@@ -191,14 +191,14 @@ class QuickStartConfigSet(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "CollectionRoutingConfig": {
+                    "collection_routing_config": {
                         "enabled": True,
                         "operations": {
-                            "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"}],
-                            "READ":  [{"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"}],
+                            "WRITE": [{"driver_id": "items_postgresql_driver_config", "on_failure": "fatal"}],
+                            "READ":  [{"driver_id": "items_postgresql_driver_config", "on_failure": "fatal"}],
                         },
                     },
-                    "ItemsPostgresqlDriver": {
+                    "items_postgresql_driver_config": {
                         "enabled": True,
                         "collection_type": "VECTOR",
                     },

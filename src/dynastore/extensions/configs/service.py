@@ -103,7 +103,7 @@ class ConfigsService(ExtensionProtocol):
             summary="Plugin registry — list all registered config plugin classes",
         )
         self.router.add_api_route(
-            "/registry/{plugin_id}",
+            "/registry/{class_key}",
             self.get_config_schema,
             methods=["GET"],
             summary="Plugin registry entry — JSON Schema + description for one plugin class",

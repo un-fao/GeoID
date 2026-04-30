@@ -14,14 +14,15 @@ field names + native OGR types. Maps each OGR type to the
 (``text``, ``integer``, ``float``, ``boolean``, ``date``, ``timestamp``,
 ``jsonb``, ``geometry``).
 
-The output dict is suitable to PATCH directly into ``CollectionSchema.fields``::
+The output dict is suitable to PATCH directly into ``CollectionSchema.fields``
+(class_key ``"collection_schema"``)::
 
     derived = extract_ogr_schema("/vsigs/bucket/roads.zip")
     await configs_svc.patch_config(
         catalog_id, collection_id,
-        {"CollectionSchema": {"fields": derived,
-                              "strict_unknown_fields": True,
-                              "materialize_fields_as_columns": True}},
+        {"collection_schema": {"fields": derived,
+                               "strict_unknown_fields": True,
+                               "materialize_fields_as_columns": True}},
     )
 
 Hard-imports ``osgeo`` at module load time. When SCOPE excludes

@@ -247,6 +247,25 @@ async def get_driver(
     """Single-driver resolution for collection READ/SEARCH.
 
     Returns the first matching ``CollectionItemsStore`` or raises.
+
+    ``hint`` selects among multiple drivers configured for the same
+    operation. The default routing puts ES (public) first for READ with
+    ``hints={"geometry_simplified"}`` and PG second with
+    ``hints={"geometry_exact"}``. SDK consumers needing exact geometries
+    pass the corresponding hint::
+
+        # Default (fast simplified-geom search via ES):
+        driver = await get_driver(Operation.READ, catalog_id, collection_id)
+
+        # Exact geometries (falls through to PG):
+        driver = await get_driver(
+            Operation.READ, catalog_id, collection_id,
+            hint="geometry_exact",
+        )
+
+    Hint matching: an entry matches when ``hint in entry.hints`` (strict),
+    or — if ``entry.hints`` is empty — when ``hint`` is in the driver's
+    class-level ``supported_hints`` set. See ``router.py:_entry_matches``.
     """
     resolved = await resolve_drivers(
         operation, catalog_id, collection_id, hint=hint,
@@ -406,7 +425,8 @@ async def get_asset_upload_driver(
         )
         resolved_ids = []
 
-    impls_by_class = {type(d).__name__: d for d in get_protocols(AssetUploadProtocol)}
+    from dynastore.tools.typed_store.base import _to_snake
+    impls_by_class = {_to_snake(type(d).__name__): d for d in get_protocols(AssetUploadProtocol)}
     for driver_id, _on_failure, _write_mode in resolved_ids:
         impl = impls_by_class.get(driver_id)
         if impl is not None:

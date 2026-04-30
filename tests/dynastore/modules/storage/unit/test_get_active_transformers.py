@@ -39,7 +39,7 @@ def _ops_with_transform(*driver_ids):
 @pytest.mark.asyncio
 async def test_resolves_class_names_to_instances_in_order():
     a, b = TransformerA(), TransformerB()
-    fake_ops = _ops_with_transform("TransformerA", "TransformerB")
+    fake_ops = _ops_with_transform("transformer_a", "transformer_b")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake_ops,
@@ -55,7 +55,7 @@ async def test_resolves_class_names_to_instances_in_order():
 async def test_preserves_routing_order_not_discovery_order():
     """routing-config order wins, even if discovery returns a different order."""
     a, b = TransformerA(), TransformerB()
-    fake_ops = _ops_with_transform("TransformerB", "TransformerA")
+    fake_ops = _ops_with_transform("transformer_b", "transformer_a")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake_ops,
@@ -70,7 +70,7 @@ async def test_preserves_routing_order_not_discovery_order():
 @pytest.mark.asyncio
 async def test_skips_unknown_class_name_with_debug_log(caplog):
     a = TransformerA()
-    fake_ops = _ops_with_transform("TransformerA", "TransformerMissing")
+    fake_ops = _ops_with_transform("transformer_a", "transformer_missing")
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake_ops,
@@ -80,7 +80,7 @@ async def test_skips_unknown_class_name_with_debug_log(caplog):
     ), caplog.at_level(logging.DEBUG, logger="dynastore.modules.storage.routing_config"):
         chain = await get_active_transformers("c", entity="item", collection_id="col")
     assert chain == [a]
-    assert any("TransformerMissing" in rec.message for rec in caplog.records)
+    assert any("transformer_missing" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -96,7 +96,7 @@ async def test_returns_empty_when_no_TRANSFORM_entries():
 @pytest.mark.asyncio
 async def test_works_for_each_entity_kind():
     a = TransformerA()
-    fake_ops = _ops_with_transform("TransformerA")
+    fake_ops = _ops_with_transform("transformer_a")
     for entity in ("item", "collection", "catalog", "asset"):
         with patch(
             "dynastore.modules.storage.routing_config._resolve_entity_operations",

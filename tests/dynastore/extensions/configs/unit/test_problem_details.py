@@ -44,6 +44,27 @@ def test_value_error_shape():
     assert "unknown plugin" in (p.detail or "")
 
 
+def test_global_registry_surfaces_problem_status_not_500():
+    """Regression: ``GlobalExceptionHandlingMiddleware`` was demoting every
+    ``ProblemException`` to a generic 500 because the registry didn't know
+    how to render one — the configs extension's RFC 9457 handler is registered
+    with FastAPI but the middleware swallows the exception before per-class
+    dispatch fires. ``ProblemExceptionHandler`` (registered first in
+    ``_register_builtin_handlers``) surfaces the explicit 4xx status and the
+    Problem Details ``detail`` instead of the fallback ``"An unexpected error
+    occurred."`` body.
+    """
+    from dynastore.extensions.tools.exception_handlers import _global_registry
+
+    exc = problem_details.value_error(
+        ValueError("Unknown config class 'collection_schema'"),
+    )
+    result = _global_registry.handle(exc, context={}, reraise_unhandled=False)
+    assert result.status_code == 404, "must keep the configs ProblemException's status"
+    assert "Unknown config class" in (result.detail or "")
+    assert "An unexpected error" not in (result.detail or "")
+
+
 def test_unexpected_failure_shape():
     exc = problem_details.unexpected_failure(RuntimeError("connection reset by peer"))
     p = exc.problem

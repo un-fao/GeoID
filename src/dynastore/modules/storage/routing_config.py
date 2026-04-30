@@ -41,7 +41,7 @@ import logging
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Literal, Optional, Set, Tuple, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.indexer import (
@@ -53,6 +53,7 @@ from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
 )
+from dynastore.tools.typed_store.base import _to_snake
 from dynastore.tools.ui_hints import ui
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,24 @@ class OperationDriverEntry(BaseModel):
     driver_id: Immutable[str] = Field(
         ..., min_length=1, description="Driver identifier (e.g. 'postgresql')."
     )
+
+    @field_validator("driver_id", mode="before")
+    @classmethod
+    def _normalize_driver_id(cls, v: Any) -> Any:
+        """Coerce driver_id to snake_case (PR-1e cutover convention).
+
+        Accepts both PascalCase (legacy: ``"ItemsPostgresqlDriver"`` from
+        auto-augment helpers + persisted configs predating snake_case) and
+        snake_case (current canonical form: ``"items_postgresql_driver"``).
+        Both forms are idempotent through ``_to_snake``. Normalising here
+        means downstream lookup against ``DriverRegistry`` (which keys by
+        snake_case) finds entries regardless of input convention.
+        """
+        if isinstance(v, str) and v:
+            from dynastore.tools.typed_store.base import _to_snake
+            return _to_snake(v)
+        return v
+
     hints: Set[str] = Field(
         default_factory=set,
         description="Hints this driver responds to for this operation.",
@@ -343,8 +362,35 @@ class CollectionRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
-            Operation.READ: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            # ES (public) primary, PG secondary. PG is authoritative for WRITE
+            # (on_failure=fatal — must succeed); ES is the derived index
+            # (on_failure=warn — transient outage doesn't block writes,
+            # reindex catches up). READ orders ES first for fast simplified-
+            # geometry search; PG carries the `geometry_exact` hint so a
+            # consumer can request exact geometries — actual hint-aware
+            # dispatch is pending PR-1e (today position 0 wins per :660).
+            Operation.WRITE: [
+                OperationDriverEntry(
+                    driver_id="items_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+                OperationDriverEntry(
+                    driver_id="items_elasticsearch_driver",
+                    on_failure=FailurePolicy.WARN,
+                ),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(
+                    driver_id="items_elasticsearch_driver",
+                    hints={"geometry_simplified"},
+                    on_failure=FailurePolicy.WARN,
+                ),
+                OperationDriverEntry(
+                    driver_id="items_postgresql_driver",
+                    hints={"geometry_exact"},
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
         },
         description=(
             "Operation → ordered driver list.  "
@@ -451,8 +497,31 @@ class AssetRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            Operation.WRITE: [OperationDriverEntry(driver_id="asset_postgresql_driver")],
-            Operation.READ: [OperationDriverEntry(driver_id="asset_postgresql_driver")],
+            # Mirrors CollectionRoutingConfig: ES (public) primary indexer for
+            # READ, PG authoritative for WRITE. See companion memory note +
+            # CollectionRoutingConfig.operations comment for rationale.
+            Operation.WRITE: [
+                OperationDriverEntry(
+                    driver_id="asset_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+                OperationDriverEntry(
+                    driver_id="asset_elasticsearch_driver",
+                    on_failure=FailurePolicy.WARN,
+                ),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(
+                    driver_id="asset_elasticsearch_driver",
+                    hints={"geometry_simplified"},
+                    on_failure=FailurePolicy.WARN,
+                ),
+                OperationDriverEntry(
+                    driver_id="asset_postgresql_driver",
+                    hints={"geometry_exact"},
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
         },
         description=(
             "Operation → ordered driver list for asset drivers. "
@@ -622,13 +691,17 @@ def _validate_routing_entries(
 
             # 4. write_mode compatibility — check DriverCapability.ASYNC
             if entry.write_mode == WriteMode.ASYNC:
-                # Resolve driver config via naming convention: ClassName + "Config"
+                # Resolve driver config via naming convention: snake_case
+                # ``<class_name>_config`` (matches PluginConfig.class_key()
+                # which snake-cases the bound config class name). Pre-PR-1e
+                # this used PascalCase ``ClassName + "Config"`` which silently
+                # missed the registry — masked by the broad except below.
                 try:
                     from dynastore.modules.db_config.platform_config_service import (
                         resolve_config_class,
                     )
 
-                    driver_config_key = type(driver).__name__ + "Config"
+                    driver_config_key = _to_snake(type(driver).__name__ + "Config")
                     driver_cls = resolve_config_class(driver_config_key)
                     if driver_cls is not None:
                         driver_config = driver_cls()
@@ -695,7 +768,7 @@ def _self_register_indexers_into(
 
     listed = {entry.driver_id for entry in target_ops.get(Operation.INDEX, [])}
     for driver in get_protocols(marker_proto):
-        driver_id = type(driver).__name__
+        driver_id = _to_snake(type(driver).__name__)
         if driver_id in listed:
             continue
         target_ops.setdefault(Operation.INDEX, []).append(
@@ -734,7 +807,7 @@ def _self_register_upload_into(
 
     listed = {entry.driver_id for entry in target_ops.get(Operation.UPLOAD, [])}
     for driver in get_protocols(marker_proto):
-        driver_id = type(driver).__name__
+        driver_id = _to_snake(type(driver).__name__)
         if driver_id in listed:
             continue
         target_ops.setdefault(Operation.UPLOAD, []).append(
@@ -794,7 +867,7 @@ def _self_register_searchers_into(
         driver_caps = getattr(driver, "capabilities", frozenset())
         if not (driver_caps & search_caps):
             continue
-        driver_id = type(driver).__name__
+        driver_id = _to_snake(type(driver).__name__)
         if driver_id in listed:
             continue
         target_ops.setdefault(Operation.SEARCH, []).append(
@@ -862,11 +935,11 @@ async def _on_apply_routing_config(
     from dynastore.models.protocols.storage_driver import CollectionItemsStore
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {type(d).__name__: d for d in get_protocols(CollectionItemsStore)}
+    driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionItemsStore)}
     _validate_routing_entries(config, driver_index, "Collection routing config")
 
     # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
-    metadata_driver_index = {type(d).__name__: d for d in get_protocols(CollectionMetadataStore)}
+    metadata_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionMetadataStore)}
     _self_register_metadata_drivers(config, metadata_driver_index)
     for entry in config.metadata.operations.get(Operation.READ, []):
         if entry.driver_id not in metadata_driver_index:
@@ -973,7 +1046,7 @@ async def _on_apply_asset_routing_config(
     from dynastore.models.protocols.asset_driver import AssetStore
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {type(d).__name__: d for d in get_protocols(AssetStore)}
+    driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(AssetStore)}
     _validate_routing_entries(config, driver_index, "Asset routing config")
 
     # Auto-register installed AssetIndexer drivers under operations[INDEX].
@@ -1029,7 +1102,7 @@ async def _on_apply_catalog_routing_config(
     from dynastore.models.protocols.metadata_driver import CatalogMetadataStore
     from dynastore.tools.discovery import get_protocols
 
-    driver_index = {type(d).__name__: d for d in get_protocols(CatalogMetadataStore)}
+    driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CatalogMetadataStore)}
     _self_register_metadata_drivers(config, driver_index)
     _validate_routing_entries(config, driver_index, "Catalog routing config")
 
@@ -1219,7 +1292,7 @@ async def get_active_transformers(
     if not entries:
         return []
 
-    by_driver_id = {type(t).__name__: t for t in get_protocols(EntityTransformProtocol)}
+    by_driver_id = {_to_snake(type(t).__name__): t for t in get_protocols(EntityTransformProtocol)}
     chain: List[Any] = []
     for entry in entries:
         transformer = by_driver_id.get(entry.driver_id)
@@ -1290,7 +1363,7 @@ def _self_register_transformers_into(
 
     listed = {entry.driver_id for entry in target_ops.get(Operation.TRANSFORM, [])}
     for transformer in get_protocols(EntityTransformProtocol):
-        driver_id = type(transformer).__name__
+        driver_id = _to_snake(type(transformer).__name__)
         if driver_id in listed:
             continue
         target_ops.setdefault(Operation.TRANSFORM, []).append(

@@ -1,3 +1,4 @@
 pyodide-http
 httpx
 python-dotenv
+pyshp
