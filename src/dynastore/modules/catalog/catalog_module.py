@@ -133,7 +133,9 @@ CREATE TABLE IF NOT EXISTS catalog.catalogs (
     id VARCHAR PRIMARY KEY,
     physical_schema VARCHAR NOT NULL UNIQUE,
     provisioning_status VARCHAR(50) NOT NULL DEFAULT 'ready',
-    deleted_at TIMESTAMPTZ DEFAULT NULL
+    deleted_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
 
