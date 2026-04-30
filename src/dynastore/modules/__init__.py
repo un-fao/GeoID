@@ -191,14 +191,13 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
             )
             config.instance = None
 
-    # Post-discovery audit — single log line per pod boot that tells us
-    # exactly which modules are live, which failed, and which core
-    # protocols ended up resolvable.  Paired with
-    # `_get_storage_protocol` diagnostic in commit f8be448 — at runtime
-    # we dump registry state; at boot, this line tells us what SHOULD
-    # have registered on this pod.
+    # Post-sync-init audit — reports which modules survived __init__.
+    # Runtime-protocol resolution is audited separately at the end of
+    # ``lifespan()`` startup, because providers like ``CatalogService`` /
+    # ``PostgresProxyStorage`` register inside their module's async
+    # lifespan, not during sync ``__init__`` — probing them here is a
+    # timing false-positive.
     try:
-        from dynastore.tools.discovery import get_protocol
         live_modules = sorted(
             name for name, cfg in _DYNASTORE_MODULES.items() if cfg.instance
         )
@@ -206,32 +205,20 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
             name for name in ordered_modules
             if _DYNASTORE_MODULES.get(name) and not _DYNASTORE_MODULES[name].instance
         )
-
-        # Probe a small set of protocols that downstream code is known to
-        # resolve without a DB round-trip. Keep this list in sync with the
-        # "cannot_start_without" set of protocols referenced by tasks.
-        from dynastore.models.protocols import (
-            StorageProtocol, DatabaseProtocol, CatalogsProtocol, TasksProtocol,
-        )
-        probed = {
-            "Storage": type(get_protocol(StorageProtocol)).__name__ if get_protocol(StorageProtocol) else None,
-            "Database": type(get_protocol(DatabaseProtocol)).__name__ if get_protocol(DatabaseProtocol) else None,
-            "Catalogs": type(get_protocol(CatalogsProtocol)).__name__ if get_protocol(CatalogsProtocol) else None,
-            "Tasks": type(get_protocol(TasksProtocol)).__name__ if get_protocol(TasksProtocol) else None,
-        }
-        logger.info(
-            "Module discovery complete. live=%s missing=%s init_failures=%s protocol_resolvers=%s",
-            live_modules, missing_modules, init_failures, probed,
-        )
-        if any(v is None for v in probed.values()):
+        if init_failures:
             logger.critical(
-                "Module discovery left core protocols UNRESOLVED: %s — "
-                "tasks depending on these will fail at runtime. Check "
-                "CRITICAL 'Failed during __init__' lines above.",
-                [k for k, v in probed.items() if v is None],
+                "Module __init__ left %d module(s) failed: %s — "
+                "get_protocol() will return None for any protocol they were "
+                "supposed to register. Check CRITICAL 'Failed during __init__' "
+                "lines above.",
+                len(init_failures), init_failures,
             )
+        logger.info(
+            "Module sync-init complete. live=%s missing=%s init_failures=%s",
+            live_modules, missing_modules, init_failures,
+        )
     except Exception as audit_err:  # pragma: no cover — diagnostic best-effort
-        logger.error("Module-discovery audit failed: %s", audit_err)
+        logger.error("Module sync-init audit failed: %s", audit_err)
 
 
 @asynccontextmanager
@@ -296,9 +283,36 @@ async def lifespan(app_state: object):
                     if getattr(config.cls, "priority", 100) < 20:
                         raise RuntimeError(f"CRITICAL: Foundational module '{config.cls.__name__}' failed during startup. Aborting.") from e
 
-        
+        # Runtime-protocol audit — runs after every module's async lifespan
+        # has entered (so every register_plugin(svc) call has fired). The
+        # probed set is the protocols downstream code is known to resolve
+        # without a DB round-trip; missing here = real failure, not async-
+        # init timing.
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols import (
+                StorageProtocol, DatabaseProtocol, CatalogsProtocol, TasksProtocol,
+            )
+            probed = {
+                "Storage":  type(get_protocol(StorageProtocol)).__name__   if get_protocol(StorageProtocol)  else None,
+                "Database": type(get_protocol(DatabaseProtocol)).__name__  if get_protocol(DatabaseProtocol) else None,
+                "Catalogs": type(get_protocol(CatalogsProtocol)).__name__  if get_protocol(CatalogsProtocol) else None,
+                "Tasks":    type(get_protocol(TasksProtocol)).__name__     if get_protocol(TasksProtocol)    else None,
+            }
+            if any(v is None for v in probed.values()):
+                logger.critical(
+                    "Lifespan startup left core protocols UNRESOLVED: %s — "
+                    "tasks depending on these will fail at runtime. "
+                    "protocol_resolvers=%s",
+                    [k for k, v in probed.items() if v is None], probed,
+                )
+            else:
+                logger.info("Runtime protocols resolved: %s", probed)
+        except Exception as audit_err:  # pragma: no cover — diagnostic best-effort
+            logger.error("Runtime-protocol audit failed: %s", audit_err)
+
         yield
-        
+
         # Wait for all background tasks before shutting down modules
         # This prevents closing GCP clients while tasks are still running.
         try:
