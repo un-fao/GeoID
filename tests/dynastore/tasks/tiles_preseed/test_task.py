@@ -4,6 +4,7 @@ import asyncio
 from tests.dynastore.test_utils import generate_test_id
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
+from dynastore.modules.processes.models import ExecuteRequest
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum, TaskCreate
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tiles.tiles_config import TilesPreseedConfig
@@ -107,9 +108,12 @@ async def test_tile_preseed_task_run_integration(app_lifespan, in_process_client
         schema=schema
     )
     
+    # Wrap in ExecuteRequest to match the OGC Process dispatch shape the task
+    # expects (task.py:62-70 reads payload.inputs.inputs). Same pattern as
+    # DwhJoinExportTask and ExportFeaturesTask payloads.
     payload = TaskPayload(
         task_id=db_task.task_id,
-        inputs=request,
+        inputs=ExecuteRequest(inputs=request.model_dump()),
         caller_id="test_admin"
     )
     

@@ -324,8 +324,20 @@ class WFSService(ExtensionProtocol):
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
 
-        from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import Operation
+        # Phase 1.6: collection_type was hoisted out of ItemsPostgresqlDriverConfig
+        # into its own CollectionType PluginConfig. Fetch from configs_svc instead
+        # of reading driver config (which no longer exposes the attribute).
+        from dynastore.modules.catalog.catalog_config import (
+            CollectionType, CollectionTypeEnum,
+        )
+
+        async def _is_vector(cat_id: str, coll_id: str) -> bool:
+            ct = await configs_svc.get_config(
+                CollectionType, catalog_id=cat_id, collection_id=coll_id,
+            ) if configs_svc else None
+            # Default per CollectionType.kind = VECTOR — missing config means
+            # vector, matching the pre-Phase-1.6 "no driver config → include" path.
+            return ct is None or ct.kind == CollectionTypeEnum.VECTOR
 
         if catalog_id:
             # Scoped request: only fetch collections for the specified catalog.
@@ -345,11 +357,7 @@ class WFSService(ExtensionProtocol):
 
             vector_collections = []
             for c_summary in all_collections_summary:
-                driver = await get_driver(Operation.READ, catalog_id, c_summary.id)
-                layer_config = await driver.get_driver_config(
-                    catalog_id, c_summary.id, db_resource=conn
-                )
-                if not layer_config or layer_config.collection_type == "VECTOR":
+                if await _is_vector(catalog_id, c_summary.id):
                     full_collection_details = await catalogs_svc.get_collection(
                         catalog_id, c_summary.id, ctx=DriverContext(db_resource=conn)
                     )
@@ -367,11 +375,7 @@ class WFSService(ExtensionProtocol):
                 )
                 vector_collections = []
                 for c_summary in all_collections_summary:
-                    driver = await get_driver(Operation.READ, catalog.id, c_summary.id)
-                    layer_config = await driver.get_driver_config(
-                        catalog.id, c_summary.id, db_resource=conn
-                    )
-                    if not layer_config or layer_config.collection_type == "VECTOR":
+                    if await _is_vector(catalog.id, c_summary.id):
                         full_collection_details = await catalogs_svc.get_collection(
                             catalog.id, c_summary.id, ctx=DriverContext(db_resource=conn)
                         )
