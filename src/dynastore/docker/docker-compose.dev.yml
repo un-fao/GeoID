@@ -26,6 +26,10 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src # Hot reload mount
+      # Service identity (instance.json) + shared task-routing defaults.
+      # Activates the TaskRoutingConfig service-affinity gate so this
+      # service only claims task types its routing entry whitelists it for.
+      - ./config/catalog:/dynastore/config:ro
     env_file:
       - .env
       - path: .env.local
@@ -46,6 +50,7 @@ services:
       ERROR_LOG: "-"
       ES_HOST: elasticsearch
       ES_PORT: "9200"
+      DYNASTORE_CONFIG_ROOT: /dynastore/config
     ports:
       - "5678:5678" # Debug port
     command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
@@ -62,6 +67,7 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src
+      - ./config/geoid:/dynastore/config:ro
     depends_on:
       db:
         condition: service_healthy
@@ -73,6 +79,7 @@ services:
       UVICORN_WORKERS: 1
       ES_HOST: elasticsearch
       ES_PORT: "9200"
+      DYNASTORE_CONFIG_ROOT: /dynastore/config
 
   worker:
     extends:
@@ -96,6 +103,7 @@ services:
         condition: service_healthy
     volumes:
       - ../../../src:/dynastore/src
+      - ./config/worker:/dynastore/config:ro
     environment:
       UVICORN_WORKERS: 1
       LOG_LEVEL: DEBUG
@@ -103,6 +111,7 @@ services:
       ERROR_LOG: "-"
       ES_HOST: elasticsearch
       ES_PORT: "9200"
+      DYNASTORE_CONFIG_ROOT: /dynastore/config
     ports:
       - "5679:5679" # Debug port for worker
     command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --reload --reload-dir src
@@ -120,6 +129,7 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src
+      - ./config/tools:/dynastore/config:ro
     env_file:
       - .env
       - path: .env.local
@@ -132,6 +142,7 @@ services:
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
       ERROR_LOG: "-"
+      DYNASTORE_CONFIG_ROOT: /dynastore/config
     ports:
       - "5680:5680" # Debug port for tools
     command: python -m debugpy --listen 0.0.0.0:5680 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8082 --reload --reload-dir src
@@ -149,6 +160,7 @@ services:
         BUILD_JUPYTERLITE: "true"
     volumes:
       - ../../../src:/dynastore/src
+      - ./config/maps:/dynastore/config:ro
     env_file:
       - .env
       - path: .env.local
@@ -165,6 +177,7 @@ services:
       ERROR_LOG: "-"
       ES_HOST: elasticsearch
       ES_PORT: "9200"
+      DYNASTORE_CONFIG_ROOT: /dynastore/config
     ports:
       - "5681:5681" # Debug port for maps
     command: python -m debugpy --listen 0.0.0.0:5681 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8083 --reload --reload-dir src

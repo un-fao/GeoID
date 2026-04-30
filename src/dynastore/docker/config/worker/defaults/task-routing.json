@@ -1,0 +1,24 @@
+{
+  "class_key": "task_routing_config",
+  "value": {
+    "routing": {
+      "gcs_storage_event":                     ["catalog"],
+      "gcp_provision_catalog":                 ["catalog"],
+      "gcp_destroy_catalog":                   ["catalog"],
+      "gcp_catalog_cleanup":                   ["catalog"],
+      "elasticsearch_index":                   ["catalog"],
+      "elasticsearch_delete":                  ["catalog"],
+      "elasticsearch_private_index":           ["catalog"],
+      "elasticsearch_private_delete":          ["catalog"],
+      "elasticsearch_bulk_reindex_catalog":    ["catalog"],
+      "elasticsearch_bulk_reindex_collection": ["catalog"],
+      "elasticsearch_indexer":                 ["worker"],
+      "ingestion":                             ["worker"],
+      "gdal":                                  ["worker"],
+      "tiles_preseed":                         ["worker"],
+      "dwh_join":                              ["worker"],
+      "export_features":                       ["worker"],
+      "dimensions_materialize":                ["worker"]
+    }
+  }
+}
