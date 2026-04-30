@@ -16,10 +16,14 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+from typing import ClassVar, Optional, Tuple
+
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 
 class ConnectedSystemsPluginConfig(ExposableConfigMixin, PluginConfig):
     """Service-exposure config for the OGC API - Connected Systems extension."""
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("extensions", "connected_systems", None)
+
     # `enabled` inherited from ExposableConfigMixin — no further fields.
