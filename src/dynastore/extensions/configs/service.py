@@ -379,6 +379,18 @@ class ConfigsService(ExtensionProtocol):
                 "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
             ),
         ),
+        docs: str = Query(
+            "none",
+            pattern="^(none|schema)$",
+            description=(
+                "Documentation mode for the response. ``none`` (default): no schemas. "
+                "``schema``: each class in the response gets its full JSON Schema 2020-12 "
+                "document at ``meta.{ClassName}.json_schema`` (title, description, type, "
+                "default, examples, constraints — everything a dashboard form-builder "
+                "needs). Independent of ``?meta=true``: combine to get both source "
+                "diagnostics and schemas."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -388,6 +400,7 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
+            docs=docs,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -413,6 +426,14 @@ class ConfigsService(ExtensionProtocol):
                 "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
             ),
         ),
+        docs: str = Query(
+            "none",
+            pattern="^(none|schema)$",
+            description=(
+                "Documentation mode. ``schema`` embeds each class's JSON Schema "
+                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -424,6 +445,7 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
+            docs=docs,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -449,6 +471,14 @@ class ConfigsService(ExtensionProtocol):
                 "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
             ),
         ),
+        docs: str = Query(
+            "none",
+            pattern="^(none|schema)$",
+            description=(
+                "Documentation mode. ``schema`` embeds each class's JSON Schema "
+                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -460,6 +490,7 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
+            docs=docs,
         )
         return JSONResponse(content=response.model_dump())
 
