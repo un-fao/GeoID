@@ -138,14 +138,20 @@ jobs:
         run: |
           NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
           test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
+          # Source .env so DATABASE_URL picks up the actual db credentials
+          # (POSTGRES_USER/PASSWORD/DB) the canonical compose's db started with.
+          # Hardcoding postgres:postgres breaks because .env sets
+          # POSTGRES_USER=testuser, POSTGRES_PASSWORD=testpassword.
+          set -a; source src/dynastore/docker/.env; set +a
           docker run --rm \
             --network "$NETWORK" \
             --workdir /dynastore \
+            --env-file src/dynastore/docker/.env \
             -v "$WORKSPACE":/dynastore/workspace \
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
-            -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
+            -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
             -e DYNASTORE_DDL_STATEMENT_TIMEOUT=120s \
             -e DYNASTORE_DDL_LOCK_TIMEOUT=120s \
             -e LOG_LEVEL=INFO \
@@ -284,6 +290,7 @@ jobs:
         run: |
           NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
           test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
+          set -a; source src/dynastore/docker/.env; set +a
           docker run --rm \
             --network "$NETWORK" \
             --workdir /dynastore \
@@ -291,7 +298,8 @@ jobs:
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
-            -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
+            --env-file src/dynastore/docker/.env \
+            -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
             -e DYNASTORE_API_URL=http://catalog:80 \
             -e DYNASTORE_WORKER_URL=http://worker:81 \
             -e REMOTE_TEST_EXECUTION=true \
