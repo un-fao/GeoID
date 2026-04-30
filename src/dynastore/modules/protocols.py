@@ -106,11 +106,35 @@ class ModuleProtocol(ProtocolPlugin[object], HasConfigService):
     provides_extra: ClassVar[Tuple[type, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Auto-register every concrete subclass when it is first defined."""
+        """Auto-register every concrete subclass when it is first defined.
+
+        Skipped for classes that live deeper than ``dynastore.modules.<X>.<file>``
+        (e.g. drivers under ``dynastore.modules.storage.drivers.postgresql``):
+        those are *always* registered through the entry-point pass in
+        ``discover_modules`` under their explicit entry-point key. Auto-
+        registering them via the path-derivation rule in ``_register_module``
+        would collide on the bare segment after ``modules`` (every storage
+        driver derives to ``"storage"``), emitting a noisy
+        "Module 'storage' is already registered with a different class"
+        warning per driver on every boot — without changing the final state
+        because entry-point discovery re-keys them anyway.
+        """
         super().__init_subclass__(**kwargs)
         # Skip abstract classes (those that still have unimplemented abstract methods)
         if getattr(cls, '__abstractmethods__', None):
             return
+        # Skip nested driver classes (entry-point-discovered, see docstring above).
+        # ``dynastore.modules.catalog.catalog_module`` (4 segments) → register;
+        # ``dynastore.modules.storage.drivers.postgresql`` (5+ segments) → skip.
+        try:
+            parts = cls.__module__.split('.')
+            modules_idx = parts.index('modules')
+            if len(parts) - modules_idx > 3:
+                return
+        except ValueError:
+            # Class lives outside ``dynastore.modules.*`` — let
+            # ``_register_module`` fall back to ``cls.__name__``.
+            pass
         # Defer import to avoid circular imports at module load time
         try:
             from dynastore.modules import _register_module
