@@ -1,9 +1,10 @@
 """Platform notebook registrations for the catalog module.
 
 Registers collection configuration notebooks:
-  - collection_write_policy        — write policy configuration
-  - collection_feature_type        — feature type definition
-  - collection_metadata_enrichment — metadata enrichment / METADATA storage routing
+  - collection_write_policy            — write policy configuration
+  - collection_feature_type            — feature type definition
+  - collection_metadata_enrichment     — metadata enrichment / METADATA storage routing
+  - collection_shapefile_strict_schema — end-to-end strict-schema demo (PRs #178/179/180/181)
 
 Import this module during CatalogModule lifespan (before NotebooksModule seeds).
 """
@@ -39,4 +40,13 @@ register_platform_notebook(
     title={"en": "Collection Metadata Enrichment"},
     description={"en": "Configure METADATA storage routing — which storage drivers supply collection metadata at read time."},
     tags=["collection", "metadata", "enrichment", "configuration"],
+)
+
+register_platform_notebook(
+    notebook_id="collection_shapefile_strict_schema",
+    registered_by=_REG,
+    notebook_path=_HERE / "shapefile_strict_schema.ipynb",
+    title={"en": "Strict-Schema Collection from a Shapefile"},
+    description={"en": "End-to-end demo: upload shapefile → derive schema via OGR → enforce strict schema → optimize storage by columns → refuse duplicate identity. Combines PRs #178 (strict_unknown_fields), #179 (materialize_fields_as_columns), #180 (post-ingest ANALYZE), #181 (extract_ogr_schema)."},
+    tags=["collection", "schema", "shapefile", "strict-mode", "ogr", "ingestion", "demo"],
 )
