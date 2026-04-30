@@ -23,7 +23,18 @@ from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.storage.errors import (
     RequiredFieldMissingError,
     UniqueConstraintViolationError,
+    UnknownFieldsError,
 )
+
+
+# System-level fields that always pass the strict-unknown-fields check
+# regardless of CollectionSchema.fields contents. These are platform
+# concerns (item identity, geometry, properties bag) — not user data fields,
+# so requiring them in every CollectionSchema would be ceremonial noise.
+_STRICT_MODE_SYSTEM_FIELDS = frozenset({
+    "id", "geoid", "geometry", "bbox", "type", "properties",
+    "links", "assets", "stac_version", "stac_extensions", "collection",
+})
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
@@ -181,6 +192,52 @@ def check_required(
             if _resolve_value(feature, name) is None:
                 raise RequiredFieldMissingError(
                     f"required field '{name}' is missing or null", field=name,
+                )
+
+
+def check_strict_unknown_fields(
+    allowed_fields: Iterable[str],
+    features: Iterable[Mapping[str, Any]],
+) -> None:
+    """Raise ``UnknownFieldsError`` when any feature carries a property
+    not in ``allowed_fields`` (CollectionSchema strict-mode enforcement).
+
+    Inspects ``feature["properties"]`` and the top-level keys of each
+    feature; system fields (id, geoid, geometry, bbox, properties, etc.)
+    always pass regardless of ``allowed_fields``. Use when the
+    collection's ``CollectionSchema.strict_unknown_fields=True``.
+
+    The first offending feature triggers the raise (fail-fast). Callers
+    that need batch-level violation aggregation should iterate manually.
+    """
+    allowed = set(allowed_fields)
+    for feature in features:
+        # Property-bag fields
+        props = feature.get("properties") if isinstance(feature, Mapping) else None
+        if isinstance(props, Mapping):
+            offenders = [
+                k for k in props.keys()
+                if k not in allowed and k not in _STRICT_MODE_SYSTEM_FIELDS
+            ]
+            if offenders:
+                raise UnknownFieldsError(
+                    f"feature carries unknown fields under 'properties' "
+                    f"not declared in CollectionSchema.fields: {sorted(offenders)}",
+                    unknown_fields=sorted(offenders),
+                    allowed_fields=sorted(allowed),
+                )
+        # Top-level keys outside the system-field whitelist
+        if isinstance(feature, Mapping):
+            top_offenders = [
+                k for k in feature.keys()
+                if k not in allowed and k not in _STRICT_MODE_SYSTEM_FIELDS
+            ]
+            if top_offenders:
+                raise UnknownFieldsError(
+                    f"feature carries unknown top-level fields not declared in "
+                    f"CollectionSchema.fields: {sorted(top_offenders)}",
+                    unknown_fields=sorted(top_offenders),
+                    allowed_fields=sorted(allowed),
                 )
 
 

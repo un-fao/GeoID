@@ -61,6 +61,29 @@ class RequiredFieldMissingError(Exception):
         self.field = field
 
 
+class UnknownFieldsError(Exception):
+    """A feature carried fields not declared in the collection's
+    ``CollectionSchema.fields`` while ``strict_unknown_fields=True``.
+
+    Raised by the service-layer pre-write helper to enforce the strict-mode
+    contract: collections that declare a schema with strict mode reject any
+    write whose properties contain a field outside the declared set.
+    Always service-layer enforcement (no driver-native equivalent — drivers
+    that store JSON properties accept any field by default). Maps to HTTP 422.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        unknown_fields: list[str] | None = None,
+        allowed_fields: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.unknown_fields = unknown_fields or []
+        self.allowed_fields = allowed_fields or []
+
+
 class SidecarRejectedError(Exception):
     """A sidecar refused a feature at ingestion time.
 

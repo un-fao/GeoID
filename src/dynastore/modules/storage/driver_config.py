@@ -864,6 +864,19 @@ class CollectionSchema(PluginConfig):
             "config admission is rejected for unsupported constraints."
         ),
     )
+    strict_unknown_fields: bool = Field(
+        default=False,
+        description=(
+            "When True, refuse writes whose features carry properties not "
+            "listed in ``fields``. System fields (id, geoid, geometry, bbox, "
+            "properties, etc.) always pass; only user-data fields are "
+            "checked. Always service-layer enforcement — drivers that store "
+            "JSON properties accept any field by default, so this is the "
+            "ONLY way to constrain the schema shape on write. Maps to HTTP "
+            "422 with the offending field list. Default False keeps the "
+            "current open-schema behavior."
+        ),
+    )
     constraints: List[Any] = Field(
         default_factory=list,
         description=(
