@@ -297,11 +297,11 @@ async def list_systems(
     catalog_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[System]]:
+) -> List[System]:
     rows = await _list_systems_query.execute(
         conn, catalog_id=catalog_id, limit=limit, offset=offset
     )
-    return [_system_from_row(r) for r in rows]
+    return [s for r in rows if (s := _system_from_row(r)) is not None]
 
 
 async def update_system(
@@ -387,11 +387,11 @@ async def list_deployments_for_system(
     system_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[Deployment]]:
+) -> List[Deployment]:
     rows = await _list_deployments_by_system_query.execute(
         conn, catalog_id=catalog_id, system_id=system_id, limit=limit, offset=offset
     )
-    return [_deployment_from_row(r) for r in rows]
+    return [d for r in rows if (d := _deployment_from_row(r)) is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -429,11 +429,11 @@ async def list_datastreams(
     catalog_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[DataStream]]:
+) -> List[DataStream]:
     rows = await _list_datastreams_query.execute(
         conn, catalog_id=catalog_id, limit=limit, offset=offset
     )
-    return [_datastream_from_row(r) for r in rows]
+    return [d for r in rows if (d := _datastream_from_row(r)) is not None]
 
 
 async def list_datastreams_for_system(
@@ -442,11 +442,11 @@ async def list_datastreams_for_system(
     system_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[DataStream]]:
+) -> List[DataStream]:
     rows = await _list_datastreams_by_system_query.execute(
         conn, catalog_id=catalog_id, system_id=system_id, limit=limit, offset=offset
     )
-    return [_datastream_from_row(r) for r in rows]
+    return [d for r in rows if (d := _datastream_from_row(r)) is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +477,7 @@ async def list_observations(
     datastream_id: str,
     limit: int = 100,
     offset: int = 0,
-) -> List[Optional[Observation]]:
+) -> List[Observation]:
     rows = await _list_observations_query.execute(
         conn,
         catalog_id=catalog_id,
@@ -485,4 +485,4 @@ async def list_observations(
         limit=limit,
         offset=offset,
     )
-    return [_observation_from_row(r) for r in rows]
+    return [o for r in rows if (o := _observation_from_row(r)) is not None]
