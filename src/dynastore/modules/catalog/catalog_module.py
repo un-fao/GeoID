@@ -62,6 +62,7 @@ from dynastore.models.protocols import (
     ConfigsProtocol,
     DatabaseProtocol,
     LocalizationProtocol,
+    LogsProtocol,
 )
 from dynastore.tools.discovery import register_plugin, get_protocol
 from dynastore.modules.catalog.catalog_service import CatalogService
@@ -160,6 +161,19 @@ class CatalogModule(ModuleProtocol):
     which creates tables that the event consumer depends on.
     Priority < 20 would cause hard-abort on startup failure; 20 is still foundational.
     """
+
+    # Inner-service registrations during ``lifespan`` (see ``register_plugin(svc)``
+    # in the for-loop further down). The lifespan-end audit reads this tuple to
+    # learn that this module is expected to make these protocols resolvable —
+    # MRO walk alone wouldn't see them, since ``CatalogService`` / ``AssetService``
+    # / ``ConfigService`` / ``LogService`` are inner services, not bases of
+    # ``CatalogModule`` itself.
+    provides_extra = (
+        CatalogsProtocol,
+        AssetsProtocol,
+        ConfigsProtocol,
+        LogsProtocol,
+    )
 
 
     def __init__(self):

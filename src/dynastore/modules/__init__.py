@@ -43,6 +43,26 @@ class ModuleConfig:
     cls: Type[ModuleProtocol]
     instance: ModuleProtocol | None = None
 
+
+def _module_provided_protocols(cls: type) -> set[type]:
+    """MRO-derived set of ``typing.Protocol`` bases the module class itself
+    implements directly, filtered to those marked ``@runtime_checkable``
+    (which is the only kind that can be probed via ``get_protocol`` /
+    ``isinstance``). ``ModuleProtocol`` is filtered out — it is the
+    plugin-category marker, not a service contract. Inner-service protocols
+    (registered during async lifespan via ``register_plugin(svc)``) are NOT
+    visible here; modules that delegate must declare them via the opt-in
+    ``provides_extra: ClassVar[Tuple[type, ...]]`` ClassVar on
+    ``ModuleProtocol``. Used by the lifespan-end audit to derive the
+    deployment's expected protocol set instead of hardcoding one.
+    """
+    return {
+        base for base in cls.__mro__
+        if base is not ModuleProtocol
+        and getattr(base, "_is_protocol", False)
+        and getattr(base, "_is_runtime_protocol", False)
+    }
+
 def _register_module(cls: Type[T_Module], registration_name: Optional[str] = None) -> Type[T_Module]:
     """
     Internal helper to register a module class.
@@ -283,31 +303,37 @@ async def lifespan(app_state: object):
                     if getattr(config.cls, "priority", 100) < 20:
                         raise RuntimeError(f"CRITICAL: Foundational module '{config.cls.__name__}' failed during startup. Aborting.") from e
 
-        # Runtime-protocol audit — runs after every module's async lifespan
-        # has entered (so every register_plugin(svc) call has fired). The
-        # probed set is the protocols downstream code is known to resolve
-        # without a DB round-trip; missing here = real failure, not async-
-        # init timing.
+        # Runtime-protocol audit — derives the expected protocol set from the
+        # *live* module classes (their MRO + their ``provides_extra`` ClassVar)
+        # so the audit is automatically SCOPE-aware: a worker SCOPE that omits
+        # ``CatalogModule`` does not expect ``CatalogsProtocol``, and so does
+        # not CRITICAL when it is missing.  Runs after every module's async
+        # lifespan has entered (so every ``register_plugin(svc)`` call has
+        # fired) — anything still unresolvable here is a real failure.
         try:
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.models.protocols import (
-                StorageProtocol, DatabaseProtocol, CatalogsProtocol, TasksProtocol,
-            )
-            probed = {
-                "Storage":  type(get_protocol(StorageProtocol)).__name__   if get_protocol(StorageProtocol)  else None,
-                "Database": type(get_protocol(DatabaseProtocol)).__name__  if get_protocol(DatabaseProtocol) else None,
-                "Catalogs": type(get_protocol(CatalogsProtocol)).__name__  if get_protocol(CatalogsProtocol) else None,
-                "Tasks":    type(get_protocol(TasksProtocol)).__name__     if get_protocol(TasksProtocol)    else None,
-            }
-            if any(v is None for v in probed.values()):
+            from dynastore.tools.discovery import get_protocol as _gp
+            expected: set[type] = set()
+            for _cfg in _DYNASTORE_MODULES.values():
+                if _cfg.instance is None:
+                    continue
+                expected.update(_module_provided_protocols(_cfg.cls))
+                expected.update(getattr(_cfg.cls, "provides_extra", ()))
+            probed = {}
+            for proto in sorted(expected, key=lambda p: p.__name__):
+                inst = _gp(proto)
+                probed[proto.__name__] = type(inst).__name__ if inst else None
+            unresolved = [name for name, val in probed.items() if val is None]
+            if unresolved:
                 logger.critical(
-                    "Lifespan startup left core protocols UNRESOLVED: %s — "
-                    "tasks depending on these will fail at runtime. "
+                    "Lifespan startup left expected protocols UNRESOLVED: %s — "
+                    "modules registered them but providers never appeared. "
                     "protocol_resolvers=%s",
-                    [k for k, v in probed.items() if v is None], probed,
+                    unresolved, probed,
                 )
             else:
-                logger.info("Runtime protocols resolved: %s", probed)
+                logger.info(
+                    "Runtime protocols resolved (%d): %s", len(probed), probed,
+                )
         except Exception as audit_err:  # pragma: no cover — diagnostic best-effort
             logger.error("Runtime-protocol audit failed: %s", audit_err)
 

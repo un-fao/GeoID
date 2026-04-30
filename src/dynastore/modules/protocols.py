@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional, Protocol, Type, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, Protocol, Tuple, Type, TypeVar
 
 from dynastore.tools.plugin import ProtocolPlugin
 
@@ -93,6 +93,17 @@ class ModuleProtocol(ProtocolPlugin[object], HasConfigService):
                 del app_state.my_service
     ```
     """
+
+    #: Protocols this module *delegates* to inner services registered during
+    #: its async ``lifespan()`` (via ``register_plugin(svc)``). The post-
+    #: lifespan audit walks every live module's MRO + this tuple to derive
+    #: the set of expected protocols for the current SCOPE — so a module
+    #: that delegates ``CatalogsProtocol`` to an inner ``CatalogService``
+    #: should declare ``provides_extra = (CatalogsProtocol,)``. Protocols
+    #: that the module class implements *directly* (i.e. that appear in
+    #: its MRO) need not be repeated here — the audit picks them up from
+    #: the MRO walk.
+    provides_extra: ClassVar[Tuple[type, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Auto-register every concrete subclass when it is first defined."""
