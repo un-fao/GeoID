@@ -146,6 +146,7 @@ web_service.py
 !src/dynastore/extensions/web/static/README_home.md
 !src/dynastore/extensions/wfs/README.md
 !src/dynastore/modules/apikey/readme.md
+!src/dynastore/modules/iam/identity_providers/KEYCLOAK_SETUP.md
 !src/dynastore/modules/processes/README.md
 !src/dynastore/modules/stats/readme.md
 !src/dynastore/modules/tasks/README.md
