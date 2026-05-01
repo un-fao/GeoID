@@ -44,6 +44,8 @@ This makes it compatible with any standards-compliant IdP without code changes.
 
 Tested with: **Keycloak**, **Okta**, **Auth0**, **Azure AD**, **Google**.
 
+> **Setting up Keycloak?** See [`KEYCLOAK_SETUP.md`](./KEYCLOAK_SETUP.md) — recipe for the **Keycloak admin** covering realm / role / client setup, the load-bearing `roles` scope + audience mapper, and a smoke-test command.
+
 ### Environment Variables
 
 | Variable | Alias (legacy) | Description |
