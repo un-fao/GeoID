@@ -485,14 +485,14 @@ class SearchService(ExtensionProtocol):
         if driver:
             inputs["driver"] = driver
 
-        task = await tasks_module.create_task(
+        task = await tasks_module.create_task_for_catalog(
             engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_catalog",
                 inputs=inputs,
             ),
-            schema=tasks_module.get_task_schema(),
+            catalog_id=catalog_id,
         )
         if task is None:
             raise RuntimeError("reindex_catalog: create_task returned None (dedup hit on a non-dedup task).")
@@ -525,14 +525,14 @@ class SearchService(ExtensionProtocol):
         if driver:
             inputs["driver"] = driver
 
-        task = await tasks_module.create_task(
+        task = await tasks_module.create_task_for_catalog(
             engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
                 task_type="elasticsearch_bulk_reindex_collection",
                 inputs=inputs,
             ),
-            schema=tasks_module.get_task_schema(),
+            catalog_id=catalog_id,
         )
         if task is None:
             raise RuntimeError("reindex_collection: create_task returned None (dedup hit on a non-dedup task).")
