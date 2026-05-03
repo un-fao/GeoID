@@ -5,7 +5,7 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_search_filters(in_process_client, setup_catalog, setup_collection):
+async def test_stac_search_filters(sysadmin_in_process_client, in_process_client, setup_catalog, setup_collection):
     catalog_id = setup_catalog
     collection_id = setup_collection
 
@@ -33,13 +33,13 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
     }
 
     # Insert items
-    r1 = await in_process_client.post(
+    r1 = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items", json=item1
     )
     print(f"Item1 Insert: {r1.status_code} {r1.text}")
     assert r1.status_code in [200, 201]
 
-    r2 = await in_process_client.post(
+    r2 = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items", json=item2
     )
     print(f"Item2 Insert: {r2.status_code} {r2.text}")
@@ -52,7 +52,7 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
         "bbox": [9.0, 9.0, 11.0, 11.0],
         "collections": [collection_id],
     }
-    r = await in_process_client.post("/stac/search", json=search_bbox)
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_bbox)
     if r.status_code != 200:
         print(f"\nResponse: {r.json()}")
     assert r.status_code == 200
@@ -66,7 +66,7 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
         "ids": ["item1", "item2"],
         "collections": [collection_id],
     }
-    r = await in_process_client.post("/stac/search", json=search_ids)
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_ids)
     if r.status_code != 200:
         print(f"\nResponse: {r.json()}")
     assert r.status_code == 200
@@ -78,7 +78,7 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
         "ids": ["item2"],
         "collections": [collection_id],
     }
-    r = await in_process_client.post("/stac/search", json=search_ids_single)
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_ids_single)
     if r.status_code != 200:
         print(f"\nResponse: {r.json()}")
     assert r.status_code == 200
@@ -92,7 +92,7 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
         "datetime": "2024-01-02T00:00:00Z/..",  # From Jan 2nd onwards
         "collections": [collection_id],
     }
-    r = await in_process_client.post("/stac/search", json=search_dt)
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_dt)
     if r.status_code != 200:
         print(f"\nResponse: {r.json()}")
     assert r.status_code == 200
@@ -109,7 +109,7 @@ async def test_stac_search_filters(in_process_client, setup_catalog, setup_colle
         "ids": ["item1"],  # Only item1
         "collections": [collection_id],
     }
-    r = await in_process_client.post("/stac/search", json=search_combined)
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_combined)
     if r.status_code != 200:
         print(f"\nResponse: {r.json()}")
     assert r.status_code == 200
