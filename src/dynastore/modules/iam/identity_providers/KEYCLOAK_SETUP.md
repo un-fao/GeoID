@@ -168,6 +168,44 @@ If any of these are missing or wrong, fix the realm/client configuration before 
 
 ---
 
+## Migration warnings — read before deploying changes to a non-fresh environment
+
+### Adding the `oidc-sub-mapper` to an environment that already has principals
+
+If your environment was running with `sub: null` (the Keycloak 26 default before the mapper was added), `oidc_identity.py:238` was deriving the principal identifier from `preferred_username` — recorded in `iam.principals.identifier` as `oidc:<username>` (e.g. `oidc:alice`).
+
+Once you add the `oidc-sub-mapper`, NEW tokens carry a real `sub` (the user's Keycloak UUID) and the catalog creates a NEW `iam.principals` row with identifier `oidc:<uuid>` (e.g. `oidc:0d9a7e33-ab84-4c92-8195-3e9f424dad8c`). **Any existing role grants in `iam.grants` bound to the OLD identifier are orphaned** — the new principal record has no grants, and every authenticated request from that user resolves to the role-less new principal.
+
+The fallback in `oidc_identity.py:238` only fires when `sub` is absent in the token, so once you flip the mapper there is no automatic reconciliation.
+
+**Mitigation options** in priority order:
+
+1. **Re-trigger IAM seeding** — if your auto-grant code runs on every login (resolves the JWT's `realm_access.roles` and creates fresh grants for the new principal), the new principal will get its grants on first login post-deploy. Most local dev stacks behave this way.
+2. **Reconcile via SQL** — for environments where grants were created manually, find each `oidc:<username>` principal and re-create the grants under the new `oidc:<uuid>` row. Match via `iam.identity_links` if present, or via `display_name`.
+3. **Defer the mapper** — if (1) and (2) are not feasible, leave the realm's old behavior intact and rely on the `preferred_username` fallback. Document this and revisit when downstream tooling requires the canonical OIDC `sub`.
+
+Symptom of the orphan state: every authenticated request returns `403 Deny by Default — No matching ALLOW policy found` from the moment the mapper takes effect, until the new principal accumulates grants. The `iam.principals` table will show a new row with `identifier = 'oidc:<uuid>'` and zero rows in `iam.grants` for that `subject_ref`.
+
+### Vault-collection notebook IAM bundle pollution risk
+
+The vault-collection notebook (`src/dynastore/modules/elasticsearch/notebooks/collection_vault_geoid_only.ipynb`, registered via `register_platform_notebook`) creates a `vault-{cat}` Role and binds it as parent of `sysadmin/admin/user/anonymous` via `POST /iam/governance/hierarchies`. If the notebook errors out before the cleanup cell runs, the hierarchy edges remain and the vault role's DENY policies stay attached to the four default roles — **every user gets the vault DENYs applied globally**. Symptom: catalog/collection writes start returning 403 across unrelated catalogs.
+
+Manual recovery:
+
+```bash
+# List + remove leftover hierarchy edges
+for child in sysadmin admin user anonymous; do
+  curl -s -X DELETE "$BASE/iam/governance/hierarchies?parent=vault-<cat>&child=$child" \
+    -H "Authorization: Bearer $TOKEN"
+done
+curl -s -X DELETE "$BASE/iam/governance/roles/vault-<cat>" -H "Authorization: Bearer $TOKEN"
+# Then delete each vault-<cat>-* policy if any remain
+```
+
+A future hardening of the notebook should bind the vault role to a single test principal instead of the global default-role hierarchy, so kernel death can't pollute global IAM state.
+
+---
+
 ## Reference — the local realm export
 
 `src/dynastore/docker/keycloak/realm-export.json` is the literal Keycloak export that the docker-compose dev stack imports. It is the authoritative source for the schema of every setting above. When in doubt, diff your remote configuration against that file.
