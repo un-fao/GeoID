@@ -489,7 +489,7 @@ class SearchService(ExtensionProtocol):
             engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
-                task_type="elasticsearch_bulk_reindex_catalog",
+                task_type="elasticsearch_indexer",
                 inputs=inputs,
             ),
             catalog_id=catalog_id,
@@ -529,7 +529,7 @@ class SearchService(ExtensionProtocol):
             engine=engine,
             task_data=TaskCreate(
                 caller_id="system:search",
-                task_type="elasticsearch_bulk_reindex_collection",
+                task_type="elasticsearch_indexer",
                 inputs=inputs,
             ),
             catalog_id=catalog_id,
