@@ -24,7 +24,7 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_aggregations(in_process_client: AsyncClient, setup_aggregation_data):
+async def test_stac_aggregations(sysadmin_in_process_client, in_process_client: AsyncClient, setup_aggregation_data):
     """
     Integration test for the STAC aggregation endpoints.
     Tests both the dedicated /aggregate endpoint and aggregations within /search.
@@ -40,7 +40,7 @@ async def test_stac_aggregations(in_process_client: AsyncClient, setup_aggregati
         ]
     }
 
-    response = await in_process_client.post(
+    response = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/aggregate",
         json=aggregation_request,
     )
@@ -75,7 +75,7 @@ async def test_stac_aggregations(in_process_client: AsyncClient, setup_aggregati
         ]
     }
 
-    search_response = await in_process_client.post("/stac/search", json=search_request)
+    search_response = await sysadmin_in_process_client.post("/stac/search", json=search_request)
     assert search_response.status_code == 200
     search_results = search_response.json()
 
@@ -101,7 +101,7 @@ async def test_stac_aggregations(in_process_client: AsyncClient, setup_aggregati
     assert search_buckets == {"A": 2, "B": 2, "C": 1}
 
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_unique_values_aggregation(in_process_client: AsyncClient, setup_aggregation_data):
+async def test_stac_unique_values_aggregation(sysadmin_in_process_client, in_process_client: AsyncClient, setup_aggregation_data):
     """
     Integration test for unique value aggregation in STAC.
     """
@@ -115,7 +115,7 @@ async def test_stac_unique_values_aggregation(in_process_client: AsyncClient, se
         ]
     }
 
-    response = await in_process_client.post(
+    response = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/aggregate",
         json=aggregation_request,
     )

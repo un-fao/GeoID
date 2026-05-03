@@ -34,7 +34,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
     # 2. Create Main Collection (STAC API)
     col_data = test_data_loader("collection.json")
     col_data["id"] = collection_id
-    resp = await in_process_client.post(
+    resp = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=col_data
     )
     assert resp.status_code in [201, 200]
@@ -42,7 +42,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
     # 3. Insert an Asset record manually (Simulating ingestion)
     asset_payload = test_data_loader("asset.json")
     asset_payload.update({"asset_id": asset_id, "uri": file_uri})
-    resp = await in_process_client.post(
+    resp = await sysadmin_in_process_client.post(
         f"/assets/catalogs/{catalog_id}/collections/{collection_id}",
         json=asset_payload,
     )
@@ -50,7 +50,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
 
     # 4. Feature Tracking Config
     stac_config_payload = test_data_loader("config.json")
-    resp = await in_process_client.put(
+    resp = await sysadmin_in_process_client.put(
         f"/configs/catalogs/{catalog_id}/collections/{collection_id}/plugins/stac_plugin_config",
         json=stac_config_payload,
     )
@@ -64,7 +64,7 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
     ingestion_task["ingestion_request"]["asset"]["asset_id"] = asset_id
 
     # Use the correct generic process endpoint
-    resp = await in_process_client.post(
+    resp = await sysadmin_in_process_client.post(
         f"/processes/catalogs/{catalog_id}/collections/{collection_id}/processes/ingestion/execution",
         json={"inputs": ingestion_task, "outputs": {}},
         headers={"Prefer": "wait=true"},

@@ -5,14 +5,12 @@ from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_external_metadata_flow(
-    in_process_client, setup_catalog, collection_data, collection_id
-):
+async def test_stac_external_metadata_flow(sysadmin_in_process_client, in_process_client, setup_catalog, collection_data, collection_id):
     catalog_id = setup_catalog
 
     # 1. Create collection via STAC
     # We expect stac_metadata sidecar to be injected automatically
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     if r.status_code != 201:
@@ -62,7 +60,7 @@ async def test_stac_external_metadata_flow(
     }
 
     # Add Item
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=external_item,
     )
@@ -109,9 +107,7 @@ async def test_stac_external_metadata_flow(
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_metadata_pruning_verification(
-    in_process_client, setup_catalog, setup_collection, app_lifespan
-):
+async def test_stac_metadata_pruning_verification(sysadmin_in_process_client, in_process_client, setup_catalog, setup_collection, app_lifespan):
     """
     Directly verify that data is pruned from attributes sidecar and stored in stac_metadata sidecar.
     """
@@ -134,7 +130,7 @@ async def test_stac_metadata_pruning_verification(
     }
 
     # Add Item
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=item_payload,
     )

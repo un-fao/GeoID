@@ -22,7 +22,7 @@ async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_pr
     # 2. Create Collection
     col_data = test_data_loader("collection.json")
     col_data["id"] = collection_id
-    await in_process_client.post(
+    await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=col_data
     )
 
@@ -57,7 +57,7 @@ async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_pr
         "asset_type": "VECTORIAL",
         "metadata": vector_metadata,
     }
-    await in_process_client.post(
+    await sysadmin_in_process_client.post(
         f"/assets/catalogs/{catalog_id}/collections/{collection_id}", json=asset_payload
     )
 
@@ -90,7 +90,7 @@ async def test_stac_metadata_enrichment_vector(sysadmin_in_process_client, in_pr
     assert data["extent"]["spatial"]["bbox"] == [[2.5, 49.4, 6.4, 51.5]]
 
     # Cleanup handled by session fixture
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}?force=true")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}?force=true")
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_stac_metadata_enrichment_raster(sysadmin_in_process_client, in_pr
     # 2. Create Collection
     col_data = test_data_loader("collection.json")
     col_data["id"] = collection_id
-    await in_process_client.post(
+    await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=col_data
     )
 
@@ -148,7 +148,7 @@ async def test_stac_metadata_enrichment_raster(sysadmin_in_process_client, in_pr
         "asset_type": "RASTER",
         "metadata": raster_metadata,
     }
-    await in_process_client.post(
+    await sysadmin_in_process_client.post(
         f"/assets/catalogs/{catalog_id}/collections/{collection_id}", json=asset_payload
     )
 
@@ -184,4 +184,4 @@ async def test_stac_metadata_enrichment_raster(sysadmin_in_process_client, in_pr
     assert data["extent"]["spatial"]["bbox"] == [[10.0, 40.0, 11.0, 41.0]]
 
     # Cleanup handled by session fixture
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}?force=true")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}?force=true")

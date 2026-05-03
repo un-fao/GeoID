@@ -729,6 +729,31 @@ async def reset_dynastore_state(engine=None):
     from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
     SidecarRegistry.clear_registry()
 
+    # 10.2 Clear metadata-tier sidecar registries — same problem class:
+    # ``MetadataPgSidecarRegistry`` and ``CatalogMetadataPgSidecarRegistry``
+    # cache ``_defaults_loaded`` + ``_registry`` at class scope. If a prior
+    # test bootstrapped them before the stac extension was instantiated,
+    # the next test's STAC sidecar gets silently omitted from the default
+    # list — collection/catalog metadata writes succeed in-memory but the
+    # STAC slice (title/description/keywords) never reaches the DB,
+    # making PATCH/PUT appear to no-op on the GET-back round trip.
+    try:
+        from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
+            MetadataPgSidecarRegistry,
+        )
+        MetadataPgSidecarRegistry._registry.clear()
+        MetadataPgSidecarRegistry._defaults_loaded = False
+    except Exception as e:
+        logger.debug(f"MetadataPgSidecarRegistry reset skipped: {e}")
+    try:
+        from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+            CatalogMetadataPgSidecarRegistry,
+        )
+        CatalogMetadataPgSidecarRegistry._registry.clear()
+        CatalogMetadataPgSidecarRegistry._defaults_loaded = False
+    except Exception as e:
+        logger.debug(f"CatalogMetadataPgSidecarRegistry reset skipped: {e}")
+
     # 11. Clear Caches safely
     from dynastore.modules.catalog import config_service
     from dynastore.modules.tiles import tiles_module
@@ -940,6 +965,26 @@ async def app_lifespan(
 
             logging.getLogger(__name__).warning(
                 f"Extension lifespan partially failed: {e}"
+            )
+
+        # Mirror main.py: flush buffered policy/role registrations from
+        # extensions to the IAM store. Without this, policies registered
+        # via PermissionProtocol.register_policy(...) (e.g. STAC's
+        # ``stac_public_access`` policy granting anonymous GET access)
+        # stay in IamModule's in-memory pending buffer and never reach
+        # the DB — leaving every registered route unprotected (or
+        # relying on stale policies from a prior test session that DID
+        # flush). Same flush as ``app_lifespan_module`` below.
+        try:
+            from dynastore.models.protocols.policies import PermissionProtocol
+            pm = modules.get_protocol(PermissionProtocol)
+            flush = getattr(pm, "flush_pending_registrations", None)
+            if flush is not None:
+                await flush()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Test fixture: flush_pending_registrations failed: {e}"
             )
 
         # Attach app to state for easy access in tests (e.g. for in-process AsyncClient)

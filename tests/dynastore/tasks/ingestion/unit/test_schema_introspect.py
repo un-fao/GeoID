@@ -24,7 +24,11 @@ from dynastore.tasks.ingestion.schema_introspect import (
 def _mock_field_defn(name: str, ogr_type_name: str) -> MagicMock:
     fd = MagicMock()
     fd.GetName.return_value = name
-    fd.GetType.return_value = 0  # value irrelevant; we patch GetFieldTypeName below
+    # Carry the type name on GetType() so the GetFieldTypeName patch below
+    # can be a stable identity lambda — avoids brittle call-count math when
+    # extract_ogr_schema invokes GetFieldTypeName more than once per field
+    # (it currently does: once for type mapping, once for the description).
+    fd.GetType.return_value = ogr_type_name
     return fd
 
 
@@ -111,17 +115,8 @@ def test_extract_schema_yields_geometry_first_then_fields() -> None:
         return_value=ds,
     ), patch(
         "dynastore.tasks.ingestion.schema_introspect.ogr.GetFieldTypeName",
-        side_effect=lambda t: {0: "String"}.get(t, "Integer") if False else (
-            # Field order: road_id (String), lanes (Integer)
-            ["String", "Integer"][_call_count.next()]
-        ),
+        side_effect=lambda t: t,  # GetType() returns the type name verbatim
     ):
-        # Counter helper for the side_effect above
-        class _Ctr:
-            def __init__(self): self.i = -1
-            def next(self): self.i += 1; return self.i
-        _call_count = _Ctr()
-
         out = extract_ogr_schema("/tmp/roads.shp")
 
     assert list(out.keys()) == ["geometry", "road_id", "lanes"]

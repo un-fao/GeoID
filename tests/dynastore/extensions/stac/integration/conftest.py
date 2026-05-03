@@ -36,18 +36,18 @@ async def setup_catalog(sysadmin_in_process_client, catalog_data, catalog_id):
 
 @pytest.fixture
 async def setup_collection(
-    in_process_client, setup_catalog, collection_data, collection_id
+    sysadmin_in_process_client, setup_catalog, collection_data, collection_id
 ):
     """Fixture to ensure a collection exists and is cleaned up using the STAC API."""
     catalog_id = setup_catalog
 
     # Cleanup any existing collection (redundant with random IDs)
-    # await in_process_client.delete(
+    # await sysadmin_in_process_client.delete(
     #     f"/stac/catalogs/{catalog_id}/collections/{collection_id}"
     # )
 
     # Create collection via STAC
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     if r.status_code == 409:

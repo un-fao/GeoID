@@ -758,9 +758,19 @@ class IamService:
                     continue
             if payload:
                 from dynastore.models.auth import Principal
-                roles = payload.get("roles", ["user"])
+                roles = payload.get("roles") or ["user"]
                 if isinstance(roles, str):
                     roles = [roles]
+                if not roles:
+                    # Same default as the OIDC branch above (line 716): an
+                    # authenticated principal with zero declared roles still
+                    # gets the USER role so /iam/me/* self-service endpoints
+                    # remain reachable. Without this default, an internal
+                    # HS256 token issued for a roles=[] principal would
+                    # surface as ANONYMOUS-equivalent — failing the
+                    # SelfServiceAPI's "any logged-in user can read their
+                    # own roles/catalogs" contract.
+                    roles = ["user"]
                 # Same dual-scope expansion as the OAuth/identity branch — the
                 # internal HS256 fallback can also carry platform + catalog
                 # roles in a single payload (test fixtures sign sysadmin +

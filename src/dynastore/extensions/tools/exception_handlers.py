@@ -85,14 +85,14 @@ class ProblemExceptionHandler(ExceptionHandler):
     """
 
     def can_handle(self, exception: Exception) -> bool:
-        from dynastore.extensions.configs.problem_details import ProblemException
+        from dynastore.extensions.tools.problem_details import ProblemException
 
         return isinstance(exception, ProblemException)
 
     def handle(
         self, exception: Exception, context: Optional[Dict[str, Any]] = None
     ) -> Optional[HTTPException]:
-        from dynastore.extensions.configs.problem_details import ProblemException
+        from dynastore.extensions.tools.problem_details import ProblemException
 
         assert isinstance(exception, ProblemException)
         problem = exception.problem
