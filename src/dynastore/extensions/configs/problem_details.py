@@ -30,93 +30,32 @@ The handler is registered in ``ConfigsService.lifespan`` so the wrapper
 is local to the configs extension; no global side effects.
 """
 
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
+
+from dynastore.extensions.tools.problem_details import (
+    ProblemDetails,
+    ProblemError,
+    ProblemException,
+)
+
+__all__ = [
+    "ProblemDetails",
+    "ProblemError",
+    "ProblemException",
+    "plugin_not_registered",
+    "validation_failed",
+    "value_error",
+    "unexpected_failure",
+    "problem_exception_handler",
+    "register",
+]
 
 
 _TYPE_BASE = "https://errors.dynastore.fao.org/config"
-
-
-class ProblemError(BaseModel):
-    """Per-field validation error (RFC 9457 ``errors`` extension member).
-
-    Mirrors the structure operators expect when a request body fails
-    validation: which field, why, and the offending value.
-    """
-
-    field: str = Field(
-        ..., description="Dotted path to the failing field, e.g. 'target_srid'."
-    )
-    message: str = Field(
-        ..., description="Human-readable validation message."
-    )
-    value: Optional[Any] = Field(
-        default=None,
-        description="The offending value, when serialisable.",
-    )
-
-
-class ProblemDetails(BaseModel):
-    """RFC 9457 Problem Details for HTTP APIs.
-
-    `type` is a URI identifying the problem class (clients can dispatch on
-    it without parsing `title`); `title` is a short human label; `detail`
-    is the longer prose; `instance` identifies this specific occurrence
-    (typically the request path).
-    """
-
-    type: str = Field(
-        ...,
-        description=(
-            "URI identifying the problem class — clients should dispatch on this, "
-            "not on `title`. Format: 'https://errors.dynastore.fao.org/config/<category>'."
-        ),
-    )
-    title: str = Field(
-        ..., description="Short, human-readable summary of the problem class."
-    )
-    status: int = Field(
-        ..., description="HTTP status code for this occurrence."
-    )
-    detail: Optional[str] = Field(
-        default=None,
-        description="Human-readable explanation specific to this occurrence.",
-    )
-    instance: Optional[str] = Field(
-        default=None,
-        description="URI identifying this specific occurrence — typically the request path.",
-    )
-    errors: Optional[List[ProblemError]] = Field(
-        default=None,
-        description=(
-            "Per-field validation errors (RFC 9457 extension). Populated for "
-            "422 responses arising from Pydantic validation."
-        ),
-    )
-
-
-class ProblemException(Exception):
-    """Raised to surface a ``ProblemDetails`` response.
-
-    Subclasses :class:`Exception` (not :class:`HTTPException`) so the
-    custom handler picks it up before FastAPI's default exception path
-    can convert it to a plain JSON body.
-
-    ``status_code`` and ``detail`` are exposed at the exception level so
-    the global ``GlobalExceptionHandlingMiddleware`` (which runs *before*
-    FastAPI's per-class handler dispatch) can read them via the existing
-    ``getattr(result, "status_code", 500)`` path and avoid demoting a
-    well-formed 4xx Problem Details to a generic 500.
-    """
-
-    def __init__(self, problem: ProblemDetails) -> None:
-        self.problem = problem
-        self.status_code = problem.status
-        self.detail = problem.detail or problem.title
-        super().__init__(problem.title)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import pytest
 async def test_stac_catalog_lifecycle(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
 
     # Ensure cleanup first
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
     # Create via STAC
     r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
@@ -19,17 +19,15 @@ async def test_stac_catalog_lifecycle(sysadmin_in_process_client, in_process_cli
     assert r.json()["id"] == catalog_id
 
     # Cleanup
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_collection_lifecycle(
-    in_process_client, setup_catalog, collection_data, collection_id
-):
+async def test_stac_collection_lifecycle(sysadmin_in_process_client, in_process_client, setup_catalog, collection_data, collection_id):
     catalog_id = setup_catalog
     # Create via STAC
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     assert r.status_code == 201
@@ -45,15 +43,13 @@ async def test_stac_collection_lifecycle(
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_item_lifecycle(
-    in_process_client, setup_catalog, setup_collection, item_raw_data, item_id
-):
+async def test_stac_item_lifecycle(sysadmin_in_process_client, in_process_client, setup_catalog, setup_collection, item_raw_data, item_id):
     catalog_id = setup_catalog
     collection_id = setup_collection
 
     # 1. Create Item via STAC
     # item_raw_data already has id=item_id (from fixture)
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items",
         json=item_raw_data,
     )
@@ -101,7 +97,7 @@ async def test_stac_item_lifecycle(
         updated_data["properties"] = {}
     updated_data["properties"]["custom_updated"] = True
 
-    r = await in_process_client.put(
+    r = await sysadmin_in_process_client.put(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{final_item_id}",
         json=updated_data,
     )
@@ -121,7 +117,7 @@ async def test_stac_item_lifecycle(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{final_item_id}"
     )
     print(f"\nDEBUG: DELETE URL: {url}")
-    r = await in_process_client.delete(url)
+    r = await sysadmin_in_process_client.delete(url)
     assert r.status_code == 204, (
         f"Failed to delete item {final_item_id}. Response: {r.text}"
     )
@@ -144,7 +140,7 @@ async def test_stac_item_lifecycle(
 async def test_stac_catalog_conflict_409(sysadmin_in_process_client, in_process_client, catalog_data, catalog_id):
     """Test that creating a duplicate catalog returns 409 Conflict."""
     # Pre-clean
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
     # Create catalog
     r = await sysadmin_in_process_client.post("/stac/catalogs", json=catalog_data)
@@ -156,25 +152,23 @@ async def test_stac_catalog_conflict_409(sysadmin_in_process_client, in_process_
     assert "already exists" in r.json()["detail"].lower()
 
     # Cleanup
-    # await in_process_client.delete(f"/stac/catalogs/{catalog_id}")
+    # await sysadmin_in_process_client.delete(f"/stac/catalogs/{catalog_id}")
 
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features")
-async def test_stac_collection_conflict_409(
-    in_process_client, setup_catalog, collection_data, collection_id
-):
+async def test_stac_collection_conflict_409(sysadmin_in_process_client, in_process_client, setup_catalog, collection_data, collection_id):
     """Test that creating a duplicate collection returns 409 Conflict."""
     catalog_id = setup_catalog
     # Create collection
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     assert r.status_code == 201
 
     # Try to create the same collection again
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     assert r.status_code == 409

@@ -51,7 +51,8 @@ def _patch_configs(stored_config):
 @pytest.mark.asyncio
 async def test_collection_routing_falls_back_to_defaults_when_empty() -> None:
     """Stored CollectionRoutingConfig with empty operations should fall
-    back to default_factory entries (READ → items_postgresql_driver)."""
+    back to default_factory entries (READ → items_elasticsearch_driver
+    primary, items_postgresql_driver secondary — see PR #185)."""
     empty_config = CollectionRoutingConfig(operations={})
 
     # Cache is keyed on (cls, catalog_id, collection_id, op, hint) —
@@ -67,20 +68,24 @@ async def test_collection_routing_falls_back_to_defaults_when_empty() -> None:
 
     assert result, (
         "Expected fallback to default_factory entries (READ → "
-        "items_postgresql_driver) when stored config has empty operations. "
+        "items_elasticsearch_driver) when stored config has empty operations. "
         "Got: empty list."
     )
-    assert result[0][0] == "items_postgresql_driver", (
-        f"Expected first driver_id to be items_postgresql_driver from "
-        f"CollectionRoutingConfig.default_factory, got {result[0][0]!r}."
+    driver_ids = [entry[0] for entry in result]
+    assert driver_ids[0] == "items_elasticsearch_driver", (
+        f"Expected first driver_id to be items_elasticsearch_driver from "
+        f"CollectionRoutingConfig.default_factory READ order, got {driver_ids[0]!r}."
+    )
+    assert "items_postgresql_driver" in driver_ids, (
+        f"Expected items_postgresql_driver also in fallback list (geometry_exact "
+        f"hint), got {driver_ids!r}."
     )
 
 
 @pytest.mark.asyncio
 async def test_asset_routing_falls_back_to_defaults_when_empty() -> None:
-    """Same fallback for AssetRoutingConfig — defaults to
-    asset_postgresql_driver. Unblocks gdal asset READ when the stored
-    AssetRoutingConfig row has empty operations."""
+    """Same fallback for AssetRoutingConfig — defaults mirror collection
+    routing: ES primary for READ, PG secondary (PR #185)."""
     empty_config = AssetRoutingConfig(operations={})
 
     with _patch_configs(empty_config):
@@ -93,9 +98,14 @@ async def test_asset_routing_falls_back_to_defaults_when_empty() -> None:
         )
 
     assert result, "Expected fallback for AssetRoutingConfig empty operations."
-    assert result[0][0] == "asset_postgresql_driver", (
-        f"Expected first driver_id to be asset_postgresql_driver, "
-        f"got {result[0][0]!r}."
+    driver_ids = [entry[0] for entry in result]
+    assert driver_ids[0] == "asset_elasticsearch_driver", (
+        f"Expected first driver_id to be asset_elasticsearch_driver, "
+        f"got {driver_ids[0]!r}."
+    )
+    assert "asset_postgresql_driver" in driver_ids, (
+        f"Expected asset_postgresql_driver also in fallback list, "
+        f"got {driver_ids!r}."
     )
 
 

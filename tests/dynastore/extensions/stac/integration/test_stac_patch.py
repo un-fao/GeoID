@@ -14,7 +14,7 @@ async def test_stac_patch_operations(
     new_title = "Patched Catalog Title"
     patch_data = {"title": new_title}
     # We use PATCH method
-    r = await in_process_client.patch(f"/stac/catalogs/{catalog_id}", json=patch_data)
+    r = await sysadmin_in_process_client.patch(f"/stac/catalogs/{catalog_id}", json=patch_data)
     assert r.status_code == 200
     assert r.json()["title"] == new_title
 
@@ -24,7 +24,7 @@ async def test_stac_patch_operations(
     assert r.json()["title"] == new_title
 
     # 3. Create Collection
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections", json=collection_data
     )
     assert r.status_code == 201
@@ -32,7 +32,7 @@ async def test_stac_patch_operations(
     # 4. PATCH Collection (update description)
     new_desc = "Patched Collection Description"
     patch_col_data = {"description": new_desc}
-    r = await in_process_client.patch(
+    r = await sysadmin_in_process_client.patch(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}", json=patch_col_data
     )
     assert r.status_code == 200

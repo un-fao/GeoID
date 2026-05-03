@@ -42,7 +42,7 @@ async def test_add_french_translation_to_catalog(sysadmin_in_process_client, in_
         "description": "Description Française",
         "license": "MIT"
     }
-    r = await in_process_client.put(f"/stac/catalogs/{catalog_id}?lang=fr", json=payload_fr)
+    r = await sysadmin_in_process_client.put(f"/stac/catalogs/{catalog_id}?lang=fr", json=payload_fr)
     assert r.status_code == 200
     data = r.json()
     assert data["title"] == "Titre Français"  # Returns French when lang=fr
@@ -61,7 +61,7 @@ async def test_add_french_translation_to_catalog(sysadmin_in_process_client, in_
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "logs")
-async def test_create_collection_with_language(in_process_client, setup_catalog, collection_id):
+async def test_create_collection_with_language(sysadmin_in_process_client, in_process_client, setup_catalog, collection_id):
     """Test creating a collection with language-specific input."""
     catalog_id = setup_catalog
     
@@ -76,7 +76,7 @@ async def test_create_collection_with_language(in_process_client, setup_catalog,
         }
     }
     
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections?lang=it", 
         json=payload
     )
@@ -89,7 +89,7 @@ async def test_create_collection_with_language(in_process_client, setup_catalog,
 
 @pytest.mark.asyncio
 @pytest.mark.enable_extensions("stac", "assets", "features", "logs")
-async def test_multilingual_collection_update(in_process_client, setup_catalog, collection_id):
+async def test_multilingual_collection_update(sysadmin_in_process_client, in_process_client, setup_catalog, collection_id):
     """Test updating a collection with multiple languages."""
     catalog_id = setup_catalog
     
@@ -104,7 +104,7 @@ async def test_multilingual_collection_update(in_process_client, setup_catalog, 
             "temporal": {"interval": [[None, None]]}
         }
     }
-    r = await in_process_client.post(
+    r = await sysadmin_in_process_client.post(
         f"/stac/catalogs/{catalog_id}/collections?lang=en",
         json=payload_en
     )
@@ -121,7 +121,7 @@ async def test_multilingual_collection_update(in_process_client, setup_catalog, 
             "temporal": {"interval": [[None, None]]}
         }
     }
-    r = await in_process_client.put(
+    r = await sysadmin_in_process_client.put(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=es",
         json=payload_es
     )
@@ -220,7 +220,7 @@ async def test_keywords_localization(sysadmin_in_process_client, in_process_clie
         }
     }
 
-    r = await in_process_client.post(f"/stac/catalogs/{catalog_id}/collections?lang=en", json=payload_en)
+    r = await sysadmin_in_process_client.post(f"/stac/catalogs/{catalog_id}/collections?lang=en", json=payload_en)
     assert r.status_code == 201
     assert r.json()["title"] == "English Collection"
     
@@ -233,7 +233,7 @@ async def test_keywords_localization(sysadmin_in_process_client, in_process_clie
         "license": "MIT"
     }
     
-    r = await in_process_client.put(f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=fr", json=payload_fr)
+    r = await sysadmin_in_process_client.put(f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=fr", json=payload_fr)
     assert r.status_code == 200
     
     # Verify English keywords
