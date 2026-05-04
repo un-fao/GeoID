@@ -17,14 +17,10 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-import datetime
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict
 import pystac
-from pystac.extensions.projection import ProjectionExtension
-from pystac.extensions.raster import RasterExtension, RasterBand, DataType, Statistics
+from pystac.extensions.raster import RasterExtension, RasterBand, DataType
 from pystac.extensions.eo import EOExtension, Band as EOBand
-from pystac.extensions.table import TableExtension, Column
-from pystac.extensions.file import FileExtension
 
 logger = logging.getLogger(__name__)
 
@@ -196,127 +192,3 @@ def _enrich_from_raster(collection: pystac.Collection, gdal_info: Dict[str, Any]
         if ul and lr:
             bbox = [min(ul[0], lr[0]), min(ul[1], lr[1]), max(ul[0], lr[0]), max(ul[1], lr[1])]
             collection.extent.spatial = pystac.SpatialExtent([bbox])
-
-# --- User Algorithm (Included as requested) ---
-
-def create_stac_description(
-    gdal_ogr_json: Dict[str, Any], 
-    asset_href: str, 
-    source_type: str = "raster",
-    collection_id: str = "my-geospatial-collection",
-    item_id: str = "my-item"
-) -> pystac.Collection:
-    """
-    Creates a PySTAC Collection (and a contained Item) providing the most complete
-    description possible from gdalinfo or ogrinfo JSON output.
-    """
-    # 1. Basic Spatial/Temporal Extents
-    extent = pystac.Extent(
-        pystac.SpatialExtent([[-180, -90, 180, 90]]),
-        pystac.TemporalExtent([[datetime.datetime.now(datetime.timezone.utc), None]])
-    )
-    
-    # Create Collection
-    collection = pystac.Collection(
-        id=collection_id,
-        description=f"Collection derived from {source_type} data source.",
-        extent=extent,
-        license="proprietary"
-    )
-
-    # Create Item
-    geom = {
-        "type": "Polygon",
-        "coordinates": [[[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]]]
-    }
-    
-    item = pystac.Item(
-        id=item_id,
-        geometry=geom,
-        bbox=[-180, -90, 180, 90],
-        datetime=datetime.datetime.now(datetime.timezone.utc),
-        properties={}
-    )
-    
-    # Create the main Asset
-    asset = pystac.Asset(href=asset_href, roles=["data"])
-
-    # --- MAPPING LOGIC ---
-    
-    if source_type == "raster":
-        proj_ext = ProjectionExtension.ext(item, add_if_missing=True)
-        if "coordinateSystem" in gdal_ogr_json:
-            cs = gdal_ogr_json["coordinateSystem"]
-            if "wkt" in cs:
-                proj_ext.wkt2 = cs["wkt"]
-        
-        if "geoTransform" in gdal_ogr_json:
-            proj_ext.transform = gdal_ogr_json["geoTransform"]
-            
-        if "size" in gdal_ogr_json:
-            proj_ext.shape = [gdal_ogr_json["size"][1], gdal_ogr_json["size"][0]]
-            
-        if "cornerCoordinates" in gdal_ogr_json:
-            cc = gdal_ogr_json["cornerCoordinates"]
-            xs = [c[0] for c in cc.values()]
-            ys = [c[1] for c in cc.values()]
-            item.bbox = [min(xs), min(ys), max(xs), max(ys)]
-            
-        raster_ext = RasterExtension.ext(asset, add_if_missing=True)
-        bands_data = []
-        
-        if "bands" in gdal_ogr_json:
-            for b in gdal_ogr_json["bands"]:
-                stac_band = RasterBand.create()
-                if "noDataValue" in b:
-                    stac_band.nodata = b["noDataValue"]
-                if "type" in b:
-                    stac_band.data_type = GDAL_TO_STAC_DTYPE.get(b["type"], DataType.FLOAT32)
-                if "unit" in b:
-                    stac_band.unit = b["unit"]
-                if any(k in b for k in ("min", "max", "mean", "stdDev")):
-                    stac_band.statistics = Statistics.create(
-                        minimum=b.get("min"),
-                        maximum=b.get("max"),
-                        mean=b.get("mean"),
-                        stddev=b.get("stdDev"),
-                    )
-                bands_data.append(stac_band)
-                    
-        raster_ext.bands = bands_data
-        item.add_asset("image", asset)
-
-    elif source_type == "vector":
-        if "layers" in gdal_ogr_json and gdal_ogr_json["layers"]:
-            layer = gdal_ogr_json["layers"][0]
-            table_ext = TableExtension.ext(asset, add_if_missing=True)
-            columns = []
-            if "fields" in layer:
-                for f in layer["fields"]:
-                    col = Column({
-                        "name": f["name"],
-                        "type": OGR_TO_STAC_TABLE_TYPE.get(f["type"], "string"),
-                    })
-                    columns.append(col)
-            table_ext.columns = columns
-            if "featureCount" in layer:
-                table_ext.row_count = layer["featureCount"]
-                
-            proj_ext = ProjectionExtension.ext(item, add_if_missing=True)
-            if "coordinateSystem" in layer:
-                cs = layer["coordinateSystem"]
-                if "wkt" in cs:
-                    proj_ext.wkt2 = cs["wkt"]
-            
-            if "extent" in layer:
-                item.bbox = layer["extent"]
-                    
-            if "geometryType" in layer:
-                item.properties["ogr:geometry_type"] = layer["geometryType"]
-
-        item.add_asset("data", asset)
-
-    if item.bbox is not None:
-        collection.extent.spatial = pystac.SpatialExtent([item.bbox])
-    collection.add_item(item)
-    return collection
