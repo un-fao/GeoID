@@ -90,11 +90,61 @@ async def test_shared_collection_factory_collection_visible_during_test(
     shared_catalog, shared_collection_factory, sysadmin_in_process_client_module
 ):
     """A collection created in this test is visible via the API. The
-    'really gone after teardown' guarantee is exercised by the xdist run
-    later — duplicate-id collisions would surface immediately.
+    'really gone after teardown' guarantee is exercised by the next test
+    (test_shared_collection_factory_cleans_up_previous_test_collections).
     """
     col_id = await shared_collection_factory()
     resp = await sysadmin_in_process_client_module.get(
         f"/features/catalogs/{shared_catalog}/collections/{col_id}"
     )
     assert resp.status_code == 200
+    # Stash the id where the next test can find it (module-level state is OK
+    # within a single module's tests; test ordering is preserved by pytest).
+    pytest._shared_collection_factory_leak_probe = col_id
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_shared_collection_factory_cleans_up_previous_test_collections(
+    shared_catalog, sysadmin_in_process_client_module
+):
+    """Verifies the previous test's collection was actually deleted on
+    its teardown. Closes the cleanup contract that
+    ``shared_collection_factory`` claims.
+
+    Pattern: previous test stashed the id on the pytest module; we read
+    it back here and confirm the API now returns 404.
+    """
+    col_id = getattr(pytest, "_shared_collection_factory_leak_probe", None)
+    assert col_id is not None, (
+        "previous test must have stashed an id; check ordering"
+    )
+    resp = await sysadmin_in_process_client_module.get(
+        f"/features/catalogs/{shared_catalog}/collections/{col_id}"
+    )
+    assert resp.status_code == 404, (
+        f"expected 404 (collection cleaned up by factory teardown); "
+        f"got {resp.status_code}: {resp.text}"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_shared_collection_factory_accepts_overrides(
+    shared_catalog, shared_collection_factory, sysadmin_in_process_client_module
+):
+    """The ``**overrides`` kwarg lets a caller customise the body. Verify
+    a custom description sticks (proves the override pathway is wired,
+    not silently dropped).
+    """
+    custom_desc = "test override description — should land on the resource"
+    col_id = await shared_collection_factory(description=custom_desc)
+    resp = await sysadmin_in_process_client_module.get(
+        f"/features/catalogs/{shared_catalog}/collections/{col_id}"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # description may be returned as a string or as a localized {"en": "..."}
+    # dict depending on the request language; accept both.
+    desc = body.get("description")
+    if isinstance(desc, dict):
+        desc = next(iter(desc.values()), None)
+    assert desc == custom_desc, f"override didn't stick; got {body.get('description')!r}"

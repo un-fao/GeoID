@@ -205,13 +205,22 @@ async def shared_catalog(app_lifespan_module, worker_id):
     module registry. A session-scoped variant would require a session-scoped
     app_lifespan that doesn't yet exist; that's a larger follow-up.
 
-    Worker disambiguation: under xdist ``worker_id`` is ``"gw0"``, ``"gw1"``,
-    … so concurrent workers don't collide on catalog ids. When pytest runs
-    without xdist, ``worker_id`` is ``"master"``.
+    Worker disambiguation: under xdist the built-in ``worker_id`` fixture
+    yields ``"gw0"``, ``"gw1"``, … so concurrent workers don't collide on
+    catalog ids. When pytest runs without xdist, ``worker_id`` is
+    ``"master"``. (See pytest-xdist docs: ``how-to/parallelism.html``.)
 
     Tests that opt in must use module-scoped asyncio loop:
         @pytest.mark.asyncio(loop_scope="module")
+
+    Migration tip: replacing a function-scoped ``setup_catalog`` /
+    ``catalog_id`` with ``shared_catalog`` requires (1) the loop_scope
+    above, (2) any ``enable_extensions(...)`` markers must apply to every
+    test in the file (they're unioned at module bootstrap), and (3)
+    assertions must not assume catalog cardinality (other tests in the
+    file may have created collections too).
     """
+    import logging
     from dynastore.tools.discovery import get_protocol
     from dynastore.models.protocols import CatalogsProtocol
 
@@ -221,14 +230,16 @@ async def shared_catalog(app_lifespan_module, worker_id):
 
     yield cat_id
 
-    # Session teardown: hard-delete drops every collection, asset, and
-    # item the worker accumulated. force=True triggers schema removal.
+    # Module teardown: hard-delete drops every collection, asset, and item
+    # the file accumulated. force=True triggers schema removal.
     try:
         await catalogs.delete_catalog(cat_id, force=True)
-    except Exception:
-        # Session is ending; don't crash teardown. Any leaked schema is
-        # cleaned up by db_reset_session at the start of the next run.
-        pass
+    except Exception as e:
+        # Don't crash teardown. Log so debugging isn't blind; the next
+        # session's db_reset_session reaps any leaked schema regardless.
+        logging.getLogger(__name__).warning(
+            "shared_catalog teardown failed for %s: %s", cat_id, e
+        )
 
 
 @pytest_asyncio.fixture
@@ -274,15 +285,21 @@ async def shared_collection_factory(shared_catalog, sysadmin_in_process_client_m
 
     yield _make
 
+    import logging
+    log = logging.getLogger(__name__)
     for cat_id, col_id in created:
         try:
             await sysadmin_in_process_client_module.delete(
                 f"/features/catalogs/{cat_id}/collections/{col_id}?force=true"
             )
-        except Exception:
-            # Don't crash teardown; the next session's shared_catalog
-            # cleanup hard-deletes the parent catalog and reaps everything.
-            pass
+        except Exception as e:
+            # Don't crash teardown. Log so debugging isn't blind; the
+            # parent catalog's module-end teardown hard-deletes everything
+            # regardless.
+            log.warning(
+                "shared_collection_factory teardown failed for %s/%s: %s",
+                cat_id, col_id, e,
+            )
 
 
 @pytest_asyncio.fixture(autouse=True)
