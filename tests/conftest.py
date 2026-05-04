@@ -59,8 +59,6 @@ import json
 from tests.dynastore.test_utils import generate_test_id
 import pytest
 import pytest_asyncio
-import requests
-from httpx import AsyncClient
 from typing import Any, Union
 
 
@@ -389,40 +387,6 @@ def base_url():
     return f"http://{host}:{port}{root_path}"
 
 
-@pytest.fixture(scope="session")
-def worker_url():
-    """Returns the base URL for the DynaStore Worker."""
-    url = os.getenv("DYNASTORE_WORKER_URL")
-    if url:
-        return url.rstrip("/")
-
-    host = os.getenv("WORKER_HOST", "127.0.0.1")
-    port = os.getenv("WORKER_PORT", "81")
-    # Respect docker-compose port if present
-    port = os.getenv("HOST_PORT_WORKER", port)
-
-    root_path = os.getenv("WORKER_ROOT_PATH", "").rstrip("/")
-    if root_path and not root_path.startswith("/"):
-        root_path = "/" + root_path
-
-    return f"http://{host}:{port}{root_path}"
-
-
-@pytest.fixture(scope="session")
-def api_client(base_url):
-    """Synchronous HTTP client for testing."""
-    session = requests.Session()
-    session.headers.update({"Content-Type": "application/json"})
-    return session
-
-
-@pytest_asyncio.fixture(loop_scope="function")
-async def async_api_client(base_url):
-    """Asynchronous HTTP client for testing."""
-    async with AsyncClient(base_url=base_url, timeout=120.0) as client:
-        yield client
-
-
 async def _mint_test_jwt(iam_svc, roles: list[str], subject: str = "test-sysadmin") -> str:
     """Mint a short-lived HS256 JWT for test fixtures."""
     import jwt as pyjwt
@@ -437,26 +401,6 @@ async def _mint_test_jwt(iam_svc, roles: list[str], subject: str = "test-sysadmi
         "iss": "dynastore-test",
     }
     return pyjwt.encode(payload, secret, algorithm="HS256")
-
-
-@pytest_asyncio.fixture(loop_scope="function")
-async def sysadmin_api_client(base_url, app_lifespan):
-    """
-    Asynchronous HTTP client for testing with SYSADMIN privileges.
-    Mints a JWT with sysadmin role via IamService.
-    """
-    from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols import AuthenticatorProtocol
-
-    iam_svc = get_protocol(AuthenticatorProtocol)
-    if not iam_svc:
-        raise RuntimeError("AuthenticatorProtocol not available")
-
-    token = await _mint_test_jwt(iam_svc, roles=["sysadmin"])
-    headers = {"Authorization": f"Bearer {token}"}
-
-    async with AsyncClient(base_url=base_url, timeout=120.0, headers=headers) as client:
-        yield client
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -525,43 +469,6 @@ async def sysadmin_in_process_client_module(app_lifespan_module):
     async with AsyncClient(
         transport=transport, base_url="http://test", headers=headers
     ) as client:
-        yield client
-
-
-@pytest_asyncio.fixture(loop_scope="function")
-async def authenticated_api_client(app_lifespan, base_url):
-    """
-    Creates a Principal with 'admin' role and mints a JWT for it.
-    No Keycloak required.
-    Yields (client, principal) tuple.
-    """
-    from dynastore.tools.discovery import get_protocol
-    from dynastore.models.protocols import AuthenticatorProtocol, PrincipalAdminProtocol
-    from dynastore.models.auth import Principal
-
-    iam_svc = get_protocol(AuthenticatorProtocol)
-    principal_admin = get_protocol(PrincipalAdminProtocol)
-    if not iam_svc or not principal_admin:
-        pytest.skip("IAM authenticator/principal-admin protocols not available")
-
-    subject_id = f"test-user-{generate_test_id()}"
-    principal = Principal(
-        provider="test",
-        subject_id=subject_id,
-        roles=["admin"],
-    )
-    created = await principal_admin.create_principal(principal)
-
-    token = await _mint_test_jwt(iam_svc, roles=["admin"], subject=subject_id)
-    headers = {"Authorization": f"Bearer {token}"}
-    async with AsyncClient(base_url=base_url, timeout=120.0, headers=headers) as client:
-        yield client, created
-
-
-@pytest_asyncio.fixture(loop_scope="function")
-async def async_worker_client(worker_url):
-    """Asynchronous HTTP client for testing."""
-    async with AsyncClient(base_url=worker_url, timeout=120.0) as client:
         yield client
 
 
