@@ -1004,7 +1004,7 @@ class ItemsElasticsearchDriver(
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
-    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+    async def ensure_indexer(self, ctx) -> None:
         """Idempotent bootstrap — creates the per-tenant items index
         ``{prefix}-items-{catalog_id}`` with ``ITEM_MAPPING`` if missing
         and enrols it in the platform alias ``{prefix}-items-public``.
@@ -1015,7 +1015,7 @@ class ItemsElasticsearchDriver(
         """
         await self.ensure_storage(ctx.catalog, ctx.collection)
 
-    async def index(self, ctx, op) -> None:  # type: ignore[override]
+    async def index(self, ctx, op) -> None:
         """Apply a single :class:`IndexOp` to the per-tenant items index.
 
         Called by :class:`IndexDispatcher` from inside the caller's PG
@@ -1066,7 +1066,7 @@ class ItemsElasticsearchDriver(
             params={"routing": ctx.collection},
         )
 
-    async def index_bulk(self, ctx, ops):  # type: ignore[override]
+    async def index_bulk(self, ctx, ops):
         """Apply a batch of :class:`IndexOp` via the ES ``_bulk`` API.
 
         Returns a :class:`BulkResult` summarising success / failure
@@ -1526,14 +1526,14 @@ class AssetElasticsearchDriver(
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
-    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+    async def ensure_indexer(self, ctx) -> None:
         """Idempotent bootstrap — creates ``{prefix}-assets-{catalog_id}``
         with ``ASSET_MAPPING`` if missing.  No alias today (assets are
         per-catalog only; no platform-wide assets alias).
         """
         await self.ensure_storage(ctx.catalog, ctx.collection)
 
-    async def index(self, ctx, op) -> None:  # type: ignore[override]
+    async def index(self, ctx, op) -> None:
         """Apply a single asset :class:`IndexOp` via the existing
         :meth:`index_asset` / :meth:`delete_asset` helpers.
 
@@ -1553,7 +1553,7 @@ class AssetElasticsearchDriver(
             doc.setdefault("collection_id", ctx.collection)
         await self.index_asset(ctx.catalog, doc)
 
-    async def index_bulk(self, ctx, ops):  # type: ignore[override]
+    async def index_bulk(self, ctx, ops):
         """Bulk-apply a batch of asset ops.
 
         Delegates per-op to :meth:`index` for now — asset writes are

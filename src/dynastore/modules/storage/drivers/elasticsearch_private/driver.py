@@ -322,7 +322,7 @@ class ItemsElasticsearchPrivateDriver(
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
-    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+    async def ensure_indexer(self, ctx) -> None:
         """Idempotent bootstrap for the private per-tenant index.
 
         Creates ``{prefix}-geoid-{catalog_id}`` with
@@ -336,7 +336,7 @@ class ItemsElasticsearchPrivateDriver(
         """
         await self.ensure_storage(ctx.catalog, ctx.collection)
 
-    async def index(self, ctx, op) -> None:  # type: ignore[override]
+    async def index(self, ctx, op) -> None:
         """Apply a single item :class:`IndexOp` to the per-tenant private
         index ``{prefix}-geoid-{catalog_id}``.
 
@@ -394,7 +394,7 @@ class ItemsElasticsearchPrivateDriver(
         doc["simplification_mode"] = mode
         await es.index(index=index_name, id=op.entity_id, document=doc)
 
-    async def index_bulk(self, ctx, ops):  # type: ignore[override]
+    async def index_bulk(self, ctx, ops):
         """Bulk-apply a batch of item ops via the ES ``_bulk`` API."""
         from dynastore.models.protocols.indexer import BulkResult
         from dynastore.modules.elasticsearch.client import (
