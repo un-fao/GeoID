@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-CORE PostgreSQL metadata drivers + shared CRUD base classes.
+CORE PostgreSQL ``CollectionStore`` / ``CatalogStore`` drivers + shared CRUD base classes.
 
 - :class:`CollectionCorePostgresqlDriver`  → ``{schema}.collection_core``
 - :class:`CatalogCorePostgresqlDriver`     → ``catalog.catalog_core``
@@ -198,7 +198,7 @@ class CatalogCorePostgresqlDriverConfig(DriverPluginConfig):
 
 
 class _PgCollectionCoreBase:
-    """Shared implementation for the two collection-tier metadata drivers.
+    """Shared implementation for the two collection-tier ``CollectionStore`` drivers.
 
     Domain-specific knobs (table name, column tuple, capability set,
     ``domain`` ClassVar) live on the concrete subclasses; this base
@@ -508,7 +508,7 @@ class CollectionCorePostgresqlDriver(
 
 
 class _PgCatalogCoreBase:
-    """Shared implementation for the two catalog-tier metadata drivers."""
+    """Shared implementation for the two catalog-tier ``CatalogStore`` drivers."""
 
     _table: ClassVar[str]              # e.g. "catalog_core"
     _columns: ClassVar[Tuple[str, ...]]  # columns this driver owns

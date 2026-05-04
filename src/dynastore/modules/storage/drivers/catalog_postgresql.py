@@ -16,11 +16,11 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Composition driver for PG-backed catalog metadata.
+"""Composition driver for PG-backed catalog storage.
 
 Catalog-tier sibling of
 :mod:`dynastore.modules.storage.drivers.collection_postgresql`.
-Wraps the existing per-domain catalog-tier PG metadata drivers
+Wraps the existing per-domain catalog-tier PG ``CatalogStore`` drivers
 (:class:`CatalogCorePostgresqlDriver` plus the optional
 :class:`CatalogStacPostgresqlDriver` from the stac module) and fans
 :class:`CatalogStore` CRUD across them at write/read/delete time.
@@ -214,9 +214,9 @@ class CatalogPgSidecarRegistry:
 
 
 class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
-    """Configuration for the PG-backed composition catalog metadata driver.
+    """Configuration for the PG-backed composition ``CatalogStore`` driver.
 
-    ``sidecars`` is the typed list of catalog-metadata domain slices the
+    ``sidecars`` is the typed list of catalog-tier domain slices the
     wrapper will fan CRUD across.  Empty list → wrapper falls back to
     :meth:`CatalogPgSidecarRegistry.default_sidecars`
     (``[catalog_core, catalog_stac if installed]``).

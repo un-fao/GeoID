@@ -151,11 +151,11 @@ def _resolve_catalog_store_drivers() -> List[CatalogStore]:
         # caller expected at least one driver, so ERROR is appropriate —
         # but one ERROR is enough.
         logger.error(
-            "No CatalogStore drivers registered; catalog-metadata "
+            "No CatalogStore drivers registered; catalog "
             "router will no-op all operations.  Entry-point discovery did "
             "not surface any dynastore.modules entry-point implementing "
             "CatalogStore — check installed package metadata and "
-            "that metadata_postgresql imports cleanly in this env."
+            "that catalog_postgresql imports cleanly in this env."
         )
         _MISSING_DRIVERS_LOGGED["catalog"] = True
     return drivers
@@ -234,7 +234,7 @@ async def upsert_catalog_metadata(
     db_resource: Optional[Any] = None,
     drivers: Optional[List[CatalogStore]] = None,
 ) -> None:
-    """Fan-out WRITE across every registered catalog-metadata driver.
+    """Fan-out WRITE across every registered ``CatalogStore`` driver.
 
     Each driver receives the same ``metadata`` dict; the driver's
     internal ``_filter_payload`` strips keys outside its own domain.
@@ -302,7 +302,7 @@ async def delete_catalog_metadata(
     db_resource: Optional[Any] = None,
     drivers: Optional[List[CatalogStore]] = None,
 ) -> None:
-    """Fan-out DELETE across every registered catalog-metadata driver.
+    """Fan-out DELETE across every registered ``CatalogStore`` driver.
 
     ``soft=True`` pushes a tombstone via ``extra_metadata._deleted_at``
     on drivers that advertise ``SOFT_DELETE``; drivers that don't

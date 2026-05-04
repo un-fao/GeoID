@@ -409,7 +409,7 @@ class CollectionRoutingConfig(PluginConfig):
         Empty → auto-discovery fallback (ES if registered, otherwise PG).
 
     ``WRITE`` (``write_mode=sync``):
-        Primary metadata driver(s) committing in-transaction.  Empty →
+        Primary ``CollectionStore`` driver(s) committing in-transaction.  Empty →
         defaults to the Primary PG driver.
 
     ``TRANSFORM`` (``write_mode=chain``, **lazy**):
@@ -441,8 +441,8 @@ class CollectionRoutingConfig(PluginConfig):
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {},
         description=(
-            "Operation → ordered driver list for metadata routing.  "
-            "READ  = first-match metadata drivers (CollectionStore).  "
+            "Operation → ordered driver list for collection-tier routing.  "
+            "READ  = first-match ``CollectionStore`` drivers.  "
             "TRANSFORM = lazy enrichers.  "
             "INDEX = async search-sink propagation.  "
             "BACKUP = async export-sink propagation."
@@ -547,7 +547,7 @@ class AssetRoutingConfig(PluginConfig):
 
 
 class CatalogRoutingConfig(PluginConfig):
-    """Operation-based routing for catalog-level metadata drivers.
+    """Operation-based routing for catalog-tier ``CatalogStore`` drivers.
 
     Parallels :class:`ItemsRoutingConfig` but scoped to catalog-tier
     drivers (``CatalogStore`` implementations).  Introduced by the
@@ -560,9 +560,9 @@ class CatalogRoutingConfig(PluginConfig):
     with a catalog containing both CORE and STAC envelopes resolves
     correctly without explicit platform config.
 
-    ``operations`` supports the same keys as collection metadata routing:
+    ``operations`` supports the same keys as :class:`CollectionRoutingConfig`:
     ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``, ``INDEX``, ``BACKUP``.
-    See :class:`CollectionRoutingConfig` for per-key semantics.
+    See that class for per-key semantics.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
@@ -587,7 +587,7 @@ class CatalogRoutingConfig(PluginConfig):
             ],
         },
         description=(
-            "Operation → ordered driver list for catalog-tier metadata drivers. "
+            "Operation → ordered driver list for catalog-tier ``CatalogStore`` drivers. "
             "Supports WRITE, READ, SEARCH, TRANSFORM, INDEX, BACKUP. "
             "Default fans out to the CORE + STAC PG Primaries; INDEX and "
             "SEARCH entries are auto-augmented at validation time with "
