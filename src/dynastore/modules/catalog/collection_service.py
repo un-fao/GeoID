@@ -815,13 +815,27 @@ class CollectionService:
                 db_resource=conn,
             )
 
-            self._get_collection_model_cached.cache_invalidate(
-                catalog_id, collection_id
-            )
-
-            return await self._get_collection_model_logic(
+            # Fetch the post-write state inside the TX so the caller's
+            # response includes the freshly-merged data (the conn is the
+            # only resource where the uncommitted upsert is visible).
+            fresh = await self._get_collection_model_logic(
                 catalog_id, collection_id, conn
             )
+
+        # CRITICAL: invalidate the cache AFTER the transaction commits
+        # (closes #199). Pre-fix this happened inside the async-with block
+        # while the upsert was still uncommitted. Concurrent readers
+        # (background lifecycle hooks, sibling requests) could populate
+        # the cache with the OLD pre-write data between cache_invalidate
+        # firing and the TX actually committing — leaving the cache with
+        # stale data that subsequent GETs would happily serve. Mirror
+        # what create_collection (line 624) and delete_collection (923)
+        # already do: invalidate after the `async with` exits.
+        self._get_collection_model_cached.cache_invalidate(
+            catalog_id, collection_id
+        )
+
+        return fresh
 
     async def delete_collection(
         self,
