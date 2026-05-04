@@ -76,7 +76,7 @@ class CollectionStacPostgresqlDriver(
     ``CollectionPostgresqlDriver`` via the ``metadata_stac`` sidecar
     (PR 1e step 3b); not a standalone ``CollectionStore`` plugin
     anymore.  The wrapper forwards the ``stac_metadata_columns()`` marker
-    to this class via ``MetadataPgSidecarRegistry`` try-import.
+    to this class via ``CollectionPgSidecarRegistry`` try-import.
     """
 
     _table: ClassVar[str] = "collection_metadata_stac"

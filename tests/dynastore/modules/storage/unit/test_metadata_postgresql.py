@@ -377,7 +377,7 @@ class TestEntryPoints:
         and ``CatalogPostgresqlDriver`` (entry-point ``catalog_postgresql``)
         are now the only PG-tier metadata plugins.  Each wrapper composes
         the raw CORE driver internally via its per-tier
-        ``*MetadataPgSidecarRegistry``.
+        ``*CollectionPgSidecarRegistry``.
 
         This test now asserts that the wrappers ARE registered.
         """

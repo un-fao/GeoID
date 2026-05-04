@@ -761,19 +761,19 @@ async def reset_dynastore_state(engine=None):
     # and matches how the items-tier ``SidecarRegistry.clear_registry()`` is
     # invoked above.
     try:
-        from dynastore.modules.storage.drivers.collection_metadata_postgresql import (
-            MetadataPgSidecarRegistry,
+        from dynastore.modules.storage.drivers.collection_postgresql import (
+            CollectionPgSidecarRegistry,
         )
-        MetadataPgSidecarRegistry.clear()
+        CollectionPgSidecarRegistry.clear()
     except Exception as e:
-        logger.debug(f"MetadataPgSidecarRegistry.clear() skipped: {e}")
+        logger.debug(f"CollectionPgSidecarRegistry.clear() skipped: {e}")
     try:
-        from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
-            CatalogMetadataPgSidecarRegistry,
+        from dynastore.modules.storage.drivers.catalog_postgresql import (
+            CatalogPgSidecarRegistry,
         )
-        CatalogMetadataPgSidecarRegistry.clear()
+        CatalogPgSidecarRegistry.clear()
     except Exception as e:
-        logger.debug(f"CatalogMetadataPgSidecarRegistry.clear() skipped: {e}")
+        logger.debug(f"CatalogPgSidecarRegistry.clear() skipped: {e}")
 
     # 11. Clear Caches safely
     from dynastore.modules.catalog import config_service
