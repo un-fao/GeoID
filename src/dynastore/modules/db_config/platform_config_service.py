@@ -444,10 +444,10 @@ def _post_commit_router_bust(cls: Type["PluginConfig"]) -> None:
     """
     try:
         from dynastore.modules.storage.routing_config import (
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             AssetRoutingConfig,
         )
-        if not issubclass(cls, (CollectionRoutingConfig, AssetRoutingConfig)):
+        if not issubclass(cls, (ItemsRoutingConfig, AssetRoutingConfig)):
             return
         from dynastore.modules.storage.router import invalidate_router_cache
         invalidate_router_cache(None, None)

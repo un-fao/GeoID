@@ -104,13 +104,13 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
 
 @pytest.mark.asyncio
 async def test_get_effective_configs_catalog_source(mock_config_service):
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and not collection_id:
             return {
                 "items": [
-                    {"plugin_id": "collection_routing_config",
+                    {"plugin_id": "items_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
@@ -123,8 +123,8 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
                 resolve_config_class,
             )
             config_cls = resolve_config_class(config_cls)
-        if config_cls is CollectionRoutingConfig and catalog_id and not collection_id:
-            return CollectionRoutingConfig()
+        if config_cls is ItemsRoutingConfig and catalog_id and not collection_id:
+            return ItemsRoutingConfig()
         return config_cls() if config_cls else None
 
     mock_config_service.list_configs.side_effect = list_side_effect
@@ -134,7 +134,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     _, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="my-catalog", collection_id=None, resolved=True,
     )
-    assert sources["collection_routing_config"] == "catalog"
+    assert sources["items_routing_config"] == "catalog"
 
 
 # ---------------------------------------------------------------------------

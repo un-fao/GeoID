@@ -14,9 +14,9 @@ from dynastore.modules.storage.driver_config import (
     IcebergConfig,
 )
 from dynastore.modules.storage.routing_config import (
-    CollectionRoutingConfig,
+    ItemsRoutingConfig,
     AssetRoutingConfig,
-    MetadataRoutingConfig,
+    CollectionRoutingConfig,
     Operation,
     OperationDriverEntry,
     FailurePolicy,
@@ -246,22 +246,22 @@ class TestCompositePartitionConfig:
 
 
 # ---------------------------------------------------------------------------
-# CollectionRoutingConfig
+# ItemsRoutingConfig
 # ---------------------------------------------------------------------------
 
 
-class TestCollectionRoutingConfig:
+class TestCollectionMetadataRouting:
     def test_class_key(self):
-        assert CollectionRoutingConfig.class_key() == "collection_routing_config"
+        assert ItemsRoutingConfig.class_key() == "items_routing_config"
 
     def test_defaults(self):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
         assert cfg.operations[Operation.WRITE][0].driver_id == "items_postgresql_driver"
 
     def test_custom_operations(self):
-        cfg = CollectionRoutingConfig(operations={
+        cfg = ItemsRoutingConfig(operations={
             Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
             Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver", hints={"search"})],
             Operation.SEARCH: [OperationDriverEntry(driver_id="items_elasticsearch_driver", hints={"search"})],
@@ -296,7 +296,7 @@ class TestCollectionRoutingConfig:
         WRITE keeps PG as authoritative (on_failure=fatal) and adds ES as a
         best-effort indexer (on_failure=warn).
         """
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         write = cfg.operations[Operation.WRITE]
         read = cfg.operations[Operation.READ]
         assert [e.driver_id for e in write] == [
@@ -334,11 +334,11 @@ class TestWriteMode:
 
 class TestMetadataRoutingConfig:
     def test_default_operations_empty(self):
-        cfg = MetadataRoutingConfig()
+        cfg = CollectionRoutingConfig()
         assert cfg.operations == {}
 
     def test_read_operation(self):
-        cfg = MetadataRoutingConfig(operations={
+        cfg = CollectionRoutingConfig(operations={
             Operation.READ: [OperationDriverEntry(
                 driver_id="collection_elasticsearch_driver",
                 write_mode=WriteMode.FIRST,
@@ -348,7 +348,7 @@ class TestMetadataRoutingConfig:
         assert cfg.operations[Operation.READ][0].driver_id == "collection_elasticsearch_driver"
 
     def test_transform_operation(self):
-        cfg = MetadataRoutingConfig(operations={
+        cfg = CollectionRoutingConfig(operations={
             Operation.TRANSFORM: [OperationDriverEntry(
                 driver_id="items_iceberg_driver",
                 write_mode=WriteMode.CHAIN,
@@ -361,106 +361,12 @@ class TestMetadataRoutingConfig:
         assert entry.on_failure == FailurePolicy.WARN
 
     def test_read_and_transform_together(self):
-        cfg = MetadataRoutingConfig(operations={
+        cfg = CollectionRoutingConfig(operations={
             Operation.READ: [OperationDriverEntry(driver_id="collection_postgresql_driver")],
             Operation.TRANSFORM: [OperationDriverEntry(driver_id="items_iceberg_driver")],
         })
         assert Operation.READ in cfg.operations
         assert Operation.TRANSFORM in cfg.operations
-
-    def test_embedded_in_collection_routing_config(self):
-        """CollectionRoutingConfig.metadata must accept MetadataRoutingConfig."""
-        cfg = CollectionRoutingConfig(metadata=MetadataRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="collection_postgresql_driver")],
-        }))
-        assert cfg.metadata.operations[Operation.READ][0].driver_id == "collection_postgresql_driver"
-
-    def test_default_embedded_metadata_is_empty(self):
-        cfg = CollectionRoutingConfig()
-        assert isinstance(cfg.metadata, MetadataRoutingConfig)
-        # Validators auto-fold globally-registered indexer/search drivers
-        # (entries marked source='auto'); the test guards against
-        # operator-explicit defaults leaking into a fresh config — filter
-        # auto entries out so the result is independent of which other tests
-        # happened to register drivers in the same xdist worker.
-        operator_explicit = {
-            op: [e for e in entries if getattr(e, "source", None) != "auto"]
-            for op, entries in cfg.metadata.operations.items()
-        }
-        operator_explicit = {op: v for op, v in operator_explicit.items() if v}
-        assert operator_explicit == {}
-
-
-class TestMetadataRoutingSnapshot:
-    """Snapshot: metadata routing decisions are byte-identical before and after M5."""
-
-    def _make_es_override_routing(self) -> CollectionRoutingConfig:
-        """Equivalent of old metadata.override=[ES], storage=[]"""
-        return CollectionRoutingConfig(
-            metadata=MetadataRoutingConfig(operations={
-                Operation.READ: [OperationDriverEntry(
-                    driver_id="collection_elasticsearch_driver",
-                    write_mode=WriteMode.FIRST,
-                )],
-            })
-        )
-
-    def _make_iceberg_storage_routing(self) -> CollectionRoutingConfig:
-        """Equivalent of old metadata.override=[], storage=[Iceberg]"""
-        return CollectionRoutingConfig(
-            metadata=MetadataRoutingConfig(operations={
-                Operation.TRANSFORM: [OperationDriverEntry(
-                    driver_id="items_iceberg_driver",
-                    write_mode=WriteMode.CHAIN,
-                    on_failure=FailurePolicy.WARN,
-                )],
-            })
-        )
-
-    def _make_mixed_routing(self) -> CollectionRoutingConfig:
-        """Mixed: ES override + Iceberg transform."""
-        return CollectionRoutingConfig(
-            metadata=MetadataRoutingConfig(operations={
-                Operation.READ: [OperationDriverEntry(
-                    driver_id="collection_elasticsearch_driver",
-                )],
-                Operation.TRANSFORM: [OperationDriverEntry(
-                    driver_id="items_iceberg_driver",
-                    on_failure=FailurePolicy.WARN,
-                )],
-            })
-        )
-
-    def test_read_driver_resolution(self):
-        cfg = self._make_es_override_routing()
-        read_entries = cfg.metadata.operations.get(Operation.READ, [])
-        assert len(read_entries) == 1
-        assert read_entries[0].driver_id == "collection_elasticsearch_driver"
-
-    def test_transform_driver_resolution(self):
-        cfg = self._make_iceberg_storage_routing()
-        transform_entries = cfg.metadata.operations.get(Operation.TRANSFORM, [])
-        assert len(transform_entries) == 1
-        assert transform_entries[0].driver_id == "items_iceberg_driver"
-
-    def test_empty_read_returns_empty_list(self):
-        cfg = self._make_iceberg_storage_routing()
-        assert cfg.metadata.operations.get(Operation.READ, []) == []
-
-    def test_empty_transform_returns_empty_list(self):
-        cfg = self._make_es_override_routing()
-        assert cfg.metadata.operations.get(Operation.TRANSFORM, []) == []
-
-    def test_mixed_routing_both_ops(self):
-        cfg = self._make_mixed_routing()
-        assert len(cfg.metadata.operations[Operation.READ]) == 1
-        assert len(cfg.metadata.operations[Operation.TRANSFORM]) == 1
-
-    def test_failure_policy_preserved(self):
-        cfg = self._make_mixed_routing()
-        transform_entry = cfg.metadata.operations[Operation.TRANSFORM][0]
-        assert transform_entry.on_failure == FailurePolicy.WARN
-
 
 class TestAssetRoutingConfig:
     def test_class_key(self):

@@ -61,10 +61,12 @@ def _routing_config_keys() -> frozenset[str]:
         AssetRoutingConfig,
         CatalogRoutingConfig,
         CollectionRoutingConfig,
+        ItemsRoutingConfig,
     )
     return frozenset({
         cls.class_key() for cls in (
-            CollectionRoutingConfig, AssetRoutingConfig, CatalogRoutingConfig,
+            ItemsRoutingConfig, CollectionRoutingConfig,
+            AssetRoutingConfig, CatalogRoutingConfig,
         )
     })
 

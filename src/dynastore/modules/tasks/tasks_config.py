@@ -34,7 +34,7 @@ class TasksPluginConfig(PluginConfig):
 class TaskRoutingConfig(PluginConfig):
     """Service-affinity routing for the global task queue.
 
-    Sibling to ``CollectionRoutingConfig`` but for the tasks tier. Maps
+    Sibling to ``ItemsRoutingConfig`` but for the tasks tier. Maps
     ``task_type`` → ordered list of service names allowed to claim it.
     Empty/missing entry → any service whose runner can handle the task may
     claim (legacy behaviour).

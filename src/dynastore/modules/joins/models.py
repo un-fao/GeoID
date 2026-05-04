@@ -247,7 +247,7 @@ class JoinRequest(BaseModel):
 
     Primary side: any READ-capable storage driver registered for the
     target collection. With a default-routing deployment, the platform
-    PG items driver answers — no per-collection ``CollectionRoutingConfig``
+    PG items driver answers — no per-collection ``ItemsRoutingConfig``
     PUT required (PR #107 added zero-config hint routing).
 
     Secondary side: either ``NamedSecondarySpec`` (registered collection)

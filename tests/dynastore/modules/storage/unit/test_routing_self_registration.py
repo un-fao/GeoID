@@ -9,6 +9,7 @@ from __future__ import annotations
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingConfig,
     CollectionRoutingConfig,
+    ItemsRoutingConfig,
     FailurePolicy,
     Operation,
     OperationDriverEntry,
@@ -20,13 +21,13 @@ def test_collection_self_registers_missing_metadata_drivers():
     """Empty metadata.operations + 2 installed drivers → both auto-appended
     to WRITE and READ."""
     cfg = CollectionRoutingConfig()
-    cfg.metadata.operations.clear()
+    cfg.operations.clear()
 
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
-    write_ids = {e.driver_id for e in cfg.metadata.operations[Operation.WRITE]}
-    read_ids = {e.driver_id for e in cfg.metadata.operations[Operation.READ]}
+    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
     assert write_ids == {"pg_core_meta", "pg_stac_meta"}
     assert read_ids == {"pg_core_meta", "pg_stac_meta"}
 
@@ -35,8 +36,8 @@ def test_collection_preserves_operator_supplied_entry():
     """Operator-supplied entries (with custom on_failure / write_mode)
     survive auto-append — only MISSING drivers get appended."""
     cfg = CollectionRoutingConfig()
-    cfg.metadata.operations.clear()
-    cfg.metadata.operations[Operation.WRITE] = [
+    cfg.operations.clear()
+    cfg.operations[Operation.WRITE] = [
         OperationDriverEntry(
             driver_id="pg_core_meta", on_failure=FailurePolicy.WARN,
         ),
@@ -46,7 +47,7 @@ def test_collection_preserves_operator_supplied_entry():
     _self_register_metadata_drivers(cfg, metadata_index)
 
     write_entries = {
-        e.driver_id: e for e in cfg.metadata.operations[Operation.WRITE]
+        e.driver_id: e for e in cfg.operations[Operation.WRITE]
     }
     # Operator's PgCoreMeta entry preserved with on_failure=WARN.
     assert write_entries["pg_core_meta"].on_failure == FailurePolicy.WARN
@@ -58,12 +59,12 @@ def test_collection_preserves_operator_supplied_entry():
 def test_collection_no_op_when_all_drivers_already_listed():
     """All installed drivers already present → no duplicates appended."""
     cfg = CollectionRoutingConfig()
-    cfg.metadata.operations.clear()
-    cfg.metadata.operations[Operation.WRITE] = [
+    cfg.operations.clear()
+    cfg.operations[Operation.WRITE] = [
         OperationDriverEntry(driver_id="pg_core_meta"),
         OperationDriverEntry(driver_id="pg_stac_meta"),
     ]
-    cfg.metadata.operations[Operation.READ] = [
+    cfg.operations[Operation.READ] = [
         OperationDriverEntry(driver_id="pg_core_meta"),
         OperationDriverEntry(driver_id="pg_stac_meta"),
     ]
@@ -71,8 +72,8 @@ def test_collection_no_op_when_all_drivers_already_listed():
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
-    assert len(cfg.metadata.operations[Operation.WRITE]) == 2
-    assert len(cfg.metadata.operations[Operation.READ]) == 2
+    assert len(cfg.operations[Operation.WRITE]) == 2
+    assert len(cfg.operations[Operation.READ]) == 2
 
 
 def test_catalog_self_registers_missing_drivers():
@@ -93,13 +94,13 @@ def test_self_registration_skips_zero_drivers():
     """Empty driver index → no entries appended (no spurious empty list creation
     for ops that were already absent)."""
     cfg = CollectionRoutingConfig()
-    cfg.metadata.operations.clear()
+    cfg.operations.clear()
 
     _self_register_metadata_drivers(cfg, metadata_driver_index={})
 
     # Operations stay empty — auto-append only adds for present drivers.
-    assert cfg.metadata.operations.get(Operation.WRITE, []) == []
-    assert cfg.metadata.operations.get(Operation.READ, []) == []
+    assert cfg.operations.get(Operation.WRITE, []) == []
+    assert cfg.operations.get(Operation.READ, []) == []
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +156,8 @@ def test_apply_handlers_invoke_indexer_self_registration():
         AssetRoutingConfig,
         _on_apply_asset_routing_config,
         _on_apply_catalog_routing_config,
-        _on_apply_routing_config,
+        _on_apply_collection_routing_config,
+        _on_apply_items_routing_config,
     )
 
     calls: list[type] = []
@@ -167,9 +169,10 @@ def test_apply_handlers_invoke_indexer_self_registration():
 
     # Empty operations so _validate_routing_entries has nothing to check
     # against the (stubbed-empty) driver registry.
+    items = ItemsRoutingConfig()
+    items.operations.clear()
     coll = CollectionRoutingConfig()
     coll.operations.clear()
-    coll.metadata.operations.clear()
     asset = AssetRoutingConfig()
     asset.operations.clear()
     cat = CatalogRoutingConfig()
@@ -182,7 +185,10 @@ def test_apply_handlers_invoke_indexer_self_registration():
         "dynastore.tools.discovery.get_protocols",
         lambda proto: [],
     ):
-        asyncio.run(_on_apply_routing_config(
+        asyncio.run(_on_apply_items_routing_config(
+            items, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_collection_routing_config(
             coll, catalog_id=None, collection_id=None, db_resource=None,
         ))
         asyncio.run(_on_apply_asset_routing_config(
@@ -198,10 +204,9 @@ def test_apply_handlers_invoke_indexer_self_registration():
         CollectionIndexer,
         ItemIndexer,
     )
-    # Order: collection-tier metadata (CollectionIndexer), then items-tier
-    # (ItemIndexer — added by the items-tier validator/apply-handler in
-    # PR #5x), then asset, then catalog.
-    assert calls == [CollectionIndexer, ItemIndexer, AssetIndexer, CatalogIndexer]
+    # Each tier's apply handler invokes indexer registration with its own
+    # marker Protocol. Order matches the invocation order above.
+    assert calls == [ItemIndexer, CollectionIndexer, AssetIndexer, CatalogIndexer]
 
 
 def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
@@ -428,7 +433,7 @@ def test_catalog_routing_validator_no_op_when_no_indexers_discoverable():
 
 
 def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
-    """CollectionRoutingConfig validator augments metadata.operations
+    """ItemsRoutingConfig validator augments metadata.operations
     (not top-level operations)."""
     from typing import ClassVar
     from unittest.mock import patch
@@ -443,21 +448,18 @@ def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
                lambda proto: [_ColES()]):
         cfg = CollectionRoutingConfig()
 
-    index_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.INDEX, [])}
-    search_ids = {e.driver_id for e in cfg.metadata.operations.get(Operation.SEARCH, [])}
+    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
+    search_ids = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_col_es" in index_ids
     assert "_col_es" in search_ids
 
 
-def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
-    """The SECOND model_validator on CollectionRoutingConfig augments the
-    TOP-LEVEL `operations` (items-tier) — separate from the
-    metadata-tier validator which augments `metadata.operations`.
-
-    Discoverable ItemIndexer drivers land in `operations[INDEX]`;
-    CollectionItemsStore drivers declaring storage SEARCH-family caps
-    (FULLTEXT / SPATIAL_FILTER / ATTRIBUTE_FILTER) land in
-    `operations[SEARCH]`."""
+def test_items_routing_validator_augments_INDEX_and_SEARCH():
+    """The model_validator on ItemsRoutingConfig augments its `operations`
+    with discoverable ItemIndexer drivers (→ INDEX) and CollectionItemsStore
+    drivers declaring storage SEARCH-family caps (FULLTEXT / SPATIAL_FILTER /
+    ATTRIBUTE_FILTER) (→ SEARCH).
+    """
     from typing import ClassVar
     from unittest.mock import patch
 
@@ -469,9 +471,8 @@ def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
 
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: [_ItemsES()]):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
 
-    # Top-level operations augmented (NOT metadata.operations).
     top_index = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
     top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_items_es" in top_index
@@ -482,11 +483,11 @@ def test_collection_routing_validator_augments_items_tier_INDEX_and_SEARCH():
            "items_postgresql_driver" in write_ids
 
 
-def test_collection_items_tier_search_caps_filter():
-    """Items-tier SEARCH gate uses storage Capability (FULLTEXT,
+def test_items_routing_search_caps_filter():
+    """ItemsRoutingConfig SEARCH gate uses storage Capability (FULLTEXT,
     SPATIAL_FILTER, ATTRIBUTE_FILTER) — NOT MetadataCapability.SEARCH.
-    A driver with only metadata SEARCH caps must NOT land in items-
-    tier `operations[SEARCH]`."""
+    A driver with only metadata SEARCH caps must NOT land in items-tier
+    ``operations[SEARCH]``."""
     from typing import ClassVar
     from unittest.mock import patch
 
@@ -504,7 +505,7 @@ def test_collection_items_tier_search_caps_filter():
 
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: [_MetadataOnlySearcher(), _StorageSpatialSearcher()]):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
 
     top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_storage_spatial_searcher" in top_search
@@ -623,13 +624,13 @@ def test_searcher_helper_marks_entries_as_auto():
 def test_metadata_driver_helper_marks_entries_as_auto():
     """`_self_register_metadata_drivers` also marks new entries as auto."""
     cfg = CollectionRoutingConfig()
-    cfg.metadata.operations.clear()
+    cfg.operations.clear()
 
     metadata_index = {"pg_core_meta": object()}
     _self_register_metadata_drivers(cfg, metadata_index)
 
     for op in (Operation.WRITE, Operation.READ):
-        entries = cfg.metadata.operations[op]
+        entries = cfg.operations[op]
         assert len(entries) == 1
         assert entries[0].source == "auto"
 
@@ -704,9 +705,9 @@ def test_source_field_rejects_invalid_value():
 
 
 def test_apply_handlers_invoke_searcher_self_registration():
-    """The collection-tier and catalog-tier apply handlers MUST also call
-    `_self_register_searchers_into` (asset tier doesn't, by design — no
-    SEARCH op for assets)."""
+    """The items-tier, collection-tier and catalog-tier apply handlers MUST
+    each call `_self_register_searchers_into` (asset tier doesn't, by design —
+    no SEARCH op for assets)."""
     import asyncio
     from unittest.mock import patch
 
@@ -714,7 +715,8 @@ def test_apply_handlers_invoke_searcher_self_registration():
         AssetRoutingConfig,
         _on_apply_asset_routing_config,
         _on_apply_catalog_routing_config,
-        _on_apply_routing_config,
+        _on_apply_collection_routing_config,
+        _on_apply_items_routing_config,
     )
 
     calls: list[type] = []
@@ -724,9 +726,10 @@ def test_apply_handlers_invoke_searcher_self_registration():
         # helper) so the spy works for both helper signatures.
         calls.append(marker_proto)
 
+    items = ItemsRoutingConfig()
+    items.operations.clear()
     coll = CollectionRoutingConfig()
     coll.operations.clear()
-    coll.metadata.operations.clear()
     asset = AssetRoutingConfig()
     asset.operations.clear()
     cat = CatalogRoutingConfig()
@@ -739,7 +742,10 @@ def test_apply_handlers_invoke_searcher_self_registration():
         "dynastore.tools.discovery.get_protocols",
         lambda proto: [],
     ):
-        asyncio.run(_on_apply_routing_config(
+        asyncio.run(_on_apply_items_routing_config(
+            items, catalog_id=None, collection_id=None, db_resource=None,
+        ))
+        asyncio.run(_on_apply_collection_routing_config(
             coll, catalog_id=None, collection_id=None, db_resource=None,
         ))
         asyncio.run(_on_apply_asset_routing_config(
@@ -754,10 +760,13 @@ def test_apply_handlers_invoke_searcher_self_registration():
         CollectionMetadataStore,
     )
     from dynastore.models.protocols.storage_driver import CollectionItemsStore
-    # Order: collection-tier metadata, then items-tier (added by the
-    # items-tier hook in PR #5x), then catalog-tier.  Asset tier still
-    # doesn't call the searcher (no SEARCH op for assets).
-    assert calls == [CollectionMetadataStore, CollectionItemsStore, CatalogMetadataStore]
+    # Each tier's apply handler invokes searcher registration once with its
+    # own marker Protocol. Order matches invocation order above.
+    assert calls == [
+        CollectionItemsStore,
+        CollectionMetadataStore,
+        CatalogMetadataStore,
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -70,33 +70,41 @@ class FailurePolicy(StrEnum):
 class Operation(StrEnum):
     """Standard operations configured in routing configs.
 
-    Collection routing (``CollectionRoutingConfig.operations``):
+    The four routing configs mirror the four entity tiers, each governing
+    CRUD on its own entity row (catalog / collection / items / assets).
+    No separate "metadata" routing — every entity has exactly one routing
+    config that dispatches every operation on that entity's row.
+
+    Items routing (``ItemsRoutingConfig.operations``) — entity rows for
+    collection items / features:
     - WRITE  : fan-out to all configured drivers (position 0 = primary)
     - READ   : single-driver for browsing/pagination (streaming)
     - SEARCH : single-driver for filtered queries (bbox, attributes, fulltext)
 
-    Asset routing (``AssetRoutingConfig.operations``):
+    Collection routing (``CollectionRoutingConfig.operations``) — collection
+    envelope rows:
+    - READ      : first-match driver (PG sidecar / ES wrapper / …).
+    - WRITE     : primary driver(s) committing in-transaction.
+    - TRANSFORM : ordered chain — drivers (typically items drivers) that
+                  enrich the collection row at READ time (extents, counts,
+                  summaries derived from items).
+    - INDEX     : async post-write propagation to search sinks (ES, vector
+                  DB, …).  Entries declare ``transformed: bool``; the
+                  ReindexWorker feeds raw or transformed envelopes.
+    - BACKUP    : async post-write propagation to export sinks (Parquet via
+                  DuckDB, NDJSON, …).  Entries declare ``transformed`` + ``fmt``.
+
+    Catalog routing (``CatalogRoutingConfig.operations``) — same shape on
+    catalog rows.
+
+    Asset routing (``AssetRoutingConfig.operations``) — asset rows:
     - WRITE / READ : as above (single-primary + secondaries via INDEX/event sync)
     - INDEX  : auto-augmented with discoverable ``AssetIndexer`` drivers,
                fanned out asynchronously by ``AssetEntitySyncSubscriber``.
     - UPLOAD : single-driver pick of the ``AssetUploadProtocol`` impl that
-               handles ``initiate_upload``/``get_upload_status`` for this
-               catalog/collection (auto-augmented from discoverable
-               ``AssetUploadProtocol`` impls; operator config can pin a
-               specific backend).
-
-    Metadata routing (``CollectionRoutingConfig.metadata.operations``):
-    - READ      : first-match metadata driver (CollectionMetadataStore)
-    - TRANSFORM : ordered transform chain — storage drivers that enrich metadata
-                  at READ time (replaces ``MetadataOperationConfig.storage``)
-    - INDEX     : async post-write propagation to search-capable sinks (ES,
-                  vector DB, …).  Entries declare ``transformed: bool``; the
-                  ReindexWorker feeds raw or transformed envelopes accordingly.
-                  See role-based driver plan §Routing.
-    - BACKUP    : async post-write propagation to export-capable sinks (Parquet
-                  via DuckDB, NDJSON, …).  Entries declare ``transformed: bool``
-                  and ``fmt``.  Serves ``GET .../backup`` endpoints.
-                  See role-based driver plan §Routing.
+               handles ``initiate_upload``/``get_upload_status`` (auto-
+               augmented from discoverable ``AssetUploadProtocol`` impls;
+               operator config can pin a specific backend).
     """
 
     WRITE = "WRITE"
@@ -111,19 +119,19 @@ class Operation(StrEnum):
 class WriteMode(StrEnum):
     """Execution / composition mode for an operation entry.
 
-    Collection write semantics:
+    Items-routing write semantics:
     - ``sync``   : await result; participates in coordinated rollback
                    (all sync writes run in parallel via ``asyncio.gather``)
     - ``async``  : fire-and-forget after sync phase succeeds
 
-    Metadata routing composition semantics:
+    Collection / catalog-routing composition semantics:
     - ``first``    : return result from the first driver that succeeds
-                     (used with ``Operation.READ`` on metadata routing)
+                     (used with ``Operation.READ``)
     - ``fan_out``  : call all drivers independently; merge results
-                     (used with ``Operation.WRITE`` on metadata routing)
+                     (used with ``Operation.WRITE``)
     - ``chain``    : pipe output through drivers in declared order;
                      each driver receives the previous output
-                     (used with ``Operation.TRANSFORM`` on metadata routing)
+                     (used with ``Operation.TRANSFORM``)
     """
 
     SYNC = "sync"
@@ -295,60 +303,17 @@ class OperationDriverEntry(BaseModel):
     )
 
 
-class MetadataRoutingConfig(BaseModel):
-    """Metadata routing sub-configuration within ``CollectionRoutingConfig``.
-
-    Uses the same ``operations`` dict shape as collection routing.  Standard
-    operation keys:
-
-    ``READ`` (``write_mode=first``):
-        ``CollectionMetadataStore`` backends for metadata persistence
-        and search.  First available driver wins.
-        Empty → auto-discovery fallback (ES if registered, otherwise PG).
-
-    ``WRITE`` (``write_mode=sync``):
-        Primary metadata driver(s) committing in-transaction.  Empty →
-        defaults to the Primary PG driver.
-
-    ``TRANSFORM`` (``write_mode=chain``, **lazy**):
-        Drivers that enrich collection metadata.  **Not** invoked on default
-        read paths — only when an endpoint opts in (e.g. STAC derived fields)
-        or when the async reindex pipeline is preparing an envelope for an
-        INDEX / BACKUP entry marked ``transformed=true``.  Each entry should
-        carry an SLA; see role-based driver plan §Routing.
-
-    ``INDEX`` (optional, async):
-        Post-write propagation targets for search-capable sinks (ES, Vertex AI,
-        vector DBs).  Each entry declares ``transformed: bool`` to pick raw
-        vs transformed envelopes.  When absent, search falls through to the
-        Primary's ``SEARCH`` capability.
-
-    ``BACKUP`` (optional, async):
-        Post-write propagation targets for export sinks (Parquet via DuckDB,
-        NDJSON, …).  Each entry declares ``transformed: bool`` and ``fmt``.
-        Serves ``GET .../backup?format=<fmt>`` endpoints.
-    """
-
-    operations: Dict[str, List[OperationDriverEntry]] = Field(
-        default_factory=dict,
-        description=(
-            "Operation → ordered driver list for metadata routing.  "
-            "READ  = first-match metadata drivers (CollectionMetadataStore).  "
-            "TRANSFORM = lazy enrichers.  "
-            "INDEX = async search-sink propagation.  "
-            "BACKUP = async export-sink propagation."
-        ),
-    )
-
-
-class CollectionRoutingConfig(PluginConfig):
-    """Operation-based routing for collection storage drivers.
+class ItemsRoutingConfig(PluginConfig):
+    """Operation-based routing for **items** storage drivers.
 
     Each operation maps to an ordered list of :class:`OperationDriverEntry`.
     Position in the list determines priority (first = primary).
 
-    ``metadata`` is a separate sub-object for collection metadata routing —
-    see :class:`MetadataRoutingConfig`.
+    Items routing dispatches `CollectionItemsStore` drivers (PG, ES, BQ,
+    Iceberg, DuckDB) for entity-level operations: WRITE / READ / SEARCH /
+    INDEX over collection items / features. **Distinct from**
+    :class:`CollectionRoutingConfig` which dispatches
+    ``CollectionMetadataStore`` drivers for collection-envelope metadata.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
@@ -391,70 +356,21 @@ class CollectionRoutingConfig(PluginConfig):
             ],
         },
         description=(
-            "Operation → ordered driver list.  "
+            "Operation → ordered driver list for items dispatch.  "
             "Immutable: to change driver mapping, create a new config.  "
             "Hints and on_failure within entries are mutable."
         ),
     )
 
-    metadata: MetadataRoutingConfig = Field(
-        default_factory=MetadataRoutingConfig,
-        description=(
-            "Metadata routing sub-configuration. "
-            "``operations[READ]`` selects the CollectionMetadataStore backend "
-            "(first available wins); "
-            "``operations[TRANSFORM]`` selects CollectionItemsStore backends "
-            "that contribute metadata at READ time. "
-            "``operations[INDEX]`` and ``operations[SEARCH]`` are "
-            "auto-augmented at validation time with discoverable "
-            "CollectionIndexer / SEARCH-capable CollectionMetadataStore "
-            "drivers (typically CollectionElasticsearchDriver)."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _augment_metadata_with_discoverable_indexers_searchers(
-        self,
-    ) -> "CollectionRoutingConfig":
-        """Mirror of the catalog-tier augmentation but on the
-        ``metadata.operations`` sub-dict.  See
-        :meth:`CatalogRoutingConfig._augment_with_discoverable_indexers_searchers`.
-        """
-        from dynastore.models.protocols.metadata_driver import (
-            CollectionMetadataStore,
-        )
-
-        try:
-            _self_register_indexers_into(
-                self.metadata.operations, CollectionIndexer,
-            )
-            _self_register_searchers_into(
-                self.metadata.operations, CollectionMetadataStore,
-            )
-            _self_register_transformers_into(self.metadata.operations)
-        except Exception as exc:
-            logger.debug(
-                "CollectionRoutingConfig: read-time self-register skipped "
-                "(%s); apply-handler will populate on next write.", exc,
-            )
-        return self
-
     @model_validator(mode="after")
     def _augment_items_with_discoverable_indexers_searchers(
         self,
-    ) -> "CollectionRoutingConfig":
-        """Items-tier augmentation: top-level ``operations`` (not
-        ``metadata.operations``).  Auto-folds discoverable
-        :class:`ItemIndexer` drivers into ``operations[INDEX]`` and
-        :class:`CollectionItemsStore` drivers declaring storage
-        ``Capability.{FULLTEXT, SPATIAL_FILTER, ATTRIBUTE_FILTER}``
-        into ``operations[SEARCH]``.
-
-        Closes the symmetric gap to PR #49 — that PR augmented the
-        metadata-tier; this hook now also fills the items-tier so a
-        deployed `ItemsElasticsearchDriver` shows up under
-        ``operations[INDEX]`` / ``operations[SEARCH]`` without
-        requiring an operator PUT.
+    ) -> "ItemsRoutingConfig":
+        """Auto-folds discoverable :class:`ItemIndexer` drivers into
+        ``operations[INDEX]`` and :class:`CollectionItemsStore` drivers
+        declaring storage ``Capability.{FULLTEXT, SPATIAL_FILTER,
+        ATTRIBUTE_FILTER}`` into ``operations[SEARCH]`` — so a deployed
+        ``ItemsElasticsearchDriver`` shows up without operator PUT.
         """
         from dynastore.models.protocols.indexer import ItemIndexer
         from dynastore.models.protocols.storage_driver import (
@@ -470,9 +386,94 @@ class CollectionRoutingConfig(PluginConfig):
             _self_register_transformers_into(self.operations)
         except Exception as exc:
             logger.debug(
-                "CollectionRoutingConfig: items-tier read-time self-"
+                "ItemsRoutingConfig: items-tier read-time self-"
                 "register skipped (%s); apply-handler will populate on "
                 "next write.", exc,
+            )
+        return self
+
+
+class CollectionRoutingConfig(PluginConfig):
+    """Operation-based routing for **collection metadata** drivers.
+
+    Dispatches ``CollectionMetadataStore`` drivers (PG metadata sidecars,
+    ES wrapper for collection envelopes) for collection-envelope CRUD and
+    metadata indexing. **Distinct from** :class:`ItemsRoutingConfig` which
+    dispatches per-entity items drivers.
+
+    Standard operation keys:
+
+    ``READ`` (``write_mode=first``):
+        ``CollectionMetadataStore`` backends for metadata persistence
+        and search.  First available driver wins.
+        Empty → auto-discovery fallback (ES if registered, otherwise PG).
+
+    ``WRITE`` (``write_mode=sync``):
+        Primary metadata driver(s) committing in-transaction.  Empty →
+        defaults to the Primary PG driver.
+
+    ``TRANSFORM`` (``write_mode=chain``, **lazy**):
+        Drivers that enrich collection metadata.  **Not** invoked on default
+        read paths — only when an endpoint opts in (e.g. STAC derived fields)
+        or when the async reindex pipeline is preparing an envelope for an
+        INDEX / BACKUP entry marked ``transformed=true``.  Each entry should
+        carry an SLA; see role-based driver plan §Routing.
+
+    ``INDEX`` (optional, async):
+        Post-write propagation targets for search-capable sinks (ES, Vertex AI,
+        vector DBs).  Each entry declares ``transformed: bool`` to pick raw
+        vs transformed envelopes.  When absent, search falls through to the
+        Primary's ``SEARCH`` capability.
+
+    ``BACKUP`` (optional, async):
+        Post-write propagation targets for export sinks (Parquet via DuckDB,
+        NDJSON, …).  Each entry declares ``transformed: bool`` and ``fmt``.
+        Serves ``GET .../backup?format=<fmt>`` endpoints.
+
+    Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
+    """
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+
+    model_config = ConfigDict(json_schema_extra=ui(category="routing"))
+
+    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+        default_factory=lambda: {},
+        description=(
+            "Operation → ordered driver list for metadata routing.  "
+            "READ  = first-match metadata drivers (CollectionMetadataStore).  "
+            "TRANSFORM = lazy enrichers.  "
+            "INDEX = async search-sink propagation.  "
+            "BACKUP = async export-sink propagation."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _augment_metadata_with_discoverable_indexers_searchers(
+        self,
+    ) -> "CollectionRoutingConfig":
+        """Auto-folds discoverable :class:`CollectionIndexer` drivers into
+        ``operations[INDEX]`` and ``CollectionMetadataStore`` SEARCH-capable
+        drivers into ``operations[SEARCH]``.
+        """
+        from dynastore.models.protocols.metadata_driver import (
+            CollectionMetadataStore,
+        )
+
+        try:
+            _self_register_indexers_into(
+                self.operations, CollectionIndexer,
+            )
+            _self_register_searchers_into(
+                self.operations, CollectionMetadataStore,
+            )
+            _self_register_transformers_into(self.operations)
+        except Exception as exc:
+            logger.debug(
+                "CollectionRoutingConfig: read-time self-register "
+                "skipped (%s); apply-handler will populate on next write.",
+                exc,
             )
         return self
 
@@ -480,7 +481,7 @@ class CollectionRoutingConfig(PluginConfig):
 class AssetRoutingConfig(PluginConfig):
     """Operation-based routing for asset storage drivers.
 
-    Same structure as :class:`CollectionRoutingConfig` but scoped to
+    Same structure as :class:`ItemsRoutingConfig` but scoped to
     asset-domain drivers.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
@@ -493,9 +494,9 @@ class AssetRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            # Mirrors CollectionRoutingConfig: ES (public) primary indexer for
+            # Mirrors ItemsRoutingConfig: ES (public) primary indexer for
             # READ, PG authoritative for WRITE. See companion memory note +
-            # CollectionRoutingConfig.operations comment for rationale.
+            # ItemsRoutingConfig.operations comment for rationale.
             Operation.WRITE: [
                 OperationDriverEntry(
                     driver_id="asset_postgresql_driver",
@@ -548,7 +549,7 @@ class AssetRoutingConfig(PluginConfig):
 class CatalogRoutingConfig(PluginConfig):
     """Operation-based routing for catalog-level metadata drivers.
 
-    Parallels :class:`CollectionRoutingConfig` but scoped to catalog-tier
+    Parallels :class:`ItemsRoutingConfig` but scoped to catalog-tier
     drivers (``CatalogMetadataStore`` implementations).  Introduced by the
     role-based driver refactor so catalogs follow the same Primary /
     Transformer / Indexer / Backup pattern as collections.
@@ -561,7 +562,7 @@ class CatalogRoutingConfig(PluginConfig):
 
     ``operations`` supports the same keys as collection metadata routing:
     ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``, ``INDEX``, ``BACKUP``.
-    See :class:`MetadataRoutingConfig` for per-key semantics.
+    See :class:`CollectionRoutingConfig` for per-key semantics.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
@@ -637,7 +638,7 @@ class CatalogRoutingConfig(PluginConfig):
 
 
 def _validate_routing_entries(
-    config: "CollectionRoutingConfig | AssetRoutingConfig | CatalogRoutingConfig",
+    config: "ItemsRoutingConfig | AssetRoutingConfig | CatalogRoutingConfig",
     driver_index: Dict[str, Any],
     label: str,
 ) -> None:
@@ -887,7 +888,7 @@ def _self_register_metadata_drivers(
     *,
     op_keys: Tuple[str, ...] = (Operation.WRITE, Operation.READ),
 ) -> None:
-    """Auto-append every installed metadata driver missing from ``operations[op]``.
+    """Auto-append every installed metadata-store driver missing from ``operations[op]``.
 
     Closes the "implicit fan-out, invisible to operators" antipattern:
     every protocol-installed driver participates in WRITE/READ unless an
@@ -898,7 +899,7 @@ def _self_register_metadata_drivers(
     Pydantic field level (you can't reassign the dict), but the contents
     are still appendable.  Called from the apply handlers below.
     """
-    target_ops = config.metadata.operations if hasattr(config, "metadata") else config.operations  # type: ignore[union-attr]
+    target_ops = config.operations
     for op in op_keys:
         listed = {entry.driver_id for entry in target_ops.get(op, [])}
         for driver_id in metadata_driver_index:
@@ -914,71 +915,41 @@ def _self_register_metadata_drivers(
             )
 
 
-async def _on_apply_routing_config(
-    config: CollectionRoutingConfig,
+async def _on_apply_items_routing_config(
+    config: ItemsRoutingConfig,
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
-    """Called after routing config is written.
+    """Called after items routing config is written.
 
-    Validates driver_id, hints, operations, write_mode, and metadata entries,
-    then invalidates the router and metadata-router caches.
+    Validates driver_id, hints, operations, write_mode for items dispatch
+    entries (``CollectionItemsStore`` drivers); auto-registers discoverable
+    ``ItemIndexer`` drivers and SEARCH-capable items drivers; invalidates
+    the router cache.
 
-    Self-registration step: auto-appends every installed
-    ``CollectionMetadataStore`` driver missing from
-    ``config.metadata.operations[WRITE]`` / ``[READ]`` so operators
-    reading ``/configs/...`` see every driver that will run; no implicit
-    fan-out behind the config's back.
+    NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
+    NOT called here. It is invoked by the collection-creation flow
+    (CollectionService._create_collection_internal step 6) on the write driver,
+    which is the only correct point because the ItemsPostgresqlDriverConfig
+    (physical_table, sidecars) must be fully resolved before storage is
+    provisioned.
     """
-    from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+    from dynastore.models.protocols.indexer import ItemIndexer
     from dynastore.models.protocols.storage_driver import CollectionItemsStore
     from dynastore.tools.discovery import get_protocols
 
     driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionItemsStore)}
-    _validate_routing_entries(config, driver_index, "Collection routing config")
+    _validate_routing_entries(config, driver_index, "Items routing config")
 
-    # Validate metadata.operations[READ] entries (CollectionMetadataStore drivers)
-    metadata_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionMetadataStore)}
-    _self_register_metadata_drivers(config, metadata_driver_index)
-    for entry in config.metadata.operations.get(Operation.READ, []):
-        if entry.driver_id not in metadata_driver_index:
-            raise ValueError(
-                f"Collection routing config: metadata.operations[READ] driver "
-                f"'{entry.driver_id}' is not registered. "
-                f"Available: {sorted(metadata_driver_index)}"
-            )
-
-    # Validate metadata.operations[TRANSFORM] entries (CollectionItemsStore drivers)
-    for entry in config.metadata.operations.get(Operation.TRANSFORM, []):
-        if entry.driver_id not in driver_index:
-            raise ValueError(
-                f"Collection routing config: metadata.operations[TRANSFORM] driver "
-                f"'{entry.driver_id}' is not registered. "
-                f"Available: {sorted(driver_index)}"
-            )
-
-    # Validate metadata.operations[INDEX] and [BACKUP] entries.
-    # Indexers and Backup drivers are metadata-domain drivers (CollectionMetadataStore
-    # implementations); search-only sinks (ES, Vertex, vector DBs) and export sinks
-    # (Parquet via DuckDB) both register there.  See role-based driver plan §Routing.
-    for op in (Operation.INDEX, Operation.BACKUP):
-        for entry in config.metadata.operations.get(op, []):
-            if entry.driver_id not in metadata_driver_index:
-                raise ValueError(
-                    f"Collection routing config: metadata.operations[{op}] driver "
-                    f"'{entry.driver_id}' is not registered. "
-                    f"Available: {sorted(metadata_driver_index)}"
-                )
-            # BACKUP-specific: entry.fmt should be declared; a Backup driver
-            # without fmt can't be matched to a ?format= query.  Non-fatal —
-            # a driver may legitimately emit a single implicit format.
-            if op == Operation.BACKUP and not entry.fmt:
-                logger.info(
-                    "Collection routing config: BACKUP entry '%s' has no fmt; "
-                    "endpoint ?format= query will not be able to target it.",
-                    entry.driver_id,
-                )
+    # Items-tier: auto-register ItemIndexer drivers + items-tier SEARCH-capable
+    # CollectionItemsStore drivers — apply-handler parity with the read-time
+    # model_validator so operator PUTs also pick up auto-augmentation.
+    _self_register_indexers_into(config.operations, ItemIndexer)
+    _self_register_searchers_into(
+        config.operations, CollectionItemsStore,
+        search_caps=_items_search_caps(),
+    )
 
     # Invalidate router cache
     try:
@@ -988,32 +959,81 @@ async def _on_apply_routing_config(
     except Exception:
         pass
 
-    # The collection-metadata router is cache-free (pure discovery fan-out);
-    # nothing to invalidate after a routing-config apply.
 
-    # Auto-register installed CollectionIndexer drivers under metadata.operations[INDEX]
-    # with async/warn defaults.  Per-tier marker — only collection-tier indexers
-    # land here.  Also auto-register SEARCH-capable CollectionMetadataStore
-    # drivers under metadata.operations[SEARCH] for parity with the read-time
-    # validator on CollectionRoutingConfig.
-    _self_register_indexers_into(config.metadata.operations, CollectionIndexer)
-    _self_register_searchers_into(config.metadata.operations, CollectionMetadataStore)
+async def _on_apply_collection_routing_config(
+    config: CollectionRoutingConfig,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Called after collection-metadata routing config is written.
 
-    # Items-tier: auto-register ItemIndexer drivers + items-tier SEARCH-capable
-    # CollectionItemsStore drivers under the TOP-LEVEL config.operations.  Mirror
-    # of the second model_validator on CollectionRoutingConfig — apply-handler
-    # parity so operator PUTs also pick up auto-augmentation.
-    from dynastore.models.protocols.indexer import ItemIndexer
+    Validates entries against the ``CollectionMetadataStore`` registry,
+    auto-registers installed metadata drivers (READ/WRITE), auto-registers
+    discoverable ``CollectionIndexer`` and SEARCH-capable
+    ``CollectionMetadataStore`` drivers, and calls ``ensure_storage()`` on
+    READ drivers.
 
-    _self_register_indexers_into(config.operations, ItemIndexer)
-    _self_register_searchers_into(
-        config.operations, CollectionItemsStore,
-        search_caps=_items_search_caps(),
-    )
+    The collection-metadata router is cache-free (pure discovery fan-out);
+    nothing to invalidate after this apply.
+    """
+    from dynastore.models.protocols.metadata_driver import CollectionMetadataStore
+    from dynastore.models.protocols.storage_driver import CollectionItemsStore
+    from dynastore.tools.discovery import get_protocols
 
-    # Call ensure_storage() on metadata READ drivers (idempotent, catalog-scoped).
+    driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionItemsStore)}
+    metadata_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionMetadataStore)}
+
+    # Auto-register installed metadata drivers (WRITE/READ) so operators
+    # reading ``/configs/...`` see every driver that will run; no implicit
+    # fan-out behind the config's back.
+    _self_register_metadata_drivers(config, metadata_driver_index)
+
+    # Validate operations[READ] (CollectionMetadataStore drivers)
+    for entry in config.operations.get(Operation.READ, []):
+        if entry.driver_id not in metadata_driver_index:
+            raise ValueError(
+                f"Collection metadata routing config: operations[READ] driver "
+                f"'{entry.driver_id}' is not registered. "
+                f"Available: {sorted(metadata_driver_index)}"
+            )
+
+    # Validate operations[TRANSFORM] (CollectionItemsStore drivers — they
+    # contribute item-derived metadata at READ time)
+    for entry in config.operations.get(Operation.TRANSFORM, []):
+        if entry.driver_id not in driver_index:
+            raise ValueError(
+                f"Collection metadata routing config: operations[TRANSFORM] driver "
+                f"'{entry.driver_id}' is not registered. "
+                f"Available: {sorted(driver_index)}"
+            )
+
+    # Validate operations[INDEX] and [BACKUP] entries (CollectionMetadataStore
+    # search/export sinks — ES for INDEX, Parquet/DuckDB for BACKUP).
+    for op in (Operation.INDEX, Operation.BACKUP):
+        for entry in config.operations.get(op, []):
+            if entry.driver_id not in metadata_driver_index:
+                raise ValueError(
+                    f"Collection metadata routing config: operations[{op}] driver "
+                    f"'{entry.driver_id}' is not registered. "
+                    f"Available: {sorted(metadata_driver_index)}"
+                )
+            if op == Operation.BACKUP and not entry.fmt:
+                logger.info(
+                    "Collection metadata routing config: BACKUP entry '%s' "
+                    "has no fmt; endpoint ?format= query will not be able to "
+                    "target it.",
+                    entry.driver_id,
+                )
+
+    # Auto-register discoverable indexers + searchers — apply-handler parity
+    # with the read-time model_validator on CollectionRoutingConfig.
+    _self_register_indexers_into(config.operations, CollectionIndexer)
+    _self_register_searchers_into(config.operations, CollectionMetadataStore)
+
+    # Call ensure_storage() on READ drivers (idempotent, catalog-scoped).
     if catalog_id:
-        for entry in config.metadata.operations.get(Operation.READ, []):
+        for entry in config.operations.get(Operation.READ, []):
             driver = metadata_driver_index.get(entry.driver_id)
             if driver is None:
                 continue
@@ -1024,16 +1044,6 @@ async def _on_apply_routing_config(
                     "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
                     entry.driver_id, catalog_id, exc,
                 )
-
-    # NOTE: ensure_storage() for collection WRITE/READ drivers is intentionally
-    # NOT called here. It is invoked by the collection-creation flow
-    # (CollectionService._create_collection_internal step 6) on the write driver,
-    # which is the only correct point because the ItemsPostgresqlDriverConfig
-    # (physical_table, sidecars) must be fully resolved before storage is
-    # provisioned.  Calling ensure_storage() here — potentially before the
-    # collection row exists — causes ImmutableConfigError for WriteOnce /
-    # Immutable fields when collection creation later tries to write the
-    # initial driver config with default (None / empty) values.
 
 
 async def _on_apply_asset_routing_config(
@@ -1119,7 +1129,8 @@ async def _on_apply_catalog_routing_config(
 
 # Register handlers on the config classes themselves.
 _HandlerSig = Callable[[PluginConfig, Optional[str], Optional[str], Optional[Any]], Any]
-CollectionRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_routing_config))
+ItemsRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_items_routing_config))
+CollectionRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_collection_routing_config))
 AssetRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_asset_routing_config))
 CatalogRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_catalog_routing_config))
 
@@ -1141,8 +1152,8 @@ CatalogRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_catalog_
 # Entity-agnostic: parameterised by ``entity`` ∈ {item, collection, catalog,
 # asset}. Each entity reads from a different config:
 #
-#   item       → CollectionRoutingConfig.operations
-#   collection → CollectionRoutingConfig.metadata.operations
+#   item       → ItemsRoutingConfig.operations
+#   collection → ItemsRoutingConfig.metadata.operations
 #   catalog    → CatalogRoutingConfig.operations
 #   asset      → AssetRoutingConfig.operations
 # ---------------------------------------------------------------------------
@@ -1173,11 +1184,11 @@ async def _resolve_entity_operations(
             if not collection_id:
                 return {}
             cfg = await configs.get_config(
-                CollectionRoutingConfig,
+                ItemsRoutingConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            if isinstance(cfg, CollectionRoutingConfig):
+            if isinstance(cfg, ItemsRoutingConfig):
                 return cfg.operations
         elif entity == "collection":
             if not collection_id:
@@ -1188,7 +1199,7 @@ async def _resolve_entity_operations(
                 collection_id=collection_id,
             )
             if isinstance(cfg, CollectionRoutingConfig):
-                return cfg.metadata.operations
+                return cfg.operations
         elif entity == "catalog":
             cfg = await configs.get_config(
                 CatalogRoutingConfig,

@@ -19,7 +19,7 @@
 """
 Storage Router — resolves drivers for a given operation + catalog/collection.
 
-Resolution is based on ``CollectionRoutingConfig`` (operation → ordered driver
+Resolution is based on ``ItemsRoutingConfig`` (operation → ordered driver
 list) with optional hint-based filtering.
 
 For **WRITE**: all matching drivers execute (fan-out), each with its own
@@ -49,7 +49,7 @@ from dynastore.modules.storage.routing_config import (
     AssetRoutingConfig,
     FailurePolicy,
     Operation,
-    CollectionRoutingConfig,
+    ItemsRoutingConfig,
     WriteMode,
 )
 from dynastore.modules.storage.driver_registry import DriverRegistry
@@ -98,7 +98,7 @@ async def _resolve_driver_ids_cached(
     if not configs:
         raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig as _RPC
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig as _RPC
     _raw_config = await configs.get_config(
         routing_plugin_cls,
         catalog_id=catalog_id,
@@ -174,7 +174,7 @@ async def resolve_drivers(
     collection_id: Optional[str] = None,
     *,
     hint: Optional[str] = None,
-    routing_plugin_cls: "Type[PluginConfig]" = CollectionRoutingConfig,
+    routing_plugin_cls: "Type[PluginConfig]" = ItemsRoutingConfig,
 ) -> List[ResolvedDriver]:
     """Resolve an ordered list of drivers for the requested operation.
 
@@ -192,7 +192,7 @@ async def resolve_drivers(
         catalog_id: Catalog context.
         collection_id: Optional collection context.
         hint: Optional preference to select specific driver(s).
-        routing_plugin_cls: PluginConfig class — ``CollectionRoutingConfig`` for
+        routing_plugin_cls: PluginConfig class — ``ItemsRoutingConfig`` for
             collections, ``AssetRoutingConfig`` for assets.
 
     Returns:
@@ -288,7 +288,7 @@ async def get_write_drivers(
     """Multi-driver resolution for collection WRITE fan-out.
 
     Always returns ≥1 entry in a correctly bootstrapped deploy. The waterfall
-    has a code-level default (``CollectionRoutingConfig.operations[WRITE] =
+    has a code-level default (``ItemsRoutingConfig.operations[WRITE] =
     [ItemsPostgresqlDriver]``), so an empty result indicates a deploy/ops
     misconfiguration and is raised as :class:`ConfigResolutionError`.
     """
@@ -303,16 +303,16 @@ async def get_write_drivers(
             (
                 f"No CollectionItemsStore resolved for WRITE on "
                 f"'{catalog_id}/{collection_id}'. Routing waterfall produced "
-                f"an empty list — neither CollectionRoutingConfig.operations[WRITE] "
+                f"an empty list — neither ItemsRoutingConfig.operations[WRITE] "
                 f"nor its code default is supplying a registered, available driver."
             ),
-            missing_key="CollectionRoutingConfig.operations[WRITE]",
+            missing_key="ItemsRoutingConfig.operations[WRITE]",
             required_fields=[],
             scope_tried=["collection", "catalog", "platform", "code_default"],
             hint=(
                 "Register a CollectionItemsStore driver (e.g. "
                 "ItemsPostgresqlDriver) or set "
-                "CollectionRoutingConfig.operations[WRITE] at platform scope."
+                "ItemsRoutingConfig.operations[WRITE] at platform scope."
             ),
         )
     return cast(List["ResolvedDriver[_CSDP]"], result)

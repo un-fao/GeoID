@@ -3,7 +3,7 @@
 Phase H deploy 4 (image :860, 2026-04-29) surfaced a regression where
 both `ingestion` (collection routing READ) and `gdal` (asset routing
 READ) failed with `ValueError: No collection/asset driver found for
-operation='READ'`. The catalog API service had stored CollectionRoutingConfig /
+operation='READ'`. The catalog API service had stored ItemsRoutingConfig /
 AssetRoutingConfig rows with empty `operations: {}` (left over from a
 parallel-session config-refactor PR that rewrote stored config shape).
 
@@ -24,7 +24,7 @@ import pytest
 from dynastore.modules.storage.router import _resolve_driver_ids_cached
 from dynastore.modules.storage.routing_config import (
     AssetRoutingConfig,
-    CollectionRoutingConfig,
+    ItemsRoutingConfig,
     Operation,
     OperationDriverEntry,
 )
@@ -50,16 +50,16 @@ def _patch_configs(stored_config):
 
 @pytest.mark.asyncio
 async def test_collection_routing_falls_back_to_defaults_when_empty() -> None:
-    """Stored CollectionRoutingConfig with empty operations should fall
+    """Stored ItemsRoutingConfig with empty operations should fall
     back to default_factory entries (READ → items_elasticsearch_driver
     primary, items_postgresql_driver secondary — see PR #185)."""
-    empty_config = CollectionRoutingConfig(operations={})
+    empty_config = ItemsRoutingConfig(operations={})
 
     # Cache is keyed on (cls, catalog_id, collection_id, op, hint) —
     # use a unique id so each test gets a fresh resolution.
     with _patch_configs(empty_config):
         result = await _resolve_driver_ids_cached(
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             "test_cat_empty_collection_routing",
             "test_col",
             Operation.READ,
@@ -74,7 +74,7 @@ async def test_collection_routing_falls_back_to_defaults_when_empty() -> None:
     driver_ids = [entry[0] for entry in result]
     assert driver_ids[0] == "items_elasticsearch_driver", (
         f"Expected first driver_id to be items_elasticsearch_driver from "
-        f"CollectionRoutingConfig.default_factory READ order, got {driver_ids[0]!r}."
+        f"ItemsRoutingConfig.default_factory READ order, got {driver_ids[0]!r}."
     )
     assert "items_postgresql_driver" in driver_ids, (
         f"Expected items_postgresql_driver also in fallback list (geometry_exact "
@@ -114,7 +114,7 @@ async def test_explicit_entries_are_not_overridden() -> None:
     """Negative case: when stored config HAS explicit entries, the
     fallback must not fire — we must respect operator-set routing.
     The fallback only fires for the NO-entries case."""
-    explicit_config = CollectionRoutingConfig(
+    explicit_config = ItemsRoutingConfig(
         operations={
             Operation.READ: [OperationDriverEntry(driver_id="explicitly_chosen_driver")],
         }
@@ -122,7 +122,7 @@ async def test_explicit_entries_are_not_overridden() -> None:
 
     with _patch_configs(explicit_config):
         result = await _resolve_driver_ids_cached(
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             "test_cat_explicit_routing",
             "test_col",
             Operation.READ,

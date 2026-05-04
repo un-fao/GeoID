@@ -182,7 +182,7 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
                     status_code=404,
                     detail=(
                         f"No READ driver registered for {catalog_id}/{collection_id}. "
-                        "Configure a CollectionRoutingConfig before /join."
+                        "Configure a ItemsRoutingConfig before /join."
                     ),
                 )
             limit = body.paging.limit if body.paging else 100_000

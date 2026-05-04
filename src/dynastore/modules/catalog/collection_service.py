@@ -154,14 +154,14 @@ class CollectionService:
 
         Idempotent. Runs `ensure_storage` against the write driver (creates
         hub + sidecar tables / ES index / GCS prefix), then pins
-        `CollectionRoutingConfig` at collection scope so future platform
+        `ItemsRoutingConfig` at collection scope so future platform
         default changes cannot silently re-route existing data.
 
         Skipped gracefully when no storage drivers are registered (test
         environments without `StorageModule`).
         """
         from dynastore.modules.storage.router import get_driver
-        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+        from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
         # Load current collection-scope driver config (may already be pinned
         # by a prior inline configure step) so ensure_storage sees the
@@ -202,14 +202,14 @@ class CollectionService:
             if configs is None:
                 raise ValueError("ConfigsProtocol not registered")
             resolved_routing = await configs.get_config(
-                CollectionRoutingConfig,
+                ItemsRoutingConfig,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 ctx=DriverContext(db_resource=conn),
             )
             if resolved_routing:
                 await configs.set_config(
-                    CollectionRoutingConfig,
+                    ItemsRoutingConfig,
                     resolved_routing,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
@@ -304,7 +304,7 @@ class CollectionService:
         # 3. CollectionMetadataEnricherProtocol pipeline removed in the
         #    role-based driver refactor (plan §Protocols — deleted).  Any
         #    in-process hook that used to enrich the metadata dict here is
-        #    now a TRANSFORM driver routed through MetadataRoutingConfig —
+        #    now a TRANSFORM driver routed through CollectionRoutingConfig —
         #    invoked lazily when an endpoint opts in or when the async
         #    reindex pipeline is preparing a transformed INDEX/BACKUP
         #    envelope.  Default read path is deliberately transform-free.
@@ -587,7 +587,7 @@ class CollectionService:
             #    **pending** until either:
             #       - the first `POST /items` triggers lazy activation, or
             #       - an operator calls `POST /collections/{col}/activate`.
-            #    During the pending window, `PUT /configs/.../CollectionRoutingConfig`
+            #    During the pending window, `PUT /configs/.../ItemsRoutingConfig`
             #    (and any other collection-scope config) can be freely set —
             #    the Immutable guard short-circuits while `current=None`.
 

@@ -96,7 +96,7 @@ def test_no_records_in_class_key():
 def test_no_plugin_infix_in_config_class_key():
     """Storage/tiles config classes must not have 'Plugin' infix.
 
-    The classes renamed in M1 (RoutingPluginConfig → CollectionRoutingConfig,
+    The classes renamed in M1 (RoutingPluginConfig → ItemsRoutingConfig,
     FeatureTypePluginConfig → CollectionSchema, TilesPluginConfig → TilesConfig,
     AssetRoutingPluginConfig → AssetRoutingConfig) must not regress.
 

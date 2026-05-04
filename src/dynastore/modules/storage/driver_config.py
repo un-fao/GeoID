@@ -31,7 +31,7 @@ Domain separation uses **class inheritance**:
 
 Capabilities describe *how* the driver operates (SYNC, ASYNC, TRANSACTIONAL,
 etc.), not *what operation* it performs.  Operations are defined in
-``CollectionRoutingConfig`` (see ``routing_config.py``).
+``ItemsRoutingConfig`` (see ``routing_config.py``).
 """
 
 import json
@@ -1191,7 +1191,7 @@ async def _on_apply_collection_schema(
         )
         from dynastore.modules.storage.routing_config import (
             Operation,
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
         )
         from dynastore.tools.discovery import get_protocol, get_protocols
 
@@ -1200,7 +1200,7 @@ async def _on_apply_collection_schema(
             return
 
         routing = await configs.get_config(
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )

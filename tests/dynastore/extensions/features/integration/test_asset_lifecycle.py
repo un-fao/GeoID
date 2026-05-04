@@ -11,7 +11,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 
 
-# PR #185 made ES the default primary indexer in CollectionRoutingConfig.
+# PR #185 made ES the default primary indexer in ItemsRoutingConfig.
 # Without the elasticsearch module loaded, _on_apply_routing_config raises
 # at create_collection time because items_elasticsearch_driver is unknown.
 # Loading the module satisfies the validator; ES need not actually be

@@ -231,7 +231,7 @@ class ConfigScopeMixin:
 
     Add to any ``PluginConfig`` subclass::
 
-        class CollectionRoutingConfig(ConfigScopeMixin, PluginConfig):
+        class ItemsRoutingConfig(ConfigScopeMixin, PluginConfig):
             config_scope: ClassVar[ConfigScopeType] = "platform_waterfall"
 
     Used by the config discovery API (M9) to group configs by scope.

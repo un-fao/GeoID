@@ -52,12 +52,12 @@ def get_es_client():
 async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
     """Whether the regular ES driver is currently routed for this collection.
 
-    Reads ``CollectionRoutingConfig`` via the ConfigsProtocol. Returns False
+    Reads ``ItemsRoutingConfig`` via the ConfigsProtocol. Returns False
     on any failure (missing protocol, missing config, malformed config) so
     callers can safely use this as a guard before performing ES operations.
     """
     from dynastore.models.protocols.configs import ConfigsProtocol
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig
     from dynastore.tools.discovery import get_protocol as _get_protocol
 
     configs = _get_protocol(ConfigsProtocol)
@@ -65,7 +65,7 @@ async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
         return False
     try:
         routing = await configs.get_config(
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
