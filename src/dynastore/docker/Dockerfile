@@ -66,8 +66,12 @@ ENV BUILD_COMMIT=${BUILD_COMMIT}
 # Install Production Dependencies — split into two layers so source-only
 # commits don't bust the (~3 min) deps-install cache.
 #
-# Layer 1: project metadata + .env scaffolding (small, stable)
-COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* VERSION ./
+# Layer 1: project metadata. NOTE: VERSION is intentionally EXCLUDED here.
+# The version-bump bot commits a fresh VERSION on every successful main
+# push (see version-bump.yml); including it in this COPY would mean every
+# downstream PR rebase brings a new VERSION → cache miss on the pip
+# install layer. We stub VERSION below and ship the real one in Layer 3.
+COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* ./
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.
@@ -77,12 +81,14 @@ COPY pyproject.toml .en[v]* ./env/
 COPY pyproject.toml .en[v]* ./
 COPY pyproject.toml .en[v]* ./src/
 
-# Layer 2: stub the dynastore package so setuptools can build a wheel
-# without bundling real source. The pip-install layer below now caches on
-# pyproject.toml hash alone — source-only commits hit the cache and skip
-# the heavy GDAL/pyiceberg/etc. install. Layer 3 replaces the stub with
-# the real tree.
+# Layer 2: stub the dynastore package + a stable VERSION so setuptools can
+# build a wheel without bundling real source/version. The pip-install layer
+# below caches on pyproject.toml + this RUN's text alone — source-only AND
+# version-bump-only commits hit the cache and skip the heavy GDAL /
+# pyiceberg / etc. install. Layer 3 replaces both stubs with real files
+# and rebuilds the wheel --no-deps, picking up the real VERSION.
 RUN mkdir -p src/dynastore/scripts && \
+    echo "0.0.0" > VERSION && \
     : > src/dynastore/__init__.py && \
     : > src/dynastore/scripts/__init__.py && \
     : > src/dynastore/scripts/start.sh && \
@@ -107,11 +113,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
     ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
-# Layer 3: real source overlay. Fast layer — busts only when src/ or
-# tests/ change. We reinstall --no-deps --force-reinstall so site-packages
-# reflects the real package data (start.sh, *.html, *.sql, etc.) instead
-# of the stub from layer 2. Without this, the install -m 755 step below
-# copies stub files out of site-packages.
+# Layer 3: real source overlay + real VERSION. Fast layer — busts only
+# when src/, tests/, or VERSION change. We reinstall --no-deps
+# --force-reinstall so site-packages reflects the real package data
+# (start.sh, *.html, *.sql, etc.) and the real version string. Without
+# this, the install -m 755 step below copies stub files out of
+# site-packages.
+COPY VERSION ./
 COPY src ./src
 COPY tests ./tests
 RUN --mount=type=cache,target=/root/.cache/pip \
