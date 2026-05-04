@@ -91,10 +91,26 @@ class ItemMetadataSidecar(SidecarProtocol):
     def get_default_config(
         cls, context: Dict[str, Any]
     ) -> Optional[ItemMetadataSidecarConfig]:
-        """Auto-inject metadata sidecar if STAC context is active."""
-        if context.get("stac_context"):
-            return ItemMetadataSidecarConfig()
-        return None
+        """Auto-inject metadata sidecar by default.
+
+        Per the class docstring, this is a core sidecar that runs for all
+        consumers (OGC Features, STAC, WFS) — it resolves multilanguage
+        title/description/keywords. Skipped only for RECORDS collections
+        which have no per-item descriptive metadata layer.
+
+        The previous gate (``if context.get("stac_context")``) relied on a
+        flag that the lazy-activation refactor stopped propagating: the
+        STAC service set ``stac_context=True`` on ``create_collection``
+        but ``_activate_collection`` (where ``ensure_storage`` actually
+        runs) had no recovery path for it. Result: the table never got
+        created and any item-metadata-touching test failed with
+        ``UndefinedTableError``. Always-inject restores the documented
+        contract; non-STAC collections that produce no per-item metadata
+        rows pay only the empty-table cost.
+        """
+        if context.get("collection_type") == "RECORDS":
+            return None
+        return ItemMetadataSidecarConfig()
 
     def is_mandatory(self) -> bool:
         """Metadata sidecar is not mandatory — items can exist without metadata."""
