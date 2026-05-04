@@ -317,8 +317,9 @@ class PluginConfig(PersistentModel):
     # in the Phase 0 cleanup.  Subclasses that need a per-scope kill-switch
     # mix in :class:`ExposableConfigMixin` (extension togglability) or
     # declare their own ``enabled: bool`` field with a tailored description
-    # (e.g. ``CollectionRoutingConfig.enabled`` gates routing dispatch;
-    # ``GcpCatalogBucketConfig.enabled`` gates GCS provisioning).
+    # that is actually consumed at runtime (e.g. ``GcpCatalogBucketConfig.
+    # enabled`` gates GCS provisioning; per-sidecar ``_PgSidecarConfig.
+    # enabled`` gates apply-time activation).
 
     # Marker for abstract intermediate bases (not concrete configs). Read via
     # ``cls.__dict__.get("is_abstract_base", False)`` so concrete subclasses do
@@ -443,10 +444,10 @@ def _post_commit_router_bust(cls: Type["PluginConfig"]) -> None:
     """
     try:
         from dynastore.modules.storage.routing_config import (
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             AssetRoutingConfig,
         )
-        if not issubclass(cls, (CollectionRoutingConfig, AssetRoutingConfig)):
+        if not issubclass(cls, (ItemsRoutingConfig, AssetRoutingConfig)):
             return
         from dynastore.modules.storage.router import invalidate_router_cache
         invalidate_router_cache(None, None)

@@ -75,11 +75,11 @@ class TestIsSecondaryFor:
     @pytest.mark.asyncio
     async def test_returns_true_when_listed(self):
         from dynastore.modules.storage.routing_config import (
-            CollectionRoutingConfig, Operation, OperationDriverEntry,
+            ItemsRoutingConfig, Operation, OperationDriverEntry,
         )
 
         mock_configs = AsyncMock()
-        routing = CollectionRoutingConfig(operations={
+        routing = ItemsRoutingConfig(operations={
             Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
             Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver")],
         })
@@ -94,11 +94,11 @@ class TestIsSecondaryFor:
     @pytest.mark.asyncio
     async def test_returns_false_when_not_listed(self):
         from dynastore.modules.storage.routing_config import (
-            CollectionRoutingConfig, Operation, OperationDriverEntry,
+            ItemsRoutingConfig, Operation, OperationDriverEntry,
         )
 
         mock_configs = AsyncMock()
-        routing = CollectionRoutingConfig(operations={
+        routing = ItemsRoutingConfig(operations={
             Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
             Operation.READ: [OperationDriverEntry(driver_id="items_duckdb_driver")],
         })

@@ -56,6 +56,63 @@ class DriverRef(BaseModel):
     write_mode: str = Field("sync", description="Write mode: sync | async.")
 
 
+class Link(BaseModel):
+    """A JSON Hyper-Schema (draft 2019-09) link descriptor.
+
+    Surfaces hypermedia at the response root so operators can discover
+    related endpoints, alternate representations of the same resource,
+    and edit affordances without consulting OpenAPI separately.
+
+    See https://json-schema.org/draft/2019-09/json-schema-hypermedia.html
+    """
+
+    rel: str = Field(
+        ...,
+        description=(
+            "Standard relation name per IANA Link Relations registry "
+            "(``self`` | ``alternate`` | ``edit`` | ``related`` | ``next`` "
+            "| ``prev`` | ``successor-version`` | ``documentation``)."
+        ),
+    )
+    href: str = Field(
+        ...,
+        description=(
+            "Target URI. May be a URI Template (RFC 6570) when "
+            "``templated`` is true — e.g. ``/configs/catalogs/{cat}/"
+            "collections/{coll}/plugins/{class_key}``."
+        ),
+    )
+    title: Optional[str] = Field(
+        None, description="Human-readable label for the link target."
+    )
+    method: Optional[str] = Field(
+        None,
+        description=(
+            "HTTP method used to follow the link (``GET`` | ``PATCH`` | "
+            "``PUT`` | ``DELETE``). Defaults to ``GET`` when omitted. "
+            "Strict JSON Hyper-Schema does not include ``method``; widely "
+            "accepted HAL-style extension carried here for operator clarity."
+        ),
+    )
+    templated: bool = Field(
+        default=False,
+        description=(
+            "When true, ``href`` is a URI Template per RFC 6570 (placeholders "
+            "in ``{...}`` MUST be expanded by the client before dereferencing)."
+        ),
+    )
+    hrefSchema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "JSON Schema 2020-12 describing query-string parameters accepted "
+            "by this link. Each property carries ``description`` and "
+            "``examples``. Drives self-documenting parameter discovery — "
+            "operators read the schema to learn what query params do and what "
+            "values they take, without scanning OpenAPI separately."
+        ),
+    )
+
+
 class ConfigLayer(BaseModel):
     """One tier in the waterfall trace for a single config entry.
 
@@ -110,9 +167,34 @@ class ConfigMeta(BaseModel):
             "Pydantic's ``model_json_schema()``. Includes per-field title, "
             "description, type, default, examples, constraints — everything a "
             "dashboard form-builder needs. Populated when ``?docs=schema`` is "
-            "requested; null otherwise (default ``?docs=none``). Orthogonal to "
-            "``?meta=true``: the two flags can be combined to get both source "
-            "diagnostics and schemas in one response."
+            "requested; null otherwise. Orthogonal to ``?meta=true``: the two "
+            "flags can be combined to get both source diagnostics and schemas "
+            "in one response."
+        ),
+    )
+    field_docs: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Lightweight ``{field_name: description}`` map extracted from the "
+            "class JSON Schema. Each entry carries the Pydantic ``Field(..., "
+            "description=...)`` text — field-by-field documentation surfaced "
+            "alongside the data without the weight of the full JSON Schema. "
+            "Populated when ``?docs=field`` (the default mode). Use "
+            "``?docs=schema`` instead to get the full JSON Schema in "
+            "``json_schema`` above; ``?docs=none`` to suppress both."
+        ),
+    )
+    entity: Optional[str] = Field(
+        default=None,
+        description=(
+            "For driver-tier configs (``_address = (\"storage\", \"drivers\", "
+            "<entity>)``), the entity bucket the config governs: "
+            "``items`` (collection items / features), ``assets`` (asset "
+            "metadata), or ``collection`` (collection-level metadata). Lets "
+            "dashboards group sidecars and driver settings per entity — "
+            "e.g. distinguish ``ItemsPostgresqlDriverConfig.sidecars`` "
+            "(items-side) from ``CollectionPostgresqlDriverConfig.sidecars`` "
+            "(collection-metadata-side). ``None`` for non-driver configs."
         ),
     )
 
@@ -145,8 +227,36 @@ class ConfigPage(BaseModel):
 class CollectionConfigResponse(BaseModel):
     """Composed view of all effective configs at a single collection scope."""
 
+    links: List[Link] = Field(
+        default_factory=list,
+        serialization_alias="_links",
+        description=(
+            "JSON Hyper-Schema link descriptors for this resource. Always "
+            "populated. Includes ``self``, ``alternate`` representations "
+            "(other ``?docs=`` and ``?meta=`` modes), and ``edit`` (templated "
+            "PATCH against per-class plugin endpoints). Operators read "
+            "``hrefSchema`` on each link to discover supported query "
+            "parameters with descriptions and examples."
+        ),
+    )
     collection_id: str
     catalog_id: str
+    inherited: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Class-key → source map for configs that resolved at this scope "
+            "but are NOT rendered in ``configs`` (default ``?include=scope`` "
+            "mode). Populated when an upstream-tier config (``platform`` "
+            "or ``default``) would otherwise have flooded the body. "
+            "Operators see WHAT exists upstream and HOW to reach it without "
+            "the full payloads. Set ``?include=upstream`` to render the "
+            "bodies inline (today's verbose mode). ``inherited_from_catalog`` "
+            "(under ``configs``) is distinct: it carries catalog-only-visible "
+            "configs that influence this collection — those keep their tree "
+            "shape since the operator may still need to PATCH them at "
+            "catalog scope."
+        ),
+    )
     configs: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -183,7 +293,24 @@ class CollectionConfigResponse(BaseModel):
 class CatalogConfigResponse(BaseModel):
     """Composed view of all effective configs at a single catalog scope."""
 
+    links: List[Link] = Field(
+        default_factory=list,
+        serialization_alias="_links",
+        description=(
+            "JSON Hyper-Schema link descriptors. See "
+            "``CollectionConfigResponse._links`` for the link semantics."
+        ),
+    )
     catalog_id: str
+    inherited: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Class-key → source map for configs that resolved at this scope "
+            "but are NOT rendered in ``configs`` (default ``?include=scope`` "
+            "mode). See ``CollectionConfigResponse.inherited`` for full "
+            "semantics."
+        ),
+    )
     configs: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -209,6 +336,14 @@ class CatalogConfigResponse(BaseModel):
 class PlatformConfigResponse(BaseModel):
     """Composed view of all effective configs at the platform scope."""
 
+    links: List[Link] = Field(
+        default_factory=list,
+        serialization_alias="_links",
+        description=(
+            "JSON Hyper-Schema link descriptors. See "
+            "``CollectionConfigResponse._links`` for the link semantics."
+        ),
+    )
     scope: str = Field("platform", frozen=True)
     configs: Dict[str, Any] = Field(
         default_factory=dict,

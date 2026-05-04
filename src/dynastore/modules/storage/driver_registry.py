@@ -19,7 +19,7 @@ driver instance for both collection and asset drivers, where ``driver_id``
 is the **snake_case** form of the driver class name (e.g.
 ``ItemsPostgresqlDriver`` → ``items_postgresql_driver``). The snake_case
 shape matches the ``driver_id`` strings in
-``CollectionRoutingConfig.operations`` / ``AssetRoutingConfig.operations``
+``ItemsRoutingConfig.operations`` / ``AssetRoutingConfig.operations``
 defaults after the PR #140 (`581cca9`) snake_case identity cutover.
 
 It is built once on first access and never rebuilt at runtime (drivers are
@@ -63,7 +63,7 @@ class DriverRegistry:
         from dynastore.tools.discovery import get_protocols
         from dynastore.tools.typed_store.base import _to_snake
         # Keys must be snake_case to match the driver_id strings used in
-        # CollectionRoutingConfig.operations defaults (PR #140 cutover).
+        # ItemsRoutingConfig.operations defaults (PR #140 cutover).
         # The router's lookup is `driver_index.get(driver_id)` against the
         # config's snake_case driver_id; PascalCase keys here would silently
         # miss every default-routed lookup.

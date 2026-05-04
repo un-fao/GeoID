@@ -2,7 +2,7 @@
 
 A collection is `pending` after create until its first `POST /items`,
 at which point activation runs inside the insert transaction:
-`ensure_storage` is called and `CollectionRoutingConfig` is pinned at
+`ensure_storage` is called and `ItemsRoutingConfig` is pinned at
 collection scope. See docs/architecture/collection-lifecycle.md.
 """
 

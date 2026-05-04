@@ -5,7 +5,7 @@ Covers shape only — does not exercise live ES. Stubs:
   * ``get_index_prefix`` → constant
   * ``get_protocol(CatalogsProtocol)`` → fake catalogs proto returning a
     fixed page of features then EOF
-  * ``ConfigsProtocol`` lookup of ``CollectionRoutingConfig`` → routing
+  * ``ConfigsProtocol`` lookup of ``ItemsRoutingConfig`` → routing
     that lists ``ItemsElasticsearchDriver`` (so the collection is
     eligible for reindex) or doesn't (so it skips)
 """
@@ -70,7 +70,7 @@ class _FakeCatalogs:
 
 
 def _routing_with_es(driver_id: str = "items_elasticsearch_driver"):
-    """Fake CollectionRoutingConfig listing the regular ES driver."""
+    """Fake ItemsRoutingConfig listing the regular ES driver."""
     return type("Routing", (), {
         "operations": {"INDEX": [
             type("Entry", (), {"driver_id": driver_id})()
@@ -261,13 +261,13 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
     """
     from dynastore.modules.elasticsearch.bulk_reindex import is_es_active_for
     from dynastore.modules.storage.routing_config import (
-        CollectionRoutingConfig,
+        ItemsRoutingConfig,
         OperationDriverEntry,
         Operation,
     )
     from dynastore.tools import discovery
 
-    routing = CollectionRoutingConfig(
+    routing = ItemsRoutingConfig(
         operations={Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver")]},
     )
 
@@ -286,7 +286,7 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
         assert await is_es_active_for("cat1", "col1") is True
 
     # And conversely: a routing without ES returns False.
-    routing_pg_only = CollectionRoutingConfig(
+    routing_pg_only = ItemsRoutingConfig(
         operations={Operation.READ: [OperationDriverEntry(driver_id="items_postgresql_driver")]},
     )
 

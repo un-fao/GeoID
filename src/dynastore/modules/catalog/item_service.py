@@ -390,7 +390,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # payloads, QueryOptimizer) is skipped — the driver owns its own write path.
         # Post-commit fan-out and event emission still run after this branch.
         #
-        # Trust the waterfall: CollectionRoutingConfig.operations[WRITE] has a
+        # Trust the waterfall: ItemsRoutingConfig.operations[WRITE] has a
         # code-level default of [ItemsPostgresqlDriver], so this list is
         # never empty in a correctly bootstrapped deploy. If it is empty, the
         # resolver surfaces ConfigResolutionError → HTTP 500 ops alert.

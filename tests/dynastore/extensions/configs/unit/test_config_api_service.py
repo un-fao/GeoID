@@ -72,14 +72,14 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     waterfall order (platform > catalog > collection, last wins) — no per-class
     ``get_config`` round-trip.
     """
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+    from dynastore.modules.storage.driver_config import WritePolicyDefaults
 
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and collection_id:
             return {
                 "items": [
-                    {"plugin_id": "collection_routing_config",
-                     "config_data": {"enabled": False}},
+                    {"plugin_id": "write_policy_defaults",
+                     "config_data": {"require_identity_key": True}},
                 ],
                 "total": 1,
             }
@@ -95,22 +95,22 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     by_class, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="cat-x", collection_id="coll-y", resolved=True,
     )
-    assert sources["collection_routing_config"] == "collection"
-    assert by_class["collection_routing_config"]["enabled"] is False
+    assert sources["write_policy_defaults"] == "collection"
+    assert by_class["write_policy_defaults"]["require_identity_key"] is True
     # round-trips through the model so other defaults are present
-    default_keys = set(CollectionRoutingConfig().model_dump().keys())
-    assert set(by_class["collection_routing_config"].keys()) == default_keys
+    default_keys = set(WritePolicyDefaults().model_dump().keys())
+    assert set(by_class["write_policy_defaults"].keys()) == default_keys
 
 
 @pytest.mark.asyncio
 async def test_get_effective_configs_catalog_source(mock_config_service):
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and not collection_id:
             return {
                 "items": [
-                    {"plugin_id": "collection_routing_config",
+                    {"plugin_id": "items_routing_config",
                      "config_data": {"enabled": False}},
                 ],
                 "total": 1,
@@ -123,8 +123,8 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
                 resolve_config_class,
             )
             config_cls = resolve_config_class(config_cls)
-        if config_cls is CollectionRoutingConfig and catalog_id and not collection_id:
-            return CollectionRoutingConfig(enabled=False)
+        if config_cls is ItemsRoutingConfig and catalog_id and not collection_id:
+            return ItemsRoutingConfig()
         return config_cls() if config_cls else None
 
     mock_config_service.list_configs.side_effect = list_side_effect
@@ -134,7 +134,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     _, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="my-catalog", collection_id=None, resolved=True,
     )
-    assert sources["collection_routing_config"] == "catalog"
+    assert sources["items_routing_config"] == "catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +182,12 @@ def test_compose_tree_places_classes_by_address():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        # ``include_mode="upstream"`` exercises the verbose path — tests
+        # focused on address-based placement should not also be exercising
+        # the slim filter (covered by dedicated slim-mode tests below).
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="catalog", include_meta=False,
+            include_mode="upstream",
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
     assert "catalog_core_postgresql_driver" in tree["storage"]["drivers"]["catalog"]
@@ -203,7 +207,7 @@ def test_compose_tree_filters_collection_only_from_catalog():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _ = ConfigApiService._compose_tree(
+        tree, _, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="catalog", include_meta=False,
         )
     assert "storage" not in tree or "policy" not in tree.get("storage", {})
@@ -221,7 +225,7 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _ = ConfigApiService._compose_tree(
+        tree, _, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection", include_meta=False,
         )
     assert tree["storage"]["policy"]["collection_write_policy"] == {"on_conflict": "update"}
@@ -249,7 +253,7 @@ def test_compose_tree_drops_abstract_bases():
         return_value=registry,
     ):
         for scope in ("platform", "catalog", "collection"):
-            tree, _ = ConfigApiService._compose_tree(
+            tree, _, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope, include_meta=False,
             )
             assert tree == {}, (
@@ -277,7 +281,7 @@ def test_compose_tree_real_plugin_driver_config_does_not_leak():
         return_value=registry,
     ):
         for scope in ("platform", "catalog", "collection"):
-            tree, _ = ConfigApiService._compose_tree(
+            tree, _, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope, include_meta=False,
             )
             assert tree == {}, f"_PluginDriverConfig leaked at scope={scope!r}: {tree!r}"
@@ -438,13 +442,13 @@ def test_compose_tree_address_visibility_filters_correctly():
     ):
         # Visible at platform / catalog
         for scope in ("platform", "catalog"):
-            tree, _ = ConfigApiService._compose_tree(
+            tree, _, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope, include_meta=False,
             )
             assert "CatalogOnly" in tree["storage"]["drivers"]["catalog"]
             assert "inherited_from_catalog" not in tree
         # At collection scope: NOT in main tree, but in inherited_from_catalog
-        tree, _ = ConfigApiService._compose_tree(
+        tree, _, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection", include_meta=False,
         )
         assert "storage" not in tree
@@ -489,14 +493,17 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _ = ConfigApiService._compose_tree(
+        tree, _, inherited = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection", include_meta=False,
         )
 
     # Collection-vis stays in main tree
     assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
-    # Universal stays in main tree
-    assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
+    # Universal-visibility configs are upstream-tier under default slim mode —
+    # they go to the ``inherited`` summary, NOT inlined in the body
+    assert "platform" not in tree
+    assert inherited is not None
+    assert "web_config" in inherited
     # Catalog-vis configs ALL surface under inherited_from_catalog with the same shape
     inh = tree["inherited_from_catalog"]
     assert inh["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
@@ -521,7 +528,7 @@ def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
         return_value=registry,
     ):
         for scope in ("platform", "catalog"):
-            tree, _ = ConfigApiService._compose_tree(
+            tree, _, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope, include_meta=False,
             )
             assert "inherited_from_catalog" not in tree, (
@@ -546,12 +553,175 @@ def test_compose_tree_inherited_from_catalog_meta_carries_source():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="collection", include_meta=True,
         )
     assert tree["inherited_from_catalog"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
     assert meta is not None
     assert meta["elasticsearch_catalog_config"].source == "catalog"
+
+
+# ---------------------------------------------------------------------------
+# Slim mode (?include=scope, default) — body shows configs owned by the
+# active scope; upstream-tier ones are summarised in `inherited` instead.
+# ---------------------------------------------------------------------------
+
+
+def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
+    """Universal-visibility (_visibility=None) configs at collection scope
+    flow into the slim ``inherited`` summary; only collection-owned configs
+    stay in the body.
+    """
+    by_class = {
+        "items_postgresql_driver": {"sidecars": []},  # _visibility=collection
+        "web_config": {"brand_name": "X"},            # _visibility=None (universal)
+    }
+    registry = _stub_registry(
+        items_postgresql_driver={
+            "_address": ("storage", "drivers", "items"),
+            "_visibility": "collection",
+        },
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"web_config": "platform"},
+            active_scope="collection", include_meta=False,
+            # default include_mode="scope"
+        )
+    # Collection-owned config stays in the body
+    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    # Universal-vis config is diverted to the slim summary, NOT inlined
+    assert "platform" not in tree
+    assert inherited == {"web_config": "platform"}
+
+
+def test_compose_tree_slim_keeps_collection_overrides_in_body():
+    """A class with universal visibility BUT an explicit collection-scope
+    row IS in-scope — it stays in the body."""
+    by_class = {"web_config": {"brand_name": "Tenant Override"}}
+    registry = _stub_registry(
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"web_config": "collection"},
+            active_scope="collection", include_meta=False,
+        )
+    # source==collection means an explicit override exists → stays in body
+    assert tree["platform"]["web"]["web_config"] == {"brand_name": "Tenant Override"}
+    # Nothing was diverted
+    assert inherited is None
+
+
+def test_compose_tree_upstream_mode_renders_everything_in_body():
+    """``include_mode="upstream"`` restores the verbose pre-slim default —
+    every visible class lands in the tree regardless of source/visibility."""
+    by_class = {
+        "web_config": {"brand_name": "X"},
+        "items_postgresql_driver": {"sidecars": []},
+    }
+    registry = _stub_registry(
+        web_config={"_address": ("platform", "web", None)},
+        items_postgresql_driver={
+            "_address": ("storage", "drivers", "items"),
+            "_visibility": "collection",
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="collection", include_meta=False,
+            include_mode="upstream",
+        )
+    # Both rendered in body, no inherited summary
+    assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
+    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    assert inherited is None
+
+
+def test_compose_tree_entity_annotation_on_driver_tier_configs():
+    """Driver-tier configs (``_address[1] == "drivers"``) get an ``entity``
+    field on their ConfigMeta — extracted from ``_address[2]`` — so
+    dashboards can group sidecars/driver settings per entity (items vs
+    collection-metadata vs assets).
+    """
+    by_class = {
+        "items_postgresql_driver":      {"sidecars": [{"sidecar_type": "geometries"}]},
+        "collection_postgresql_driver": {"sidecars": []},
+        "asset_postgresql_driver":      {},
+        "web_config":                   {"brand_name": "X"},  # non-driver, no entity
+    }
+    registry = _stub_registry(
+        items_postgresql_driver={
+            "_address": ("storage", "drivers", "items"),
+            "_visibility": "collection",
+        },
+        collection_postgresql_driver={
+            "_address": ("storage", "drivers", "collection"),
+            "_visibility": "collection",
+        },
+        asset_postgresql_driver={
+            "_address": ("storage", "drivers", "assets"),
+            "_visibility": "collection",
+        },
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        _, meta, _ = ConfigApiService._compose_tree(
+            by_class, sources={
+                "items_postgresql_driver": "collection",
+                "collection_postgresql_driver": "collection",
+                "asset_postgresql_driver": "collection",
+                "web_config": "platform",
+            },
+            active_scope="collection", include_meta=True,
+            tier_data={
+                "platform": {"web_config": {"brand_name": "X"}},
+                "catalog": {},
+                "collection": {
+                    "items_postgresql_driver": {"sidecars": [{}]},
+                    "collection_postgresql_driver": {"sidecars": []},
+                    "asset_postgresql_driver": {},
+                },
+            },
+            include_mode="upstream",
+        )
+    assert meta is not None
+    assert meta["items_postgresql_driver"].entity == "items"
+    assert meta["collection_postgresql_driver"].entity == "collection"
+    assert meta["asset_postgresql_driver"].entity == "assets"
+    # Non-driver configs have no entity context
+    assert meta["web_config"].entity is None
+
+
+def test_compose_tree_slim_at_platform_scope_is_a_noop():
+    """At platform scope the slim filter is a no-op — platform IS the top
+    tier, nothing is upstream."""
+    by_class = {"web_config": {"brand_name": "X"}}
+    registry = _stub_registry(
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="platform", include_meta=False,
+        )
+    assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
+    assert inherited is None
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +1000,7 @@ def test_compose_tree_meta_includes_layers_when_tier_data_provided():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        _, meta = ConfigApiService._compose_tree(
+        _, meta, _ = ConfigApiService._compose_tree(
             by_class, sources, "platform", include_meta=True,
             tier_data=tier_data,
         )

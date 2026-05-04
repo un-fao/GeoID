@@ -62,9 +62,9 @@ class TestGetConfigSchemas:
     @pytest.mark.asyncio
     async def test_collection_routing_config_present(self, service):
         # PR #140 (snake_case identity cutover): class_key is auto-derived
-        # snake_case from `cls.__name__`. CollectionRoutingConfig → collection_routing_config.
+        # snake_case from `cls.__name__`. ItemsRoutingConfig → items_routing_config.
         result = await service.get_config_schemas()
-        assert "collection_routing_config" in result
+        assert "items_routing_config" in result
 
     @pytest.mark.asyncio
     async def test_write_policy_defaults_present(self, service):
@@ -85,8 +85,8 @@ class TestGetConfigSchemas:
 class TestGetConfigSchema:
     @pytest.mark.asyncio
     async def test_known_class_key_returns_entry(self, service):
-        result = await service.get_config_schema("collection_routing_config")
-        assert result["plugin_id"] == "collection_routing_config"
+        result = await service.get_config_schema("items_routing_config")
+        assert result["plugin_id"] == "items_routing_config"
         assert "json_schema" in result
         assert "description" in result
         assert "scope" in result
@@ -126,8 +126,8 @@ class TestGetConfigSchema:
     @pytest.mark.asyncio
     async def test_scope_reflects_config_scope_mixin(self, service):
         """Classes with ConfigScopeMixin should expose their declared scope."""
-        result = await service.get_config_schema("collection_routing_config")
-        # CollectionRoutingConfig defaults to platform_waterfall
+        result = await service.get_config_schema("items_routing_config")
+        # ItemsRoutingConfig defaults to platform_waterfall
         assert result["scope"] == "platform_waterfall"
 
 

@@ -550,7 +550,7 @@ class CatalogService(CatalogsProtocol):
         """Resolve the best storage driver for a collection.
 
         Delegates to the storage router which resolves via
-        ``CollectionRoutingConfig`` operation → ordered driver list.
+        ``ItemsRoutingConfig`` operation → ordered driver list.
         """
         from dynastore.modules.storage.router import get_driver
         return await get_driver(operation, catalog_id, collection_id, hint=hint)

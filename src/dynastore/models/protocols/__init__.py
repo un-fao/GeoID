@@ -78,7 +78,7 @@ from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.asset_driver import AssetStore
 # CollectionMetadataEnricherProtocol and AssetEnricherProtocol were deleted
 # in the role-based driver refactor.  Replacement: TRANSFORM-capable drivers
-# routed through MetadataRoutingConfig / AssetRoutingConfig.
+# routed through CollectionRoutingConfig / AssetRoutingConfig.
 from dynastore.models.protocols.asset_contrib import (
     AssetContributor,
     AssetLink,

@@ -32,10 +32,10 @@ def _maybe_bust_router(cls: Type["PluginConfig"], catalog_id: Optional[str], col
     """
     try:
         from dynastore.modules.storage.routing_config import (
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             AssetRoutingConfig,
         )
-        if not issubclass(cls, (CollectionRoutingConfig, AssetRoutingConfig)):
+        if not issubclass(cls, (ItemsRoutingConfig, AssetRoutingConfig)):
             return
     except Exception:
         return

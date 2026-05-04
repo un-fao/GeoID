@@ -159,16 +159,16 @@ class _ElasticsearchBase:
             from dynastore.models.protocols.configs import ConfigsProtocol
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
-                CollectionRoutingConfig,
+                ItemsRoutingConfig,
             )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = _cast(
-                Optional[CollectionRoutingConfig],
+                Optional[ItemsRoutingConfig],
                 await configs.get_config(
-                    CollectionRoutingConfig,
+                    ItemsRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),
@@ -201,16 +201,16 @@ class _ElasticsearchBase:
             from dynastore.tools.discovery import get_protocol
             from dynastore.modules.storage.routing_config import (
                 Operation,
-                CollectionRoutingConfig,
+                ItemsRoutingConfig,
             )
 
             configs = get_protocol(ConfigsProtocol)
             if not configs:
                 return False
             routing = _cast(
-                Optional[CollectionRoutingConfig],
+                Optional[ItemsRoutingConfig],
                 await configs.get_config(
-                    CollectionRoutingConfig,
+                    ItemsRoutingConfig,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                 ),

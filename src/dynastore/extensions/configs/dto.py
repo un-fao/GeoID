@@ -131,7 +131,7 @@ class DriverListResponse(BaseModel):
     Outer key is the domain (``"collections"``, ``"assets"``,
     ``"collection_metadata"``) — matches the slot in routing config.
     Inner key is the snake_case ``driver_id`` (e.g. ``"items_postgresql_driver"``),
-    used in ``CollectionRoutingConfig`` / ``AssetRoutingConfig`` operations.
+    used in ``ItemsRoutingConfig`` / ``AssetRoutingConfig`` operations.
     """
 
     drivers: Dict[str, Dict[str, DriverInfo]] = Field(
@@ -149,7 +149,7 @@ class PluginListResponse(BaseModel):
             [
                 "collection",
                 "stac",
-                "collection_routing_config",
+                "items_routing_config",
                 "asset_routing_config",
                 "items_postgresql_driver",
                 "items_elasticsearch_driver",
@@ -190,7 +190,7 @@ class QuickStartConfigSet(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "collection_routing_config": {
+                    "items_routing_config": {
                         "enabled": True,
                         "operations": {
                             "WRITE": [{"driver_id": "items_postgresql_driver_config", "on_failure": "fatal"}],

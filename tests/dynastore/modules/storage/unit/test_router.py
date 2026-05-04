@@ -13,13 +13,13 @@ from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     Operation,
     OperationDriverEntry,
-    CollectionRoutingConfig,
+    ItemsRoutingConfig,
     WriteMode,
 )
 
 
-def _make_routing(operations: dict) -> CollectionRoutingConfig:
-    """Build a CollectionRoutingConfig from {operation: [(driver_id, hints, policy), ...]}."""
+def _make_routing(operations: dict) -> ItemsRoutingConfig:
+    """Build a ItemsRoutingConfig from {operation: [(driver_id, hints, policy), ...]}."""
     ops = {}
     for op, entries in operations.items():
         ops[op] = [
@@ -30,7 +30,7 @@ def _make_routing(operations: dict) -> CollectionRoutingConfig:
             )
             for e in entries
         ]
-    return CollectionRoutingConfig(operations=ops)
+    return ItemsRoutingConfig(operations=ops)
 
 
 def _mock_configs_protocol(routing_config):

@@ -14,31 +14,31 @@ from dynastore.modules.storage.driver_config import (
     WriteConflictPolicy,
 )
 from dynastore.modules.storage.routing_config import (
-    CollectionRoutingConfig,
+    ItemsRoutingConfig,
     Operation,
 )
 
 
 class TestCollectionRoutingConfigDefaults:
     def test_zero_arg_instantiation(self):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         assert cfg is not None
 
     def test_has_write_operation_default(self):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         ops = cfg.operations or {}
         # Default posture: at least one WRITE and one READ driver entry
         assert Operation.WRITE in ops
         assert len(ops[Operation.WRITE]) >= 1
 
     def test_has_read_operation_default(self):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         ops = cfg.operations or {}
         assert Operation.READ in ops
         assert len(ops[Operation.READ]) >= 1
 
     def test_write_default_is_pg(self):
-        cfg = CollectionRoutingConfig()
+        cfg = ItemsRoutingConfig()
         ids = [e.driver_id for e in cfg.operations[Operation.WRITE]]
         assert "items_postgresql_driver" in ids
 

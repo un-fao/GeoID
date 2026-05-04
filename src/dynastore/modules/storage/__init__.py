@@ -29,7 +29,7 @@ Public API::
     async for entity in driver.read_entities(catalog_id, collection_id):
         ...
 
-Storage routing is controlled by ``CollectionRoutingConfig`` via the existing
+Storage routing is controlled by ``ItemsRoutingConfig`` via the existing
 config API (identity is the class itself; see ``class_key()`` in
 ``platform_config_service.py``).
 Per-driver settings are in ``DriverPluginConfig`` subclasses.
@@ -87,11 +87,11 @@ from dynastore.modules.storage.config_cache import (
 from dynastore.modules.storage.routing_config import (
     AssetRoutingConfig,
     CatalogRoutingConfig,
+    CollectionRoutingConfig,
     FailurePolicy,
-    MetadataRoutingConfig,
+    ItemsRoutingConfig,
     Operation,
     OperationDriverEntry,
-    CollectionRoutingConfig,
     WriteMode,
 )
 
@@ -127,10 +127,10 @@ __all__ = [
     "apply_transform_chain",
     "restore_transform_chain",
     # Routing configs
+    "ItemsRoutingConfig",
     "CollectionRoutingConfig",
     "AssetRoutingConfig",
     "CatalogRoutingConfig",
-    "MetadataRoutingConfig",
     "OperationDriverEntry",
     "FailurePolicy",
     "Operation",

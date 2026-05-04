@@ -140,13 +140,13 @@ async def _is_es_active(catalog_id: str, collection_id: str) -> bool:
         configs = get_protocol(ConfigsProtocol)
         if not configs:
             return False
-        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+        from dynastore.modules.storage.routing_config import ItemsRoutingConfig
         routing = await configs.get_config(
-            CollectionRoutingConfig,
+            ItemsRoutingConfig,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
-        if not isinstance(routing, CollectionRoutingConfig):
+        if not isinstance(routing, ItemsRoutingConfig):
             return False
         for entries in routing.operations.values():
             for entry in entries:

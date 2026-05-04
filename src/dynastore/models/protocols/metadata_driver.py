@@ -28,7 +28,7 @@ Mirrors the ``CollectionItemsStore`` architecture:
     faster for JSON), or any future backend
 
 Metadata drivers are discovered via entry points (``dynastore.metadata_drivers``)
-and routed through ``MetadataRoutingConfig``.
+and routed through ``CollectionRoutingConfig``.
 """
 
 from typing import (

@@ -385,15 +385,32 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode for the response. ``none`` (default): no schemas. "
-                "``schema``: each class in the response gets its full JSON Schema 2020-12 "
-                "document at ``meta.{ClassName}.json_schema`` (title, description, type, "
-                "default, examples, constraints — everything a dashboard form-builder "
-                "needs). Independent of ``?meta=true``: combine to get both source "
-                "diagnostics and schemas."
+                "Documentation mode. ``field`` (default): each class in the "
+                "response gets a lightweight ``{field_name: description}`` map "
+                "at ``meta.{ClassName}.field_docs``. ``schema``: each class "
+                "gets its full JSON Schema 2020-12 document at "
+                "``meta.{ClassName}.json_schema`` (title, description, type, "
+                "default, examples, constraints — everything a form-builder "
+                "needs; heavier). ``none``: no field documentation. "
+                "Independent of ``?meta=true``: combine to get both source "
+                "diagnostics and docs."
+            ),
+        ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. ``scope`` (default): body shows configs "
+                "owned by this scope (``_visibility`` matches OR an explicit "
+                "row exists here). Upstream-tier configs are summarised in "
+                "``inherited`` (class_key → source) — operators see what exists "
+                "without the verbose payloads. ``upstream``: every visible "
+                "class is rendered with its waterfall-resolved value (today's "
+                "verbose mode). At platform scope this flag is a no-op since "
+                "platform IS the top tier."
             ),
         ),
     ) -> Any:
@@ -406,6 +423,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -432,11 +450,24 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``schema`` embeds each class's JSON Schema "
-                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+                "Documentation mode. ``field`` (default) embeds a lightweight "
+                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
+                "``schema`` embeds each class's full JSON Schema at "
+                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
+                "See platform endpoint for full notes."
+            ),
+        ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. See platform endpoint for full notes. "
+                "At catalog scope, ``scope`` filters out platform-tier "
+                "configs that have no catalog override; they appear in "
+                "``inherited`` instead."
             ),
         ),
     ) -> Any:
@@ -451,6 +482,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -477,11 +509,28 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``schema`` embeds each class's JSON Schema "
-                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+                "Documentation mode. ``field`` (default) embeds a lightweight "
+                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
+                "``schema`` embeds each class's full JSON Schema at "
+                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
+                "See platform endpoint for full notes."
+            ),
+        ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. ``scope`` (default): body shows only "
+                "configs owned by this collection — collection-visibility "
+                "configs (routing, items-driver with sidecars) and any "
+                "explicit collection-level overrides. Upstream-tier configs "
+                "(platform/default) appear in ``inherited`` as class_key → "
+                "source pairs. ``upstream``: every visible class is rendered "
+                "with its waterfall-resolved value (today's verbose mode, "
+                "useful for callers expecting the full payload)."
             ),
         ),
     ) -> Any:
@@ -496,6 +545,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
