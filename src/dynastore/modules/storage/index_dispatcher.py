@@ -267,7 +267,10 @@ class TaskTableOutboxWriter:
 
         # asyncpg path — translate :name placeholders to $N positional args.
         sql_pg, args = _bind_named_to_positional(sql, params)
-        await conn.execute(sql_pg, *args)
+        # conn is asyncpg.Connection (or compatible) at this point; the
+        # isinstance branch above already returned for SQLAlchemy.
+        asyncpg_conn: Any = conn
+        await asyncpg_conn.execute(sql_pg, *args)
 
 
 # ---------------------------------------------------------------------------

@@ -269,6 +269,9 @@ async def _maybe_dispatch_to_es_search(
         return None
 
     body = SearchBody(
+        q=None,
+        token=None,
+        sortby=None,
         catalog_id=cat_id,
         collections=cids,
         ids=search_request.ids,
