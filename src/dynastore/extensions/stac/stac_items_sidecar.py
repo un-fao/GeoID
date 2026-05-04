@@ -35,13 +35,14 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
-    SidecarConfig,
-    SidecarConfigRegistry,
     FeaturePipelineContext,
     ConsumerType,
     ValidationResult,
     FieldDefinition,
     FieldCapability,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.stac_metadata_config import (
+    StacItemsSidecarConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,12 +61,6 @@ STAC_METADATA_RAW_COLUMNS: Set[str] = {
     "external_assets",
     "stac_extra_fields",
 }
-
-
-class StacItemsSidecarConfig(SidecarConfig):
-    """Configuration for the STAC items sidecar."""
-
-    sidecar_type: str = "stac_metadata"
 
 
 class StacItemsSidecar(SidecarProtocol):
@@ -264,11 +259,6 @@ class StacItemsSidecar(SidecarProtocol):
         partition_value: Any,
     ) -> None:
         pass
-
-    # ── Query support (reads from ItemMetadataSidecar context) ───────────
-
-    def resolve_query_path(self, attr_name: str) -> Optional[Tuple[str, str]]:
-        return None
 
     def apply_query_context(
         self,
@@ -543,5 +533,5 @@ class StacItemsSidecar(SidecarProtocol):
 
 
 # Register for polymorphic resolution
-SidecarConfigRegistry.register("stac_metadata", StacItemsSidecarConfig)
+# (Config is registered in stac_metadata_config.py at import time.)
 SidecarRegistry.register("stac_metadata", StacItemsSidecar)
