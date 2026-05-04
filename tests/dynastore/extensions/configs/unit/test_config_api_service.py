@@ -72,14 +72,14 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     waterfall order (platform > catalog > collection, last wins) — no per-class
     ``get_config`` round-trip.
     """
-    from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+    from dynastore.modules.storage.driver_config import WritePolicyDefaults
 
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and collection_id:
             return {
                 "items": [
-                    {"plugin_id": "collection_routing_config",
-                     "config_data": {"enabled": False}},
+                    {"plugin_id": "write_policy_defaults",
+                     "config_data": {"require_identity_key": True}},
                 ],
                 "total": 1,
             }
@@ -95,11 +95,11 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     by_class, sources, _tier_data = await svc._get_effective_configs(
         catalog_id="cat-x", collection_id="coll-y", resolved=True,
     )
-    assert sources["collection_routing_config"] == "collection"
-    assert by_class["collection_routing_config"]["enabled"] is False
+    assert sources["write_policy_defaults"] == "collection"
+    assert by_class["write_policy_defaults"]["require_identity_key"] is True
     # round-trips through the model so other defaults are present
-    default_keys = set(CollectionRoutingConfig().model_dump().keys())
-    assert set(by_class["collection_routing_config"].keys()) == default_keys
+    default_keys = set(WritePolicyDefaults().model_dump().keys())
+    assert set(by_class["write_policy_defaults"].keys()) == default_keys
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
             )
             config_cls = resolve_config_class(config_cls)
         if config_cls is CollectionRoutingConfig and catalog_id and not collection_id:
-            return CollectionRoutingConfig(enabled=False)
+            return CollectionRoutingConfig()
         return config_cls() if config_cls else None
 
     mock_config_service.list_configs.side_effect = list_side_effect

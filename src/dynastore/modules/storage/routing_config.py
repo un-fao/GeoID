@@ -358,8 +358,6 @@ class CollectionRoutingConfig(PluginConfig):
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
-    enabled: bool = Field(default=True, description="Enable this routing configuration.")
-
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # ES (public) primary, PG secondary. PG is authoritative for WRITE
@@ -493,8 +491,6 @@ class AssetRoutingConfig(PluginConfig):
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
-    enabled: bool = Field(default=True, description="Enable this routing configuration.")
-
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # Mirrors CollectionRoutingConfig: ES (public) primary indexer for
@@ -572,8 +568,6 @@ class CatalogRoutingConfig(PluginConfig):
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-
-    enabled: bool = Field(default=True, description="Enable this routing configuration.")
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {

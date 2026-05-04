@@ -317,8 +317,9 @@ class PluginConfig(PersistentModel):
     # in the Phase 0 cleanup.  Subclasses that need a per-scope kill-switch
     # mix in :class:`ExposableConfigMixin` (extension togglability) or
     # declare their own ``enabled: bool`` field with a tailored description
-    # (e.g. ``CollectionRoutingConfig.enabled`` gates routing dispatch;
-    # ``GcpCatalogBucketConfig.enabled`` gates GCS provisioning).
+    # that is actually consumed at runtime (e.g. ``GcpCatalogBucketConfig.
+    # enabled`` gates GCS provisioning; per-sidecar ``_PgSidecarConfig.
+    # enabled`` gates apply-time activation).
 
     # Marker for abstract intermediate bases (not concrete configs). Read via
     # ``cls.__dict__.get("is_abstract_base", False)`` so concrete subclasses do
