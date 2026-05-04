@@ -16,10 +16,10 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Composition driver for PG-backed collection metadata.
+"""Composition driver for PG-backed collection storage.
 
 :class:`CollectionPostgresqlDriver` wraps the existing per-domain PG
-metadata drivers (``CollectionCorePostgresqlDriver`` plus the optional
+``CollectionStore`` drivers (``CollectionCorePostgresqlDriver`` plus the optional
 ``CollectionStacPostgresqlDriver`` from the stac module) and fans CRUD
 out across them at write/read/delete time.  The two inner drivers
 already implement :class:`CollectionStore` directly today; this
@@ -228,9 +228,9 @@ class CollectionPgSidecarRegistry:
 
 
 class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
-    """Configuration for the PG-backed composition collection metadata driver.
+    """Configuration for the PG-backed composition ``CollectionStore`` driver.
 
-    ``sidecars`` is the typed list of metadata domain slices the wrapper
+    ``sidecars`` is the typed list of domain slices the wrapper
     will fan CRUD across.  Empty list → wrapper falls back to the
     :meth:`CollectionPgSidecarRegistry.default_sidecars` default
     (``[collection_core, collection_stac if installed]``).

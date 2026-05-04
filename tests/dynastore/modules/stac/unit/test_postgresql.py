@@ -1,7 +1,7 @@
-"""Unit tests for the relocated STAC PG metadata drivers.
+"""Unit tests for the relocated STAC PG store drivers.
 
 Mirror of the STAC-specific subset of
-``tests/dynastore/modules/storage/unit/test_metadata_postgresql.py``,
+``tests/dynastore/modules/storage/unit/test_core_postgresql.py``,
 relocated alongside the drivers that moved to ``modules/stac/`` in
 PR 1b of the STAC-decoupling sequence.
 

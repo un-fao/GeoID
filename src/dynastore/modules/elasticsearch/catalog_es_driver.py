@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Elasticsearch catalog-metadata driver — implements :class:`CatalogStore`.
+Elasticsearch catalog-tier driver — implements :class:`CatalogStore`.
 
-Stores catalog-tier metadata in a SINGLE shared ES index across all
+Stores catalog-tier records in a SINGLE shared ES index across all
 catalogs (``{prefix}-catalogs`` from ``mappings.get_index_name(prefix,
 "catalog")``).  Catalog cardinality is low — typically <100 per
 deployment — so a per-catalog index would waste shards; a single shared
@@ -56,10 +56,10 @@ logger = logging.getLogger(__name__)
 
 
 class CatalogElasticsearchDriverConfig(_PluginDriverConfig):
-    """Configuration for the Elasticsearch catalog metadata driver.
+    """Configuration for the Elasticsearch ``CatalogStore`` driver.
 
     ``index_name`` is ``Immutable`` because changing it would orphan all
-    existing catalog metadata documents.  The default ``"catalogs"``
+    existing catalog documents.  The default ``"catalogs"``
     matches ``mappings.get_index_name(prefix, "catalog")`` ⇒
     ``{prefix}-catalogs``.
     """

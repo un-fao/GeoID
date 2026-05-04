@@ -17,9 +17,9 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-BigQueryMetadataTransformDriver — TRANSFORM-capability metadata driver.
+BigQueryMetadataTransformDriver — TRANSFORM-capability collection-store driver.
 
-Produces a partial collection-metadata envelope containing BigQuery-sourced
+Produces a partial collection envelope containing BigQuery-sourced
 statistics (row counts, last-modified timestamps, etc.) under the
 ``bq_stats`` key.  The router's TRANSFORM chain merges this partial into the
 main envelope when an endpoint opts into transform-aware output or the async

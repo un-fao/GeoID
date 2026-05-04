@@ -78,9 +78,9 @@ def _resolve_drivers() -> List[CollectionStore]:
     drivers = list(get_protocols(CollectionStore))
     if not drivers and not _MISSING_DRIVERS_LOGGED["collection"]:
         logger.error(
-            "No CollectionStore drivers registered; collection-"
-            "metadata router will no-op all operations.  Check that "
-            "metadata_postgresql imports cleanly and its entry-points "
+            "No CollectionStore drivers registered; collection "
+            "router will no-op all operations.  Check that "
+            "collection_postgresql imports cleanly and its entry-points "
             "are installed."
         )
         _MISSING_DRIVERS_LOGGED["collection"] = True
