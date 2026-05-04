@@ -63,7 +63,10 @@ ENV PYTHONPATH=${APP_DIR}/src
 ARG BUILD_COMMIT=unknown
 ENV BUILD_COMMIT=${BUILD_COMMIT}
 
-# Install Production Dependencies
+# Install Production Dependencies — split into two layers so source-only
+# commits don't bust the (~3 min) deps-install cache.
+#
+# Layer 1: project metadata + .env scaffolding (small, stable)
 COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* VERSION ./
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
@@ -73,8 +76,17 @@ COPY pyproject.toml .en[v]* ./env/
 # Also copy to root and src to be safe for discovery logic
 COPY pyproject.toml .en[v]* ./
 COPY pyproject.toml .en[v]* ./src/
-COPY src ./src
-COPY tests ./tests
+
+# Layer 2: stub the dynastore package so setuptools can build a wheel
+# without bundling real source. The pip-install layer below now caches on
+# pyproject.toml hash alone — source-only commits hit the cache and skip
+# the heavy GDAL/pyiceberg/etc. install. Layer 3 replaces the stub with
+# the real tree.
+RUN mkdir -p src/dynastore/scripts && \
+    : > src/dynastore/__init__.py && \
+    : > src/dynastore/scripts/__init__.py && \
+    : > src/dynastore/scripts/start.sh && \
+    : > src/dynastore/scripts/start-task.sh
 
 # SCOPE selects which pyproject.toml extras to install.
 # Set per-service via docker-compose.yml build args (from .env) or CI.
@@ -94,6 +106,16 @@ ARG BUILD_JUPYTERLITE=false
 RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools wheel && \
     ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
+
+# Layer 3: real source overlay. Fast layer — busts only when src/ or
+# tests/ change. We reinstall --no-deps --force-reinstall so site-packages
+# reflects the real package data (start.sh, *.html, *.sql, etc.) instead
+# of the stub from layer 2. Without this, the install -m 755 step below
+# copies stub files out of site-packages.
+COPY src ./src
+COPY tests ./tests
+RUN --mount=type=cache,target=/root/.cache/pip \
+    ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation .
 
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT). Copy
 # from site-packages so this step is identical across every Dockerfile that

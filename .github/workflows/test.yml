@@ -4,9 +4,31 @@ name: Test
 on:
   push:
     branches: [main]
-    paths-ignore: ['geoid-refs.json', 'VERSION']
+    # Skip CI for documentation / version-bump / notebook-only changes —
+    # source code paths still trigger. See
+    # `project_geoid_ci_minutes_optimization.md` for the cost rationale.
+    paths-ignore:
+      - 'geoid-refs.json'
+      - 'VERSION'
+      - 'CHANGES.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'notebook_showcase/**'
+      - '**/*.png'
+      - '**/*.svg'
+      - '**/*.jpg'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'geoid-refs.json'
+      - 'VERSION'
+      - 'CHANGES.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'notebook_showcase/**'
+      - '**/*.png'
+      - '**/*.svg'
+      - '**/*.jpg'
   workflow_dispatch:
     inputs:
       run_integration:
