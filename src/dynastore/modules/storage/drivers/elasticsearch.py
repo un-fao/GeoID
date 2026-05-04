@@ -332,6 +332,14 @@ class ItemsElasticsearchDriver(
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
+        """Register event listeners for catalog/collection-tier propagation only.
+
+        ITEM_* propagation moved to the IndexDispatcher (called directly
+        from item_service.upsert and item_query.delete) — see Phase 2d
+        of the indexer-protocol harmonisation.  Catalog/collection-tier
+        propagation will follow in a separate phase; for now those keep
+        the event-driven path.
+        """
         from dynastore.models.protocols.events import EventsProtocol
         from dynastore.tools.discovery import get_protocol
         from dynastore.modules.catalog.event_service import CatalogEventType
@@ -347,16 +355,14 @@ class ItemsElasticsearchDriver(
                 (CatalogEventType.COLLECTION_UPDATE, self._on_collection_upsert),
                 (CatalogEventType.COLLECTION_DELETION, self._on_collection_delete),
                 (CatalogEventType.COLLECTION_HARD_DELETION, self._on_collection_delete),
-                (CatalogEventType.ITEM_CREATION, self._on_item_upsert),
-                (CatalogEventType.ITEM_UPDATE, self._on_item_upsert),
-                (CatalogEventType.ITEM_DELETION, self._on_item_delete),
-                (CatalogEventType.ITEM_HARD_DELETION, self._on_item_delete),
-                (CatalogEventType.BULK_ITEM_CREATION, self._on_item_bulk_upsert),
             ]:
                 decorator = events.async_event_listener(etype)
                 if decorator:
                     decorator(handler)
-            logger.info("ItemsElasticsearchDriver: event listeners registered.")
+            logger.info(
+                "ItemsElasticsearchDriver: catalog/collection event listeners "
+                "registered (item propagation now dispatched via IndexDispatcher).",
+            )
         yield
 
     # ------------------------------------------------------------------

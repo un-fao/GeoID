@@ -255,6 +255,10 @@ class ElasticsearchModule(ModuleProtocol):
     async def lifespan(self, app_state: object):
         events = get_protocol(EventBusProtocol)
 
+        # ITEM_* propagation moved to the IndexDispatcher (Phase 2d of
+        # the indexer-protocol harmonisation).  Catalog/collection-tier
+        # listeners stay event-driven for now — a follow-up phase will
+        # migrate those to the dispatcher too.
         _registered: list = []
         if events:
             for etype, handler in [
@@ -266,11 +270,6 @@ class ElasticsearchModule(ModuleProtocol):
                 (CatalogEventType.COLLECTION_UPDATE,        self._on_collection_upsert),
                 (CatalogEventType.COLLECTION_DELETION,      self._on_collection_delete),
                 (CatalogEventType.COLLECTION_HARD_DELETION, self._on_collection_delete),
-                (CatalogEventType.ITEM_CREATION,            self._on_item_upsert),
-                (CatalogEventType.ITEM_UPDATE,              self._on_item_upsert),
-                (CatalogEventType.ITEM_DELETION,            self._on_item_delete),
-                (CatalogEventType.ITEM_HARD_DELETION,       self._on_item_delete),
-                (CatalogEventType.BULK_ITEM_CREATION,       self._on_item_bulk_upsert),
             ]:
                 decorator = events.async_event_listener(etype)
                 if decorator:
@@ -280,10 +279,14 @@ class ElasticsearchModule(ModuleProtocol):
                     logger.warning(
                         "ElasticsearchModule: Failed to register listener for %s", etype
                     )
-            logger.info("ElasticsearchModule: Registered async event listeners.")
+            logger.info(
+                "ElasticsearchModule: Registered catalog/collection listeners "
+                "(item propagation now dispatched via IndexDispatcher).",
+            )
         else:
             logger.warning(
-                "ElasticsearchModule: EventsProtocol not found. Indexing events not captured."
+                "ElasticsearchModule: EventsProtocol not found. "
+                "Catalog/collection events not captured.",
             )
 
         # Restore in-memory DENY policies for all catalogs that have private=True.

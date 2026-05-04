@@ -117,25 +117,12 @@ class ItemsElasticsearchPrivateDriver(
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        from dynastore.models.protocols.events import EventsProtocol
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.catalog.event_service import CatalogEventType
-
+        """Restore DENY policies; item-tier propagation runs through the
+        IndexDispatcher now (Phase 2d).  No event listeners registered
+        on this driver — the dispatcher resolves it via the slim
+        :class:`Indexer` Protocol and routing config.
+        """
         await self._restore_deny_policies()
-
-        events = get_protocol(EventsProtocol)
-        if events:
-            for etype, handler in [
-                (CatalogEventType.ITEM_CREATION, self._on_item_upsert),
-                (CatalogEventType.ITEM_UPDATE, self._on_item_upsert),
-                (CatalogEventType.ITEM_DELETION, self._on_item_delete),
-                (CatalogEventType.ITEM_HARD_DELETION, self._on_item_delete),
-                (CatalogEventType.BULK_ITEM_CREATION, self._on_item_bulk_upsert),
-            ]:
-                decorator = events.async_event_listener(etype)
-                if decorator:
-                    decorator(handler)
-            logger.info("ItemsElasticsearchPrivateDriver: event listeners registered.")
         yield
 
     # ------------------------------------------------------------------
