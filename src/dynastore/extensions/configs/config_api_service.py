@@ -29,6 +29,7 @@ one source of truth per class.
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Type
 
@@ -38,6 +39,7 @@ from dynastore.extensions.configs.config_api_dto import (
     ConfigMeta,
     ConfigPage,
     DriverRef,
+    Link,
     PlatformConfigResponse,
 )
 from dynastore.models.protocols import ConfigsProtocol
@@ -266,13 +268,37 @@ class ConfigApiService:
         return ConfigMeta(source=source, layers=layers)
 
     @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _extract_field_docs(model_cls: Type[PluginConfig]) -> Dict[str, str]:
+        """Extract ``{field_name: description}`` from a Pydantic class's JSON schema.
+
+        Lightweight alternative to attaching the full ``model_json_schema()``:
+        each class declares ``Field(..., description=...)`` per field; this
+        helper strips out just the description map. Cached per class since
+        the schema is static.
+        """
+        try:
+            schema = model_cls.model_json_schema()
+        except Exception:
+            return {}
+        props = schema.get("properties", {})
+        out: Dict[str, str] = {}
+        for name, spec in props.items():
+            if not isinstance(spec, dict):
+                continue
+            desc = spec.get("description")
+            if isinstance(desc, str) and desc:
+                out[name] = desc
+        return out
+
+    @staticmethod
     def _compose_tree(
         by_class: Dict[str, Dict[str, Any]],
         sources: Dict[str, str],
         active_scope: str,
         include_meta: bool,
         tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
-        include_schemas: bool = False,
+        docs_mode: str = "none",
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, ConfigMeta]]]:
         """Bucket visible classes into scope/topic tree and optionally build meta.
 
@@ -290,11 +316,19 @@ class ConfigApiService:
         (one entry per tier with a ``present`` flag) alongside the
         single-tier ``source`` summary.
 
-        When ``include_schemas`` is true, each placed class also gets its
-        ``model_json_schema()`` attached as ``json_schema``. ``include_meta``
-        and ``include_schemas`` are independent: either, both, or neither
-        can be set, and the meta dict is returned whenever at least one is.
+        ``docs_mode`` controls per-class field documentation:
+        - ``"none"`` — no field-level docs attached.
+        - ``"field"`` — ``meta[ClassName].field_docs`` carries
+          ``{field_name: description}`` extracted from the class JSON Schema
+          (lightweight; default mode).
+        - ``"schema"`` — ``meta[ClassName].json_schema`` carries the full
+          ``model_json_schema()`` document.
+
+        ``include_meta`` and ``docs_mode`` are independent: either, both,
+        or neither can be set, and the meta dict is returned whenever at
+        least one is.
         """
+        wants_docs = docs_mode in ("field", "schema")
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
         meta: Dict[str, ConfigMeta] = {}
@@ -306,15 +340,17 @@ class ConfigApiService:
                     entry = ConfigApiService._build_meta_entry(
                         class_key, sources, tier_data,
                     )
-                elif include_schemas:
+                elif wants_docs:
                     # source still useful even without meta=true; fall back
                     # to "default" when class isn't in sources (resolved=False)
                     entry = ConfigMeta(source=sources.get(class_key, "default"))
                 else:
                     return
                 meta[class_key] = entry
-            if include_schemas and entry.json_schema is None:
+            if docs_mode == "schema" and entry.json_schema is None:
                 entry.json_schema = cls.model_json_schema()
+            elif docs_mode == "field" and entry.field_docs is None:
+                entry.field_docs = ConfigApiService._extract_field_docs(cls)
 
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)
@@ -352,7 +388,7 @@ class ConfigApiService:
             else:
                 topic_node.setdefault(sub, {})[class_key] = payload
             _ensure_meta(class_key, cls)
-        return tree, (meta if (include_meta or include_schemas) else None)
+        return tree, (meta if (include_meta or wants_docs) else None)
 
     # --- Routing-ref rewrite. ---
 
@@ -440,6 +476,171 @@ class ConfigApiService:
             },
         }
 
+    # --- JSON Hyper-Schema link assembly (Change 5). ---
+
+    @staticmethod
+    def _query_param_schema(scope: str) -> Dict[str, Any]:
+        """JSON Schema 2020-12 describing the query params for ``scope``.
+
+        Used as ``hrefSchema`` on the ``self`` link so operators discover
+        supported query parameters with descriptions and examples — without
+        scanning the OpenAPI document. Returned schema is JSON Schema, not
+        OpenAPI Parameter Object, by design (the user asked for alignment
+        with general standards, not just OpenAPI/FastAPI).
+        """
+        common: Dict[str, Any] = {
+            "depth": {
+                "type": "integer", "minimum": 0, "maximum": 3, "default": 0,
+                "description": (
+                    "Expand child resources nested under this scope. 0 = "
+                    "leaf only; 1 = one level (e.g. catalogs at platform "
+                    "scope); 2-3 = deeper nesting."
+                ),
+                "examples": [0, 1, 2],
+            },
+            "page_size": {
+                "type": "integer", "minimum": 1, "maximum": 100, "default": 15,
+                "description": "Items per page for paginated child categories.",
+                "examples": [15, 50],
+            },
+            "resolved": {
+                "type": "boolean", "default": True,
+                "description": (
+                    "When true (default): all registered configs with "
+                    "waterfall-resolved values; ``meta.{class}.source`` "
+                    "tells you which tier won. When false: only configs "
+                    "explicitly stored at this scope (delta-only, safe for "
+                    "read-modify-write flows)."
+                ),
+                "examples": [True, False],
+            },
+            "meta": {
+                "type": "boolean", "default": False,
+                "description": (
+                    "When true, attach per-class tier-of-origin diagnostics "
+                    "under ``meta.{class}.source`` plus the full waterfall "
+                    "trace under ``meta.{class}.layers``. Off by default to "
+                    "keep the payload slim."
+                ),
+                "examples": [True, False],
+            },
+            "docs": {
+                "type": "string", "enum": ["none", "field", "schema"],
+                "default": "field",
+                "description": (
+                    "Documentation mode. ``none`` (lean) — no field docs. "
+                    "``field`` (default) — lightweight ``{field_name: "
+                    "description}`` map per class at "
+                    "``meta.{class}.field_docs``. ``schema`` — full JSON "
+                    "Schema 2020-12 per class at "
+                    "``meta.{class}.json_schema`` (heavier, useful for "
+                    "form-builders)."
+                ),
+                "examples": ["field", "schema", "none"],
+            },
+        }
+        per_scope: Dict[str, Dict[str, Any]] = {
+            "platform": {
+                "catalogs_page": {
+                    "type": "integer", "minimum": 1, "default": 1,
+                    "description": "1-based page number for the catalogs list "
+                                   "(used when depth >= 1).",
+                    "examples": [1, 2],
+                },
+            },
+            "catalog": {
+                "collections_page": {
+                    "type": "integer", "minimum": 1, "default": 1,
+                    "description": "1-based page number for the collections "
+                                   "list (used when depth >= 1).",
+                    "examples": [1, 2],
+                },
+                "assets_page": {
+                    "type": "integer", "minimum": 1, "default": 1,
+                    "description": "1-based page number for the assets list "
+                                   "(used when depth >= 1).",
+                    "examples": [1, 2],
+                },
+            },
+            "collection": {
+                "assets_page": {
+                    "type": "integer", "minimum": 1, "default": 1,
+                    "description": "1-based page number for the assets list "
+                                   "(used when depth >= 1).",
+                    "examples": [1, 2],
+                },
+            },
+        }
+        properties = {**common, **per_scope.get(scope, {})}
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+
+    @staticmethod
+    def _build_links(
+        scope: str,
+        base_url: str,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> List[Link]:
+        """Assemble the response-level ``_links`` block.
+
+        Includes:
+        - ``self`` with ``hrefSchema`` describing all query parameters.
+        - ``alternate`` representations (other ``docs=`` modes).
+        - ``edit`` (templated) for per-class PATCH at this scope.
+
+        ``base_url`` is the URL without query string; the per-class CRUD
+        endpoint convention is ``<base_url>/plugins/{class_key}``.
+        """
+        links: List[Link] = [
+            Link(
+                rel="self",
+                href=base_url,
+                method="GET",
+                title=f"This {scope} config view (default mode)",
+                hrefSchema=ConfigApiService._query_param_schema(scope),
+            ),
+            Link(
+                rel="alternate",
+                href=f"{base_url}?docs=schema",
+                method="GET",
+                title="Same view with full JSON Schema per class (form-builder mode)",
+            ),
+            Link(
+                rel="alternate",
+                href=f"{base_url}?docs=none",
+                method="GET",
+                title="Same view without field documentation (lean mode)",
+            ),
+            Link(
+                rel="alternate",
+                href=f"{base_url}?meta=true",
+                method="GET",
+                title="Same view with per-class tier-of-origin diagnostics",
+            ),
+            Link(
+                rel="alternate",
+                href=f"{base_url}?resolved=false",
+                method="GET",
+                title=(
+                    "Delta-only: configs explicitly stored at this scope "
+                    "(safe for read-modify-write flows)"
+                ),
+            ),
+            Link(
+                rel="edit",
+                href=f"{base_url}/plugins/{{class_key}}",
+                method="PATCH",
+                title="Modify a single config class at this scope",
+                templated=True,
+            ),
+        ]
+        return links
+
     async def compose_collection_config(
         self,
         base_url: str,
@@ -458,7 +659,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "collection", meta, tier_data=tier_data,
-            include_schemas=(docs == "schema"),
+            docs_mode=docs,
         )
 
         # Phase 1.5d: surface per-op driver resolution alongside the per-class
@@ -485,6 +686,10 @@ class ConfigApiService:
             categories["assets"] = pg
 
         return CollectionConfigResponse(
+            links=self._build_links(
+                "collection", base_url,
+                catalog_id=catalog_id, collection_id=collection_id,
+            ),
             collection_id=collection_id, catalog_id=catalog_id,
             configs=tree, meta=meta_dict,
             routing_resolution=routing_resolution,
@@ -509,7 +714,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "catalog", meta, tier_data=tier_data,
-            include_schemas=(docs == "schema"),
+            docs_mode=docs,
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -539,6 +744,7 @@ class ConfigApiService:
             categories["assets"] = assets_pg
 
         return CatalogConfigResponse(
+            links=self._build_links("catalog", base_url, catalog_id=catalog_id),
             catalog_id=catalog_id, configs=tree, meta=meta_dict, categories=categories,
         )
 
@@ -558,7 +764,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict = self._compose_tree(
             by_class, sources, "platform", meta, tier_data=tier_data,
-            include_schemas=(docs == "schema"),
+            docs_mode=docs,
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -595,6 +801,7 @@ class ConfigApiService:
             categories["catalogs"] = pg
 
         return PlatformConfigResponse(
+            links=self._build_links("platform", base_url),
             scope="platform", configs=tree, meta=meta_dict, categories=categories,
         )
 

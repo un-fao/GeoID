@@ -65,7 +65,7 @@ def test_compose_tree_no_schemas_when_include_schemas_false_and_meta_off():
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, include_schemas=False,
+            include_meta=False, docs_mode="none",
         )
     assert tree == {"platform": {"web": {"WebConfig": {"brand_name": "x"}}}}
     assert meta is None
@@ -82,7 +82,7 @@ def test_compose_tree_meta_only_no_schema_when_only_meta_requested():
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=True, include_schemas=False,
+            include_meta=True, docs_mode="none",
         )
     assert meta is not None and "WebConfig" in meta
     assert meta["WebConfig"].source == "platform"
@@ -104,7 +104,7 @@ def test_compose_tree_schema_attached_when_include_schemas_true():
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, include_schemas=True,
+            include_meta=False, docs_mode="schema",
         )
     # Tree shape unchanged (data and schema are kept separate)
     assert tree == {"platform": {"web": {"WebConfig": {"brand_name": "x"}}}}
@@ -135,7 +135,7 @@ def test_compose_tree_schema_falls_back_to_default_source_when_class_not_in_sour
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="platform",
-            include_meta=False, include_schemas=True,
+            include_meta=False, docs_mode="schema",
         )
     assert meta is not None and "WebConfig" in meta
     assert meta["WebConfig"].source == "default"
@@ -161,7 +161,7 @@ def test_compose_tree_meta_and_schema_combine():
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=True, include_schemas=True, tier_data=tier_data,
+            include_meta=True, docs_mode="schema", tier_data=tier_data,
         )
     assert meta is not None and "WebConfig" in meta
     entry = meta["WebConfig"]
@@ -192,7 +192,7 @@ def test_compose_tree_schema_attached_for_inherited_from_catalog_block():
     ):
         tree, meta = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "catalog"}, active_scope="collection",
-            include_meta=False, include_schemas=True,
+            include_meta=False, docs_mode="schema",
         )
     # Class lands under inherited_from_catalog at collection scope
     assert "inherited_from_catalog" in tree
@@ -201,3 +201,101 @@ def test_compose_tree_schema_attached_for_inherited_from_catalog_block():
     assert meta is not None and "CatalogOnly" in meta
     assert meta["CatalogOnly"].json_schema is not None
     assert meta["CatalogOnly"].json_schema["title"] == "CatalogOnly"
+
+
+# ---------------------------------------------------------------------------
+# docs_mode="field" — lightweight {field_name: description} per class
+# ---------------------------------------------------------------------------
+
+def _stub_registry_with_described_fields(**classes):
+    """Variant where the stub schema includes per-field descriptions so
+    ``docs_mode="field"`` can extract them.
+    """
+    out = {}
+    for name, attrs in classes.items():
+        body = {}
+        if "_address" in attrs:
+            body["_address"] = attrs["_address"]
+        if "_visibility" in attrs:
+            body["_visibility"] = attrs["_visibility"]
+        body["model_json_schema"] = classmethod(
+            lambda cls, _name=name, _descs=attrs.get("descriptions", {}): {
+                "title": _name,
+                "type": "object",
+                "properties": {
+                    fname: {"type": "string", "description": fdesc}
+                    for fname, fdesc in _descs.items()
+                },
+            }
+        )
+        cls = type(name, (), body)
+        cls.__module__ = "test.stub"
+        out[name] = cls
+    return out
+
+
+def test_compose_tree_field_docs_attached_when_docs_mode_field():
+    """``docs_mode="field"`` extracts a flat ``{field_name: description}`` map
+    per class — no full JSON Schema, just the descriptions."""
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    registry = _stub_registry_with_described_fields(
+        WebConfig={
+            "_address": ("platform", "web", None),
+            "descriptions": {
+                "brand_name": "Display name shown in the page header.",
+                "primary_color": "Hex color for primary UI accents.",
+            },
+        },
+    )
+    # Clear cache so the new stub class's schema is read fresh
+    ConfigApiService._extract_field_docs.cache_clear()
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        _, meta = ConfigApiService._compose_tree(
+            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
+            include_meta=False, docs_mode="field",
+        )
+    assert meta is not None and "WebConfig" in meta
+    entry = meta["WebConfig"]
+    assert entry.json_schema is None  # field mode, not schema mode
+    assert entry.field_docs == {
+        "brand_name": "Display name shown in the page header.",
+        "primary_color": "Hex color for primary UI accents.",
+    }
+
+
+def test_compose_tree_field_docs_skips_fields_without_description():
+    """Fields lacking a ``description`` are omitted from ``field_docs``."""
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    # Stub schema with one described, one undescribed field
+    out: dict = {}
+    body = {
+        "_address": ("platform", "web", None),
+        "model_json_schema": classmethod(
+            lambda cls: {
+                "title": "WebConfig",
+                "type": "object",
+                "properties": {
+                    "brand_name": {"type": "string", "description": "Brand."},
+                    "internal_flag": {"type": "boolean"},  # no description
+                },
+            }
+        ),
+    }
+    cls = type("WebConfig", (), body)
+    cls.__module__ = "test.stub"
+    out["WebConfig"] = cls
+
+    ConfigApiService._extract_field_docs.cache_clear()
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=out,
+    ):
+        _, meta = ConfigApiService._compose_tree(
+            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
+            include_meta=False, docs_mode="field",
+        )
+    assert meta is not None
+    assert meta["WebConfig"].field_docs == {"brand_name": "Brand."}

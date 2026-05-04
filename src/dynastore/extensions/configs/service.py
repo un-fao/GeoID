@@ -385,15 +385,18 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode for the response. ``none`` (default): no schemas. "
-                "``schema``: each class in the response gets its full JSON Schema 2020-12 "
-                "document at ``meta.{ClassName}.json_schema`` (title, description, type, "
-                "default, examples, constraints — everything a dashboard form-builder "
-                "needs). Independent of ``?meta=true``: combine to get both source "
-                "diagnostics and schemas."
+                "Documentation mode. ``field`` (default): each class in the "
+                "response gets a lightweight ``{field_name: description}`` map "
+                "at ``meta.{ClassName}.field_docs``. ``schema``: each class "
+                "gets its full JSON Schema 2020-12 document at "
+                "``meta.{ClassName}.json_schema`` (title, description, type, "
+                "default, examples, constraints — everything a form-builder "
+                "needs; heavier). ``none``: no field documentation. "
+                "Independent of ``?meta=true``: combine to get both source "
+                "diagnostics and docs."
             ),
         ),
     ) -> Any:
@@ -432,11 +435,14 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``schema`` embeds each class's JSON Schema "
-                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+                "Documentation mode. ``field`` (default) embeds a lightweight "
+                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
+                "``schema`` embeds each class's full JSON Schema at "
+                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
+                "See platform endpoint for full notes."
             ),
         ),
     ) -> Any:
@@ -477,11 +483,14 @@ class ConfigsService(ExtensionProtocol):
             ),
         ),
         docs: str = Query(
-            "none",
-            pattern="^(none|schema)$",
+            "field",
+            pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``schema`` embeds each class's JSON Schema "
-                "at ``meta.{ClassName}.json_schema``. See platform endpoint for full notes."
+                "Documentation mode. ``field`` (default) embeds a lightweight "
+                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
+                "``schema`` embeds each class's full JSON Schema at "
+                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
+                "See platform endpoint for full notes."
             ),
         ),
     ) -> Any:
