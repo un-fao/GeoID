@@ -774,40 +774,48 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         """
         if not results:
             return
-        try:
-            from dynastore.models.protocols.indexer import (
-                IndexContext, IndexOp,
-            )
-            from dynastore.modules.storage.index_dispatcher import (
-                get_index_dispatcher,
-            )
-            from dynastore.tools.correlation import get_correlation_id
 
-            dispatcher = get_index_dispatcher()
-            ctx = IndexContext(
-                catalog=catalog_id,
-                collection=collection_id,
-                correlation_id=get_correlation_id() or "",
-                # No pg_conn: this call site runs post-commit. OUTBOX
-                # policy degrades to non-atomic enqueue — Phase 2e moves
-                # the call site inside the write TX.
-                pg_conn=None,
+        from dynastore.models.protocols.indexer import (
+            IndexContext, IndexOp,
+        )
+        from dynastore.modules.storage.index_dispatcher import (
+            IndexerFatal, get_index_dispatcher,
+        )
+        from dynastore.tools.correlation import get_correlation_id
+
+        dispatcher = get_index_dispatcher()
+        ctx = IndexContext(
+            catalog=catalog_id,
+            collection=collection_id,
+            correlation_id=get_correlation_id() or "",
+            # No pg_conn: this call site runs post-commit. OUTBOX
+            # policy degrades to non-atomic enqueue — Phase 2f will
+            # move the call inside the write TX so OUTBOX becomes
+            # atomic with the data write.
+            pg_conn=None,
+        )
+        ops = [
+            IndexOp(
+                op_type="upsert",
+                entity_type="item",
+                entity_id=str(r.id) if r.id else "",
+                payload=r.model_dump(by_alias=True, exclude_none=True),
             )
-            ops = [
-                IndexOp(
-                    op_type="upsert",
-                    entity_type="item",
-                    entity_id=str(r.id) if r.id else "",
-                    payload=r.model_dump(by_alias=True, exclude_none=True),
-                )
-                for r in results
-                if r.id is not None
-            ]
+            for r in results
+            if r.id is not None
+        ]
+
+        try:
             if len(ops) == 1:
                 await dispatcher.fan_out(ctx, ops[0])
             else:
                 await dispatcher.fan_out_bulk(ctx, ops)
-        except Exception as e:  # noqa: BLE001 — dispatcher errors must not fail the write
+        except IndexerFatal:
+            # FATAL contract: a routing entry with on_failure=FATAL
+            # MUST propagate so the caller's TX rolls back.  Don't
+            # swallow.
+            raise
+        except Exception as e:  # noqa: BLE001 — non-FATAL paths absorb errors
             logger.warning(
                 "Index dispatcher fan-out failed for %s/%s (%d items): %s",
                 catalog_id, collection_id, len(results), e,
