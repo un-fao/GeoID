@@ -301,6 +301,10 @@ class ItemsElasticsearchDriver(
         Capability.EXTERNAL_ID_TRACKING,
         Capability.TEMPORAL_VALIDITY,
         Capability.PHYSICAL_ADDRESSING,
+        Capability.COUNT,
+        Capability.STATISTICS,
+        Capability.AGGREGATION,
+        Capability.INTROSPECTION,
     })
     preferred_for: FrozenSet[str] = frozenset({"search", "geometry_simplified"})
     supported_hints: FrozenSet[str] = frozenset({
@@ -1197,17 +1201,13 @@ class ItemsElasticsearchDriver(
         )
 
     # ------------------------------------------------------------------
-    # CollectionItemsStore Protocol — capability-gated stubs
+    # CollectionItemsStore Protocol — data-side ops
     # ------------------------------------------------------------------
-    # The methods below exist to satisfy the runtime_checkable
-    # CollectionItemsStore protocol so isinstance(driver,
-    # CollectionItemsStore) returns True and the driver registers in
-    # the items slot. They raise NotImplementedError because this
-    # driver's capabilities frozenset does NOT advertise the matching
-    # Capability flag — callers that respect capabilities won't reach
-    # them. Implementations can replace these stubs incrementally as
-    # the corresponding capabilities (COUNT, AGGREGATION, STATISTICS,
-    # INTROSPECTION) are added.
+    # All four delegate to the shared ``items_es_ops`` helpers (which
+    # use the standalone opensearch-py client, not SFEOS DatabaseLogic)
+    # so they remain available on services without stac-fastapi-elasticsearch.
+    # The per-tenant index is shared across all collections of a catalog;
+    # the routing key is the collection_id.
 
     async def count_entities(
         self,
@@ -1217,10 +1217,19 @@ class ItemsElasticsearchDriver(
         request: Optional[Any] = None,
         db_resource: Optional[Any] = None,
     ) -> int:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver: count_entities is not implemented "
-            "(no Capability.COUNT). Route counting through a driver that "
-            "advertises the capability."
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_count_items
+
+        es = get_client()
+        if es is None:
+            return 0
+        query = self._query_request_to_es(request) if request is not None else None
+        return await es_count_items(
+            es,
+            _tenant_items_index(catalog_id),
+            query=query,
+            collection=collection_id,
+            routing=collection_id,
         )
 
     async def compute_extents(
@@ -1230,10 +1239,17 @@ class ItemsElasticsearchDriver(
         *,
         db_resource: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver: compute_extents is not implemented "
-            "(no Capability.STATISTICS). Route extent computation through "
-            "a driver that advertises the capability."
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_extents
+
+        es = get_client()
+        if es is None:
+            return None
+        return await es_extents(
+            es,
+            _tenant_items_index(catalog_id),
+            collection=collection_id,
+            routing=collection_id,
         )
 
     async def aggregate(
@@ -1246,10 +1262,21 @@ class ItemsElasticsearchDriver(
         request: Optional[Any] = None,
         db_resource: Optional[Any] = None,
     ) -> Any:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver: aggregate is not implemented "
-            "(no Capability.AGGREGATION). Route aggregations through "
-            "a driver that advertises the capability."
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_aggregate
+
+        es = get_client()
+        if es is None:
+            return None
+        query = self._query_request_to_es(request) if request is not None else None
+        return await es_aggregate(
+            es,
+            _tenant_items_index(catalog_id),
+            aggregation_type=aggregation_type,
+            field=field,
+            query=query,
+            collection=collection_id,
+            routing=collection_id,
         )
 
     async def introspect_schema(
@@ -1259,11 +1286,15 @@ class ItemsElasticsearchDriver(
         *,
         db_resource: Optional[Any] = None,
     ) -> List[Any]:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver: introspect_schema is not implemented "
-            "(no Capability.INTROSPECTION). Route schema discovery through "
-            "a driver that advertises the capability."
-        )
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_introspect_mapping
+
+        es = get_client()
+        if es is None:
+            return []
+        return await es_introspect_mapping(es, _tenant_items_index(catalog_id))
+
+    # --- Admin ops not supported on this backend ---
 
     async def rename_storage(
         self,

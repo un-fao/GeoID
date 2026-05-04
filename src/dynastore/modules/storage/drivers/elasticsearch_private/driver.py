@@ -88,6 +88,10 @@ class ItemsElasticsearchPrivateDriver(
         Capability.WRITE,
         Capability.STREAMING,
         Capability.PHYSICAL_ADDRESSING,
+        Capability.COUNT,
+        Capability.STATISTICS,
+        Capability.AGGREGATION,
+        Capability.INTROSPECTION,
     })
     preferred_for: FrozenSet[str] = frozenset()
     supported_hints: FrozenSet[str] = frozenset()
@@ -567,4 +571,141 @@ class ItemsElasticsearchPrivateDriver(
             canonical_uri=f"es://{index_name}",
             identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
             display_label=index_name,
+        )
+
+    # ------------------------------------------------------------------
+    # CollectionItemsStore Protocol — data-side ops (parity with public)
+    # ------------------------------------------------------------------
+    # Mirror the public driver's implementation against the per-tenant
+    # private index ``{prefix}-geoid-{catalog_id}``. The private index
+    # holds every collection of the catalog in one place, scoped at
+    # query time by the ``collection`` field — same shape as public.
+
+    def _private_index(self, catalog_id: str) -> str:
+        from dynastore.modules.elasticsearch.client import get_index_prefix
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            get_private_index_name,
+        )
+        return get_private_index_name(get_index_prefix(), catalog_id)
+
+    async def count_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_count_items
+
+        es = get_client()
+        if es is None:
+            return 0
+        return await es_count_items(
+            es, self._private_index(catalog_id), collection=collection_id,
+        )
+
+    async def compute_extents(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> Optional[Dict[str, Any]]:
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_extents
+
+        es = get_client()
+        if es is None:
+            return None
+        return await es_extents(
+            es, self._private_index(catalog_id), collection=collection_id,
+        )
+
+    async def aggregate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        aggregation_type: str,
+        field: Optional[str] = None,
+        request: Optional[Any] = None,
+        db_resource: Optional[Any] = None,
+    ) -> Any:
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_aggregate
+
+        es = get_client()
+        if es is None:
+            return None
+        return await es_aggregate(
+            es,
+            self._private_index(catalog_id),
+            aggregation_type=aggregation_type,
+            field=field,
+            collection=collection_id,
+        )
+
+    async def introspect_schema(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> List[Any]:
+        from dynastore.modules.elasticsearch.client import get_client
+        from dynastore.modules.elasticsearch.items_es_ops import es_introspect_mapping
+
+        es = get_client()
+        if es is None:
+            return []
+        return await es_introspect_mapping(es, self._private_index(catalog_id))
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return the introspected field set as a dict keyed by field name.
+
+        Bridges the legacy dict-based contract (used by some queryables
+        contributors) over the protocol's list-returning ``introspect_schema``.
+        """
+        if entity_level != "item" or not collection_id:
+            return {}
+        fields = await self.introspect_schema(catalog_id, collection_id)
+        return {getattr(f, "name", str(f)): f for f in fields}
+
+    # --- Admin ops not supported on this backend ---
+
+    async def rename_storage(
+        self,
+        catalog_id: str,
+        old_collection_id: str,
+        new_collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            "ItemsElasticsearchPrivateDriver: rename_storage is not "
+            "supported. Renaming on this backend would require a full "
+            "reindex of the per-tenant private index."
+        )
+
+    async def restore_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        raise SoftDeleteNotSupportedError(
+            "ItemsElasticsearchPrivateDriver: restore_entities is not "
+            "implemented; deletes on the private index are physical "
+            "removals (no soft-delete tombstone)."
         )
