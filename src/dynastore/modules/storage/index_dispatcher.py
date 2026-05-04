@@ -270,6 +270,89 @@ class TaskTableOutboxWriter:
         await conn.execute(sql_pg, *args)
 
 
+# ---------------------------------------------------------------------------
+# Default factory — wires the dispatcher against the live routing config
+# and the protocol-discovery indexer registry
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_DISPATCHER: Optional[IndexDispatcher] = None
+
+
+def _make_default_routing_resolver():
+    """Build a resolver that loads the live :class:`CollectionRoutingConfig`
+    via ``ConfigsProtocol.get_config`` — the same path used elsewhere in
+    the storage layer.
+    """
+
+    async def resolve(catalog: str, collection: Optional[str]):
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.routing_config import CollectionRoutingConfig
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            # No platform configs in this process — return a default
+            # routing config so the dispatcher gracefully degrades to
+            # empty-INDEX (no fan-out).
+            return CollectionRoutingConfig()
+        return await configs.get_config(
+            CollectionRoutingConfig,
+            catalog_id=catalog,
+            collection_id=collection,
+        )
+
+    return resolve
+
+
+def _make_default_indexer_registry():
+    """Build a registry that resolves an :class:`Indexer` by ``indexer_id``
+    via the protocol discovery system.
+
+    Cached after first build because the set of registered indexers is
+    fixed once app startup completes.
+    """
+    cache: Dict[str, Optional[Indexer]] = {}
+
+    async def resolve(indexer_id: str) -> Optional[Indexer]:
+        if indexer_id in cache:
+            return cache[indexer_id]
+        from dynastore.tools.discovery import get_protocols
+
+        match: Optional[Indexer] = None
+        for impl in get_protocols(Indexer):
+            if getattr(impl, "indexer_id", None) == indexer_id:
+                match = impl
+                break
+        cache[indexer_id] = match
+        return match
+
+    return resolve
+
+
+def get_index_dispatcher() -> IndexDispatcher:
+    """Process-wide singleton dispatcher — reuses live resolvers + the
+    default :class:`TaskTableOutboxWriter`.  Phase 3 plugs in the
+    circuit breaker.
+    """
+    global _DEFAULT_DISPATCHER
+    if _DEFAULT_DISPATCHER is None:
+        _DEFAULT_DISPATCHER = IndexDispatcher(
+            routing_resolver=_make_default_routing_resolver(),
+            indexer_registry=_make_default_indexer_registry(),
+            outbox=TaskTableOutboxWriter(),
+        )
+    return _DEFAULT_DISPATCHER
+
+
+def reset_index_dispatcher() -> None:
+    """Test hook — drops the cached singleton so the next
+    :func:`get_index_dispatcher` rebuilds with current discovery state.
+    """
+    global _DEFAULT_DISPATCHER
+    _DEFAULT_DISPATCHER = None
+
+
 def _bind_named_to_positional(sql: str, params: Dict[str, Any]):
     """Translate ``:name`` placeholders to ``$N`` for asyncpg.
 
@@ -504,6 +587,26 @@ class IndexDispatcher:
             "IndexDispatcher: indexer '%s' failed (policy=ignore): %s",
             entry.driver_id, exc,
         )
+
+    # Public diagnostic — operator-facing introspection of the routing
+    # entries that this dispatcher will fan out across, without invoking
+    # any indexer.  Used by /_health and /index-dispatcher-status surfaces.
+    async def describe(self, ctx: IndexContext) -> Dict[str, Any]:
+        entries = await self._index_entries(ctx)
+        return {
+            "catalog": ctx.catalog,
+            "collection": ctx.collection,
+            "indexers": [
+                {
+                    "indexer_id": e.driver_id,
+                    "write_mode": e.write_mode,
+                    "on_failure": e.on_failure,
+                    "source": getattr(e, "source", None),
+                    "registered": (await self._resolve_indexer(e.driver_id)) is not None,
+                }
+                for e in entries
+            ],
+        }
 
     async def _enqueue_or_warn(
         self,
