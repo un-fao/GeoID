@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, FrozenSet, List, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncIterator, ClassVar, Dict, FrozenSet, List, Optional, Union
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.storage_location import StorageLocation
@@ -80,6 +80,13 @@ class ItemsElasticsearchPrivateDriver(
 
     Registered as ``storage_elasticsearch_private`` via entry points.
     """
+
+    # Generic Indexer Protocol — slim per-item / bulk surface used by the
+    # ``IndexDispatcher``.  The private driver opts in as ``ItemIndexer``
+    # via the existing routing config; this attribute identifies it on
+    # the dispatcher side.
+    indexer_id: ClassVar[str] = "items_elasticsearch_private_driver"
+    is_item_indexer: ClassVar[bool] = True
 
     priority: int = 51
     preferred_chunk_size: int = 500
@@ -457,6 +464,142 @@ class ItemsElasticsearchPrivateDriver(
                 pass
         except Exception as e:
             logger.error("PrivateDriver: delete failed for %s: %s", item_id, e)
+
+    # ------------------------------------------------------------------
+    # Generic Indexer Protocol — slim, dispatcher-facing surface
+    # ------------------------------------------------------------------
+
+    async def index(self, ctx, op) -> None:  # type: ignore[override]
+        """Apply a single item :class:`IndexOp` to the per-tenant private
+        index ``{prefix}-geoid-{catalog_id}``.
+
+        The "private" index stores the full feature with reduced search
+        surface (geoid + tenant attrs).  When called from the
+        ``IndexDispatcher``, ``op.payload`` carries the full STAC item;
+        the driver builds the tenant-scoped doc and shrinks oversized
+        geometries via ``simplify_to_fit`` before indexing.
+        """
+        if op.entity_type != "item":
+            return
+        if not ctx.collection:
+            raise ValueError(
+                "ItemsElasticsearchPrivateDriver.index: collection required for item ops",
+            )
+
+        from dynastore.modules.elasticsearch.client import (
+            get_index_prefix as _get_index_prefix,
+        )
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            TENANT_FEATURE_MAPPING,
+            get_private_index_name,
+        )
+
+        index_name = get_private_index_name(_get_index_prefix(), ctx.catalog)
+        es = self._get_client()
+
+        if op.op_type == "delete":
+            try:
+                await es.delete(index=index_name, id=op.entity_id)
+            except Exception:
+                pass
+            return
+
+        # upsert
+        from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
+            build_tenant_feature_doc,
+        )
+        from dynastore.tools.geometry_simplify import simplify_to_fit
+
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": TENANT_FEATURE_MAPPING},
+                ignore=400,
+            )
+
+        src = op.payload or {"id": op.entity_id}
+        src.setdefault("id", op.entity_id)
+        doc = build_tenant_feature_doc(
+            src, catalog_id=ctx.catalog, collection_id=ctx.collection,
+        )
+        doc, factor, mode = simplify_to_fit(doc)
+        doc["simplification_factor"] = factor
+        doc["simplification_mode"] = mode
+        await es.index(index=index_name, id=op.entity_id, document=doc)
+
+    async def index_bulk(self, ctx, ops):  # type: ignore[override]
+        """Bulk-apply a batch of item ops via the ES ``_bulk`` API."""
+        from dynastore.models.protocols.indexer import BulkResult
+        from dynastore.modules.elasticsearch.client import (
+            get_index_prefix as _get_index_prefix,
+        )
+        from dynastore.modules.storage.drivers.elasticsearch_private.doc_builder import (
+            build_tenant_feature_doc,
+        )
+        from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
+            TENANT_FEATURE_MAPPING,
+            get_private_index_name,
+        )
+        from dynastore.tools.geometry_simplify import simplify_to_fit
+
+        if not ops:
+            return BulkResult()
+        if not ctx.collection:
+            raise ValueError(
+                "ItemsElasticsearchPrivateDriver.index_bulk: collection required for item ops",
+            )
+
+        index_name = get_private_index_name(_get_index_prefix(), ctx.catalog)
+        es = self._get_client()
+
+        if not await es.indices.exists(index=index_name):
+            await es.indices.create(
+                index=index_name,
+                body={"mappings": TENANT_FEATURE_MAPPING},
+                ignore=400,
+            )
+
+        body: List[dict] = []
+        for op in ops:
+            if op.entity_type != "item":
+                continue
+            if op.op_type == "delete":
+                body.append({"delete": {"_index": index_name, "_id": op.entity_id}})
+                continue
+            src = op.payload or {"id": op.entity_id}
+            src.setdefault("id", op.entity_id)
+            doc = build_tenant_feature_doc(
+                src, catalog_id=ctx.catalog, collection_id=ctx.collection,
+            )
+            doc, factor, mode = simplify_to_fit(doc)
+            doc["simplification_factor"] = factor
+            doc["simplification_mode"] = mode
+            body.append({"index": {"_index": index_name, "_id": op.entity_id}})
+            body.append(doc)
+
+        if not body:
+            return BulkResult(total=len(ops))
+
+        resp = await es.bulk(body=body, request_timeout=60)
+        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
+        succeeded = 0
+        failures: List[Dict[str, Any]] = []
+        for it in items:
+            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
+            err = entry.get("error") if isinstance(entry, dict) else None
+            if err:
+                failures.append({
+                    "id": entry.get("_id"),
+                    "reason": str(err.get("reason", err) if isinstance(err, dict) else err),
+                })
+            else:
+                succeeded += 1
+        return BulkResult(
+            total=len(ops),
+            succeeded=succeeded,
+            failed=len(failures),
+            failures=failures,
+        )
 
     # ------------------------------------------------------------------
     # DENY policy management (self-contained)
