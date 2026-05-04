@@ -19,8 +19,8 @@
 """
 CORE PostgreSQL metadata drivers + shared CRUD base classes.
 
-- :class:`CollectionCorePostgresqlDriver`  → ``{schema}.collection_metadata_core``
-- :class:`CatalogCorePostgresqlDriver`     → ``catalog.catalog_metadata_core``
+- :class:`CollectionCorePostgresqlDriver`  → ``{schema}.collection_core``
+- :class:`CatalogCorePostgresqlDriver`     → ``catalog.catalog_core``
 
 The matching STAC drivers live in
 :mod:`dynastore.modules.stac.drivers.postgresql` and inherit
@@ -210,7 +210,7 @@ class _PgCollectionCoreBase:
     """
 
     # Declared on subclasses.
-    _table: ClassVar[str]              # e.g. "collection_metadata_core"
+    _table: ClassVar[str]              # e.g. "collection_core"
     _columns: ClassVar[Tuple[str, ...]]  # columns this driver owns
     capabilities: FrozenSet[str]
 
@@ -427,7 +427,7 @@ class CollectionCorePostgresqlDriver(
 ):
     """Primary driver for CORE collection metadata (``title``, ``description``, …).
 
-    Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
+    Backs ``{schema}.collection_core``.  Declares ``SEARCH`` because
     CORE fields carry the human-readable text the ``/search?q=…`` endpoint
     matches against.  Active path — :mod:`~dynastore.modules.catalog.
     collection_router` fans out WRITEs across this driver plus
@@ -436,7 +436,7 @@ class CollectionCorePostgresqlDriver(
     columns and no-ops when its filtered slice is empty.
     """
 
-    _table: ClassVar[str] = "collection_metadata_core"
+    _table: ClassVar[str] = "collection_core"
     _columns: ClassVar[Tuple[str, ...]] = _COLLECTION_CORE_COLUMNS
 
     capabilities: FrozenSet[str] = frozenset({
@@ -481,7 +481,7 @@ class CollectionCorePostgresqlDriver(
             where_sql = " AND ".join(where_clauses)
             count_sql = (
                 f'SELECT COUNT(*) FROM "{phys}".collections c '
-                f'LEFT JOIN "{phys}".collection_metadata_core m '
+                f'LEFT JOIN "{phys}".collection_core m '
                 f'ON m.collection_id = c.id WHERE {where_sql};'
             )
             total = await DQLQuery(
@@ -491,7 +491,7 @@ class CollectionCorePostgresqlDriver(
             data_sql = (
                 f'SELECT c.id, {col_list} '
                 f'FROM "{phys}".collections c '
-                f'LEFT JOIN "{phys}".collection_metadata_core m '
+                f'LEFT JOIN "{phys}".collection_core m '
                 f'ON m.collection_id = c.id '
                 f'WHERE {where_sql} '
                 f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
@@ -510,7 +510,7 @@ class CollectionCorePostgresqlDriver(
 class _PgCatalogCoreBase:
     """Shared implementation for the two catalog-tier metadata drivers."""
 
-    _table: ClassVar[str]              # e.g. "catalog_metadata_core"
+    _table: ClassVar[str]              # e.g. "catalog_core"
     _columns: ClassVar[Tuple[str, ...]]  # columns this driver owns
     capabilities: FrozenSet[str]
 
@@ -650,11 +650,11 @@ class CatalogCorePostgresqlDriver(
 ):
     """Primary driver for CORE catalog metadata.
 
-    Backs ``catalog.catalog_metadata_core``.  Scope: ``title``,
+    Backs ``catalog.catalog_core``.  Scope: ``title``,
     ``description``, ``keywords``, ``license``, ``extra_metadata``.
     """
 
-    _table: ClassVar[str] = "catalog_metadata_core"
+    _table: ClassVar[str] = "catalog_core"
     _columns: ClassVar[Tuple[str, ...]] = _CATALOG_CORE_COLUMNS
 
     capabilities: FrozenSet[str] = frozenset({

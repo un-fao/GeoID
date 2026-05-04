@@ -39,7 +39,7 @@ Sidecar discriminated union shape mirrors the items-tier
 mental model: one wrapper config carries a typed list of sidecar
 entries discriminated by ``sidecar_type``, defaults are resolved
 lazily from a registry that uses try-import for cross-module sidecars
-so a deployment without the stac extra simply omits ``metadata_stac``.
+so a deployment without the stac extra simply omits ``collection_stac``.
 
 NOTE — items-tier ``SidecarProtocol`` is NOT lifted here.  That
 machinery (Hub-FK, partition-keys, ``{physical_table}_{sidecar_id}``
@@ -120,7 +120,7 @@ class CollectionCoreSidecarConfig(_PgCollectionSidecarConfigBase):
     :class:`CollectionCorePostgresqlDriver`.
     """
 
-    sidecar_type: Literal["metadata_core"] = "metadata_core"
+    sidecar_type: Literal["collection_core"] = "collection_core"
 
 
 class CollectionStacSidecarConfig(_PgCollectionSidecarConfigBase):
@@ -133,7 +133,7 @@ class CollectionStacSidecarConfig(_PgCollectionSidecarConfigBase):
     resolution log a single warning and skip the slice (no crash).
     """
 
-    sidecar_type: Literal["metadata_stac"] = "metadata_stac"
+    sidecar_type: Literal["collection_stac"] = "collection_stac"
 
 
 _PgCollectionSidecarConfig = Annotated[
@@ -169,7 +169,7 @@ class CollectionPgSidecarRegistry:
         from dynastore.modules.storage.drivers.core_postgresql import (
             CollectionCorePostgresqlDriver,
         )
-        cls._registry.setdefault("metadata_core", CollectionCorePostgresqlDriver)
+        cls._registry.setdefault("collection_core", CollectionCorePostgresqlDriver)
 
         # STAC — different module; deployments without the stac extra
         # silently omit the entry.
@@ -178,7 +178,7 @@ class CollectionPgSidecarRegistry:
                 CollectionStacPostgresqlDriver,
             )
             cls._registry.setdefault(
-                "metadata_stac", CollectionStacPostgresqlDriver,
+                "collection_stac", CollectionStacPostgresqlDriver,
             )
         except ImportError as exc:
             logger.debug(
@@ -211,7 +211,7 @@ class CollectionPgSidecarRegistry:
         """
         cls._ensure_defaults()
         out: List[_PgCollectionSidecarConfigBase] = [CollectionCoreSidecarConfig()]
-        if "metadata_stac" in cls._registry:
+        if "collection_stac" in cls._registry:
             out.append(CollectionStacSidecarConfig())
         return out
 
@@ -233,7 +233,7 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
     ``sidecars`` is the typed list of metadata domain slices the wrapper
     will fan CRUD across.  Empty list → wrapper falls back to the
     :meth:`CollectionPgSidecarRegistry.default_sidecars` default
-    (``[metadata_core, metadata_stac if installed]``).
+    (``[collection_core, collection_stac if installed]``).
 
     Marked ``Immutable`` because changing the active sidecar set after
     rows exist would orphan domain slices in their per-tenant tables —
@@ -248,7 +248,7 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
         description=(
             "Metadata sidecar configs — discriminated union on "
             "`sidecar_type`.  Empty → registry default "
-            "(`metadata_core` always, `metadata_stac` if the stac extra "
+            "(`collection_core` always, `collection_stac` if the stac extra "
             "is installed).  Immutable once set — changing it would orphan "
             "rows in the per-domain tables under the per-tenant schema.  "
             "Honored at runtime via per-catalog ``ConfigsProtocol`` fetch "
@@ -311,8 +311,8 @@ CollectionPostgresqlDriverConfig.register_apply_handler(
 
 class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
     """Composition driver: fans CollectionStore CRUD across the
-    configured PG metadata sidecars (``metadata_core``, optionally
-    ``metadata_stac``, plus any extension-contributed sidecar registered
+    configured PG metadata sidecars (``collection_core``, optionally
+    ``collection_stac``, plus any extension-contributed sidecar registered
     via :meth:`CollectionPgSidecarRegistry.register`).
 
     The wrapper itself owns no SQL — every method delegates to the
@@ -346,7 +346,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         :meth:`CollectionPgSidecarRegistry.default_sidecars`.
 
         Sidecar entries whose ``sidecar_type`` is unknown to the registry
-        (e.g. ``metadata_stac`` in a deployment without the stac extra)
+        (e.g. ``collection_stac`` in a deployment without the stac extra)
         log a warning and are skipped — a missing slice is a less-bad
         failure mode than crashing the whole write.
 
@@ -601,13 +601,13 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         Defining this method makes the wrapper structurally satisfy
         :class:`extensions.stac.protocols.StacCollectionEntityStoreCapability`,
         so ``get_protocols(CollectionStore)`` -> isinstance check
-        in ``stac_service._assert_stac_capable_metadata_stack`` keeps
+        in ``stac_service._assert_stac_capable_collection_stack`` keeps
         working after the wrapper replaces the raw STAC driver in the
         plugin registry.
 
         Returns ``()`` when no inner advertises the marker — e.g. a
         deployment without the stac extra installed, or a wrapper config
-        that explicitly omitted the ``metadata_stac`` sidecar.  Callers
+        that explicitly omitted the ``collection_stac`` sidecar.  Callers
         that need to distinguish "STAC unavailable" from "STAC available
         but empty" should check for non-empty return.
         """

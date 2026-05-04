@@ -34,7 +34,7 @@ pytestmark = [
     pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_extensions("logs", "features", "stac"),
     # 'stac' MODULE (not extension) registers CollectionStacPostgresqlDriver +
-    # creates the collection_metadata_stac sidecar table at lifespan DDL time;
+    # creates the collection_stac sidecar table at lifespan DDL time;
     # without it any catalog write blows up at first STAC-slice insert.
     pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam", "stac"),
 ]

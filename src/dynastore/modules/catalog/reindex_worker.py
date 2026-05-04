@@ -22,7 +22,7 @@ ReindexWorker — M3.1 scaffold of the role-based-driver refactor.
 Consumes ``catalog_metadata_changed`` events emitted by the catalog-tier
 router (M3.0) and dispatches the mutation payload to registered INDEX
 drivers (ES Indexers, vector-DB sinks, …).  The worker is the glue
-between the authoritative store (catalog.catalog_metadata_core/_stac
+between the authoritative store (catalog.catalog_core/_stac
 written by the Primary drivers) and search-tier mirrors.
 
 Scope of M3.1 (this file)

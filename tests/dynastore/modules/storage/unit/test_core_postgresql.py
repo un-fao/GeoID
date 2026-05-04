@@ -36,7 +36,7 @@ class TestStructuralInvariants:
         )
 
         d = CollectionCorePostgresqlDriver()
-        assert d._table == "collection_metadata_core"
+        assert d._table == "collection_core"
         assert EntityStoreCapability.READ in d.capabilities
         assert EntityStoreCapability.WRITE in d.capabilities
         assert EntityStoreCapability.SEARCH in d.capabilities
@@ -50,14 +50,14 @@ class TestStructuralInvariants:
         )
 
         d = CatalogCorePostgresqlDriver()
-        assert d._table == "catalog_metadata_core"
+        assert d._table == "catalog_core"
         assert isinstance(d, CatalogStore)
 
 class TestDomainColumnSets:
     """Column sets must match the M2.0 DDL exactly.
 
     Guards against drift between the driver's ``_columns`` tuple and the
-    CREATE TABLE statements in ``modules/catalog/db_init/metadata_core_tables.py``.
+    CREATE TABLE statements in ``modules/catalog/db_init/core_tables.py``.
     A stray column on the Python side silently succeeds on UPDATE (the
     EXCLUDED alias accepts any column) but fails on INSERT with
     UndefinedColumn.  Pinning the column sets here means the test fails
@@ -203,7 +203,7 @@ async def test_collection_core_upsert_uses_core_columns_only(fake_conn_with_dql)
 
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert '"t_alpha".collection_metadata_core' in sql
+    assert '"t_alpha".collection_core' in sql
     # STAC columns never appear in the SQL (domain filtered).
     assert "extent" not in sql
     assert "providers" not in sql
@@ -239,7 +239,7 @@ async def test_collection_core_upsert_partial_update_preserves_other_columns(
     )
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert '"t_alpha".collection_metadata_core' in sql
+    assert '"t_alpha".collection_core' in sql
     # title appears (it was supplied) …
     assert "title" in sql
     # … but no other CORE column is referenced in the SQL.  A ``SET
@@ -274,7 +274,7 @@ async def test_collection_core_upsert_empty_payload_only_bumps_updated_at(
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
     assert sql.startswith(
-        'INSERT INTO "t_alpha".collection_metadata_core '
+        'INSERT INTO "t_alpha".collection_core '
         '(collection_id, updated_at)'
     )
     assert "ON CONFLICT (collection_id) DO UPDATE SET updated_at = NOW()" in sql
@@ -297,7 +297,7 @@ async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
     dql_execute.assert_awaited_once()
     sql = dql_execute.call_args.args[0]
     # catalog-tier driver uses the global catalog schema, NOT {schema}.
-    assert "catalog.catalog_metadata_core" in sql
+    assert "catalog.catalog_core" in sql
     assert '"t_alpha"' not in sql  # no tenant schema reference
     assert "NOW()" in sql
 
@@ -309,7 +309,7 @@ async def test_catalog_core_upsert_targets_global_schema(fake_conn_with_dql):
 
 class TestColumnTupleAlignment:
     """N2 regression: the ``_*_COLUMNS`` tuples must stay in lock-step with
-    the CREATE TABLE column lists in ``metadata_core_tables.py``.
+    the CREATE TABLE column lists in ``core_tables.py``.
 
     Without this guard, a future DDL change that adds a column but
     forgets to extend the tuple would have ``_filter_payload`` silently
@@ -346,7 +346,7 @@ class TestColumnTupleAlignment:
         return cols
 
     def test_collection_core_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_core_tables import (
+        from dynastore.modules.catalog.db_init.core_tables import (
             TENANT_METADATA_CORE_DDL,
         )
         from dynastore.modules.storage.drivers.core_postgresql import (
@@ -358,7 +358,7 @@ class TestColumnTupleAlignment:
         )
 
     def test_catalog_core_columns_match_ddl(self):
-        from dynastore.modules.catalog.db_init.metadata_core_tables import (
+        from dynastore.modules.catalog.db_init.core_tables import (
             CATALOG_METADATA_CORE_DDL,
         )
         from dynastore.modules.storage.drivers.core_postgresql import (

@@ -114,8 +114,8 @@ def _reset_registry():
     saved = dict(CatalogPgSidecarRegistry._registry)
     saved_loaded = CatalogPgSidecarRegistry._defaults_loaded
     CatalogPgSidecarRegistry.clear()
-    CatalogPgSidecarRegistry._registry["catalog_metadata_core"] = _FakeCoreCls  # type: ignore[assignment]
-    CatalogPgSidecarRegistry._registry["catalog_metadata_stac"] = _FakeStacCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._registry["catalog_core"] = _FakeCoreCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._registry["catalog_stac"] = _FakeStacCls  # type: ignore[assignment]
     CatalogPgSidecarRegistry._defaults_loaded = True
     _FakeCoreCls._instance = None
     _FakeStacCls._instance = None
@@ -177,14 +177,14 @@ def test_capabilities_union_covers_inner_capabilities():
 def test_default_sidecars_includes_core_and_stac_when_both_registered():
     sidecars = CatalogPgSidecarRegistry.default_sidecars()
     assert [s.sidecar_type for s in sidecars] == [
-        "catalog_metadata_core", "catalog_metadata_stac",
+        "catalog_core", "catalog_stac",
     ]
 
 
 def test_default_sidecars_omits_stac_when_unregistered():
-    CatalogPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
+    CatalogPgSidecarRegistry._registry.pop("catalog_stac", None)
     sidecars = CatalogPgSidecarRegistry.default_sidecars()
-    assert [s.sidecar_type for s in sidecars] == ["catalog_metadata_core"]
+    assert [s.sidecar_type for s in sidecars] == ["catalog_core"]
 
 
 def test_unknown_sidecar_type_skipped_with_warning(caplog):
@@ -258,7 +258,7 @@ async def test_get_catalog_metadata_swallows_per_inner_failure_and_returns_other
         def __new__(cls):  # type: ignore[misc]
             return failing
 
-    CatalogPgSidecarRegistry._registry["catalog_metadata_core"] = _FailingCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._registry["catalog_core"] = _FailingCls  # type: ignore[assignment]
     driver = CatalogPostgresqlDriver()
     out = await driver.get_catalog_metadata("cat-a")
     assert out is not None
@@ -282,7 +282,7 @@ def test_wrapper_config_sidecars_discriminated_union_round_trips():
     dumped = cfg.model_dump(exclude_unset=True)
     restored = CatalogPostgresqlDriverConfig.model_validate(dumped)
     assert [s.sidecar_type for s in restored.sidecars] == [
-        "catalog_metadata_core", "catalog_metadata_stac",
+        "catalog_core", "catalog_stac",
     ]
 
 
@@ -320,12 +320,12 @@ def test_wrapper_satisfies_stac_capability_when_stac_inner_loaded():
 
 
 def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
-    """Deployment without the stac extra: registry has only catalog_metadata_core.
+    """Deployment without the stac extra: registry has only catalog_core.
     Wrapper's stac_metadata_columns() must return () so
     ``stac_service._has_stac`` correctly identifies STAC as unavailable
     and the catalog-tier hard-reject still fires.
     """
-    CatalogPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
+    CatalogPgSidecarRegistry._registry.pop("catalog_stac", None)
     driver = CatalogPostgresqlDriver()
     assert driver.stac_metadata_columns() == ()
 
@@ -357,7 +357,7 @@ async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
             )
         assert any(
             "sidecar cache invalidated" in r.message
-            and "catalog_metadata_core" in r.message
+            and "catalog_core" in r.message
             for r in caplog.records
         )
     finally:

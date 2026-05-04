@@ -106,7 +106,7 @@ class CatalogCoreSidecarConfig(_PgCatalogSidecarConfigBase):
     :class:`CatalogCorePostgresqlDriver`.
     """
 
-    sidecar_type: Literal["catalog_metadata_core"] = "catalog_metadata_core"
+    sidecar_type: Literal["catalog_core"] = "catalog_core"
 
 
 class CatalogStacSidecarConfig(_PgCatalogSidecarConfigBase):
@@ -119,7 +119,7 @@ class CatalogStacSidecarConfig(_PgCatalogSidecarConfigBase):
     resolution log a single warning and skip the slice (no crash).
     """
 
-    sidecar_type: Literal["catalog_metadata_stac"] = "catalog_metadata_stac"
+    sidecar_type: Literal["catalog_stac"] = "catalog_stac"
 
 
 _PgCatalogSidecarConfig = Annotated[
@@ -156,7 +156,7 @@ class CatalogPgSidecarRegistry:
             CatalogCorePostgresqlDriver,
         )
         cls._registry.setdefault(
-            "catalog_metadata_core", CatalogCorePostgresqlDriver,
+            "catalog_core", CatalogCorePostgresqlDriver,
         )
 
         # STAC — different module; deployments without the stac extra
@@ -166,7 +166,7 @@ class CatalogPgSidecarRegistry:
                 CatalogStacPostgresqlDriver,
             )
             cls._registry.setdefault(
-                "catalog_metadata_stac", CatalogStacPostgresqlDriver,
+                "catalog_stac", CatalogStacPostgresqlDriver,
             )
         except ImportError as exc:
             logger.debug(
@@ -197,7 +197,7 @@ class CatalogPgSidecarRegistry:
         out: List[_PgCatalogSidecarConfigBase] = [
             CatalogCoreSidecarConfig(),
         ]
-        if "catalog_metadata_stac" in cls._registry:
+        if "catalog_stac" in cls._registry:
             out.append(CatalogStacSidecarConfig())
         return out
 
@@ -219,7 +219,7 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
     ``sidecars`` is the typed list of catalog-metadata domain slices the
     wrapper will fan CRUD across.  Empty list → wrapper falls back to
     :meth:`CatalogPgSidecarRegistry.default_sidecars`
-    (``[catalog_metadata_core, catalog_metadata_stac if installed]``).
+    (``[catalog_core, catalog_stac if installed]``).
 
     Marked ``Immutable`` because changing the active sidecar set after
     rows exist would orphan domain slices in ``catalog.catalog_metadata_*``.
@@ -233,7 +233,7 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
         description=(
             "Catalog metadata sidecar configs — discriminated union on "
             "`sidecar_type`.  Empty → registry default "
-            "(`catalog_metadata_core` always, `catalog_metadata_stac` "
+            "(`catalog_core` always, `catalog_stac` "
             "if the stac extra is installed).  Immutable once set — "
             "changing it would orphan rows in the per-domain "
             "``catalog.catalog_metadata_*`` tables.  Honored at runtime "
@@ -287,8 +287,8 @@ CatalogPostgresqlDriverConfig.register_apply_handler(
 
 class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
     """Composition driver: fans CatalogStore CRUD across the
-    configured PG catalog-metadata sidecars (``catalog_metadata_core``,
-    optionally ``catalog_metadata_stac``, plus any extension-contributed
+    configured PG catalog-metadata sidecars (``catalog_core``,
+    optionally ``catalog_stac``, plus any extension-contributed
     sidecar registered via
     :meth:`CatalogPgSidecarRegistry.register`).
 
@@ -473,7 +473,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         iff a STAC inner is loaded.  Returns ``()`` when no inner
         advertises the marker; ``stac_service._has_stac`` treats the
         empty tuple as "STAC unavailable" so the catalog-tier hard-reject
-        at ``_assert_stac_capable_metadata_stack`` still fires correctly
+        at ``_assert_stac_capable_collection_stack`` still fires correctly
         in stac-less deployments.
         """
         for inner in self._default_inner_drivers:

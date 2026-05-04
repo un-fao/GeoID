@@ -87,7 +87,7 @@ from dynastore.models.protocols.web import StaticFilesProtocol
 import os
 from .stac_virtual import StacVirtualMixin
 
-def _assert_stac_capable_metadata_stack() -> None:
+def _assert_stac_capable_collection_stack() -> None:
     """Verify the catalog-tier can persist a STAC envelope; warn on the
     collection tier.
 
@@ -498,7 +498,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # Deployments pointing routing configs at STAC-blind drivers
             # (e.g. ES-only without the stac extra installed) fail loudly
             # here rather than silently dropping the STAC slice on write.
-            _assert_stac_capable_metadata_stack()
+            _assert_stac_capable_collection_stack()
 
             # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged
             # The definition is a Pydantic model with localized fields. model_dump() handles serialization.

@@ -31,7 +31,7 @@ from dynastore.models.driver_context import DriverContext
 pytestmark = [
     pytest.mark.enable_extensions("tiles", "dwh", "features"),
     # 'stac' MODULE (not extension) registers CollectionStacPostgresqlDriver
-    # and provisions the collection_metadata_stac sidecar at lifespan DDL time.
+    # and provisions the collection_stac sidecar at lifespan DDL time.
     # The collection-write code path always touches that sidecar, so omitting
     # it here causes setup_collection to 500 on the first POST /collections.
     pytest.mark.enable_modules(

@@ -536,7 +536,7 @@ from dynastore.modules.db_config.query_executor import (
 
 
 @lifecycle_registry.sync_catalog_initializer(priority=5)
-async def _migrate_stac_metadata_tables(
+async def _migrate_stac_tables(
     conn: DbResource, schema: str, catalog_id: str
 ):
     """Rename legacy ``_stac_metadata`` sidecar tables to ``_item_metadata``.

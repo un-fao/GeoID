@@ -701,8 +701,8 @@ class CollectionService:
                     f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
                     f'ms.item_assets, mc.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata_core mc ON mc.collection_id = c.id '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_core mc ON mc.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_stac ms ON ms.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
                 )
@@ -715,8 +715,8 @@ class CollectionService:
                     f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
                     f'ms.item_assets, mc.extra_metadata '
                     f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata_core mc ON mc.collection_id = c.id '
-                    f'LEFT JOIN "{phys_schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_core mc ON mc.collection_id = c.id '
+                    f'LEFT JOIN "{phys_schema}".collection_stac ms ON ms.collection_id = c.id '
                     f'WHERE c.deleted_at IS NULL '
                     f"AND (c.id ILIKE :q OR mc.title->>'en' ILIKE :q OR mc.description->>'en' ILIKE :q) "
                     f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'

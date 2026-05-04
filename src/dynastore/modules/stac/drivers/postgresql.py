@@ -19,8 +19,8 @@
 """STAC-slice PG metadata drivers — relocated to the STAC module.
 
 The two collection/catalog-tier STAC drivers persist the STAC subset of
-the metadata envelope into the per-tenant ``{schema}.collection_metadata_stac``
-and global ``catalog.catalog_metadata_stac`` tables respectively.
+the metadata envelope into the per-tenant ``{schema}.collection_stac``
+and global ``catalog.catalog_stac`` tables respectively.
 
 The shared CRUD bodies live on ``_PgCollectionCoreBase`` /
 ``_PgCatalogCoreBase`` in the core PG metadata module
@@ -70,16 +70,16 @@ class CollectionStacPostgresqlDriver(
     """Inner driver for the STAC collection metadata slice (``extent``,
     ``providers``, …).
 
-    Backs ``{schema}.collection_metadata_stac``. Declares ``SPATIAL_FILTER``
+    Backs ``{schema}.collection_stac``. Declares ``SPATIAL_FILTER``
     because the ``extent`` column carries the STAC bbox the spatial-filter
     endpoints match against.  Composed inside the PG-tier wrapper
-    ``CollectionPostgresqlDriver`` via the ``metadata_stac`` sidecar
+    ``CollectionPostgresqlDriver`` via the ``collection_stac`` sidecar
     (PR 1e step 3b); not a standalone ``CollectionStore`` plugin
     anymore.  The wrapper forwards the ``stac_metadata_columns()`` marker
     to this class via ``CollectionPgSidecarRegistry`` try-import.
     """
 
-    _table: ClassVar[str] = "collection_metadata_stac"
+    _table: ClassVar[str] = "collection_stac"
     _columns: ClassVar[Tuple[str, ...]] = _COLLECTION_STAC_COLUMNS
 
     capabilities: FrozenSet[str] = frozenset({
@@ -99,14 +99,14 @@ class CatalogStacPostgresqlDriver(
 ):
     """Primary driver for STAC catalog metadata.
 
-    Backs ``catalog.catalog_metadata_stac``. Scope: ``stac_version``,
+    Backs ``catalog.catalog_stac``. Scope: ``stac_version``,
     ``stac_extensions``, ``conforms_to``, ``links``, ``assets``.
 
     Structurally satisfies ``StacCatalogEntityStoreCapability`` via the
     ``stac_metadata_columns()`` marker method.
     """
 
-    _table: ClassVar[str] = "catalog_metadata_stac"
+    _table: ClassVar[str] = "catalog_stac"
     _columns: ClassVar[Tuple[str, ...]] = _CATALOG_STAC_COLUMNS
 
     capabilities: FrozenSet[str] = frozenset({

@@ -150,8 +150,8 @@ def _reset_registry():
     saved = dict(CollectionPgSidecarRegistry._registry)
     saved_loaded = CollectionPgSidecarRegistry._defaults_loaded
     CollectionPgSidecarRegistry.clear()
-    CollectionPgSidecarRegistry._registry["metadata_core"] = _FakeCoreCls  # type: ignore[assignment]
-    CollectionPgSidecarRegistry._registry["metadata_stac"] = _FakeStacCls  # type: ignore[assignment]
+    CollectionPgSidecarRegistry._registry["collection_core"] = _FakeCoreCls  # type: ignore[assignment]
+    CollectionPgSidecarRegistry._registry["collection_stac"] = _FakeStacCls  # type: ignore[assignment]
     CollectionPgSidecarRegistry._defaults_loaded = True
     # Clear singletons between tests.
     _FakeCoreCls._instance = None
@@ -208,14 +208,14 @@ def test_capabilities_union_covers_inner_capabilities():
 def test_default_sidecars_includes_core_and_stac_when_both_registered():
     sidecars = CollectionPgSidecarRegistry.default_sidecars()
     types = [s.sidecar_type for s in sidecars]
-    assert types == ["metadata_core", "metadata_stac"]
+    assert types == ["collection_core", "collection_stac"]
 
 
 def test_default_sidecars_omits_stac_when_unregistered():
     """Simulates a deployment without the stac extra installed."""
-    CollectionPgSidecarRegistry._registry.pop("metadata_stac", None)
+    CollectionPgSidecarRegistry._registry.pop("collection_stac", None)
     sidecars = CollectionPgSidecarRegistry.default_sidecars()
-    assert [s.sidecar_type for s in sidecars] == ["metadata_core"]
+    assert [s.sidecar_type for s in sidecars] == ["collection_core"]
 
 
 def test_unknown_sidecar_type_skipped_with_warning(caplog):
@@ -292,7 +292,7 @@ async def test_get_metadata_swallows_per_inner_failure_and_returns_other_slices(
         def __new__(cls):  # type: ignore[misc]
             return failing
 
-    CollectionPgSidecarRegistry._registry["metadata_core"] = _FailingCls  # type: ignore[assignment]
+    CollectionPgSidecarRegistry._registry["collection_core"] = _FailingCls  # type: ignore[assignment]
     driver = CollectionPostgresqlDriver()
     out = await driver.get_metadata("cat-a", "col-a")
     assert out is not None
@@ -347,7 +347,7 @@ def test_wrapper_config_sidecars_discriminated_union_round_trips():
     dumped = cfg.model_dump(exclude_unset=True)
     restored = CollectionPostgresqlDriverConfig.model_validate(dumped)
     assert [s.sidecar_type for s in restored.sidecars] == [
-        "metadata_core", "metadata_stac",
+        "collection_core", "collection_stac",
     ]
 
 
@@ -365,7 +365,7 @@ def test_wrapper_config_default_sidecars_is_empty_list():
 # Regression guard for PR 1e step 3b: before the fix, the wrapper had no
 # ``stac_metadata_columns`` method, so ``isinstance(wrapper,
 # StacCollectionEntityStoreCapability)`` returned False and
-# ``stac_service._assert_stac_capable_metadata_stack`` warned
+# ``stac_service._assert_stac_capable_collection_stack`` warned
 # "STAC slice will be dropped on write" even though the wrapper's
 # STAC sidecar actually persisted it.
 # ---------------------------------------------------------------------------
@@ -392,11 +392,11 @@ def test_wrapper_satisfies_stac_capability_when_stac_inner_loaded():
 
 
 def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
-    """Deployment without the stac extra: registry has only metadata_core,
+    """Deployment without the stac extra: registry has only collection_core,
     wrapper's stac_metadata_columns() must return () so
     ``stac_service._has_stac`` correctly identifies STAC as unavailable.
     """
-    CollectionPgSidecarRegistry._registry.pop("metadata_stac", None)
+    CollectionPgSidecarRegistry._registry.pop("collection_stac", None)
     driver = CollectionPostgresqlDriver()
     assert driver.stac_metadata_columns() == ()
 
@@ -432,7 +432,7 @@ async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
                 db_resource=None,
             )
         assert any(
-            "sidecar cache invalidated" in r.message and "metadata_core" in r.message
+            "sidecar cache invalidated" in r.message and "collection_core" in r.message
             for r in caplog.records
         ), "Apply handler must log INFO when invalidating cache for non-empty override"
     finally:
@@ -510,7 +510,7 @@ async def test_apply_handler_safe_when_wrapper_not_yet_registered():
 
 async def test_operator_override_actually_changes_runtime_fanout():
     """Mock ConfigsProtocol.get_config to return a config with ONLY
-    metadata_core in sidecars (no metadata_stac).  Verify the wrapper
+    collection_core in sidecars (no collection_stac).  Verify the wrapper
     fans out to ONLY core, not both — proving the runtime override
     is honored, not silently dropped (which was the v0.5.70 state).
     """

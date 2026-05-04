@@ -7,24 +7,24 @@
 #        http://www.apache.org/licenses/LICENSE-2.0
 
 """
-Core PostgreSQL metadata DDL — catalog + tenant ``*_metadata_core`` tables.
+Core PostgreSQL metadata DDL — catalog + tenant ``*_collection_core`` tables.
 
 Backs the ``CatalogStore`` / ``CollectionStore`` core
 drivers (``modules.storage.drivers.core_postgresql``).
 
 Global (under ``catalog.`` schema):
 
-- ``catalog.catalog_metadata_core`` — CORE fields (title, description,
+- ``catalog.catalog_core`` — CORE fields (title, description,
   keywords, license, extra_metadata) keyed on ``catalog_id``.
 
 Per-tenant (under each ``{schema}``):
 
-- ``{schema}.collection_metadata_core`` — CORE collection metadata
+- ``{schema}.collection_core`` — CORE collection metadata
   (title, description, keywords, license, extra_metadata).
 
-The STAC sidecar tables (``*.catalog_metadata_stac`` /
-``*.collection_metadata_stac``) live in
-``modules.stac.db_init.metadata_stac_tables`` and run only when the STAC
+The STAC sidecar tables (``*.catalog_stac`` /
+``*.collection_stac``) live in
+``modules.stac.db_init.stac_tables`` and run only when the STAC
 module is installed.
 """
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CATALOG_METADATA_CORE_DDL = """
-CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_core (
+CREATE TABLE IF NOT EXISTS catalog.catalog_core (
     catalog_id     VARCHAR PRIMARY KEY REFERENCES catalog.catalogs(id) ON DELETE CASCADE,
     title          JSONB,
     description    JSONB,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_core (
 # ---------------------------------------------------------------------------
 
 TENANT_METADATA_CORE_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
+CREATE TABLE IF NOT EXISTS {schema}.collection_core (
     collection_id  VARCHAR PRIMARY KEY,
     title          JSONB,
     description    JSONB,
@@ -84,12 +84,12 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_core (
 # ---------------------------------------------------------------------------
 
 
-async def ensure_global_metadata_core_tables(conn: DbResource) -> None:
-    """Apply the global CORE DDL (``catalog.catalog_metadata_core``).
+async def ensure_global_core_tables(conn: DbResource) -> None:
+    """Apply the global CORE DDL (``catalog.catalog_core``).
 
-    The STAC sidecar table (``catalog.catalog_metadata_stac``) is owned
+    The STAC sidecar table (``catalog.catalog_stac``) is owned
     by the STAC module — when installed, ``StacModule.lifespan`` applies
-    its DDL via ``ensure_global_stac_metadata_tables``.
+    its DDL via ``ensure_global_stac_tables``.
 
     Idempotent.  Called once during ``CatalogModule`` init after the
     ``catalog.catalogs`` table has been created.
@@ -97,13 +97,13 @@ async def ensure_global_metadata_core_tables(conn: DbResource) -> None:
     await DDLQuery(CATALOG_METADATA_CORE_DDL).execute(conn)
 
 
-async def ensure_tenant_metadata_core_tables(conn: DbResource, schema: str) -> None:
-    """Apply the per-tenant CORE DDL (``{schema}.collection_metadata_core``).
+async def ensure_tenant_core_tables(conn: DbResource, schema: str) -> None:
+    """Apply the per-tenant CORE DDL (``{schema}.collection_core``).
 
-    The per-tenant STAC sidecar (``{schema}.collection_metadata_stac``) is
+    The per-tenant STAC sidecar (``{schema}.collection_stac``) is
     owned by the STAC module — when installed, the lifecycle-registered
-    ``_ensure_tenant_stac_metadata_tables`` initializer in
-    ``modules.stac.db_init.metadata_stac_tables`` runs alongside this.
+    ``_ensure_tenant_stac_tables`` initializer in
+    ``modules.stac.db_init.stac_tables`` runs alongside this.
 
     Idempotent.  Called from ``create_catalog`` as the canonical
     collection-metadata storage provision step.  FK to

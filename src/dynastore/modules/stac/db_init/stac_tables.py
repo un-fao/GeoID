@@ -19,10 +19,10 @@
 """STAC-slice metadata DDL.
 
 When the STAC module is installed, the per-tenant lifecycle initializer
-``_ensure_tenant_stac_metadata_tables`` (decorated with
+``_ensure_tenant_stac_tables`` (decorated with
 ``@lifecycle_registry.sync_catalog_initializer``) runs at every
 ``CatalogService.create_catalog`` call — alongside the core-tables
-initializer in ``modules.catalog.db_init.metadata_core_tables``. The
+initializer in ``modules.catalog.db_init.core_tables``. The
 global STAC table is applied once during ``StacModule.lifespan``.
 
 Without the STAC module loaded, neither the global nor the per-tenant
@@ -39,7 +39,7 @@ from dynastore.modules.db_config.query_executor import (
 
 
 CATALOG_METADATA_STAC_DDL = """
-CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_stac (
+CREATE TABLE IF NOT EXISTS catalog.catalog_stac (
     catalog_id      VARCHAR PRIMARY KEY REFERENCES catalog.catalogs(id) ON DELETE CASCADE,
     stac_version    VARCHAR(20),
     stac_extensions JSONB,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS catalog.catalog_metadata_stac (
 
 
 TENANT_METADATA_STAC_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
+CREATE TABLE IF NOT EXISTS {schema}.collection_stac (
     collection_id   VARCHAR PRIMARY KEY,
     stac_version    VARCHAR(20),
     stac_extensions JSONB,
@@ -69,8 +69,8 @@ CREATE TABLE IF NOT EXISTS {schema}.collection_metadata_stac (
 """
 
 
-async def ensure_global_stac_metadata_tables(conn: DbResource) -> None:
-    """Apply the global STAC DDL (``catalog.catalog_metadata_stac``).
+async def ensure_global_stac_tables(conn: DbResource) -> None:
+    """Apply the global STAC DDL (``catalog.catalog_stac``).
 
     Idempotent. ``StacModule.lifespan`` calls this once at app startup
     after ``CatalogModule`` has created ``catalog.catalogs`` (the FK
@@ -80,10 +80,10 @@ async def ensure_global_stac_metadata_tables(conn: DbResource) -> None:
 
 
 @lifecycle_registry.sync_catalog_initializer(priority=2)
-async def _ensure_tenant_stac_metadata_tables(
+async def _ensure_tenant_stac_tables(
     conn: DbResource, schema: str, catalog_id: str
 ) -> None:
-    """Per-tenant lifecycle hook: create ``{schema}.collection_metadata_stac``.
+    """Per-tenant lifecycle hook: create ``{schema}.collection_stac``.
 
     Priority 2 keeps this very early — before any module-specific
     lifecycle hooks (priority 5+) that might write STAC metadata
