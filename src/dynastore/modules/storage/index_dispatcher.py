@@ -430,6 +430,11 @@ class IndexDispatcher:
         self._outbox = outbox
         self._breaker = breaker
         self._outbox_warning_emitted: set = set()
+        # ``ensure_indexer`` is idempotent on the driver side, but we
+        # cache success here to avoid the per-call ES ``indices.exists``
+        # round-trip.  Keyed by ``(indexer_id, catalog, collection)``;
+        # the set survives for the dispatcher's process lifetime.
+        self._ensured: set = set()
 
     # ------------------------------------------------------------------
     # Public surface — single-op and bulk
@@ -521,6 +526,10 @@ class IndexDispatcher:
                 )
             return
 
+        # Idempotent bootstrap of the indexer's storage (per-process cache).
+        if not await self._ensure_or_handle(entry, indexer, ctx, op):
+            return
+
         # Synchronous in-process attempt.
         try:
             await indexer.index(ctx, op)
@@ -530,6 +539,37 @@ class IndexDispatcher:
             if self._breaker is not None:
                 self._breaker.record_failure(entry.driver_id)
             await self._handle_failure(entry, ctx, op, exc)
+
+    async def _ensure_or_handle(
+        self,
+        entry: OperationDriverEntry,
+        indexer: Indexer,
+        ctx: IndexContext,
+        op: IndexOp,
+    ) -> bool:
+        """Run ``ensure_indexer`` once per (indexer_id, catalog, collection).
+
+        Returns True when the indexer is ready to receive ops, False when
+        the bootstrap failed and the dispatcher already routed the op
+        through its FailurePolicy (e.g. enqueued to outbox, logged WARN).
+        Raises :class:`IndexerFatal` when the policy is FATAL.
+        """
+        key = (entry.driver_id, ctx.catalog, ctx.collection)
+        if key in self._ensured:
+            return True
+        # Some Indexer impls may not have ``ensure_indexer`` yet during the
+        # transition window — treat absence as "no bootstrap needed".
+        ensure = getattr(indexer, "ensure_indexer", None)
+        if ensure is None:
+            self._ensured.add(key)
+            return True
+        try:
+            await ensure(ctx)
+            self._ensured.add(key)
+            return True
+        except Exception as exc:
+            await self._handle_failure(entry, ctx, op, exc)
+            return False
 
     async def _dispatch_bulk(
         self,
@@ -541,6 +581,12 @@ class IndexDispatcher:
         if self._breaker is not None and self._breaker.is_open(entry.driver_id):
             return BulkResult(total=len(ops), failed=len(ops), failures=[
                 {"reason": "circuit_breaker_open", "indexer": entry.driver_id},
+            ])
+        # Bootstrap once per (indexer, catalog, collection).  Use the
+        # first op as the failure-handling target if ensure raises.
+        if ops and not await self._ensure_or_handle(entry, indexer, ctx, ops[0]):
+            return BulkResult(total=len(ops), failed=len(ops), failures=[
+                {"reason": "ensure_indexer_failed", "indexer": entry.driver_id},
             ])
         try:
             result = await indexer.index_bulk(ctx, ops)

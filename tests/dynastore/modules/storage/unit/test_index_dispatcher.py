@@ -34,11 +34,24 @@ from dynastore.modules.storage.routing_config import (
 class _StubIndexer:
     """Records calls; can be told to raise on a specific op_type."""
 
-    def __init__(self, indexer_id: str, *, raise_on: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        indexer_id: str,
+        *,
+        raise_on: Optional[str] = None,
+        raise_on_ensure: bool = False,
+    ) -> None:
         self.indexer_id = indexer_id
         self.raise_on = raise_on
+        self.raise_on_ensure = raise_on_ensure
         self.calls: List[IndexOp] = []
         self.bulk_calls: List[Sequence[IndexOp]] = []
+        self.ensure_calls: List[IndexContext] = []
+
+    async def ensure_indexer(self, ctx: IndexContext) -> None:
+        self.ensure_calls.append(ctx)
+        if self.raise_on_ensure:
+            raise RuntimeError("stub ensure_indexer failure")
 
     async def index(self, ctx: IndexContext, op: IndexOp) -> None:
         self.calls.append(op)
@@ -102,6 +115,88 @@ def _op(op_type: str = "upsert", entity_id: str = "item-1") -> IndexOp:
 # ---------------------------------------------------------------------------
 # Happy path — no failures
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# ensure_indexer (Phase 2e) — bootstrap before first write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fan_out_calls_ensure_indexer_once_per_collection():
+    a = _StubIndexer("a")
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    # Three ops on the same (catalog, collection) — only one ensure call.
+    await dispatcher.fan_out(_ctx(), _op(entity_id="i1"))
+    await dispatcher.fan_out(_ctx(), _op(entity_id="i2"))
+    await dispatcher.fan_out(_ctx(), _op(entity_id="i3"))
+    assert len(a.ensure_calls) == 1
+    assert len(a.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_fan_out_re_runs_ensure_for_new_collection():
+    a = _StubIndexer("a")
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    ctx_b = IndexContext(catalog="cat-x", collection="col-z", correlation_id="c2")
+    await dispatcher.fan_out(_ctx(), _op())
+    await dispatcher.fan_out(ctx_b, _op())
+    # Two distinct collections → two ensure calls.
+    assert len(a.ensure_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexer_failure_with_warn_skips_index_call():
+    a = _StubIndexer("a", raise_on_ensure=True)
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    await dispatcher.fan_out(_ctx(), _op())
+    # ensure_indexer attempted once; index() never reached.
+    assert len(a.ensure_calls) == 1
+    assert len(a.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_indexer_failure_with_fatal_raises():
+    a = _StubIndexer("a", raise_on_ensure=True)
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.FATAL)],
+        indexers={"a": a},
+    )
+    with pytest.raises(IndexerFatal):
+        await dispatcher.fan_out(_ctx(), _op())
+
+
+@pytest.mark.asyncio
+async def test_indexer_without_ensure_indexer_method_is_treated_as_ready():
+    """Drivers in transition may not yet have ensure_indexer — the
+    dispatcher must not block on missing methods.
+    """
+
+    class _LegacyIndexer:
+        indexer_id = "legacy"
+        def __init__(self):
+            self.calls: List = []
+        async def index(self, ctx, op):
+            self.calls.append(op)
+        async def index_bulk(self, ctx, ops):
+            return BulkResult(total=len(ops), succeeded=len(ops))
+
+    a = _LegacyIndexer()
+    dispatcher = _make_dispatcher(
+        entries=[_entry("legacy", on_failure=FailurePolicy.WARN)],
+        indexers={"legacy": a},
+    )
+    await dispatcher.fan_out(_ctx(), _op())
+    assert len(a.calls) == 1
 
 
 @pytest.mark.asyncio

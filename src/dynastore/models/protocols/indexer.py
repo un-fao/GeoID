@@ -131,6 +131,25 @@ class Indexer(Protocol):
 
     indexer_id: ClassVar[str]
 
+    async def ensure_indexer(self, ctx: IndexContext) -> None:
+        """Ensure this indexer's per-tenant storage is provisioned.
+
+        Each backend has different needs — ES creates a per-catalog
+        index plus alias membership, a vector DB creates a collection
+        with a configured dimension, an audit-log indexer is a no-op.
+        Implementations MUST be idempotent: dispatched repeatedly per
+        process, but only the first call per (indexer, catalog,
+        collection) is uncached on the dispatcher side.
+
+        Called by :class:`IndexDispatcher` before the first
+        :meth:`index` / :meth:`index_bulk` for a given
+        ``(catalog, collection)``.  Failures surface to the dispatcher
+        and are governed by the routing entry's ``FailurePolicy`` —
+        OUTBOX persists the obligation; the drain worker re-attempts
+        ``ensure_indexer`` automatically.
+        """
+        ...
+
     async def index(self, ctx: IndexContext, op: IndexOp) -> None:
         """Apply a single index op (upsert or delete) to this sink.
 

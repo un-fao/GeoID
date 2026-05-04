@@ -1100,6 +1100,17 @@ class ItemsElasticsearchDriver(
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
+    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+        """Idempotent bootstrap — creates the per-tenant items index
+        ``{prefix}-items-{catalog_id}`` with ``ITEM_MAPPING`` if missing
+        and enrols it in the platform alias ``{prefix}-items-public``.
+
+        Delegates to :meth:`ensure_storage` so a single code path
+        handles both per-collection-creation eager bootstrap and the
+        dispatcher's lazy first-write check.
+        """
+        await self.ensure_storage(ctx.catalog, ctx.collection)
+
     async def index(self, ctx, op) -> None:  # type: ignore[override]
         """Apply a single :class:`IndexOp` to the per-tenant items index.
 
@@ -1610,6 +1621,13 @@ class AssetElasticsearchDriver(
     # ------------------------------------------------------------------
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
+
+    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+        """Idempotent bootstrap — creates ``{prefix}-assets-{catalog_id}``
+        with ``ASSET_MAPPING`` if missing.  No alias today (assets are
+        per-catalog only; no platform-wide assets alias).
+        """
+        await self.ensure_storage(ctx.catalog, ctx.collection)
 
     async def index(self, ctx, op) -> None:  # type: ignore[override]
         """Apply a single asset :class:`IndexOp` via the existing

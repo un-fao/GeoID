@@ -456,6 +456,20 @@ class ItemsElasticsearchPrivateDriver(
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
+    async def ensure_indexer(self, ctx) -> None:  # type: ignore[override]
+        """Idempotent bootstrap for the private per-tenant index.
+
+        Creates ``{prefix}-geoid-{catalog_id}`` with
+        ``TENANT_FEATURE_MAPPING`` if missing, then re-applies the
+        catalog's DENY policies (recovers in-memory IAM state on cold
+        boot — same recovery path as :meth:`ensure_storage`).
+
+        No public alias today: the private index is intentionally
+        absent from the ``{prefix}-items-public`` discovery alias to
+        keep tenant isolation intact.
+        """
+        await self.ensure_storage(ctx.catalog, ctx.collection)
+
     async def index(self, ctx, op) -> None:  # type: ignore[override]
         """Apply a single item :class:`IndexOp` to the per-tenant private
         index ``{prefix}-geoid-{catalog_id}``.
