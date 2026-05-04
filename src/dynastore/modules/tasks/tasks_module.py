@@ -1288,7 +1288,7 @@ async def claim_next(
         )
         RETURNING task_id, schema_name, scope, task_type, execution_mode,
                   caller_id, inputs, collection_id, retry_count, max_retries,
-                  timestamp, dedup_key;
+                  timestamp, dedup_key, owner_id;
     """
 
     async with managed_transaction(engine) as conn:
@@ -1385,7 +1385,7 @@ async def claim_batch(
         )
         RETURNING task_id, schema_name, scope, task_type, execution_mode,
                   caller_id, inputs, collection_id, retry_count, max_retries,
-                  timestamp, dedup_key;
+                  timestamp, dedup_key, owner_id;
     """
 
     async with managed_transaction(engine) as conn:
@@ -1544,7 +1544,7 @@ async def claim_by_id(
           AND status = 'PENDING'
         RETURNING task_id, schema_name, scope, task_type, execution_mode,
                   caller_id, inputs, collection_id, retry_count, max_retries,
-                  timestamp, dedup_key;
+                  timestamp, dedup_key, owner_id;
     """
     async with managed_transaction(engine) as conn:
         return await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
