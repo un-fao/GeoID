@@ -37,7 +37,6 @@ module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.9.0", "pyarrow>=14.0.0"]
 module_storage_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_private = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
-module_metadata_postgresql = []
 module_collection_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_catalog_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_stac = []
@@ -230,7 +229,7 @@ tools_grp = ["dynastore[tools_core_grp,dimensions,notebooks]"]
 monitor_grp = ["dynastore[stats,logs]"]
 index_grp = ["dynastore[elasticsearch,task_elasticsearch_indexer_deps]"]
 # drivers_grp — all storage/asset/metadata drivers (both collection and asset domains)
-drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_private,module_storage_elasticsearch_assets,module_metadata_postgresql,module_collection_elasticsearch,module_catalog_elasticsearch]"]
+drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module_storage_iceberg,module_storage_elasticsearch,module_storage_elasticsearch_private,module_storage_elasticsearch_assets,module_collection_elasticsearch,module_catalog_elasticsearch]"]
 
 # ==========================================================================
 # TASK GROUPINGS (sync-db)

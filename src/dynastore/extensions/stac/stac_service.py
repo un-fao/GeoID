@@ -210,13 +210,8 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
     def configure_app(self, app: FastAPI):
         """Early configuration for the STAC extension."""
-        # Register sidecar in the registry (IoC)
-        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-        from .stac_items_sidecar import StacItemsSidecar
-
-        SidecarRegistry.register("stac_metadata", StacItemsSidecar)
-        logger.info("STACService: STAC metadata sidecar registered.")
-
+        # Sidecar registration is canonical at module-import time inside
+        # ``stac_items_sidecar.py``; no re-registration needed here.
         # Web pages / static assets are discovered by WebModule via the
         # WebPageContributor / StaticAssetProvider capability protocols —
         # implemented on this class via collect_web_pages/collect_static_assets.
