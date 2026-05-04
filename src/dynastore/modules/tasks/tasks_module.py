@@ -1558,15 +1558,18 @@ async def claim_for_dispatch(
     owner_id: str,
     locked_until: datetime,
     expected_owner_prefix: Optional[str] = None,
+    prior_owner_id: Optional[str] = None,
 ) -> bool:
     """Conditionally take ownership of an ACTIVE task without a fresh claim.
 
     Used by runners on the dispatcher path to extend the lease and stamp
-    themselves as owner *only if* the row is unowned or owned by a peer of
-    the same runner family (matched by ``expected_owner_prefix`` LIKE).
-    Returns True when the UPDATE matched a row, False otherwise — callers
-    should treat False as "another worker already owns this task; do not
-    spawn the side-effect (e.g. Cloud Run Job)".
+    themselves as owner *only if* the row is unowned, owned by a peer of
+    the same runner family (matched by ``expected_owner_prefix`` LIKE), or
+    owned by the immediate dispatcher predecessor (``prior_owner_id``
+    exact match — the in-process dispatcher claim that delegated to this
+    runner). Returns True when the UPDATE matched a row, False otherwise
+    — callers should treat False as "another worker already owns this
+    task; do not spawn the side-effect (e.g. Cloud Run Job)".
 
     Belt-and-suspenders against any future regression that re-opens a
     create→claim race on the producing side.
@@ -1592,6 +1595,8 @@ async def claim_for_dispatch(
               OR (CAST(:expected_owner_prefix AS TEXT) IS NOT NULL
                   AND owner_id LIKE :expected_owner_prefix || '%')
               OR owner_id = :owner_id
+              OR (CAST(:prior_owner_id AS TEXT) IS NOT NULL
+                  AND owner_id = :prior_owner_id)
           )
         RETURNING task_id;
     """
@@ -1602,6 +1607,7 @@ async def claim_for_dispatch(
             owner_id=owner_id,
             locked_until=locked_until,
             expected_owner_prefix=expected_owner_prefix,
+            prior_owner_id=prior_owner_id,
         )
     return row is not None
 

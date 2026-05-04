@@ -185,18 +185,24 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
         existing_task: Optional[Task] = None
 
         if claimed_task_id is not None:
-            # Dispatcher path: take ownership conditionally.  If the row is
-            # owned by a non-GcpJobRunner peer (or already terminal) we got
-            # raced — return DEFERRED_COMPLETION without spawning so we do
-            # not double-fire.
+            # Dispatcher path: take ownership conditionally.  Accept the
+            # in-process dispatcher's predecessor claim (``prior_owner_id``)
+            # as a legitimate hand-off; only bail with DEFERRED_COMPLETION
+            # when the row was raced by an unrelated worker.
             import uuid
             task_id_uuid = uuid.UUID(str(claimed_task_id))
+            prior_owner_id = (
+                context.extra_context.get("prior_owner_id")
+                if context.extra_context
+                else None
+            )
             claimed = await tasks_module.claim_for_dispatch(
                 context.engine,
                 task_id_uuid,
                 owner_id=owner_id,
                 locked_until=new_locked_until,
                 expected_owner_prefix="gcp_cloud_run_",
+                prior_owner_id=prior_owner_id,
             )
             if not claimed:
                 logger.warning(

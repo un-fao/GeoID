@@ -176,6 +176,59 @@ async def test_dispatcher_path_skips_runjob_when_claim_lost():
     run_job_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_dispatcher_path_takes_over_predecessor_claim():
+    """When the dispatcher pre-claims the row with its own ``_RUNNER_ID``
+    (hostname:pid — no ``gcp_cloud_run_`` prefix) and delegates to
+    GcpJobRunner, ``claim_for_dispatch`` MUST accept the predecessor as a
+    legitimate hand-off via ``prior_owner_id``. Otherwise the runner
+    bails with ``DEFERRED_COMPLETION`` and the Cloud Run job never fires
+    — the bug that left every reindex task stuck at progress=0 forever
+    (closes #217).
+    """
+    from dynastore.modules.gcp.gcp_runner import GcpJobRunner
+
+    new_task = MagicMock()
+    new_task.task_id = _uuid.uuid4()
+
+    runner = GcpJobRunner()
+    ctx = RunnerContext(
+        engine=_fake_engine(),
+        task_type="elasticsearch_indexer",
+        caller_id="u",
+        inputs={},
+        db_schema="s_test",
+        extra_context={
+            "task_id": str(_uuid.uuid4()),
+            "task_timestamp": "2026-05-04T12:00:00Z",
+            "prior_owner_id": "host-abc:42",
+        },
+    )
+
+    claim_mock = AsyncMock(return_value=True)
+    run_job_mock = AsyncMock()
+    with patch(
+        "dynastore.modules.tasks.tasks_module.claim_for_dispatch", claim_mock
+    ), patch(
+        "dynastore.modules.gcp.tools.jobs.load_job_config",
+        AsyncMock(return_value={
+            "elasticsearch_indexer": "dynastore-elasticsearch-indexer"
+        }),
+    ), patch(
+        "dynastore.modules.gcp.tools.jobs.run_cloud_run_job_async", run_job_mock
+    ), patch(
+        "dynastore.modules.gcp.tools.jobs.try_load_process_definition", return_value=None
+    ), patch(
+        "dynastore.modules.gcp.tools.jobs.get_job_max_retries", return_value=3
+    ):
+        await runner.run(ctx)
+
+    claim_mock.assert_awaited_once()
+    assert claim_mock.await_args.kwargs["prior_owner_id"] == "host-abc:42"
+    assert claim_mock.await_args.kwargs["expected_owner_prefix"] == "gcp_cloud_run_"
+    run_job_mock.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Bounded retry around RunJob — transient errors, permanent fail-fast
 # ---------------------------------------------------------------------------

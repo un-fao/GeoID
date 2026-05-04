@@ -468,6 +468,11 @@ class ExecutionEngine:
         _extra_context: Dict[str, Any] = {
             "task_id": str(task_id),
             "task_timestamp": task_row.get("timestamp"),
+            # Pass the dispatcher's claim through so runners that take over
+            # ownership (GcpJobRunner.claim_for_dispatch) can recognise the
+            # in-process predecessor instead of treating it as a competing
+            # peer and bailing with "race detected" (closes #217).
+            "prior_owner_id": task_row.get("owner_id"),
         }
         if heartbeat is not None:
             _extra_context["heartbeat"] = heartbeat
