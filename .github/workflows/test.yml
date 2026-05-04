@@ -358,6 +358,110 @@ jobs:
             integration-badge.svg
           if-no-files-found: warn
 
+  integration-tests-elasticsearch:
+    # Coverage matrix job — runs the ~13 tests carrying
+    # `@pytest.mark.elasticsearch` against a live OpenSearch container.
+    # Conftest gates these on DYNASTORE_RUN_ELASTICSEARCH_TESTS=true; this
+    # job is the one place that env var is set, so the core
+    # `integration-tests` job continues to skip them (no overlap, no double
+    # execution). Advisory-only — its outcome is NOT included in
+    # aggregate.tests_passed while ES coverage stabilises (1 known-failing
+    # test in this set as of 2026-05-04). Re-include in the gate once
+    # green for ~5 consecutive runs.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    if: ${{ inputs.run_integration != 'false' }}
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Reuse the same `scope=tester` cache as integration-tests / unit-tests.
+      # When the three jobs run concurrently, whichever finishes first warms
+      # the cache for the others' next run.
+      - name: Build test-runner image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/dynastore/docker/Dockerfile
+          target: tester
+          build-args: SCOPE=all
+          tags: geoid-test-runner:ci
+          load: true
+          cache-from: type=gha,scope=tester
+          cache-to: type=gha,mode=max,scope=tester
+
+      - name: Start db + elasticsearch
+        run: |
+          docker compose -f src/dynastore/docker/docker-compose.yml build db
+          docker compose -f src/dynastore/docker/docker-compose.yml up -d --wait db elasticsearch
+
+      - name: Run elasticsearch-marked tests
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
+          test -n "$NETWORK" || { echo "dynastore_net not found"; docker network ls; exit 1; }
+          eval "$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB)=' src/dynastore/docker/.env | sed 's/^/export /')"
+          docker run --rm \
+            --network "$NETWORK" \
+            --workdir /dynastore \
+            -v "$WORKSPACE":/dynastore/workspace \
+            -v "$WORKSPACE/src":/dynastore/src \
+            -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
+            --env-file src/dynastore/docker/.env \
+            -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
+            -e ELASTICSEARCH_URL="http://elasticsearch:9200" \
+            -e DYNASTORE_RUN_ELASTICSEARCH_TESTS=true \
+            -e REMOTE_TEST_EXECUTION=true \
+            -e DYNASTORE_DDL_STATEMENT_TIMEOUT=120s \
+            -e DYNASTORE_DDL_LOCK_TIMEOUT=120s \
+            -e LOG_LEVEL=INFO \
+            -e PYTEST_CURRENT_TEST=true \
+            geoid-test-runner:ci \
+            /opt/venv/bin/pytest -m elasticsearch \
+              tests/dynastore/ \
+              --durations=10 \
+              --junitxml=/dynastore/workspace/test-results-es.xml
+
+      - name: Display elasticsearch logs on failure
+        if: failure()
+        run: |
+          docker compose -f src/dynastore/docker/docker-compose.yml logs elasticsearch
+          docker compose -f src/dynastore/docker/docker-compose.yml logs db
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f src/dynastore/docker/docker-compose.yml down -v
+
+      - name: Report elasticsearch tests
+        uses: dorny/test-reporter@v3
+        if: always()
+        with:
+          name: Integration Tests (Elasticsearch)
+          path: './test-results-es.xml'
+          reporter: java-junit
+          fail-on-error: 'false'
+
+      - name: Upload elasticsearch artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-output-es
+          path: test-results-es.xml
+          if-no-files-found: warn
+
   aggregate:
     # Fan-in: combine unit + integration artifacts, generate the test report
     # JSON, upload the badge bundle, and surface workflow_call outputs.
