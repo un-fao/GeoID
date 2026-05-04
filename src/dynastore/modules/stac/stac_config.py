@@ -195,7 +195,6 @@ class AggregationRule(BaseModel):
 
 class AggregationConfig(BaseModel):
     """Configuration for STAC aggregations following OGC extension."""
-    enabled: bool = Field(True, description="Enable or disable aggregation support")
     default_rules: List[AggregationRule] = Field(default_factory=list, description="Pre-configured aggregations available by default")
     allow_custom: bool = Field(True, description="Allow ad-hoc aggregations via API requests")
     max_aggregations_per_request: int = Field(5, ge=1, le=10, description="Maximum number of aggregations per request")
