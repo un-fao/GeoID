@@ -18,7 +18,8 @@ from dynastore.models.protocols.indexer import (
     BulkResult, Indexer, IndexContext, IndexOp,
 )
 from dynastore.modules.storage.index_dispatcher import (
-    IndexDispatcher, IndexerFatal,
+    IndexDispatcher, IndexerFatal, TaskTableOutboxWriter,
+    _bind_named_to_positional,
 )
 from dynastore.modules.storage.routing_config import (
     FailurePolicy, Operation, OperationDriverEntry, WriteMode,
@@ -217,6 +218,145 @@ async def test_fan_out_bulk_returns_per_indexer_results():
     results = await dispatcher.fan_out_bulk(_ctx(), ops)
     assert results["a"].succeeded == 2
     assert results["b"].succeeded == 2
+
+
+# ---------------------------------------------------------------------------
+# OutboxWriter — Phase 2a
+# ---------------------------------------------------------------------------
+
+
+class _FakePgConn:
+    """Stub connection that records executed SQL for inspection."""
+
+    def __init__(self) -> None:
+        self.calls: List[tuple] = []
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+
+
+@pytest.mark.asyncio
+async def test_outbox_writer_skips_when_no_pg_conn(caplog):
+    """When IndexContext has no pg_conn, atomicity can't be guaranteed —
+    writer logs a warning and returns without raising.
+    """
+    writer = TaskTableOutboxWriter(task_schema_resolver=lambda: "tasks")
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING):
+        await writer.enqueue(
+            indexer_id="x", ctx=_ctx(), op=_op(), last_error="boom",
+        )
+    assert any("ctx.pg_conn is None" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_outbox_writer_inserts_task_row_on_caller_conn():
+    """Happy path: writer issues INSERT INTO {task_schema}.tasks on the
+    caller's connection.  The shape of the SQL + bind args is the load-
+    bearing assertion — this is the contract that gives the atomicity
+    guarantee.
+    """
+    conn = _FakePgConn()
+    ctx = IndexContext(
+        catalog="cat-x", collection="col-y", correlation_id="cid-1",
+        pg_conn=conn,
+    )
+    writer = TaskTableOutboxWriter(task_schema_resolver=lambda: "tasks")
+
+    await writer.enqueue(
+        indexer_id="items_elasticsearch_driver",
+        ctx=ctx,
+        op=_op(),
+        last_error="ES timeout",
+    )
+    assert len(conn.calls) == 1
+    sql, args = conn.calls[0]
+
+    # SQL must INSERT into the tasks table with task_type='index_propagation'.
+    assert "INSERT INTO tasks.tasks" in sql
+    # Named placeholders should have been translated to $N positional args.
+    assert "$1" in sql
+
+    # Inspect the bind args by reconstructing the named->positional mapping.
+    # We re-bind to verify the inputs JSON contains the indexer_id payload.
+    inputs_json = next(
+        (a for a in args if isinstance(a, str) and "items_elasticsearch_driver" in a),
+        None,
+    )
+    assert inputs_json is not None
+    import json as _json
+    inputs = _json.loads(inputs_json)
+    assert inputs["indexer_id"] == "items_elasticsearch_driver"
+    assert inputs["entity_id"] == "item-1"
+    assert inputs["op_type"] == "upsert"
+    assert inputs["catalog"] == "cat-x"
+    assert inputs["last_error"] == "ES timeout"
+
+
+@pytest.mark.asyncio
+async def test_outbox_dedup_key_is_stable_across_calls():
+    """Same (indexer_id, entity_id, op_type) → same dedup_key.  Different
+    op_type → different key.  Coalesces concurrent failures of the same
+    item into one row, but keeps upsert/delete distinct.
+    """
+    op_a = _op("upsert", "abc")
+    op_b = _op("delete", "abc")
+    op_c = _op("upsert", "abc")
+    k_a = TaskTableOutboxWriter._dedup_key("ix", op_a)
+    k_b = TaskTableOutboxWriter._dedup_key("ix", op_b)
+    k_c = TaskTableOutboxWriter._dedup_key("ix", op_c)
+    assert k_a == k_c, "same op identity must coalesce"
+    assert k_a != k_b, "upsert and delete must stay distinct"
+
+
+def test_bind_named_to_positional_handles_repeated_names():
+    sql, args = _bind_named_to_positional(
+        "SELECT :a, :b, :a, :c", {"a": 1, "b": 2, "c": 3},
+    )
+    assert sql == "SELECT $1, $2, $1, $3"
+    assert args == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher × OutboxWriter integration (Phase 2a)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_outbox_policy_with_writer_enqueues_on_failure():
+    """OUTBOX policy + a real OutboxWriter should write the task row when
+    the indexer call fails.  Validates the production durability path
+    end-to-end against the dispatcher.
+    """
+    a = _StubIndexer("a", raise_on="upsert")
+    conn = _FakePgConn()
+    ctx_with_conn = IndexContext(
+        catalog="cat-x", collection="col-y",
+        correlation_id="cid-1", pg_conn=conn,
+    )
+    writer = TaskTableOutboxWriter(task_schema_resolver=lambda: "tasks")
+
+    routing = _StubRouting([_entry("a", on_failure=FailurePolicy.OUTBOX)])
+
+    async def routing_resolver(catalog, collection):
+        return routing
+
+    async def indexer_registry(indexer_id):
+        return {"a": a}.get(indexer_id)
+
+    dispatcher = IndexDispatcher(
+        routing_resolver=routing_resolver,
+        indexer_registry=indexer_registry,
+        outbox=writer,
+    )
+    await dispatcher.fan_out(ctx_with_conn, _op())
+
+    # Indexer was attempted once (and raised).
+    assert len(a.calls) == 1
+    # Outbox row was written on the caller's connection.
+    assert len(conn.calls) == 1
+    sql, _ = conn.calls[0]
+    assert "INSERT INTO tasks.tasks" in sql
 
 
 @pytest.mark.asyncio

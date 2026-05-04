@@ -54,8 +54,10 @@ Phases
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from dynastore.models.protocols.indexer import (
     BulkResult,
@@ -92,6 +94,215 @@ class IndexerFatal(Exception):
         self.indexer_id = indexer_id
         self.op = op
         self.original = original
+
+
+# ---------------------------------------------------------------------------
+# Outbox writer — durable retry path backed by the existing ``tasks`` table
+# ---------------------------------------------------------------------------
+
+
+class OutboxWriterProtocol(Protocol):
+    """Minimal surface the dispatcher needs from a durable retry queue.
+
+    The default implementation (:class:`TaskTableOutboxWriter`) reuses
+    the existing ``tasks.tasks`` table; callers wanting a different
+    persistence (Kafka, SQS, …) implement the same one-method interface.
+    """
+
+    async def enqueue(
+        self,
+        *,
+        indexer_id: str,
+        ctx: IndexContext,
+        op: IndexOp,
+        last_error: Optional[str] = None,
+    ) -> None:
+        ...
+
+
+class TaskTableOutboxWriter:
+    """Outbox backed by the existing ``tasks.tasks`` table.
+
+    Writes a ``task_type='index_propagation'`` row on the caller's PG
+    connection so the row commits / rolls back atomically with the
+    upstream data write.  The regular tasks worker pool drains it via
+    the existing ``claim_batch`` / ``complete_task`` / ``fail_task``
+    pipeline — retry budget, DEAD_LETTER, dedup are all reused.
+
+    The dedup_key is a stable hash of
+    ``(indexer_id, entity_type, entity_id, op_type)`` so concurrent
+    failures on the same item don't fan-out into multiple retry rows.
+    """
+
+    TASK_TYPE = "index_propagation"
+
+    def __init__(
+        self,
+        *,
+        schema_resolver=None,
+        task_schema_resolver=None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        schema_resolver
+            Optional callable ``(catalog: str) -> str`` mapping a catalog
+            id to the per-tenant ``schema_name`` recorded on the task
+            row.  Defaults to passing the catalog id through unchanged
+            (matches the convention used elsewhere — schema_name == catalog
+            schema name).
+        task_schema_resolver
+            Optional callable ``() -> str`` returning the SQL schema that
+            owns the ``tasks`` table.  Defaults to importing
+            :func:`dynastore.modules.tasks.tasks_module.get_task_schema`
+            at call time, so this module stays importable in test
+            contexts that don't pull the tasks runtime.
+        """
+        self._schema_resolver = schema_resolver or (lambda c: c)
+        self._task_schema_resolver = task_schema_resolver
+
+    async def enqueue(
+        self,
+        *,
+        indexer_id: str,
+        ctx: IndexContext,
+        op: IndexOp,
+        last_error: Optional[str] = None,
+    ) -> None:
+        if ctx.pg_conn is None:
+            # Without a caller TX we can't honour the atomicity guarantee.
+            # Emit a single warning and bail; the dispatcher's degrade
+            # path already logged the original failure.
+            logger.warning(
+                "TaskTableOutboxWriter: ctx.pg_conn is None — skipping "
+                "outbox enqueue for indexer '%s' on %s/%s/%s.  Caller "
+                "must pass an open PG connection on IndexContext for "
+                "the OUTBOX policy to be durable.",
+                indexer_id, op.op_type, op.entity_type, op.entity_id,
+            )
+            return
+
+        task_schema = self._resolve_task_schema()
+        schema_name = self._schema_resolver(ctx.catalog)
+
+        inputs = {
+            "indexer_id": indexer_id,
+            "op_type": op.op_type,
+            "entity_type": op.entity_type,
+            "entity_id": op.entity_id,
+            "catalog": ctx.catalog,
+            "collection": ctx.collection,
+            "payload": op.payload,
+            "correlation_id": ctx.correlation_id,
+            "last_error": last_error,
+        }
+        dedup_key = self._dedup_key(indexer_id, op)
+
+        from dynastore.tools.identifiers import generate_uuidv7
+        from dynastore.tools.json import CustomJSONEncoder
+
+        task_id = generate_uuidv7()
+        await self._exec_insert(
+            ctx.pg_conn,
+            sql=f"""
+                INSERT INTO {task_schema}.tasks (
+                    task_id, schema_name, scope, task_type, type,
+                    execution_mode, inputs, collection_id, dedup_key, status
+                ) VALUES (
+                    :task_id, :schema_name, 'CATALOG', :task_type,
+                    'task', 'ASYNCHRONOUS', :inputs::jsonb,
+                    :collection_id, :dedup_key, 'PENDING'
+                )
+                ON CONFLICT DO NOTHING
+            """,
+            params=dict(
+                task_id=task_id,
+                schema_name=schema_name,
+                task_type=self.TASK_TYPE,
+                inputs=json.dumps(inputs, cls=CustomJSONEncoder),
+                collection_id=ctx.collection,
+                dedup_key=dedup_key,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _resolve_task_schema(self) -> str:
+        if self._task_schema_resolver is not None:
+            return self._task_schema_resolver()
+        from dynastore.modules.tasks.tasks_module import get_task_schema
+        return get_task_schema()
+
+    @staticmethod
+    def _dedup_key(indexer_id: str, op: IndexOp) -> str:
+        """Stable hash so repeated failures coalesce into one row."""
+        material = "|".join((
+            indexer_id, op.op_type, op.entity_type, op.entity_id,
+        )).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()[:64]
+
+    async def _exec_insert(
+        self, conn: Any, sql: str, params: Dict[str, Any],
+    ) -> None:
+        """Execute the INSERT on the caller's connection.
+
+        Detects the connection flavour at call time:
+
+        * SQLAlchemy ``AsyncConnection`` — uses ``conn.execute(text(...))``.
+        * asyncpg connection — uses ``conn.execute(...)`` with ``$N``-style
+          parameters and a positional argument list.
+        * Anything else — raises so the dispatcher can fall back to
+          degraded-WARN mode.
+        """
+        try:
+            from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import AsyncConnection
+            if isinstance(conn, AsyncConnection):
+                await conn.execute(text(sql), params)
+                return
+        except Exception:
+            pass
+
+        # asyncpg path — translate :name placeholders to $N positional args.
+        sql_pg, args = _bind_named_to_positional(sql, params)
+        await conn.execute(sql_pg, *args)
+
+
+def _bind_named_to_positional(sql: str, params: Dict[str, Any]):
+    """Translate ``:name`` placeholders to ``$N`` for asyncpg.
+
+    Skips PostgreSQL ``::`` cast operators (``:inputs::jsonb`` →
+    ``$1::jsonb``).  Order is determined by first appearance in ``sql``
+    — same convention SQLAlchemy uses internally for named-bind
+    compilation.
+    """
+    out: List[str] = []
+    args: List[Any] = []
+    seen: Dict[str, int] = {}
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        # Skip the PG ``::`` cast operator — it's not a bind site.
+        if ch == ":" and i + 1 < len(sql) and sql[i + 1] == ":":
+            out.append("::")
+            i += 2
+            continue
+        if ch == ":" and (i + 1 < len(sql)) and (sql[i + 1].isalpha() or sql[i + 1] == "_"):
+            j = i + 1
+            while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            name = sql[i + 1:j]
+            if name not in seen:
+                seen[name] = len(args) + 1
+                args.append(params[name])
+            out.append(f"${seen[name]}")
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), args
 
 
 # ---------------------------------------------------------------------------
