@@ -40,6 +40,19 @@ from .operations import initialize_operations, run_pre_operations, run_post_oper
 logger = logging.getLogger(__name__)
 
 
+# Top-level keys yielded by readers (e.g. GdalOsgeoReader) that are GeoJSON
+# envelope markers or reader-internal geometry slots — never publisher DBF
+# columns. Excluded from the merge into feature["properties"] so they don't
+# pollute the attributes JSONB sidecar. Source columns with the same names
+# (if any) reach properties through the inner properties dict, not the
+# top-level merge, so this is safe.
+_STRUCTURAL_RAW_KEYS = frozenset({
+    "geometry", "properties", "id",
+    "type",                          # GeoJSON Feature envelope marker
+    "geometry_wkb", "geometry_wkt",  # reader-internal geometry slots
+})
+
+
 async def _post_ingest_analyze(engine: "DbEngine", schema: str) -> None:
     """Run ``ANALYZE "<schema>"`` after a successful ingest.
 
@@ -385,10 +398,14 @@ async def run_ingestion_task(
                 for k, v in raw_props.items():
                     if k not in reserved:
                         feature["properties"][k] = v
-                # Also take from top-level if not already taken and not reserved
+                # Also take from top-level if not already taken and not reserved.
+                # _STRUCTURAL_RAW_KEYS covers the GeoJSON envelope marker and the
+                # reader's internal geometry slots — they're never DBF columns
+                # and were leaking into the attributes JSONB when the user's
+                # ColumnMappingConfig left mapping.geometry_wkb unset.
                 for k, v in raw.items():
                     if (
-                        k not in ["geometry", "properties", "id"]
+                        k not in _STRUCTURAL_RAW_KEYS
                         and k not in reserved
                         and k not in feature["properties"]
                     ):
