@@ -16,10 +16,9 @@ Layer 2: metadata table (PG, default source)
     stac_extensions
   Catch-all: extra_metadata JSONB for arbitrary STAC extension fields
 
-Layer 3: CollectionMetadataEnricherProtocol (runtime pipeline)
-  Runs after PG metadata is read
-  Enrichers registered via register_plugin(), discovered via get_protocols()
-  Priority-ordered: lower priority runs first
+Layer 3: External sources via alternative CollectionStore drivers
+  Per-collection routing selects which driver implementation reads metadata
+  Drivers replace the old enricher chain — one mechanism, one SLA
 ```
 
 ## Layer 1: Collections Table
@@ -37,14 +36,14 @@ CREATE TABLE IF NOT EXISTS {schema}.collections (
 );
 ```
 
-## Layer 2: Metadata Table
+## Layer 2: Metadata Tables
 
-All descriptive metadata lives here.  The M2.5 hard cut split the single
-`collection_metadata` table into two domain-scoped tables —
-`collection_metadata_core` and `collection_metadata_stac` — see
-`modules/catalog/db_init/metadata_domain_split.py`.  The deployment
-policy for the cut is delete-and-rebuild; no in-place migration is
-carried.
+All descriptive metadata lives in two domain-scoped tables:
+`collection_core` (format-agnostic identity + extent + lifecycle)
+and `collection_stac` (STAC-specific summaries, providers, links).
+DDL authored in `modules/catalog/db_init/core_tables.py` and
+`modules/catalog/db_init/stac_tables.py`. The deployment policy is
+delete-and-rebuild; no in-place migration is carried.
 
 ```sql
 CREATE TABLE IF NOT EXISTS {schema}.collection_metadata (
@@ -79,52 +78,16 @@ Fields from STAC extensions (datacube, eo, raster, etc.) are stored in `extra_me
 {"cube:dimensions": {...}, "eo:bands": [...]}
 ```
 
-## Layer 3: Enricher Protocol
+## Layer 3: External Sources via CollectionStore
 
-```python
-from dynastore.models.protocols.enrichment import CollectionMetadataEnricherProtocol
-
-class MyEnricher:
-    enricher_id = "my_enricher"
-    priority = 50  # lower runs first
-
-    def can_enrich(self, catalog_id: str, collection_id: str) -> bool:
-        """Return True if this enricher applies to the given collection."""
-        ...
-
-    async def enrich(self, catalog_id, collection_id, metadata, context):
-        """Modify and return the metadata dict."""
-        metadata["description"] = await fetch_external_description(collection_id)
-        return metadata
-```
-
-Register during module lifespan:
-```python
-from dynastore.tools.discovery import register_plugin
-register_plugin(MyEnricher())
-```
-
-### Enricher Pipeline Execution
-
-Located in `collection_service.py`, the pipeline runs after metadata is read from PG:
-
-1. `get_protocols(CollectionMetadataEnricherProtocol)` discovers all registered enrichers
-2. Enrichers sorted by `priority` (ascending)
-3. Each enricher's `can_enrich()` checked
-4. Applicable enrichers called sequentially, each receiving the output of the previous
-
-### Use Cases
-
-| Scenario | How It Works |
-|----------|-------------|
-| Pure STAC collection | `metadata` table stores everything. No enrichers needed. |
-| STAC extensions | `extra_metadata` JSONB column stores extension fields |
-| Multilanguage | JSONB columns support `{"en": "...", "fr": "..."}` |
-| Collection-level assets | `assets` JSONB column in `metadata` table |
-| ISO 19115 merge | Enricher reads external catalog, overlays fields |
-| BigQuery stats | Enricher injects real-time row counts into summaries |
-| Computed extent | Enricher recalculates temporal extent from event log |
-| Role-based filtering | Enricher strips fields based on user permissions |
+The `CollectionMetadataEnricherProtocol` runtime pipeline was removed.
+External-source metadata (BigQuery row counts, ISO 19115 overlays, role-
+filtered views) is now provided by alternative `CollectionStore` driver
+implementations selected per-collection through `RoutingConfig` (see
+`modules/routing/`). The canonical replacement pattern lives at
+`modules/gcp/bq_collection_enricher.py`: a `CollectionStore` subclass
+returning enriched rows from BigQuery. One mechanism, one priority
+model, one SLA — no separate enricher chain.
 
 ## Configuration
 

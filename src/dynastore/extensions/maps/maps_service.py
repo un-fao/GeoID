@@ -112,8 +112,8 @@ async def _validate_collections_helper(conn, dataset, requested_collections):
     
     # Sequential — every check runs `.execute(conn, ...)` on the SAME asyncpg
     # Connection.  Concurrent SELECTs on a single wire deadlock asyncpg's
-    # single-stream protocol — see feedback_asyncpg_shared_connection_deadlock.md
-    # (#28, #32, #43).  Per-table latency is ~1ms; serializing N checks is fine.
+    # single-stream protocol (regression observed in PRs #28, #32, #43).
+    # Per-table latency is ~1ms; serializing N checks is fine.
     physical_table_results = []
     for i, coll_id in enumerate(requested_collections):
         if collection_metadata_results[i]:

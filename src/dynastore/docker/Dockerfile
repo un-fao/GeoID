@@ -114,27 +114,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
 # Layer 3: real source overlay + real VERSION. Fast layer — busts only
-# when src/, tests/, or VERSION change. The stub wheel installed in
-# Layer 2's pip install put zero-byte start.sh / start-task.sh into
-# site-packages; trying to "fix" it via `pip install --force-reinstall`
-# proved unreliable (pip returns the cached stub wheel even with
-# --no-cache-dir, leaving the empty files in place — which surfaces at
-# runtime as `exec /usr/local/bin/start.sh: exec format error`).
-# Instead, read the SSOT scripts directly from /dynastore/src/. This is
-# a SECOND intentional delta from dynastore/docker/Dockerfile (which
-# installs from `git+...` with no local source and reads from
-# site-packages). Documented in `feedback_geoid_dynastore_catalog_sync.md`.
+# when src/, tests/, or VERSION change.
 COPY VERSION ./
 COPY src ./src
 COPY tests ./tests
 
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT).
-# - dynastore/docker/Dockerfile reads from
-#   ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/  (git install)
-# - geoid/docker/Dockerfile reads from
-#   /dynastore/src/dynastore/scripts/  (local source build, this file)
-# Both reach the same canonical content; the dispatch differs only because
-# this image's pip install used a stub package source for cache-friendliness.
+# This Dockerfile reads them from the local source tree because Layer 2's
+# pip install used a stub package (the wheel built from those stubs put
+# zero-byte scripts into site-packages, and pip refuses to overwrite them
+# on a `--force-reinstall` overlay). The deployment-wrapper Dockerfile
+# (`pip install dynastore @ git+...`) has no local source and reads the
+# same scripts from ${VENV_PATH}/lib/.../site-packages/dynastore/scripts/.
+# Both reach identical canonical content; only the dispatch path differs.
 RUN install -m 755 /dynastore/src/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
     install -m 755 /dynastore/src/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
 

@@ -262,8 +262,8 @@ async def search_items(
 
     # Sequential — every check forwards the SAME `db_resource` (a live
     # asyncpg Connection); concurrent SELECTs over a single wire deadlock
-    # asyncpg's single-stream protocol.  See
-    # feedback_asyncpg_shared_connection_deadlock.md (#28, #32, #43).
+    # asyncpg's single-stream protocol (regression observed in PRs #28,
+    # #32, #43).
     results = [await _check_layer_def(cid) for cid in initial_collection_ids]
 
     # Store configs map

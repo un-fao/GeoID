@@ -343,8 +343,8 @@ class WFSService(ExtensionProtocol):
             # Scoped request: only fetch collections for the specified catalog.
             # Sequential awaits — both calls share `conn` (the request's
             # asyncpg Connection); concurrent SELECTs on the same wire
-            # deadlock asyncpg's single-stream protocol.  See
-            # `feedback_asyncpg_shared_connection_deadlock.md` (#28, #32, #43).
+            # deadlock asyncpg's single-stream protocol (regression observed
+            # in PRs #28, #32, #43).
             catalog_metadata = await catalogs_svc.get_catalog(
                 catalog_id, ctx=DriverContext(db_resource=conn)
             )

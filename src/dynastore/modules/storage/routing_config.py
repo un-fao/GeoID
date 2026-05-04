@@ -1339,8 +1339,7 @@ def supported_operations(driver: Any) -> FrozenSet[str]:
     The asymmetry is intentional: capabilities express variant subsets within
     one structural type (a ``CollectionItemsStore`` may support FULLTEXT but
     not SPATIAL_FILTER); a Protocol expresses an identity with no variants
-    (a transformer is a transformer). See
-    ``project_geoid_driver_responsibilities.md`` for the full rationale.
+    (a transformer is a transformer).
 
     Drivers MAY expose a ``supported_operations`` property forwarding to
     this helper; it is not required.

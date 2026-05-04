@@ -58,7 +58,7 @@ class BigQueryCredentials(BaseModel):
     Registered-per-collection only — stored encrypted at rest in the
     platform's PluginConfig jsonb, masked in API responses, revealed only
     inside the BQ client constructor. Matches the platform credential
-    framework (see project_credential_framework.md memory note).
+    framework.
 
     Per-request credential overrides (spec lines 546-581's
     BigQuerySecondarySpec with credentials field) are explicitly NOT
