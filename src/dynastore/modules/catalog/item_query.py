@@ -26,6 +26,7 @@ from dynastore.modules.storage.driver_config import (
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FeaturePipelineContext,
@@ -539,11 +540,11 @@ class ItemQueryMixin:
 
             # ID Resolution Logic: delete ALL active rows for this external_id
             rows = 0
-            if col_config and col_config.sidecars:
+            if col_config and driver_sidecars(col_config):
                 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
                 from sqlalchemy import text as sa_text
 
-                for sc in col_config.sidecars:
+                for sc in driver_sidecars(col_config):
                     if sc.feature_id_field_name:
                         sidecar = SidecarRegistry.get_sidecar(sc)
                         if sidecar is None:
@@ -835,8 +836,8 @@ class ItemQueryMixin:
                 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
                 all_fields = {"geoid", "deleted_at"}
-                if col_config.sidecars:
-                    for sc_config in col_config.sidecars:
+                if driver_sidecars(col_config):
+                    for sc_config in driver_sidecars(col_config):
                         sidecar = SidecarRegistry.get_sidecar(sc_config)
                         if sidecar is not None:
                             all_fields.update(sidecar.get_field_definitions().keys())

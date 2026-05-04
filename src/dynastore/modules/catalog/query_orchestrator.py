@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
+from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.db_config.query_executor import DbResource, GeoDQLQuery, ResultHandler
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,9 @@ class CatalogQueryOrchestrator:
         # We need to instantiate sidecars from config
         # This duplicates logic in ItemService, maybe we should centralize the factory? 
         # For now, inline.
-        if self.config.sidecars:
+        if driver_sidecars(self.config):
             from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-            for sc_config in self.config.sidecars:
+            for sc_config in driver_sidecars(self.config):
                 try:
                     sidecar = SidecarRegistry.get_sidecar(sc_config)
                     if sidecar is not None:
@@ -73,7 +74,7 @@ class CatalogQueryOrchestrator:
         
         for attr in attributes:
             resolved = False
-            for sidecar in self.sidecars:
+            for sidecar in driver_sidecars(self):
                 res = sidecar.resolve_query_path(attr)
                 if res:
                     col_expr, alias = res # e.g. "g.geom", "g"

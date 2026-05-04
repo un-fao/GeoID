@@ -1,3 +1,4 @@
+from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 import logging
 from typing import Set, List
 from dynastore.modules.db_config.exceptions import InternalValidationError
@@ -36,9 +37,9 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
             schema_properties.update({entry.name for entry in config.attribute_schema})
 
         # 2b. Sidecar Fields
-        if config.sidecars:
+        if driver_sidecars(config):
             from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-            for sc_config in config.sidecars:
+            for sc_config in driver_sidecars(config):
                 if not sc_config.enabled:
                     continue
                 try:

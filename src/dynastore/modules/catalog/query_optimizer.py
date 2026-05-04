@@ -19,6 +19,7 @@
 import logging
 from typing import Dict, List, Any, Tuple, Set, Optional
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     FieldDefinition,
@@ -62,7 +63,7 @@ class QueryOptimizer:
         """Build index of all available fields and their capabilities from active sidecars."""
         from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
-        for sc_config in self.col_config.sidecars:
+        for sc_config in driver_sidecars(self.col_config):
             sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
             if not sidecar:
                 logger.debug(
@@ -114,7 +115,7 @@ class QueryOptimizer:
             if sel.field not in self.field_index:
                 # Try to resolve dynamically
                 found_dynamic = False
-                for sc_config in self.col_config.sidecars:
+                for sc_config in driver_sidecars(self.col_config):
                     sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                     if not sidecar:
                         continue
@@ -152,7 +153,7 @@ class QueryOptimizer:
 
                 # Try to resolve dynamically
                 found_dynamic = False
-                for sc_config in self.col_config.sidecars:
+                for sc_config in driver_sidecars(self.col_config):
                     sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                     if not sidecar:
                         continue
@@ -182,7 +183,7 @@ class QueryOptimizer:
 
                     # Try to resolve dynamically
                     found_dynamic = False
-                    for sc_config in self.col_config.sidecars:
+                    for sc_config in driver_sidecars(self.col_config):
                         sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                         if not sidecar:
                             continue
@@ -210,7 +211,7 @@ class QueryOptimizer:
 
                     # Try to resolve dynamically
                     found_dynamic = False
-                    for sc_config in self.col_config.sidecars:
+                    for sc_config in driver_sidecars(self.col_config):
                         sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                         if not sidecar:
                             continue
@@ -254,7 +255,7 @@ class QueryOptimizer:
         properties = {}
         geometry_schema = None
 
-        for sc_config in self.col_config.sidecars:
+        for sc_config in driver_sidecars(self.col_config):
             sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
             if not sidecar:
                 continue
@@ -305,7 +306,7 @@ class QueryOptimizer:
         for sel in query.select:
             if sel.field == "*":
                 # Need all sidecars if selecting *
-                return list(self.col_config.sidecars)
+                return list(driver_sidecars(self.col_config))
 
             if sel.field in self.field_index:
                 sidecar, _ = self.field_index[sel.field]
@@ -336,14 +337,14 @@ class QueryOptimizer:
         # asset_id) would produce features without geometry.
         if require_geometry:
             from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-            for sc_config in self.col_config.sidecars:
+            for sc_config in driver_sidecars(self.col_config):
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar and sidecar.get_main_geometry_field() is not None:
                     required_sidecars.add(sc_config.sidecar_id)
 
         # Return only required sidecar configs, preserving declaration order
         return [
-            sc for sc in self.col_config.sidecars if sc.sidecar_id in required_sidecars
+            sc for sc in driver_sidecars(self.col_config) if sc.sidecar_id in required_sidecars
         ]
 
     def build_optimized_query(
