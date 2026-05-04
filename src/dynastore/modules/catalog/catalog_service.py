@@ -211,7 +211,7 @@ def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
     Keys align with the column tuples in
     :mod:`dynastore.modules.storage.drivers.metadata_postgresql` (CORE)
     and :mod:`dynastore.modules.stac.drivers.metadata_postgresql` (STAC)
-    so the ``catalog_metadata_router`` can fan the payload out to every
+    so the ``catalog_router`` can fan the payload out to every
     registered driver and let each driver ``_filter_payload`` down to
     its own column slice.  Absent fields are omitted (not set to
     ``None``) so drivers skip the write entirely when their filtered
@@ -800,7 +800,7 @@ class CatalogService(CatalogsProtocol):
             # STAC-only payload writes only to the STAC driver.
             catalog_metadata = _build_catalog_metadata_payload(catalog_model)
             if catalog_metadata:
-                from dynastore.modules.catalog.catalog_metadata_router import (
+                from dynastore.modules.catalog.catalog_router import (
                     upsert_catalog_metadata,
                 )
                 await upsert_catalog_metadata(
@@ -943,7 +943,7 @@ class CatalogService(CatalogsProtocol):
 
         return Catalog.model_validate(data)
 
-    def _list_catalog_metadata_driver_types(self) -> List[type]:
+    def _list_catalog_store_driver_types(self) -> List[type]:
         """Return the ``CatalogStore`` classes currently registered.
 
         Used by :meth:`list_catalogs` to compute the expected per-row
@@ -978,7 +978,7 @@ class CatalogService(CatalogsProtocol):
         router's driver resolution itself raises.
         """
         try:
-            from dynastore.modules.catalog.catalog_metadata_router import (
+            from dynastore.modules.catalog.catalog_router import (
                 get_catalog_metadata,
             )
             return await get_catalog_metadata(
@@ -1131,7 +1131,7 @@ class CatalogService(CatalogsProtocol):
                 self._get_catalog_model_cached.cache_invalidate(catalog_id)
                 return merged_model
 
-            from dynastore.modules.catalog.catalog_metadata_router import (
+            from dynastore.modules.catalog.catalog_router import (
                 upsert_catalog_metadata,
             )
             # Router exceptions bubble — an UPDATE that fails to
@@ -1220,7 +1220,7 @@ class CatalogService(CatalogsProtocol):
             # per-domain UPSERT means the caller's delete didn't
             # actually land and must know.
             if router_fields_to_update:
-                from dynastore.modules.catalog.catalog_metadata_router import (
+                from dynastore.modules.catalog.catalog_router import (
                     upsert_catalog_metadata,
                 )
                 await upsert_catalog_metadata(
@@ -1291,7 +1291,7 @@ class CatalogService(CatalogsProtocol):
             # when the page × driver product gets large enough that
             # operators will notice the latency — makes the degradation
             # observable instead of silent.
-            router_drivers_count = len(self._list_catalog_metadata_driver_types())
+            router_drivers_count = len(self._list_catalog_store_driver_types())
             expected_roundtrips = len(results) * max(router_drivers_count, 1)
             if expected_roundtrips >= _LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD:
                 logger.warning(
@@ -1829,7 +1829,7 @@ class CatalogService(CatalogsProtocol):
 
         After committing the source-of-truth row in ``catalog.catalogs``, fans
         the change out across every registered ``CatalogStore`` driver
-        via ``catalog_metadata_router.upsert_catalog_metadata``. Without that
+        via ``catalog_router.upsert_catalog_metadata``. Without that
         propagation, search backends (ES indexer) keep the stale
         ``provisioning_status`` value and reads return inconsistent state
         relative to the row (observed on review env 2026-04-30: PG flipped to
@@ -1855,7 +1855,7 @@ class CatalogService(CatalogsProtocol):
             if catalog_model is not None:
                 metadata = _build_catalog_metadata_payload(catalog_model)
                 if metadata:
-                    from dynastore.modules.catalog.catalog_metadata_router import (
+                    from dynastore.modules.catalog.catalog_router import (
                         upsert_catalog_metadata,
                     )
                     await upsert_catalog_metadata(

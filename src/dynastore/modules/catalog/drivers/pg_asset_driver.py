@@ -24,7 +24,7 @@ Owns the DDL and all SQL operations for:
 - ``{schema}.asset_references`` — cascade-delete coordination table
 
 Collection-level metadata is no longer this driver's responsibility.
-Callers go through :mod:`dynastore.modules.catalog.collection_metadata_router`
+Callers go through :mod:`dynastore.modules.catalog.collection_router`
 which fans out across registered ``CollectionStore`` drivers
 (``CollectionPostgresqlDriver`` — the composition wrapper that owns
 the metadata_core + metadata_stac sidecar fan-out — in the default PG
@@ -645,7 +645,7 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
 
     # Collection-metadata CRUD has moved to the
     # CollectionStore protocol +
-    # :mod:`dynastore.modules.catalog.collection_metadata_router`.  The
+    # :mod:`dynastore.modules.catalog.collection_router`.  The
     # asset driver no longer owns collection metadata — callers invoke
     # the router, which delegates to the registered
     # CollectionStore implementers (the PG-tier wrapper

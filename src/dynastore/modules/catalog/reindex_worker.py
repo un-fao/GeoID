@@ -29,7 +29,7 @@ Scope of M3.1 (this file)
 -------------------------
 
 - **Batch dispatcher**: given a list of catalog_metadata_changed event
-  dicts, hydrate each (via ``catalog_metadata_router.get_catalog_metadata``)
+  dicts, hydrate each (via ``catalog_router.get_catalog_metadata``)
   and fan out to every INDEX-role driver configured in
   ``CatalogRoutingConfig.metadata.operations[INDEX]``.
 - **Per-driver SLA**: honours ``DriverSla.timeout_ms`` via
@@ -133,7 +133,7 @@ class ReindexWorker:
     Today only the catalog-tier ``catalog_metadata_changed`` event flows
     through this worker.  A parallel collection-tier event can be wired
     up by adding a ``COLLECTION_METADATA_CHANGED`` emission in
-    :mod:`~dynastore.modules.catalog.collection_metadata_router` when
+    :mod:`~dynastore.modules.catalog.collection_router` when
     INDEX propagation is needed there too.
     """
 
@@ -167,7 +167,7 @@ class ReindexWorker:
             resolve_indexers or _resolve_catalog_indexers
         )
         if get_catalog_metadata is None:
-            from dynastore.modules.catalog.catalog_metadata_router import (
+            from dynastore.modules.catalog.catalog_router import (
                 get_catalog_metadata as _default_hydrate,
             )
             self._get_catalog_metadata = _default_hydrate
@@ -467,7 +467,7 @@ async def _resolve_catalog_indexers(
     """Return the (entry, driver) pairs configured under INDEX for catalogs.
 
     Resolution order mirrors the collection-tier router
-    (:mod:`dynastore.modules.catalog.collection_metadata_router`):
+    (:mod:`dynastore.modules.catalog.collection_router`):
 
     1. If ``ConfigsProtocol`` is registered, read
        ``CatalogRoutingConfig`` for the given ``catalog_id`` through the

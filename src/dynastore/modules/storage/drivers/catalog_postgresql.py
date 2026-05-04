@@ -400,7 +400,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         """Fan-in: read from each inner, shallow-merge slices.  Returns
         ``None`` only when every inner returned ``None``.  Per-inner
         failures degrade to ``None`` for that slice, mirroring the
-        existing ``catalog_metadata_router`` _safe_get semantics.
+        existing ``catalog_router`` _safe_get semantics.
         """
         merged: Dict[str, Any] = {}
         inners = await self._resolve_sidecars_for_catalog(

@@ -1,6 +1,6 @@
 """Unit tests for the collection-metadata router (M2.5 hard cut).
 
-Covers the same shape as ``test_catalog_metadata_router.py`` but for
+Covers the same shape as ``test_catalog_router.py`` but for
 the collection tier:
 
 - Read fan-out merges CORE + STAC slices.
@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.modules.catalog.collection_metadata_router import (
+from dynastore.modules.catalog.collection_router import (
     delete_collection_metadata,
     get_collection_metadata,
     search_collection_metadata,
@@ -80,7 +80,7 @@ async def test_read_calls_drivers_sequentially_on_shared_connection():
     asyncpg Connection deadlock on the single-wire protocol.
 
     Same hazard previously fixed in PR #28 (list_catalogs) and PR #32
-    (catalog_metadata_router). This guards the symmetric collection-tier
+    (catalog_router). This guards the symmetric collection-tier
     READ path so we don't regress to ``asyncio.gather`` again.
     """
     in_flight = 0

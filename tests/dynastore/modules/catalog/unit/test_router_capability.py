@@ -14,7 +14,7 @@ advertises ``capabilities = frozenset({TRANSFORM})`` and its
 ``models/protocols/entity_store.py``).
 
 Before the fix, the default fan-out path in both
-``collection_metadata_router`` and ``catalog_metadata_router`` iterated
+``collection_router`` and ``catalog_router`` iterated
 every registered driver, invoking the raising stub and aborting the
 fan-out with no preceding driver writes completed.  The fix is a
 ``EntityStoreCapability.WRITE`` filter applied only on the default-
@@ -75,7 +75,7 @@ def _transform_only_driver() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_upsert_collection_skips_transform_only_driver():
-    from dynastore.modules.catalog import collection_metadata_router as cmr
+    from dynastore.modules.catalog import collection_router as cmr
 
     write = _write_driver()
     transform = _transform_only_driver()
@@ -91,7 +91,7 @@ async def test_upsert_collection_skips_transform_only_driver():
 
 @pytest.mark.asyncio
 async def test_delete_collection_skips_transform_only_driver():
-    from dynastore.modules.catalog import collection_metadata_router as cmr
+    from dynastore.modules.catalog import collection_router as cmr
 
     write = _write_driver()
     transform = _transform_only_driver()
@@ -106,7 +106,7 @@ async def test_delete_collection_skips_transform_only_driver():
 @pytest.mark.asyncio
 async def test_upsert_collection_noops_when_only_transform_drivers(caplog):
     """Fan-out with zero WRITE-capable drivers degrades to a logged no-op."""
-    from dynastore.modules.catalog import collection_metadata_router as cmr
+    from dynastore.modules.catalog import collection_router as cmr
 
     # Reset per-process warning latch so the log fires within this test.
     cmr._MISSING_DRIVERS_LOGGED["collection_write"] = False
@@ -127,7 +127,7 @@ async def test_upsert_collection_noops_when_only_transform_drivers(caplog):
 @pytest.mark.asyncio
 async def test_explicit_drivers_kwarg_bypasses_capability_filter():
     """Callers passing ``drivers=`` take full responsibility — no filter."""
-    from dynastore.modules.catalog import collection_metadata_router as cmr
+    from dynastore.modules.catalog import collection_router as cmr
 
     transform = _transform_only_driver()
 
@@ -144,7 +144,7 @@ async def test_explicit_drivers_kwarg_bypasses_capability_filter():
 
 @pytest.mark.asyncio
 async def test_upsert_catalog_skips_transform_only_driver():
-    from dynastore.modules.catalog import catalog_metadata_router as cmr
+    from dynastore.modules.catalog import catalog_router as cmr
 
     write = _write_driver()
     # Domain attribute is read when emitting the changed event.
@@ -152,7 +152,7 @@ async def test_upsert_catalog_skips_transform_only_driver():
     transform = _transform_only_driver()
 
     with patch.object(
-        cmr, "_resolve_catalog_metadata_drivers",
+        cmr, "_resolve_catalog_store_drivers",
         return_value=[write, transform],
     ), patch.object(cmr, "_emit_catalog_metadata_changed", new=AsyncMock()):
         await cmr.upsert_catalog_metadata("cat", {"title": {"en": "T"}})
@@ -163,14 +163,14 @@ async def test_upsert_catalog_skips_transform_only_driver():
 
 @pytest.mark.asyncio
 async def test_delete_catalog_skips_transform_only_driver():
-    from dynastore.modules.catalog import catalog_metadata_router as cmr
+    from dynastore.modules.catalog import catalog_router as cmr
 
     write = _write_driver()
     write.domain = MagicMock(value="CORE")
     transform = _transform_only_driver()
 
     with patch.object(
-        cmr, "_resolve_catalog_metadata_drivers",
+        cmr, "_resolve_catalog_store_drivers",
         return_value=[write, transform],
     ), patch.object(cmr, "_emit_catalog_metadata_changed", new=AsyncMock()):
         await cmr.delete_catalog_metadata("cat")
@@ -181,13 +181,13 @@ async def test_delete_catalog_skips_transform_only_driver():
 
 @pytest.mark.asyncio
 async def test_upsert_catalog_noops_when_only_transform_drivers(caplog):
-    from dynastore.modules.catalog import catalog_metadata_router as cmr
+    from dynastore.modules.catalog import catalog_router as cmr
 
     cmr._MISSING_DRIVERS_LOGGED["catalog_write"] = False
     transform = _transform_only_driver()
 
     with patch.object(
-        cmr, "_resolve_catalog_metadata_drivers",
+        cmr, "_resolve_catalog_store_drivers",
         return_value=[transform],
     ), patch.object(cmr, "_emit_catalog_metadata_changed", new=AsyncMock()) \
             as emit:

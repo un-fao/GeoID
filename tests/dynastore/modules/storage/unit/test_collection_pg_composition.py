@@ -576,7 +576,7 @@ async def test_registry_default_used_when_no_operator_override():
 async def test_wrapper_is_discoverable_via_get_protocols():
     """Verify ``get_protocols(CollectionStore)`` returns the
     wrapper after ``register_plugin``, NOT a raw inner driver.  Mirrors
-    the production discovery path that ``collection_metadata_router._resolve_drivers``
+    the production discovery path that ``collection_router._resolve_drivers``
     uses when called without an explicit ``drivers=`` kwarg.
     """
     from dynastore.models.protocols.entity_store import (

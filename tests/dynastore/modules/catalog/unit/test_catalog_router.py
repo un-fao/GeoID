@@ -46,7 +46,7 @@ def _silence_event_emission(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_catalog_metadata_merges_core_and_stac():
     """Router awaits both drivers concurrently and merges their dicts."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         get_catalog_metadata,
     )
 
@@ -69,7 +69,7 @@ async def test_get_catalog_metadata_merges_core_and_stac():
 @pytest.mark.asyncio
 async def test_get_catalog_metadata_returns_none_when_all_drivers_return_none():
     """Envelope absence is a domain-wide signal — not a partial dict."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         get_catalog_metadata,
     )
 
@@ -84,7 +84,7 @@ async def test_get_catalog_metadata_returns_none_when_all_drivers_return_none():
 @pytest.mark.asyncio
 async def test_get_catalog_metadata_returns_partial_when_one_driver_has_data():
     """One domain populated + one empty → dict of the populated domain."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         get_catalog_metadata,
     )
 
@@ -99,8 +99,8 @@ async def test_get_catalog_metadata_returns_partial_when_one_driver_has_data():
 @pytest.mark.asyncio
 async def test_get_catalog_metadata_degrades_on_driver_exception(caplog):
     """Driver raising on READ is logged at WARNING; merge keeps the rest."""
-    from dynastore.modules.catalog import catalog_metadata_router as mod
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog import catalog_router as mod
+    from dynastore.modules.catalog.catalog_router import (
         get_catalog_metadata,
     )
 
@@ -123,7 +123,7 @@ async def test_get_catalog_metadata_degrades_on_driver_exception(caplog):
 @pytest.mark.asyncio
 async def test_get_catalog_metadata_noop_without_registered_drivers():
     """Empty driver list → None with no crash and no warning per call."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         get_catalog_metadata,
     )
 
@@ -139,7 +139,7 @@ async def test_get_catalog_metadata_noop_without_registered_drivers():
 @pytest.mark.asyncio
 async def test_upsert_catalog_metadata_calls_every_driver_sequentially():
     """Sequential upsert — shared db_resource, deterministic order."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         upsert_catalog_metadata,
     )
 
@@ -173,7 +173,7 @@ async def test_upsert_catalog_metadata_calls_every_driver_sequentially():
 @pytest.mark.asyncio
 async def test_upsert_catalog_metadata_bubbles_driver_exceptions():
     """WRITE failures MUST propagate — dual-write needs all-or-nothing."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         upsert_catalog_metadata,
     )
 
@@ -196,7 +196,7 @@ async def test_upsert_catalog_metadata_second_driver_skipped_on_first_failure():
     must raise on first failure so the enclosing lifecycle-hook
     SAVEPOINT catches the exception and rolls back cleanly.
     """
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         upsert_catalog_metadata,
     )
 
@@ -223,7 +223,7 @@ async def test_upsert_catalog_metadata_second_driver_skipped_on_first_failure():
 @pytest.mark.asyncio
 async def test_delete_catalog_metadata_forwards_soft_flag():
     """``soft=True`` reaches every driver."""
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         delete_catalog_metadata,
     )
 
@@ -247,16 +247,16 @@ async def test_delete_catalog_metadata_forwards_soft_flag():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_catalog_metadata_drivers_goes_through_get_protocols():
+def test_resolve_catalog_store_drivers_goes_through_get_protocols():
     """Default path resolves every registered CatalogStore."""
-    from dynastore.modules.catalog import catalog_metadata_router as mod
+    from dynastore.modules.catalog import catalog_router as mod
 
     fake_driver = MagicMock()
     with patch(
         "dynastore.tools.discovery.get_protocols",
         return_value=[fake_driver],
     ) as gp:
-        result = mod._resolve_catalog_metadata_drivers()
+        result = mod._resolve_catalog_store_drivers()
     assert result == [fake_driver]
     gp.assert_called_once()
     # Called with the CatalogStore protocol — the one arg to get_protocols.
@@ -279,7 +279,7 @@ class TestMetadataChangedEventEmission:
 
     @pytest.mark.asyncio
     async def test_upsert_emits_per_driver_class_event(self, monkeypatch):
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog.catalog_router import (
             upsert_catalog_metadata,
         )
 
@@ -317,7 +317,7 @@ class TestMetadataChangedEventEmission:
 
     @pytest.mark.asyncio
     async def test_delete_emits_delete_operation(self, monkeypatch):
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog.catalog_router import (
             delete_catalog_metadata,
         )
 
@@ -335,7 +335,7 @@ class TestMetadataChangedEventEmission:
 
     @pytest.mark.asyncio
     async def test_soft_delete_emits_soft_delete_operation(self, monkeypatch):
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog.catalog_router import (
             delete_catalog_metadata,
         )
 
@@ -352,7 +352,7 @@ class TestMetadataChangedEventEmission:
     @pytest.mark.asyncio
     async def test_duplicate_driver_class_dedup_to_one_event(self, monkeypatch):
         """Two instances of the same driver class → one event, not two."""
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog.catalog_router import (
             upsert_catalog_metadata,
         )
 
@@ -391,7 +391,7 @@ class TestMetadataChangedEventEmission:
         bearing)" section depends on this identity propagation; this
         test is the regression fuse against silent breakage of it.
         """
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog.catalog_router import (
             upsert_catalog_metadata,
         )
 
@@ -436,8 +436,8 @@ class TestMetadataChangedEventEmission:
     @pytest.mark.asyncio
     async def test_emit_failure_logs_but_does_not_raise(self, monkeypatch, caplog):
         """A broken emit_event must not turn a successful write into a 5xx."""
-        from dynastore.modules.catalog import catalog_metadata_router as mod
-        from dynastore.modules.catalog.catalog_metadata_router import (
+        from dynastore.modules.catalog import catalog_router as mod
+        from dynastore.modules.catalog.catalog_router import (
             upsert_catalog_metadata,
         )
 

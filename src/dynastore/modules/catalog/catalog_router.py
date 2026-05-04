@@ -19,7 +19,7 @@
 """
 Catalog-tier metadata router.
 
-Parallels :mod:`dynastore.modules.catalog.collection_metadata_router`
+Parallels :mod:`dynastore.modules.catalog.collection_router`
 but scoped to :class:`CatalogStore` implementations.
 Three operations:
 
@@ -87,7 +87,7 @@ branch.  Regressing any of those two invariants — drivers resolving
 losing re-entrancy — silently detaches router writes from the caller's
 transaction and breaks the outbox contract.  The router tests pin the
 connection-identity propagation
-(see ``test_catalog_metadata_router.py`` —
+(see ``test_catalog_router.py`` —
 ``test_upsert_fan_out_shares_db_resource`` and siblings) as the
 fuse against that regression.
 """
@@ -131,7 +131,7 @@ def _filter_capable(
             if capability in getattr(d, "capabilities", frozenset())]
 
 
-def _resolve_catalog_metadata_drivers() -> List[CatalogStore]:
+def _resolve_catalog_store_drivers() -> List[CatalogStore]:
     """Return the live :class:`CatalogStore` drivers registered via entry-points.
 
     Delegates to :func:`dynastore.tools.discovery.get_protocols` so the
@@ -193,7 +193,7 @@ async def get_catalog_metadata(
     future refactor that gives each driver its own pooled connection
     can re-enable ``gather`` at that point.
     """
-    drivers = drivers if drivers is not None else _resolve_catalog_metadata_drivers()
+    drivers = drivers if drivers is not None else _resolve_catalog_store_drivers()
     if not drivers:
         return None
 
@@ -273,7 +273,7 @@ async def upsert_catalog_metadata(
     """
     if drivers is None:
         drivers = _filter_capable(
-            _resolve_catalog_metadata_drivers(), EntityStoreCapability.WRITE,
+            _resolve_catalog_store_drivers(), EntityStoreCapability.WRITE,
         )
     if not drivers:
         if not _MISSING_DRIVERS_LOGGED["catalog_write"]:
@@ -318,7 +318,7 @@ async def delete_catalog_metadata(
     """
     if drivers is None:
         drivers = _filter_capable(
-            _resolve_catalog_metadata_drivers(), EntityStoreCapability.WRITE,
+            _resolve_catalog_store_drivers(), EntityStoreCapability.WRITE,
         )
     if not drivers:
         if not _MISSING_DRIVERS_LOGGED["catalog_delete"]:

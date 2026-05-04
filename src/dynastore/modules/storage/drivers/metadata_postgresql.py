@@ -30,8 +30,8 @@ upsert / delete / search shape, different column tuples and table names.
 
 Each driver owns only its declared columns.  Callers that need the full
 envelope run all participating drivers through the metadata router
-(:mod:`~dynastore.modules.catalog.catalog_metadata_router` for catalogs,
-:mod:`~dynastore.modules.catalog.collection_metadata_router` for
+(:mod:`~dynastore.modules.catalog.catalog_router` for catalogs,
+:mod:`~dynastore.modules.catalog.collection_router` for
 collections) which fans out the payload on WRITE and merges the slices
 on READ.
 
@@ -430,7 +430,7 @@ class CollectionCorePostgresqlDriver(
     Backs ``{schema}.collection_metadata_core``.  Declares ``SEARCH`` because
     CORE fields carry the human-readable text the ``/search?q=…`` endpoint
     matches against.  Active path — :mod:`~dynastore.modules.catalog.
-    collection_metadata_router` fans out WRITEs across this driver plus
+    collection_router` fans out WRITEs across this driver plus
     :class:`CollectionStacPostgresqlDriver` and merges both slices on
     READ.  Each driver filters the unified payload to its own domain's
     columns and no-ops when its filtered slice is empty.
@@ -666,10 +666,10 @@ class CatalogCorePostgresqlDriver(
 
 
 # Catalog-tier metadata persistence is invoked directly by
-# ``CatalogService.create_catalog`` through ``catalog_metadata_router.
+# ``CatalogService.create_catalog`` through ``catalog_router.
 # upsert_catalog_metadata`` — no lifecycle-decorator indirection.  Each
 # driver enforces its own default-fast skip inside
 # ``upsert_catalog_metadata`` (empty filtered payload → no write), so
 # a STAC-only payload reaching the CORE driver is a no-op and
 # vice-versa.  See the router in
-# :mod:`dynastore.modules.catalog.catalog_metadata_router`.
+# :mod:`dynastore.modules.catalog.catalog_router`.

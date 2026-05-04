@@ -884,7 +884,7 @@ def _self_register_searchers_into(
 
 def _self_register_store_drivers(
     config: "CollectionRoutingConfig | CatalogRoutingConfig",
-    metadata_driver_index: Dict[str, Any],
+    store_driver_index: Dict[str, Any],
     *,
     op_keys: Tuple[str, ...] = (Operation.WRITE, Operation.READ),
 ) -> None:
@@ -902,7 +902,7 @@ def _self_register_store_drivers(
     target_ops = config.operations
     for op in op_keys:
         listed = {entry.driver_id for entry in target_ops.get(op, [])}
-        for driver_id in metadata_driver_index:
+        for driver_id in store_driver_index:
             if driver_id in listed:
                 continue
             target_ops.setdefault(op, []).append(
@@ -982,20 +982,20 @@ async def _on_apply_collection_routing_config(
     from dynastore.tools.discovery import get_protocols
 
     driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionItemsStore)}
-    metadata_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionStore)}
+    store_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionStore)}
 
     # Auto-register installed store drivers (WRITE/READ) so operators
     # reading ``/configs/...`` see every driver that will run; no implicit
     # fan-out behind the config's back.
-    _self_register_store_drivers(config, metadata_driver_index)
+    _self_register_store_drivers(config, store_driver_index)
 
     # Validate operations[READ] (CollectionStore drivers)
     for entry in config.operations.get(Operation.READ, []):
-        if entry.driver_id not in metadata_driver_index:
+        if entry.driver_id not in store_driver_index:
             raise ValueError(
                 f"Collection metadata routing config: operations[READ] driver "
                 f"'{entry.driver_id}' is not registered. "
-                f"Available: {sorted(metadata_driver_index)}"
+                f"Available: {sorted(store_driver_index)}"
             )
 
     # Validate operations[TRANSFORM] (CollectionItemsStore drivers — they
@@ -1012,11 +1012,11 @@ async def _on_apply_collection_routing_config(
     # search/export sinks — ES for INDEX, Parquet/DuckDB for BACKUP).
     for op in (Operation.INDEX, Operation.BACKUP):
         for entry in config.operations.get(op, []):
-            if entry.driver_id not in metadata_driver_index:
+            if entry.driver_id not in store_driver_index:
                 raise ValueError(
                     f"Collection metadata routing config: operations[{op}] driver "
                     f"'{entry.driver_id}' is not registered. "
-                    f"Available: {sorted(metadata_driver_index)}"
+                    f"Available: {sorted(store_driver_index)}"
                 )
             if op == Operation.BACKUP and not entry.fmt:
                 logger.info(
@@ -1034,7 +1034,7 @@ async def _on_apply_collection_routing_config(
     # Call ensure_storage() on READ drivers (idempotent, catalog-scoped).
     if catalog_id:
         for entry in config.operations.get(Operation.READ, []):
-            driver = metadata_driver_index.get(entry.driver_id)
+            driver = store_driver_index.get(entry.driver_id)
             if driver is None:
                 continue
             try:

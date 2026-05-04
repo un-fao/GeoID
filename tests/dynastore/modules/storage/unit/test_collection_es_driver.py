@@ -216,7 +216,7 @@ def test_both_spatial_and_temporal_enriched():
 # Guards against the drift that caused the production log spam:
 #     CollectionElasticsearchDriver.get_metadata() got an unexpected keyword
 #     argument 'context' — omitting slice from merged envelope
-# The router at collection_metadata_router.py always forwards `context=`;
+# The router at collection_router.py always forwards `context=`;
 # if the driver rejects it, the ES slice is silently dropped on every read.
 # ---------------------------------------------------------------------------
 

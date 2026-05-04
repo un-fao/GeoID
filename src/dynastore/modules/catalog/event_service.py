@@ -178,7 +178,7 @@ class CatalogEventType(EventType):
 
     # M3.0 — metadata-changed events (role-based driver plan §Events).
     #
-    # Emitted by ``catalog_metadata_router.upsert_catalog_metadata`` and
+    # Emitted by ``catalog_router.upsert_catalog_metadata`` and
     # ``delete_catalog_metadata`` on every Primary WRITE/DELETE so INDEX
     # (ReindexWorker) and BACKUP (export-endpoint) consumers see a
     # single signal per change.  Payload shape:

@@ -11,7 +11,7 @@ Bug observed on review env 2026-04-30:
 
 These tests pin the contract that ``update_provisioning_status``:
   1. writes the source-of-truth row in ``catalog.catalogs``
-  2. fans the change out via ``catalog_metadata_router.upsert_catalog_metadata``
+  2. fans the change out via ``catalog_router.upsert_catalog_metadata``
      so every CatalogStore driver (PG CORE, PG STAC, ES indexer)
      stays in sync with the row
 
@@ -166,7 +166,7 @@ async def test_update_provisioning_status_fans_out_to_metadata_router() -> None:
     ), patch(
         "dynastore.modules.catalog.catalog_service.DQLQuery",
     ) as DQLQueryCls, patch(
-        "dynastore.modules.catalog.catalog_metadata_router.upsert_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
     ):
         # DQLQuery(...).execute(...) returns the row dict
@@ -211,7 +211,7 @@ async def test_update_provisioning_status_skips_router_when_pg_returns_no_row() 
     ), patch(
         "dynastore.modules.catalog.catalog_service.DQLQuery",
     ) as DQLQueryCls, patch(
-        "dynastore.modules.catalog.catalog_metadata_router.upsert_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
     ):
         DQLQueryCls.return_value.execute = AsyncMock(return_value=None)
@@ -260,7 +260,7 @@ async def test_update_provisioning_status_skips_router_when_payload_empty() -> N
     ), patch(
         "dynastore.modules.catalog.catalog_service.DQLQuery",
     ) as DQLQueryCls, patch(
-        "dynastore.modules.catalog.catalog_metadata_router.upsert_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
     ):
         DQLQueryCls.return_value.execute = AsyncMock(return_value={"id": "cat_x"})

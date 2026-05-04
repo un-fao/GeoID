@@ -452,7 +452,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
     ) -> Optional[Dict[str, Any]]:
         """Fan-in: read from each inner driver, shallow-merge slices.
 
-        Mirrors :func:`collection_metadata_router._safe_get` semantics —
+        Mirrors :func:`collection_router._safe_get` semantics —
         per-driver failures degrade to ``None`` for that slice, the
         resulting dict carries every successfully-read column.
         Returns ``None`` only when every inner returned ``None``.
