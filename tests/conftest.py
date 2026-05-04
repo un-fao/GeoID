@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import os
+import sys
 
 if "DYNASTORE_ENV" not in os.environ:
     os.environ["DYNASTORE_ENV"] = "test"
@@ -325,15 +326,28 @@ def data_id():
 
 @pytest.fixture
 def dynastore_modules(request):
-    """Default modules list. Can be overridden via @pytest.mark.enable_modules."""
+    """Default modules list. Resolution order:
+
+    1. ``@pytest.mark.enable_modules(...)`` — per-test override.
+    2. ``SCOPE`` env var (e.g. ``monkeypatch.setenv("SCOPE", "db_config,db,...")``)
+       — matches the production-side narrowing knob. Without this,
+       fixture-scoped ``setenv("SCOPE", ...)`` was a silent no-op
+       (closes #206).
+    3. Hard-coded default below.
+
+    "gcp" is intentionally excluded from the default set: loading it hooks
+    into catalog lifecycle events and makes real GCS API calls (bucket
+    create/delete) on every catalog operation, adding ~30 s per test.
+    Tests that require GCP behaviour must opt in explicitly:
+       @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
+    or via ``monkeypatch.setenv("SCOPE", "...,gcp,...")``.
+    """
     marker = request.node.get_closest_marker("enable_modules")
     if marker:
         return list(marker.args)
-    # "gcp" is intentionally excluded from the default set: loading it hooks into
-    # catalog lifecycle events and makes real GCS API calls (bucket create/delete)
-    # on every catalog operation, adding ~30 s per test.
-    # Tests that require GCP behaviour must opt in explicitly:
-    #   @pytest.mark.enable_modules("db_config", "db", "catalog", "gcp", ...)
+    scope_env = os.environ.get("SCOPE", "").strip()
+    if scope_env:
+        return [name.strip() for name in scope_env.split(",") if name.strip()]
     return ["db_config", "db", "catalog", "stats", "iam", "stac", "collection_postgresql", "catalog_postgresql"]
 
 
@@ -728,6 +742,17 @@ async def reset_dynastore_state(engine=None):
     # 10.1 Clear Sidecar Registry (CRITICAL for extension isolation)
     from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
     SidecarRegistry.clear_registry()
+
+    # 10.1b Drop the STAC items-sidecar module from ``sys.modules`` so that
+    # a subsequent narrowed-SCOPE test (one that excludes ``stac``) doesn't
+    # inherit a stale ``StacItemsSidecar`` registration left behind by
+    # module-import side-effects (``stac_items_sidecar.py`` registers
+    # ``StacItemsSidecar`` at import time, and ``clear_registry()`` only
+    # wipes the registry dict — the cached module object survives).
+    # Belt-and-braces: closes the gw2 cascade in CI (#206) where the
+    # ingestion fixture inherited STAC sidecar state from a prior wide
+    # test on the same xdist worker.
+    sys.modules.pop("dynastore.extensions.stac.stac_items_sidecar", None)
 
     # 10.2 Clear metadata-tier sidecar registries via their public test-isolation
     # hooks. Both classes ship a ``.clear()`` classmethod (with the docstring
