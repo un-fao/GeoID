@@ -616,11 +616,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # Single-level partitioning today — first value is the partition key.
                 unique_partition_values.add(next(iter(partition_values.values())))
 
-            # Lift geometry_hash computed by the geometries sidecar onto the
-            # hub row so it persists in hub.geometry_hash and the matcher
-            # chain / hash gating in insert_or_update_distributed can read it.
-            if "geometry_hash" in item_context and "geometry_hash" not in hub_payload:
-                hub_payload["geometry_hash"] = item_context["geometry_hash"]
+            # geometry_hash is now PG-generated on the geometries sidecar
+            # (issue #220) — STORED column ``encode(digest(ST_AsBinary(geom),
+            # 'sha256'), 'hex')``.  No longer carried on the hub row; the
+            # matcher JOINs the sidecar to read it.
 
             prepared.append({
                 "geoid": geoid,

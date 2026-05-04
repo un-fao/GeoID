@@ -741,10 +741,14 @@ async def search_items(
         geoid_param = f"geoids_{coll_idx}"
         hydration_params[geoid_param] = geoids
 
+        # Issue #220: geometry_hash now lives on the geometries sidecar.
+        # Project ``g.geometry_hash`` when the geometries sidecar is
+        # joined below (``has_geom``); otherwise emit NULL to keep the
+        # column shape stable.
         select_parts = [
             f"SELECT '{cat_id}' as catalog_id,"
             f" '{coll_id}' as collection_id,"
-            f" h.geoid, h.transaction_time, h.geometry_hash"
+            f" h.geoid, h.transaction_time"
         ]
         joins = [f'FROM "{phys_schema}"."{p_tab}" h']
 
@@ -766,6 +770,7 @@ async def search_items(
 
         if has_geom:
             select_parts.append(
+                f", g.geometry_hash"
                 f", ST_AsEWKB(ST_SimplifyPreserveTopology(g.geom, {simplification_sql})) AS simplified_geom"
                 f", ST_XMin(g.geom) as bbox_xmin, ST_YMin(g.geom) as bbox_ymin"
                 f", ST_XMax(g.geom) as bbox_xmax, ST_YMax(g.geom) as bbox_ymax"
@@ -773,6 +778,7 @@ async def search_items(
             joins.append(f'LEFT JOIN "{phys_schema}"."{g_tab}" g ON h.geoid = g.geoid')
         else:
             select_parts.append(
+                ", null as geometry_hash"
                 ", null as simplified_geom"
                 ", null as bbox_xmin, null as bbox_ymin"
                 ", null as bbox_xmax, null as bbox_ymax"
