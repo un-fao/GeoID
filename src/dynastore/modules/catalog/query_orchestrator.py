@@ -74,7 +74,7 @@ class CatalogQueryOrchestrator:
         
         for attr in attributes:
             resolved = False
-            for sidecar in driver_sidecars(self):
+            for sidecar in self.sidecars:
                 res = sidecar.resolve_query_path(attr)
                 if res:
                     col_expr, alias = res # e.g. "g.geom", "g"

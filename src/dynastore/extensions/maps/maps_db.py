@@ -63,11 +63,14 @@ async def get_features_for_rendering(
     # Sidecars are PG-driver-internal — driver_sidecars() returns []
     # for non-PG resolved layer configs and we fall back to 4326.
     from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+        GeometriesSidecarConfig,
+    )
     source_srid = next(
         (
             sc.target_srid
             for sc in driver_sidecars(layer_config)
-            if getattr(sc, "sidecar_type", None) == "geometries"
+            if isinstance(sc, GeometriesSidecarConfig)
         ),
         4326,
     )
