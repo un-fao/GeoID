@@ -63,7 +63,7 @@ def test_compose_tree_no_schemas_when_include_schemas_false_and_meta_off():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=False, docs_mode="none",
         )
@@ -80,7 +80,7 @@ def test_compose_tree_meta_only_no_schema_when_only_meta_requested():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=True, docs_mode="none",
         )
@@ -102,7 +102,7 @@ def test_compose_tree_schema_attached_when_include_schemas_true():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=False, docs_mode="schema",
         )
@@ -133,7 +133,7 @@ def test_compose_tree_schema_falls_back_to_default_source_when_class_not_in_sour
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="platform",
             include_meta=False, docs_mode="schema",
         )
@@ -159,7 +159,7 @@ def test_compose_tree_meta_and_schema_combine():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=True, docs_mode="schema", tier_data=tier_data,
         )
@@ -190,7 +190,7 @@ def test_compose_tree_schema_attached_for_inherited_from_catalog_block():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta = ConfigApiService._compose_tree(
+        tree, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "catalog"}, active_scope="collection",
             include_meta=False, docs_mode="schema",
         )
@@ -253,7 +253,7 @@ def test_compose_tree_field_docs_attached_when_docs_mode_field():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        _, meta = ConfigApiService._compose_tree(
+        _, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=False, docs_mode="field",
         )
@@ -293,7 +293,7 @@ def test_compose_tree_field_docs_skips_fields_without_description():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=out,
     ):
-        _, meta = ConfigApiService._compose_tree(
+        _, meta, _ = ConfigApiService._compose_tree(
             by_class, sources={"WebConfig": "platform"}, active_scope="platform",
             include_meta=False, docs_mode="field",
         )

@@ -228,6 +228,22 @@ class CollectionConfigResponse(BaseModel):
     )
     collection_id: str
     catalog_id: str
+    inherited: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Class-key → source map for configs that resolved at this scope "
+            "but are NOT rendered in ``configs`` (default ``?include=scope`` "
+            "mode). Populated when an upstream-tier config (``platform`` "
+            "or ``default``) would otherwise have flooded the body. "
+            "Operators see WHAT exists upstream and HOW to reach it without "
+            "the full payloads. Set ``?include=upstream`` to render the "
+            "bodies inline (today's verbose mode). ``inherited_from_catalog`` "
+            "(under ``configs``) is distinct: it carries catalog-only-visible "
+            "configs that influence this collection — those keep their tree "
+            "shape since the operator may still need to PATCH them at "
+            "catalog scope."
+        ),
+    )
     configs: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -273,6 +289,15 @@ class CatalogConfigResponse(BaseModel):
         ),
     )
     catalog_id: str
+    inherited: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Class-key → source map for configs that resolved at this scope "
+            "but are NOT rendered in ``configs`` (default ``?include=scope`` "
+            "mode). See ``CollectionConfigResponse.inherited`` for full "
+            "semantics."
+        ),
+    )
     configs: Dict[str, Any] = Field(
         default_factory=dict,
         description=(

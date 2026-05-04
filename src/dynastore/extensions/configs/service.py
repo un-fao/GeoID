@@ -399,6 +399,20 @@ class ConfigsService(ExtensionProtocol):
                 "diagnostics and docs."
             ),
         ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. ``scope`` (default): body shows configs "
+                "owned by this scope (``_visibility`` matches OR an explicit "
+                "row exists here). Upstream-tier configs are summarised in "
+                "``inherited`` (class_key → source) — operators see what exists "
+                "without the verbose payloads. ``upstream``: every visible "
+                "class is rendered with its waterfall-resolved value (today's "
+                "verbose mode). At platform scope this flag is a no-op since "
+                "platform IS the top tier."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -409,6 +423,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -445,6 +460,16 @@ class ConfigsService(ExtensionProtocol):
                 "See platform endpoint for full notes."
             ),
         ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. See platform endpoint for full notes. "
+                "At catalog scope, ``scope`` filters out platform-tier "
+                "configs that have no catalog override; they appear in "
+                "``inherited`` instead."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -457,6 +482,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -493,6 +519,20 @@ class ConfigsService(ExtensionProtocol):
                 "See platform endpoint for full notes."
             ),
         ),
+        include: str = Query(
+            "scope",
+            pattern="^(scope|upstream)$",
+            description=(
+                "Body-rendering mode. ``scope`` (default): body shows only "
+                "configs owned by this collection — collection-visibility "
+                "configs (routing, items-driver with sidecars) and any "
+                "explicit collection-level overrides. Upstream-tier configs "
+                "(platform/default) appear in ``inherited`` as class_key → "
+                "source pairs. ``upstream``: every visible class is rendered "
+                "with its waterfall-resolved value (today's verbose mode, "
+                "useful for callers expecting the full payload)."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -505,6 +545,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             docs=docs,
+            include=include,
         )
         return JSONResponse(content=response.model_dump())
 
