@@ -882,13 +882,13 @@ def _self_register_searchers_into(
         )
 
 
-def _self_register_metadata_drivers(
+def _self_register_store_drivers(
     config: "CollectionRoutingConfig | CatalogRoutingConfig",
     metadata_driver_index: Dict[str, Any],
     *,
     op_keys: Tuple[str, ...] = (Operation.WRITE, Operation.READ),
 ) -> None:
-    """Auto-append every installed metadata-store driver missing from ``operations[op]``.
+    """Auto-append every installed store driver missing from ``operations[op]``.
 
     Closes the "implicit fan-out, invisible to operators" antipattern:
     every protocol-installed driver participates in WRITE/READ unless an
@@ -984,10 +984,10 @@ async def _on_apply_collection_routing_config(
     driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionItemsStore)}
     metadata_driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CollectionMetadataStore)}
 
-    # Auto-register installed metadata drivers (WRITE/READ) so operators
+    # Auto-register installed store drivers (WRITE/READ) so operators
     # reading ``/configs/...`` see every driver that will run; no implicit
     # fan-out behind the config's back.
-    _self_register_metadata_drivers(config, metadata_driver_index)
+    _self_register_store_drivers(config, metadata_driver_index)
 
     # Validate operations[READ] (CollectionMetadataStore drivers)
     for entry in config.operations.get(Operation.READ, []):
@@ -1113,7 +1113,7 @@ async def _on_apply_catalog_routing_config(
     from dynastore.tools.discovery import get_protocols
 
     driver_index = {_to_snake(type(d).__name__): d for d in get_protocols(CatalogMetadataStore)}
-    _self_register_metadata_drivers(config, driver_index)
+    _self_register_store_drivers(config, driver_index)
     _validate_routing_entries(config, driver_index, "Catalog routing config")
 
     # Auto-register installed CatalogIndexer drivers under operations[INDEX]

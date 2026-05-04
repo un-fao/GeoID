@@ -1,7 +1,7 @@
-"""Routing-config self-registration: every installed metadata driver
+"""Routing-config self-registration: every installed store driver
 appears in ``operations[WRITE]`` / ``operations[READ]`` after the
 auto-append step fires — closes the "implicit fan-out invisible to
-operators" antipattern flagged in the Site 1 plan.
+operators" antipattern.
 """
 
 from __future__ import annotations
@@ -13,18 +13,18 @@ from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     Operation,
     OperationDriverEntry,
-    _self_register_metadata_drivers,
+    _self_register_store_drivers,
 )
 
 
-def test_collection_self_registers_missing_metadata_drivers():
+def test_collection_self_registers_missing_store_drivers():
     """Empty metadata.operations + 2 installed drivers → both auto-appended
     to WRITE and READ."""
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
-    _self_register_metadata_drivers(cfg, metadata_index)
+    _self_register_store_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
@@ -44,7 +44,7 @@ def test_collection_preserves_operator_supplied_entry():
     ]
 
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
-    _self_register_metadata_drivers(cfg, metadata_index)
+    _self_register_store_drivers(cfg, metadata_index)
 
     write_entries = {
         e.driver_id: e for e in cfg.operations[Operation.WRITE]
@@ -70,7 +70,7 @@ def test_collection_no_op_when_all_drivers_already_listed():
     ]
 
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
-    _self_register_metadata_drivers(cfg, metadata_index)
+    _self_register_store_drivers(cfg, metadata_index)
 
     assert len(cfg.operations[Operation.WRITE]) == 2
     assert len(cfg.operations[Operation.READ]) == 2
@@ -82,7 +82,7 @@ def test_catalog_self_registers_missing_drivers():
     cfg.operations.clear()
 
     metadata_index = {"catalog_pg_core": object(), "catalog_pg_stac": object()}
-    _self_register_metadata_drivers(cfg, metadata_index)
+    _self_register_store_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
@@ -96,7 +96,7 @@ def test_self_registration_skips_zero_drivers():
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
-    _self_register_metadata_drivers(cfg, metadata_driver_index={})
+    _self_register_store_drivers(cfg, metadata_driver_index={})
 
     # Operations stay empty — auto-append only adds for present drivers.
     assert cfg.operations.get(Operation.WRITE, []) == []
@@ -432,7 +432,7 @@ def test_catalog_routing_validator_no_op_when_no_indexers_discoverable():
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
 
 
-def test_collection_routing_validator_augments_metadata_INDEX_and_SEARCH():
+def test_collection_routing_validator_augments_INDEX_and_SEARCH():
     """ItemsRoutingConfig validator augments metadata.operations
     (not top-level operations)."""
     from typing import ClassVar
@@ -560,7 +560,7 @@ def test_validator_failure_in_discovery_does_not_break_construction():
 
 # Imports needed for the source-provenance test block below.
 from dynastore.modules.storage.routing_config import (  # noqa: E402
-    _self_register_metadata_drivers,
+    _self_register_store_drivers,
 )
 
 
@@ -621,13 +621,13 @@ def test_searcher_helper_marks_entries_as_auto():
     assert target_ops[Operation.SEARCH][0].source == "auto"
 
 
-def test_metadata_driver_helper_marks_entries_as_auto():
-    """`_self_register_metadata_drivers` also marks new entries as auto."""
+def test_store_driver_helper_marks_entries_as_auto():
+    """`_self_register_store_drivers` also marks new entries as auto."""
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
     metadata_index = {"pg_core_meta": object()}
-    _self_register_metadata_drivers(cfg, metadata_index)
+    _self_register_store_drivers(cfg, metadata_index)
 
     for op in (Operation.WRITE, Operation.READ):
         entries = cfg.operations[op]
