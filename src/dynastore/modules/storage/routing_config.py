@@ -786,7 +786,7 @@ def _self_register_indexers_into(
             )
         )
         listed.add(driver_id)
-        logger.info(
+        logger.debug(
             "Routing config self-registration: appended %s indexer '%s' "
             "to operations[INDEX] (write_mode=async, on_failure=warn, source=auto)",
             marker_proto.__name__, driver_id,
@@ -825,7 +825,7 @@ def _self_register_upload_into(
             )
         )
         listed.add(driver_id)
-        logger.info(
+        logger.debug(
             "Routing config self-registration: appended %s upload driver "
             "'%s' to operations[UPLOAD] (write_mode=sync, on_failure=fatal, source=auto)",
             marker_proto.__name__, driver_id,
@@ -880,7 +880,7 @@ def _self_register_searchers_into(
             OperationDriverEntry(driver_id=driver_id, source="auto")
         )
         listed.add(driver_id)
-        logger.info(
+        logger.debug(
             "Routing config self-registration: appended %s SEARCH "
             "driver '%s' to operations[SEARCH] (source=auto)",
             marker_proto.__name__, driver_id,
@@ -913,7 +913,7 @@ def _self_register_metadata_drivers(
             target_ops.setdefault(op, []).append(
                 OperationDriverEntry(driver_id=driver_id, source="auto")
             )
-            logger.info(
+            logger.debug(
                 "Routing config self-registration: appended installed "
                 "metadata driver '%s' to operations[%s] (source=auto)",
                 driver_id, op,
@@ -1376,7 +1376,7 @@ def _self_register_transformers_into(
             OperationDriverEntry(driver_id=driver_id, source="auto")
         )
         listed.add(driver_id)
-        logger.info(
+        logger.debug(
             "Routing config self-registration: appended EntityTransformProtocol "
             "driver '%s' to operations[TRANSFORM] (source=auto)",
             driver_id,
