@@ -387,6 +387,17 @@ class ConfigApiService:
                 entry.json_schema = cls.model_json_schema()
             elif docs_mode == "field" and entry.field_docs is None:
                 entry.field_docs = ConfigApiService._extract_field_docs(cls)
+            # Entity context (Change 3): for driver-tier configs, surface
+            # the entity bucket from `_address[2]` so dashboards can
+            # distinguish items-side / collection-metadata-side / assets-side
+            # sidecars and driver settings.
+            if entry.entity is None:
+                address = getattr(cls, "_address", None)
+                if (
+                    isinstance(address, tuple) and len(address) == 3
+                    and address[1] == "drivers" and isinstance(address[2], str)
+                ):
+                    entry.entity = address[2]
 
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)

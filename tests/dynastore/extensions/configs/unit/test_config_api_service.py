@@ -648,6 +648,64 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
     assert inherited is None
 
 
+def test_compose_tree_entity_annotation_on_driver_tier_configs():
+    """Driver-tier configs (``_address[1] == "drivers"``) get an ``entity``
+    field on their ConfigMeta — extracted from ``_address[2]`` — so
+    dashboards can group sidecars/driver settings per entity (items vs
+    collection-metadata vs assets).
+    """
+    by_class = {
+        "items_postgresql_driver":      {"sidecars": [{"sidecar_type": "geometries"}]},
+        "collection_postgresql_driver": {"sidecars": []},
+        "asset_postgresql_driver":      {},
+        "web_config":                   {"brand_name": "X"},  # non-driver, no entity
+    }
+    registry = _stub_registry(
+        items_postgresql_driver={
+            "_address": ("storage", "drivers", "items"),
+            "_visibility": "collection",
+        },
+        collection_postgresql_driver={
+            "_address": ("storage", "drivers", "collection"),
+            "_visibility": "collection",
+        },
+        asset_postgresql_driver={
+            "_address": ("storage", "drivers", "assets"),
+            "_visibility": "collection",
+        },
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        _, meta, _ = ConfigApiService._compose_tree(
+            by_class, sources={
+                "items_postgresql_driver": "collection",
+                "collection_postgresql_driver": "collection",
+                "asset_postgresql_driver": "collection",
+                "web_config": "platform",
+            },
+            active_scope="collection", include_meta=True,
+            tier_data={
+                "platform": {"web_config": {"brand_name": "X"}},
+                "catalog": {},
+                "collection": {
+                    "items_postgresql_driver": {"sidecars": [{}]},
+                    "collection_postgresql_driver": {"sidecars": []},
+                    "asset_postgresql_driver": {},
+                },
+            },
+            include_mode="upstream",
+        )
+    assert meta is not None
+    assert meta["items_postgresql_driver"].entity == "items"
+    assert meta["collection_postgresql_driver"].entity == "collection"
+    assert meta["asset_postgresql_driver"].entity == "assets"
+    # Non-driver configs have no entity context
+    assert meta["web_config"].entity is None
+
+
 def test_compose_tree_slim_at_platform_scope_is_a_noop():
     """At platform scope the slim filter is a no-op — platform IS the top
     tier, nothing is upstream."""

@@ -184,6 +184,19 @@ class ConfigMeta(BaseModel):
             "``json_schema`` above; ``?docs=none`` to suppress both."
         ),
     )
+    entity: Optional[str] = Field(
+        default=None,
+        description=(
+            "For driver-tier configs (``_address = (\"storage\", \"drivers\", "
+            "<entity>)``), the entity bucket the config governs: "
+            "``items`` (collection items / features), ``assets`` (asset "
+            "metadata), or ``collection`` (collection-level metadata). Lets "
+            "dashboards group sidecars and driver settings per entity — "
+            "e.g. distinguish ``ItemsPostgresqlDriverConfig.sidecars`` "
+            "(items-side) from ``CollectionPostgresqlDriverConfig.sidecars`` "
+            "(collection-metadata-side). ``None`` for non-driver configs."
+        ),
+    )
 
 
 class ConfigPage(BaseModel):
