@@ -22,10 +22,10 @@ from dynastore.models.protocols.entity_store import (
     CatalogStore,
     EntityStoreCapability,
 )
-from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
-    CatalogMetadataCoreSidecarConfig,
-    CatalogMetadataPgSidecarRegistry,
-    CatalogMetadataStacSidecarConfig,
+from dynastore.modules.storage.drivers.catalog_postgresql import (
+    CatalogCoreSidecarConfig,
+    CatalogPgSidecarRegistry,
+    CatalogStacSidecarConfig,
     CatalogPostgresqlDriver,
     CatalogPostgresqlDriverConfig,
 )
@@ -111,12 +111,12 @@ class _FakeStacCls:
 
 @pytest.fixture(autouse=True)
 def _reset_registry():
-    saved = dict(CatalogMetadataPgSidecarRegistry._registry)
-    saved_loaded = CatalogMetadataPgSidecarRegistry._defaults_loaded
-    CatalogMetadataPgSidecarRegistry.clear()
-    CatalogMetadataPgSidecarRegistry._registry["catalog_metadata_core"] = _FakeCoreCls  # type: ignore[assignment]
-    CatalogMetadataPgSidecarRegistry._registry["catalog_metadata_stac"] = _FakeStacCls  # type: ignore[assignment]
-    CatalogMetadataPgSidecarRegistry._defaults_loaded = True
+    saved = dict(CatalogPgSidecarRegistry._registry)
+    saved_loaded = CatalogPgSidecarRegistry._defaults_loaded
+    CatalogPgSidecarRegistry.clear()
+    CatalogPgSidecarRegistry._registry["catalog_metadata_core"] = _FakeCoreCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._registry["catalog_metadata_stac"] = _FakeStacCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._defaults_loaded = True
     _FakeCoreCls._instance = None
     _FakeStacCls._instance = None
     # Flush per-catalog sidecar cache (PR 1e step 4) — the cache key
@@ -129,9 +129,9 @@ def _reset_registry():
     try:
         yield
     finally:
-        CatalogMetadataPgSidecarRegistry.clear()
-        CatalogMetadataPgSidecarRegistry._registry.update(saved)
-        CatalogMetadataPgSidecarRegistry._defaults_loaded = saved_loaded
+        CatalogPgSidecarRegistry.clear()
+        CatalogPgSidecarRegistry._registry.update(saved)
+        CatalogPgSidecarRegistry._defaults_loaded = saved_loaded
         try:
             CatalogPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()  # type: ignore[attr-defined]
         except Exception:
@@ -175,21 +175,21 @@ def test_capabilities_union_covers_inner_capabilities():
 
 
 def test_default_sidecars_includes_core_and_stac_when_both_registered():
-    sidecars = CatalogMetadataPgSidecarRegistry.default_sidecars()
+    sidecars = CatalogPgSidecarRegistry.default_sidecars()
     assert [s.sidecar_type for s in sidecars] == [
         "catalog_metadata_core", "catalog_metadata_stac",
     ]
 
 
 def test_default_sidecars_omits_stac_when_unregistered():
-    CatalogMetadataPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
-    sidecars = CatalogMetadataPgSidecarRegistry.default_sidecars()
+    CatalogPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
+    sidecars = CatalogPgSidecarRegistry.default_sidecars()
     assert [s.sidecar_type for s in sidecars] == ["catalog_metadata_core"]
 
 
 def test_unknown_sidecar_type_skipped_with_warning(caplog):
     driver = CatalogPostgresqlDriver()
-    bogus = CatalogMetadataCoreSidecarConfig.model_construct(
+    bogus = CatalogCoreSidecarConfig.model_construct(
         sidecar_type="catalog_metadata_does_not_exist",
     )
     with caplog.at_level("WARNING"):
@@ -258,7 +258,7 @@ async def test_get_catalog_metadata_swallows_per_inner_failure_and_returns_other
         def __new__(cls):  # type: ignore[misc]
             return failing
 
-    CatalogMetadataPgSidecarRegistry._registry["catalog_metadata_core"] = _FailingCls  # type: ignore[assignment]
+    CatalogPgSidecarRegistry._registry["catalog_metadata_core"] = _FailingCls  # type: ignore[assignment]
     driver = CatalogPostgresqlDriver()
     out = await driver.get_catalog_metadata("cat-a")
     assert out is not None
@@ -275,8 +275,8 @@ async def test_get_catalog_metadata_swallows_per_inner_failure_and_returns_other
 def test_wrapper_config_sidecars_discriminated_union_round_trips():
     cfg = CatalogPostgresqlDriverConfig(
         sidecars=[
-            CatalogMetadataCoreSidecarConfig(),
-            CatalogMetadataStacSidecarConfig(),
+            CatalogCoreSidecarConfig(),
+            CatalogStacSidecarConfig(),
         ],
     )
     dumped = cfg.model_dump(exclude_unset=True)
@@ -325,7 +325,7 @@ def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
     ``stac_service._has_stac`` correctly identifies STAC as unavailable
     and the catalog-tier hard-reject still fires.
     """
-    CatalogMetadataPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
+    CatalogPgSidecarRegistry._registry.pop("catalog_metadata_stac", None)
     driver = CatalogPostgresqlDriver()
     assert driver.stac_metadata_columns() == ()
 
@@ -339,7 +339,7 @@ def test_wrapper_returns_empty_columns_when_no_stac_inner_loaded():
 
 async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
     """PR 1e step 4 sister test: handler clears cache + logs INFO."""
-    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+    from dynastore.modules.storage.drivers.catalog_postgresql import (
         _on_apply_catalog_pg_driver_config,
     )
     from dynastore.tools.discovery import register_plugin, unregister_plugin
@@ -348,7 +348,7 @@ async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
     register_plugin(wrapper)
     try:
         cfg = CatalogPostgresqlDriverConfig(
-            sidecars=[CatalogMetadataCoreSidecarConfig()],
+            sidecars=[CatalogCoreSidecarConfig()],
         )
         with caplog.at_level("INFO"):
             await _on_apply_catalog_pg_driver_config(
@@ -365,7 +365,7 @@ async def test_apply_handler_invalidates_cache_and_logs_info(caplog):
 
 
 async def test_apply_handler_silent_for_empty_sidecars(caplog):
-    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+    from dynastore.modules.storage.drivers.catalog_postgresql import (
         _on_apply_catalog_pg_driver_config,
     )
     from dynastore.tools.discovery import register_plugin, unregister_plugin
@@ -386,7 +386,7 @@ async def test_apply_handler_silent_for_empty_sidecars(caplog):
 
 
 async def test_apply_handler_ignores_non_wrapper_configs():
-    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+    from dynastore.modules.storage.drivers.catalog_postgresql import (
         _on_apply_catalog_pg_driver_config,
     )
 
@@ -399,12 +399,12 @@ async def test_apply_handler_ignores_non_wrapper_configs():
 
 
 async def test_apply_handler_safe_when_wrapper_not_yet_registered():
-    from dynastore.modules.storage.drivers.catalog_metadata_postgresql import (
+    from dynastore.modules.storage.drivers.catalog_postgresql import (
         _on_apply_catalog_pg_driver_config,
     )
 
     cfg = CatalogPostgresqlDriverConfig(
-        sidecars=[CatalogMetadataCoreSidecarConfig()],
+        sidecars=[CatalogCoreSidecarConfig()],
     )
     await _on_apply_catalog_pg_driver_config(
         cfg, catalog_id="cat", collection_id=None, db_resource=None,
@@ -418,7 +418,7 @@ async def test_apply_handler_safe_when_wrapper_not_yet_registered():
 
 async def test_operator_override_actually_changes_runtime_fanout():
     custom_cfg = CatalogPostgresqlDriverConfig(
-        sidecars=[CatalogMetadataCoreSidecarConfig()],  # core only
+        sidecars=[CatalogCoreSidecarConfig()],  # core only
     )
     fake_configs = MagicMock()
     fake_configs.get_config = AsyncMock(return_value=custom_cfg)

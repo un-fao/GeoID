@@ -110,7 +110,7 @@ def _assert_stac_capable_metadata_stack() -> None:
     composition wrappers ``CatalogPostgresqlDriver`` +
     ``CollectionPostgresqlDriver`` once the stac extra is installed —
     each wrapper composes its tier's STAC slice via
-    ``*MetadataPgSidecarRegistry`` try-import (PR 1e steps 3b+3c).
+    ``*CollectionPgSidecarRegistry`` try-import (PR 1e steps 3b+3c).
     """
     from dynastore.extensions.stac.protocols import (
         StacCatalogEntityStoreCapability,
@@ -154,7 +154,7 @@ def _assert_stac_capable_metadata_stack() -> None:
                 "stac_metadata_columns().  The default PG deployment "
                 "satisfies this via CatalogPostgresqlDriver once the "
                 "stac extra is installed (the wrapper composes the "
-                "STAC slice via CatalogMetadataPgSidecarRegistry's "
+                "STAC slice via CatalogPgSidecarRegistry's "
                 "try-import).  Install ``dynastore[module_stac]`` or "
                 "check the routing config."
             ),
@@ -494,7 +494,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # somewhere.  Default PG config satisfies this via the
             # composition wrappers CatalogPostgresqlDriver +
             # CollectionPostgresqlDriver, which compose their tier's STAC
-            # sidecar via ``*MetadataPgSidecarRegistry`` try-import.
+            # sidecar via ``*CollectionPgSidecarRegistry`` try-import.
             # Deployments pointing routing configs at STAC-blind drivers
             # (e.g. ES-only without the stac extra installed) fail loudly
             # here rather than silently dropping the STAC slice on write.

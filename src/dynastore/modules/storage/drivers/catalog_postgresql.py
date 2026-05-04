@@ -19,7 +19,7 @@
 """Composition driver for PG-backed catalog metadata.
 
 Catalog-tier sibling of
-:mod:`dynastore.modules.storage.drivers.collection_metadata_postgresql`.
+:mod:`dynastore.modules.storage.drivers.collection_postgresql`.
 Wraps the existing per-domain catalog-tier PG metadata drivers
 (:class:`CatalogCorePostgresqlDriver` plus the optional
 :class:`CatalogStacPostgresqlDriver` from the stac module) and fans
@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _PgCatalogMetadataSidecarConfigBase(BaseModel):
+class _PgCatalogSidecarConfigBase(BaseModel):
     """Common base for catalog-metadata PG sidecar configs.
 
     Subclasses pin ``sidecar_type`` as a ``Literal[...]`` so the
@@ -89,7 +89,7 @@ class _PgCatalogMetadataSidecarConfigBase(BaseModel):
     sidecar_type: str
 
     @model_validator(mode="after")
-    def _pin_discriminator_as_set(self) -> "_PgCatalogMetadataSidecarConfigBase":
+    def _pin_discriminator_as_set(self) -> "_PgCatalogSidecarConfigBase":
         """Mark ``sidecar_type`` as explicitly set so ``exclude_unset=True`` keeps it.
 
         Mirrors the collection-tier wrapper's validator (which itself
@@ -100,7 +100,7 @@ class _PgCatalogMetadataSidecarConfigBase(BaseModel):
         return self
 
 
-class CatalogMetadataCoreSidecarConfig(_PgCatalogMetadataSidecarConfigBase):
+class CatalogCoreSidecarConfig(_PgCatalogSidecarConfigBase):
     """Routes the CORE catalog metadata slice (``title``, ``description``,
     ``keywords``, ``license``, ``extra_metadata``) to
     :class:`CatalogCorePostgresqlDriver`.
@@ -109,12 +109,12 @@ class CatalogMetadataCoreSidecarConfig(_PgCatalogMetadataSidecarConfigBase):
     sidecar_type: Literal["catalog_metadata_core"] = "catalog_metadata_core"
 
 
-class CatalogMetadataStacSidecarConfig(_PgCatalogMetadataSidecarConfigBase):
+class CatalogStacSidecarConfig(_PgCatalogSidecarConfigBase):
     """Routes the STAC catalog metadata slice (``stac_version``,
     ``stac_extensions``, ``conforms_to``, ``links``, ``assets``) to
     :class:`CatalogStacPostgresqlDriver` from the stac module.
 
-    Resolved via try-import in :class:`CatalogMetadataPgSidecarRegistry` —
+    Resolved via try-import in :class:`CatalogPgSidecarRegistry` —
     a deployment without the stac extra installed will see this entry's
     resolution log a single warning and skip the slice (no crash).
     """
@@ -122,10 +122,10 @@ class CatalogMetadataStacSidecarConfig(_PgCatalogMetadataSidecarConfigBase):
     sidecar_type: Literal["catalog_metadata_stac"] = "catalog_metadata_stac"
 
 
-_PgCatalogMetadataSidecarConfig = Annotated[
+_PgCatalogSidecarConfig = Annotated[
     Union[
-        CatalogMetadataCoreSidecarConfig,
-        CatalogMetadataStacSidecarConfig,
+        CatalogCoreSidecarConfig,
+        CatalogStacSidecarConfig,
     ],
     Discriminator("sidecar_type"),
 ]
@@ -136,7 +136,7 @@ _PgCatalogMetadataSidecarConfig = Annotated[
 # ---------------------------------------------------------------------------
 
 
-class CatalogMetadataPgSidecarRegistry:
+class CatalogPgSidecarRegistry:
     """Registry mapping ``sidecar_type`` to inner ``CatalogStore``
     classes.  STAC entry uses try-import so the wrapper works in
     deployments without the stac extra installed.
@@ -170,7 +170,7 @@ class CatalogMetadataPgSidecarRegistry:
             )
         except ImportError as exc:
             logger.debug(
-                "CatalogMetadataPgSidecarRegistry: stac sidecar unavailable (%s)",
+                "CatalogPgSidecarRegistry: stac sidecar unavailable (%s)",
                 exc,
             )
 
@@ -191,14 +191,14 @@ class CatalogMetadataPgSidecarRegistry:
         cls._registry[sidecar_type] = driver_cls
 
     @classmethod
-    def default_sidecars(cls) -> List[_PgCatalogMetadataSidecarConfigBase]:
+    def default_sidecars(cls) -> List[_PgCatalogSidecarConfigBase]:
         """Built-in default — CORE always, STAC if the extra is installed."""
         cls._ensure_defaults()
-        out: List[_PgCatalogMetadataSidecarConfigBase] = [
-            CatalogMetadataCoreSidecarConfig(),
+        out: List[_PgCatalogSidecarConfigBase] = [
+            CatalogCoreSidecarConfig(),
         ]
         if "catalog_metadata_stac" in cls._registry:
-            out.append(CatalogMetadataStacSidecarConfig())
+            out.append(CatalogStacSidecarConfig())
         return out
 
     @classmethod
@@ -218,7 +218,7 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
 
     ``sidecars`` is the typed list of catalog-metadata domain slices the
     wrapper will fan CRUD across.  Empty list → wrapper falls back to
-    :meth:`CatalogMetadataPgSidecarRegistry.default_sidecars`
+    :meth:`CatalogPgSidecarRegistry.default_sidecars`
     (``[catalog_metadata_core, catalog_metadata_stac if installed]``).
 
     Marked ``Immutable`` because changing the active sidecar set after
@@ -228,7 +228,7 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
     _visibility: ClassVar[Optional[str]] = "catalog"
 
 
-    sidecars: Immutable[List[_PgCatalogMetadataSidecarConfig]] = Field(
+    sidecars: Immutable[List[_PgCatalogSidecarConfig]] = Field(
         default_factory=list,
         description=(
             "Catalog metadata sidecar configs — discriminated union on "
@@ -290,7 +290,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
     configured PG catalog-metadata sidecars (``catalog_metadata_core``,
     optionally ``catalog_metadata_stac``, plus any extension-contributed
     sidecar registered via
-    :meth:`CatalogMetadataPgSidecarRegistry.register`).
+    :meth:`CatalogPgSidecarRegistry.register`).
 
     The wrapper itself owns no SQL — every method delegates to the
     inner drivers, each of which already filters the payload to its
@@ -306,7 +306,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
 
     def _resolve_inner_drivers(
         self,
-        sidecars: Optional[List[_PgCatalogMetadataSidecarConfigBase]] = None,
+        sidecars: Optional[List[_PgCatalogSidecarConfigBase]] = None,
     ) -> List[CatalogStore]:
         """Resolve the configured ``sidecars`` list to instantiated inner
         ``CatalogStore`` driver instances.  Production paths
@@ -314,7 +314,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         :attr:`_default_inner_drivers`.
         """
         if not sidecars:
-            sidecars = CatalogMetadataPgSidecarRegistry.default_sidecars()
+            sidecars = CatalogPgSidecarRegistry.default_sidecars()
         out: List[CatalogStore] = []
         for cfg in sidecars:
             sc_type = getattr(cfg, "sidecar_type", None)
@@ -324,7 +324,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
                     "`sidecar_type` discriminator — skipping",
                 )
                 continue
-            cls = CatalogMetadataPgSidecarRegistry.get_driver_cls(sc_type)
+            cls = CatalogPgSidecarRegistry.get_driver_cls(sc_type)
             if cls is None:
                 logger.warning(
                     "CatalogPostgresqlDriver: sidecar %r not registered "
@@ -365,7 +365,7 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
-        sidecars: Optional[List[_PgCatalogMetadataSidecarConfigBase]] = None
+        sidecars: Optional[List[_PgCatalogSidecarConfigBase]] = None
         configs = get_protocol(ConfigsProtocol)
         if configs is not None:
             try:

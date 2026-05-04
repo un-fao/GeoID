@@ -45,7 +45,7 @@ Migration shape
 
     class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
         schema: str = "public"
-        sidecars: List[_PgMetadataSidecarConfig] = Field(default_factory=list)
+        sidecars: List[_PgCollectionSidecarConfig] = Field(default_factory=list)
         # NO class_key() override.
 
     class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):

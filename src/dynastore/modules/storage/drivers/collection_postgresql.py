@@ -91,7 +91,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _PgMetadataSidecarConfigBase(BaseModel):
+class _PgCollectionSidecarConfigBase(BaseModel):
     """Common base for collection-metadata PG sidecar configs.
 
     Subclasses pin ``sidecar_type`` as a ``Literal[...]`` so the
@@ -102,19 +102,19 @@ class _PgMetadataSidecarConfigBase(BaseModel):
     sidecar_type: str
 
     @model_validator(mode="after")
-    def _pin_discriminator_as_set(self) -> "_PgMetadataSidecarConfigBase":
+    def _pin_discriminator_as_set(self) -> "_PgCollectionSidecarConfigBase":
         """Mark ``sidecar_type`` as explicitly set so ``exclude_unset=True`` keeps it.
 
         Mirrors the items-tier ``SidecarConfig._retain_sidecar_type_on_dump``
         fix (commit ``96fbf8c``) — without this, default-constructed
-        ``MetadataCoreSidecarConfig()`` dumps to ``{}`` and re-validating
+        ``CollectionCoreSidecarConfig()`` dumps to ``{}`` and re-validating
         the dump against the discriminated union fails.
         """
         self.__pydantic_fields_set__.add("sidecar_type")
         return self
 
 
-class MetadataCoreSidecarConfig(_PgMetadataSidecarConfigBase):
+class CollectionCoreSidecarConfig(_PgCollectionSidecarConfigBase):
     """Routes the CORE metadata slice (``title``, ``description``,
     ``keywords``, ``license``, ``extra_metadata``) to
     :class:`CollectionCorePostgresqlDriver`.
@@ -123,12 +123,12 @@ class MetadataCoreSidecarConfig(_PgMetadataSidecarConfigBase):
     sidecar_type: Literal["metadata_core"] = "metadata_core"
 
 
-class MetadataStacSidecarConfig(_PgMetadataSidecarConfigBase):
+class CollectionStacSidecarConfig(_PgCollectionSidecarConfigBase):
     """Routes the STAC metadata slice (``stac_version``, ``extent``,
     ``providers``, ``summaries``, ``links``, ``assets``, ``item_assets``)
     to :class:`CollectionStacPostgresqlDriver` from the stac module.
 
-    Resolved via try-import in :class:`MetadataPgSidecarRegistry` — a
+    Resolved via try-import in :class:`CollectionPgSidecarRegistry` — a
     deployment without the stac extra installed will see this entry's
     resolution log a single warning and skip the slice (no crash).
     """
@@ -136,10 +136,10 @@ class MetadataStacSidecarConfig(_PgMetadataSidecarConfigBase):
     sidecar_type: Literal["metadata_stac"] = "metadata_stac"
 
 
-_PgMetadataSidecarConfig = Annotated[
+_PgCollectionSidecarConfig = Annotated[
     Union[
-        MetadataCoreSidecarConfig,
-        MetadataStacSidecarConfig,
+        CollectionCoreSidecarConfig,
+        CollectionStacSidecarConfig,
     ],
     Discriminator("sidecar_type"),
 ]
@@ -150,7 +150,7 @@ _PgMetadataSidecarConfig = Annotated[
 # ---------------------------------------------------------------------------
 
 
-class MetadataPgSidecarRegistry:
+class CollectionPgSidecarRegistry:
     """Registry mapping ``sidecar_type`` to inner ``CollectionStore``
     classes.  STAC entry uses try-import so the wrapper works in deployments
     without the stac extra installed.
@@ -182,7 +182,7 @@ class MetadataPgSidecarRegistry:
             )
         except ImportError as exc:
             logger.debug(
-                "MetadataPgSidecarRegistry: stac sidecar unavailable (%s)", exc,
+                "CollectionPgSidecarRegistry: stac sidecar unavailable (%s)", exc,
             )
 
     @classmethod
@@ -203,16 +203,16 @@ class MetadataPgSidecarRegistry:
         cls._registry[sidecar_type] = driver_cls
 
     @classmethod
-    def default_sidecars(cls) -> List[_PgMetadataSidecarConfigBase]:
+    def default_sidecars(cls) -> List[_PgCollectionSidecarConfigBase]:
         """Built-in default — CORE always, STAC if the extra is installed.
 
         Mirrors the existing two-driver routing default (router fans out to
         ``CollectionCorePostgresqlDriver`` + ``CollectionStacPostgresqlDriver``).
         """
         cls._ensure_defaults()
-        out: List[_PgMetadataSidecarConfigBase] = [MetadataCoreSidecarConfig()]
+        out: List[_PgCollectionSidecarConfigBase] = [CollectionCoreSidecarConfig()]
         if "metadata_stac" in cls._registry:
-            out.append(MetadataStacSidecarConfig())
+            out.append(CollectionStacSidecarConfig())
         return out
 
     @classmethod
@@ -232,7 +232,7 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
 
     ``sidecars`` is the typed list of metadata domain slices the wrapper
     will fan CRUD across.  Empty list → wrapper falls back to the
-    :meth:`MetadataPgSidecarRegistry.default_sidecars` default
+    :meth:`CollectionPgSidecarRegistry.default_sidecars` default
     (``[metadata_core, metadata_stac if installed]``).
 
     Marked ``Immutable`` because changing the active sidecar set after
@@ -243,7 +243,7 @@ class CollectionPostgresqlDriverConfig(_PluginDriverConfig):
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
-    sidecars: Immutable[List[_PgMetadataSidecarConfig]] = Field(
+    sidecars: Immutable[List[_PgCollectionSidecarConfig]] = Field(
         default_factory=list,
         description=(
             "Metadata sidecar configs — discriminated union on "
@@ -313,7 +313,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
     """Composition driver: fans CollectionStore CRUD across the
     configured PG metadata sidecars (``metadata_core``, optionally
     ``metadata_stac``, plus any extension-contributed sidecar registered
-    via :meth:`MetadataPgSidecarRegistry.register`).
+    via :meth:`CollectionPgSidecarRegistry.register`).
 
     The wrapper itself owns no SQL — every method delegates to the
     inner drivers, each of which already filters the payload to its own
@@ -337,13 +337,13 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
     })
 
     def _resolve_inner_drivers(
-        self, sidecars: Optional[List[_PgMetadataSidecarConfigBase]] = None,
+        self, sidecars: Optional[List[_PgCollectionSidecarConfigBase]] = None,
     ) -> List[CollectionStore]:
         """Resolve the configured ``sidecars`` list to instantiated inner
         ``CollectionStore`` driver instances.
 
         ``sidecars=None`` (or empty) falls back to
-        :meth:`MetadataPgSidecarRegistry.default_sidecars`.
+        :meth:`CollectionPgSidecarRegistry.default_sidecars`.
 
         Sidecar entries whose ``sidecar_type`` is unknown to the registry
         (e.g. ``metadata_stac`` in a deployment without the stac extra)
@@ -356,7 +356,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         4 fresh instantiations per request.
         """
         if not sidecars:
-            sidecars = MetadataPgSidecarRegistry.default_sidecars()
+            sidecars = CollectionPgSidecarRegistry.default_sidecars()
         out: List[CollectionStore] = []
         for cfg in sidecars:
             sc_type = getattr(cfg, "sidecar_type", None)
@@ -366,7 +366,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
                     "`sidecar_type` discriminator — skipping",
                 )
                 continue
-            cls = MetadataPgSidecarRegistry.get_driver_cls(sc_type)
+            cls = CollectionPgSidecarRegistry.get_driver_cls(sc_type)
             if cls is None:
                 logger.warning(
                     "CollectionPostgresqlDriver: sidecar %r not registered "
@@ -406,7 +406,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         Fetches the wrapper config via the 4-tier waterfall
         (``ConfigsProtocol.get_config``); if ``config.sidecars`` is
         non-empty uses those, otherwise falls back to
-        :meth:`MetadataPgSidecarRegistry.default_sidecars`.
+        :meth:`CollectionPgSidecarRegistry.default_sidecars`.
 
         Cached at TTL=60s with jitter — operator overrides propagate
         within ~60s of being persisted, OR immediately when the apply
@@ -417,7 +417,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
-        sidecars: Optional[List[_PgMetadataSidecarConfigBase]] = None
+        sidecars: Optional[List[_PgCollectionSidecarConfigBase]] = None
         configs = get_protocol(ConfigsProtocol)
         if configs is not None:
             try:
