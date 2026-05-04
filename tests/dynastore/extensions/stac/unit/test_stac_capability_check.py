@@ -1,6 +1,6 @@
 """Unit tests for the STAC catalog-creation capability precheck.
 
-``_assert_stac_capable_metadata_stack`` refuses a STAC catalog create
+``_assert_stac_capable_collection_stack`` refuses a STAC catalog create
 when the ``CatalogStore`` registry has no driver implementing
 ``StacCatalogEntityStoreCapability`` (the sub-Protocol owned by the STAC
 extension at ``extensions/stac/protocols.py``). Default PG deployment
@@ -22,7 +22,7 @@ from dynastore.extensions.stac.protocols import (
     StacCollectionEntityStoreCapability,
 )
 from dynastore.extensions.stac.stac_service import (
-    _assert_stac_capable_metadata_stack,
+    _assert_stac_capable_collection_stack,
 )
 
 
@@ -59,7 +59,7 @@ def test_raises_when_no_catalog_stac_driver_registered():
         side_effect=_get_protocols,
     ):
         with pytest.raises(HTTPException) as exc:
-            _assert_stac_capable_metadata_stack()
+            _assert_stac_capable_collection_stack()
 
     assert exc.value.status_code == 422
     assert "StacCatalogEntityStoreCapability" in exc.value.detail
@@ -78,7 +78,7 @@ def test_warns_but_proceeds_when_no_collection_stac_driver_registered(caplog):
         side_effect=_get_protocols,
     ):
         with caplog.at_level("WARNING"):
-            _assert_stac_capable_metadata_stack()  # should not raise
+            _assert_stac_capable_collection_stack()  # should not raise
 
     assert any(
         "StacCollectionEntityStoreCapability" in r.message
@@ -98,7 +98,7 @@ def test_passes_when_both_tiers_have_stac_driver():
         "dynastore.extensions.stac.stac_service.get_protocols",
         side_effect=_get_protocols,
     ):
-        _assert_stac_capable_metadata_stack()  # should not raise
+        _assert_stac_capable_collection_stack()  # should not raise
 
 
 def test_raises_when_registry_empty_on_catalog_tier():
@@ -109,7 +109,7 @@ def test_raises_when_registry_empty_on_catalog_tier():
         return_value=[],
     ):
         with pytest.raises(HTTPException) as exc:
-            _assert_stac_capable_metadata_stack()
+            _assert_stac_capable_collection_stack()
 
     assert exc.value.status_code == 422
     assert "StacCatalogEntityStoreCapability" in exc.value.detail
@@ -140,7 +140,7 @@ def test_warns_when_collection_wrapper_satisfies_capability_but_returns_empty_co
         side_effect=_get_protocols,
     ):
         with caplog.at_level("WARNING"):
-            _assert_stac_capable_metadata_stack()  # should not raise
+            _assert_stac_capable_collection_stack()  # should not raise
 
     assert any(
         "StacCollectionEntityStoreCapability" in r.message

@@ -27,7 +27,7 @@ module loaded, ``get_protocols(StacCollectionEntityStoreCapability)``
 returns nothing and ``stac_service._has_stac()`` reports False.
 
 Module priority is 60 — runs after ``CatalogModule`` (default 50) so the
-``catalog.catalogs`` table (FK target for ``catalog.catalog_metadata_stac``)
+``catalog.catalogs`` table (FK target for ``catalog.catalog_stac``)
 exists before this module's lifespan applies the global STAC DDL.
 """
 
@@ -46,7 +46,7 @@ class StacModule(ModuleProtocol):
     On lifespan entry:
     - Imports the per-tenant lifecycle hook so its
       ``@lifecycle_registry.sync_catalog_initializer`` decorator fires.
-    - Applies the global ``catalog.catalog_metadata_stac`` DDL.
+    - Applies the global ``catalog.catalog_stac`` DDL.
 
     Neither STAC PG driver is surfaced as a standalone
     ``CollectionStore`` / ``CatalogStore`` plugin
@@ -62,21 +62,21 @@ class StacModule(ModuleProtocol):
     async def lifespan(self, app_state: object):
         # Import the db_init module so its lifecycle decorator registers
         # the per-tenant STAC DDL initializer with lifecycle_registry.
-        from dynastore.modules.stac.db_init import metadata_stac_tables  # noqa: F401
-        from dynastore.modules.stac.db_init.metadata_stac_tables import (
-            ensure_global_stac_metadata_tables,
+        from dynastore.modules.stac.db_init import stac_tables  # noqa: F401
+        from dynastore.modules.stac.db_init.stac_tables import (
+            ensure_global_stac_tables,
         )
-        # Apply global DDL (catalog.catalog_metadata_stac) — once, idempotent.
+        # Apply global DDL (catalog.catalog_stac) — once, idempotent.
         from dynastore.models.protocols import DatabaseProtocol
         from dynastore.modules.db_config.query_executor import managed_transaction
 
         db = get_protocol(DatabaseProtocol)
         if db and db.engine:
             async with managed_transaction(db.engine) as conn:
-                await ensure_global_stac_metadata_tables(conn)
+                await ensure_global_stac_tables(conn)
             logger.info(
                 "StacModule: global STAC metadata DDL applied "
-                "(catalog.catalog_metadata_stac)."
+                "(catalog.catalog_stac)."
             )
         else:
             logger.warning(

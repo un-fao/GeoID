@@ -27,7 +27,7 @@ Collection-level metadata is no longer this driver's responsibility.
 Callers go through :mod:`dynastore.modules.catalog.collection_router`
 which fans out across registered ``CollectionStore`` drivers
 (``CollectionPostgresqlDriver`` — the composition wrapper that owns
-the metadata_core + metadata_stac sidecar fan-out — in the default PG
+the collection_core + collection_stac sidecar fan-out — in the default PG
 deployment).  The asset driver handles asset-level CRUD only.
 
 Lifecycle

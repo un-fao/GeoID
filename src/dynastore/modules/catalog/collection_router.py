@@ -24,7 +24,7 @@ registered :class:`CollectionStore` driver receives WRITE / DELETE
 fan-outs and contributes its slice on READ; the router merges per-domain
 dicts into the envelope returned to callers.  Default deployment
 registers :class:`CollectionPostgresqlDriver` (the composition wrapper
-that fans CRUD across ``metadata_core`` + ``metadata_stac`` sidecars
+that fans CRUD across ``collection_core`` + ``collection_stac`` sidecars
 internally — PR 1e step 3b); the ES indexer and any future TRANSFORM
 contributors slot in alongside without changing call sites.
 

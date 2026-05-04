@@ -99,8 +99,8 @@ def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
     collections + config tables are skipped in one round-trip.  Cold
     path runs all DDLs under a single connection with nested savepoints.
 
-    The domain-scoped metadata tables (``collection_metadata_core`` +
-    ``collection_metadata_stac``) are created by
+    The domain-scoped metadata tables (``collection_core`` +
+    ``collection_stac``) are created by
     :func:`ensure_tenant_metadata_domain_tables` — not in this batch.
 
     The IAM-side tenant tables (``roles``, ``role_hierarchy``, ``grants``)
@@ -356,7 +356,7 @@ _CONTROL_PLANE_CATALOG_FIELDS: FrozenSet[str] = frozenset({
 # --- Queries ---
 
 # The catalog.catalogs INSERT carries only the technical registry
-# columns.  Metadata lands in catalog.catalog_metadata_core / _stac via
+# columns.  Metadata lands in catalog.catalog_core / _stac via
 # a router-direct upsert from ``create_catalog``; no legacy metadata
 # columns remain on ``catalog.catalogs`` after the M2.5 hard cut.
 _create_catalog_strict_query = DQLQuery(
@@ -748,10 +748,10 @@ class CatalogService(CatalogsProtocol):
             # (when StacModule is loaded) attaches via lifecycle_registry
             # below.  MUST precede lifecycle hooks because downstream
             # drivers may write metadata immediately.
-            from dynastore.modules.catalog.db_init.metadata_core_tables import (
-                ensure_tenant_metadata_core_tables,
+            from dynastore.modules.catalog.db_init.core_tables import (
+                ensure_tenant_core_tables,
             )
-            await ensure_tenant_metadata_core_tables(conn, physical_schema)
+            await ensure_tenant_core_tables(conn, physical_schema)
 
             # 4. Module-specific lifecycle hooks (stats, tiles, …) all run AFTER
             #    the schema and core tables exist, inside their own SAVEPOINTs.
@@ -862,7 +862,7 @@ class CatalogService(CatalogsProtocol):
         # carries metadata merged from the split tables — ``Catalog.model_validate``
         # of the raw ``catalog.catalogs`` row would yield ``title=None`` /
         # ``description=None`` etc. since those columns were dropped from the
-        # registry in M2.5b and now live in ``catalog_metadata_core`` /
+        # registry in M2.5b and now live in ``catalog_core`` /
         # ``_stac`` (router-direct upsert above).
         merged = await self.get_catalog_model(
             catalog_model.id,
@@ -895,7 +895,7 @@ class CatalogService(CatalogsProtocol):
 
         When ``router_metadata`` is supplied, its keys overwrite any
         corresponding columns on the row dict before model-validation.
-        Catalog writes land in ``catalog.catalog_metadata_core`` /
+        Catalog writes land in ``catalog.catalog_core`` /
         ``_stac`` via the router-direct upsert in ``create_catalog``;
         reads hydrate via the catalog-metadata router and pass the
         result here as ``router_metadata``.  Absence of router data
@@ -1250,14 +1250,14 @@ class CatalogService(CatalogsProtocol):
             else:
                 # M2.5b — the legacy ``title`` / ``description`` columns
                 # are gone from ``catalog.catalogs``.  Search now joins
-                # through ``catalog.catalog_metadata_core`` (the only
+                # through ``catalog.catalog_core`` (the only
                 # place those fields live post-M2.5) and applies the
                 # same ILIKE pattern to the JSONB ``en`` field.  Left
                 # join so catalogs with no metadata row still match on
                 # ``id ILIKE``.
                 sql = (
                     "SELECT c.* FROM catalog.catalogs c "
-                    "LEFT JOIN catalog.catalog_metadata_core m "
+                    "LEFT JOIN catalog.catalog_core m "
                     "  ON m.catalog_id = c.id "
                     "WHERE c.deleted_at IS NULL AND ("
                     "  c.id ILIKE :q "

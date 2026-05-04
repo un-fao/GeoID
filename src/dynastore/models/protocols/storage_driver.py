@@ -316,7 +316,7 @@ class CollectionItemsStore(Protocol):
     # of collection metadata to the CollectionStore protocol; the
     # PG-tier implementer is now the composition wrapper
     # CollectionPostgresqlDriver (PR 1e step 3b), which fans CRUD across
-    # metadata_core + metadata_stac sidecars internally.  Routing happens
+    # collection_core + collection_stac sidecars internally.  Routing happens
     # via :mod:`dynastore.modules.catalog.collection_router`.
     # Storage drivers now handle items-only; metadata is out-of-band.
 

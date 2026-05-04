@@ -123,7 +123,7 @@ async def _asset_event_bridge(
 # M2.5b — post-refactor ``catalog.catalogs`` shape: technical registry
 # columns only.  All descriptive metadata (title, description, keywords,
 # license, conforms_to, links, assets, stac_*, extra_metadata) lives in
-# ``catalog.catalog_metadata_core`` / ``_stac`` and is accessed through
+# ``catalog.catalog_core`` / ``_stac`` and is accessed through
 # the catalog-metadata router (:mod:`catalog_router`).
 #
 # Delete-and-rebuild policy: no legacy columns carried over.  Fresh
@@ -275,13 +275,13 @@ class CatalogModule(ModuleProtocol):
 
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
 
-                # Metadata-domain tables: catalog.catalog_metadata_core +
-                # catalog.catalog_metadata_stac.  The only collection- and
+                # Metadata-domain tables: catalog.catalog_core +
+                # catalog.catalog_stac.  The only collection- and
                 # catalog-metadata storage path after the M2.5 hard cut.
-                from dynastore.modules.catalog.db_init.metadata_core_tables import (
-                    ensure_global_metadata_core_tables,
+                from dynastore.modules.catalog.db_init.core_tables import (
+                    ensure_global_core_tables,
                 )
-                await ensure_global_metadata_core_tables(conn)
+                await ensure_global_core_tables(conn)
 
                 # Ensure stored procedures (replacing init.sql)
                 from dynastore.modules.catalog.db_init.stored_procedures import (

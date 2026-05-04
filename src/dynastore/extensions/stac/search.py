@@ -860,9 +860,9 @@ async def search_collections(
 
     # Each subquery JOINs both domain-scoped metadata tables (CORE + STAC).
     # The collection-tier M2.5 hard cut replaced the legacy monolithic
-    # ``{schema}.collection_metadata`` with ``collection_metadata_core``
+    # ``{schema}.collection_metadata`` with ``collection_core``
     # (title / description / keywords / license / extra_metadata) and
-    # ``collection_metadata_stac`` (links / assets / extent / providers /
+    # ``collection_stac`` (links / assets / extent / providers /
     # summaries / item_assets).  Text-match filters land on the CORE
     # alias (``mc``), spatial filters on the STAC alias (``ms``).
     _meta_cols = (
@@ -876,8 +876,8 @@ async def search_collections(
         union_queries.append(
             f'SELECT {_meta_cols} '
             f'FROM "{schema}".collections c '
-            f'LEFT JOIN "{schema}".collection_metadata_core mc ON mc.collection_id = c.id '
-            f'LEFT JOIN "{schema}".collection_metadata_stac ms ON ms.collection_id = c.id '
+            f'LEFT JOIN "{schema}".collection_core mc ON mc.collection_id = c.id '
+            f'LEFT JOIN "{schema}".collection_stac ms ON ms.collection_id = c.id '
             f'WHERE {where_sql}'
         )
 

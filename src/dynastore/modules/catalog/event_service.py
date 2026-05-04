@@ -203,7 +203,7 @@ class CatalogEventType(EventType):
     # delivered on this branch — see the scope-cut tracker for the
     # follow-up.  After PR 1e step 3b the relevant emitter would live
     # behind ``CollectionPostgresqlDriver`` (the composition wrapper
-    # that owns the metadata_core + metadata_stac sidecar fan-out).
+    # that owns the collection_core + collection_stac sidecar fan-out).
     # Until an emitter exists, listeners registered against this event
     # will never fire — they are not an accidental production coupling.
     COLLECTION_METADATA_CHANGED = define_event(

@@ -36,7 +36,7 @@ class TestStructuralInvariants:
         )
 
         d = CollectionStacPostgresqlDriver()
-        assert d._table == "collection_metadata_stac"
+        assert d._table == "collection_stac"
         assert EntityStoreCapability.SPATIAL_FILTER in d.capabilities
         # STAC collection driver does NOT advertise SEARCH — the CORE
         # driver owns title/description; STAC carries structured fields.
@@ -51,7 +51,7 @@ class TestStructuralInvariants:
         )
 
         d = CatalogStacPostgresqlDriver()
-        assert d._table == "catalog_metadata_stac"
+        assert d._table == "catalog_stac"
         assert isinstance(d, CatalogStore)
         assert isinstance(d, StacCatalogEntityStoreCapability)
 
@@ -180,7 +180,7 @@ async def test_collection_stac_upsert_uses_stac_columns_only(fake_conn_with_dql)
 
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert '"t_alpha".collection_metadata_stac' in sql
+    assert '"t_alpha".collection_stac' in sql
     assert "title" not in sql
     assert "license" not in sql
     assert "extent" in sql
@@ -213,7 +213,7 @@ async def test_catalog_stac_upsert_carries_catalog_stac_columns(fake_conn_with_d
     )
     dql_execute.assert_awaited_once()
     sql, params = dql_execute.call_args.args[0], dql_execute.call_args.kwargs
-    assert "catalog.catalog_metadata_stac" in sql
+    assert "catalog.catalog_stac" in sql
     assert "conforms_to" in sql
     assert "item_assets" not in sql
     for untouched in ("stac_extensions", "links", "assets"):
@@ -249,7 +249,7 @@ class TestColumnTupleAlignment:
         return cols
 
     def test_collection_stac_columns_match_ddl(self):
-        from dynastore.modules.stac.db_init.metadata_stac_tables import (
+        from dynastore.modules.stac.db_init.stac_tables import (
             TENANT_METADATA_STAC_DDL,
         )
         from dynastore.modules.stac.drivers.postgresql import (
@@ -261,7 +261,7 @@ class TestColumnTupleAlignment:
         )
 
     def test_catalog_stac_columns_match_ddl(self):
-        from dynastore.modules.stac.db_init.metadata_stac_tables import (
+        from dynastore.modules.stac.db_init.stac_tables import (
             CATALOG_METADATA_STAC_DDL,
         )
         from dynastore.modules.stac.drivers.postgresql import (
@@ -287,7 +287,7 @@ class TestEntryPoints:
         # (``CollectionPostgresqlDriver`` / ``CatalogPostgresqlDriver``)
         # via their sidecar registries' try-imports.  StacModule itself
         # remains entry-point-registered as the lifespan owner of the
-        # global ``catalog.catalog_metadata_stac`` DDL.
+        # global ``catalog.catalog_stac`` DDL.
         got = {
             ep.name: ep.value
             for ep in entry_points(group="dynastore.modules")

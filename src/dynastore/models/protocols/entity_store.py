@@ -375,8 +375,8 @@ class CatalogStore(Protocol):
     Catalog-level metadata includes the Records-minimum envelope fields
     (title, description, keywords, license, extra_metadata) and any
     domain-specific payload owned by an extension (STAC conforms_to, links,
-    etc.).  Per-domain tables: ``catalog.catalog_metadata_core`` (always),
-    ``catalog.catalog_metadata_stac`` (STAC extension only).
+    etc.).  Per-domain tables: ``catalog.catalog_core`` (always),
+    ``catalog.catalog_stac`` (STAC extension only).
 
     ``capabilities`` — same semantics as :class:`CollectionStore`.
     ``sla``           — mandatory when ``EntityStoreCapability.TRANSFORM``.
