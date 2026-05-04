@@ -186,6 +186,105 @@ async def catalog_cleaner(app_lifespan):
         await lifecycle_registry.wait_for_all_tasks()
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def shared_catalog(app_lifespan_module, worker_id):
+    """One catalog per test file (module), alive for every test in that file.
+
+    Tests that don't care about catalog lifecycle should depend on this
+    instead of the function-scoped ``catalog_id`` / ``setup_catalog`` to
+    skip the 25-37s creation overhead per test. With N tests per file, the
+    file pays the catalog-creation cost ONCE.
+
+    Returns the catalog_id (str). Tests create their own random
+    collections / assets / items inside it — no isolation issues because
+    every collection_id / item_id is freshly generated per test, and
+    assertions filter by their own random ids (never by catalog cardinality).
+
+    Scope rationale: depends on ``app_lifespan_module`` (the module-scoped
+    application bootstrap), so the catalog can't outlive the dynastore
+    module registry. A session-scoped variant would require a session-scoped
+    app_lifespan that doesn't yet exist; that's a larger follow-up.
+
+    Worker disambiguation: under xdist ``worker_id`` is ``"gw0"``, ``"gw1"``,
+    … so concurrent workers don't collide on catalog ids. When pytest runs
+    without xdist, ``worker_id`` is ``"master"``.
+
+    Tests that opt in must use module-scoped asyncio loop:
+        @pytest.mark.asyncio(loop_scope="module")
+    """
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import CatalogsProtocol
+
+    cat_id = f"shared_{worker_id}_{generate_id_hex()}"
+    catalogs = get_protocol(CatalogsProtocol)
+    await catalogs.create_catalog(Catalog(id=cat_id, title=cat_id), lang="en")
+
+    yield cat_id
+
+    # Session teardown: hard-delete drops every collection, asset, and
+    # item the worker accumulated. force=True triggers schema removal.
+    try:
+        await catalogs.delete_catalog(cat_id, force=True)
+    except Exception:
+        # Session is ending; don't crash teardown. Any leaked schema is
+        # cleaned up by db_reset_session at the start of the next run.
+        pass
+
+
+@pytest_asyncio.fixture
+async def shared_collection_factory(shared_catalog, sysadmin_in_process_client_module):
+    """Function-scoped factory that creates random collections inside the
+    module-shared catalog and cleans them up on test teardown.
+
+    Returns a callable: ``await factory(**overrides) -> col_id``. Tests
+    that need multiple collections in one test can call it repeatedly;
+    every call gets a fresh random id (``col_<hex>``).
+
+    Cleanup is per-test, not per-module: keeping the shared catalog light
+    prevents list/search assertions from drowning in cross-test state. The
+    shared catalog itself stays alive across tests in the file; only the
+    collections this specific test created are removed.
+
+    Depends on ``sysadmin_in_process_client_module`` (module-scoped client)
+    so we don't pay client-bootstrap overhead per test.
+    """
+    created: list[tuple[str, str]] = []
+
+    async def _make(**overrides) -> str:
+        col_id = overrides.pop("id", f"col_{generate_id_hex()}")
+        body = {
+            "id": col_id,
+            "description": "Test Collection (shared_collection_factory)",
+            "extent": {
+                "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                "temporal": {"interval": [[None, None]]},
+            },
+            **overrides,
+        }
+        resp = await sysadmin_in_process_client_module.post(
+            f"/features/catalogs/{shared_catalog}/collections", json=body
+        )
+        # 201 on first create; 409 on idempotent re-create from a previous
+        # failed teardown — both are acceptable here.
+        assert resp.status_code in (201, 409), (
+            f"create_collection returned {resp.status_code}: {resp.text}"
+        )
+        created.append((shared_catalog, col_id))
+        return col_id
+
+    yield _make
+
+    for cat_id, col_id in created:
+        try:
+            await sysadmin_in_process_client_module.delete(
+                f"/features/catalogs/{cat_id}/collections/{col_id}?force=true"
+            )
+        except Exception:
+            # Don't crash teardown; the next session's shared_catalog
+            # cleanup hard-deletes the parent catalog and reaps everything.
+            pass
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def wait_for_lifecycle_tasks():
     """
