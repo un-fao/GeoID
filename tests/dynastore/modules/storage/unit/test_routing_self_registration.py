@@ -96,7 +96,7 @@ def test_self_registration_skips_zero_drivers():
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
-    _self_register_store_drivers(cfg, metadata_driver_index={})
+    _self_register_store_drivers(cfg, store_driver_index={})
 
     # Operations stay empty — auto-append only adds for present drivers.
     assert cfg.operations.get(Operation.WRITE, []) == []

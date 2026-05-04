@@ -267,7 +267,7 @@ class CollectionService:
         # CollectionStore driver (PG Core + PG Stac by default;
         # ES joins in when the elasticsearch scope is installed).  The
         # router merges the per-domain slices into one dict.
-        from dynastore.modules.catalog.collection_metadata_router import (
+        from dynastore.modules.catalog.collection_router import (
             get_collection_metadata as _route_get_metadata,
         )
 
@@ -595,7 +595,7 @@ class CollectionService:
             # every registered CollectionStore driver.  Each driver
             # filters the unified payload to its own domain's columns and
             # no-ops on an empty filtered slice.
-            from dynastore.modules.catalog.collection_metadata_router import (
+            from dynastore.modules.catalog.collection_router import (
                 upsert_collection_metadata as _route_upsert_metadata,
             )
 
@@ -669,7 +669,7 @@ class CollectionService:
         # driver (CORE has SEARCH capability; ES contributes FULLTEXT when
         # present) and falls back to the direct-PG path below if nothing
         # matches the query shape.
-        from dynastore.modules.catalog.collection_metadata_router import (
+        from dynastore.modules.catalog.collection_router import (
             search_collection_metadata as _route_search,
         )
 
@@ -803,7 +803,7 @@ class CollectionService:
                 return None
 
             # Fan-out metadata writes via the collection-metadata router.
-            from dynastore.modules.catalog.collection_metadata_router import (
+            from dynastore.modules.catalog.collection_router import (
                 upsert_collection_metadata as _route_upsert_metadata,
             )
 
@@ -905,7 +905,7 @@ class CollectionService:
                 )
                 await DDLQuery(hard_delete_sql).execute(conn, id=collection_id)
                 # Fan-out metadata deletion via the router.
-                from dynastore.modules.catalog.collection_metadata_router import (
+                from dynastore.modules.catalog.collection_router import (
                     delete_collection_metadata as _route_delete_metadata,
                 )
 
@@ -993,7 +993,7 @@ class CollectionService:
             if not can_delete:
                 return False
 
-            from dynastore.modules.catalog.collection_metadata_router import (
+            from dynastore.modules.catalog.collection_router import (
                 upsert_collection_metadata as _route_upsert_metadata,
             )
 

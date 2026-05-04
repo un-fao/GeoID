@@ -571,7 +571,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         )
 
     # Collection-metadata CRUD has moved to the domain-scoped drivers +
-    # :mod:`dynastore.modules.catalog.collection_metadata_router`.  The
+    # :mod:`dynastore.modules.catalog.collection_router`.  The
     # items driver no longer touches the legacy ``{schema}.collection_metadata``
     # table (dropped by the M2.5 migration) — callers route through the
     # split-domain drivers instead.

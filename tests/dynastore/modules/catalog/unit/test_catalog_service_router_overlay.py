@@ -181,7 +181,7 @@ async def test_router_resolution_returns_router_payload_on_success(monkeypatch):
         return {"title": {"en": "T"}, "conforms_to": ["x"]}
 
     monkeypatch.setattr(
-        "dynastore.modules.catalog.catalog_metadata_router.get_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.get_catalog_metadata",
         _fake_get,
     )
     result = await svc._resolve_catalog_router_metadata("cat-42", db_resource=None)
@@ -197,7 +197,7 @@ async def test_router_resolution_degrades_to_none_on_exception(monkeypatch, capl
         raise RuntimeError("router exploded")
 
     monkeypatch.setattr(
-        "dynastore.modules.catalog.catalog_metadata_router.get_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.get_catalog_metadata",
         _boom,
     )
     with caplog.at_level(
@@ -222,7 +222,7 @@ async def test_router_resolution_returns_none_when_router_returns_none(monkeypat
         return None
 
     monkeypatch.setattr(
-        "dynastore.modules.catalog.catalog_metadata_router.get_catalog_metadata",
+        "dynastore.modules.catalog.catalog_router.get_catalog_metadata",
         _none,
     )
     result = await svc._resolve_catalog_router_metadata(

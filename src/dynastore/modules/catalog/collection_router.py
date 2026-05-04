@@ -19,7 +19,7 @@
 """
 Collection-tier metadata router — fan-out across registered drivers.
 
-Mirror of :mod:`catalog_metadata_router` at the collection tier.  Every
+Mirror of :mod:`catalog_router` at the collection tier.  Every
 registered :class:`CollectionStore` driver receives WRITE / DELETE
 fan-outs and contributes its slice on READ; the router merges per-domain
 dicts into the envelope returned to callers.  Default deployment

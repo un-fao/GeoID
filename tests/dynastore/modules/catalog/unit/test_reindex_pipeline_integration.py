@@ -4,7 +4,7 @@ Goal: a single test that proves the M3.0 + M3.1 + M3.1b + M3.2 chain
 connects.  Uses stubs for the durable-storage pieces (outbox, asyncpg)
 but exercises the real code paths in between:
 
-1. :func:`catalog_metadata_router._emit_catalog_metadata_changed`
+1. :func:`catalog_router._emit_catalog_metadata_changed`
    correctly wraps the emission.
 2. :meth:`EventService._consume_shard` dispatches via registered
    async listeners.  We bypass the actual shard loop (which needs a
@@ -86,7 +86,7 @@ async def test_pipeline_router_emit_listener_worker_indexer(
 
     Stages wired:
 
-    - ``catalog_metadata_router.upsert_catalog_metadata`` fans out to
+    - ``catalog_router.upsert_catalog_metadata`` fans out to
       two stub Primary drivers (domain=core, domain=stac), then emits
       ``catalog_metadata_changed`` through ``emit_event``.
     - ``emit_event`` invokes the registered async listener from
@@ -107,7 +107,7 @@ async def test_pipeline_router_emit_listener_worker_indexer(
     line is missing.
     """
     from dynastore.modules.catalog import event_service as event_service_mod
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         upsert_catalog_metadata,
     )
     from dynastore.modules.catalog.reindex_listener import (
@@ -222,7 +222,7 @@ async def test_pipeline_deletes_route_to_delete_catalog_metadata(
     ``driver.delete_catalog_metadata`` instead of ``upsert_catalog_metadata``.
     """
     from dynastore.modules.catalog import event_service as event_service_mod
-    from dynastore.modules.catalog.catalog_metadata_router import (
+    from dynastore.modules.catalog.catalog_router import (
         delete_catalog_metadata,
     )
     from dynastore.modules.catalog.reindex_listener import (

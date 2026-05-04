@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 
 # Canonical event-type string emitted by
-# :func:`catalog_metadata_router._emit_catalog_metadata_changed`
+# :func:`catalog_router._emit_catalog_metadata_changed`
 # (``CatalogEventType.CATALOG_METADATA_CHANGED.value``).  Kept as a
 # string here to avoid an import cycle between ``reindex_listener``
 # and ``event_service``.

@@ -124,7 +124,7 @@ async def _asset_event_bridge(
 # columns only.  All descriptive metadata (title, description, keywords,
 # license, conforms_to, links, assets, stac_*, extra_metadata) lives in
 # ``catalog.catalog_metadata_core`` / ``_stac`` and is accessed through
-# the catalog-metadata router (:mod:`catalog_metadata_router`).
+# the catalog-metadata router (:mod:`catalog_router`).
 #
 # Delete-and-rebuild policy: no legacy columns carried over.  Fresh
 # deployments get this canonical shape directly from the CREATE TABLE
@@ -327,7 +327,7 @@ class CatalogModule(ModuleProtocol):
                 await self._on_task_failed(**kwargs)
 
             # M3.1b — register the catalog_metadata_changed → ReindexWorker
-            # listener so mutations emitted by ``catalog_metadata_router``
+            # listener so mutations emitted by ``catalog_router``
             # propagate to every configured INDEX driver.  Uses the shared
             # ``_consume_shard`` machinery started below (step 6); see
             # ``reindex_listener.py`` for the rationale on listener-over-
