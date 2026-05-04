@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from dynastore.modules.storage.schema_types import (
     ConfigScopeMixin,
-    ContentHashConstraint,
+    GeometryHashConstraint,
     FieldConstraint,
     IdentityKeyConstraint,
     OgcFeaturesSchemaExtension,
@@ -88,13 +88,13 @@ class TestValidityConstraint:
         assert c.field == "valid_time"
 
 
-class TestContentHashConstraint:
+class TestGeometryHashConstraint:
     def test_constraint_type(self):
-        assert ContentHashConstraint.constraint_type == "content_hash"
+        assert GeometryHashConstraint.constraint_type == "geometry_hash"
 
     def test_construction(self):
-        c = ContentHashConstraint()
-        assert c.constraint_type == "content_hash"
+        c = GeometryHashConstraint()
+        assert c.constraint_type == "geometry_hash"
 
 
 class TestAllConstraintTypesDistinct:
@@ -104,7 +104,7 @@ class TestAllConstraintTypesDistinct:
             UniqueConstraint.constraint_type,
             IdentityKeyConstraint.constraint_type,
             ValidityConstraint.constraint_type,
-            ContentHashConstraint.constraint_type,
+            GeometryHashConstraint.constraint_type,
         }
         assert len(types) == 5
 

@@ -161,17 +161,17 @@ class ItemDistributedMixin(_Host):
                     matcher=str(matcher_name),
                 )
 
-        # 1.7 Hash gating: if enabled and an unchanged content_hash matches,
+        # 1.7 Hash gating: if enabled and an unchanged geometry_hash matches,
         # short-circuit the action to avoid churning identical rows.
         if (
             active_rec
             and write_policy
-            and write_policy.skip_if_unchanged_content_hash
+            and write_policy.skip_if_unchanged_geometry_hash
         ):
-            incoming_ch = processing_context.get("content_hash") or hub_payload.get("content_hash")
-            if incoming_ch and active_rec.get("content_hash") == incoming_ch:
+            incoming_ch = processing_context.get("geometry_hash") or hub_payload.get("geometry_hash")
+            if incoming_ch and active_rec.get("geometry_hash") == incoming_ch:
                 logger.info(
-                    "DISTRIBUTED UPSERT: content_hash unchanged — collapsing "
+                    "DISTRIBUTED UPSERT: geometry_hash unchanged — collapsing "
                     f"{on_conflict} to REFUSE_RETURN (geoid={active_rec.get('geoid')})"
                 )
                 on_conflict = WriteConflictPolicy.REFUSE_RETURN

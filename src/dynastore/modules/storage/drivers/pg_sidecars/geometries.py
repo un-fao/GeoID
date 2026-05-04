@@ -1089,15 +1089,15 @@ class GeometriesSidecar(SidecarProtocol):
             )
             shapely_geom = geom_data.get("shapely_geom")
 
-        # Propagate the geometry-derived content_hash to the orchestrator
-        # so the hub row stores it and the CONTENT_HASH identity matcher /
-        # skip_if_unchanged_content_hash gate can resolve. process_geometry
+        # Propagate the geometry-derived geometry_hash to the orchestrator
+        # so the hub row stores it and the GEOMETRY_HASH identity matcher /
+        # skip_if_unchanged_geometry_hash gate can resolve. process_geometry
         # populates it on the standard path; the trusted ingestion path
         # skips it, so derive from the final WKB to keep the invariant
         # (hash always matches the stored geometry).
         wkb_hex_final = geom_data.get("wkb_hex_processed")
         if wkb_hex_final:
-            context["content_hash"] = geom_data.get("content_hash") or hashlib.sha256(
+            context["geometry_hash"] = geom_data.get("geometry_hash") or hashlib.sha256(
                 bytes.fromhex(wkb_hex_final)
             ).hexdigest()
 
@@ -1387,7 +1387,7 @@ class GeometriesSidecar(SidecarProtocol):
         Uses the stored generated column ``geohash`` on the geometry sidecar
         (populated by ``ST_GeoHash(geom, precision)``) to find a prior feature
         co-located at the configured precision.  Returns the active (non-
-        soft-deleted) hub row with its ``content_hash`` so the caller can
+        soft-deleted) hub row with its ``geometry_hash`` so the caller can
         hash-gate NEW_VERSION / UPDATE decisions.
 
         Returns ``None`` when:
@@ -1407,7 +1407,7 @@ class GeometriesSidecar(SidecarProtocol):
 
         sc_table = f"{physical_table}_{self.sidecar_id}"
         sql = f"""
-            SELECT h.geoid, h.content_hash
+            SELECT h.geoid, h.geometry_hash
             FROM "{physical_schema}"."{physical_table}" h
             JOIN "{physical_schema}"."{sc_table}" s ON s.geoid = h.geoid
             WHERE h.deleted_at IS NULL

@@ -30,7 +30,7 @@ class FeatureProperties(BaseModel):
     external_id: Optional[str] = None
     asset_code: Optional[str] = None
     transaction_time: Optional[datetime] = None
-    content_hash: Optional[str] = None
+    geometry_hash: Optional[str] = None
 
     valid_from: Optional[datetime] = None
     valid_to: Optional[datetime] = None

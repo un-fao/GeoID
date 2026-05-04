@@ -17,4 +17,5 @@ RUN apt-get update && \
 RUN echo "CREATE EXTENSION IF NOT EXISTS postgis;" > /docker-entrypoint-initdb.d/001_postgis.sql && \
     echo "CREATE EXTENSION IF NOT EXISTS postgis_topology;" >> /docker-entrypoint-initdb.d/001_postgis.sql && \
     echo "CREATE EXTENSION IF NOT EXISTS pg_cron;" > /docker-entrypoint-initdb.d/002_cron.sql && \
-    echo "CREATE SCHEMA IF NOT EXISTS keycloak;" > /docker-entrypoint-initdb.d/003_keycloak.sql
+    echo "CREATE EXTENSION IF NOT EXISTS pgcrypto;" > /docker-entrypoint-initdb.d/003_pgcrypto.sql && \
+    echo "CREATE SCHEMA IF NOT EXISTS keycloak;" > /docker-entrypoint-initdb.d/004_keycloak.sql

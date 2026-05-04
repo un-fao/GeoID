@@ -88,6 +88,10 @@ async def ensure_init_db(resource: DbResource):
     await maintenance_tools.ensure_db_extension(resource, "postgis_topology")
     await maintenance_tools.ensure_db_extension(resource, "btree_gist")
     await maintenance_tools.ensure_db_extension(resource, "btree_gin")
+    # pgcrypto provides ``digest()`` used by the geometries / attributes
+    # sidecar GENERATED columns to maintain the SHA256 *_hash columns
+    # without application-side write code.
+    await maintenance_tools.ensure_db_extension(resource, "pgcrypto")
 
     # --- Initialize Platform Config Storage ---
     # This ensures 'configs' schema and 'platform_configs' table exist.

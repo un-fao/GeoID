@@ -329,6 +329,22 @@ class FeatureAttributeSidecar(SidecarProtocol):
             columns.append(f"{self.config.jsonb_column_name} JSONB")
             known_columns.add(self.config.jsonb_column_name)
 
+            # attributes_hash STORED GENERATED column — SHA256 of the
+            # canonicalised JSONB (PG keeps jsonb internally normalised so
+            # ``jsonb::text`` is deterministic for a given value).  Powers
+            # ``IdentityMatcher.ATTRIBUTES_HASH`` for "same attribute
+            # combination, regardless of geometry" deduplication. Requires
+            # pgcrypto, which ``ensure_init_db`` enables at boot.
+            columns.append(
+                "attributes_hash CHAR(64) GENERATED ALWAYS AS "
+                f"(encode(digest({self.config.jsonb_column_name}::text, 'sha256'), 'hex')) STORED"
+            )
+            known_columns.add("attributes_hash")
+            indexes.append(
+                f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_attributes_hash" '
+                f'ON {{schema}}."{table_name}" (attributes_hash)'
+            )
+
             # GIN index for full document containment (if not overridden by functional indexes)
             # Standard GIN
             indexes.append(
@@ -1132,6 +1148,10 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 "transaction_period", "catalog_id", "collection_id"}
         if self.config.enable_asset_id:
             cols.add("asset_id")
+        # attributes_hash is write-policy plumbing for IdentityMatcher.ATTRIBUTES_HASH;
+        # never leak it into Feature.properties.  Only present in Mode B (JSONB).
+        if self.resolved_storage_mode == AttributeStorageMode.JSONB:
+            cols.add("attributes_hash")
         return cols
 
     def map_row_to_feature(
@@ -1522,7 +1542,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         processing_context: Dict[str, Any],
         matcher: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Resolve by EXTERNAL_ID (default) or CONTENT_HASH matcher.
+        """Resolve by EXTERNAL_ID (default) or GEOMETRY_HASH matcher.
 
         ``matcher`` is a :class:`IdentityMatcher` string.  Unknown matchers
         and those owned by another sidecar return None.
@@ -1530,8 +1550,12 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         if matcher is None:
             matcher = "external_id"
 
-        if matcher == "content_hash":
-            return await self._resolve_by_content_hash(
+        if matcher == "geometry_hash":
+            return await self._resolve_by_geometry_hash(
+                conn, physical_schema, physical_table, processing_context
+            )
+        if matcher == "attributes_hash":
+            return await self._resolve_by_attributes_hash(
                 conn, physical_schema, physical_table, processing_context
             )
         if matcher != "external_id":
@@ -1548,7 +1572,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         sc_table = f"{physical_table}_{self.sidecar_id}"
 
         # We need geoid and validity (if enabled)
-        select_fields = ["h.geoid", "h.content_hash"]
+        select_fields = ["h.geoid", "h.geometry_hash"]
 
         # Check active status:
         # 1. Hub deleted_at IS NULL
@@ -1581,34 +1605,93 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         )
         return row or None
 
-    async def _resolve_by_content_hash(
+    async def _resolve_by_geometry_hash(
         self,
         conn: DbResource,
         physical_schema: str,
         physical_table: str,
         processing_context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Match on the hub's ``content_hash`` fingerprint (geometry-derived).
+        """Match on the hub's ``geometry_hash`` fingerprint (geometry-derived).
 
         The fingerprint is computed in ``tools.geospatial.prepare_geometry_for_upsert``
-        and flows through ``processing_context["content_hash"]`` when the geometries
+        and flows through ``processing_context["geometry_hash"]`` when the geometries
         sidecar's pipeline populates it.  Returns the active hub row with its
-        ``content_hash`` so callers can short-circuit no-op writes.
+        ``geometry_hash`` so callers can short-circuit no-op writes.
         """
-        content_hash = processing_context.get("content_hash")
-        if not content_hash:
+        geometry_hash = processing_context.get("geometry_hash")
+        if not geometry_hash:
             return None
 
         sql = f"""
-            SELECT h.geoid, h.content_hash
+            SELECT h.geoid, h.geometry_hash
             FROM "{physical_schema}"."{physical_table}" h
-            WHERE h.content_hash = :ch
+            WHERE h.geometry_hash = :ch
               AND h.deleted_at IS NULL
             ORDER BY h.transaction_time DESC
             LIMIT 1;
         """
         row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
-            conn, ch=content_hash
+            conn, ch=geometry_hash
+        )
+        return row or None
+
+    async def _resolve_by_attributes_hash(
+        self,
+        conn: DbResource,
+        physical_schema: str,
+        physical_table: str,
+        processing_context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Match on the attributes sidecar's ``attributes_hash`` (PG-generated).
+
+        The hash is a STORED GENERATED column on the attributes sidecar
+        (Mode B / JSONB only) — ``encode(digest(attributes::text, 'sha256'),
+        'hex')``. Two items with byte-equal canonicalised JSONB attributes
+        produce the same hash regardless of geometry.  Use case: "same
+        attribute combination, different geometry" detection — pair with
+        ``IdentityMatcher.GEOMETRY_HASH`` to distinguish "duplicate" from
+        "moved" from "renamed".
+
+        Returns ``None`` in Mode A (columnar storage) since the column
+        isn't emitted there, and when the incoming feature didn't carry
+        any attributes payload.
+        """
+        if self.resolved_storage_mode != AttributeStorageMode.JSONB:
+            return None
+
+        # Compute the hash on the incoming payload using the same
+        # canonicalisation PG applies (jsonb internal sort), via the same
+        # JSON dump the upsert payload prep uses (json.dumps with the
+        # CustomJSONEncoder). PG canonicalises further on insert so the
+        # comparison happens against the stored canonical form.
+        feature_props = processing_context.get("feature_attributes")
+        if feature_props is None:
+            # Fall back to the upsert payload prep value if the orchestrator
+            # already serialised it.
+            feature_props = processing_context.get(
+                f"{self.config.jsonb_column_name}_for_hash"
+            )
+        if feature_props is None:
+            return None
+
+        sc_table = f"{physical_table}_{self.sidecar_id}"
+        sql = f"""
+            SELECT h.geoid, h.geometry_hash, s.attributes_hash
+            FROM "{physical_schema}"."{physical_table}" h,
+                 "{physical_schema}"."{sc_table}" s
+            WHERE h.geoid = s.geoid
+              AND h.deleted_at IS NULL
+              AND s.attributes_hash = encode(
+                  digest(CAST(:attrs AS jsonb)::text, 'sha256'), 'hex')
+            ORDER BY h.transaction_time DESC
+            LIMIT 1;
+        """
+
+        import json as _json
+        attrs_json = _json.dumps(feature_props, cls=CustomJSONEncoder)
+        row = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+            conn, attrs=attrs_json,
         )
         return row or None
 

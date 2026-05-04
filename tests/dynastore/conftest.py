@@ -152,7 +152,7 @@ def item_data_for_db(item_id):
         attributes={"name": "Rome", "asset_code": "test_asset"},
         wkb_hex_processed="010100000003780b2428fe2840166a4df38ef34440",  # Rome point
         geom_type="Point",
-        content_hash="hash",
+        geometry_hash="hash",
         asset_code="test_asset",
         bbox_coords=[12.4, 41.8, 12.5, 41.9],
         h3_res0=580321200388407295,  # Rome h3_res0

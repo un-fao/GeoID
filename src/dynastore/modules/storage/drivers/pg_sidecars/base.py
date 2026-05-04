@@ -71,8 +71,8 @@ class ConsumerType(str, Enum):
         return obj
 
 # Columns that belong to the Hub table and must never appear in Feature.properties,
-# regardless of which sidecar is currently running. content_hash is plumbing for
-# the CONTENT_HASH identity matcher and skip_if_unchanged_content_hash gate
+# regardless of which sidecar is currently running. geometry_hash is plumbing for
+# the GEOMETRY_HASH identity matcher and skip_if_unchanged_geometry_hash gate
 # (see CollectionWritePolicy); it is queryable at the SQL layer for write
 # policies but is not surfaced to API consumers by default.
 HUB_INTERNAL_COLUMNS: frozenset = frozenset({
@@ -81,7 +81,7 @@ HUB_INTERNAL_COLUMNS: frozenset = frozenset({
     "deleted_at",
     "catalog_id",
     "collection_id",
-    "content_hash",
+    "geometry_hash",
 })
 
 
@@ -952,11 +952,11 @@ class SidecarProtocol(ABC):
             physical_schema: Physical schema name.
             physical_table: Physical table name (Hub).
             processing_context: Context containing resolved IDs / geometry.
-            matcher: IdentityMatcher string (EXTERNAL_ID | GEOHASH | CONTENT_HASH).
+            matcher: IdentityMatcher string (EXTERNAL_ID | GEOHASH | GEOMETRY_HASH).
                      Sidecars return None for matchers they do not own.
 
         Returns:
-            Dictionary with at least 'geoid' (and 'validity', 'content_hash'
+            Dictionary with at least 'geoid' (and 'validity', 'geometry_hash'
             when available) of the matched row, or None if no match.
         """
         return None

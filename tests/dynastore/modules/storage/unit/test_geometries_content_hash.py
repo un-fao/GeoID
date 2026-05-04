@@ -1,9 +1,9 @@
 """Regression: GeometriesSidecar.prepare_upsert_payload must propagate
-the geometry-derived ``content_hash`` into the per-item context dict.
+the geometry-derived ``geometry_hash`` into the per-item context dict.
 
 Without this propagation the orchestrator's ``hub_payload`` never carries
-``content_hash``, the hub column stays NULL on every insert, and the
-``CONTENT_HASH`` identity matcher plus ``skip_if_unchanged_content_hash``
+``geometry_hash``, the hub column stays NULL on every insert, and the
+``GEOMETRY_HASH`` identity matcher plus ``skip_if_unchanged_geometry_hash``
 gate become dead code paths.
 
 Two paths are exercised:
@@ -57,9 +57,9 @@ class TestContentHashPropagation:
 
         sidecar.prepare_upsert_payload(feature, ctx)
 
-        assert "content_hash" in ctx, "sidecar did not propagate content_hash"
-        assert isinstance(ctx["content_hash"], str)
-        assert len(ctx["content_hash"]) == 64  # sha256 hex digest
+        assert "geometry_hash" in ctx, "sidecar did not propagate geometry_hash"
+        assert isinstance(ctx["geometry_hash"], str)
+        assert len(ctx["geometry_hash"]) == 64  # sha256 hex digest
 
     def test_trusted_path_derives_hash_from_final_wkb(self):
         sidecar = _make_sidecar()
@@ -76,7 +76,7 @@ class TestContentHashPropagation:
         sidecar.prepare_upsert_payload(feature, ctx)
 
         expected = hashlib.sha256(bytes.fromhex(wkb_hex)).hexdigest()
-        assert ctx.get("content_hash") == expected
+        assert ctx.get("geometry_hash") == expected
 
     def test_two_identical_features_yield_same_hash(self):
         sidecar = _make_sidecar()
@@ -94,7 +94,7 @@ class TestContentHashPropagation:
         sidecar.prepare_upsert_payload(feat, ctx_a)
         sidecar.prepare_upsert_payload(feat, ctx_b)
 
-        assert ctx_a["content_hash"] == ctx_b["content_hash"]
+        assert ctx_a["geometry_hash"] == ctx_b["geometry_hash"]
 
     def test_distinct_geometries_yield_distinct_hashes(self):
         sidecar = _make_sidecar()
@@ -120,20 +120,20 @@ class TestContentHashPropagation:
         sidecar.prepare_upsert_payload(feat_a, ctx_a)
         sidecar.prepare_upsert_payload(feat_b, ctx_b)
 
-        assert ctx_a["content_hash"] != ctx_b["content_hash"]
+        assert ctx_a["geometry_hash"] != ctx_b["geometry_hash"]
 
 
 class TestPlumbingFieldsHiddenByDefault:
-    """``content_hash`` and ``geohash`` are write-policy plumbing — they
-    must be queryable at the SQL layer (so the CONTENT_HASH / GEOHASH
-    matchers and the ``skip_if_unchanged_content_hash`` gate work) but
+    """``geometry_hash`` and ``geohash`` are write-policy plumbing — they
+    must be queryable at the SQL layer (so the GEOMETRY_HASH / GEOHASH
+    matchers and the ``skip_if_unchanged_geometry_hash`` gate work) but
     must not surface in the public Feature output by default. Hiding is
     enforced via the internal-column sets consulted by
     ``AttributesSidecar.map_row_to_feature``'s JSONB merge."""
 
-    def test_hub_internal_columns_includes_content_hash(self):
-        assert "content_hash" in HUB_INTERNAL_COLUMNS, (
-            "content_hash leaks into Feature.properties when the attributes "
+    def test_hub_internal_columns_includes_geometry_hash(self):
+        assert "geometry_hash" in HUB_INTERNAL_COLUMNS, (
+            "geometry_hash leaks into Feature.properties when the attributes "
             "sidecar runs in JSONB mode unless it is in HUB_INTERNAL_COLUMNS"
         )
 

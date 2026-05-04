@@ -198,7 +198,7 @@ def process_geometry(
         )
 
     # Calculate content hash based on the final processed geometry
-    content_hash = _calculate_geometry_hash(processed_geom)
+    geometry_hash = _calculate_geometry_hash(processed_geom)
 
     # Calculate bbox_coords in EPSG:4326 for validation
     bbox_coords = None
@@ -244,7 +244,7 @@ def process_geometry(
     return {
         "geom_type": processed_geom.geom_type,
         "wkb_hex_processed": wkb_hex_processed,
-        "content_hash": content_hash,
+        "geometry_hash": geometry_hash,
         "bbox_coords": bbox_coords,
         "centroid": (processed_geom.centroid.x, processed_geom.centroid.y),
         "shapely_geom": processed_geom,

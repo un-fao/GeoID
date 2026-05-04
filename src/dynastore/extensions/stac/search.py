@@ -654,7 +654,7 @@ async def search_items(
         select_parts = [
             f"SELECT '{cat_id}' as catalog_id,"
             f" '{coll_id}' as collection_id,"
-            f" h.geoid, h.transaction_time, h.content_hash"
+            f" h.geoid, h.transaction_time, h.geometry_hash"
         ]
         joins = [f'FROM "{phys_schema}"."{p_tab}" h']
 

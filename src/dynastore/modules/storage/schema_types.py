@@ -26,7 +26,7 @@ Five built-in constraint types:
     UniqueConstraint          — values must be unique across the collection
     IdentityKeyConstraint     — deduplication identity key with optional geohash precision
     ValidityConstraint        — field carries temporal validity range
-    ContentHashConstraint     — skip write when content hash is unchanged
+    GeometryHashConstraint    — skip write when geometry hash is unchanged
 
 Additional constraint types can be registered by any module.
 
@@ -121,14 +121,14 @@ class ValidityConstraint(FieldConstraint):
     field: str = Field(description="Name of the temporal validity field.")
 
 
-class ContentHashConstraint(FieldConstraint):
-    """Skip write when the incoming content hash equals the stored one.
+class GeometryHashConstraint(FieldConstraint):
+    """Skip write when the incoming geometry hash equals the stored one.
 
-    Replaces ``CollectionWritePolicy.skip_if_unchanged_content_hash``.
+    Replaces ``CollectionWritePolicy.skip_if_unchanged_geometry_hash``.
     NEW_VERSION degrades to no-op; UPDATE degrades to REFUSE_RETURN.
     """
 
-    constraint_type: ClassVar[str] = "content_hash"
+    constraint_type: ClassVar[str] = "geometry_hash"
 
 
 # ---------------------------------------------------------------------------

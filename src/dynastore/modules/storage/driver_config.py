@@ -184,15 +184,29 @@ class IdentityMatcher(StrEnum):
     record wins.  Each sidecar implements the matchers it owns via its
     ``resolve_existing_item(..., matcher=...)`` method.
 
-    - ``EXTERNAL_ID``  — match on ``write_policy.external_id_field`` (attributes sidecar)
-    - ``GEOHASH``      — match on geohash of the incoming geometry at
-                         ``geohash_precision`` (geometries sidecar, uses ST_GeoHash)
-    - ``CONTENT_HASH`` — match on ``hub.content_hash`` (geometry-derived fingerprint)
+    - ``EXTERNAL_ID``     — match on ``write_policy.external_id_field`` (attributes sidecar)
+    - ``GEOHASH``         — match on geohash of the incoming geometry at
+                            ``geohash_precision`` (geometries sidecar, uses ST_GeoHash)
+    - ``GEOMETRY_HASH``   — match on SHA256 of the geometry (WKB).  Stored as
+                            a hub column today; a follow-up (#220) relocates
+                            it to the geometries sidecar as a STORED GENERATED
+                            column via ``encode(digest(ST_AsBinary(geom),
+                            'sha256'), 'hex')``.
+    - ``ATTRIBUTES_HASH`` — match on SHA256 of the canonicalised attributes JSONB.
+                            Stored as a STORED GENERATED column on the attributes
+                            sidecar via ``encode(digest(attributes::text, 'sha256'), 'hex')``.
+                            Recognises items whose attribute combination is identical
+                            (regardless of geometry).
+
+    Naming convention: ``<source>_hash`` for SHA256-of-source columns.
+    Algorithm-specific spatial indexes (``geohash``, future ``h3``/``s2``)
+    use the algorithm name directly.
     """
 
     EXTERNAL_ID = "external_id"
     GEOHASH = "geohash"
-    CONTENT_HASH = "content_hash"
+    GEOMETRY_HASH = "geometry_hash"
+    ATTRIBUTES_HASH = "attributes_hash"
 
 
 class AssetConflictPolicy(StrEnum):
@@ -246,10 +260,10 @@ class CollectionWritePolicy(PluginConfig):
       implementations at once.
 
     Hash-gated versioning:
-      When ``skip_if_unchanged_content_hash=True`` a match that has an identical
-      ``content_hash`` to the incoming feature short-circuits the action:
+      When ``skip_if_unchanged_geometry_hash=True`` a match that has an identical
+      ``geometry_hash`` to the incoming feature short-circuits the action:
       NEW_VERSION degrades to a no-op, UPDATE degrades to REFUSE_RETURN.  This
-      covers "create new version only if attribute/geometry hash changed".
+      covers "create new version only if geometry changed".
     """
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "policy", None)
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -276,7 +290,8 @@ class CollectionWritePolicy(PluginConfig):
             "Ordered matcher chain. First matcher returning a record wins. "
             "Each matcher is delegated to the sidecar that owns the underlying "
             "column (EXTERNAL_ID → attributes, GEOHASH → geometries, "
-            "CONTENT_HASH → hub via attributes sidecar)."
+            "GEOMETRY_HASH → geometries sidecar, "
+            "ATTRIBUTES_HASH → attributes sidecar)."
         ),
     )
     geohash_precision: int = Field(
@@ -288,12 +303,12 @@ class CollectionWritePolicy(PluginConfig):
             "1=~5000km, 6=~1.2km, 9=~5m, 12=~4cm."
         ),
     )
-    skip_if_unchanged_content_hash: bool = Field(
+    skip_if_unchanged_geometry_hash: bool = Field(
         default=False,
         description=(
-            "If True, matched features whose content_hash equals the incoming one "
-            "bypass NEW_VERSION (treated as no-op) and collapse UPDATE to "
-            "REFUSE_RETURN.  Enables 'new version only when payload differs'."
+            "If True, matched features whose geometry_hash equals the incoming "
+            "one bypass NEW_VERSION (treated as no-op) and collapse UPDATE to "
+            "REFUSE_RETURN.  Enables 'new version only when geometry differs'."
         ),
     )
     track_asset_id: bool = Field(
@@ -335,7 +350,7 @@ class WritePolicyDefaults(PluginConfig):
     Carries only posture flags — no references to specific field names.
     Field-level constraints (identity key, validity, geohash precision)
     live in ``CollectionSchema.constraints`` as ``IdentityKeyConstraint`` /
-    ``ValidityConstraint`` / ``ContentHashConstraint`` instances.
+    ``ValidityConstraint`` / ``GeometryHashConstraint`` instances.
 
     Note: ``CollectionWritePolicy`` remains the collection-intrinsic config
     that carries field-name bindings for backward compatibility with existing
@@ -537,12 +552,22 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
         return self
 
     def get_column_definitions(self) -> Dict[str, str]:
-        """Hub table column definitions (sidecar columns are separate)."""
+        """Hub table column definitions (sidecar columns are separate).
+
+        ``geometry_hash`` (renamed from ``geometry_hash``): SHA256 of the
+        processed geometry's WKB, populated by the geometries sidecar's
+        write path and lifted onto the hub by the orchestrator. Used by
+        ``IdentityMatcher.GEOMETRY_HASH`` and the
+        ``skip_if_unchanged_geometry_hash`` policy gate.
+
+        Follow-up (#220): relocate to the geometries sidecar as a STORED
+        GENERATED column once readers and writers are migrated together.
+        """
         return {
             "geoid": "UUID PRIMARY KEY",
             "transaction_time": "TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP",
             "deleted_at": "TIMESTAMPTZ",
-            "content_hash": "VARCHAR(64)",
+            "geometry_hash": "VARCHAR(64)",
         }
 
     def get_all_field_definitions(self) -> Dict[str, Any]:
@@ -894,7 +919,7 @@ class CollectionSchema(PluginConfig):
         default_factory=list,
         description=(
             "Declarative field constraints (FieldConstraint subclass instances). "
-            "Examples: IdentityKeyConstraint, ValidityConstraint, ContentHashConstraint."
+            "Examples: IdentityKeyConstraint, ValidityConstraint, GeometryHashConstraint."
         ),
     )
 

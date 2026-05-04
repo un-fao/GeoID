@@ -55,7 +55,7 @@ class SidecarRejection(BaseModel):
     matcher: Optional[str] = Field(
         default=None,
         description="Identity matcher that triggered the rejection "
-        "(e.g. 'external_id', 'content_hash').",
+        "(e.g. 'external_id', 'geometry_hash').",
     )
     reason: str = Field(
         ..., description="Machine-readable rejection reason code."

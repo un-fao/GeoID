@@ -680,7 +680,7 @@ class ItemDataForDB(BaseModel):
     attributes: Dict[str, Any]
     wkb_hex_processed: str
     geom_type: str
-    content_hash: str
+    geometry_hash: str
 
     # These are intermediate values used to construct PostGIS geometries
     bbox_coords: Optional[List[float]] = None
