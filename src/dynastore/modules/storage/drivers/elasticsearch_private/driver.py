@@ -97,7 +97,12 @@ class ItemsElasticsearchPrivateDriver(
     supported_hints: FrozenSet[str] = frozenset()
 
     def is_available(self) -> bool:
-        return self._sfeos_available()
+        # See ItemsElasticsearchDriver.is_available — the driver is
+        # available whenever the standalone opensearch-py client is wired
+        # up. SFEOS is only needed for write/read full-STAC paths and
+        # those raise at call time if it's missing.
+        from dynastore.modules.elasticsearch.client import get_client
+        return get_client() is not None
 
     def _get_client(self):
         """Get the async ES client from SFEOS DatabaseLogic."""

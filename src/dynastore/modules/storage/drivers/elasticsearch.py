@@ -313,7 +313,16 @@ class ItemsElasticsearchDriver(
     })
 
     def is_available(self) -> bool:
-        return self._sfeos_available()
+        # The driver is "available" whenever the standalone opensearch-py
+        # client is wired up — that's all we need for the read path
+        # (search/count/extents/aggregate/introspect/ensure_storage), which
+        # is the surface most deployments exercise. SFEOS is only required
+        # for the full STAC write_entities / read_entities path; those
+        # methods raise a RuntimeError at call time if SFEOS is missing,
+        # which is the right granularity to fail at — not a top-level
+        # discovery skip that would also hide the read path.
+        from dynastore.modules.elasticsearch.client import get_client
+        return get_client() is not None
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
