@@ -114,23 +114,29 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
 # Layer 3: real source overlay + real VERSION. Fast layer — busts only
-# when src/, tests/, or VERSION change. We reinstall --no-deps
-# --force-reinstall so site-packages reflects the real package data
-# (start.sh, *.html, *.sql, etc.) and the real version string. Without
-# this, the install -m 755 step below copies stub files out of
-# site-packages.
+# when src/, tests/, or VERSION change. The stub wheel installed in
+# Layer 2's pip install put zero-byte start.sh / start-task.sh into
+# site-packages; trying to "fix" it via `pip install --force-reinstall`
+# proved unreliable (pip returns the cached stub wheel even with
+# --no-cache-dir, leaving the empty files in place — which surfaces at
+# runtime as `exec /usr/local/bin/start.sh: exec format error`).
+# Instead, read the SSOT scripts directly from /dynastore/src/. This is
+# a SECOND intentional delta from dynastore/docker/Dockerfile (which
+# installs from `git+...` with no local source and reads from
+# site-packages). Documented in `feedback_geoid_dynastore_catalog_sync.md`.
 COPY VERSION ./
 COPY src ./src
 COPY tests ./tests
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation .
 
-# Startup scripts ship as package data under dynastore/scripts/ (SSOT). Copy
-# from site-packages so this step is identical across every Dockerfile that
-# installs dynastore — local source build (this file) or pip install from git
-# ref (dynastore/docker/Dockerfile). Single canonical path.
-RUN install -m 755 ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
-    install -m 755 ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
+# Startup scripts ship as package data under dynastore/scripts/ (SSOT).
+# - dynastore/docker/Dockerfile reads from
+#   ${VENV_PATH}/lib/python3.12/site-packages/dynastore/scripts/  (git install)
+# - geoid/docker/Dockerfile reads from
+#   /dynastore/src/dynastore/scripts/  (local source build, this file)
+# Both reach the same canonical content; the dispatch differs only because
+# this image's pip install used a stub package source for cache-friendliness.
+RUN install -m 755 /dynastore/src/dynastore/scripts/start.sh /usr/local/bin/start.sh && \
+    install -m 755 /dynastore/src/dynastore/scripts/start-task.sh /usr/local/bin/start-task.sh
 
 # Overlay JupyterLite assets when scope includes notebooks; bridge.js (committed) is preserved.
 # After copy, inject bridge.js into lab/index.html so the host can postMessage
