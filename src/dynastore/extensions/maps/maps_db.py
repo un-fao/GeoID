@@ -59,11 +59,14 @@ async def get_features_for_rendering(
     
     where_clause, bind_params = shared_queries.build_filter_clause(table_columns, datetime_str, subset_params)
     
-    # Identify source SRID (Storage)
+    # Identify source SRID from the PG geometries sidecar, if any.
+    # Sidecars are PG-driver-internal — driver_sidecars() returns []
+    # for non-PG resolved layer configs and we fall back to 4326.
+    from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
     source_srid = next(
         (
             sc.target_srid
-            for sc in layer_config.sidecars
+            for sc in driver_sidecars(layer_config)
             if getattr(sc, "sidecar_type", None) == "geometries"
         ),
         4326,

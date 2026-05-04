@@ -403,13 +403,17 @@ async def create_collection(
         if SUPPORTED_STAC_EXTENSIONS[0] not in stac_extensions_to_add:
             stac_extensions_to_add.append(SUPPORTED_STAC_EXTENSIONS[0])
 
-    # Cast layer_config components to expected types to handle Immutable wrappers
+    # Cast layer_config components to expected types to handle Immutable wrappers.
+    # Sidecars are PG-driver-internal — driver_sidecars() returns [] for any
+    # non-PG resolved driver and the geometries-sidecar fast path is skipped.
+    from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+
     storage_config = None
     if layer_config:
         geom_sidecar = next(
             (
                 sc
-                for sc in layer_config.sidecars
+                for sc in driver_sidecars(layer_config)
                 if getattr(sc, "sidecar_type", None) == "geometries"
             ),
             None,

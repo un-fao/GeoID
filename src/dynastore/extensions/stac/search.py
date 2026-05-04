@@ -561,17 +561,21 @@ async def search_items(
             has_attr_sidecar = False
             has_geom_sidecar = False
             has_stac_sidecar = False
-            if config and config.sidecars:
-                for sc in config.sidecars:
-                    if not sc.enabled:
-                        continue
-                    stype = getattr(sc, "sidecar_type", "")
-                    if stype in ["attributes", "feature_attributes"]:
-                        has_attr_sidecar = True
-                    elif stype in ["geometries", "geometry"]:
-                        has_geom_sidecar = True
-                    elif stype in ["stac_metadata", "item_metadata"]:
-                        has_stac_sidecar = True
+            # Sidecars are a PG-driver-internal concept; for non-PG
+            # driver configs (Elasticsearch, DuckDB, Iceberg, …) the
+            # helper returns [] and the sidecar-shaped hydration is
+            # simply skipped.
+            from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+            for sc in driver_sidecars(config):
+                if not sc.enabled:
+                    continue
+                stype = getattr(sc, "sidecar_type", "")
+                if stype in ["attributes", "feature_attributes"]:
+                    has_attr_sidecar = True
+                elif stype in ["geometries", "geometry"]:
+                    has_geom_sidecar = True
+                elif stype in ["stac_metadata", "item_metadata"]:
+                    has_stac_sidecar = True
 
             collection_table_map[collection_id] = (
                 phys_table,
