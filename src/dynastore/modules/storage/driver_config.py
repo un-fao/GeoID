@@ -228,8 +228,8 @@ class AssetConflictPolicy(StrEnum):
 class CollectionWritePolicy(PluginConfig):
     """Collection-level write behaviour, applied by all capable drivers.
 
-    Registered as ``CollectionWritePolicy`` in the config waterfall (identity: class_key)
-    (collection > catalog > platform > code default).
+    Registered as ``CollectionWritePolicy`` in the config waterfall
+    (identity: class_key) — collection > catalog > platform > code default.
 
     All drivers (PG, ES, Iceberg, DuckDB) read this single config during
     ``write_entities()`` via::
@@ -241,6 +241,7 @@ class CollectionWritePolicy(PluginConfig):
 
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
+
     - ``asset_id``             — source asset reference (from ingestion pipeline)
     - ``external_id_override`` — explicit external_id bypassing field extraction
     - ``valid_from``           — validity range start (ISO-8601 or datetime)
@@ -248,22 +249,71 @@ class CollectionWritePolicy(PluginConfig):
 
     Composable policies:
       ``on_conflict`` (item-level) and ``on_asset_conflict`` (batch-level) act
-      independently — both can be set simultaneously.  Example::
-
-          on_conflict = WriteConflictPolicy.REFUSE        # skip item duplicates
-          on_asset_conflict = AssetConflictPolicy.REFUSE  # reject whole batch
+      independently — both can be set simultaneously.
 
     Identity matchers:
-      ``identity_matchers`` is an ordered list; the first matcher that resolves
-      a record wins.  Unknown / unsupported matchers are silently skipped so a
-      collection can opt into GEOHASH without requiring every sidecar to grow
-      implementations at once.
+      ``identity_matchers`` is an ordered list; the first matcher that
+      resolves a record wins. Unknown / unsupported matchers are silently
+      skipped so a collection can opt into GEOHASH without requiring every
+      sidecar to grow implementations at once. Each matcher is implemented
+      by the sidecar that owns the underlying column — see ``IdentityMatcher``.
 
     Hash-gated versioning:
-      When ``skip_if_unchanged_geometry_hash=True`` a match that has an identical
-      ``geometry_hash`` to the incoming feature short-circuits the action:
-      NEW_VERSION degrades to a no-op, UPDATE degrades to REFUSE_RETURN.  This
-      covers "create new version only if geometry changed".
+      When ``skip_if_unchanged_geometry_hash=True`` a match whose
+      ``geometry_hash`` equals the incoming feature short-circuits the
+      action: ``NEW_VERSION`` degrades to a no-op, ``UPDATE`` degrades to
+      ``REFUSE_RETURN``. Enables "new version only when geometry differs".
+
+    Layering vs ``WritePolicyDefaults`` (M8):
+      ``CollectionWritePolicy`` is the collection-INTRINSIC config — carries
+      field-name bindings (``external_id_field``, ``validity_field``) needed
+      by existing write infrastructure. ``WritePolicyDefaults`` (sibling
+      class) is the platform/catalog-tier POSTURE config — carries only
+      posture flags (``on_conflict``, ``require_identity_key``) without
+      field-name references. Field-name binding lives separately in
+      ``CollectionSchema.constraints`` (``IdentityKeyConstraint``,
+      ``ValidityConstraint``, ``ContentHashConstraint``). Operators
+      configuring a NEW collection should set posture in
+      ``WritePolicyDefaults`` at the platform tier and field bindings via
+      ``CollectionSchema.constraints``; ``CollectionWritePolicy`` remains
+      for legacy collections that bound fields here directly.
+
+    Worked scenarios:
+
+    1. **External-id versioning** (track every change as a new version)::
+
+           CollectionWritePolicy(
+               identity_matchers=[IdentityMatcher.EXTERNAL_ID],
+               on_conflict=WriteConflictPolicy.NEW_VERSION,
+               external_id_field="properties.code",
+               skip_if_unchanged_geometry_hash=True,
+           )
+
+       Each upsert keyed on ``properties.code`` versions the existing row
+       UNLESS the geometry_hash is identical (then it's a no-op).
+
+    2. **Geohash dedup at city precision** (drop duplicate POIs)::
+
+           CollectionWritePolicy(
+               identity_matchers=[IdentityMatcher.GEOHASH],
+               geohash_precision=6,           # ~1.2km
+               on_conflict=WriteConflictPolicy.REFUSE_RETURN,
+           )
+
+       Incoming features falling within the same ~1.2km tile as an existing
+       row are skipped; the existing row is returned.
+
+    3. **Batch idempotency via geometry hash** (reject the whole asset on
+       any geometry duplicate)::
+
+           CollectionWritePolicy(
+               identity_matchers=[IdentityMatcher.GEOMETRY_HASH],
+               on_conflict=WriteConflictPolicy.UPDATE,
+               on_asset_conflict=AssetConflictPolicy.REFUSE,
+           )
+
+       A re-uploaded asset (same geometries) is rejected entirely; partial
+       overlap fails the whole batch with a 409.
     """
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "policy", None)
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -271,71 +321,125 @@ class CollectionWritePolicy(PluginConfig):
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
+        examples=["update", "new_version", "refuse_return", "refuse_fail"],
         description=(
-            "Item-level action when identity matches. "
-            "UPDATE | NEW_VERSION | REFUSE | REFUSE_RETURN | REFUSE_FAIL."
+            "Item-level action when identity matches an existing row. "
+            "``update`` overwrites mutable fields in place. "
+            "``new_version`` archives the old row (sets validity upper bound) "
+            "and inserts a fresh one with a new geoid. "
+            "``refuse`` skips silently and continues the batch. "
+            "``refuse_return`` skips but returns the matched row to the caller "
+            "(idempotent read-through). "
+            "``refuse_fail`` raises ConflictError and aborts the batch (use for "
+            "strict-mode pipelines)."
         ),
     )
     on_asset_conflict: Optional[AssetConflictPolicy] = Field(
         default=None,
+        examples=[None, "refuse_asset"],
         description=(
-            "Asset-level (batch-level) conflict policy, checked before item processing. "
-            "None = no batch-level check. "
-            "REFUSE rejects the entire asset batch if any duplicate identity is found."
+            "Asset-level (batch-level) conflict policy, checked BEFORE item "
+            "processing begins. ``None`` (default) skips batch-level checks. "
+            "``refuse_asset`` rejects the entire asset batch if any single "
+            "entity conflicts — useful for re-upload idempotency where partial "
+            "overlap should fail the whole asset."
         ),
     )
     identity_matchers: List[IdentityMatcher] = Field(
         default_factory=lambda: [IdentityMatcher.EXTERNAL_ID],
+        examples=[
+            ["external_id"],
+            ["external_id", "geohash"],
+            ["geometry_hash"],
+            ["external_id", "attributes_hash"],
+        ],
         description=(
-            "Ordered matcher chain. First matcher returning a record wins. "
-            "Each matcher is delegated to the sidecar that owns the underlying "
-            "column (EXTERNAL_ID → attributes, GEOHASH → geometries, "
-            "GEOMETRY_HASH → geometries sidecar, "
-            "ATTRIBUTES_HASH → attributes sidecar)."
+            "Ordered matcher chain — first matcher returning a record wins. "
+            "Matchers are delegated to the sidecar that owns the underlying "
+            "column: ``external_id`` → attributes sidecar (reads "
+            "``external_id_field``); ``geohash`` → geometries sidecar (uses "
+            "ST_GeoHash at ``geohash_precision``); ``geometry_hash`` → "
+            "geometries sidecar (SHA256 of WKB); ``attributes_hash`` → "
+            "attributes sidecar (SHA256 of canonicalised attributes JSONB). "
+            "Unknown matchers are silently skipped so a collection can opt "
+            "into a strategy that requires a sidecar not yet enabled — the "
+            "next matcher in the chain takes over."
         ),
     )
     geohash_precision: int = Field(
         default=9,
         ge=1,
         le=12,
+        examples=[6, 9, 12],
         description=(
-            "ST_GeoHash precision used when IdentityMatcher.GEOHASH is active. "
-            "1=~5000km, 6=~1.2km, 9=~5m, 12=~4cm."
+            "ST_GeoHash precision used when ``IdentityMatcher.GEOHASH`` is "
+            "active. Cell sizes (latitude-dependent at the equator): "
+            "1≈5000km, 4≈40km, 6≈1.2km, 9≈5m, 12≈4cm. Pick by what 'same place' "
+            "means in your dataset: 6 for cities, 9 for parcels, 12 for points "
+            "of interest."
         ),
     )
     skip_if_unchanged_geometry_hash: bool = Field(
         default=False,
+        examples=[False, True],
         description=(
-            "If True, matched features whose geometry_hash equals the incoming "
-            "one bypass NEW_VERSION (treated as no-op) and collapse UPDATE to "
-            "REFUSE_RETURN.  Enables 'new version only when geometry differs'."
+            "If True, matched features whose ``geometry_hash`` equals the "
+            "incoming one bypass ``NEW_VERSION`` (treated as a no-op) and "
+            "collapse ``UPDATE`` to ``REFUSE_RETURN``. Enables 'new version "
+            "only when geometry differs'. Requires the geometries sidecar "
+            "to be enabled (it computes geometry_hash on write)."
         ),
     )
     track_asset_id: bool = Field(
         default=True,
-        description="Store asset_id from write context in the entity document.",
+        examples=[True, False],
+        description=(
+            "Store the ``asset_id`` from the write context as a column on the "
+            "entity document — provenance tracking. Disable only when source "
+            "tracking is intentionally severed (e.g. derived collections "
+            "produced from a join)."
+        ),
     )
     external_id_field: Optional[str] = Field(
         default=None,
+        examples=[None, "id", "properties.code", "properties.src_id"],
         description=(
-            "Dot-notation path to extract external_id from the entity. "
-            "E.g. 'id' (Feature.id), 'properties.code', 'properties.src_id'. "
-            "When None, conflict detection uses geoid directly. "
-            "When set, a fresh geoid is always generated and conflict resolution "
-            "uses the extracted external_id."
+            "Dot-notation path to extract ``external_id`` from the entity "
+            "(e.g. ``id`` for Feature.id, ``properties.code`` for a domain "
+            "code). When ``None``, conflict detection uses the geoid directly. "
+            "When set, a fresh geoid is always generated on insert and conflict "
+            "resolution uses the extracted external_id — the geoid becomes a "
+            "stable internal handle while external_id is the operator-facing "
+            "natural key."
         ),
     )
     require_external_id: bool = Field(
         default=False,
-        description="Refuse entity if external_id cannot be extracted.",
+        examples=[False, True],
+        description=(
+            "If True, an entity whose ``external_id_field`` resolves to None "
+            "or empty is refused with a 422. Pair with ``external_id_field`` "
+            "to enforce that every row carries a domain key."
+        ),
     )
     enable_validity: bool = Field(
         default=False,
-        description="Track valid_from / valid_to temporal range per entity.",
+        examples=[False, True],
+        description=(
+            "Track ``valid_from`` / ``valid_to`` temporal range per entity. "
+            "Required for ``NEW_VERSION`` semantics — when False, "
+            "``on_conflict=NEW_VERSION`` falls back to ``UPDATE``."
+        ),
     )
     validity_field: str = Field(
         default="valid_from",
-        description="Field to extract validity start from entity.",
+        examples=["valid_from", "properties.start_date", "valid_time.start"],
+        description=(
+            "Dot-notation path to extract validity start from the incoming "
+            "entity. Used only when ``enable_validity=True``. Validity END is "
+            "either provided in ``write_context.valid_to`` or computed as "
+            "``None`` (open-ended)."
+        ),
     )
 
 
@@ -345,17 +449,54 @@ class CollectionWritePolicy(PluginConfig):
 
 
 class WritePolicyDefaults(PluginConfig):
-    """Posture-only write policy for the platform / catalog waterfall.
+    """Posture-only write-policy defaults for the platform / catalog waterfall.
 
-    Carries only posture flags — no references to specific field names.
-    Field-level constraints (identity key, validity, geohash precision)
-    live in ``CollectionSchema.constraints`` as ``IdentityKeyConstraint`` /
-    ``ValidityConstraint`` / ``GeometryHashConstraint`` instances.
+    Carries only posture flags — never references specific field names. This
+    is the M8 cleanup target: write-policy posture (HOW conflicts are handled)
+    is decoupled from field-binding (WHICH columns carry identity, validity,
+    geometry hash). Field-binding lives in ``CollectionSchema.constraints``
+    as ``IdentityKeyConstraint``, ``ValidityConstraint``, and
+    ``GeometryHashConstraint`` instances — owned by the schema, not the
+    write-policy config.
 
-    Note: ``CollectionWritePolicy`` remains the collection-intrinsic config
-    that carries field-name bindings for backward compatibility with existing
-    write infrastructure.  ``WritePolicyDefaults`` is the new waterfall-level
-    posture config.
+    Layering vs ``CollectionWritePolicy`` (sibling class):
+      - **At platform / catalog tiers**: set posture defaults via
+        ``WritePolicyDefaults``. Operators set "all collections in this
+        catalog default to ``on_conflict=REFUSE_FAIL``" once at the catalog
+        scope.
+      - **At collection tier (legacy / field-name-binding cases)**: use
+        ``CollectionWritePolicy`` for the field-name knobs
+        (``external_id_field``, ``validity_field``) that pre-date the schema
+        constraint model. New collections should declare bindings in
+        ``CollectionSchema.constraints`` and leave ``CollectionWritePolicy``
+        at code defaults.
+      - When both are present, ``CollectionWritePolicy`` at collection tier
+        wins for the fields it owns; ``WritePolicyDefaults`` at upstream
+        tiers fills in the rest via the standard waterfall.
+
+    Worked scenarios:
+
+    1. **Platform-wide strict mode** (no silent skips anywhere)::
+
+           # at platform tier:
+           WritePolicyDefaults(
+               on_conflict=WriteConflictPolicy.REFUSE_FAIL,
+               require_identity_key=True,
+           )
+
+       Every collection refuses with a 409 on any duplicate AND must declare
+       an IdentityKeyConstraint in its schema.
+
+    2. **Per-catalog defaults** (loose at catalog A, strict at catalog B)::
+
+           # at catalog A scope (e.g. ingestion landing zone):
+           WritePolicyDefaults(on_conflict=WriteConflictPolicy.UPDATE)
+
+           # at catalog B scope (e.g. authoritative master):
+           WritePolicyDefaults(
+               on_conflict=WriteConflictPolicy.REFUSE_FAIL,
+               require_identity_key=True,
+           )
     """
     _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "policy", None)
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -363,20 +504,34 @@ class WritePolicyDefaults(PluginConfig):
 
     on_conflict: WriteConflictPolicy = Field(
         default=WriteConflictPolicy.UPDATE,
+        examples=["update", "new_version", "refuse_return", "refuse_fail"],
         description=(
-            "Item-level default action when identity matches. "
-            "Overridden by per-collection CollectionWritePolicy.on_conflict."
+            "Item-level default action when identity matches. Cascades down "
+            "the waterfall (platform → catalog → collection). Overridden at "
+            "collection scope by ``CollectionWritePolicy.on_conflict`` if set. "
+            "Use ``refuse_fail`` for strict-mode catalogs that must surface "
+            "every duplicate as a 409."
         ),
     )
     on_asset_conflict: Optional[AssetConflictPolicy] = Field(
         default=None,
-        description="Asset-level (batch-level) conflict policy default. None = no check.",
+        examples=[None, "refuse_asset"],
+        description=(
+            "Asset-level (batch-level) conflict policy default. ``None`` "
+            "disables batch-level checks at this tier. ``refuse_asset`` "
+            "rejects the entire asset if any item conflicts. Cascades like "
+            "``on_conflict``."
+        ),
     )
     require_identity_key: bool = Field(
         default=False,
+        examples=[False, True],
         description=(
-            "If True, every collection at this scope must declare exactly one "
-            "IdentityKeyConstraint in CollectionSchema.constraints."
+            "If True, every collection at this scope MUST declare exactly one "
+            "``IdentityKeyConstraint`` in its ``CollectionSchema.constraints``. "
+            "Collections missing the constraint are rejected at write time. "
+            "Set at platform / catalog tier to enforce identity-key discipline "
+            "across all owned collections."
         ),
     )
 
