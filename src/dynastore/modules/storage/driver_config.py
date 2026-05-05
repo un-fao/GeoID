@@ -42,7 +42,6 @@ from typing import Annotated, Any, ClassVar, Dict, FrozenSet, List, Optional, Tu
 from pydantic import (
     ConfigDict,
     Field,
-    computed_field,
     field_validator,
     model_validator,
 )
@@ -628,20 +627,22 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
         default_factory=list,
         description=(
             "Sidecar table configs — discriminated union on ``sidecar_type``. "
-            "Empty (the default) means the PG driver resolves the effective "
-            "list lazily from ``pg_sidecars._effective_sidecars(...)`` at first "
-            "use (core defaults for the collection_type + registry injections). "
-            "Populate this list to pin explicit overrides — anything you set "
-            "wins, and registry-injected sidecars not present here are appended "
-            "automatically.  See ``effective_sidecars`` (computed) for what "
-            "actually runs.  Discriminator values: ``geometries`` "
-            "(GeometriesSidecarConfig — wkb/wkt + ST_GeoHash + GENERATED "
-            "geometry_hash; VECTOR/RASTER only); ``attributes`` "
+            "Lifecycle: empty until the collection is materialised "
+            "(``ensure_storage()``).  At materialisation the PG driver runs "
+            "``_effective_sidecars(...)`` — core defaults for the "
+            "collection_type plus extension-registered sidecars (e.g. "
+            "``ItemMetadataSidecarConfig`` from STAC) — and persists the "
+            "resolved list onto this field, alongside ``physical_table``.  "
+            "After that point this list IS the snapshot of what runs; ``Immutable`` "
+            "blocks PATCH from changing it.  Discriminator values: "
+            "``geometries`` (GeometriesSidecarConfig — wkb/wkt + ST_GeoHash + "
+            "GENERATED geometry_hash; VECTOR/RASTER only); ``attributes`` "
             "(FeatureAttributeSidecarConfig — JSONB or columnar attribute "
-            "storage + GENERATED attributes_hash; always-on); ``item_metadata`` "
-            "(ItemMetadataSidecarConfig — STAC overlay table for "
-            "external_extensions / external_assets / extra_fields with "
-            "multilingual title/description/keywords)."
+            "storage + GENERATED attributes_hash; always-on); "
+            "``item_metadata`` (ItemMetadataSidecarConfig — multilingual "
+            "title/description/keywords); ``stac_metadata`` "
+            "(StacItemsSidecarConfig — STAC external_extensions / "
+            "external_assets / extra_fields overlay)."
         ),
     )
     partitioning: Immutable[Any] = Field(
@@ -703,45 +704,6 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
                 f"Available keys: {available_keys}"
             )
         return self
-
-    # ------------------------------------------------------------------
-    # Operator visibility — what actually runs
-    # ------------------------------------------------------------------
-
-    @computed_field(
-        description=(
-            "Read-only: the sidecars that actually run for this driver, "
-            "merging explicit overrides from ``sidecars`` (when set) with "
-            "registry-injected core defaults for the collection_type "
-            "(``GeometriesSidecarConfig`` + ``FeatureAttributeSidecarConfig`` "
-            "for VECTOR/RASTER; ``FeatureAttributeSidecarConfig`` only for "
-            "RECORDS) plus extension-contributed sidecars (e.g. "
-            "``ItemMetadataSidecarConfig`` from the STAC extension).  Use "
-            "this to introspect 'what runs' without persisting overrides."
-        ),
-    )
-    @property
-    def effective_sidecars(self) -> List[_PgSidecarConfig]:
-        """Resolved sidecar list — what the PG driver will actually use."""
-        try:
-            from dynastore.modules.storage.drivers.pg_sidecars.resolver import (
-                _effective_sidecars,
-            )
-        except ImportError:
-            return list(self.sidecars)
-        try:
-            return _effective_sidecars(
-                self,
-                catalog_id="",
-                collection_id="",
-                # collection_type isn't on this config in Phase 1.6+;
-                # the operator-visibility view defaults to VECTOR which
-                # matches the most common deployment.  Callers that need
-                # the RECORDS variant can override on the runtime path.
-                collection_type="VECTOR",
-            )
-        except Exception:
-            return list(self.sidecars)
 
     @model_validator(mode="after")
     def validate_sidecar_partition_mirroring(self) -> "ItemsPostgresqlDriverConfig":

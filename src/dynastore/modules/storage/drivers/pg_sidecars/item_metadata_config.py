@@ -39,9 +39,10 @@ class ItemMetadataSidecarConfig(SidecarConfig):
       Merged back into the rendered STAC Item by the
       ``StacItemsSidecar`` overlay at read time.
 
-    Auto-injected by the STAC extension via ``SidecarRegistry`` —
-    appears in ``effective_sidecars`` whenever the STAC extension is
-    loaded, regardless of whether ``sidecars`` overrides include it.
+    Auto-injected by the STAC extension via ``SidecarRegistry`` — gets
+    snapshotted into ``ItemsPostgresqlDriverConfig.sidecars`` at
+    ``ensure_storage()`` time whenever the STAC extension is loaded,
+    regardless of whether the caller's overrides include it.
     """
 
     # Literal-typed discriminator — required by Pydantic for the
