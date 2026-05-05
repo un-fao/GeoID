@@ -243,7 +243,14 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         app.include_router(build_dashboards_proxy_router())
 
     def get_web_pages(self):
+        # Mirror the StatsExtension pattern: skip nav registration when no
+        # PermissionProtocol provider is loaded. The page is sysadmin-only and
+        # the underlying proxy is gated by logs_dashboard_sysadmin_access; both
+        # require an authz backend to be meaningful.
+        from dynastore.models.protocols.policies import PermissionProtocol
         from dynastore.extensions.tools.web_collect import collect_web_pages
+        if get_protocol(PermissionProtocol) is None:
+            return []
         return collect_web_pages(self)
 
     @expose_web_page(

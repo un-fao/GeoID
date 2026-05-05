@@ -39,6 +39,34 @@ logger = logging.getLogger(__name__)
 from dynastore.models.protocols.stats import StatsProtocol
 
 
+def _register_stats_policies() -> None:
+    """Register sysadmin-only access policy for the /stats/* surface."""
+    from dynastore.models.protocols.policies import Policy, Role
+
+    pm = get_protocol(PermissionProtocol)
+    if not pm:
+        logger.warning(
+            "StatsExtension: PermissionProtocol unavailable — stats policies not registered."
+        )
+        return
+
+    # /stats/system + /stats/catalogs/{cid}{/collections/{colid}} are operator-
+    # facing observability data. Sysadmin-only until per-catalog admin UI is
+    # wired through the tenant_scope_registry (mirrors logs_dashboard scope).
+    policy = Policy(
+        id="stats_endpoint_access",
+        description="Sysadmin-only access to /stats/* observability endpoints.",
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/stats(/.*)?$"],
+        effect="ALLOW",
+    )
+    pm.register_policy(policy)
+    pm.register_role(
+        Role(name=DefaultRole.SYSADMIN.value, policies=["stats_endpoint_access"])
+    )
+    logger.info("StatsExtension: stats policy registered.")
+
+
 class StatsExtension(ExtensionProtocol, StatsProtocol):
     priority: int = 100
     engine: Optional[DbResource] = None
@@ -86,7 +114,7 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             "fr": "Comptes par catalogue, utilisation du stockage et statistiques des requêtes.",
             "it": "Conteggi per catalogo, uso dello storage e statistiche delle richieste.",
         },
-        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value],
+        required_roles=[DefaultRole.SYSADMIN.value],
         section="admin",
         priority=18,
     )
@@ -160,6 +188,7 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             yield
             return
 
+        _register_stats_policies()
         logger.info("StatsExtension initialized.")
         yield
 
