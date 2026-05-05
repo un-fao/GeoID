@@ -17,7 +17,6 @@ import opensearchpy  # noqa: F401
 from dynastore.modules import ModuleProtocol
 from dynastore.models.protocols.event_bus import EventBusProtocol
 from dynastore.tools.discovery import get_protocol
-from dynastore.modules.catalog.catalog_config import CatalogPolicyConfig
 from dynastore.modules.catalog.event_service import CatalogEventType
 
 logger = logging.getLogger(__name__)
