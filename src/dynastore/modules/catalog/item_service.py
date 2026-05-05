@@ -286,6 +286,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         sidecar_configs = _effective_sidecars(
             col_config, catalog_id="", collection_id="",
         )
+        # Read-time-only overlays. The STAC overlay sidecar
+        # (``StacItemsSidecar``) has no DDL and no own table — it merges
+        # external_assets / external_extensions / extra_fields written by
+        # ItemMetadataSidecar back into the rendered Feature. It cannot
+        # live in ``col_config.sidecars`` because its config type is not
+        # in the ``ItemsPostgresqlDriverConfig.sidecars`` discriminated
+        # Union (cross-package: extensions/stac → modules/storage would
+        # be a circular import). Append it here at READ time only — its
+        # ``map_row_to_feature`` gates internally on ``ConsumerType`` so
+        # non-STAC consumers (OGC Features) get an early-return no-op.
+        try:
+            from dynastore.extensions.stac.stac_items_sidecar import (
+                StacItemsSidecarConfig,
+            )
+            sidecar_configs = list(sidecar_configs) + [StacItemsSidecarConfig()]
+        except ImportError:
+            pass  # STAC extension not installed
 
         if sidecar_configs:
             # Gather all internal columns to prevent property leaking across sidecars
@@ -774,7 +791,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         """
         if not results:
             return
-
         from dynastore.models.protocols.indexer import (
             IndexContext, IndexOp,
         )
