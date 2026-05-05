@@ -266,7 +266,7 @@ ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
 # "run method without payload annotation" error. Confirmed by
 # dynastore-dwh-join-export-job-snq2n container log on 2026-04-29.
 worker_task_dwh_join = ["dynastore[task_base,module_catalog,module_crs,dwh]"]
-worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal]"]
+worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal,drivers_grp]"]
 # export_features: writes feature output to GCS (`gs://...` destination_uri)
 # via dynastore.modules.gcp clients. Without module_gcp the worker raises
 # at task run time: "GCPModule has not been initialized or failed to
