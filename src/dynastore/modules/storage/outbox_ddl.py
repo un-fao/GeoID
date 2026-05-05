@@ -5,11 +5,26 @@ The outbox table carries an AFTER INSERT trigger that emits
 ``pg_notify('outbox_<driver_id>_<schema>', json)`` so per-driver-per-tenant
 drain workers wake on commit instead of polling.
 
-Both ``ensure_*`` helpers accept either a SQLAlchemy ``DbResource`` (the
-production path — called from the catalog ``create_catalog`` outer
-transaction) or a raw ``asyncpg.Connection`` (the test path — needed so
-LISTEN / NOTIFY can be exercised against the same physical connection
-without the SQLAlchemy proxy).
+DDL templates schema-qualify every object reference via
+``{schema}.<name>`` and are rendered with ``str.format(schema=schema)`` at
+call time. ``schema`` is validated through
+:func:`dynastore.tools.db.validate_sql_identifier` before any string
+formatting so a caller-controlled schema can never inject SQL.
+
+Two entry points are exposed for each table:
+
+* :func:`ensure_storage_outbox` / :func:`ensure_index_failure_log` —
+  production path. Runs through :class:`DDLQuery` so the auto-inferred
+  existence-check shortcut + advisory locking kick in on warm boots.
+* :func:`ensure_storage_outbox_asyncpg` /
+  :func:`ensure_index_failure_log_asyncpg` — test path. Executes the same
+  rendered DDL on a raw ``asyncpg.Connection`` so LISTEN / NOTIFY can be
+  exercised against the same physical session that runs the DDL. NOT for
+  production catalog bootstrap.
+
+The ``current_schema()`` reference inside ``storage_outbox_notify`` stays
+runtime — it resolves to the schema the row was inserted into, which is
+load-bearing for the NOTIFY channel name.
 """
 
 from __future__ import annotations
@@ -17,10 +32,11 @@ from __future__ import annotations
 from typing import Any
 
 from dynastore.modules.db_config.query_executor import DDLQuery
+from dynastore.tools.db import validate_sql_identifier
 
 
-STORAGE_OUTBOX_DDL = """
-CREATE TABLE IF NOT EXISTS storage_outbox (
+_STORAGE_OUTBOX_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {schema}.storage_outbox (
     op_id              UUID         PRIMARY KEY,
     driver_id          TEXT         NOT NULL,
     driver_instance_id TEXT         NOT NULL,
@@ -41,14 +57,14 @@ CREATE TABLE IF NOT EXISTS storage_outbox (
 );
 
 CREATE INDEX IF NOT EXISTS storage_outbox_drain_idx
-    ON storage_outbox (driver_id, status, ready_at)
+    ON {schema}.storage_outbox (driver_id, status, ready_at)
     WHERE status IN ('ready', 'in_flight');
 
 CREATE INDEX IF NOT EXISTS storage_outbox_done_idx
-    ON storage_outbox (finished_at)
+    ON {schema}.storage_outbox (finished_at)
     WHERE status = 'done';
 
-CREATE OR REPLACE FUNCTION storage_outbox_notify() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION {schema}.storage_outbox_notify() RETURNS trigger AS $$
 DECLARE
     cat TEXT := current_schema();
     payload TEXT;
@@ -63,15 +79,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS storage_outbox_notify_trg ON storage_outbox;
+DROP TRIGGER IF EXISTS storage_outbox_notify_trg ON {schema}.storage_outbox;
 CREATE TRIGGER storage_outbox_notify_trg
-    AFTER INSERT ON storage_outbox
-    FOR EACH ROW EXECUTE FUNCTION storage_outbox_notify();
+    AFTER INSERT ON {schema}.storage_outbox
+    FOR EACH ROW EXECUTE FUNCTION {schema}.storage_outbox_notify();
 """
 
 
-INDEX_FAILURE_LOG_DDL = """
-CREATE TABLE IF NOT EXISTS index_failure_log (
+_INDEX_FAILURE_LOG_DDL_TEMPLATE = """
+CREATE TABLE IF NOT EXISTS {schema}.index_failure_log (
     failure_id          UUID         PRIMARY KEY,
     occurred_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
     collection_id       TEXT         NOT NULL,
@@ -90,82 +106,83 @@ CREATE TABLE IF NOT EXISTS index_failure_log (
 );
 
 CREATE INDEX IF NOT EXISTS index_failure_log_browse_idx
-    ON index_failure_log (collection_id, occurred_at DESC);
+    ON {schema}.index_failure_log (collection_id, occurred_at DESC);
 
 CREATE INDEX IF NOT EXISTS index_failure_log_status_idx
-    ON index_failure_log (status, occurred_at DESC)
+    ON {schema}.index_failure_log (status, occurred_at DESC)
     WHERE status = 'failed';
 """
 
 
-def _is_asyncpg_connection(conn: Any) -> bool:
-    """Detect a raw ``asyncpg.Connection`` without a hard import.
+def _storage_outbox_ddl(schema: str) -> str:
+    """Render the storage_outbox DDL with ``schema`` baked in.
 
-    We avoid importing :mod:`asyncpg` at module top-level because this DDL
-    file is imported during catalog bootstrap; matching by module path keeps
-    the dependency surface narrow.
+    ``schema`` is validated up front so the subsequent
+    ``str.format`` cannot interpolate an injection vector.
     """
-    return type(conn).__module__.startswith("asyncpg")
+    validate_sql_identifier(schema)
+    return _STORAGE_OUTBOX_DDL_TEMPLATE.format(schema=f'"{schema}"')
 
 
-async def _execute_raw_asyncpg_ddl(conn: Any, ddl: str) -> None:
-    """Run multi-statement DDL on a raw asyncpg connection.
+def _index_failure_log_ddl(schema: str) -> str:
+    """Render the index_failure_log DDL with ``schema`` baked in.
 
-    asyncpg's ``Connection.execute`` accepts multi-statement scripts when no
-    parameters are bound, which is the case for these idempotent CREATE
-    blocks. The split_ddl helper used by ``DDLQuery`` is a SQLAlchemy-side
-    workaround; here we hand the script to asyncpg as a single execute.
+    ``schema`` is validated up front so the subsequent
+    ``str.format`` cannot interpolate an injection vector.
     """
-    await conn.execute(ddl)
+    validate_sql_identifier(schema)
+    return _INDEX_FAILURE_LOG_DDL_TEMPLATE.format(schema=f'"{schema}"')
 
 
-def _scoped(ddl: str, schema: str | None) -> str:
-    """Wrap ``ddl`` so unqualified names resolve to ``schema``.
+async def ensure_storage_outbox(db_resource: Any, schema: str) -> None:
+    """Apply storage_outbox DDL via :class:`DDLQuery` (production path).
 
-    The DDL templates intentionally use unqualified names + ``current_schema()``
-    so the same source string works in two contexts:
-
-    1. Tests / scripts that ``SET search_path`` themselves before calling
-       ``ensure_*`` (``schema is None`` — pass through verbatim).
-    2. Catalog bootstrap, which calls ``ensure_*`` with the per-catalog
-       physical schema. There the outer transaction's search_path may still
-       be the platform default, so we prepend ``SET LOCAL search_path``.
-       This is transaction-local; once the bootstrap commits, normal
-       ``search_path`` resolution resumes for subsequent inserts (which
-       set their own search_path before writing).
-    """
-    if schema is None:
-        return ddl
-    # Quote-double the schema name to keep mixed-case / reserved-word safety.
-    return f'SET LOCAL search_path TO "{schema}";\n{ddl}'
-
-
-async def ensure_storage_outbox(conn: Any, schema: str | None = None) -> None:
-    """Apply storage_outbox DDL (table + indexes + NOTIFY trigger).
+    Goes through :class:`DDLQuery` so the auto-inferred existence-check
+    shortcut + advisory locking apply — second and subsequent calls for
+    the same schema short-circuit on the cached sentinel without
+    re-parsing the full multi-statement DDL.
 
     Idempotent. ``CREATE TABLE IF NOT EXISTS`` / ``CREATE INDEX IF NOT
     EXISTS`` plus ``DROP TRIGGER IF EXISTS`` then ``CREATE TRIGGER`` makes
     the trigger re-creation safe across calls; ``CREATE OR REPLACE
     FUNCTION`` keeps the handler in lockstep with the latest definition.
-
-    Pass ``schema`` to land the objects in a specific catalog schema; omit
-    it to fall back to the connection's current ``search_path``.
     """
-    ddl = _scoped(STORAGE_OUTBOX_DDL, schema)
-    if _is_asyncpg_connection(conn):
-        await _execute_raw_asyncpg_ddl(conn, ddl)
-        return
-    await DDLQuery(ddl).execute(conn)
+    ddl = _storage_outbox_ddl(schema)
+    await DDLQuery(ddl).execute(db_resource)
 
 
-async def ensure_index_failure_log(conn: Any, schema: str | None = None) -> None:
-    """Apply index_failure_log DDL (table + browse / status indexes).
+async def ensure_storage_outbox_asyncpg(conn: Any, schema: str) -> None:
+    """Apply storage_outbox DDL on a raw ``asyncpg.Connection`` (test path).
 
-    Idempotent. See :func:`ensure_storage_outbox` for the ``schema``
-    semantics.
+    Used by ``test_pg_outbox.py`` to exercise LISTEN / NOTIFY on the same
+    physical session that owns the DDL. NOT for production catalog
+    bootstrap — production uses :func:`ensure_storage_outbox`, which goes
+    through :class:`DDLQuery` for the warm-path shortcut and advisory
+    locking.
+
+    asyncpg's ``Connection.execute`` accepts multi-statement scripts when
+    no parameters are bound, which is the case for these idempotent
+    CREATE blocks; we hand the rendered script over as a single execute.
     """
-    ddl = _scoped(INDEX_FAILURE_LOG_DDL, schema)
-    if _is_asyncpg_connection(conn):
-        await _execute_raw_asyncpg_ddl(conn, ddl)
-        return
-    await DDLQuery(ddl).execute(conn)
+    ddl = _storage_outbox_ddl(schema)
+    await conn.execute(ddl)
+
+
+async def ensure_index_failure_log(db_resource: Any, schema: str) -> None:
+    """Apply index_failure_log DDL via :class:`DDLQuery` (production path).
+
+    See :func:`ensure_storage_outbox` for the rationale on routing through
+    :class:`DDLQuery`.
+    """
+    ddl = _index_failure_log_ddl(schema)
+    await DDLQuery(ddl).execute(db_resource)
+
+
+async def ensure_index_failure_log_asyncpg(conn: Any, schema: str) -> None:
+    """Apply index_failure_log DDL on a raw ``asyncpg.Connection`` (test path).
+
+    See :func:`ensure_storage_outbox_asyncpg` for the rationale on the raw
+    asyncpg surface.
+    """
+    ddl = _index_failure_log_ddl(schema)
+    await conn.execute(ddl)
