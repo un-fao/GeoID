@@ -65,7 +65,7 @@ from dynastore.models.protocols.indexer import (
     IndexContext,
     IndexOp,
 )
-from dynastore.models.protocols.indexing import IndexableOp
+from dynastore.models.protocols.indexing import IndexableOp, OutboxStore
 from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     Operation,
@@ -676,10 +676,11 @@ class IndexDispatcher:
         # (``enqueue_bulk``) or only the legacy singular
         # ``OutboxWriterProtocol.enqueue`` — pick whichever the wired
         # instance offers so the dispatcher stays compatible with both
-        # during the migration window.
-        enqueue_bulk = getattr(self._outbox, "enqueue_bulk", None)
-        if enqueue_bulk is not None:
-            await enqueue_bulk(
+        # during the migration window.  ``OutboxStore`` is
+        # ``@runtime_checkable`` so we narrow via ``isinstance`` rather
+        # than ``getattr`` probing (project rule: Protocols over hasattr).
+        if isinstance(self._outbox, OutboxStore):
+            await self._outbox.enqueue_bulk(
                 None,
                 catalog_id=op.catalog_id,
                 rows=[record],
@@ -849,6 +850,12 @@ class IndexDispatcher:
         # see attribute errors.  Skip with a single warning rather than
         # hard-failing — the caller's failure policy already chose
         # tolerance.
+        # NOTE: ``OutboxWriterProtocol`` (defined above) pre-dates the
+        # project's runtime_checkable typing baseline and is *not*
+        # decorated with ``@runtime_checkable``; ``isinstance`` against
+        # it would raise ``TypeError``.  The bulk path above already
+        # narrowed via ``OutboxStore``; here we fall back to a ``getattr``
+        # probe for the legacy singular surface only.
         enqueue = getattr(self._outbox, "enqueue", None)
         if enqueue is None:
             logger.warning(

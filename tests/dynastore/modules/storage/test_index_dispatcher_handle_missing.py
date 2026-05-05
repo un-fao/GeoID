@@ -93,7 +93,7 @@ async def test_missing_warn_logs_once(ctx, op, caplog):
     ):
         await d.fan_out(ctx, op)
         await d.fan_out(ctx, op)
-    warns = [r for r in caplog.records if "d" in r.message]
+    warns = [r for r in caplog.records if "indexer 'd'" in r.message]
     assert len(warns) == 1
 
 
@@ -105,16 +105,38 @@ async def test_missing_ignore_silent(ctx, op, caplog):
         logger="dynastore.modules.storage.index_dispatcher",
     ):
         await _dispatcher([entry]).fan_out(ctx, op)
-    assert not [r for r in caplog.records if "d" in r.message]
+    assert not [r for r in caplog.records if "indexer 'd'" in r.message]
 
 
 @pytest.mark.asyncio
 async def test_missing_outbox_enqueues(ctx, op):
     enq = []
 
+    # Stub satisfies the full ``OutboxStore`` runtime_checkable Protocol
+    # surface — the dispatcher narrows via ``isinstance`` so all six
+    # methods must be present even when the test only exercises
+    # ``enqueue_bulk``.
     class _Stub:
         async def enqueue_bulk(self, conn, *, catalog_id, rows):
             enq.extend(rows)
+
+        async def claim_batch(self, *, driver_id, catalog_id, batch_size, claimed_by):
+            return []
+
+        async def mark_done(self, *, catalog_id, op_ids):
+            return None
+
+        async def mark_retry(self, *, catalog_id, op_ids, error, attempts_seen):
+            return None
+
+        async def mark_failed(self, *, catalog_id, op_ids, error):
+            return None
+
+        def listen(self, *, driver_id, catalog_id):
+            async def _empty():
+                if False:
+                    yield  # pragma: no cover
+            return _empty()
 
     entry = OperationDriverEntry(
         driver_id="d",
