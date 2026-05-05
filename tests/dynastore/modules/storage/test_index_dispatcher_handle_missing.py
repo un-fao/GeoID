@@ -146,3 +146,53 @@ async def test_missing_outbox_enqueues(ctx, op):
     await _dispatcher([entry], outbox=_Stub()).fan_out(ctx, op)
     assert len(enq) == 1
     assert enq[0].driver_id == "d"
+
+
+@pytest.mark.asyncio
+async def test_handle_missing_with_pg_outbox_persists(async_conn, async_schema, ctx, op):
+    """End-to-end: missing indexer + OUTBOX policy + PgOutboxStore writes
+    a row to ``storage_outbox`` in the tenant schema.
+
+    Exercises the full ``_handle_missing`` → ``_enqueue_outbox_record`` →
+    ``PgOutboxStore.enqueue_bulk`` chain against a real PG schema. The
+    dispatcher passes ``conn=None`` to ``enqueue_bulk``; the store's
+    ``single_conn`` fallback writes through the test's session so the
+    fixture's ``search_path`` is honoured.
+    """
+    from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+
+    await ensure_storage_outbox_asyncpg(async_conn, async_schema)
+
+    async def routing(c, col):
+        return _StubRouting([
+            OperationDriverEntry(
+                driver_id="missing", write_mode=WriteMode.ASYNC,
+                on_failure=FailurePolicy.OUTBOX,
+            ),
+        ])
+
+    async def registry(driver_id):
+        return None
+
+    # IndexableOp.catalog_id must match the test schema so the outbox
+    # row lands in the right table — the dispatcher passes
+    # ``op.catalog_id`` through to ``OutboxStore.enqueue_bulk`` and the
+    # store pins ``search_path`` to that value when acquiring a conn.
+    op_for_schema = IndexableOp(
+        op_id=op.op_id, op=op.op,
+        catalog_id=async_schema, collection_id="cc",
+        driver_instance_id="x", item_id="i1",
+        payload={"id": "i1"}, idempotency_key="i1",
+    )
+
+    dispatcher = IndexDispatcher(
+        routing_resolver=routing, indexer_registry=registry,
+        outbox=PgOutboxStore(single_conn=async_conn),
+    )
+    await dispatcher.fan_out(ctx, op_for_schema)
+
+    n = await async_conn.fetchval(  # type: ignore[attr-defined]
+        "SELECT count(*) FROM storage_outbox WHERE driver_id='missing'"
+    )
+    assert n == 1

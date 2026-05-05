@@ -93,8 +93,16 @@ class PgOutboxStore:
     ) -> None:
         """Bulk-insert outbox rows via binary COPY.
 
-        Runs on the caller's ``conn`` inside the caller's transaction;
-        ``search_path`` must already be set by the caller.
+        When ``conn`` is provided, runs on the caller's connection inside
+        the caller's transaction; ``search_path`` must already be set by
+        the caller (this is the atomic-with-upstream-write path).
+
+        When ``conn`` is ``None`` (the dispatcher's missing-indexer path
+        — see ``IndexDispatcher._enqueue_outbox_record``) the store falls
+        back to its own connection source: ``single_conn`` for tests,
+        otherwise a pool-acquired conn. In pool mode ``search_path`` is
+        pinned via :meth:`_ensure_search_path`; in ``single_conn`` mode
+        the caller has already set it.
         """
         if not rows:
             return
@@ -111,20 +119,48 @@ class PgOutboxStore:
             )
             for r in rows
         ]
-        await conn.copy_records_to_table(
-            "storage_outbox",
-            records=records,
-            columns=[
-                "op_id",
-                "driver_id",
-                "driver_instance_id",
-                "collection_id",
-                "op",
-                "item_id",
-                "payload",
-                "idempotency_key",
-            ],
-        )
+        if conn is not None:
+            await conn.copy_records_to_table(
+                "storage_outbox",
+                records=records,
+                columns=[
+                    "op_id",
+                    "driver_id",
+                    "driver_instance_id",
+                    "collection_id",
+                    "op",
+                    "item_id",
+                    "payload",
+                    "idempotency_key",
+                ],
+            )
+            return
+        # Fallback: acquire from the store's own connection source so the
+        # dispatcher seam doesn't have to plumb a conn through.
+        own_conn = await self._conn()
+        # Capture the pool reference up-front so the ``finally`` branch
+        # narrows cleanly (pyright can't track the ``and`` guard across
+        # the await above).
+        pool_ref = self._pool if self._single is None else None
+        try:
+            await self._ensure_search_path(own_conn, catalog_id)
+            await own_conn.copy_records_to_table(
+                "storage_outbox",
+                records=records,
+                columns=[
+                    "op_id",
+                    "driver_id",
+                    "driver_instance_id",
+                    "collection_id",
+                    "op",
+                    "item_id",
+                    "payload",
+                    "idempotency_key",
+                ],
+            )
+        finally:
+            if pool_ref is not None:
+                await pool_ref.release(own_conn)
 
     async def claim_batch(
         self,
