@@ -136,13 +136,13 @@ def register_web_policies():
     pm.register_role(Role(name=DefaultRole.USER.value, policies=["web_admin_access"]))
 
     # Platform-tier dashboard endpoints (no `catalogs/` segment) — sysadmin only.
-    # Note: ogc-compliance is also covered by web_dashboard_ogc_compliance_access
-    # (which extends access to admin/user); both policies ALLOW, which is correct.
+    # `ogc-compliance` is intentionally excluded here and granted separately to
+    # admin+user via `web_dashboard_ogc_compliance_access` below.
     web_dashboard_platform_policy = Policy(
         id="web_dashboard_platform_access",
-        description="Sysadmin-only access to platform-tier dashboard endpoints (stats, logs, events, tasks, ogc-compliance).",
+        description="Sysadmin-only access to platform-tier dashboard endpoints (stats, logs, events, tasks).",
         actions=["GET", "OPTIONS"],
-        resources=[r"^/web/dashboard/(stats|logs|events|tasks|ogc-compliance)/?$"],
+        resources=[r"^/web/dashboard/(stats|logs|events|tasks)/?$"],
         effect="ALLOW",
     )
     pm.register_policy(web_dashboard_platform_policy)
@@ -898,9 +898,6 @@ async function demoAction(action) {
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read().replace("{{VERSION}}", VERSION))
 
-    # Alias kept for the admin-panel callers already using this name.
-    _serve_admin_html = _serve_html_template
-
     @expose_web_page(
         page_id="exposure",
         title="Service Exposure",
@@ -916,7 +913,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "exposure.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
-        return self._serve_admin_html(html_path)
+        return self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="configuration",
@@ -938,7 +935,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "configuration.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
-        return self._serve_admin_html(html_path)
+        return self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="governance",
@@ -961,7 +958,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "governance.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Governance page template not found.")
-        return self._serve_admin_html(html_path)
+        return self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="stac-authoring",
@@ -982,7 +979,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "stac-authoring.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="STAC authoring template not found.")
-        return self._serve_admin_html(html_path)
+        return self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="ingest",
@@ -1005,7 +1002,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "ingest.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Ingest page template not found.")
-        return self._serve_admin_html(html_path)
+        return self._serve_html_template(html_path)
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
@@ -1595,9 +1592,10 @@ async function demoAction(action) {
         # Dashboard data endpoints — TWO TIERS, both gated declaratively by  #
         # PermissionProtocol policies registered in register_web_policies():  #
         #                                                                     #
-        #   Platform tier  : /web/dashboard/{stats|logs|events|tasks|         #
-        #                                    ogc-compliance}                  #
+        #   Platform tier  : /web/dashboard/{stats|logs|events|tasks}        #
         #     Sysadmin-only via web_dashboard_platform_access policy.         #
+        #     /web/dashboard/ogc-compliance is admin+user via                 #
+        #     web_dashboard_ogc_compliance_access (broader audience).         #
         #                                                                     #
         #   Per-catalog    : /web/dashboard/catalogs/{catalog_id}/...         #
         #     Anyone with catalog membership for the URL's catalog_id, via    #

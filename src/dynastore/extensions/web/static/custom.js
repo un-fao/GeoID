@@ -835,6 +835,8 @@ function updateUserWidget(user) {
     if (!user) {
         if (userWidget) userWidget.classList.add('hidden');
         if (authButtons) authButtons.classList.remove('hidden');
+        // Refresh sidebar so role-gated entries disappear after sign-out.
+        loadSidebar();
         return;
     }
 
@@ -845,7 +847,6 @@ function updateUserWidget(user) {
     const nameEl = document.getElementById('user-display-name');
     const emailEl = document.getElementById('user-email');
     const avatarEl = document.getElementById('user-avatar');
-    const adminLink = document.getElementById('admin-panel-link');
 
     if (nameEl) nameEl.innerText = user.preferred_username || user.name || user.sub || 'User';
     if (emailEl) emailEl.innerText = user.email || '';
@@ -855,18 +856,9 @@ function updateUserWidget(user) {
         avatarEl.innerText = initial;
     }
 
-    // Role-based visibility for Admin Panel
-    if (adminLink) {
-        const roles = user.roles || [...(user.realm_roles || []), ...(user.client_roles || [])];
-        const isPrivileged = roles.includes('sysadmin') || roles.includes('admin');
-        if (isPrivileged) {
-            adminLink.classList.remove('hidden');
-            adminLink.classList.add('flex');
-        } else {
-            adminLink.classList.add('hidden');
-            adminLink.classList.remove('flex');
-        }
-    }
+    // Role-gated nav (admin hub, governance, etc.) is rendered dynamically by
+    // loadSidebar() from /web/config/pages — no static admin link to toggle here.
+    loadSidebar();
 }
 
 function toggleSidebar() {

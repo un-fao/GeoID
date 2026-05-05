@@ -1,0 +1,73 @@
+<!--
+  Stats fragment.
+  Served via @expose_web_page (page_id="stats", section="admin").
+  Uses the outer shell's authToken/TOKEN_KEY conventions; calls the existing
+  REST endpoints under /stats/system and /stats/catalogs/* — no new backend
+  surface introduced.
+-->
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-2xl font-bold text-white mb-1">System Stats</h2>
+      <p class="text-slate-400 text-sm">Object counts, request volume and latency by catalog.</p>
+    </div>
+    <button id="stats-refresh"
+      class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs">
+      <i class="fa-solid fa-rotate mr-1"></i> Refresh
+    </button>
+  </div>
+
+  <div id="stats-system" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="glass-panel p-5 rounded-2xl border border-white/5">
+      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Total requests</div>
+      <div id="stats-total-requests" class="text-2xl font-bold text-white">—</div>
+    </div>
+    <div class="glass-panel p-5 rounded-2xl border border-white/5">
+      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Average latency</div>
+      <div id="stats-avg-latency" class="text-2xl font-bold text-white">—</div>
+    </div>
+    <div class="glass-panel p-5 rounded-2xl border border-white/5">
+      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Build version</div>
+      <div class="text-2xl font-mono text-blue-300">{{VERSION}}</div>
+    </div>
+  </div>
+
+  <div id="stats-error" class="hidden text-rose-400 text-sm"></div>
+</div>
+
+<script>
+(function() {
+  const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
+  const token = (typeof authToken !== 'undefined' && authToken)
+    || localStorage.getItem(tkey)
+    || sessionStorage.getItem(tkey);
+  const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+  const errEl = document.getElementById('stats-error');
+
+  function fmtNumber(n) {
+    if (n === null || n === undefined) return '—';
+    return new Intl.NumberFormat().format(n);
+  }
+  function fmtMs(ms) {
+    if (ms === null || ms === undefined) return '—';
+    return Number(ms).toFixed(1) + ' ms';
+  }
+
+  async function load() {
+    errEl.classList.add('hidden');
+    try {
+      const res = await fetch('/stats/system', { headers });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      document.getElementById('stats-total-requests').textContent = fmtNumber(data.total_requests);
+      document.getElementById('stats-avg-latency').textContent = fmtMs(data.average_latency_ms);
+    } catch (e) {
+      errEl.textContent = 'Failed to load system stats: ' + (e.message || e);
+      errEl.classList.remove('hidden');
+    }
+  }
+
+  document.getElementById('stats-refresh').addEventListener('click', load);
+  load();
+})();
+</script>

@@ -18,14 +18,21 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+import os
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.web.decorators import expose_web_page
+from dynastore.extensions.tools.web_collect import collect_web_pages
+from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.models.protocols.catalogs import CatalogsProtocol
+from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +67,38 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             methods=["GET"],
             summary="Retrieve stats for a specific collection",
         )
+
+    def get_web_pages(self):
+        # Skip nav registration in deployments without IAM — there are no
+        # authenticated roles to gate the page on, so it would surface to
+        # anonymous callers or be unreachable.
+        if get_protocol(PermissionProtocol) is None:
+            return []
+        return collect_web_pages(self)
+
+    @expose_web_page(
+        page_id="stats",
+        title={"en": "System Stats", "es": "Estadísticas", "fr": "Statistiques", "it": "Statistiche"},
+        icon="fa-chart-bar",
+        description={
+            "en": "Per-catalog object counts, storage usage, and request stats.",
+            "es": "Conteos por catálogo, uso de almacenamiento y estadísticas de solicitudes.",
+            "fr": "Comptes par catalogue, utilisation du stockage et statistiques des requêtes.",
+            "it": "Conteggi per catalogo, uso dello storage e statistiche delle richieste.",
+        },
+        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value],
+        section="admin",
+        priority=18,
+    )
+    async def provide_stats_page(self, request: Request) -> HTMLResponse:
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", "stats.html")
+        if not os.path.exists(file_path):
+            return HTMLResponse(
+                content='<div class="text-slate-400 text-sm py-8">Stats page template missing.</div>'
+            )
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read().replace("{{VERSION}}", VERSION))
 
     @property
     def catalogs(self) -> CatalogsProtocol:
