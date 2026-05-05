@@ -249,6 +249,7 @@ async def apply_catalog_default_privacy_seed(
 
     from dynastore.models.driver_context import DriverContext
     from dynastore.modules.storage.routing_config import (
+        CollectionRoutingConfig,
         FailurePolicy,
         ItemsRoutingConfig,
         Operation,
@@ -269,7 +270,7 @@ async def apply_catalog_default_privacy_seed(
     if policy.default_collection_privacy != "private":
         return False
 
-    private_routing = ItemsRoutingConfig(
+    private_items_routing = ItemsRoutingConfig(
         operations={
             Operation.WRITE: [
                 OperationDriverEntry(
@@ -290,7 +291,7 @@ async def apply_catalog_default_privacy_seed(
     )
     await configs.set_config(
         ItemsRoutingConfig,
-        private_routing,
+        private_items_routing,
         catalog_id=catalog_id,
         collection_id=collection_id,
         ctx=ctx,
@@ -298,6 +299,43 @@ async def apply_catalog_default_privacy_seed(
     await configs.set_config(
         CollectionPluginConfig,
         CollectionPluginConfig(is_private=True),
+        catalog_id=catalog_id,
+        collection_id=collection_id,
+        ctx=ctx,
+    )
+
+    # Cycle E.2.c slice 3 — also seed CollectionRoutingConfig with the
+    # collection-envelope private driver pinned (Cycle E.2.b shipped
+    # this driver class).  Without this third write the collection
+    # envelope would fall through to the public shared
+    # ``{prefix}-collections`` index — the catalog-wide DENY policy
+    # (owned by the items-private driver via the cascade rule) would
+    # still block public GET reads, but operators auditing the index
+    # list would see the envelope in the public index, which is
+    # surprising for a "private" collection.  Symmetrical seed: items
+    # AND envelope both land in per-tenant private indexes when the
+    # catalog default is "private".
+    #
+    # Independent of the cascade ordering above — the privacy cascade
+    # validator gates ItemsRoutingConfig vs CollectionPluginConfig only;
+    # CollectionRoutingConfig has no cross-config constraint, so this
+    # write's position relative to the pair above is incidental (we
+    # put it last for clarity).
+    private_collection_routing = CollectionRoutingConfig(
+        operations={
+            Operation.INDEX: [
+                OperationDriverEntry(
+                    driver_id="collection_elasticsearch_private_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    source="auto",
+                ),
+            ],
+        },
+    )
+    await configs.set_config(
+        CollectionRoutingConfig,
+        private_collection_routing,
         catalog_id=catalog_id,
         collection_id=collection_id,
         ctx=ctx,
