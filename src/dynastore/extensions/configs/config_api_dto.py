@@ -20,9 +20,11 @@ payloads keyed by class name.  No wrapper envelopes, no duplicated
 driver configs inline under routing entries, no ``class_key`` field
 (the map key IS the class name).
 
-Tier-of-origin diagnostics (``meta[ClassName] = {source}``) are opt-in
-via the ``?meta=true`` query parameter; off by default to keep the
-default response slim.
+Tier-of-origin information lives in the top-level ``inherited`` map
+(class_key → tier).  The ``meta`` field carries field-level docs or
+full JSON Schema per class, hierarchical and mirroring the ``configs``
+tree shape; mode is selected via ``?meta=none|field|schema`` (default
+``field``).
 """
 
 from typing import Any, Dict, List, Optional
@@ -162,7 +164,7 @@ class CollectionConfigResponse(BaseModel):
         description=(
             "JSON Hyper-Schema link descriptors for this resource. Always "
             "populated. Includes ``self``, ``alternate`` representations "
-            "(other ``?docs=`` and ``?meta=`` modes), and ``edit`` (templated "
+            "(other ``?meta=`` modes), and ``edit`` (templated "
             "PATCH against per-class plugin endpoints). Operators read "
             "``hrefSchema`` on each link to discover supported query "
             "parameters with descriptions and examples."
@@ -210,13 +212,11 @@ class CollectionConfigResponse(BaseModel):
         None,
         description=(
             "Per-entity, per-op driver resolution: "
-            "``{entity: {op: {driver_id, reason}}}``. Tells the operator "
-            "WHICH driver fires for each operation at this collection — "
-            "factoring in private-mode resolution "
-            "(``ElasticsearchCatalogConfig.private`` + per-collection "
-            "override).  Populated only when ``?meta=true``.  Currently "
-            "covers ``items.{WRITE,READ,SEARCH}``; other entities will "
-            "be added as their resolvers stabilise."
+            "``{entity: {op: {driver_id, reason}}}``. Synthetic resolver "
+            "scheduled for removal in Cycle C of the config-API "
+            "restructure — the routing tree under ``configs.storage."
+            "routing`` is the truth post PR #254.  Populated only when "
+            "``?meta != \"none\"``."
         ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(

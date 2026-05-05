@@ -571,7 +571,7 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
     async def location(self, catalog_id: str, collection_id: str) -> Any:
         """Delegate to the first inner that supports PHYSICAL_ADDRESSING.
 
-        Sufficient for `?meta=true` introspection — operator only needs
+        Sufficient for config-API introspection — operator only needs
         to know the underlying tenant schema, which every inner shares.
         """
         from dynastore.modules.storage.storage_location import StorageLocation

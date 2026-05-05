@@ -516,34 +516,24 @@ class ConfigApiService:
                 "type": "boolean", "default": True,
                 "description": (
                     "When true (default): all registered configs with "
-                    "waterfall-resolved values; ``meta.{class}.source`` "
-                    "tells you which tier won. When false: only configs "
-                    "explicitly stored at this scope (delta-only, safe for "
-                    "read-modify-write flows)."
+                    "waterfall-resolved values; the top-level ``inherited`` "
+                    "map tells you which tier provided each upstream value. "
+                    "When false: only configs explicitly stored at this "
+                    "scope (delta-only, safe for read-modify-write flows)."
                 ),
                 "examples": [True, False],
             },
             "meta": {
-                "type": "boolean", "default": False,
-                "description": (
-                    "When true, attach per-class tier-of-origin diagnostics "
-                    "under ``meta.{class}.source`` plus the full waterfall "
-                    "trace under ``meta.{class}.layers``. Off by default to "
-                    "keep the payload slim."
-                ),
-                "examples": [True, False],
-            },
-            "docs": {
                 "type": "string", "enum": ["none", "field", "schema"],
                 "default": "field",
                 "description": (
-                    "Documentation mode. ``none`` (lean) — no field docs. "
-                    "``field`` (default) — lightweight ``{field_name: "
-                    "description}`` map per class at "
-                    "``meta.{class}.field_docs``. ``schema`` — full JSON "
-                    "Schema 2020-12 per class at "
-                    "``meta.{class}.json_schema`` (heavier, useful for "
-                    "form-builders)."
+                    "Documentation mode for the hierarchical ``meta`` tree. "
+                    "``none`` — ``meta`` returned as null. ``field`` "
+                    "(default) — leaf at the configs path is "
+                    "``{field_docs: {field_name: description}}`` per class. "
+                    "``schema`` — leaf is ``{json_schema: <full Pydantic "
+                    "schema 2020-12>}`` per class (heavier, form-builder "
+                    "ready)."
                 ),
                 "examples": ["field", "schema", "none"],
             },
@@ -628,21 +618,15 @@ class ConfigApiService:
             ),
             Link(
                 rel="alternate",
-                href=f"{base_url}?docs=schema",
+                href=f"{base_url}?meta=schema",
                 method="GET",
                 title="Same view with full JSON Schema per class (form-builder mode)",
             ),
             Link(
                 rel="alternate",
-                href=f"{base_url}?docs=none",
+                href=f"{base_url}?meta=none",
                 method="GET",
                 title="Same view without field documentation (lean mode)",
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?meta=true",
-                method="GET",
-                title="Same view with per-class tier-of-origin diagnostics",
             ),
             Link(
                 rel="alternate",
