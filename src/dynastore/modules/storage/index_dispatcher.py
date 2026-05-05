@@ -335,15 +335,17 @@ def _make_default_indexer_registry():
 
 def get_index_dispatcher() -> IndexDispatcher:
     """Process-wide singleton dispatcher — reuses live resolvers + the
-    default :class:`TaskTableOutboxWriter`.  Phase 3 plugs in the
-    circuit breaker.
+    default :class:`TaskTableOutboxWriter` + a per-indexer
+    :class:`CircuitBreaker` (Phase 3).
     """
     global _DEFAULT_DISPATCHER
     if _DEFAULT_DISPATCHER is None:
+        from dynastore.modules.storage.circuit_breaker import CircuitBreaker
         _DEFAULT_DISPATCHER = IndexDispatcher(
             routing_resolver=_make_default_routing_resolver(),
             indexer_registry=_make_default_indexer_registry(),
             outbox=TaskTableOutboxWriter(),
+            breaker=CircuitBreaker(),
         )
     return _DEFAULT_DISPATCHER
 
