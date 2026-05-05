@@ -20,9 +20,11 @@ payloads keyed by class name.  No wrapper envelopes, no duplicated
 driver configs inline under routing entries, no ``class_key`` field
 (the map key IS the class name).
 
-Tier-of-origin diagnostics (``meta[ClassName] = {source}``) are opt-in
-via the ``?meta=true`` query parameter; off by default to keep the
-default response slim.
+Tier-of-origin information lives in the top-level ``inherited`` map
+(class_key → tier).  The ``meta`` field carries field-level docs or
+full JSON Schema per class, hierarchical and mirroring the ``configs``
+tree shape; mode is selected via ``?meta=none|field|schema`` (default
+``field``).
 """
 
 from typing import Any, Dict, List, Optional
@@ -113,90 +115,19 @@ class Link(BaseModel):
     )
 
 
-class ConfigLayer(BaseModel):
-    """One tier in the waterfall trace for a single config entry.
-
-    Tells the operator WHICH tier contributed WHAT — useful when the
-    effective value at a collection comes from the catalog tier and the
-    operator needs to know whether the platform default would take over
-    if the catalog override were deleted.
-    """
-
-    level: str = Field(
-        ...,
-        description=(
-            "Tier name in waterfall order: 'default' (code-level class "
-            "default), 'platform', 'catalog', 'collection'."
-        ),
-    )
-    present: bool = Field(
-        ...,
-        description=(
-            "True when an explicit row exists at this tier (i.e. the tier "
-            "contributed a delta that was merged into the effective value). "
-            "False when the tier was empty for this class — the value was "
-            "inherited from a higher (lower-precedence) tier."
-        ),
-    )
-
-
-class ConfigMeta(BaseModel):
-    """Tier-of-origin diagnostics for a single resolved config entry."""
-
-    source: str = Field(
-        ...,
-        description=(
-            "Tier that supplied the effective value: "
-            "'collection' | 'catalog' | 'platform' | 'default'.  Single-tier "
-            "summary; for the full waterfall trace see ``layers`` below."
-        ),
-    )
-    layers: Optional[List[ConfigLayer]] = Field(
-        default=None,
-        description=(
-            "Full waterfall trace for this config: one entry per tier "
-            "(default, platform, catalog, collection) with ``present`` "
-            "indicating whether that tier explicitly contributed a delta. "
-            "Populated when ``?meta=true`` is requested."
-        ),
-    )
-    json_schema: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description=(
-            "JSON Schema 2020-12 document for this config class, emitted by "
-            "Pydantic's ``model_json_schema()``. Includes per-field title, "
-            "description, type, default, examples, constraints — everything a "
-            "dashboard form-builder needs. Populated when ``?docs=schema`` is "
-            "requested; null otherwise. Orthogonal to ``?meta=true``: the two "
-            "flags can be combined to get both source diagnostics and schemas "
-            "in one response."
-        ),
-    )
-    field_docs: Optional[Dict[str, str]] = Field(
-        default=None,
-        description=(
-            "Lightweight ``{field_name: description}`` map extracted from the "
-            "class JSON Schema. Each entry carries the Pydantic ``Field(..., "
-            "description=...)`` text — field-by-field documentation surfaced "
-            "alongside the data without the weight of the full JSON Schema. "
-            "Populated when ``?docs=field`` (the default mode). Use "
-            "``?docs=schema`` instead to get the full JSON Schema in "
-            "``json_schema`` above; ``?docs=none`` to suppress both."
-        ),
-    )
-    entity: Optional[str] = Field(
-        default=None,
-        description=(
-            "For driver-tier configs (``_address = (\"storage\", \"drivers\", "
-            "<entity>)``), the entity bucket the config governs: "
-            "``items`` (collection items / features), ``assets`` (asset "
-            "metadata), or ``collection`` (collection-level metadata). Lets "
-            "dashboards group sidecars and driver settings per entity — "
-            "e.g. distinguish ``ItemsPostgresqlDriverConfig.sidecars`` "
-            "(items-side) from ``CollectionPostgresqlDriverConfig.sidecars`` "
-            "(collection-metadata-side). ``None`` for non-driver configs."
-        ),
-    )
+# NOTE: ConfigLayer and ConfigMeta were retired in Cycle B of the
+# config-API restructure (2026-05-05).  The waterfall-trace meta
+# (``source`` + ``layers``) was dropped — operators didn't find the
+# per-tier presence breadcrumb interesting; the tier-of-origin
+# information now lives in the top-level ``inherited`` map.  ``entity``
+# (the items/assets/collection bucket) was dropped along with the
+# composer's ``_build_meta_entry`` helper.
+#
+# The ``meta`` response field now carries field-level docs OR full JSON
+# Schema per class, hierarchical to mirror the ``configs`` tree shape.
+# Each leaf is a plain dict (``{field_docs: {...}}`` or
+# ``{json_schema: {...}}``), so ``meta: Optional[Dict[str, Any]]`` on
+# the response models suffices — no per-class DTO needed.
 
 
 class ConfigPage(BaseModel):
@@ -233,7 +164,7 @@ class CollectionConfigResponse(BaseModel):
         description=(
             "JSON Hyper-Schema link descriptors for this resource. Always "
             "populated. Includes ``self``, ``alternate`` representations "
-            "(other ``?docs=`` and ``?meta=`` modes), and ``edit`` (templated "
+            "(other ``?meta=`` modes), and ``edit`` (templated "
             "PATCH against per-class plugin endpoints). Operators read "
             "``hrefSchema`` on each link to discover supported query "
             "parameters with descriptions and examples."
@@ -264,24 +195,28 @@ class CollectionConfigResponse(BaseModel):
             "scope -> topic -> [sub ->] ClassName -> payload."
         ),
     )
-    meta: Optional[Dict[str, ConfigMeta]] = Field(
+    meta: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Per-class tier-of-origin diagnostics; populated only when "
-            "?meta=true is requested."
+            "Per-class field-level docs OR full JSON Schema, hierarchical "
+            "and mirroring the ``configs`` tree shape — the same path that "
+            "produces the resolved payload in ``configs`` produces a "
+            "``{field_docs: {...}}`` (default ``?meta=field``) or "
+            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
+            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
+            "older waterfall trace (``source`` + ``layers``) was retired in "
+            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
     )
     routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = Field(
         None,
         description=(
             "Per-entity, per-op driver resolution: "
-            "``{entity: {op: {driver_id, reason}}}``. Tells the operator "
-            "WHICH driver fires for each operation at this collection — "
-            "factoring in private-mode resolution "
-            "(``ElasticsearchCatalogConfig.private`` + per-collection "
-            "override).  Populated only when ``?meta=true``.  Currently "
-            "covers ``items.{WRITE,READ,SEARCH}``; other entities will "
-            "be added as their resolvers stabilise."
+            "``{entity: {op: {driver_id, reason}}}``. Synthetic resolver "
+            "scheduled for removal in Cycle C of the config-API "
+            "restructure — the routing tree under ``configs.storage."
+            "routing`` is the truth post PR #254.  Populated only when "
+            "``?meta != \"none\"``."
         ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(
@@ -318,11 +253,17 @@ class CatalogConfigResponse(BaseModel):
             "scope -> topic -> [sub ->] ClassName -> payload."
         ),
     )
-    meta: Optional[Dict[str, ConfigMeta]] = Field(
+    meta: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Per-class tier-of-origin diagnostics; populated only when "
-            "?meta=true is requested."
+            "Per-class field-level docs OR full JSON Schema, hierarchical "
+            "and mirroring the ``configs`` tree shape — the same path that "
+            "produces the resolved payload in ``configs`` produces a "
+            "``{field_docs: {...}}`` (default ``?meta=field``) or "
+            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
+            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
+            "older waterfall trace (``source`` + ``layers``) was retired in "
+            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(
@@ -352,11 +293,17 @@ class PlatformConfigResponse(BaseModel):
             "scope -> topic -> [sub ->] ClassName -> payload."
         ),
     )
-    meta: Optional[Dict[str, ConfigMeta]] = Field(
+    meta: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Per-class tier-of-origin diagnostics; populated only when "
-            "?meta=true is requested."
+            "Per-class field-level docs OR full JSON Schema, hierarchical "
+            "and mirroring the ``configs`` tree shape — the same path that "
+            "produces the resolved payload in ``configs`` produces a "
+            "``{field_docs: {...}}`` (default ``?meta=field``) or "
+            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
+            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
+            "older waterfall trace (``source`` + ``layers``) was retired in "
+            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
     )
     categories: Optional[Dict[str, ConfigPage]] = Field(

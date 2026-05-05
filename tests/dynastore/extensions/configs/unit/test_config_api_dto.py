@@ -9,7 +9,6 @@ through pydantic cleanly.
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
     CollectionConfigResponse,
-    ConfigMeta,
     ConfigPage,
     DriverRef,
     PatchConfigBody,
@@ -27,11 +26,6 @@ def test_driver_ref_defaults():
 def test_driver_ref_null_config_ref_is_allowed():
     ref = DriverRef(driver_id="SomeDriver")
     assert ref.config_ref is None
-
-
-def test_config_meta_source_value():
-    m = ConfigMeta(source="catalog")
-    assert m.source == "catalog"
 
 
 def test_config_page_serializes_none_items():
@@ -94,14 +88,24 @@ def test_collection_response_carries_ids():
     assert r.collection_id == "coll"
 
 
-def test_meta_populated_when_requested():
+def test_meta_hierarchical_payload():
+    """Cycle B: ``meta`` mirrors the configs tree shape.  Each leaf is
+    a plain dict carrying ``{field_docs}`` or ``{json_schema}``."""
     r = CatalogConfigResponse(
         catalog_id="cat",
         configs={},
-        meta={"WebConfig": ConfigMeta(source="default")},
+        meta={
+            "platform": {
+                "web": {
+                    "web_config": {
+                        "field_docs": {"brand_name": "Display name."},
+                    },
+                },
+            },
+        },
     )
     assert r.meta is not None
-    assert r.meta["WebConfig"].source == "default"
+    assert r.meta["platform"]["web"]["web_config"]["field_docs"]["brand_name"] == "Display name."
 
 
 def test_patch_body_accepts_null_for_delete():
