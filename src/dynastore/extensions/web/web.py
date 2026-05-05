@@ -136,9 +136,11 @@ def register_web_policies():
     pm.register_role(Role(name=DefaultRole.USER.value, policies=["web_admin_access"]))
 
     # Platform-tier dashboard endpoints (no `catalogs/` segment) — sysadmin only.
+    # Note: ogc-compliance is also covered by web_dashboard_ogc_compliance_access
+    # (which extends access to admin/user); both policies ALLOW, which is correct.
     web_dashboard_platform_policy = Policy(
         id="web_dashboard_platform_access",
-        description="Sysadmin-only access to platform-tier dashboard endpoints.",
+        description="Sysadmin-only access to platform-tier dashboard endpoints (stats, logs, events, tasks, ogc-compliance).",
         actions=["GET", "OPTIONS"],
         resources=[r"^/web/dashboard/(stats|logs|events|tasks|ogc-compliance)/?$"],
         effect="ALLOW",
@@ -890,10 +892,14 @@ async function demoAction(action) {
 """
 
     @staticmethod
-    def _serve_admin_html(html_path: str) -> HTMLResponse:
+    def _serve_html_template(html_path: str) -> HTMLResponse:
+        """Read an HTML file and replace {{VERSION}} with the running package version."""
         from dynastore._version import VERSION
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read().replace("{{VERSION}}", VERSION))
+
+    # Alias kept for the admin-panel callers already using this name.
+    _serve_admin_html = _serve_html_template
 
     @expose_web_page(
         page_id="exposure",
@@ -1213,16 +1219,17 @@ async function demoAction(action) {
                     return await self.serve_file(index_path)
             return HTMLResponse("Not Found", status_code=404)
 
+        _dashboard_index = os.path.join(
+            os.path.dirname(__file__), "static", "dashboard", "index.html"
+        )
+
         @self.router.get("/dashboard/")
         async def read_dashboard_root():
             """Catalog-picker root. Anonymous-allowed: lists catalogs the
             caller can see (filtered downstream by IAM) and lets them pick
             a per-catalog dashboard."""
-            dashboard_index = os.path.join(
-                os.path.dirname(__file__), "static", "dashboard", "index.html"
-            )
-            if os.path.exists(dashboard_index):
-                return await self.serve_file(dashboard_index)
+            if os.path.exists(_dashboard_index):
+                return self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/")
@@ -1231,11 +1238,8 @@ async function demoAction(action) {
             JS reads ``catalog_id`` from ``window.location.pathname`` and
             uses relative URLs (``stats``, ``logs``, ``events``) which
             resolve against this base path."""
-            dashboard_index = os.path.join(
-                os.path.dirname(__file__), "static", "dashboard", "index.html"
-            )
-            if os.path.exists(dashboard_index):
-                return await self.serve_file(dashboard_index)
+            if os.path.exists(_dashboard_index):
+                return self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/processes/")
