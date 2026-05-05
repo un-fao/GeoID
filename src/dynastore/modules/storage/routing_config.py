@@ -345,21 +345,26 @@ class ItemsRoutingConfig(PluginConfig):
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
-            # ES (public) primary, PG secondary. PG is authoritative for WRITE
-            # (on_failure=fatal — must succeed); ES is the derived index
-            # (on_failure=warn — transient outage doesn't block writes,
-            # reindex catches up). READ orders ES first for fast simplified-
-            # geometry search; PG carries the `geometry_exact` hint so a
-            # consumer can request exact geometries — actual hint-aware
-            # dispatch is pending PR-1e (today position 0 wins per :660).
+            # PG is authoritative for WRITE (on_failure=fatal — must succeed).
+            # ES is intentionally NOT in WRITE: the per-item event listener
+            # ``ItemsElasticsearchDriver._on_item_upsert`` already mirrors
+            # writes to ES asynchronously (best-effort, fire-and-forget),
+            # and INDEX is auto-augmented with the same driver via
+            # ``_self_register_indexers_into``.  Putting ES in WRITE would
+            # duplicate the path; the listener has a ``_is_write_driver_for``
+            # guard to skip itself when ES is in WRITE precisely because
+            # double-indexing was the historical failure mode.  See
+            # ``feedback_es_indexing_per_item_async_not_bulk.md``: ES item
+            # sync is a per-item async best-effort listener, not a
+            # synchronous fan-out target.
+            #
+            # READ orders ES first for fast simplified-geometry search; PG
+            # carries the ``geometry_exact`` hint so a consumer can request
+            # exact geometries via ``get_driver(..., hint="geometry_exact")``.
             Operation.WRITE: [
                 OperationDriverEntry(
                     driver_id="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
-                ),
-                OperationDriverEntry(
-                    driver_id="items_elasticsearch_driver",
-                    on_failure=FailurePolicy.WARN,
                 ),
             ],
             Operation.READ: [
