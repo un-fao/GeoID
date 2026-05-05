@@ -463,6 +463,22 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
         async def _flush_once() -> None:
             async with managed_transaction(engine) as conn:
+                # Cross-process / cross-worker serialization (closes #263).
+                # Postgres advisory transaction-scoped lock — only one flush
+                # runs the read-modify-write block at a time, system-wide.
+                # `pg_advisory_xact_lock` is auto-released at COMMIT/ROLLBACK,
+                # so leaks are impossible.  Without this, the SQLSTATE-40001
+                # retry caught the *visible* race but a second class —
+                # read-modify-write on `iam.roles` returning a stale snapshot
+                # from an in-flight concurrent tx and overwriting the winner
+                # — silently left the roles table empty even though the
+                # flush log reported success.  Reproduced 2026-05-05 during
+                # the keycloak-fix browser verification.
+                from sqlalchemy import text
+                await conn.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('iam_seed:iam'))")
+                )
+
                 # Policies: one storage call per policy, all in this tx.
                 # `update_policy` opens a nested SAVEPOINT via
                 # `managed_transaction(conn)`. Each per-policy SAVEPOINT
