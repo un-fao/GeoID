@@ -132,7 +132,7 @@ async def test_pg_outbox_enqueue_bulk_persists(async_conn, async_schema):
     from dynastore.models.protocols.indexing import OutboxRecord
 
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
-    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn)
     rows = [
         OutboxRecord(
             op_id=uuid4(), driver_id="d", driver_instance_id="di",
@@ -165,7 +165,7 @@ async def test_pg_outbox_claim_batch_skip_locked(
         f'SET search_path TO "{async_schema}"',
     )
 
-    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn)
     await store.enqueue_bulk(
         async_conn, catalog_id=async_schema,
         rows=[
@@ -178,9 +178,7 @@ async def test_pg_outbox_claim_batch_skip_locked(
         ],
     )
 
-    store2 = PgOutboxStore(
-        pool=None, single_conn=second_async_conn, schema=async_schema,
-    )
+    store2 = PgOutboxStore(pool=None, single_conn=second_async_conn)
     async with async_conn.transaction(), second_async_conn.transaction():  # type: ignore[attr-defined]
         b1 = await store.claim_batch(
             driver_id="d", catalog_id=async_schema,
@@ -202,7 +200,7 @@ async def test_pg_outbox_mark_done_retry_failed(async_conn, async_schema):
     from dynastore.models.protocols.indexing import OutboxRecord
 
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
-    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn)
     op_ids = [uuid4() for _ in range(3)]
     await store.enqueue_bulk(
         async_conn, catalog_id=async_schema,
@@ -246,7 +244,7 @@ async def test_pg_outbox_mark_retry_bumps_attempts_and_delays_ready_at(
     from dynastore.models.protocols.indexing import OutboxRecord
 
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
-    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn)
     op_id = uuid4()
     await store.enqueue_bulk(
         async_conn, catalog_id=async_schema,

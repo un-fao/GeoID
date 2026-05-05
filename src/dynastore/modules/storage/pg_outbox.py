@@ -4,10 +4,13 @@ Caller responsibility: connections passed to :meth:`enqueue_bulk` must
 already have ``search_path`` set to the catalog's physical schema —
 that method runs inside the caller's transaction context and we
 deliberately do not mutate it. Methods that acquire their own
-connection (:meth:`claim_batch`, ``mark_*``, :meth:`listen`) prepend a
-``SET LOCAL search_path TO "<schema>"`` clause via
-:func:`dynastore.tools.db.validate_sql_identifier` so a fresh pool
-connection lands on the correct per-tenant schema.
+connection (:meth:`claim_batch`, ``mark_*``, :meth:`listen`) issue a
+``SET LOCAL search_path TO "<schema>"`` separately via
+:func:`dynastore.tools.db.validate_sql_identifier` before the
+parameterised query so a fresh pool connection lands on the correct
+per-tenant schema. asyncpg's extended-query protocol is single-
+statement-only, which is why this is split into two ``execute`` calls
+rather than concatenated into a single string.
 
 * :meth:`enqueue_bulk` uses ``asyncpg.copy_records_to_table`` for
   high-throughput ingest (100k/min target).
@@ -20,7 +23,7 @@ connection lands on the correct per-tenant schema.
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, List, Optional, Sequence
+from typing import Any, AsyncIterator, List, Sequence
 from uuid import UUID
 
 from dynastore.models.protocols.indexing import (
@@ -47,17 +50,11 @@ class PgOutboxStore:
         *,
         pool: Any = None,
         single_conn: Any = None,
-        schema: Optional[str] = None,
     ) -> None:
         if pool is None and single_conn is None:
             raise ValueError("PgOutboxStore: provide pool or single_conn")
         self._pool = pool
         self._single = single_conn
-        # Pre-validate schema once at construction so per-call errors
-        # are operator misconfiguration rather than user input.
-        if schema is not None:
-            validate_sql_identifier(schema)
-        self._schema = schema
 
     async def _conn(self) -> Any:
         """Return the connection used for non-enqueue queries.
@@ -71,16 +68,21 @@ class PgOutboxStore:
             raise RuntimeError("PgOutboxStore: no connection source")
         return await self._pool.acquire()
 
-    def _set_search_path_clause(self, catalog_id: str) -> str:
-        """Build the ``SET LOCAL search_path`` clause to prepend.
+    async def _ensure_search_path(self, conn: Any, catalog_id: str) -> None:
+        """Pin ``search_path`` to ``catalog_id`` on a pool-acquired conn.
 
-        Returns an empty string in ``single_conn`` mode — we assume the
-        caller has already pinned ``search_path`` on that session.
+        No-op in ``single_conn`` mode — the test fixture has already set
+        ``search_path`` on that session and we deliberately leave it alone.
+
+        Issued as a standalone ``execute`` (not concatenated onto the
+        next parameterised query) because asyncpg's extended-query
+        protocol rejects multi-statement strings when ``$N`` placeholders
+        are present.
         """
         if self._single is not None:
-            return ""
+            return
         validate_sql_identifier(catalog_id)
-        return f'SET LOCAL search_path TO "{catalog_id}"; '
+        await conn.execute(f'SET LOCAL search_path TO "{catalog_id}"')
 
     async def enqueue_bulk(
         self,
@@ -140,10 +142,9 @@ class PgOutboxStore:
         cycle.
         """
         conn = await self._conn()
-        prefix = self._set_search_path_clause(catalog_id)
+        await self._ensure_search_path(conn, catalog_id)
         rows = await conn.fetch(
-            prefix
-            + """
+            """
             WITH claimed AS (
                 SELECT op_id FROM storage_outbox
                 WHERE driver_id = $1 AND status = 'ready' AND ready_at <= now()
@@ -192,10 +193,9 @@ class PgOutboxStore:
         if not op_ids:
             return
         conn = await self._conn()
-        prefix = self._set_search_path_clause(catalog_id)
+        await self._ensure_search_path(conn, catalog_id)
         await conn.execute(
-            prefix
-            + "UPDATE storage_outbox SET status='done', finished_at=now() "
+            "UPDATE storage_outbox SET status='done', finished_at=now() "
             "WHERE op_id = ANY($1::uuid[])",
             list(op_ids),
         )
@@ -217,10 +217,9 @@ class PgOutboxStore:
         if not op_ids:
             return
         conn = await self._conn()
-        prefix = self._set_search_path_clause(catalog_id)
+        await self._ensure_search_path(conn, catalog_id)
         await conn.execute(
-            prefix
-            + """
+            """
             UPDATE storage_outbox
             SET status='ready', attempts=attempts+1, last_error=$2,
                 ready_at = now() + (
@@ -243,16 +242,15 @@ class PgOutboxStore:
         if not op_ids:
             return
         conn = await self._conn()
-        prefix = self._set_search_path_clause(catalog_id)
+        await self._ensure_search_path(conn, catalog_id)
         await conn.execute(
-            prefix
-            + "UPDATE storage_outbox SET status='failed', last_error=$2, "
+            "UPDATE storage_outbox SET status='failed', last_error=$2, "
             "finished_at=now() WHERE op_id = ANY($1::uuid[])",
             list(op_ids),
             error,
         )
 
-    async def listen(
+    def listen(
         self, *, driver_id: str, catalog_id: str,
     ) -> AsyncIterator[Notification]:
         """Yield a :class:`Notification` per ``pg_notify`` on the
@@ -263,33 +261,42 @@ class PgOutboxStore:
         lifecycle — break out of the ``async for`` to release the
         listener and (in pool mode) drop the connection back to the
         pool.
+
+        Outer ``def`` returns an inner async generator directly so the
+        signature matches :class:`OutboxStore.listen` (the streaming-
+        Protocol convention is plain ``def`` returning ``AsyncIterator``,
+        not ``async def`` with ``yield``).
         """
-        import asyncio
 
-        conn = await self._conn()
-        validate_sql_identifier(catalog_id)
-        validate_sql_identifier(driver_id)
-        channel = f"outbox_{driver_id}_{catalog_id}"
-        queue: asyncio.Queue[Notification] = asyncio.Queue()
+        async def _gen() -> AsyncIterator[Notification]:
+            import asyncio
 
-        async def _on_notify(
-            _c: Any, _pid: int, _ch: str, payload: str,
-        ) -> None:
-            try:
-                doc = json.loads(payload)
-                await queue.put(
-                    Notification(
-                        driver_id=doc["driver_id"],
-                        catalog_id=doc["catalog_id"],
-                        op_id=UUID(doc["op_id"]),
+            conn = await self._conn()
+            validate_sql_identifier(catalog_id)
+            validate_sql_identifier(driver_id)
+            channel = f"outbox_{driver_id}_{catalog_id}"
+            queue: asyncio.Queue[Notification] = asyncio.Queue()
+
+            async def _on_notify(
+                _c: Any, _pid: int, _ch: str, payload: str,
+            ) -> None:
+                try:
+                    doc = json.loads(payload)
+                    await queue.put(
+                        Notification(
+                            driver_id=doc["driver_id"],
+                            catalog_id=doc["catalog_id"],
+                            op_id=UUID(doc["op_id"]),
+                        )
                     )
-                )
-            except Exception:  # noqa: BLE001 — malformed notify, drop
-                pass
+                except Exception:  # noqa: BLE001 — malformed notify, drop
+                    pass
 
-        await conn.add_listener(channel, _on_notify)
-        try:
-            while True:
-                yield await queue.get()
-        finally:
-            await conn.remove_listener(channel, _on_notify)
+            await conn.add_listener(channel, _on_notify)
+            try:
+                while True:
+                    yield await queue.get()
+            finally:
+                await conn.remove_listener(channel, _on_notify)
+
+        return _gen()
