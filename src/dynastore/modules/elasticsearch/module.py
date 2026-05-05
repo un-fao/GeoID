@@ -228,14 +228,13 @@ class ElasticsearchModule(ModuleProtocol):
     indexing backend via ``get_protocol(IndexerProtocol)`` without importing
     this module directly.
 
-    Per-catalog private indexing is configured at runtime via:
-        PUT /configs/catalogs/{catalog_id}/elasticsearch  {"private": true}
-
-    When a catalog is private:
-    - Items are indexed only as {geoid, catalog_id, collection_id} in a
-      dedicated geoid index — no geometry, no attributes.
-    - All GET access to the catalog via any protocol is denied to all_users.
-    - The standard STAC items index is never populated for this catalog.
+    Privacy is per-collection (Cycle E) — see
+    ``CollectionPluginConfig.is_private`` and the
+    ``items_elasticsearch_private_driver`` (per-tenant geoid-only index
+    + DENY policy management).  This module no longer carries
+    catalog-wide private-mode toggles; the catalog-tier
+    ``CatalogPolicyConfig.default_collection_privacy`` only seeds the
+    default for newly-created collections.
     """
 
     priority: int = 50
@@ -627,7 +626,7 @@ class ElasticsearchModule(ModuleProtocol):
 
     async def ensure_index(
         self,
-        entity_type: Literal["catalog", "collection", "item", "asset", "private"],
+        entity_type: Literal["catalog", "collection", "item", "asset"],
         catalog_id: Optional[str] = None,
     ) -> None:
         # Standard indices are created on-demand by the index tasks.
