@@ -119,8 +119,17 @@ class FailureClassifier(Protocol):
 @runtime_checkable
 class OutboxStore(Protocol):
     async def enqueue_bulk(
-        self, conn, *, catalog_id: str, rows: Sequence[OutboxRecord],
-    ) -> None: ...
+        self, conn: Any = None, *, catalog_id: str, rows: Sequence[OutboxRecord],
+    ) -> None:
+        """Enqueue a batch of outbox rows.
+
+        ``conn`` may be passed by callers that want the enqueue to join an
+        existing transaction (e.g. ``item_service.upsert_bulk`` writing items
+        + outbox rows atomically). When ``None``, the implementation acquires
+        its own connection from a pool. Implementations targeting a single
+        backend can disregard the parameter; production ``PgOutboxStore``
+        uses it for transaction-sharing."""
+        ...
 
     async def claim_batch(
         self, *, driver_id: str, catalog_id: str,

@@ -402,7 +402,7 @@ class _DualOutbox:
 
     # OutboxStore surface — delegate to the bulk implementation.
     async def enqueue_bulk(
-        self, conn: Any, *, catalog_id: str, rows: Sequence[Any],
+        self, conn: Any = None, *, catalog_id: str, rows: Sequence[Any],
     ) -> None:
         await self._bulk.enqueue_bulk(conn, catalog_id=catalog_id, rows=rows)
 
@@ -532,12 +532,18 @@ def get_index_dispatcher() -> IndexDispatcher:
     return _DEFAULT_DISPATCHER
 
 
-def reset_index_dispatcher() -> None:
+async def reset_index_dispatcher() -> None:
     """Test hook — drops the cached singleton so the next
     :func:`get_index_dispatcher` rebuilds with current discovery state.
+
+    Also closes the lazy asyncpg outbox pool (see :func:`_close_outbox_pool`)
+    so subsequent tests that exercise production-mode wiring don't leak
+    sockets across resets. Must be awaited; tests that previously called
+    this synchronously need to be async or wrap with ``asyncio.run``.
     """
     global _DEFAULT_DISPATCHER
     _DEFAULT_DISPATCHER = None
+    await _close_outbox_pool()
 
 
 def _bind_named_to_positional(sql: str, params: Dict[str, Any]):

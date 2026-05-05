@@ -86,7 +86,7 @@ class PgOutboxStore:
 
     async def enqueue_bulk(
         self,
-        conn: Any,
+        conn: Any = None,
         *,
         catalog_id: str,
         rows: Sequence[OutboxRecord],
