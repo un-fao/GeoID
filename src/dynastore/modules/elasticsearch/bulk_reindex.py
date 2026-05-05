@@ -50,11 +50,24 @@ def get_es_client():
 
 
 async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
-    """Whether the regular ES driver is currently routed for this collection.
+    """Whether the **regular** (public) items ES driver is routed for
+    this collection — i.e. ``items_elasticsearch_driver`` is pinned in
+    some operation of ``ItemsRoutingConfig``.
 
-    Reads ``ItemsRoutingConfig`` via the ConfigsProtocol. Returns False
-    on any failure (missing protocol, missing config, malformed config) so
-    callers can safely use this as a guard before performing ES operations.
+    **Privacy safety property** (Cycle E.2): a collection routed *only*
+    through ``items_elasticsearch_private_driver`` (per the privacy
+    cascade when ``CollectionPluginConfig.is_private == True``) returns
+    False here.  Callers that gate bulk reindex on this guard therefore
+    cannot accidentally fan out private-collection items into the
+    per-tenant *public* index ``{prefix}-{cat}-items`` — the private
+    driver writes to ``{prefix}-{cat}-private-items`` via its own
+    dispatcher path; the bulk reindex pipeline must skip those
+    collections.
+
+    Reads ``ItemsRoutingConfig`` via the ConfigsProtocol.  Returns
+    False on any failure (missing protocol, missing config, malformed
+    config) so callers can safely use this as a guard before
+    performing ES operations.
     """
     from dynastore.models.protocols.configs import ConfigsProtocol
     from dynastore.modules.storage.routing_config import ItemsRoutingConfig

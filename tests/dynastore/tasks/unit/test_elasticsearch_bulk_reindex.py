@@ -303,3 +303,95 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
 
     with patch.object(discovery, "get_protocol", side_effect=_get_protocol_pg):
         assert await is_es_active_for("cat1", "col1") is False
+
+
+@pytest.mark.asyncio
+async def test_is_es_active_for_returns_false_for_private_only_routing():
+    """Cycle E.2 privacy safety: a collection whose items routing pins
+    ONLY ``items_elasticsearch_private_driver`` (per the cascade rule
+    when ``CollectionPluginConfig.is_private == True``) must return
+    False from ``is_es_active_for``.
+
+    Without this property, the catalog bulk-reindex pipeline
+    (``BulkCatalogReindexTask``) would fan out the collection's items
+    into the per-tenant **public** index ``{prefix}-{cat}-items``,
+    leaking private item geometry that should only live in the
+    per-tenant **private** index ``{prefix}-{cat}-private-items``.
+    """
+    from dynastore.modules.elasticsearch.bulk_reindex import is_es_active_for
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig,
+        Operation,
+        OperationDriverEntry,
+    )
+    from dynastore.tools import discovery
+
+    routing = ItemsRoutingConfig(
+        operations={
+            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            Operation.INDEX: [
+                OperationDriverEntry(driver_id="items_elasticsearch_private_driver"),
+            ],
+        },
+    )
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return routing
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch.object(discovery, "get_protocol", side_effect=_get_protocol):
+        # Private driver pinned, but public driver IS NOT — bulk
+        # reindex must skip this collection to honour the privacy
+        # cascade.
+        assert await is_es_active_for("cat1", "col1") is False
+
+
+@pytest.mark.asyncio
+async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned():
+    """A collection that pins BOTH the public and private items
+    drivers (e.g. an operator transitioning OUT of private mode by
+    layering the public driver before flipping ``is_private``) is
+    "es-active" — the bulk-reindex into the public per-tenant index
+    is the right action.  The cascade validator allows this shape:
+    items-private + collection-public is OK.
+    """
+    from dynastore.modules.elasticsearch.bulk_reindex import is_es_active_for
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig,
+        Operation,
+        OperationDriverEntry,
+    )
+    from dynastore.tools import discovery
+
+    routing = ItemsRoutingConfig(
+        operations={
+            Operation.WRITE: [
+                OperationDriverEntry(driver_id="items_postgresql_driver"),
+                OperationDriverEntry(driver_id="items_elasticsearch_driver"),
+            ],
+            Operation.INDEX: [
+                OperationDriverEntry(driver_id="items_elasticsearch_private_driver"),
+            ],
+        },
+    )
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return routing
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch.object(discovery, "get_protocol", side_effect=_get_protocol):
+        assert await is_es_active_for("cat1", "col1") is True
