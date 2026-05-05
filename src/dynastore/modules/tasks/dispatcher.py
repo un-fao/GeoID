@@ -53,7 +53,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
 from dynastore.modules.db_config.query_executor import DbResource
-from dynastore.modules.db_config.exceptions import TableNotFoundError
+from dynastore.modules.db_config.exceptions import (
+    DatabaseConnectionError,
+    TableNotFoundError,
+)
 from dynastore.tools.async_utils import signal_bus
 
 logger = logging.getLogger(__name__)
@@ -450,6 +453,18 @@ async def run_dispatcher(
                 "it persists.", e,
             )
             await asyncio.sleep(10.0)
+        except DatabaseConnectionError as e:
+            # Transient asyncpg client-state errors — connection closed
+            # mid-operation (#235) or "cannot switch to state" from
+            # concurrent connection use (#239).  The dispatcher recovers
+            # on the next loop with a fresh connection; demote to WARNING
+            # so the underlying noise doesn't page operators.
+            if shutdown_event.is_set():
+                break
+            logger.warning(
+                "Dispatcher: transient PG connection issue (%s) — backing off 5s.", e,
+            )
+            await asyncio.sleep(5.0)
         except Exception as e:
             if shutdown_event.is_set():
                 break
