@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import (
-    AsyncIterator, List, Literal, Optional, Protocol, Sequence, Tuple,
+    Any, AsyncIterator, List, Literal, Optional, Protocol, Sequence, Tuple,
     runtime_checkable,
 )
 from uuid import UUID
@@ -42,7 +42,7 @@ class IndexableOp:
     collection_id: str
     driver_instance_id: str
     item_id: Optional[str]
-    payload: dict
+    payload: dict[str, Any]
     idempotency_key: str
 
 
@@ -61,7 +61,7 @@ class OutboxRecord:
     collection_id: str
     op: Literal["upsert", "delete"]
     item_id: Optional[str]
-    payload: dict
+    payload: dict[str, Any]
     idempotency_key: str
 
 
@@ -72,9 +72,9 @@ class OutboxRow:
     driver_instance_id: str
     catalog_id: str
     collection_id: str
-    op: str
+    op: str  # raw-from-DB TEXT; CHECK constraint enforces values, not the dataclass
     item_id: Optional[str]
-    payload: dict
+    payload: dict[str, Any]
     idempotency_key: str
     attempts: int
 
@@ -88,7 +88,7 @@ class IndexFailureRecord:
     driver_instance_id: str
     op_id: Optional[UUID]
     item_id: Optional[str]
-    op: str
+    op: str  # raw-from-DB TEXT; CHECK constraint enforces values, not the dataclass
     attempts: int
     error_class: str
     error_message: str
