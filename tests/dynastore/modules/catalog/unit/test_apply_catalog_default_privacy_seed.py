@@ -29,6 +29,7 @@ from dynastore.modules.catalog.catalog_config import (
     apply_catalog_default_privacy_seed,
 )
 from dynastore.modules.storage.routing_config import (
+    CollectionRoutingConfig,
     ItemsRoutingConfig,
     Operation,
 )
@@ -87,11 +88,17 @@ async def test_seed_noop_when_get_config_raises():
 
 
 @pytest.mark.asyncio
-async def test_seed_writes_routing_then_collection_plugin_when_private():
-    """Cascade-satisfying order is load-bearing: ItemsRoutingConfig
-    MUST land BEFORE CollectionPluginConfig(is_private=True), so the
-    cascade validator on the second write finds the private driver
-    already pinned in the sibling routing.
+async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_private():
+    """Cascade-satisfying order is load-bearing for the FIRST TWO writes:
+    ``ItemsRoutingConfig`` MUST land BEFORE
+    ``CollectionPluginConfig(is_private=True)`` so the cascade
+    validator on the second write finds the private driver already
+    pinned.
+
+    Cycle E.2.c slice 3 added a third write — ``CollectionRoutingConfig``
+    pinning ``collection_elasticsearch_private_driver`` — independent
+    of the cascade gate (it covers collection-envelope routing, not
+    items routing); we put it LAST for clarity.
     """
     proto = _configs_returning(
         CatalogPolicyConfig(default_collection_privacy="private"),
@@ -101,35 +108,62 @@ async def test_seed_writes_routing_then_collection_plugin_when_private():
     )
     assert applied is True
 
-    # Two set_config calls — order matters.
-    assert proto.set_config.await_count == 2
-    first_call_args = proto.set_config.await_args_list[0]
-    second_call_args = proto.set_config.await_args_list[1]
-    first_cls = first_call_args.args[0]
-    second_cls = second_call_args.args[0]
-    assert first_cls is ItemsRoutingConfig, (
-        "Routing must land FIRST so the cascade validator on the "
+    # Three set_config calls — order matters for the first two
+    # (cascade), incidental for the third.
+    assert proto.set_config.await_count == 3
+    classes_in_order = [
+        proto.set_config.await_args_list[i].args[0]
+        for i in range(3)
+    ]
+    assert classes_in_order[0] is ItemsRoutingConfig, (
+        "Items routing must land FIRST so the cascade validator on the "
         "CollectionPluginConfig apply finds the private driver already pinned."
     )
-    assert second_cls is CollectionPluginConfig
+    assert classes_in_order[1] is CollectionPluginConfig
+    assert classes_in_order[2] is CollectionRoutingConfig, (
+        "Collection-envelope routing seed (slice 3) lands last for "
+        "clarity — independent of the cascade gate."
+    )
 
-    # The routing payload must pin the private items driver in WRITE
+    # The items-routing payload must pin the private items driver in WRITE
     # (or any operation — cascade gate is "in any operation").
-    routing_payload: ItemsRoutingConfig = first_call_args.args[1]
-    pinned = {
+    items_routing: ItemsRoutingConfig = (
+        proto.set_config.await_args_list[0].args[1]
+    )
+    items_pinned = {
         e.driver_id
-        for entries in routing_payload.operations.values()
+        for entries in items_routing.operations.values()
         for e in entries
     }
-    assert "items_elasticsearch_private_driver" in pinned
+    assert "items_elasticsearch_private_driver" in items_pinned
     # And the public driver is NOT pinned in any operation — privacy
     # safety: the seed must NOT introduce a leak path to the public
     # per-tenant index.
-    assert "items_elasticsearch_driver" not in pinned
+    assert "items_elasticsearch_driver" not in items_pinned
 
     # The CollectionPluginConfig payload must have is_private=True.
-    coll_payload: CollectionPluginConfig = second_call_args.args[1]
+    coll_payload: CollectionPluginConfig = (
+        proto.set_config.await_args_list[1].args[1]
+    )
     assert coll_payload.is_private is True
+
+    # The collection-routing payload must pin the collection-envelope
+    # private driver — same privacy-safety property: the public
+    # collection driver must NOT be pinned in this seed.
+    coll_routing: CollectionRoutingConfig = (
+        proto.set_config.await_args_list[2].args[1]
+    )
+    coll_pinned = {
+        e.driver_id
+        for entries in coll_routing.operations.values()
+        for e in entries
+    }
+    assert "collection_elasticsearch_private_driver" in coll_pinned
+    assert "collection_elasticsearch_driver" not in coll_pinned, (
+        "Privacy safety: seed must NOT pin the PUBLIC collection ES "
+        "driver — that would put the envelope into the shared "
+        "{prefix}-collections index."
+    )
 
 
 @pytest.mark.asyncio
