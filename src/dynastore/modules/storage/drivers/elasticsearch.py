@@ -46,8 +46,9 @@ its own self-contained subpackage at
 ``[private]`` extras group can be opted in or out without touching this
 file.
 
-All drivers register as async event listeners, checking
-``StorageRoutingConfig.secondary_drivers`` before acting.
+All drivers register as async event listeners, dispatched by the post-PR-#261
+operation-based router via ``ItemsRoutingConfig.operations[INDEX]`` /
+``AssetRoutingConfig.operations[INDEX]``.
 """
 
 import logging
