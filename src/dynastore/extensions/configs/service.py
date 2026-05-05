@@ -367,9 +367,6 @@ class ConfigsService(ExtensionProtocol):
     async def get_platform_config_composed(
         self,
         request: Request,
-        depth: int = Query(0, ge=0, le=3, description="Child levels to expand (0 = configs only)."),
-        catalogs_page: int = Query(1, ge=1),
-        page_size: int = Query(15, ge=1, le=100),
         resolved: bool = Query(
             True,
             description=(
@@ -410,9 +407,6 @@ class ConfigsService(ExtensionProtocol):
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
             base_url=base_url,
-            depth=depth,
-            catalogs_page=catalogs_page,
-            page_size=page_size,
             resolved=resolved,
             meta=meta,
             include=include,
@@ -423,10 +417,6 @@ class ConfigsService(ExtensionProtocol):
         self,
         catalog_id: str,
         request: Request,
-        depth: int = Query(0, ge=0, le=3),
-        collections_page: int = Query(1, ge=1),
-        assets_page: int = Query(1, ge=1),
-        page_size: int = Query(15, ge=1, le=100),
         resolved: bool = Query(
             True,
             description=(
@@ -460,10 +450,6 @@ class ConfigsService(ExtensionProtocol):
         response = await self._config_api.compose_catalog_config(
             base_url=base_url,
             catalog_id=catalog_id,
-            depth=depth,
-            collections_page=collections_page,
-            assets_page=assets_page,
-            page_size=page_size,
             resolved=resolved,
             meta=meta,
             include=include,
@@ -475,9 +461,6 @@ class ConfigsService(ExtensionProtocol):
         catalog_id: str,
         collection_id: str,
         request: Request,
-        depth: int = Query(0, ge=0, le=3),
-        assets_page: int = Query(1, ge=1),
-        page_size: int = Query(15, ge=1, le=100),
         resolved: bool = Query(
             True,
             description=(
@@ -516,9 +499,6 @@ class ConfigsService(ExtensionProtocol):
             base_url=base_url,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            depth=depth,
-            assets_page=assets_page,
-            page_size=page_size,
             resolved=resolved,
             meta=meta,
             include=include,

@@ -2,14 +2,13 @@
 
 Asserts that the new DTOs carry no legacy envelope keys (``class_key``,
 ``value``, ``source``, ``resolved_drivers``) and that the nested
-``configs`` tree + optional ``meta`` / ``categories`` fields roundtrip
-through pydantic cleanly.
+``configs`` tree + optional ``meta`` field roundtrip through pydantic
+cleanly.
 """
 
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
     CollectionConfigResponse,
-    ConfigPage,
     DriverRef,
     PatchConfigBody,
     PlatformConfigResponse,
@@ -28,20 +27,14 @@ def test_driver_ref_null_config_ref_is_allowed():
     assert ref.config_ref is None
 
 
-def test_config_page_serializes_none_items():
-    page = ConfigPage(category="collections", total=100, page=1, page_size=15, links=[])
-    data = page.model_dump()
-    assert data["items"] is None
-    assert data["total"] == 100
-    assert data["page_size"] == 15
-
-
 def test_platform_response_defaults_slim():
     r = PlatformConfigResponse()
     assert r.scope == "platform"
     assert r.configs == {}
     assert r.meta is None
-    assert r.categories is None
+    # ``categories`` and ``routing_resolution`` were retired in Cycle C.
+    assert not hasattr(r, "categories")
+    assert not hasattr(r, "routing_resolution")
 
 
 def test_platform_response_no_legacy_keys():

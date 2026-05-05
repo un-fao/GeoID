@@ -126,19 +126,18 @@ def test_known_consumers_have_handlers_registered():
     from dynastore.modules.elasticsearch.es_catalog_config import (
         ElasticsearchCatalogConfig,
     )
-    from dynastore.modules.elasticsearch.es_collection_config import (
-        ElasticsearchCollectionConfig,
-    )
     from dynastore.modules.gcp.gcp_config import (
         GcpCatalogBucketConfig,
         GcpEventingConfig,
     )
 
+    # ``ElasticsearchCollectionConfig`` was retired in Cycle C of the
+    # config-API restructure (2026-05-05); privacy moves to a first-class
+    # ``is_private: bool`` on ``CollectionPluginConfig`` in Cycle E.
     for cls in (
         GcpCatalogBucketConfig,
         GcpEventingConfig,
         ElasticsearchCatalogConfig,
-        ElasticsearchCollectionConfig,
     ):
         handlers = _APPLY_HANDLERS.get(cls, [])
         assert handlers, (

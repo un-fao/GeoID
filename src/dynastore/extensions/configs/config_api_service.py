@@ -36,7 +36,6 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
     CollectionConfigResponse,
-    ConfigPage,
     DriverRef,
     Link,
     PlatformConfigResponse,
@@ -438,52 +437,13 @@ class ConfigApiService:
 
     # --- Compose endpoints. ---
 
-    @staticmethod
-    async def _build_routing_resolution(
-        catalog_id: str, collection_id: str,
-    ) -> Dict[str, Dict[str, Dict[str, str]]]:
-        """Resolve which DRIVER actually fires per items operation at this
-        collection — the operator's "where do my items go?" answer.
-
-        Currently covers ``items.{WRITE,READ,SEARCH}`` and factors in the
-        Elasticsearch private-mode resolution (``ElasticsearchCatalogConfig.private``
-        + per-collection override).  Other entities (assets, catalog metadata)
-        will be added as their resolvers stabilise.
-
-        Returns ``{entity: {op: {driver_id, reason}}}`` — empty when the
-        ``is_collection_private`` resolver isn't reachable (e.g. in tests
-        with no ConfigsProtocol).  Never raises.
-        """
-        try:
-            from dynastore.modules.elasticsearch.es_collection_config import (
-                is_collection_private,
-            )
-            private = await is_collection_private(catalog_id, collection_id)
-        except Exception as exc:
-            logger.debug(
-                "routing_resolution: is_collection_private fetch failed for "
-                "%s/%s (%s) — emitting empty block",
-                catalog_id, collection_id, exc,
-            )
-            return {}
-
-        if private:
-            items_driver = "items_elasticsearch_private_driver"
-            reason = (
-                "ElasticsearchCatalogConfig.private=True (or per-collection "
-                "override) — private mode active for this collection"
-            )
-        else:
-            items_driver = "items_elasticsearch_driver"
-            reason = "private mode not active — public items index"
-
-        return {
-            "items": {
-                "WRITE":  {"driver_id": items_driver, "reason": reason},
-                "READ":   {"driver_id": items_driver, "reason": reason},
-                "SEARCH": {"driver_id": items_driver, "reason": reason},
-            },
-        }
+    # NOTE: ``_build_routing_resolution`` was retired in Cycle C.  The
+    # synthetic resolver hard-coded ``items_elasticsearch_driver`` /
+    # ``items_elasticsearch_private_driver`` per op without consulting
+    # the actual ``ItemsRoutingConfig``, which made it lie post PR #254
+    # (PG is the WRITE primary, not ES).  Operators read the truth from
+    # the routing tree under ``configs.platform.catalog.collection.
+    # storage.routing`` directly.
 
     # --- JSON Hyper-Schema link assembly (Change 5). ---
 
@@ -498,20 +458,6 @@ class ConfigApiService:
         with general standards, not just OpenAPI/FastAPI).
         """
         common: Dict[str, Any] = {
-            "depth": {
-                "type": "integer", "minimum": 0, "maximum": 3, "default": 0,
-                "description": (
-                    "Expand child resources nested under this scope. 0 = "
-                    "leaf only; 1 = one level (e.g. catalogs at platform "
-                    "scope); 2-3 = deeper nesting."
-                ),
-                "examples": [0, 1, 2],
-            },
-            "page_size": {
-                "type": "integer", "minimum": 1, "maximum": 100, "default": 15,
-                "description": "Items per page for paginated child categories.",
-                "examples": [15, 50],
-            },
             "resolved": {
                 "type": "boolean", "default": True,
                 "description": (
@@ -551,39 +497,12 @@ class ConfigApiService:
                 "examples": ["scope", "upstream"],
             },
         }
-        per_scope: Dict[str, Dict[str, Any]] = {
-            "platform": {
-                "catalogs_page": {
-                    "type": "integer", "minimum": 1, "default": 1,
-                    "description": "1-based page number for the catalogs list "
-                                   "(used when depth >= 1).",
-                    "examples": [1, 2],
-                },
-            },
-            "catalog": {
-                "collections_page": {
-                    "type": "integer", "minimum": 1, "default": 1,
-                    "description": "1-based page number for the collections "
-                                   "list (used when depth >= 1).",
-                    "examples": [1, 2],
-                },
-                "assets_page": {
-                    "type": "integer", "minimum": 1, "default": 1,
-                    "description": "1-based page number for the assets list "
-                                   "(used when depth >= 1).",
-                    "examples": [1, 2],
-                },
-            },
-            "collection": {
-                "assets_page": {
-                    "type": "integer", "minimum": 1, "default": 1,
-                    "description": "1-based page number for the assets list "
-                                   "(used when depth >= 1).",
-                    "examples": [1, 2],
-                },
-            },
-        }
-        properties = {**common, **per_scope.get(scope, {})}
+        # NOTE: per-scope ``*_page`` and ``page_size`` slots were retired
+        # in Cycle C alongside the ``categories`` paginated-children field
+        # and the depth-expansion machinery.  Operators discover children
+        # via the existing list endpoints (``GET /catalogs``,
+        # ``GET /catalogs/{cat}/collections``, ``GET .../assets``).
+        properties = dict(common)
         return {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
@@ -661,9 +580,6 @@ class ConfigApiService:
         base_url: str,
         catalog_id: str,
         collection_id: str,
-        depth: int = 0,
-        assets_page: int = 1,
-        page_size: int = 15,
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
@@ -676,30 +592,6 @@ class ConfigApiService:
             by_class, sources, "collection",
             meta_mode=meta, include_mode=include,
         )
-
-        # Routing resolution is gated on ``meta != "none"`` so callers asking
-        # for a slim payload don't pay the privacy-mode probe cost.  Cycle C
-        # of the config-API restructure drops this field entirely (the
-        # routing tree under ``configs`` is the truth post-PR #254 / #258).
-        routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None
-        if meta != "none":
-            routing_resolution = await self._build_routing_resolution(
-                catalog_id, collection_id,
-            ) or None
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0:
-            categories = {}
-            assets_total, assets_items = await self._list_assets(
-                catalog_id, collection_id, assets_page, page_size,
-            )
-            pg = self._build_config_page(
-                base_url=base_url, category="assets", total=assets_total,
-                page=assets_page, page_size=page_size, extra_params={"depth": depth},
-            )
-            pg.items = assets_items
-            categories["assets"] = pg
-
         return CollectionConfigResponse(
             links=self._build_links(
                 "collection", base_url,
@@ -708,18 +600,12 @@ class ConfigApiService:
             collection_id=collection_id, catalog_id=catalog_id,
             inherited=inherited,
             configs=tree, meta=meta_dict,
-            routing_resolution=routing_resolution,
-            categories=categories,
         )
 
     async def compose_catalog_config(
         self,
         base_url: str,
         catalog_id: str,
-        depth: int = 0,
-        collections_page: int = 1,
-        assets_page: int = 1,
-        page_size: int = 15,
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
@@ -732,45 +618,15 @@ class ConfigApiService:
             by_class, sources, "catalog",
             meta_mode=meta, include_mode=include,
         )
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0:
-            categories = {}
-            coll_total, coll_items = await self._list_collections(
-                base_url, catalog_id, collections_page, page_size, depth,
-                resolved=resolved, meta=meta, include=include,
-            )
-            coll_pg = self._build_config_page(
-                base_url=base_url, category="collections", total=coll_total,
-                page=collections_page, page_size=page_size,
-                extra_params={"depth": depth, "assets_page": assets_page},
-            )
-            coll_pg.items = coll_items
-            categories["collections"] = coll_pg
-
-            assets_total, assets_items = await self._list_assets(
-                catalog_id, "", assets_page, page_size,
-            )
-            assets_pg = self._build_config_page(
-                base_url=base_url, category="assets", total=assets_total,
-                page=assets_page, page_size=page_size,
-                extra_params={"depth": depth, "collections_page": collections_page},
-            )
-            assets_pg.items = assets_items
-            categories["assets"] = assets_pg
-
         return CatalogConfigResponse(
             links=self._build_links("catalog", base_url, catalog_id=catalog_id),
             catalog_id=catalog_id, inherited=inherited,
-            configs=tree, meta=meta_dict, categories=categories,
+            configs=tree, meta=meta_dict,
         )
 
     async def compose_platform_config(
         self,
         base_url: str,
-        depth: int = 0,
-        catalogs_page: int = 1,
-        page_size: int = 15,
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
@@ -783,43 +639,9 @@ class ConfigApiService:
             by_class, sources, "platform",
             meta_mode=meta, include_mode=include,
         )
-
-        categories: Optional[Dict[str, ConfigPage]] = None
-        if depth > 0 and self._catalogs_service is not None:
-            categories = {}
-            offset = (catalogs_page - 1) * page_size
-            try:
-                cats = await self._catalogs_service.list_catalogs(
-                    limit=page_size, offset=offset,
-                )
-                count_fn = getattr(self._catalogs_service, "count_catalogs", None)
-                total = await count_fn() if count_fn is not None else len(cats)
-            except Exception:
-                cats, total = [], 0
-
-            items: List[Any] = []
-            for cat in cats:
-                cat_id = cat.id if hasattr(cat, "id") else cat.get("id", "")
-                if depth >= 2:
-                    cat_response = await self.compose_catalog_config(
-                        base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}",
-                        catalog_id=cat_id, depth=depth - 1, page_size=page_size,
-                        resolved=resolved, meta=meta, include=include,
-                    )
-                    items.append(cat_response.model_dump())
-                else:
-                    items.append({"catalog_id": cat_id})
-
-            pg = self._build_config_page(
-                base_url=base_url, category="catalogs", total=total,
-                page=catalogs_page, page_size=page_size, extra_params={"depth": depth},
-            )
-            pg.items = items
-            categories["catalogs"] = pg
-
         return PlatformConfigResponse(
             links=self._build_links("platform", base_url),
-            scope="platform", configs=tree, meta=meta_dict, categories=categories,
+            scope="platform", configs=tree, meta=meta_dict,
         )
 
     # --- PATCH. ---
@@ -869,98 +691,10 @@ class ConfigApiService:
 
     # --- Pagination helpers. ---
 
-    def _build_config_page(
-        self,
-        base_url: str,
-        category: str,
-        total: int,
-        page: int,
-        page_size: int,
-        extra_params: Dict[str, Any],
-    ) -> ConfigPage:
-        links: List[Dict[str, str]] = []
-        page_param = f"{category}_page"
-
-        def _url(p: int) -> str:
-            params = {**extra_params, page_param: p, "page_size": page_size}
-            qs = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-            sep = "&" if "?" in base_url else "?"
-            return f"{base_url}{sep}{qs}"
-
-        if page > 1:
-            links.append({"rel": "prev", "href": _url(page - 1)})
-        if page * page_size < total:
-            links.append({"rel": "next", "href": _url(page + 1)})
-
-        return ConfigPage(
-            category=category, total=total, page=page, page_size=page_size,
-            links=links, items=None,
-        )
-
-    async def _list_assets(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        page: int,
-        page_size: int,
-    ) -> Tuple[int, List[Any]]:
-        if self._assets_service is None:
-            return 0, []
-        offset = (page - 1) * page_size
-        try:
-            col_id = collection_id or None
-            items = await self._assets_service.list_assets(
-                catalog_id=catalog_id, collection_id=col_id,
-                limit=page_size, offset=offset,
-            )
-            count_fn = getattr(self._assets_service, "count_assets", None)
-            if count_fn is not None:
-                total = await count_fn(catalog_id=catalog_id, collection_id=col_id)
-            else:
-                total = len(items)
-            return total, [
-                a.model_dump() if hasattr(a, "model_dump") else dict(a) for a in items
-            ]
-        except Exception:
-            logger.debug("Could not list assets for %s/%s", catalog_id, collection_id)
-            return 0, []
-
-    async def _list_collections(
-        self,
-        base_url: str,
-        catalog_id: str,
-        page: int,
-        page_size: int,
-        parent_depth: int,
-        resolved: bool = True,
-        meta: str = "field",
-        include: str = "scope",
-    ) -> Tuple[int, List[Any]]:
-        if self._catalogs_service is None:
-            return 0, []
-        offset = (page - 1) * page_size
-        try:
-            collections = await self._catalogs_service.list_collections(
-                catalog_id=catalog_id, limit=page_size, offset=offset,
-            )
-            count_fn = getattr(self._catalogs_service, "count_collections", None)
-            total = (
-                await count_fn(catalog_id=catalog_id) if count_fn is not None
-                else len(collections)
-            )
-        except Exception:
-            logger.debug("Could not list collections for %s", catalog_id)
-            return 0, []
-
-        items: List[Any] = []
-        for col in collections:
-            col_id = col.id if hasattr(col, "id") else col.get("id", "")
-            col_base = f"{base_url.rstrip('/')}/collections/{col_id}"
-            next_depth = parent_depth - 1 if parent_depth >= 2 else 0
-            col_response = await self.compose_collection_config(
-                base_url=col_base, catalog_id=catalog_id, collection_id=col_id,
-                depth=next_depth, page_size=page_size,
-                resolved=resolved, meta=meta, include=include,
-            )
-            items.append(col_response.model_dump())
-        return total, items
+    # NOTE: Cycle C retired ``_build_config_page``, ``_list_assets``,
+    # ``_list_collections``, and the entire ``categories`` /
+    # ``ConfigPage`` paginated-children machinery (~150 lines).
+    # Operators discover children via the existing list endpoints
+    # (``GET /catalogs``, ``GET /catalogs/{cat}/collections``,
+    # ``GET .../assets``).  The composed-config response is now scoped
+    # to a single tier — siblings/children are discovered separately.

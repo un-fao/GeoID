@@ -130,29 +130,12 @@ class Link(BaseModel):
 # the response models suffices — no per-class DTO needed.
 
 
-class ConfigPage(BaseModel):
-    """A paginated page of child config objects at one category of a scope level."""
-
-    category: str = Field(
-        ...,
-        description="Category name: 'collections' | 'assets' | 'catalogs'.",
-    )
-    total: int = Field(0, ge=0, description="Total items in this category.")
-    page: int = Field(1, ge=1, description="Current page number (1-based).")
-    page_size: int = Field(
-        15, ge=1, le=100, description="Number of items per page."
-    )
-    links: List[Dict[str, str]] = Field(
-        default_factory=list,
-        description="Navigation links: rel='next' and rel='prev' when available.",
-    )
-    items: Optional[List[Any]] = Field(
-        None,
-        description=(
-            "Items at this page, or null if this level was not expanded (depth "
-            "not reached)."
-        ),
-    )
+# NOTE: ``ConfigPage`` (paginated child resources) was retired in
+# Cycle C alongside the ``categories`` field on every response.
+# Operators discover children via the existing list endpoints
+# (``GET /catalogs``, ``GET /catalogs/{cat}/collections``,
+# ``GET .../assets``).  The composed-config response is now scoped to a
+# single tier — siblings/children are discovered separately.
 
 
 class CollectionConfigResponse(BaseModel):
@@ -208,21 +191,6 @@ class CollectionConfigResponse(BaseModel):
             "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
     )
-    routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = Field(
-        None,
-        description=(
-            "Per-entity, per-op driver resolution: "
-            "``{entity: {op: {driver_id, reason}}}``. Synthetic resolver "
-            "scheduled for removal in Cycle C of the config-API "
-            "restructure — the routing tree under ``configs.storage."
-            "routing`` is the truth post PR #254.  Populated only when "
-            "``?meta != \"none\"``."
-        ),
-    )
-    categories: Optional[Dict[str, ConfigPage]] = Field(
-        None,
-        description="Paginated child categories: 'assets'. Null if depth=0.",
-    )
 
 
 class CatalogConfigResponse(BaseModel):
@@ -266,12 +234,6 @@ class CatalogConfigResponse(BaseModel):
             "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
     )
-    categories: Optional[Dict[str, ConfigPage]] = Field(
-        None,
-        description=(
-            "Paginated child categories: 'collections', 'assets'. Null if depth=0."
-        ),
-    )
 
 
 class PlatformConfigResponse(BaseModel):
@@ -305,10 +267,6 @@ class PlatformConfigResponse(BaseModel):
             "older waterfall trace (``source`` + ``layers``) was retired in "
             "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
         ),
-    )
-    categories: Optional[Dict[str, ConfigPage]] = Field(
-        None,
-        description="Paginated child categories: 'catalogs'. Null if depth=0.",
     )
 
 
