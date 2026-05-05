@@ -224,46 +224,6 @@ class IndexerProtocol(Protocol):
         """
         ...
 
-    async def index_private(
-        self,
-        geoid: str,
-        catalog_id: str,
-        collection_id: str,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """
-        Index a single geoid-only document in the private index.
-
-        This is the privacy-preserving counterpart of ``index_document``.
-        The indexed document contains only ``{geoid, catalog_id,
-        collection_id}`` — no geometry, no STAC metadata.
-
-        Args:
-            geoid: The private item identifier.
-            catalog_id: Owning catalog.
-            collection_id: Owning collection.
-            db_resource: Database resource for transactional context.
-        """
-        ...
-
-    async def delete_private(
-        self,
-        geoid: str,
-        catalog_id: str,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        """
-        Remove a single geoid document from the private index.
-
-        Safe to call even if the document does not exist (no-op).
-
-        Args:
-            geoid: The private item identifier.
-            catalog_id: Owning catalog.
-            db_resource: Database resource for transactional context.
-        """
-        ...
-
     async def bulk_reindex(
         self,
         catalog_id: str,
