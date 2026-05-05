@@ -18,7 +18,7 @@
 Surfaces ``GET /index_failures/catalogs/{catalog_id}/index-failures``
 so tenants can self-serve recent indexing failures (transient retries
 + terminal failures) without operator log access. Authz is delegated
-to ``IamProtocol`` via the ``catalog_membership_required`` condition
+to the IAM façade via the ``catalog_membership_required`` condition
 on the registered policy.
 """
 
