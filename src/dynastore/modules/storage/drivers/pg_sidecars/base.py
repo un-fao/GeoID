@@ -38,7 +38,7 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
-from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, SerializeAsAny, field_validator, model_validator
 from enum import Enum
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.query_builder import QueryRequest
@@ -481,7 +481,15 @@ def _coerce_pg_sidecar(v: Any) -> Any:
 # alias inside ``pg_sidecars/`` (not in shared ``storage/driver_config``)
 # means non-PG drivers (DuckDB, Iceberg, Elasticsearch) never see PG
 # sidecar machinery.
-PgSidecarConfig = Annotated[SidecarConfig, BeforeValidator(_coerce_pg_sidecar)]
+#
+# ``SerializeAsAny`` opts out of Pydantic v2's default type-narrowing on
+# serialisation: without it, ``List[SidecarConfig]`` dumps every entry as
+# the base class and drops every subclass field (geohash_precision,
+# attribute_schema, …).  The runtime instance is the concrete subclass; the
+# wrapper tells Pydantic to use that instance's serializer instead of the
+# declared base type's, so the operator-facing config API renders the full
+# DTO with all defaults.
+PgSidecarConfig = Annotated[SerializeAsAny[SidecarConfig], BeforeValidator(_coerce_pg_sidecar)]
 
 
 class SidecarProtocol(ABC):
