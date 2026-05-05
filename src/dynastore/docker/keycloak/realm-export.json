@@ -12,6 +12,13 @@
   "roles": {
     "realm": [
       {
+        "name": "sysadmin",
+        "description": "System administrator (full platform access)",
+        "composite": false,
+        "clientRole": false,
+        "attributes": {}
+      },
+      {
         "name": "admin",
         "description": "Full administrative access to catalogs and collections",
         "composite": false
@@ -162,7 +169,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "testpassword",
+          "value": "testadmin",
           "temporary": false
         }
       ],
@@ -186,7 +193,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "testpassword",
+          "value": "testuser",
           "temporary": false
         }
       ],
@@ -205,7 +212,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "testpassword",
+          "value": "testviewer",
           "temporary": false
         }
       ],
@@ -213,6 +220,90 @@
         "viewer",
         "default-roles-geoid"
       ]
+    },
+    {
+      "username": "sysadmin",
+      "enabled": true,
+      "email": "sysadmin@geoid.local",
+      "emailVerified": true,
+      "firstName": "Sysadmin",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sysadmin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "sysadmin",
+        "default-roles-geoid"
+      ],
+      "clientRoles": {}
+    },
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@geoid.local",
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin",
+        "default-roles-geoid"
+      ],
+      "clientRoles": {
+        "geoid-api": [
+          "catalog_admin"
+        ]
+      }
+    },
+    {
+      "username": "user",
+      "enabled": true,
+      "email": "user@geoid.local",
+      "emailVerified": true,
+      "firstName": "User",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "user",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "user",
+        "default-roles-geoid"
+      ],
+      "clientRoles": {}
+    },
+    {
+      "username": "viewer",
+      "enabled": true,
+      "email": "viewer@geoid.local",
+      "emailVerified": true,
+      "firstName": "Viewer",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "viewer",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "viewer",
+        "default-roles-geoid"
+      ],
+      "clientRoles": {}
     }
   ],
   "scopeMappings": [
