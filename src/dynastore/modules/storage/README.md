@@ -35,18 +35,22 @@ written = await driver.write_entities(catalog_id, collection_id, feature_collect
 
 ## Configuration
 
-Set via `ConfigsProtocol` at platform, catalog, or collection level:
+Set via `ConfigsProtocol` at platform, catalog, or collection level.  Post-PR-#261 routing is **operation-based**: `operations: Dict[Operation, List[OperationDriverEntry]]` where each `Operation` (WRITE/READ/SEARCH/INDEX/BACKUP) maps to an ordered list of drivers with per-entry `on_failure` / `write_mode` / `hints`:
 
 ```json
-{"primary_driver": "postgresql"}
-
-{"primary_driver": "postgresql",
- "read_drivers": {"search": "elasticsearch"},
- "secondary_drivers": ["elasticsearch"]}
-
-{"primary_driver": "postgresql",
- "secondary_drivers": ["elasticsearch", "elasticsearch_private"]}
+{"operations": {
+  "WRITE": [
+    {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
+    {"driver_id": "items_elasticsearch_driver", "write_mode": "async", "on_failure": "outbox"}
+  ],
+  "READ": [
+    {"driver_id": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
+    {"driver_id": "items_postgresql_driver", "hints": ["geometry_exact"]}
+  ]
+}}
 ```
+
+The pre-PR-#261 `primary_driver` / `read_drivers` / `secondary_drivers` shape was retired with the operation-based migration; full reference in `docs/components/storage_drivers.md` (rewrite pending — see project memory).
 
 ## Drivers
 
