@@ -17,7 +17,7 @@ The engine separates changes into two categories:
 
 ```python
 engine = SchemaEvolutionEngine()
-collection_schema = await engine.introspect_collection(db_engine, schema, physical_table)
+items_schema = await engine.introspect_collection(db_engine, schema, physical_table)
 ```
 
 `introspect_collection()` queries:
@@ -26,7 +26,7 @@ collection_schema = await engine.introspect_collection(db_engine, schema, physic
 - `pg_catalog.pg_indexes` → `pg_get_indexdef()` — full index definition strings.
 - `pg_catalog.pg_constraint` → `pg_get_constraintdef()` — full constraint definitions.
 
-The result is a `CollectionSchema` containing a `TableSchema` per table, each with typed `ColumnInfo` objects.
+The result is a `ItemsSchema` containing a `TableSchema` per table, each with typed `ColumnInfo` objects.
 
 ---
 
@@ -34,7 +34,7 @@ The result is a `CollectionSchema` containing a `TableSchema` per table, each wi
 
 ```python
 plan: EvolutionPlan = engine.diff(
-    current=collection_schema,
+    current=items_schema,
     target_config=new_plugin_config,
     physical_table=hub_table,
     partition_keys=["catalog_id", "collection_id"],
@@ -174,7 +174,7 @@ DELETE /admin/schemas/{catalog_id}/{collection_id}/backups/{timestamp}  — expl
 
 | Path | Purpose |
 |------|---------|
-| `src/dynastore/modules/catalog/schema_evolution.py` | `SchemaEvolutionEngine`, `EvolutionPlan`, `SchemaOp`, `CollectionSchema` |
+| `src/dynastore/modules/catalog/schema_evolution.py` | `SchemaEvolutionEngine`, `EvolutionPlan`, `SchemaOp`, `ItemsSchema` |
 | `src/dynastore/modules/catalog/sidecars/base.py` | `SidecarProtocol.get_evolution_ddl()` hook |
 | `src/dynastore/modules/catalog/collection_service.py` | Schema hash storage after physical table creation |
 | `src/dynastore/extensions/admin/migration_routes.py` | Schema health + evolve API endpoints |

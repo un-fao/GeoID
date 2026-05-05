@@ -658,17 +658,17 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
                         required=field_required,
                     )
 
-            # Overlay CollectionSchema-declared flags (required / unique).
+            # Overlay ItemsSchema-declared flags (required / unique).
             try:
                 from dynastore.models.protocols.configs import ConfigsProtocol
-                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.modules.storage.driver_config import ItemsSchema
                 from dynastore.modules.storage.field_constraints import overlay_schema_flags
                 from dynastore.tools.discovery import get_protocol
 
                 configs = get_protocol(ConfigsProtocol)
                 if configs is not None:
                     schema_cfg = await configs.get_config(
-                        CollectionSchema,
+                        ItemsSchema,
                         catalog_id=catalog_id,
                         collection_id=collection_id,
                     )
@@ -869,13 +869,13 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
             # Warn on unique=True fields — Iceberg has no native UNIQUE enforcement.
             try:
                 from dynastore.models.protocols.configs import ConfigsProtocol
-                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.modules.storage.driver_config import ItemsSchema
                 from dynastore.tools.discovery import get_protocol
 
                 configs = get_protocol(ConfigsProtocol)
                 if configs is not None:
                     schema_cfg = await configs.get_config(
-                        CollectionSchema,
+                        ItemsSchema,
                         catalog_id=catalog_id,
                         collection_id=collection_id,
                     )

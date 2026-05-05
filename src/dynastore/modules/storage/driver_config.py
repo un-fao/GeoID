@@ -265,11 +265,11 @@ class ItemsWritePolicy(PluginConfig):
       class) is the platform/catalog-tier POSTURE config — carries only
       posture flags (``on_conflict``, ``require_identity_key``) without
       field-name references. Field-name binding lives separately in
-      ``CollectionSchema.constraints`` (``IdentityKeyConstraint``,
+      ``ItemsSchema.constraints`` (``IdentityKeyConstraint``,
       ``ValidityConstraint``, ``ContentHashConstraint``). Operators
       configuring a NEW collection should set posture in
       ``WritePolicyDefaults`` at the platform tier and field bindings via
-      ``CollectionSchema.constraints``; ``ItemsWritePolicy`` remains
+      ``ItemsSchema.constraints``; ``ItemsWritePolicy`` remains
       for legacy collections that bound fields here directly.
 
     Worked scenarios:
@@ -448,7 +448,7 @@ class WritePolicyDefaults(PluginConfig):
     Carries only posture flags — never references specific field names. This
     is the M8 cleanup target: write-policy posture (HOW conflicts are handled)
     is decoupled from field-binding (WHICH columns carry identity, validity,
-    geometry hash). Field-binding lives in ``CollectionSchema.constraints``
+    geometry hash). Field-binding lives in ``ItemsSchema.constraints``
     as ``IdentityKeyConstraint``, ``ValidityConstraint``, and
     ``GeometryHashConstraint`` instances — owned by the schema, not the
     write-policy config.
@@ -462,7 +462,7 @@ class WritePolicyDefaults(PluginConfig):
         ``ItemsWritePolicy`` for the field-name knobs
         (``external_id_field``, ``validity_field``) that pre-date the schema
         constraint model. New collections should declare bindings in
-        ``CollectionSchema.constraints`` and leave ``ItemsWritePolicy``
+        ``ItemsSchema.constraints`` and leave ``ItemsWritePolicy``
         at code defaults.
       - When both are present, ``ItemsWritePolicy`` at collection tier
         wins for the fields it owns; ``WritePolicyDefaults`` at upstream
@@ -522,7 +522,7 @@ class WritePolicyDefaults(PluginConfig):
         examples=[False, True],
         description=(
             "If True, every collection at this scope MUST declare exactly one "
-            "``IdentityKeyConstraint`` in its ``CollectionSchema.constraints``. "
+            "``IdentityKeyConstraint`` in its ``ItemsSchema.constraints``. "
             "Collections missing the constraint are rejected at write time. "
             "Set at platform / catalog tier to enforce identity-key discipline "
             "across all owned collections."
@@ -1002,7 +1002,7 @@ class AssetElasticsearchDriverConfig(AssetDriverConfig):
 # Convenience helpers
 # ---------------------------------------------------------------------------
 
-# ItemsWritePolicy / CollectionSchema auto-register via
+# ItemsWritePolicy / ItemsSchema auto-register via
 # PluginConfig.__init_subclass__ — no explicit registration needed.
 
 from dynastore.models.protocols.field_definition import (  # noqa: E402
@@ -1012,7 +1012,7 @@ from dynastore.models.protocols.field_definition import (  # noqa: E402
 )
 
 
-class CollectionSchema(PluginConfig):
+class ItemsSchema(PluginConfig):
     """Schema definition for a collection — registerable in the config waterfall.
 
     Defines the field structure and declarative constraints for collection items.
@@ -1024,7 +1024,7 @@ class CollectionSchema(PluginConfig):
     ``constraints`` is an open list of :class:`~dynastore.modules.storage.schema_types.FieldConstraint`
     instances, e.g.::
 
-        CollectionSchema(
+        ItemsSchema(
             fields={"feature_id": FieldDefinition(data_type="text")},
             constraints=[
                 IdentityKeyConstraint(geohash_precision=7),
@@ -1085,7 +1085,7 @@ class CollectionSchema(PluginConfig):
 
 
 # ---------------------------------------------------------------------------
-# Apply handler — write_policy ↔ CollectionSchema cross-validation (Task E)
+# Apply handler — write_policy ↔ ItemsSchema cross-validation (Task E)
 # ---------------------------------------------------------------------------
 
 import logging as _logging  # noqa: E402
@@ -1101,13 +1101,13 @@ async def _on_apply_write_policy(
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
 ) -> None:
-    """Cross-validate write_policy.external_id_field against CollectionSchema.fields.
+    """Cross-validate write_policy.external_id_field against ItemsSchema.fields.
 
-    If ``external_id_field`` is set and a ``CollectionSchema`` exists at the
-    same scope, the referenced field must appear in ``CollectionSchema.fields``.
+    If ``external_id_field`` is set and a ``ItemsSchema`` exists at the
+    same scope, the referenced field must appear in ``ItemsSchema.fields``.
 
     ``external_id_field = "geoid"`` or ``"id"`` are always accepted (system fields).
-    If ``CollectionSchema`` is not yet configured, validation is skipped.
+    If ``ItemsSchema`` is not yet configured, validation is skipped.
     """
     if not isinstance(config, ItemsWritePolicy):
         return
@@ -1130,7 +1130,7 @@ async def _on_apply_write_policy(
             return
 
         schema = await configs.get_config(
-            CollectionSchema,
+            ItemsSchema,
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
@@ -1141,7 +1141,7 @@ async def _on_apply_write_policy(
         if field_key not in defined_fields:
             raise ValueError(
                 f"write_policy.external_id_field '{ext_id}' (field key: '{field_key}') "
-                f"is not defined in CollectionSchema.fields for {catalog_id}/{collection_id}. "
+                f"is not defined in ItemsSchema.fields for {catalog_id}/{collection_id}. "
                 f"Defined fields: {sorted(defined_fields)}. "
                 f"Set 'geoid' or 'id' to use system identity fields without schema restriction."
             )
@@ -1158,11 +1158,11 @@ ItemsWritePolicy.register_apply_handler(_on_apply_write_policy)
 
 
 # ---------------------------------------------------------------------------
-# Apply handler — CollectionSchema required/unique vs primary-driver capabilities
+# Apply handler — ItemsSchema required/unique vs primary-driver capabilities
 # ---------------------------------------------------------------------------
 
 
-async def _on_apply_collection_schema(
+async def _on_apply_items_schema(
     config: PluginConfig,
     catalog_id: "Optional[str]",
     collection_id: "Optional[str]",
@@ -1176,7 +1176,7 @@ async def _on_apply_collection_schema(
     ``allow_app_level_enforcement=True`` is set, which opts into service-layer
     fallback enforcement.
     """
-    if not isinstance(config, CollectionSchema):
+    if not isinstance(config, ItemsSchema):
         return
     if not (catalog_id and collection_id):
         return
@@ -1225,14 +1225,14 @@ async def _on_apply_collection_schema(
 
         if constrained_required and Capability.REQUIRED_ENFORCEMENT not in caps:
             raise ValueError(
-                f"CollectionSchema declares required=True fields {constrained_required} "
+                f"ItemsSchema declares required=True fields {constrained_required} "
                 f"but primary write driver '{primary_id}' lacks REQUIRED_ENFORCEMENT. "
                 f"Switch primary driver, drop the constraints, or set "
                 f"allow_app_level_enforcement=True to opt into service-layer fallback."
             )
         if constrained_unique and Capability.UNIQUE_ENFORCEMENT not in caps:
             raise ValueError(
-                f"CollectionSchema declares unique=True fields {constrained_unique} "
+                f"ItemsSchema declares unique=True fields {constrained_unique} "
                 f"but primary write driver '{primary_id}' lacks UNIQUE_ENFORCEMENT. "
                 f"Switch primary driver, drop the constraints, or set "
                 f"allow_app_level_enforcement=True to opt into service-layer fallback."
@@ -1246,4 +1246,4 @@ async def _on_apply_collection_schema(
         )
 
 
-CollectionSchema.register_apply_handler(_on_apply_collection_schema)
+ItemsSchema.register_apply_handler(_on_apply_items_schema)

@@ -63,7 +63,7 @@ class RequiredFieldMissingError(Exception):
 
 class UnknownFieldsError(Exception):
     """A feature carried fields not declared in the collection's
-    ``CollectionSchema.fields`` while ``strict_unknown_fields=True``.
+    ``ItemsSchema.fields`` while ``strict_unknown_fields=True``.
 
     Raised by the service-layer pre-write helper to enforce the strict-mode
     contract: collections that declare a schema with strict mode reject any

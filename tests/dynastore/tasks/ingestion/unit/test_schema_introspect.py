@@ -1,6 +1,6 @@
-"""Tests for ``extract_ogr_schema`` — derives a CollectionSchema from a vector source.
+"""Tests for ``extract_ogr_schema`` — derives a ItemsSchema from a vector source.
 
-Covers the OGR-type → CollectionSchema-data_type mapping, layer
+Covers the OGR-type → ItemsSchema-data_type mapping, layer
 selection, the always-present geometry field, and error handling.
 Mocks ``gdal.OpenEx`` + the OGR layer/field-defn objects so the tests
 don't need actual GDAL files.

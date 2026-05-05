@@ -276,7 +276,7 @@ class UnknownFieldsExceptionHandler(ExceptionHandler):
     """Maps ``UnknownFieldsError`` to HTTP 422 with structured offender list.
 
     Raised by ``item_service.upsert`` when a write batch carries properties
-    not declared in ``CollectionSchema.fields`` and ``strict_unknown_fields``
+    not declared in ``ItemsSchema.fields`` and ``strict_unknown_fields``
     is enabled.
     """
 

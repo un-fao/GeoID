@@ -5,22 +5,22 @@
 #    You may obtain a copy of the License at
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
-"""OGR schema introspection — derive a CollectionSchema from a vector asset.
+"""OGR schema introspection — derive a ItemsSchema from a vector asset.
 
 Reads a vector source (Shapefile, GeoPackage, GeoJSON, Parquet, …) via
 the system OGR bindings and walks ``layer.GetLayerDefn()`` to extract
 field names + native OGR types. Maps each OGR type to the
-``CollectionSchema``-compatible string used by ``FieldDefinition.data_type``
+``ItemsSchema``-compatible string used by ``FieldDefinition.data_type``
 (``text``, ``integer``, ``float``, ``boolean``, ``date``, ``timestamp``,
 ``jsonb``, ``geometry``).
 
-The output dict is suitable to PATCH directly into ``CollectionSchema.fields``
-(class_key ``"collection_schema"``)::
+The output dict is suitable to PATCH directly into ``ItemsSchema.fields``
+(class_key ``"items_schema"``)::
 
     derived = extract_ogr_schema("/vsigs/bucket/roads.zip")
     await configs_svc.patch_config(
         catalog_id, collection_id,
-        {"collection_schema": {"fields": derived,
+        {"items_schema": {"fields": derived,
                                "strict_unknown_fields": True,
                                "materialize_fields_as_columns": True}},
     )
@@ -50,11 +50,11 @@ gdal.UseExceptions()
 
 
 # ---------------------------------------------------------------------------
-# OGR field type → CollectionSchema data_type mapping
+# OGR field type → ItemsSchema data_type mapping
 # ---------------------------------------------------------------------------
 #
 # OGR field types are integer constants (ogr.OFT*); we map them to the
-# string vocabulary used by ``CollectionSchema.fields[*].data_type``.
+# string vocabulary used by ``ItemsSchema.fields[*].data_type``.
 # The PG driver's ``_DATA_TYPE_TO_PG_NAME`` table at
 # ``modules/storage/field_constraints.py:35`` knows how to lift these
 # into native PG columns once ``materialize_fields_as_columns=True``.
@@ -87,7 +87,7 @@ def _ogr_field_type_name(field_defn: Any) -> str:
 
 
 def _map_ogr_type(field_defn: Any) -> str:
-    """Map an ``ogr.FieldDefn`` to the ``CollectionSchema.data_type`` vocabulary.
+    """Map an ``ogr.FieldDefn`` to the ``ItemsSchema.data_type`` vocabulary.
 
     Falls back to ``"text"`` for unrecognised types — safe choice because
     every backend can store text. Logs a debug line so the operator can

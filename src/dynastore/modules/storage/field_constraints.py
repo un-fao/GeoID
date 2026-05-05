@@ -10,7 +10,7 @@
 
 Used only when the primary write driver lacks
 ``Capability.REQUIRED_ENFORCEMENT`` / ``UNIQUE_ENFORCEMENT`` AND
-``CollectionSchema.allow_app_level_enforcement=True``.
+``ItemsSchema.allow_app_level_enforcement=True``.
 Drivers that advertise native enforcement rely on their own DDL and must
 not call these helpers.
 """
@@ -28,9 +28,9 @@ from dynastore.modules.storage.errors import (
 
 
 # System-level fields that always pass the strict-unknown-fields check
-# regardless of CollectionSchema.fields contents. These are platform
+# regardless of ItemsSchema.fields contents. These are platform
 # concerns (item identity, geometry, properties bag) — not user data fields,
-# so requiring them in every CollectionSchema would be ceremonial noise.
+# so requiring them in every ItemsSchema would be ceremonial noise.
 _STRICT_MODE_SYSTEM_FIELDS = frozenset({
     "id", "geoid", "geometry", "bbox", "type", "properties",
     "links", "assets", "stac_version", "stac_extensions", "collection",
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         FeatureAttributeSidecarConfig,
     )
-    from dynastore.modules.storage.driver_config import CollectionSchema
+    from dynastore.modules.storage.driver_config import ItemsSchema
 
 
 _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
@@ -66,10 +66,10 @@ _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
 
 
 def bridge_schema_to_attribute_sidecar(
-    schema: "Optional[CollectionSchema]",
+    schema: "Optional[ItemsSchema]",
     sidecar: "FeatureAttributeSidecarConfig",
 ) -> "FeatureAttributeSidecarConfig":
-    """Merge ``CollectionSchema.fields`` into the attributes sidecar.
+    """Merge ``ItemsSchema.fields`` into the attributes sidecar.
 
     For every ``FieldDefinition`` in ``schema.fields``:
 
@@ -146,7 +146,7 @@ def bridge_schema_to_attribute_sidecar(
 
 
 def overlay_schema_flags(
-    schema: "Optional[CollectionSchema]",
+    schema: "Optional[ItemsSchema]",
     fields: Dict[str, FieldDefinition],
 ) -> Dict[str, FieldDefinition]:
     """Overlay ``required``/``unique`` from ``schema`` onto live fields.
@@ -208,12 +208,12 @@ def check_strict_unknown_fields(
     features: Iterable[Mapping[str, Any]],
 ) -> None:
     """Raise ``UnknownFieldsError`` when any feature carries a property
-    not in ``allowed_fields`` (CollectionSchema strict-mode enforcement).
+    not in ``allowed_fields`` (ItemsSchema strict-mode enforcement).
 
     Inspects ``feature["properties"]`` and the top-level keys of each
     feature; system fields (id, geoid, geometry, bbox, properties, etc.)
     always pass regardless of ``allowed_fields``. Use when the
-    collection's ``CollectionSchema.strict_unknown_fields=True``.
+    collection's ``ItemsSchema.strict_unknown_fields=True``.
 
     The first offending feature triggers the raise (fail-fast). Callers
     that need batch-level violation aggregation should iterate manually.
@@ -230,7 +230,7 @@ def check_strict_unknown_fields(
             if offenders:
                 raise UnknownFieldsError(
                     f"feature carries unknown fields under 'properties' "
-                    f"not declared in CollectionSchema.fields: {sorted(offenders)}",
+                    f"not declared in ItemsSchema.fields: {sorted(offenders)}",
                     unknown_fields=sorted(offenders),
                     allowed_fields=sorted(allowed),
                 )
@@ -243,7 +243,7 @@ def check_strict_unknown_fields(
             if top_offenders:
                 raise UnknownFieldsError(
                     f"feature carries unknown top-level fields not declared in "
-                    f"CollectionSchema.fields: {sorted(top_offenders)}",
+                    f"ItemsSchema.fields: {sorted(top_offenders)}",
                     unknown_fields=sorted(top_offenders),
                     allowed_fields=sorted(allowed),
                 )

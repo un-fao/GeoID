@@ -434,12 +434,12 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             "asset_id": "VARCHAR(255)",
         }
 
-        # Bridge CollectionSchema.fields → attributes sidecar so that
+        # Bridge ItemsSchema.fields → attributes sidecar so that
         # required=True / unique=True materialize as NOT NULL / UNIQUE in the
         # generated DDL (COLUMNAR mode).
         try:
             from dynastore.modules.storage.driver_config import (
-                CollectionSchema,
+                ItemsSchema,
             )
             from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
                 FeatureAttributeSidecarConfig,
@@ -452,7 +452,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             schema_cfg = None
             if configs is not None:
                 schema_cfg = await configs.get_config(
-                    CollectionSchema,
+                    ItemsSchema,
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                     ctx=DriverContext(db_resource=db_resource),
@@ -847,11 +847,11 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                             transformations=fd.transformations,
                         )
 
-                    # Overlay CollectionSchema-declared flags (authoritative).
+                    # Overlay ItemsSchema-declared flags (authoritative).
                     try:
                         from dynastore.models.protocols.configs import ConfigsProtocol
                         from dynastore.modules.storage.driver_config import (
-                            CollectionSchema,
+                            ItemsSchema,
                         )
                         from dynastore.modules.storage.field_constraints import (
                             overlay_schema_flags,
@@ -861,7 +861,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                         configs = get_protocol(ConfigsProtocol)
                         if configs is not None:
                             schema_cfg = await configs.get_config(
-                                CollectionSchema,
+                                ItemsSchema,
                                 catalog_id=catalog_id,
                                 collection_id=collection_id,
                                 ctx=DriverContext(db_resource=conn),
