@@ -86,6 +86,40 @@ try:
 except ImportError:
     AsyncpgConnectionDoesNotExistError = type("AsyncpgConnectionDoesNotExistError", (Exception,), {})
 
+
+# Class names of asyncpg client-side errors that indicate transient connection
+# / state-machine issues (no pgcode — they predate the query reaching PG).
+# Used by ``_handle_db_exception`` to surface them as
+# ``DatabaseConnectionError`` so callers (e.g. ``tasks/dispatcher.py``) can
+# apply transient back-off + retry instead of treating them as hard failures.
+_TRANSIENT_ASYNCPG_ERROR_CLASS_NAMES = frozenset({
+    "ConnectionDoesNotExistError",       # connection closed mid-operation
+    "InternalClientError",               # "cannot switch to state N" — concurrent use
+    "ConnectionFailureError",
+    "InterfaceError",                    # asyncpg base client error
+})
+
+_TRANSIENT_ASYNCPG_MESSAGE_FRAGMENTS = (
+    "cannot switch to state",            # concurrent use of one connection
+    "another operation",                 # ditto, alternative phrasing
+    "connection was closed",             # mid-operation disconnect
+)
+
+
+def _is_transient_asyncpg_error(exc: Optional[BaseException]) -> bool:
+    """Return True if ``exc`` is an asyncpg transient client-state error.
+
+    Detected by class name (avoids hard import dependency on asyncpg) plus
+    message-fragment fallback for nested wraps.  See exception taxonomy in
+    issues #235 / #239.
+    """
+    if exc is None:
+        return False
+    if type(exc).__name__ in _TRANSIENT_ASYNCPG_ERROR_CLASS_NAMES:
+        return True
+    msg = str(exc)
+    return any(fragment in msg for fragment in _TRANSIENT_ASYNCPG_MESSAGE_FRAGMENTS)
+
 # --- Type Definitions ---
 DbSyncConnection = Union[SAConnection, SASession]
 DbAsyncConnection = Union[AsyncConnection, AsyncSession]
@@ -490,6 +524,18 @@ class BaseExecutor:
             exception_class = PGCODE_EXCEPTION_MAP[pgcode]
             raise exception_class(
                 f"Database error ({pgcode})", original_exception=original_exc
+            ) from e
+        # Transient asyncpg client-state errors carry no pgcode — they
+        # predate the query reaching PG (e.g. connection closed mid-op,
+        # connection used concurrently from two coroutines).  Surface as
+        # ``DatabaseConnectionError`` so callers (e.g. tasks/dispatcher.py)
+        # can apply back-off + retry instead of escalating to ERROR.
+        # Tracks #235 (ConnectionDoesNotExistError) and #239
+        # ("cannot switch to state N").
+        if _is_transient_asyncpg_error(original_exc) or _is_transient_asyncpg_error(e):
+            raise DatabaseConnectionError(
+                "Transient asyncpg client error",
+                original_exception=original_exc,
             ) from e
         raise QueryExecutionError(
             "Database query failed.", original_exception=original_exc
