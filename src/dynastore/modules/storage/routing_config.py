@@ -794,6 +794,14 @@ def _self_register_indexers_into(
 
     listed = {entry.driver_id for entry in target_ops.get(Operation.INDEX, [])}
     for driver in get_protocols(marker_proto):
+        # Drivers can opt out of auto-default routing by setting
+        # ``auto_register_for_routing = False`` on the class.  Used by
+        # drivers that are real but require explicit operator pinning
+        # (e.g. tenant-isolated DENY-policy variants), so they don't
+        # silently land in every collection's routing config.  Default
+        # True preserves the auto-discovery convention.
+        if not getattr(type(driver), "auto_register_for_routing", True):
+            continue
         driver_id = _to_snake(type(driver).__name__)
         if driver_id in listed:
             continue
@@ -890,6 +898,14 @@ def _self_register_searchers_into(
         })
     listed = {entry.driver_id for entry in target_ops.get(Operation.SEARCH, [])}
     for driver in get_protocols(marker_proto):
+        # Same opt-out semantics as ``_self_register_indexers_into``:
+        # ``auto_register_for_routing = False`` on the class excludes
+        # the driver from auto-default SEARCH routing.  Used by drivers
+        # that declare SEARCH capabilities for explicit-pin use cases
+        # (e.g. DuckDB analytical reads) but shouldn't be the default
+        # items SEARCH backend.
+        if not getattr(type(driver), "auto_register_for_routing", True):
+            continue
         driver_caps = getattr(driver, "capabilities", frozenset())
         if not (driver_caps & search_caps):
             continue
