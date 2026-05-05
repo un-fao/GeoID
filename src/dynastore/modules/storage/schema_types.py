@@ -16,7 +16,7 @@
 
 FieldConstraint
 ===============
-Declarative, composable constraints on individual fields in a ``CollectionSchema``.
+Declarative, composable constraints on individual fields in a ``ItemsSchema``.
 Each constraint kind is a frozen Pydantic model implementing the
 ``FieldConstraint`` protocol (``constraint_type: str`` class attribute).
 
@@ -48,7 +48,7 @@ WritePolicyDefaults
 ===================
 Posture-only write policy — no field name references.  Sits at
 platform / catalog waterfall scope.  Field-level constraints (identity key,
-validity field, geohash precision) live in ``CollectionSchema.constraints``.
+validity field, geohash precision) live in ``ItemsSchema.constraints``.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ from typing import ClassVar, List, Literal, Optional, Protocol, TYPE_CHECKING, r
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from dynastore.modules.storage.driver_config import CollectionSchema
+    from dynastore.modules.storage.driver_config import ItemsSchema
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class UniqueConstraint(FieldConstraint):
 
     Enforcement is native (DDL-level) when the primary driver advertises
     ``Capability.UNIQUE_ENFORCEMENT``; otherwise falls through to service-layer
-    enforcement when ``CollectionSchema.allow_app_level_enforcement=True``.
+    enforcement when ``ItemsSchema.allow_app_level_enforcement=True``.
     """
 
     constraint_type: ClassVar[str] = "unique"
@@ -152,14 +152,14 @@ class SchemaViolation(BaseModel):
 
 @runtime_checkable
 class SchemaExtension(Protocol):
-    """Plug-in validator for ``CollectionSchema``.
+    """Plug-in validator for ``ItemsSchema``.
 
-    Each registered extension receives the full ``CollectionSchema`` and
+    Each registered extension receives the full ``ItemsSchema`` and
     returns a (possibly empty) list of :class:`SchemaViolation` items.
     All violations from all extensions are aggregated at bootstrap time.
     """
 
-    def validate_schema(self, schema: "CollectionSchema") -> List[SchemaViolation]:
+    def validate_schema(self, schema: "ItemsSchema") -> List[SchemaViolation]:
         """Validate *schema* and return any violations found."""
         ...
 
@@ -176,7 +176,7 @@ _STAC_RECOMMENDED_FIELDS = frozenset({"datetime"})
 class StacSchemaExtension:
     """Validates that mandatory STAC fields are present in the schema."""
 
-    def validate_schema(self, schema: "CollectionSchema") -> List[SchemaViolation]:
+    def validate_schema(self, schema: "ItemsSchema") -> List[SchemaViolation]:
         violations: List[SchemaViolation] = []
         declared = set(schema.fields.keys())
         for fname in _STAC_REQUIRED_FIELDS:
@@ -200,7 +200,7 @@ class OgcFeaturesSchemaExtension:
       ``"geometry"`` or ``"geojson"``.
     """
 
-    def validate_schema(self, schema: "CollectionSchema") -> List[SchemaViolation]:
+    def validate_schema(self, schema: "ItemsSchema") -> List[SchemaViolation]:
         violations: List[SchemaViolation] = []
         for fname, fdef in schema.fields.items():
             dt = getattr(fdef, "data_type", None)

@@ -6,7 +6,7 @@ Covers:
 - get_config_graph() — nodes + edges structure
 - list_storage_drivers() response keys use Protocol qualnames (M9 / §7)
 - ConfigScopeMixin scope annotation propagation
-- WritePolicyDefaults and CollectionSchema absent / present fields
+- WritePolicyDefaults and ItemsSchema absent / present fields
 """
 import pytest
 from fastapi import FastAPI
@@ -72,9 +72,9 @@ class TestGetConfigSchemas:
         assert "write_policy_defaults" in result
 
     @pytest.mark.asyncio
-    async def test_collection_schema_present(self, service):
+    async def test_items_schema_present(self, service):
         result = await service.get_config_schemas()
-        assert "collection_schema" in result
+        assert "items_schema" in result
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +118,8 @@ class TestGetConfigSchema:
         assert "on_conflict" in props
 
     @pytest.mark.asyncio
-    async def test_collection_schema_has_constraints_field(self, service):
-        result = await service.get_config_schema("collection_schema")
+    async def test_items_schema_has_constraints_field(self, service):
+        result = await service.get_config_schema("items_schema")
         props = result["json_schema"].get("properties", {})
         assert "constraints" in props
 
@@ -179,11 +179,11 @@ class TestStorageDriversProtocolGrouping:
 
 
 class TestConfigScopeMixinAnnotations:
-    def test_collection_schema_has_collection_intrinsic_scope(self):
-        from dynastore.modules.storage.driver_config import CollectionSchema
+    def test_items_schema_has_collection_intrinsic_scope(self):
+        from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.schema_types import ConfigScopeMixin
-        # CollectionSchema is collection-intrinsic per plan §8
-        scope = getattr(CollectionSchema, "config_scope", "platform_waterfall")
+        # ItemsSchema is collection-intrinsic per plan §8
+        scope = getattr(ItemsSchema, "config_scope", "platform_waterfall")
         # Either annotated or default — just verify it's a valid scope
         valid = {"platform_waterfall", "collection_intrinsic", "deployment_env"}
         assert scope in valid

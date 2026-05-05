@@ -74,7 +74,7 @@ activation. Call it (zero, one, or many times, for any pinnable
 collection-scope config) to override defaults before the first insert.
 
 Call as many different configs as you need — `CollectionRoutingConfig`,
-`ItemsWritePolicy`, `CollectionSchema`, `ItemsPostgresqlDriverConfig`,
+`ItemsWritePolicy`, `ItemsSchema`, `ItemsPostgresqlDriverConfig`,
 etc. All accept a first-write while the collection is pending.
 
 This endpoint is **not** OGC-standard — it is an internal API. Clients

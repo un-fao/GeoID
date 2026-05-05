@@ -8,7 +8,7 @@ Covers:
 - OgcFeaturesSchemaExtension.validate_schema
 - ConfigScopeMixin
 - WritePolicyDefaults (no external_id_field / validity_field / geohash_precision)
-- CollectionSchema with constraints field
+- ItemsSchema with constraints field
 """
 import pytest
 from pydantic import ValidationError
@@ -160,7 +160,7 @@ class TestSchemaExtensionProtocol:
 
 
 class _MockSchema:
-    """Minimal CollectionSchema-like object for testing."""
+    """Minimal ItemsSchema-like object for testing."""
     def __init__(self, fields):
         self.fields = fields
 
@@ -288,24 +288,24 @@ class TestWritePolicyDefaults:
 
 
 # ---------------------------------------------------------------------------
-# CollectionSchema with constraints field
+# ItemsSchema with constraints field
 # ---------------------------------------------------------------------------
 
 
-class TestCollectionSchemaConstraints:
+class TestItemsSchemaConstraints:
     def test_empty_constraints_default(self):
-        from dynastore.modules.storage.driver_config import CollectionSchema
-        cfg = CollectionSchema()
+        from dynastore.modules.storage.driver_config import ItemsSchema
+        cfg = ItemsSchema()
         assert cfg.constraints == []
 
     def test_constraints_field_accepts_field_constraints(self):
-        from dynastore.modules.storage.driver_config import CollectionSchema
-        cfg = CollectionSchema(constraints=[
+        from dynastore.modules.storage.driver_config import ItemsSchema
+        cfg = ItemsSchema(constraints=[
             RequiredConstraint(),
             IdentityKeyConstraint(geohash_precision=7),
         ])
         assert len(cfg.constraints) == 2
 
     def test_class_key(self):
-        from dynastore.modules.storage.driver_config import CollectionSchema
-        assert CollectionSchema.class_key() == "collection_schema"
+        from dynastore.modules.storage.driver_config import ItemsSchema
+        assert ItemsSchema.class_key() == "items_schema"

@@ -1,4 +1,4 @@
-"""Tests for ``CollectionSchema.materialize_fields_as_columns``.
+"""Tests for ``ItemsSchema.materialize_fields_as_columns``.
 
 Default (False): the bridge lifts only fields carrying required/unique
 constraints — plain fields stay in JSONB properties.

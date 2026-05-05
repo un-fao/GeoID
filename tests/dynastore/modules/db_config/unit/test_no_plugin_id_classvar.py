@@ -97,7 +97,7 @@ def test_no_plugin_infix_in_config_class_key():
     """Storage/tiles config classes must not have 'Plugin' infix.
 
     The classes renamed in M1 (RoutingPluginConfig → ItemsRoutingConfig,
-    FeatureTypePluginConfig → CollectionSchema, TilesPluginConfig → TilesConfig,
+    FeatureTypePluginConfig → ItemsSchema, TilesPluginConfig → TilesConfig,
     AssetRoutingPluginConfig → AssetRoutingConfig) must not regress.
 
     Other modules (catalog, tasks) may have PluginConfig subclasses with "Plugin"

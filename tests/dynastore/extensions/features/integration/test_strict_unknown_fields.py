@@ -1,4 +1,4 @@
-"""Integration test for `CollectionSchema.strict_unknown_fields` enforcement
+"""Integration test for `ItemsSchema.strict_unknown_fields` enforcement
 on the live POST /features/.../items path (closes issue #189).
 
 PR #178 added the strict-mode helper, but the old call site (PG driver's
@@ -55,7 +55,7 @@ async def test_post_item_rejects_unknown_field_with_422(
     }
     schema_resp = await sysadmin_in_process_client.put(
         f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
-        "/plugins/collection_schema",
+        "/plugins/items_schema",
         json=schema_body,
         timeout=60.0,
     )

@@ -1,7 +1,7 @@
-"""Tests for ``CollectionSchema.strict_unknown_fields`` enforcement.
+"""Tests for ``ItemsSchema.strict_unknown_fields`` enforcement.
 
 When set, writes whose features carry properties NOT declared in
-``CollectionSchema.fields`` are refused at the service-layer pre-write
+``ItemsSchema.fields`` are refused at the service-layer pre-write
 helper. System fields (id, geoid, geometry, bbox, properties, etc.)
 always pass regardless of declared fields.
 """

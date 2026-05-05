@@ -299,8 +299,8 @@ class PluginConfig(PersistentModel):
     """Base class for all mutable plugin configurations.
 
     Identity is the class itself.  The stable string form is ``cls.class_key()``
-    — snake_case of ``cls.__name__`` (e.g. ``CollectionSchema`` →
-    ``"collection_schema"``); pin via ``_class_key: ClassVar[str]``.
+    — snake_case of ``cls.__name__`` (e.g. ``ItemsSchema`` →
+    ``"items_schema"``); pin via ``_class_key: ClassVar[str]``.
 
     Subclasses must be instantiable without arguments — every field requires
     a default — so defaults can be materialised on demand.

@@ -80,10 +80,10 @@ class FeatureTypeDefinition(BaseModel):
     Drivers use this to create storage with the right structure.
     Extensions use this to build OGC/STAC responses.
 
-    Stored as ``CollectionSchema`` config in the waterfall (identity: class_key = ``"collection_schema"``).
+    Stored as ``ItemsSchema`` config in the waterfall (identity: class_key = ``"items_schema"``).
 
     Note: the ``PluginConfig`` subclass used for config registration lives in
-    ``modules.storage.driver_config.CollectionSchema`` to avoid
+    ``modules.storage.driver_config.ItemsSchema`` to avoid
     circular imports from ``models.protocols`` → ``modules.db_config``.
     """
 

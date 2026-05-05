@@ -236,7 +236,7 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
         # REQUIRED_ENFORCEMENT / UNIQUE_ENFORCEMENT: not advertised.
         # DuckDB stores feature properties in a single JSON VARCHAR column,
         # so field-level NOT NULL / UNIQUE cannot be enforced natively.
-        # Opt into app-level fallback via CollectionSchema.allow_app_level_enforcement.
+        # Opt into app-level fallback via ItemsSchema.allow_app_level_enforcement.
     })
     preferred_for: FrozenSet[Hint] = frozenset({Hint.ANALYTICS})
     supported_hints: FrozenSet[Hint] = frozenset({
@@ -850,17 +850,17 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
 
             result = await run_in_thread(self._get_entity_fields_sync, loc)
 
-            # Overlay CollectionSchema-declared flags (required / unique).
+            # Overlay ItemsSchema-declared flags (required / unique).
             try:
                 from dynastore.models.protocols.configs import ConfigsProtocol
-                from dynastore.modules.storage.driver_config import CollectionSchema
+                from dynastore.modules.storage.driver_config import ItemsSchema
                 from dynastore.modules.storage.field_constraints import overlay_schema_flags
                 from dynastore.tools.discovery import get_protocol
 
                 configs = get_protocol(ConfigsProtocol)
                 if configs is not None:
                     schema_cfg = await configs.get_config(
-                        CollectionSchema,
+                        ItemsSchema,
                         catalog_id=catalog_id,
                         collection_id=collection_id,
                     )

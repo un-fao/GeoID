@@ -9,7 +9,7 @@ the expected outcome is ``ConfigResolutionError`` at request time.
 import pytest
 
 from dynastore.modules.storage.driver_config import (
-    CollectionSchema,
+    ItemsSchema,
     ItemsWritePolicy,
     WriteConflictPolicy,
 )
@@ -53,15 +53,15 @@ class TestItemsWritePolicyDefaults:
         assert cfg.on_conflict == WriteConflictPolicy.UPDATE
 
 
-class TestCollectionSchemaDefaults:
+class TestItemsSchemaDefaults:
     def test_zero_arg_instantiation(self):
-        cfg = CollectionSchema()
+        cfg = ItemsSchema()
         assert cfg is not None
 
     def test_default_schema_is_permissive(self):
         """A fresh-deploy collection with no explicit schema must not block
         ingestion: no required fields, no constraints."""
-        cfg = CollectionSchema()
+        cfg = ItemsSchema()
         fields = cfg.fields or []
         required = [f for f in fields if getattr(f, "required", False)]
         assert required == []

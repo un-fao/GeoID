@@ -530,9 +530,9 @@ class CollectionService:
             # modules register their own hooks for their own config
             # shapes.
 
-            # 5b. Persist write_policy + schema (CollectionSchema, if provided) BEFORE
+            # 5b. Persist write_policy + schema (ItemsSchema, if provided) BEFORE
             #     ensure_storage so the driver can materialise required/unique
-            #     constraints at DDL time (CollectionSchema.fields →
+            #     constraints at DDL time (ItemsSchema.fields →
             #     NOT NULL / UNIQUE in the attributes sidecar).
             write_policy_input = None
             schema_input = None
@@ -564,17 +564,17 @@ class CollectionService:
                 )
             if schema_input:
                 from dynastore.modules.storage.driver_config import (
-                    CollectionSchema,
+                    ItemsSchema,
                 )
                 schema_def = (
-                    CollectionSchema.model_validate(schema_input)
+                    ItemsSchema.model_validate(schema_input)
                     if isinstance(schema_input, dict)
                     else schema_input
                 )
                 configs = get_protocol(ConfigsProtocol)
                 assert configs is not None, "ConfigsProtocol not registered"
                 await configs.set_config(
-                    CollectionSchema,
+                    ItemsSchema,
                     schema_def,
                     catalog_id=catalog_id,
                     collection_id=collection_model.id,

@@ -57,7 +57,7 @@ def test_global_registry_surfaces_problem_status_not_500():
     from dynastore.extensions.tools.exception_handlers import _global_registry
 
     exc = problem_details.value_error(
-        ValueError("Unknown config class 'collection_schema'"),
+        ValueError("Unknown config class 'items_schema'"),
     )
     result = _global_registry.handle(exc, context={}, reraise_unhandled=False)
     assert result.status_code == 404, "must keep the configs ProblemException's status"

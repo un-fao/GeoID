@@ -408,7 +408,7 @@ class ItemsElasticsearchDriver(
         # Service-layer enforcement of FieldDefinition.required / .unique for
         # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
         # UNIQUE_ENFORCEMENT. Only runs when the collection's
-        # CollectionSchema has allow_app_level_enforcement=True; otherwise
+        # ItemsSchema has allow_app_level_enforcement=True; otherwise
         # config admission would have already rejected the constraints.
         await self._enforce_field_constraints(catalog_id, collection_id, items)
 
@@ -529,14 +529,14 @@ class ItemsElasticsearchDriver(
     ) -> None:
         """App-level fallback enforcement of FieldDefinition.required / .unique.
 
-        Only runs when the collection's CollectionSchema has
+        Only runs when the collection's ItemsSchema has
         ``allow_app_level_enforcement=True`` (otherwise admission would have
         rejected any constrained fields). Raises
         ``RequiredFieldMissingError`` (HTTP 400) or
         ``UniqueConstraintViolationError`` (HTTP 409).
         """
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.driver_config import CollectionSchema
+        from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.field_constraints import (
             check_required, check_unique,
         )
@@ -547,13 +547,13 @@ class ItemsElasticsearchDriver(
             return
         try:
             ft = await configs.get_config(
-                CollectionSchema,
+                ItemsSchema,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
         except Exception:
             return
-        if not isinstance(ft, CollectionSchema):
+        if not isinstance(ft, ItemsSchema):
             return
 
         if not ft.allow_app_level_enforcement:
