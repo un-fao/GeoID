@@ -72,16 +72,16 @@ Dynamic templates are applied in order (first match wins) to handle multilingual
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `private` | `bool` | `false` | Enable GeoID private indexing mode for this catalog |
+| `default_collection_privacy` | `Literal["public","private"]` | `"public"` | Catalog-tier seed default for newly-created collections (Cycle E.1; lives on `CatalogPolicyConfig` in `modules/catalog/catalog_config.py`) |
 
 Managed via the standard configuration API:
 
 ```
-PUT /configs/catalogs/{catalog_id}/elasticsearch
-{ "private": true }
+PUT /configs/catalogs/{catalog_id}/policy
+{ "default_collection_privacy": "private" }
 ```
 
-When `private` changes, the `on_apply` callback fires automatically — no restart required.
+Pure data — flipping the default does not retroactively re-flag existing collections.  The full operational pinning recipe is in the **Per-Collection Privacy** section below.
 
 ---
 
@@ -173,14 +173,13 @@ Response:
 | `POST` | `/search/reindex/catalogs/{catalog_id}` | 202 | Trigger full catalog reindex |
 | `POST` | `/search/reindex/catalogs/{catalog_id}/collections/{collection_id}` | 202 | Trigger single collection reindex |
 
-Both endpoints accept an optional `mode` query parameter (`"catalog"` or `"private"`). When omitted, the mode is resolved from the catalog's ES config (`private=True` -> `"private"`, otherwise `"catalog"`).
+Both endpoints accept an optional `driver` query parameter to restrict the reindex to a single secondary driver (e.g. `?driver=elasticsearch`).  Cycle E.1 retired the `mode` parameter — bulk reindex always targets the per-tenant public items index `{prefix}-{catalog_id}-items`.  Private items are dispatched per-item via the `IndexDispatcher` to `{prefix}-{catalog_id}-private-items` by `items_elasticsearch_private_driver` when the cascade rule (`CollectionPluginConfig.is_private == True`) pins it.
 
 Response:
 ```json
 {
   "task_id": "uuid",
   "catalog_id": "my_catalog",
-  "mode": "private",
   "status": "queued"
 }
 ```
