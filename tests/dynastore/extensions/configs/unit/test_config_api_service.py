@@ -186,7 +186,7 @@ def test_compose_tree_places_classes_by_address():
         # focused on address-based placement should not also be exercising
         # the slim filter (covered by dedicated slim-mode tests below).
         tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="catalog", include_meta=False,
+            by_class, sources={}, active_scope="catalog",
             include_mode="upstream",
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
@@ -208,7 +208,7 @@ def test_compose_tree_filters_collection_only_from_catalog():
         return_value=registry,
     ):
         tree, _, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="catalog", include_meta=False,
+            by_class, sources={}, active_scope="catalog",
         )
     assert "storage" not in tree or "policy" not in tree.get("storage", {})
 
@@ -226,7 +226,7 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
         return_value=registry,
     ):
         tree, _, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="collection", include_meta=False,
+            by_class, sources={}, active_scope="collection",
         )
     assert tree["storage"]["policy"]["items_write_policy"] == {"on_conflict": "update"}
 
@@ -254,7 +254,7 @@ def test_compose_tree_drops_abstract_bases():
     ):
         for scope in ("platform", "catalog", "collection"):
             tree, _, _ = ConfigApiService._compose_tree(
-                by_class, sources={}, active_scope=scope, include_meta=False,
+                by_class, sources={}, active_scope=scope,
             )
             assert tree == {}, (
                 f"abstract bases leaked into the tree at scope={scope!r}: {tree!r}"
@@ -282,7 +282,7 @@ def test_compose_tree_real_plugin_driver_config_does_not_leak():
     ):
         for scope in ("platform", "catalog", "collection"):
             tree, _, _ = ConfigApiService._compose_tree(
-                by_class, sources={}, active_scope=scope, include_meta=False,
+                by_class, sources={}, active_scope=scope,
             )
             assert tree == {}, f"_PluginDriverConfig leaked at scope={scope!r}: {tree!r}"
 
@@ -379,26 +379,38 @@ def test_no_next_on_last_page():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_compose_collection_config_depth0_no_categories(mock_config_service):
+async def test_compose_collection_config_depth0_meta_none(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()):
         response = await svc.compose_collection_config(
-            base_url="http://test", catalog_id="c", collection_id="col", depth=0,
+            base_url="http://test", catalog_id="c", collection_id="col",
+            depth=0, meta="none",
         )
     assert response.categories is None
     assert response.meta is None
 
 
 @pytest.mark.asyncio
-async def test_compose_catalog_meta_flag_populates_meta_dict(mock_config_service):
+async def test_compose_catalog_meta_field_populates_hierarchical_meta(mock_config_service):
+    """Cycle B: ``meta=field`` produces a hierarchical meta tree mirroring
+    ``configs`` with ``{field_docs}`` leaves per class."""
     svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeWebConfig:
+        _address = ("platform", "web", None)
+        _visibility = None
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {"brand_name": {"description": "Brand label."}}}
+
     by_class = {"WebConfig": {"brand_name": "x"}}
     sources = {"WebConfig": "default"}
-    registry = _stub_registry(
-        WebConfig={"_address": ("platform", "web", None)},
-    )
+    registry = {"WebConfig": FakeWebConfig}
+    # Bust the lru_cache so our stub class's schema is re-extracted.
+    ConfigApiService._extract_field_docs.cache_clear()
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
@@ -407,10 +419,12 @@ async def test_compose_catalog_meta_flag_populates_meta_dict(mock_config_service
              return_value=registry,
          ):
         r = await svc.compose_catalog_config(
-            base_url="http://test", catalog_id="c", depth=0, meta=True,
+            base_url="http://test", catalog_id="c", depth=0,
+            meta="field", include="upstream",
         )
     assert r.meta is not None
-    assert r.meta["WebConfig"].source == "default"
+    # Meta mirrors the configs tree shape.
+    assert r.meta["platform"]["web"]["WebConfig"]["field_docs"] == {"brand_name": "Brand label."}
 
 
 @pytest.mark.asyncio
@@ -443,13 +457,13 @@ def test_compose_tree_address_visibility_filters_correctly():
         # Visible at platform / catalog
         for scope in ("platform", "catalog"):
             tree, _, _ = ConfigApiService._compose_tree(
-                by_class, sources={}, active_scope=scope, include_meta=False,
+                by_class, sources={}, active_scope=scope,
             )
             assert "CatalogOnly" in tree["storage"]["drivers"]["catalog"]
             assert "inherited_from_catalog" not in tree
         # At collection scope: NOT in main tree, but in inherited_from_catalog
         tree, _, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="collection", include_meta=False,
+            by_class, sources={}, active_scope="collection",
         )
         assert "storage" not in tree
         assert tree["inherited_from_catalog"]["storage"]["drivers"]["catalog"]["CatalogOnly"] == {"x": 1}
@@ -494,7 +508,7 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
         return_value=registry,
     ):
         tree, _, inherited = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="collection", include_meta=False,
+            by_class, sources={}, active_scope="collection",
         )
 
     # Collection-vis stays in main tree
@@ -529,7 +543,7 @@ def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
     ):
         for scope in ("platform", "catalog"):
             tree, _, _ = ConfigApiService._compose_tree(
-                by_class, sources={}, active_scope=scope, include_meta=False,
+                by_class, sources={}, active_scope=scope,
             )
             assert "inherited_from_catalog" not in tree, (
                 f"inherited_from_catalog must NOT appear at scope={scope!r}"
@@ -537,28 +551,35 @@ def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
             assert "catalog_routing_config" in tree["storage"]["routing"]
 
 
-def test_compose_tree_inherited_from_catalog_meta_carries_source():
-    """The ``meta`` block still carries ``source`` for inherited configs,
-    so the dashboard can render the inheritance chain alongside the value.
+def test_compose_tree_inherited_from_catalog_meta_mirrors_path():
+    """Cycle B: the ``meta`` tree mirrors the ``configs`` tree — including
+    the ``inherited_from_catalog`` block.  Each leaf carries
+    ``{field_docs}`` (or ``{json_schema}``) at the same path that produces
+    the payload in ``configs``.
     """
+    class FakeESCatConfig:
+        _address = ("catalog", "elasticsearch", None)
+        _visibility = "catalog"
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {"private": {"description": "Private mode."}}}
+
     by_class = {"elasticsearch_catalog_config": {"private": True}}
     sources = {"elasticsearch_catalog_config": "catalog"}
-    registry = _stub_registry(
-        elasticsearch_catalog_config={
-            "_address": ("catalog", "elasticsearch", None),
-            "_visibility": "catalog",
-        },
-    )
+    registry = {"elasticsearch_catalog_config": FakeESCatConfig}
+    ConfigApiService._extract_field_docs.cache_clear()
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
         tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources=sources, active_scope="collection", include_meta=True,
+            by_class, sources=sources, active_scope="collection", meta_mode="field",
         )
     assert tree["inherited_from_catalog"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
     assert meta is not None
-    assert meta["elasticsearch_catalog_config"].source == "catalog"
+    # Meta mirrors the configs path under inherited_from_catalog.
+    assert meta["inherited_from_catalog"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"]["field_docs"] == {"private": "Private mode."}
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +610,7 @@ def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
     ):
         tree, _, inherited = ConfigApiService._compose_tree(
             by_class, sources={"web_config": "platform"},
-            active_scope="collection", include_meta=False,
+            active_scope="collection",
             # default include_mode="scope"
         )
     # Collection-owned config stays in the body
@@ -612,7 +633,7 @@ def test_compose_tree_slim_keeps_collection_overrides_in_body():
     ):
         tree, _, inherited = ConfigApiService._compose_tree(
             by_class, sources={"web_config": "collection"},
-            active_scope="collection", include_meta=False,
+            active_scope="collection",
         )
     # source==collection means an explicit override exists → stays in body
     assert tree["platform"]["web"]["web_config"] == {"brand_name": "Tenant Override"}
@@ -639,7 +660,7 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
         return_value=registry,
     ):
         tree, _, inherited = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="collection", include_meta=False,
+            by_class, sources={}, active_scope="collection",
             include_mode="upstream",
         )
     # Both rendered in body, no inherited summary
@@ -648,62 +669,12 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
     assert inherited is None
 
 
-def test_compose_tree_entity_annotation_on_driver_tier_configs():
-    """Driver-tier configs (``_address[1] == "drivers"``) get an ``entity``
-    field on their ConfigMeta — extracted from ``_address[2]`` — so
-    dashboards can group sidecars/driver settings per entity (items vs
-    collection-metadata vs assets).
-    """
-    by_class = {
-        "items_postgresql_driver":      {"sidecars": [{"sidecar_type": "geometries"}]},
-        "collection_postgresql_driver": {"sidecars": []},
-        "asset_postgresql_driver":      {},
-        "web_config":                   {"brand_name": "X"},  # non-driver, no entity
-    }
-    registry = _stub_registry(
-        items_postgresql_driver={
-            "_address": ("storage", "drivers", "items"),
-            "_visibility": "collection",
-        },
-        collection_postgresql_driver={
-            "_address": ("storage", "drivers", "collection"),
-            "_visibility": "collection",
-        },
-        asset_postgresql_driver={
-            "_address": ("storage", "drivers", "assets"),
-            "_visibility": "collection",
-        },
-        web_config={"_address": ("platform", "web", None)},
-    )
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        _, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={
-                "items_postgresql_driver": "collection",
-                "collection_postgresql_driver": "collection",
-                "asset_postgresql_driver": "collection",
-                "web_config": "platform",
-            },
-            active_scope="collection", include_meta=True,
-            tier_data={
-                "platform": {"web_config": {"brand_name": "X"}},
-                "catalog": {},
-                "collection": {
-                    "items_postgresql_driver": {"sidecars": [{}]},
-                    "collection_postgresql_driver": {"sidecars": []},
-                    "asset_postgresql_driver": {},
-                },
-            },
-            include_mode="upstream",
-        )
-    assert meta is not None
-    assert meta["items_postgresql_driver"].entity == "items"
-    assert meta["collection_postgresql_driver"].entity == "collection"
-    assert meta["asset_postgresql_driver"].entity == "assets"
-    # Non-driver configs have no entity context
-    assert meta["web_config"].entity is None
+# NOTE: The "entity" annotation on ConfigMeta and the per-class
+# ``ConfigMeta.source`` / ``.layers`` waterfall were retired in Cycle B.
+# Driver-tier entity grouping (items vs collection vs assets) now lives
+# in the tree path itself: a driver lives at
+# ``configs.storage.drivers.<entity>`` so the path encodes the bucket
+# directly — no per-entry annotation needed.
 
 
 def test_compose_tree_slim_at_platform_scope_is_a_noop():
@@ -718,7 +689,7 @@ def test_compose_tree_slim_at_platform_scope_is_a_noop():
         return_value=registry,
     ):
         tree, _, inherited = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="platform", include_meta=False,
+            by_class, sources={}, active_scope="platform",
         )
     assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
     assert inherited is None
@@ -910,106 +881,20 @@ async def test_compose_collection_config_no_routing_resolution_when_meta_false(
          ):
         r = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="x",
-            depth=0, meta=False,
+            depth=0, meta="none",
         )
     assert r.routing_resolution is None
 
 
-# ---------------------------------------------------------------------------
-# Phase 4 layer trace: meta.<class>.layers waterfall.
-# ---------------------------------------------------------------------------
-
-def test_build_meta_entry_default_only():
-    """When the class has no row at any tier, only the 'default' layer is
-    present and source='default'."""
-    sources = {"foo": "default"}
-    tier_data = {"platform": {}, "catalog": {}, "collection": {}}
-    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
-    assert meta.source == "default"
-    layers = {l.level: l.present for l in meta.layers or []}
-    assert layers == {
-        "default": True, "platform": False, "catalog": False, "collection": False,
-    }
-
-
-def test_build_meta_entry_platform_only():
-    sources = {"foo": "platform"}
-    tier_data = {"platform": {"foo": {"a": 1}}, "catalog": {}, "collection": {}}
-    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
-    assert meta.source == "platform"
-    layers = {l.level: l.present for l in meta.layers or []}
-    assert layers == {
-        "default": False, "platform": True, "catalog": False, "collection": False,
-    }
-
-
-def test_build_meta_entry_platform_then_catalog_overrides():
-    """Platform AND catalog have rows; catalog wins as source.  Both layers
-    must show present=True so the operator sees the override chain."""
-    sources = {"foo": "catalog"}
-    tier_data = {
-        "platform": {"foo": {"a": 1}},
-        "catalog":  {"foo": {"a": 2}},
-        "collection": {},
-    }
-    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
-    assert meta.source == "catalog"
-    layers = {l.level: l.present for l in meta.layers or []}
-    assert layers == {
-        "default": False, "platform": True, "catalog": True, "collection": False,
-    }
-
-
-def test_build_meta_entry_full_waterfall():
-    """All 4 tiers contributing: source is the top (collection) and every
-    tier's present flag is True (default is implicit-present only when no
-    other tier contributed)."""
-    sources = {"foo": "collection"}
-    tier_data = {
-        "platform":   {"foo": {"a": 1}},
-        "catalog":    {"foo": {"a": 2}},
-        "collection": {"foo": {"a": 3}},
-    }
-    meta = ConfigApiService._build_meta_entry("foo", sources, tier_data)
-    assert meta.source == "collection"
-    layers = {l.level: l.present for l in meta.layers or []}
-    assert layers == {
-        "default": False, "platform": True, "catalog": True, "collection": True,
-    }
-
-
-def test_build_meta_entry_no_tier_data_returns_source_only():
-    """Backward-compat path: no tier_data → meta.layers is None, source is set."""
-    meta = ConfigApiService._build_meta_entry("foo", {"foo": "platform"}, None)
-    assert meta.source == "platform"
-    assert meta.layers is None
-
-
-def test_compose_tree_meta_includes_layers_when_tier_data_provided():
-    """End-to-end through `_compose_tree`: with tier_data, every meta entry
-    carries layers."""
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    sources = {"WebConfig": "platform"}
-    tier_data = {
-        "platform":   {"WebConfig": {"brand_name": "x"}},
-        "catalog":    {},
-        "collection": {},
-    }
-    registry = _stub_registry(WebConfig={"_address": ("platform", "web", None)})
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        _, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources, "platform", include_meta=True,
-            tier_data=tier_data,
-        )
-    assert meta is not None
-    entry = meta["WebConfig"]
-    assert entry.source == "platform"
-    assert entry.layers is not None
-    assert [l.level for l in entry.layers] == [
-        "default", "platform", "catalog", "collection",
-    ]
-    assert entry.layers[1].present is True   # platform
-    assert entry.layers[2].present is False  # catalog
+# NOTE: The Phase 4 waterfall trace (``meta.<class>.layers``) and the
+# ``_build_meta_entry`` helper were retired in Cycle B of the
+# config-API restructure (2026-05-05).  ``meta`` is now a hierarchical
+# tree mirroring ``configs`` with ``{field_docs}`` or ``{json_schema}``
+# leaves; tier-of-origin is communicated via the top-level
+# ``inherited`` map.  The dropped tests covered:
+#   - test_build_meta_entry_default_only
+#   - test_build_meta_entry_platform_only
+#   - test_build_meta_entry_platform_then_catalog_overrides
+#   - test_build_meta_entry_full_waterfall
+#   - test_build_meta_entry_no_tier_data_returns_source_only
+#   - test_compose_tree_meta_includes_layers_when_tier_data_provided

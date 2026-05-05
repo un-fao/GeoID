@@ -377,26 +377,19 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at platform scope."
             ),
         ),
-        meta: bool = Query(
-            False,
-            description=(
-                "When true, include per-class tier-of-origin diagnostics under "
-                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
-            ),
-        ),
-        docs: str = Query(
+        meta: str = Query(
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``field`` (default): each class in the "
-                "response gets a lightweight ``{field_name: description}`` map "
-                "at ``meta.{ClassName}.field_docs``. ``schema``: each class "
-                "gets its full JSON Schema 2020-12 document at "
-                "``meta.{ClassName}.json_schema`` (title, description, type, "
-                "default, examples, constraints — everything a form-builder "
-                "needs; heavier). ``none``: no field documentation. "
-                "Independent of ``?meta=true``: combine to get both source "
-                "diagnostics and docs."
+                "Documentation mode for the hierarchical ``meta`` tree.  "
+                "``field`` (default): each class in the response gets a "
+                "lightweight ``{field_docs: {field_name: description}}`` "
+                "leaf in ``meta`` at the same path that produces its "
+                "payload in ``configs``. "
+                "``schema``: leaf is ``{json_schema: <full Pydantic "
+                "schema>}`` (title/description/type/default/examples/"
+                "constraints — everything a form-builder needs; heavier). "
+                "``none``: ``meta`` returned as null."
             ),
         ),
         include: str = Query(
@@ -422,7 +415,6 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
-            docs=docs,
             include=include,
         )
         return JSONResponse(content=response.model_dump())
@@ -442,22 +434,15 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at this catalog scope."
             ),
         ),
-        meta: bool = Query(
-            False,
-            description=(
-                "When true, include per-class tier-of-origin diagnostics under "
-                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
-            ),
-        ),
-        docs: str = Query(
+        meta: str = Query(
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``field`` (default) embeds a lightweight "
-                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
-                "``schema`` embeds each class's full JSON Schema at "
-                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
-                "See platform endpoint for full notes."
+                "Documentation mode for the hierarchical ``meta`` tree.  "
+                "``field`` (default) embeds ``{field_docs: {field_name: "
+                "description}}`` per class. ``schema`` embeds the full "
+                "JSON Schema. ``none`` returns ``meta`` as null. See "
+                "platform endpoint for full notes."
             ),
         ),
         include: str = Query(
@@ -481,7 +466,6 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
-            docs=docs,
             include=include,
         )
         return JSONResponse(content=response.model_dump())
@@ -501,22 +485,15 @@ class ConfigsService(ExtensionProtocol):
                 "When false: only configs explicitly stored at this collection scope."
             ),
         ),
-        meta: bool = Query(
-            False,
-            description=(
-                "When true, include per-class tier-of-origin diagnostics under "
-                "``meta.{ClassName}.source``.  Off by default to keep the payload slim."
-            ),
-        ),
-        docs: str = Query(
+        meta: str = Query(
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode. ``field`` (default) embeds a lightweight "
-                "``{field_name: description}`` map at ``meta.{ClassName}.field_docs``. "
-                "``schema`` embeds each class's full JSON Schema at "
-                "``meta.{ClassName}.json_schema``. ``none`` suppresses both. "
-                "See platform endpoint for full notes."
+                "Documentation mode for the hierarchical ``meta`` tree.  "
+                "``field`` (default) embeds ``{field_docs: {field_name: "
+                "description}}`` per class. ``schema`` embeds the full "
+                "JSON Schema. ``none`` returns ``meta`` as null. See "
+                "platform endpoint for full notes."
             ),
         ),
         include: str = Query(
@@ -544,7 +521,6 @@ class ConfigsService(ExtensionProtocol):
             page_size=page_size,
             resolved=resolved,
             meta=meta,
-            docs=docs,
             include=include,
         )
         return JSONResponse(content=response.model_dump())

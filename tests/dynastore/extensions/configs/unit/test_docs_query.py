@@ -1,16 +1,13 @@
-"""Tests for the ``?docs=`` query mode on the composed-config endpoints.
+"""Tests for the ``?meta=`` query mode on the composed-config endpoints.
 
-The flag is orthogonal to ``?meta=true``:
+Cycle B (2026-05-05) renamed ``?docs=`` to ``?meta=`` and dropped the
+waterfall trace — ``meta`` now mirrors the ``configs`` tree shape with
+``{field_docs}`` or ``{json_schema}`` leaves.
 
-  * ``?docs=none`` (default) — no schemas in the response; backward-compat.
-  * ``?docs=schema``         — each class in the response gets its full
-                               JSON Schema 2020-12 document at
-                               ``meta.{ClassName}.json_schema``.
-
-When ``?docs=schema`` is requested without ``?meta=true``, a meta block is
-still emitted so the schemas have somewhere to live; ``source`` falls back
-to ``sources[class_key]`` (or ``"default"`` when the class isn't in
-sources, e.g. ``resolved=False``). ``layers`` stays null in that path.
+  * ``?meta=none``           — ``meta`` returned as ``None``.
+  * ``?meta=field`` (default) — ``{field_docs: {field_name: description}}``
+                                leaf at the path mirroring ``configs``.
+  * ``?meta=schema``         — ``{json_schema: <full Pydantic schema>}`` leaf.
 """
 
 from unittest.mock import patch
@@ -21,281 +18,142 @@ from dynastore.extensions.configs.config_api_service import ConfigApiService
 def _stub_registry_with_schema(**classes):
     """Build a fake registry where each class also exposes a callable
     ``model_json_schema()`` returning a deterministic stub document.
-
-    Mirrors the production contract: every concrete ``PluginConfig`` is a
-    Pydantic v2 model and `model_json_schema()` returns a dict with at
-    minimum ``title`` and ``type``.
     """
     out = {}
     for name, attrs in classes.items():
-        body = {}
-        if attrs.get("abstract"):
-            body["is_abstract_base"] = True
-        if "_address" in attrs:
-            body["_address"] = attrs["_address"]
-        if "_visibility" in attrs:
-            body["_visibility"] = attrs["_visibility"]
-        # Closure capture: each class returns its own stub schema
-        body["model_json_schema"] = classmethod(
-            lambda cls, _name=name: {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "title": _name,
-                "type": "object",
-                "properties": {"stub": {"type": "string"}},
-            }
-        )
-        cls = type(name, (), body)
-        cls.__module__ = attrs.get("__module__", "test.stub")
-        out[name] = cls
+        attrs = dict(attrs)
+        schema = attrs.pop("schema", {"title": name, "type": "object"})
+
+        class _Cls:
+            _address = attrs.get("_address")
+            _visibility = attrs.get("_visibility")
+
+        _Cls.__name__ = name
+
+        @classmethod
+        def _model_json_schema(cls, _s=schema):
+            return _s
+
+        _Cls.model_json_schema = _model_json_schema  # type: ignore[assignment]
+        out[name] = _Cls
     return out
 
 
-# ---------------------------------------------------------------------------
-# include_schemas=False (default) — no schema embedded, no meta unless asked
-# ---------------------------------------------------------------------------
-
-def test_compose_tree_no_schemas_when_include_schemas_false_and_meta_off():
-    by_class = {"WebConfig": {"brand_name": "x"}}
+def test_compose_tree_meta_none_suppresses_meta():
+    """``meta_mode="none"`` returns ``meta=None`` regardless of payload."""
+    by_class = {"web_config": {"brand_name": "X"}}
     registry = _stub_registry_with_schema(
-        WebConfig={"_address": ("platform", "web", None)},
+        web_config={"_address": ("platform", "web", None)},
     )
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, docs_mode="none",
+        _, meta, _ = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="platform", meta_mode="none",
         )
-    assert tree == {"platform": {"web": {"WebConfig": {"brand_name": "x"}}}}
     assert meta is None
 
 
-def test_compose_tree_meta_only_no_schema_when_only_meta_requested():
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    registry = _stub_registry_with_schema(
-        WebConfig={"_address": ("platform", "web", None)},
-    )
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=True, docs_mode="none",
-        )
-    assert meta is not None and "WebConfig" in meta
-    assert meta["WebConfig"].source == "platform"
-    assert meta["WebConfig"].json_schema is None
-
-
-# ---------------------------------------------------------------------------
-# include_schemas=True — schema embedded per class
-# ---------------------------------------------------------------------------
-
-def test_compose_tree_schema_attached_when_include_schemas_true():
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    registry = _stub_registry_with_schema(
-        WebConfig={"_address": ("platform", "web", None)},
-    )
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, docs_mode="schema",
-        )
-    # Tree shape unchanged (data and schema are kept separate)
-    assert tree == {"platform": {"web": {"WebConfig": {"brand_name": "x"}}}}
-    # Meta dict materialises specifically to carry the schema
-    assert meta is not None and "WebConfig" in meta
-    assert meta["WebConfig"].source == "platform"
-    assert meta["WebConfig"].layers is None
-    assert meta["WebConfig"].json_schema == {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "WebConfig",
-        "type": "object",
-        "properties": {"stub": {"type": "string"}},
-    }
-
-
-def test_compose_tree_schema_falls_back_to_default_source_when_class_not_in_sources():
-    """``?docs=schema`` should still attach schemas even when ``resolved=False``
-    leaves a class out of ``sources`` — source falls back to "default" so the
-    meta entry has somewhere to live.
-    """
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    registry = _stub_registry_with_schema(
-        WebConfig={"_address": ("platform", "web", None)},
-    )
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={}, active_scope="platform",
-            include_meta=False, docs_mode="schema",
-        )
-    assert meta is not None and "WebConfig" in meta
-    assert meta["WebConfig"].source == "default"
-    assert meta["WebConfig"].json_schema is not None
-
-
-def test_compose_tree_meta_and_schema_combine():
-    """``?meta=true&?docs=schema`` produces both diagnostics and schema in
-    the same meta entry (orthogonal flags).
-    """
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    registry = _stub_registry_with_schema(
-        WebConfig={"_address": ("platform", "web", None)},
-    )
-    tier_data = {
-        "platform": {"WebConfig": {"brand_name": "x"}},
-        "catalog": {},
-        "collection": {},
-    }
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=True, docs_mode="schema", tier_data=tier_data,
-        )
-    assert meta is not None and "WebConfig" in meta
-    entry = meta["WebConfig"]
-    assert entry.source == "platform"
-    assert entry.layers is not None  # waterfall trace populated by include_meta
-    assert entry.json_schema is not None  # schema populated by include_schemas
-    assert entry.json_schema["title"] == "WebConfig"
-
-
-# ---------------------------------------------------------------------------
-# Schema attached for inherited_from_catalog block too (collection scope)
-# ---------------------------------------------------------------------------
-
-def test_compose_tree_schema_attached_for_inherited_from_catalog_block():
-    """Catalog-visibility configs surfaced under ``inherited_from_catalog`` at
-    collection scope should also get their schema when ``include_schemas=True``.
-    """
-    by_class = {"CatalogOnly": {"private": True}}
-    registry = _stub_registry_with_schema(
-        CatalogOnly={
-            "_address": ("storage", "drivers", "catalog"),
-            "_visibility": "catalog",
+def test_compose_tree_meta_field_attaches_field_docs():
+    """``meta_mode="field"`` attaches ``{field_docs}`` at the path mirroring
+    ``configs``."""
+    schema = {
+        "properties": {
+            "brand_name": {"description": "Display name."},
+            "version":    {"description": "Schema version."},
         },
+    }
+    by_class = {"web_config": {"brand_name": "X"}}
+    registry = _stub_registry_with_schema(
+        web_config={"_address": ("platform", "web", None), "schema": schema},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        # Bust the lru_cache so our stub class's schema is re-extracted.
+        ConfigApiService._extract_field_docs.cache_clear()
+        tree, meta, _ = ConfigApiService._compose_tree(
+            by_class, sources={}, active_scope="platform", meta_mode="field",
+        )
+    # configs path
+    assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
+    # meta mirrors the same path with the field_docs leaf
+    assert meta is not None
+    assert meta["platform"]["web"]["web_config"]["field_docs"] == {
+        "brand_name": "Display name.",
+        "version":    "Schema version.",
+    }
+
+
+def test_compose_tree_meta_schema_attaches_full_json_schema():
+    """``meta_mode="schema"`` attaches the full ``model_json_schema()``."""
+    schema = {"title": "WebConfig", "type": "object", "properties": {}}
+    by_class = {"web_config": {"brand_name": "X"}}
+    registry = _stub_registry_with_schema(
+        web_config={"_address": ("platform", "web", None), "schema": schema},
     )
     with patch(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
         tree, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"CatalogOnly": "catalog"}, active_scope="collection",
-            include_meta=False, docs_mode="schema",
-        )
-    # Class lands under inherited_from_catalog at collection scope
-    assert "inherited_from_catalog" in tree
-    assert "CatalogOnly" in tree["inherited_from_catalog"]["storage"]["drivers"]["catalog"]
-    # Schema still attaches via meta
-    assert meta is not None and "CatalogOnly" in meta
-    assert meta["CatalogOnly"].json_schema is not None
-    assert meta["CatalogOnly"].json_schema["title"] == "CatalogOnly"
-
-
-# ---------------------------------------------------------------------------
-# docs_mode="field" — lightweight {field_name: description} per class
-# ---------------------------------------------------------------------------
-
-def _stub_registry_with_described_fields(**classes):
-    """Variant where the stub schema includes per-field descriptions so
-    ``docs_mode="field"`` can extract them.
-    """
-    out = {}
-    for name, attrs in classes.items():
-        body = {}
-        if "_address" in attrs:
-            body["_address"] = attrs["_address"]
-        if "_visibility" in attrs:
-            body["_visibility"] = attrs["_visibility"]
-        body["model_json_schema"] = classmethod(
-            lambda cls, _name=name, _descs=attrs.get("descriptions", {}): {
-                "title": _name,
-                "type": "object",
-                "properties": {
-                    fname: {"type": "string", "description": fdesc}
-                    for fname, fdesc in _descs.items()
-                },
-            }
-        )
-        cls = type(name, (), body)
-        cls.__module__ = "test.stub"
-        out[name] = cls
-    return out
-
-
-def test_compose_tree_field_docs_attached_when_docs_mode_field():
-    """``docs_mode="field"`` extracts a flat ``{field_name: description}`` map
-    per class — no full JSON Schema, just the descriptions."""
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    registry = _stub_registry_with_described_fields(
-        WebConfig={
-            "_address": ("platform", "web", None),
-            "descriptions": {
-                "brand_name": "Display name shown in the page header.",
-                "primary_color": "Hex color for primary UI accents.",
-            },
-        },
-    )
-    # Clear cache so the new stub class's schema is read fresh
-    ConfigApiService._extract_field_docs.cache_clear()
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=registry,
-    ):
-        _, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, docs_mode="field",
-        )
-    assert meta is not None and "WebConfig" in meta
-    entry = meta["WebConfig"]
-    assert entry.json_schema is None  # field mode, not schema mode
-    assert entry.field_docs == {
-        "brand_name": "Display name shown in the page header.",
-        "primary_color": "Hex color for primary UI accents.",
-    }
-
-
-def test_compose_tree_field_docs_skips_fields_without_description():
-    """Fields lacking a ``description`` are omitted from ``field_docs``."""
-    by_class = {"WebConfig": {"brand_name": "x"}}
-    # Stub schema with one described, one undescribed field
-    out: dict = {}
-    body = {
-        "_address": ("platform", "web", None),
-        "model_json_schema": classmethod(
-            lambda cls: {
-                "title": "WebConfig",
-                "type": "object",
-                "properties": {
-                    "brand_name": {"type": "string", "description": "Brand."},
-                    "internal_flag": {"type": "boolean"},  # no description
-                },
-            }
-        ),
-    }
-    cls = type("WebConfig", (), body)
-    cls.__module__ = "test.stub"
-    out["WebConfig"] = cls
-
-    ConfigApiService._extract_field_docs.cache_clear()
-    with patch(
-        "dynastore.extensions.configs.config_api_service.list_registered_configs",
-        return_value=out,
-    ):
-        _, meta, _ = ConfigApiService._compose_tree(
-            by_class, sources={"WebConfig": "platform"}, active_scope="platform",
-            include_meta=False, docs_mode="field",
+            by_class, sources={}, active_scope="platform", meta_mode="schema",
         )
     assert meta is not None
-    assert meta["WebConfig"].field_docs == {"brand_name": "Brand."}
+    assert meta["platform"]["web"]["web_config"]["json_schema"] == schema
+    # Field-docs leaf must not appear under schema mode.
+    assert "field_docs" not in meta["platform"]["web"]["web_config"]
+
+
+def test_compose_tree_meta_field_skips_inherited_summary():
+    """Slim mode: configs in the ``inherited`` summary do NOT get meta
+    entries — they're one-line pointers, not a docs surface."""
+    by_class = {"web_config": {"brand_name": "X"}}
+    registry = _stub_registry_with_schema(
+        web_config={"_address": ("platform", "web", None)},
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        _, meta, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"web_config": "platform"},
+            active_scope="collection", meta_mode="field",
+            include_mode="scope",
+        )
+    # The class moved to inherited (not in scope at collection)
+    assert inherited == {"web_config": "platform"}
+    # ... and meta should NOT have an entry for it.
+    assert meta is not None
+    assert "platform" not in meta or "web" not in meta.get("platform", {})
+
+
+def test_compose_tree_meta_field_attached_for_inherited_from_catalog():
+    """Catalog-tier configs surfacing under ``inherited_from_catalog`` at
+    collection scope DO get meta entries — they're rendered with full
+    payload, so dashboards need their docs alongside."""
+    schema = {"properties": {"private": {"description": "Private mode."}}}
+    by_class = {"elasticsearch_catalog_config": {"private": True}}
+    registry = _stub_registry_with_schema(
+        elasticsearch_catalog_config={
+            "_address": ("catalog", "elasticsearch", None),
+            "_visibility": "catalog",
+            "schema": schema,
+        },
+    )
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        ConfigApiService._extract_field_docs.cache_clear()
+        tree, meta, _ = ConfigApiService._compose_tree(
+            by_class, sources={"elasticsearch_catalog_config": "catalog"},
+            active_scope="collection", meta_mode="field",
+        )
+    assert "inherited_from_catalog" in tree
+    assert meta is not None
+    assert meta["inherited_from_catalog"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"]["field_docs"] == {
+        "private": "Private mode.",
+    }

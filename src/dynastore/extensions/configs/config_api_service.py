@@ -36,7 +36,6 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 from dynastore.extensions.configs.config_api_dto import (
     CatalogConfigResponse,
     CollectionConfigResponse,
-    ConfigMeta,
     ConfigPage,
     DriverRef,
     Link,
@@ -238,36 +237,9 @@ class ConfigApiService:
 
     # --- Tree + meta in one pass. ---
 
-    @staticmethod
-    def _build_meta_entry(
-        class_key: str,
-        sources: Dict[str, str],
-        tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
-    ) -> ConfigMeta:
-        """Build a ConfigMeta entry combining the single-tier ``source``
-        summary with the full waterfall ``layers`` trace.
-
-        ``tier_data`` is the ``{tier: {class_key: delta}}`` dict from
-        ``_get_effective_configs``.  When ``tier_data`` is ``None`` (no
-        per-tier data available — should not happen in production), the
-        layer trace is omitted and only ``source`` is set.
-        """
-        from dynastore.extensions.configs.config_api_dto import ConfigLayer
-
-        source = sources.get(class_key, "default")
-        if tier_data is None:
-            return ConfigMeta(source=source, layers=None)
-        layers = []
-        for level in ("default", "platform", "catalog", "collection"):
-            if level == "default":
-                # The "default" tier is implicit — there's no row for it.
-                # Mark present=True only when no other tier contributed
-                # (i.e. the effective value IS the code default).
-                present = source == "default"
-            else:
-                present = class_key in tier_data.get(level, {})
-            layers.append(ConfigLayer(level=level, present=present))
-        return ConfigMeta(source=source, layers=layers)
+    # NOTE: ``_build_meta_entry`` was retired in Cycle B.  The
+    # waterfall-trace meta (source + layers) is gone; tier-of-origin
+    # information now lives in the top-level ``inherited`` map.
 
     @staticmethod
     @functools.lru_cache(maxsize=256)
@@ -298,16 +270,14 @@ class ConfigApiService:
         by_class: Dict[str, Dict[str, Any]],
         sources: Dict[str, str],
         active_scope: str,
-        include_meta: bool,
-        tier_data: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
-        docs_mode: str = "none",
+        meta_mode: str = "none",
         include_mode: str = "scope",
     ) -> Tuple[
         Dict[str, Any],
-        Optional[Dict[str, ConfigMeta]],
+        Optional[Dict[str, Any]],
         Optional[Dict[str, str]],
     ]:
-        """Bucket visible classes into scope/topic tree and optionally build meta.
+        """Bucket visible classes into scope/topic tree and optionally build hierarchical meta.
 
         At collection scope, catalog-tier configs (``_visibility = "catalog"``)
         are surfaced under a sibling ``inherited_from_catalog`` block instead
@@ -318,50 +288,43 @@ class ConfigApiService:
         ``scope/topic/sub`` shape as the main tree so dashboards can render
         it with the same form-builder.
 
-        When ``include_meta`` and ``tier_data`` are both provided, each
-        ``ConfigMeta`` entry includes the full ``layers`` waterfall trace
-        (one entry per tier with a ``present`` flag) alongside the
-        single-tier ``source`` summary.
+        ``meta_mode`` controls per-class field documentation in the
+        hierarchical ``meta`` tree:
 
-        ``docs_mode`` controls per-class field documentation:
-        - ``"none"`` — no field-level docs attached.
-        - ``"field"`` — ``meta[ClassName].field_docs`` carries
-          ``{field_name: description}`` extracted from the class JSON Schema
-          (lightweight; default mode).
-        - ``"schema"`` — ``meta[ClassName].json_schema`` carries the full
-          ``model_json_schema()`` document.
+        - ``"none"`` — no docs; ``meta`` returned as ``None``.
+        - ``"field"`` (default) — leaf is ``{"field_docs": {field_name:
+          description}}``, extracted from the class JSON Schema.
+          Lightweight, suitable for dashboards.
+        - ``"schema"`` — leaf is ``{"json_schema": <full Pydantic schema>}``.
+          Heavier; suitable for form-builders.
+
+        The ``meta`` tree mirrors the ``configs`` tree shape exactly:
+        the same path that produces a payload in ``configs`` produces
+        the docs leaf in ``meta``.
 
         ``include_mode`` controls scope-vs-waterfall payload rendering:
+
         - ``"scope"`` (default) — body shows configs whose ``_visibility``
           declares the active scope as their owner OR whose stored row
-          lives at the active scope (``sources[class_key] == active_scope``).
-          Configs failing that test go into the ``inherited`` summary
-          (class_key → source) returned alongside the tree, NOT inlined.
-          Hierarchy match: asking the collection scope returns the
-          collection's config; upstream tiers are referenced, not duplicated.
+          lives at the active scope.  Upstream-tier configs go into the
+          ``inherited`` summary, NOT inlined.
         - ``"upstream"`` — every visible class is rendered with its
-          waterfall-resolved value (today's verbose behaviour).  Returned
-          ``inherited`` is None.
+          waterfall-resolved value.  Returned ``inherited`` is None.
 
-        Returns ``(tree, meta, inherited)``. ``meta`` is None unless
-        ``include_meta`` or ``docs_mode != "none"``. ``inherited`` is None
-        unless ``include_mode == "scope"`` and at least one upstream class
-        was filtered out.
+        Returns ``(tree, meta, inherited)``.  ``meta`` is None unless
+        ``meta_mode != "none"``.  ``inherited`` is None unless
+        ``include_mode == "scope"`` and at least one upstream class was
+        filtered out.
         """
-        wants_docs = docs_mode in ("field", "schema")
+        wants_docs = meta_mode in ("field", "schema")
         slim = include_mode == "scope"
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
-        meta: Dict[str, ConfigMeta] = {}
+        meta_tree: Dict[str, Any] = {}
         inherited: Dict[str, str] = {}
 
         def _is_in_scope(cls: Type[PluginConfig], class_key: str) -> bool:
-            """Slim-mode filter: keep only configs owned by ``active_scope``.
-
-            Owned = the class declares this scope via ``_visibility`` OR
-            an explicit row exists at this scope. Platform scope is the
-            top tier — everything is "in-scope" there.
-            """
+            """Slim-mode filter: keep only configs owned by ``active_scope``."""
             if active_scope == "platform":
                 return True
             visibility = getattr(cls, "_visibility", None)
@@ -371,35 +334,25 @@ class ConfigApiService:
                 return True
             return False
 
-        def _ensure_meta(class_key: str, cls: Type[PluginConfig]) -> None:
-            entry = meta.get(class_key)
-            if entry is None:
-                if include_meta and class_key in sources:
-                    entry = ConfigApiService._build_meta_entry(
-                        class_key, sources, tier_data,
-                    )
-                elif wants_docs:
-                    # source still useful even without meta=true; fall back
-                    # to "default" when class isn't in sources (resolved=False)
-                    entry = ConfigMeta(source=sources.get(class_key, "default"))
-                else:
-                    return
-                meta[class_key] = entry
-            if docs_mode == "schema" and entry.json_schema is None:
-                entry.json_schema = cls.model_json_schema()
-            elif docs_mode == "field" and entry.field_docs is None:
-                entry.field_docs = ConfigApiService._extract_field_docs(cls)
-            # Entity context (Change 3): for driver-tier configs, surface
-            # the entity bucket from `_address[2]` so dashboards can
-            # distinguish items-side / collection-metadata-side / assets-side
-            # sidecars and driver settings.
-            if entry.entity is None:
-                address = getattr(cls, "_address", None)
-                if (
-                    isinstance(address, tuple) and len(address) == 3
-                    and address[1] == "drivers" and isinstance(address[2], str)
-                ):
-                    entry.entity = address[2]
+        def _doc_leaf(cls: Type[PluginConfig]) -> Dict[str, Any]:
+            """Build the meta-leaf payload for a class according to ``meta_mode``."""
+            if meta_mode == "schema":
+                return {"json_schema": cls.model_json_schema()}
+            return {"field_docs": ConfigApiService._extract_field_docs(cls)}
+
+        def _place_at(
+            target: Dict[str, Any],
+            address: Tuple[str, str, Optional[str]],
+            class_key: str,
+            value: Any,
+        ) -> None:
+            """Walk the address tuple to the leaf in ``target`` and set value."""
+            scope, topic, sub = address
+            topic_node = target.setdefault(scope, {}).setdefault(topic, {})
+            if sub is None:
+                topic_node[class_key] = value
+            else:
+                topic_node.setdefault(sub, {})[class_key] = value
 
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)
@@ -417,37 +370,32 @@ class ConfigApiService:
             ):
                 address = getattr(cls, "_address", None)
                 if address and address != ("", "", None):
-                    scope, topic, sub = address
                     inh_catalog = tree.setdefault("inherited_from_catalog", {})
-                    topic_node = inh_catalog.setdefault(scope, {}).setdefault(topic, {})
-                    if sub is None:
-                        topic_node[class_key] = payload
-                    else:
-                        topic_node.setdefault(sub, {})[class_key] = payload
-                    _ensure_meta(class_key, cls)
+                    _place_at(inh_catalog, address, class_key, payload)
+                    if wants_docs:
+                        meta_inh = meta_tree.setdefault("inherited_from_catalog", {})
+                        _place_at(meta_inh, address, class_key, _doc_leaf(cls))
                 continue
 
             placed = _place(cls, active_scope)
             if placed is None:
                 continue
 
-            # Slim mode (Change 4): defer upstream-tier configs to the
-            # ``inherited`` summary instead of inlining their bodies.
+            # Slim mode: defer upstream-tier configs to the ``inherited``
+            # summary instead of inlining their bodies.
             if slim and not _is_in_scope(cls, class_key):
                 inherited[class_key] = sources.get(class_key, "default")
-                _ensure_meta(class_key, cls)
+                # NB: meta entries for inherited (slim-suppressed) classes
+                # are intentionally absent — the inherited summary is a
+                # one-line pointer, not a documentation surface.
                 continue
 
-            scope, topic, sub = placed
-            topic_node = tree.setdefault(scope, {}).setdefault(topic, {})
-            if sub is None:
-                topic_node[class_key] = payload
-            else:
-                topic_node.setdefault(sub, {})[class_key] = payload
-            _ensure_meta(class_key, cls)
+            _place_at(tree, placed, class_key, payload)
+            if wants_docs:
+                _place_at(meta_tree, placed, class_key, _doc_leaf(cls))
         return (
             tree,
-            (meta if (include_meta or wants_docs) else None),
+            (meta_tree if wants_docs else None),
             (inherited if (slim and inherited) else None),
         )
 
@@ -733,25 +681,24 @@ class ConfigApiService:
         assets_page: int = 1,
         page_size: int = 15,
         resolved: bool = True,
-        meta: bool = False,
-        docs: str = "none",
+        meta: str = "field",
         include: str = "scope",
     ) -> CollectionConfigResponse:
-        by_class, sources, tier_data = await self._get_effective_configs(
+        by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
         )
         self._build_routing_refs(by_class)
         tree, meta_dict, inherited = self._compose_tree(
-            by_class, sources, "collection", meta, tier_data=tier_data,
-            docs_mode=docs, include_mode=include,
+            by_class, sources, "collection",
+            meta_mode=meta, include_mode=include,
         )
 
-        # Phase 1.5d: surface per-op driver resolution alongside the per-class
-        # tier-of-origin diagnostics in ``meta``.  Async (factors in
-        # ``is_collection_private``); kept opt-in via the existing
-        # ``?meta=true`` query so the cheap ``meta=False`` path stays cheap.
+        # Routing resolution is gated on ``meta != "none"`` so callers asking
+        # for a slim payload don't pay the privacy-mode probe cost.  Cycle C
+        # of the config-API restructure drops this field entirely (the
+        # routing tree under ``configs`` is the truth post-PR #254 / #258).
         routing_resolution: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None
-        if meta:
+        if meta != "none":
             routing_resolution = await self._build_routing_resolution(
                 catalog_id, collection_id,
             ) or None
@@ -790,17 +737,16 @@ class ConfigApiService:
         assets_page: int = 1,
         page_size: int = 15,
         resolved: bool = True,
-        meta: bool = False,
-        docs: str = "none",
+        meta: str = "field",
         include: str = "scope",
     ) -> CatalogConfigResponse:
-        by_class, sources, tier_data = await self._get_effective_configs(
+        by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
         )
         self._build_routing_refs(by_class)
         tree, meta_dict, inherited = self._compose_tree(
-            by_class, sources, "catalog", meta, tier_data=tier_data,
-            docs_mode=docs, include_mode=include,
+            by_class, sources, "catalog",
+            meta_mode=meta, include_mode=include,
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -808,7 +754,7 @@ class ConfigApiService:
             categories = {}
             coll_total, coll_items = await self._list_collections(
                 base_url, catalog_id, collections_page, page_size, depth,
-                resolved=resolved, meta=meta, docs=docs, include=include,
+                resolved=resolved, meta=meta, include=include,
             )
             coll_pg = self._build_config_page(
                 base_url=base_url, category="collections", total=coll_total,
@@ -842,17 +788,16 @@ class ConfigApiService:
         catalogs_page: int = 1,
         page_size: int = 15,
         resolved: bool = True,
-        meta: bool = False,
-        docs: str = "none",
+        meta: str = "field",
         include: str = "scope",
     ) -> PlatformConfigResponse:
-        by_class, sources, tier_data = await self._get_effective_configs(
+        by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
         )
         self._build_routing_refs(by_class)
         tree, meta_dict, _inherited = self._compose_tree(
-            by_class, sources, "platform", meta, tier_data=tier_data,
-            docs_mode=docs, include_mode=include,
+            by_class, sources, "platform",
+            meta_mode=meta, include_mode=include,
         )
 
         categories: Optional[Dict[str, ConfigPage]] = None
@@ -875,7 +820,7 @@ class ConfigApiService:
                     cat_response = await self.compose_catalog_config(
                         base_url=f"{base_url.rstrip('/')}/catalogs/{cat_id}",
                         catalog_id=cat_id, depth=depth - 1, page_size=page_size,
-                        resolved=resolved, meta=meta, docs=docs, include=include,
+                        resolved=resolved, meta=meta, include=include,
                     )
                     items.append(cat_response.model_dump())
                 else:
@@ -1004,8 +949,7 @@ class ConfigApiService:
         page_size: int,
         parent_depth: int,
         resolved: bool = True,
-        meta: bool = False,
-        docs: str = "none",
+        meta: str = "field",
         include: str = "scope",
     ) -> Tuple[int, List[Any]]:
         if self._catalogs_service is None:
@@ -1032,7 +976,7 @@ class ConfigApiService:
             col_response = await self.compose_collection_config(
                 base_url=col_base, catalog_id=catalog_id, collection_id=col_id,
                 depth=next_depth, page_size=page_size,
-                resolved=resolved, meta=meta, docs=docs, include=include,
+                resolved=resolved, meta=meta, include=include,
             )
             items.append(col_response.model_dump())
         return total, items
