@@ -121,6 +121,160 @@ async def test_index_failure_log_table_exists(async_conn):
 
 
 @pytest.mark.asyncio
+async def test_pg_outbox_enqueue_bulk_persists(async_conn, async_schema):
+    """COPY-based bulk enqueue persists rows.
+
+    The ``async_schema`` fixture has already set ``search_path`` on
+    ``async_conn`` so bare ``storage_outbox`` lands in the right namespace.
+    """
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+    from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
+    from dynastore.models.protocols.indexing import OutboxRecord
+
+    await ensure_storage_outbox_asyncpg(async_conn, async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    rows = [
+        OutboxRecord(
+            op_id=uuid4(), driver_id="d", driver_instance_id="di",
+            collection_id="cc", op="upsert", item_id=f"i{i}",
+            payload={"i": i}, idempotency_key=f"i{i}",
+        )
+        for i in range(2000)
+    ]
+    await store.enqueue_bulk(async_conn, catalog_id=async_schema, rows=rows)
+    n = await async_conn.fetchval("SELECT count(*) FROM storage_outbox")  # type: ignore[attr-defined]
+    assert n == 2000
+
+
+@pytest.mark.asyncio
+async def test_pg_outbox_claim_batch_skip_locked(
+    async_conn, second_async_conn, async_schema,
+):
+    """Two concurrent claimers each get a disjoint subset.
+
+    The fixture sets ``search_path`` only on ``async_conn``; we replicate
+    that on ``second_async_conn`` here because it's a wholly independent
+    asyncpg session.
+    """
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+    from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
+    from dynastore.models.protocols.indexing import OutboxRecord
+
+    await ensure_storage_outbox_asyncpg(async_conn, async_schema)
+    await second_async_conn.execute(  # type: ignore[attr-defined]
+        f'SET search_path TO "{async_schema}"',
+    )
+
+    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    await store.enqueue_bulk(
+        async_conn, catalog_id=async_schema,
+        rows=[
+            OutboxRecord(
+                op_id=uuid4(), driver_id="d", driver_instance_id="di",
+                collection_id="cc", op="upsert", item_id=str(i),
+                payload={}, idempotency_key=str(i),
+            )
+            for i in range(10)
+        ],
+    )
+
+    store2 = PgOutboxStore(
+        pool=None, single_conn=second_async_conn, schema=async_schema,
+    )
+    async with async_conn.transaction(), second_async_conn.transaction():  # type: ignore[attr-defined]
+        b1 = await store.claim_batch(
+            driver_id="d", catalog_id=async_schema,
+            batch_size=5, claimed_by="w1",
+        )
+        b2 = await store2.claim_batch(
+            driver_id="d", catalog_id=async_schema,
+            batch_size=5, claimed_by="w2",
+        )
+    assert len(b1) == 5 and len(b2) == 5
+    assert {r.op_id for r in b1}.isdisjoint({r.op_id for r in b2})
+
+
+@pytest.mark.asyncio
+async def test_pg_outbox_mark_done_retry_failed(async_conn, async_schema):
+    """``mark_done`` / ``mark_retry`` / ``mark_failed`` update status."""
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+    from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
+    from dynastore.models.protocols.indexing import OutboxRecord
+
+    await ensure_storage_outbox_asyncpg(async_conn, async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    op_ids = [uuid4() for _ in range(3)]
+    await store.enqueue_bulk(
+        async_conn, catalog_id=async_schema,
+        rows=[
+            OutboxRecord(
+                op_id=op_ids[i], driver_id="d", driver_instance_id="di",
+                collection_id="cc", op="upsert", item_id=str(i),
+                payload={}, idempotency_key=str(i),
+            )
+            for i in range(3)
+        ],
+    )
+
+    await store.mark_done(catalog_id=async_schema, op_ids=[op_ids[0]])
+    await store.mark_retry(
+        catalog_id=async_schema, op_ids=[op_ids[1]],
+        error="transient", attempts_seen=0,
+    )
+    await store.mark_failed(
+        catalog_id=async_schema, op_ids=[op_ids[2]], error="poison",
+    )
+
+    statuses = {
+        r["op_id"]: r["status"]
+        for r in await async_conn.fetch(  # type: ignore[attr-defined]
+            "SELECT op_id, status FROM storage_outbox",
+        )
+    }
+    assert statuses[op_ids[0]] == "done"
+    assert statuses[op_ids[1]] == "ready"
+    assert statuses[op_ids[2]] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_pg_outbox_mark_retry_bumps_attempts_and_delays_ready_at(
+    async_conn, async_schema,
+):
+    """``mark_retry`` increments ``attempts`` and pushes ``ready_at`` out."""
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+    from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
+    from dynastore.models.protocols.indexing import OutboxRecord
+
+    await ensure_storage_outbox_asyncpg(async_conn, async_schema)
+    store = PgOutboxStore(pool=None, single_conn=async_conn, schema=async_schema)
+    op_id = uuid4()
+    await store.enqueue_bulk(
+        async_conn, catalog_id=async_schema,
+        rows=[
+            OutboxRecord(
+                op_id=op_id, driver_id="d", driver_instance_id="di",
+                collection_id="cc", op="upsert", item_id="i",
+                payload={}, idempotency_key="i",
+            ),
+        ],
+    )
+    await store.mark_retry(
+        catalog_id=async_schema, op_ids=[op_id],
+        error="net blip", attempts_seen=0,
+    )
+
+    row = await async_conn.fetchrow(  # type: ignore[attr-defined]
+        "SELECT status, attempts, last_error, ready_at > now() AS delayed "
+        "FROM storage_outbox WHERE op_id = $1",
+        op_id,
+    )
+    assert row["status"] == "ready"
+    assert row["attempts"] == 1
+    assert row["last_error"] == "net blip"
+    assert row["delayed"] is True
+
+
+@pytest.mark.asyncio
 async def test_insert_emits_notify(async_conn, second_async_conn):
     """AFTER INSERT trigger must NOTIFY on outbox_<driver_id>_<schema>."""
     from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
