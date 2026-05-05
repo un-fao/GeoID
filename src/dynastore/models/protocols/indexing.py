@@ -140,7 +140,7 @@ class OutboxStore(Protocol):
         self, *, catalog_id: str, op_ids: Sequence[UUID], error: str,
     ) -> None: ...
 
-    async def listen(
+    def listen(
         self, *, driver_id: str, catalog_id: str,
     ) -> AsyncIterator[Notification]: ...
 
