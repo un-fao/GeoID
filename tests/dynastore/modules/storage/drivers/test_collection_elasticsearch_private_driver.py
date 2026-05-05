@@ -13,10 +13,16 @@ in-cluster fixture):
   ``get_tenant_collections_private_index`` matches the convention.
 - ``location`` returns the per-tenant index path (not the shared
   ``{prefix}-collections`` of the public driver).
+- ``upsert_metadata`` lazily ensures the per-tenant index exists
+  before writing (defensive against the not-yet-wired catalog
+  ensure_storage lifecycle hook + against ES clusters with
+  auto_create disabled).
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from dynastore.modules.elasticsearch.collection_es_driver import (
     CollectionElasticsearchDriver,
@@ -82,3 +88,50 @@ def test_location_returns_per_tenant_path():
     assert loc.identifiers["catalog_id"] == "cat-a"
     # No "routing" identifier — per-tenant index doesn't need shard routing.
     assert "routing" not in loc.identifiers
+
+
+@pytest.mark.asyncio
+async def test_upsert_metadata_lazily_ensures_index():
+    """Cycle E.2.c gap: until the catalog ensure_storage lifecycle hook
+    is wired, the first write to a per-tenant private collection index
+    must self-create the index — otherwise auto_create-disabled clusters
+    would reject the write OR auto-create the index without
+    COLLECTION_MAPPING (geo_shape on bbox_shape would be missing,
+    breaking spatial search)."""
+    driver = CollectionElasticsearchPrivateDriver()
+    es_client = MagicMock()
+    es_client.indices = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.indices.create = AsyncMock(return_value=None)
+    es_client.index = AsyncMock(return_value={"result": "created"})
+    with patch.object(driver, "_get_client", return_value=es_client), \
+         patch.object(driver, "_get_prefix", return_value="dynastore"):
+        await driver.upsert_metadata(
+            "cat-a", "col-a", {"id": "col-a", "extent": {}},
+        )
+    # ensure_storage should have been called via the lazy path.
+    es_client.indices.exists.assert_awaited_once()
+    es_client.indices.create.assert_awaited_once()
+    # And then the actual upsert.
+    es_client.index.assert_awaited_once()
+    create_kwargs = es_client.indices.create.await_args.kwargs
+    assert create_kwargs["index"] == "dynastore-cat-a-collections-private"
+    assert "mappings" in create_kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_metadata_skips_create_when_index_exists():
+    """ensure_storage short-circuits when the index already exists —
+    avoids racing concurrent upserts on the create path."""
+    driver = CollectionElasticsearchPrivateDriver()
+    es_client = MagicMock()
+    es_client.indices = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.indices.create = AsyncMock(return_value=None)
+    es_client.index = AsyncMock(return_value={"result": "created"})
+    with patch.object(driver, "_get_client", return_value=es_client), \
+         patch.object(driver, "_get_prefix", return_value="dynastore"):
+        await driver.upsert_metadata("cat-a", "col-a", {"id": "col-a"})
+    es_client.indices.exists.assert_awaited_once()
+    es_client.indices.create.assert_not_awaited()
+    es_client.index.assert_awaited_once()
