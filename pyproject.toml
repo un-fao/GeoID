@@ -236,6 +236,11 @@ drivers_grp = ["dynastore[module_storage_postgresql,module_storage_duckdb,module
 # ==========================================================================
 task_base = ["dynastore[db_sync,module_tasks,module_events,extension_processes]"]
 ingestion = ["dynastore[task_base,module_gcp,task_ingestion_deps]"]
+# outbox_drain — generic per-driver outbox consumer used by indexer worker
+# Cloud Run Jobs. Only depends on task_base; the concrete BulkIndexer
+# adapter is supplied by the worker's own driver extras (e.g. the ES
+# worker also pulls in module_elasticsearch).
+outbox_drain = ["dynastore[task_base]"]
 
 # ---- Worker / Cloud Run Job task extras (heavy; sync-db via task_base).
 # One extras per task. Each Cloud Run Job is deployed with
@@ -276,7 +281,7 @@ worker_task_export_features = ["dynastore[task_base,module_gcp,stac,geospatial_c
 worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs]", "morecantile>=7.0.3,<8"]
 worker_task_gdal = ["dynastore[task_base,module_catalog,gdal]"]
 worker_task_dimensions_materialize = ["dynastore[task_base,module_catalog,extension_dimensions]"]
-worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elasticsearch,task_elasticsearch_indexer_deps]"]
+worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elasticsearch,task_elasticsearch_indexer_deps,outbox_drain]"]
 
 # ==========================================================================
 # SERVICE COMPOSITIONS (async-db)
