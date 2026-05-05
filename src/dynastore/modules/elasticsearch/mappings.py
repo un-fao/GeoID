@@ -343,6 +343,23 @@ def get_assets_index_name(prefix: str, catalog_id: str) -> str:
     return f"{prefix}-{catalog_id}-assets"
 
 
+def get_tenant_collections_private_index(prefix: str, catalog_id: str) -> str:
+    """Per-catalog private collection-envelope index (Cycle E.2.b).
+
+    Owned by ``CollectionElasticsearchPrivateDriver``.  Mirrors the
+    items-tier per-tenant private index convention
+    (``{prefix}-{catalog_id}-private-items`` is owned by the items
+    private driver under a parallel name).  Catalog-first naming so
+    per-catalog indexes sort lexicographically next to each other in
+    tooling.
+
+    Like the items-private index, this index is intentionally NOT a
+    member of any platform-wide alias — tenant isolation requires
+    explicit catalog scope on every query.
+    """
+    return f"{prefix}-{catalog_id}-collections-private"
+
+
 def get_search_index(
     prefix: str,
     entity_type: str,
