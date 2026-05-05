@@ -1267,18 +1267,27 @@ async function demoAction(action) {
             if not self.web_module:
                  return []
             
-            # Extract roles from Token if provided
+            # IamMiddleware has already authenticated and attached the
+            # resolved principal_role to request.state. Read that first; the
+            # OIDC re-decode path below covers test harnesses / direct calls
+            # that bypass the middleware.
             user_roles: List[str] = []
-            if authorization and authorization.startswith("Bearer "):
+            state_roles = getattr(request.state, "principal_role", None)
+            if state_roles:
+                user_roles = list(state_roles) if isinstance(state_roles, list) else [state_roles]
+
+            if not user_roles and authorization and authorization.startswith("Bearer "):
                 token = authorization.removeprefix("Bearer ")
                 try:
                     from dynastore.modules.iam.interfaces import IdentityProviderProtocol
-                    providers = get_protocols(IdentityProviderProtocol)
-                    for provider in providers:
+                    for provider in get_protocols(IdentityProviderProtocol):
                         try:
                             user_info = await provider.get_user_info(token)
-                            if user_info and "roles" in user_info:
-                                user_roles = [str(r) for r in user_info["roles"]]
+                            if user_info:
+                                # Keycloak nests roles under realm_access.roles;
+                                # local providers may flatten them at "roles".
+                                raw = user_info.get("roles") or user_info.get("realm_access", {}).get("roles", [])
+                                user_roles = [str(r) for r in raw]
                                 break
                         except Exception:
                             continue
@@ -1527,7 +1536,7 @@ async function demoAction(action) {
                         try:
                             info = await idp.get_user_info(token)
                             if info:
-                                user_roles = info.get("roles", [])
+                                user_roles = info.get("roles") or info.get("realm_access", {}).get("roles", [])
                                 principal_id = info.get("subject_id") or info.get("principal_id")
                                 break
                         except Exception:
