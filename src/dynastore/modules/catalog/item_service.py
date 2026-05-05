@@ -446,8 +446,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             # Single dispatcher call site for index propagation —
             # replaces the per-driver ``_on_item_upsert`` event listeners.
+            # Phase 2f: pass the engine so the dispatcher can open its own
+            # wrapping TX for atomic OUTBOX enqueue.
             if results:
-                await self._dispatch_index_upsert(catalog_id, collection_id, results)
+                await self._dispatch_index_upsert(
+                    catalog_id, collection_id, results,
+                    db_resource=db_resource or self.engine,
+                )
 
             # Emit events for non-indexer subscribers (audit, telemetry).
             # Index propagation no longer rides this channel — it goes
@@ -731,9 +736,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         # ── Post-commit: dispatcher fan-out for index propagation ──────
         # Single call site replaces the per-driver ``_on_item_upsert``
-        # event listeners.
+        # event listeners.  Phase 2f: pass the engine so the dispatcher
+        # can open its own wrapping TX for atomic OUTBOX enqueue.
         if results:
-            await self._dispatch_index_upsert(catalog_id, collection_id, results)
+            await self._dispatch_index_upsert(
+                catalog_id, collection_id, results,
+                db_resource=engine,
+            )
 
         # ── Post-commit: emit events for non-indexer subscribers ──────
         if results:
@@ -776,6 +785,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         catalog_id: str,
         collection_id: str,
         results: List["Feature"],
+        *,
+        db_resource: Optional[DbResource] = None,
     ) -> None:
         """Fan items out to every configured Indexer for the collection.
 
@@ -788,28 +799,26 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         Failure surfaces are decided by routing-config ``on_failure`` per
         entry — ``OUTBOX`` enqueues a durable retry row, ``WARN`` logs,
         ``FATAL`` raises out of this method.
+
+        Phase 2f atomic OUTBOX: when an engine is supplied, the dispatch
+        is wrapped in its own ``managed_transaction`` so ``ctx.pg_conn``
+        is non-None.  The ``TaskTableOutboxWriter.enqueue`` INSERT and the
+        indexer attempt then live in the same TX — outbox writes are
+        durable instead of being skipped with a warning.  Cost: one extra
+        TX open/commit per dispatch call (cheap vs the indexer
+        round-trip).  Non-OUTBOX policies (FATAL, WARN, IGNORE) are
+        unaffected by the wrapping TX since they don't write to the outbox
+        table.
         """
         if not results:
             return
-        from dynastore.models.protocols.indexer import (
-            IndexContext, IndexOp,
-        )
+
+        from dynastore.models.protocols.indexer import IndexOp
         from dynastore.modules.storage.index_dispatcher import (
-            IndexerFatal, get_index_dispatcher,
+            get_index_dispatcher,
         )
-        from dynastore.tools.correlation import get_correlation_id
 
         dispatcher = get_index_dispatcher()
-        ctx = IndexContext(
-            catalog=catalog_id,
-            collection=collection_id,
-            correlation_id=get_correlation_id() or "",
-            # No pg_conn: this call site runs post-commit. OUTBOX
-            # policy degrades to non-atomic enqueue — Phase 2f will
-            # move the call inside the write TX so OUTBOX becomes
-            # atomic with the data write.
-            pg_conn=None,
-        )
         ops = [
             IndexOp(
                 op_type="upsert",
@@ -820,7 +829,47 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             for r in results
             if r.id is not None
         ]
+        if not ops:
+            return
 
+        engine = db_resource or self.engine
+        if engine is None:
+            # No engine available — degrade to non-atomic enqueue (matches
+            # pre-Phase-2f behaviour).  Outbox writer logs its own warning
+            # when ctx.pg_conn is None.
+            await self._do_dispatch(
+                dispatcher, catalog_id, collection_id, ops, pg_conn=None,
+            )
+            return
+
+        # Phase 2f: open a wrapping TX so the outbox INSERT (if any) is
+        # atomic with the indexer attempt.
+        async with managed_transaction(engine) as conn:
+            await self._do_dispatch(
+                dispatcher, catalog_id, collection_id, ops, pg_conn=conn,
+            )
+
+    async def _do_dispatch(
+        self,
+        dispatcher: Any,
+        catalog_id: str,
+        collection_id: str,
+        ops: List[Any],
+        *,
+        pg_conn: Optional[DbResource],
+    ) -> None:
+        """Inner dispatch helper — split out so the wrapping TX in
+        :meth:`_dispatch_index_upsert` is a single ``async with`` block."""
+        from dynastore.models.protocols.indexer import IndexContext
+        from dynastore.modules.storage.index_dispatcher import IndexerFatal
+        from dynastore.tools.correlation import get_correlation_id
+
+        ctx = IndexContext(
+            catalog=catalog_id,
+            collection=collection_id,
+            correlation_id=get_correlation_id() or "",
+            pg_conn=pg_conn,
+        )
         try:
             if len(ops) == 1:
                 await dispatcher.fan_out(ctx, ops[0])
@@ -834,7 +883,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception as e:  # noqa: BLE001 — non-FATAL paths absorb errors
             logger.warning(
                 "Index dispatcher fan-out failed for %s/%s (%d items): %s",
-                catalog_id, collection_id, len(results), e,
+                catalog_id, collection_id, len(ops), e,
             )
 
     # ------------------------------------------------------------------

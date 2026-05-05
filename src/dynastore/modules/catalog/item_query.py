@@ -590,12 +590,16 @@ class ItemQueryMixin:
                     from dynastore.tools.correlation import get_correlation_id
 
                     dispatcher = get_index_dispatcher()
+                    # Phase 2f atomic OUTBOX: pass the live PG conn from
+                    # the delete TX so any OUTBOX enqueue lands in the
+                    # same TX as the soft-delete UPDATE — atomic with
+                    # the data change.
                     await dispatcher.fan_out(
                         IndexContext(
                             catalog=catalog_id,
                             collection=collection_id,
                             correlation_id=get_correlation_id() or "",
-                            pg_conn=None,
+                            pg_conn=conn,
                         ),
                         IndexOp(
                             op_type="delete",
