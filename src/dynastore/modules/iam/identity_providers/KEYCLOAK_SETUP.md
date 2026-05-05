@@ -6,6 +6,18 @@ GeoID is a vanilla OIDC RP — any OIDC-compliant IdP (Okta, Auth0, Azure AD, Go
 
 ---
 
+## TL;DR — three deployment profiles
+
+| Profile | Keycloak | Realm + users | Secrets | Override mechanism |
+|---|---|---|---|---|
+| **Local on-premise / dev** | Bundled `compose.keycloak.yml` (Keycloak 26 in docker) | Auto-imported from `keycloak/realm-export.json` (sysadmin, admin, user, viewer + legacy test* users; passwords match usernames) | Committed dev fixtures in `docker/.env` (`IDP_CLIENT_SECRET=geoid-api-secret`, `KEYCLOAK_ADMIN_PASSWORD=admin`) | None needed — `docker compose up` works out of the box. |
+| **Review / staging** | Shared remote Keycloak (e.g. internal cluster) | Realm provisioned by Keycloak admin once; you receive issuer URLs, client id, client secret | Cloud Run env vars or shared K8s secrets | Set `IDP_*` env vars in the deployment manifest (`apps.base.yml` / `apps.review.yml`) — they override any value baked into the image. |
+| **Production** | Same shape as review but with production realm + production secrets | Same as review | Cloud Run secrets (preferably referenced from a secret manager) | Same as review — never commit production values; use the per-environment override mechanism. |
+
+Local defaults are committed deliberately. Anything you would commit for a **real** environment goes in your override layer (Cloud Run env vars, Astronomer connections, Kubernetes secrets, …) — never into `docker/.env` or `realm-export.json`.
+
+---
+
 ## What the GeoID admin needs from you
 
 Send back the following four values once the realm is configured. They become `IDP_*` env vars on the GeoID side.

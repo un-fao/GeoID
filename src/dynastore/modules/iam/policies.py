@@ -375,6 +375,38 @@ class PolicyService:
                                 role_def, schema=schema, conn=db
                             )
 
+                # Seed default role hierarchy:
+                #   sysadmin > admin > user > anonymous
+                # Direction: parent inherits child's policies (see
+                # `get_role_hierarchy` in postgres_iam_storage.py — it returns
+                # `role_names + children`). With this seed an authenticated
+                # ``user`` automatically inherits every ``*_public_access``
+                # policy bound to ``anonymous``, which is the natural
+                # "everything anonymous can do, authenticated users can do
+                # too" semantics. Without it, registering with Keycloak
+                # silently *narrows* the user's access vs. browsing
+                # unauthenticated.
+                #
+                # Idempotent: ON CONFLICT DO NOTHING in `add_role_hierarchy`,
+                # so reprovision on every cold start is safe and self-heals
+                # databases that pre-date this seed.
+                _DEFAULT_HIERARCHY = [
+                    (DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value),
+                    (DefaultRole.ADMIN.value,    DefaultRole.USER.value),
+                    (DefaultRole.USER.value,     DefaultRole.ANONYMOUS.value),
+                ]
+                for parent, child in _DEFAULT_HIERARCHY:
+                    try:
+                        await self.iam_storage.add_role_hierarchy(
+                            parent_role=parent, child_role=child,
+                            schema=schema, conn=db,
+                        )
+                    except Exception:
+                        # add_role_hierarchy is upsert-by-PK in the storage
+                        # impl; if a deployment overrode the storage with a
+                        # stricter (non-idempotent) version, swallow the dup.
+                        pass
+
     # --- Evaluation ---
 
     @cached(maxsize=512, namespace="policies")
