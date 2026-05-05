@@ -149,6 +149,21 @@ def register_web_policies():
         policies=["web_dashboard_platform_access"],
     ))
 
+    # OGC compliance check is read-only conformance info — accessible to any authenticated user.
+    web_dashboard_ogc_policy = Policy(
+        id="web_dashboard_ogc_compliance_access",
+        description="Read-only OGC conformance check accessible to authenticated users.",
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/web/dashboard/ogc-compliance/?$"],
+        effect="ALLOW",
+    )
+    pm.register_policy(web_dashboard_ogc_policy)
+    for role_name in (DefaultRole.ADMIN.value, DefaultRole.USER.value):
+        pm.register_role(Role(
+            name=role_name,
+            policies=["web_dashboard_ogc_compliance_access"],
+        ))
+
     # Per-catalog dashboard endpoints — anyone with catalog membership for the
     # catalog_id present in the URL. The condition handler does the actual
     # membership check using catalog_id pre-extracted by IamMiddleware.
@@ -874,6 +889,12 @@ async function demoAction(action) {
 </script>
 """
 
+    @staticmethod
+    def _serve_admin_html(html_path: str) -> HTMLResponse:
+        from dynastore._version import VERSION
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read().replace("{{VERSION}}", VERSION))
+
     @expose_web_page(
         page_id="exposure",
         title="Service Exposure",
@@ -889,8 +910,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "exposure.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+        return self._serve_admin_html(html_path)
 
     @expose_web_page(
         page_id="configuration",
@@ -912,8 +932,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "configuration.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+        return self._serve_admin_html(html_path)
 
     @expose_web_page(
         page_id="governance",
@@ -936,8 +955,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "governance.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Governance page template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+        return self._serve_admin_html(html_path)
 
     @expose_web_page(
         page_id="stac-authoring",
@@ -958,8 +976,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "stac-authoring.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="STAC authoring template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+        return self._serve_admin_html(html_path)
 
     @expose_web_page(
         page_id="ingest",
@@ -982,8 +999,7 @@ async function demoAction(action) {
         html_path = os.path.join(static_dir, "ingest.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Ingest page template not found.")
-        with open(html_path, "r") as f:
-            return HTMLResponse(f.read())
+        return self._serve_admin_html(html_path)
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
