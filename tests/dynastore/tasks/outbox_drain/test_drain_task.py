@@ -264,3 +264,33 @@ async def test_drain_marks_poison_and_records_failed(
         "SELECT status FROM storage_outbox WHERE op_id = $1", op_id,
     )
     assert statuses[0]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Framework-instantiation regression: the dynastore tasks framework loads
+# every entry-point at startup with zero-arg or app_state-only construction.
+# OutboxDrainTask must accept that path without raising — production wires
+# concrete collaborators per-tenant before drain_once() is called.
+# ---------------------------------------------------------------------------
+
+
+def test_outbox_drain_task_zero_arg_construction():
+    """Framework registers the task with no kwargs; should succeed."""
+    task = OutboxDrainTask()
+    assert task.driver_id is None
+    assert task.indexer is None
+
+
+def test_outbox_drain_task_app_state_only_construction():
+    """Framework also tries factory(app_state=...). Should succeed."""
+    task = OutboxDrainTask(app_state=object())
+    assert task.driver_id is None
+
+
+@pytest.mark.asyncio
+async def test_outbox_drain_unconfigured_drain_raises():
+    """A framework-instantiated placeholder must refuse to drain
+    until configuration completes — the error message names the gap."""
+    task = OutboxDrainTask()
+    with pytest.raises(RuntimeError, match="not configured: missing"):
+        await task.drain_once()

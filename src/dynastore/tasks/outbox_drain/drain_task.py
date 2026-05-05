@@ -62,16 +62,25 @@ class OutboxDrainTask(TaskProtocol):
 
     def __init__(
         self,
+        app_state: object | None = None,
         *,
-        driver_id: str,
-        indexer: BulkIndexer,
-        store: OutboxStore,
-        failure_log: IndexFailureLog,
-        catalog_id: str,
+        driver_id: str | None = None,
+        indexer: BulkIndexer | None = None,
+        store: OutboxStore | None = None,
+        failure_log: IndexFailureLog | None = None,
+        catalog_id: str | None = None,
         batch_size: int = 1500,
         worker_id: str = "drain",
         retry_visible_threshold: int = 3,
     ) -> None:
+        # Two construction paths share this signature:
+        # (1) Framework registration at startup — `factory()` or
+        #     `factory(app_state=...)` with no other kwargs. Instance is
+        #     a placeholder until a per-tenant runner configures it.
+        # (2) Production wrapper / tests — explicit kwargs supply a
+        #     fully-configured instance ready for ``drain_once()``.
+        # ``drain_once()`` validates that the configuration is complete.
+        self.app_state = app_state
         self.driver_id = driver_id
         self.indexer = indexer
         self.store = store
@@ -101,6 +110,40 @@ class OutboxDrainTask(TaskProtocol):
             "catalog_id": self.catalog_id,
         }
 
+    def _require_configured(self) -> tuple[str, BulkIndexer, OutboxStore, IndexFailureLog, str]:
+        """Assert all collaborators are set; return them as a non-Optional tuple.
+
+        Used by ``drain_once`` so pyright can narrow the Optional fields
+        after a single guard. Raises ``RuntimeError`` if framework-zero-arg
+        construction was used without subsequent configuration."""
+        missing = [
+            name for name, value in (
+                ("driver_id", self.driver_id),
+                ("indexer", self.indexer),
+                ("store", self.store),
+                ("failure_log", self.failure_log),
+                ("catalog_id", self.catalog_id),
+            ) if value is None
+        ]
+        if missing:
+            raise RuntimeError(
+                f"OutboxDrainTask not configured: missing {missing}. "
+                f"The task framework registers a zero-arg placeholder; "
+                f"production callers must construct with explicit kwargs "
+                f"(driver_id, indexer, store, failure_log, catalog_id) "
+                f"before invoking drain."
+            )
+        # Cast through assert for pyright narrowing.
+        assert self.driver_id is not None
+        assert self.indexer is not None
+        assert self.store is not None
+        assert self.failure_log is not None
+        assert self.catalog_id is not None
+        return (
+            self.driver_id, self.indexer, self.store,
+            self.failure_log, self.catalog_id,
+        )
+
     async def drain_once(self) -> int:
         """Claim a single batch and apply outcomes; return rows-handled.
 
@@ -109,9 +152,10 @@ class OutboxDrainTask(TaskProtocol):
         to the terminal ``failed`` status. Per-row poison classification
         is the indexer's responsibility, not the drain task's.
         """
-        rows = await self.store.claim_batch(
-            driver_id=self.driver_id,
-            catalog_id=self.catalog_id,
+        driver_id, indexer, store, failure_log, catalog_id = self._require_configured()
+        rows = await store.claim_batch(
+            driver_id=driver_id,
+            catalog_id=catalog_id,
             batch_size=self.batch_size,
             claimed_by=self.worker_id,
         )
@@ -120,62 +164,69 @@ class OutboxDrainTask(TaskProtocol):
 
         ops = [self._row_to_op(r) for r in rows]
         try:
-            result = await self.indexer.index_bulk(ops)
+            result = await indexer.index_bulk(ops)
         except Exception as exc:  # noqa: BLE001 — surface every failure
             logger.warning(
                 "OutboxDrainTask[%s/%s]: whole-batch error: %s",
-                self.driver_id,
-                self.catalog_id,
+                driver_id,
+                catalog_id,
                 exc,
             )
-            await self.store.mark_retry(
-                catalog_id=self.catalog_id,
+            await store.mark_retry(
+                catalog_id=catalog_id,
                 op_ids=[r.op_id for r in rows],
                 error=str(exc),
                 attempts_seen=rows[0].attempts,
             )
-            await self._record_retry_visible(rows, str(exc))
+            await self._record_retry_visible(rows, str(exc), failure_log, catalog_id)
             return len(rows)
 
-        await self._apply_outcomes(rows, result)
+        await self._apply_outcomes(rows, result, store, failure_log, catalog_id)
         return len(rows)
 
     async def _apply_outcomes(
-        self, rows: Sequence[OutboxRow], result: BulkIndexResult,
+        self,
+        rows: Sequence[OutboxRow],
+        result: BulkIndexResult,
+        store: OutboxStore,
+        failure_log: IndexFailureLog,
+        catalog_id: str,
     ) -> None:
         """Partition ``rows`` per ``result`` and apply the right
         ``mark_*`` and :class:`IndexFailureLog` writes."""
         rows_by_id = {r.op_id: r for r in rows}
 
         if result.passed:
-            await self.store.mark_done(
-                catalog_id=self.catalog_id, op_ids=result.passed,
+            await store.mark_done(
+                catalog_id=catalog_id, op_ids=result.passed,
             )
 
         if result.transient:
             tids = [op_id for op_id, _ in result.transient]
             errs_by_id = {op_id: reason for op_id, reason in result.transient}
             joined = " / ".join(set(errs_by_id.values())) or "transient"
-            await self.store.mark_retry(
-                catalog_id=self.catalog_id,
+            await store.mark_retry(
+                catalog_id=catalog_id,
                 op_ids=tids,
                 error=joined,
                 attempts_seen=rows_by_id[tids[0]].attempts,
             )
             transient_rows = [rows_by_id[op_id] for op_id in tids]
-            await self._record_retry_visible(transient_rows, errs_by_id)
+            await self._record_retry_visible(
+                transient_rows, errs_by_id, failure_log, catalog_id,
+            )
 
         if result.poison:
             pids = [op_id for op_id, _ in result.poison]
             errs_by_id = {op_id: reason for op_id, reason in result.poison}
             joined = " / ".join(set(errs_by_id.values())) or "poison"
-            await self.store.mark_failed(
-                catalog_id=self.catalog_id, op_ids=pids, error=joined,
+            await store.mark_failed(
+                catalog_id=catalog_id, op_ids=pids, error=joined,
             )
             for r in (rows_by_id[op_id] for op_id in pids):
-                await self.failure_log.record(
+                await failure_log.record(
                     None,
-                    catalog_id=self.catalog_id,
+                    catalog_id=catalog_id,
                     collection_id=r.collection_id,
                     driver_instance_id=r.driver_instance_id,
                     driver_id=r.driver_id,
@@ -192,6 +243,8 @@ class OutboxDrainTask(TaskProtocol):
         self,
         rows: Sequence[OutboxRow],
         errs: Union[str, Mapping[Any, str]],
+        failure_log: IndexFailureLog,
+        catalog_id: str,
     ) -> None:
         """Write to :class:`IndexFailureLog` only when the row's NEXT
         attempts crosses ``retry_visible_threshold``.
@@ -209,9 +262,9 @@ class OutboxDrainTask(TaskProtocol):
                 if isinstance(errs, str)
                 else errs.get(r.op_id, "transient")
             )
-            await self.failure_log.record(
+            await failure_log.record(
                 None,
-                catalog_id=self.catalog_id,
+                catalog_id=catalog_id,
                 collection_id=r.collection_id,
                 driver_instance_id=r.driver_instance_id,
                 driver_id=r.driver_id,
