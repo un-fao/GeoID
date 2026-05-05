@@ -174,12 +174,6 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
 
-    # --- Default Values (Legacy/Bulk) ---
-    attribute_defaults: Optional[Dict[str, Any]] = Field(default=None,
-        description="Default values for attributes when not provided in input Feature. "
-                    "Note: AttributeSchemaEntry defaults take precedence for columnar fields.",
-    )
-
     # --- Protocol-Driven Architecture ---
     storage_only_fields: List[str] = Field(
         default_factory=list,
