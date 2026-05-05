@@ -192,6 +192,16 @@ class CollectionElasticsearchPrivateDriver(CollectionElasticsearchDriver):
         client = self._get_client()
         if not client:
             raise RuntimeError("Elasticsearch client not available")
+        # Lazy index creation — Cycle E.2.c gap: the catalog ensure_storage
+        # lifecycle hook isn't yet wired to call our ensure_storage(),
+        # so without this defensive create the first upsert would either
+        # fail (auto_create disabled cluster-wide) or land in an index
+        # without our COLLECTION_MAPPING (auto-created with default
+        # mapping — geo_shape on extent.spatial.bbox_shape would be
+        # missing, breaking spatial search).  Mirrors the items-private
+        # driver's pattern (``write_entities`` and ``index_bulk`` both
+        # ensure the index exists before bulk-loading).
+        await self.ensure_storage(catalog_id)
         index_name = self._private_index(catalog_id)
         doc = self._enrich_doc(metadata)
         doc["id"] = collection_id
