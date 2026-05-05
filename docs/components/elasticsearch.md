@@ -263,7 +263,7 @@ tasks/elasticsearch_indexer/
 To replace Elasticsearch with another search engine (e.g. Solr, Meilisearch):
 
 1. **Create a new module** (`modules/solr/`) implementing `IndexerProtocol`:
-   - `index_document()`, `delete_document()`, `index_private()`, `delete_private()`, `bulk_reindex()`, `ensure_index()`
+   - `index_document()`, `delete_document()`, `bulk_reindex()`, `ensure_index()`
    - Register event listeners in `lifespan` (same pattern as `ElasticsearchModule`).
 
 2. **Create a new search service** implementing `SearchProtocol`:

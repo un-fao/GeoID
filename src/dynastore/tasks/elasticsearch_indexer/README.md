@@ -43,7 +43,7 @@ Triggered by `POST /search/reindex/catalogs/{id}` (admin endpoint) or by the can
 | `elasticsearch_private_index` | `geoid`, `catalog_id`, `collection_id` | Index one `{geoid, catalog_id, collection_id}` doc |
 | `elasticsearch_private_delete` | `geoid`, `catalog_id` | Delete one geoid doc (safe on NotFoundError) |
 
-Dispatched by `ElasticsearchModule` event handlers when a catalog has `private=True`.
+Dispatched via the index dispatcher (`modules/storage/index_dispatcher.py`) for collections whose routing pins the `items_elasticsearch_private_driver` (Cycle E — per-collection privacy).
 
 ## Cloud Run Job
 

@@ -69,21 +69,17 @@ The Docker Compose files in this repository use
 
 ### Per-Catalog Config (runtime-mutable, stored in AlloyDB)
 
-Each catalog can have an `ElasticsearchCatalogConfig` stored via the standard
-configuration API:
+Catalog-tier privacy default is governed by `CatalogPolicyConfig`
+(`modules/catalog/catalog_config.py`) via the standard configuration API:
 
 ```
-PUT /configs/catalogs/{catalog_id}/elasticsearch
-{ "private": true }
+PUT /configs/catalogs/{catalog_id}/policy
+{ "default_collection_privacy": "private" }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `private` | `bool` | `false` | When `true`, items are indexed in geoid-only mode and all GET access is blocked for `all_users` via a DENY policy. |
-
-This config is registered via `@register_config("elasticsearch", on_apply=...)` and
-follows the same pattern as `gcp_catalog_bucket`. The `on_apply` callback fires on
-every write — toggling private mode does not require a restart.
+| `default_collection_privacy` | `Literal["public","private"]` | `"public"` | Seed default for newly-created collections (consumed at collection-create time). Pure data — flipping it does not retroactively re-flag existing collections. Per-collection privacy is governed by `CollectionPluginConfig.is_private` (Cycle E.2). |
 
 ## Index Design & Mappings
 
@@ -95,28 +91,28 @@ The module automatically configures and manages the following Elasticsearch indi
 | `{prefix}-collections` | Collection | `geo_shape` (spatial extent), date range (temporal) |
 | `{prefix}-items` | Item | `geo_shape` (geometry), STAC datetime, dynamic template |
 | `{prefix}-assets` | Asset | `item_id`, `asset_key`, `roles`, `href` |
-| `{prefix}-geoid-{catalog_id}` | Private item | `dynamic: false`, `geoid`, `catalog_id`, `collection_id` only |
+| `{prefix}-geoid-{catalog_id}` | Private item (per-tenant) | `dynamic: false`, `geoid`, `catalog_id`, `collection_id` only |
 
-## GeoID Private Mode
+## Per-Tenant Privacy
 
-When a catalog's ES config has `private: true`:
+Privacy is owned by `items_elasticsearch_private_driver`
+(`modules/storage/drivers/elasticsearch_private/`), which:
 
-1. A **DENY policy** blocks all GET requests across all protocol paths for the catalog.
-2. A **geoid-only index** (`{prefix}-geoid-{catalog_id}`) is created with minimal mapping.
-3. Items are indexed as `{geoid, catalog_id, collection_id}` — no geometry, no STAC metadata.
-4. The STAC items index is **never populated** for private catalogs.
-5. At startup, the module scans all catalogs and **restores in-memory DENY policies**.
-6. Geoid lookups are available via `GET /search/geoid/{geoid}` and `POST /search/geoid` (batch).
+1. Writes items as `{geoid, catalog_id, collection_id}` to `{prefix}-geoid-{catalog_id}` — no geometry, no STAC metadata.
+2. Manages its own DENY policies on its lifecycle (apply on `ensure_storage`, revoke on `drop_storage`, restore on lifespan-startup).
+3. Opts out of items-tier auto-default routing (`auto_register_for_routing = frozenset()`); collections turn on the private driver via explicit routing pin or, post-Cycle-E.2, via `CollectionPluginConfig.is_private = True`.
+
+Geoid lookups remain available via `GET /search/geoid/{geoid}` and `POST /search/geoid` (batch).
 
 See `docs/components/elasticsearch.md` for the full lifecycle description.
 
 ## Tasks
 
-### Per-item (worker, incremental)
+### Per-item (worker, incremental, dispatched via `IndexDispatcher`)
 - `elasticsearch_index` — index a full STAC document
 - `elasticsearch_delete` — delete a document (safe on NotFoundError)
-- `elasticsearch_private_index` — index one geoid-only document
-- `elasticsearch_private_delete` — delete one geoid document
+- `elasticsearch_private_index` — index one geoid-only document into the per-tenant private index
+- `elasticsearch_private_delete` — delete one geoid document from the per-tenant private index
 
 ### Bulk (Cloud Run Job or worker)
 - `elasticsearch_bulk_reindex_catalog` — reindex all items in a catalog (500-doc batches)
