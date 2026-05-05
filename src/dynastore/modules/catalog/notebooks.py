@@ -18,10 +18,10 @@ _REG = "dynastore.modules.catalog"
 register_platform_notebook(
     notebook_id="items_write_policy",
     registered_by=_REG,
-    notebook_path=_HERE / "write_policy.ipynb",
-    title={"en": "Collection Write Policy"},
-    description={"en": "Configure write-once semantics, external ID tracking, and temporal validity for a collection."},
-    tags=["collection", "write-policy", "configuration"],
+    notebook_path=_HERE / "items_write_policy.ipynb",
+    title={"en": "Items Write Policy"},
+    description={"en": "Configure write-once semantics, external ID tracking, and temporal validity for items."},
+    tags=["items", "write-policy", "configuration"],
 )
 
 register_platform_notebook(
