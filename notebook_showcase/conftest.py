@@ -264,40 +264,39 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     exists. CollectionRoutingConfig.operations is Immutable, so it must be in
     place before the collection is created.
 
-    driver_id references the implementation class name (``ItemsPostgresqlDriver``),
-    not an alias.
+    driver_id is the snake_case ``cls.class_key()`` of the implementation
+    (post-PR-1e contract): ``items_postgresql_driver`` for
+    ``ItemsPostgresqlDriver``, etc.
     """
-    # The configs API path scheme is `/configs/.../classes/{plugin_id}`,
-    # not `/configs/.../configs/{class_key}` (that path returned 404 silently
-    # before the fix and the conftest was a no-op — the notebooks themselves
-    # set the same defaults via `/bulk`, so tests still passed).
+    # Configs API path: ``/configs/.../plugins/{plugin_id}`` post-PR-1e.
+    # plugin_id is the snake_case class_key of the registered config class.
     base = f"/configs/catalogs/{CATALOG_ID}"
-    r1 = client.put(f"{base}/classes/ItemsPostgresqlDriverConfig", json={
+    r1 = client.put(f"{base}/plugins/items_postgresql_driver_config", json={
         "enabled": True,
         "collection_type": "VECTOR",
     })
     if r1.status_code not in (200, 201, 204):
         print(
-            f"[conftest] WARN ItemsPostgresqlDriverConfig PUT returned {r1.status_code}: {r1.text[:200]}",
+            f"[conftest] WARN items_postgresql_driver_config PUT returned {r1.status_code}: {r1.text[:200]}",
             flush=True,
         )
-    r2 = client.put(f"{base}/classes/CollectionRoutingConfig", json={
+    r2 = client.put(f"{base}/plugins/collection_routing_config", json={
         "enabled": True,
         "operations": {
-            "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "ItemsPostgresqlDriver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
         },
     })
     if r2.status_code not in (200, 201, 204):
         print(
-            f"[conftest] WARN CollectionRoutingConfig PUT returned {r2.status_code}: {r2.text[:200]}",
+            f"[conftest] WARN collection_routing_config PUT returned {r2.status_code}: {r2.text[:200]}",
             flush=True,
         )
     # Remove any stale collection-scope RoutingConfig override left by previous
     # runs (e.g. with an old driver_id). Collection-scope overrides shadow the
     # catalog-scope config above and would cause "driver not registered" errors.
     coll_base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
-    client.delete(f"{coll_base}/classes/CollectionRoutingConfig")
+    client.delete(f"{coll_base}/plugins/collection_routing_config")
 
 
 def _delete_catalog(client: httpx.Client):
