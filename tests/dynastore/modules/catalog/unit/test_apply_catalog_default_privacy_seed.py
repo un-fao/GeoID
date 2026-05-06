@@ -1,15 +1,15 @@
-"""Cycle E.2.c slice — pin the create-time seed flow.
+"""Cycle E.2.c / F.0d slice — pin the create-time seed flow.
 
 ``apply_catalog_default_privacy_seed`` is invoked from
 ``CollectionService.create_collection`` to seed a freshly-created
 collection's privacy state from the catalog's
-``CatalogPrivacy.default_collection_privacy``.
+``CatalogPrivacy.collection_defaults.is_private``.
 
 These tests pin the helper's contract:
 - catalog policy missing → no-op (False return)
-- catalog policy public → no-op (False return)
+- catalog policy public (``is_private=False``) → no-op (False return)
 - catalog policy private → writes BOTH ``ItemsRoutingConfig`` (with
-  the private items driver pinned) AND ``CollectionPluginConfig`` (with
+  the private items driver pinned) AND ``CollectionPrivacy`` (with
   ``is_private=True``), in that exact order so the cascade validator
   on the second write finds the private driver already pinned
 - ConfigsProtocol unavailable → no-op (False return), defer to the
@@ -25,7 +25,8 @@ import pytest
 
 from dynastore.modules.catalog.catalog_config import (
     CatalogPrivacy,
-    CollectionPluginConfig,
+    CollectionPrivacy,
+    CollectionPrivacyDefaults,
     apply_catalog_default_privacy_seed,
 )
 from dynastore.modules.storage.routing_config import (
@@ -42,6 +43,12 @@ def _configs_returning(policy_or_none) -> MagicMock:
     return proto
 
 
+def _private_default_catalog_privacy() -> CatalogPrivacy:
+    return CatalogPrivacy(
+        collection_defaults=CollectionPrivacyDefaults(is_private=True),
+    )
+
+
 @pytest.mark.asyncio
 async def test_seed_noop_when_configs_protocol_is_none():
     applied = await apply_catalog_default_privacy_seed(
@@ -52,7 +59,8 @@ async def test_seed_noop_when_configs_protocol_is_none():
 
 @pytest.mark.asyncio
 async def test_seed_noop_when_catalog_has_no_policy_row():
-    """Catalog default is implicitly ``"public"`` — nothing to seed."""
+    """Catalog default is implicitly public (``is_private=False``) —
+    nothing to seed."""
     proto = _configs_returning(None)
     applied = await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
@@ -63,9 +71,7 @@ async def test_seed_noop_when_catalog_has_no_policy_row():
 
 @pytest.mark.asyncio
 async def test_seed_noop_when_policy_is_public():
-    proto = _configs_returning(
-        CatalogPrivacy(default_collection_privacy="public"),
-    )
+    proto = _configs_returning(CatalogPrivacy())  # default is_private=False
     applied = await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
     )
@@ -91,18 +97,15 @@ async def test_seed_noop_when_get_config_raises():
 async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_private():
     """Cascade-satisfying order is load-bearing for the FIRST TWO writes:
     ``ItemsRoutingConfig`` MUST land BEFORE
-    ``CollectionPluginConfig(is_private=True)`` so the cascade
-    validator on the second write finds the private driver already
-    pinned.
+    ``CollectionPrivacy(is_private=True)`` so the cascade validator
+    on the second write finds the private driver already pinned.
 
     Cycle E.2.c slice 3 added a third write — ``CollectionRoutingConfig``
     pinning ``collection_elasticsearch_private_driver`` — independent
     of the cascade gate (it covers collection-envelope routing, not
     items routing); we put it LAST for clarity.
     """
-    proto = _configs_returning(
-        CatalogPrivacy(default_collection_privacy="private"),
-    )
+    proto = _configs_returning(_private_default_catalog_privacy())
     applied = await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
     )
@@ -117,9 +120,9 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
     ]
     assert classes_in_order[0] is ItemsRoutingConfig, (
         "Items routing must land FIRST so the cascade validator on the "
-        "CollectionPluginConfig apply finds the private driver already pinned."
+        "CollectionPrivacy apply finds the private driver already pinned."
     )
-    assert classes_in_order[1] is CollectionPluginConfig
+    assert classes_in_order[1] is CollectionPrivacy
     assert classes_in_order[2] is CollectionRoutingConfig, (
         "Collection-envelope routing seed (slice 3) lands last for "
         "clarity — independent of the cascade gate."
@@ -141,8 +144,8 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
     # per-tenant index.
     assert "items_elasticsearch_driver" not in items_pinned
 
-    # The CollectionPluginConfig payload must have is_private=True.
-    coll_payload: CollectionPluginConfig = (
+    # The CollectionPrivacy payload must have is_private=True.
+    coll_payload: CollectionPrivacy = (
         proto.set_config.await_args_list[1].args[1]
     )
     assert coll_payload.is_private is True
@@ -168,9 +171,7 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
 
 @pytest.mark.asyncio
 async def test_seed_passes_catalog_and_collection_ids_through_to_set_config():
-    proto = _configs_returning(
-        CatalogPrivacy(default_collection_privacy="private"),
-    )
+    proto = _configs_returning(_private_default_catalog_privacy())
     await apply_catalog_default_privacy_seed(
         "cat-x", "col-y", configs=proto,
     )
@@ -185,9 +186,7 @@ async def test_seed_routing_payload_has_postgresql_in_write_for_durability():
     """WRITE without PG = no SoR.  The seed routing pins PG WRITE
     (FATAL) + private ES (ASYNC + OUTBOX) so a private collection
     still has a durable write target."""
-    proto = _configs_returning(
-        CatalogPrivacy(default_collection_privacy="private"),
-    )
+    proto = _configs_returning(_private_default_catalog_privacy())
     await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
     )

@@ -124,9 +124,11 @@ def test_known_consumers_have_handlers_registered():
     must end up in ``_APPLY_HANDLERS`` after import.
 
     Cycle E retired the catalog-wide private-mode apply handler
-    (``ElasticsearchCatalogConfig`` deleted; ``CatalogPrivacy`` is
-    pure data — consulted only at collection-create time as a default
-    seed for the per-collection ``is_private`` flag).
+    (``ElasticsearchCatalogConfig`` deleted).  Cycle E.2.c re-added a
+    catalog-tier apply handler on ``CatalogPrivacy`` to eager-create
+    the per-tenant private indexes when
+    ``collection_defaults.is_private`` is True (F.0d harmonised the
+    privacy field shape).
     """
     from dynastore.modules.gcp.gcp_config import (
         GcpCatalogBucketConfig,

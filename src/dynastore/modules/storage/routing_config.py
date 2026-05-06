@@ -1177,16 +1177,16 @@ CatalogRoutingConfig.register_apply_handler(cast(_HandlerSig, _on_apply_catalog_
 #   geometry on /search bypassing the per-collection DENY policy.
 #
 # Detection:
-#   - Collection privacy: ``CollectionPluginConfig.is_private == True``.
+#   - Collection privacy: ``CollectionPrivacy.is_private == True``.
 #   - Items privacy: presence of ``items_elasticsearch_private_driver`` in
 #     any operation of ``ItemsRoutingConfig.operations``.
 #
 # Enforcement points:
-#   1. Apply-time on ``CollectionPluginConfig``: if the new ``is_private``
+#   1. Apply-time on ``CollectionPrivacy``: if the new ``is_private``
 #      is True, fetch the sibling ``ItemsRoutingConfig`` and require the
 #      private items driver be pinned somewhere.
 #   2. Apply-time on ``ItemsRoutingConfig``: if the new routing drops the
-#      private items driver, fetch the sibling ``CollectionPluginConfig``
+#      private items driver, fetch the sibling ``CollectionPrivacy``
 #      and reject if the collection still claims ``is_private``.
 
 
@@ -1209,16 +1209,16 @@ async def _enforce_collection_privacy_cascade(
     collection_id: Optional[str],
     db_resource: Optional[Any],
 ) -> None:
-    """Apply handler on ``CollectionPluginConfig`` — enforce the cascade
-    rule that ``is_private=True`` requires an items routing pinning the
+    """Apply handler on ``CollectionPrivacy`` — enforce the cascade rule
+    that ``is_private=True`` requires an items routing pinning the
     private items driver.
 
     No-op when ``is_private=False`` (public collections impose no cascade
     on items routing) and at platform/catalog scope (cascade is per-pair).
     """
-    from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+    from dynastore.modules.catalog.catalog_config import CollectionPrivacy
 
-    if not isinstance(config, CollectionPluginConfig):
+    if not isinstance(config, CollectionPrivacy):
         return
     if not config.is_private:
         return
@@ -1243,7 +1243,7 @@ async def _enforce_collection_privacy_cascade(
         return
     if not _items_routing_has_private_driver(routing):
         raise ValueError(
-            f"Privacy cascade violation: CollectionPluginConfig.is_private=True "
+            f"Privacy cascade violation: CollectionPrivacy.is_private=True "
             f"for {catalog_id!r}/{collection_id!r}, but the items routing "
             f"does not pin {_PRIVATE_ITEMS_DRIVER_ID!r} in any operation. "
             f"Add the private items driver to ItemsRoutingConfig (e.g. "
@@ -1268,7 +1268,7 @@ async def _enforce_items_routing_privacy_cascade(
     if _items_routing_has_private_driver(config):
         return  # routing keeps the private driver — cascade satisfied
 
-    from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+    from dynastore.modules.catalog.catalog_config import CollectionPrivacy
     from dynastore.models.protocols.configs import ConfigsProtocol
     from dynastore.tools.discovery import get_protocol
 
@@ -1276,16 +1276,16 @@ async def _enforce_items_routing_privacy_cascade(
     if configs is None:
         return
     coll = await configs.get_config(
-        CollectionPluginConfig,
+        CollectionPrivacy,
         catalog_id=catalog_id,
         collection_id=collection_id,
     )
-    if not isinstance(coll, CollectionPluginConfig):
+    if not isinstance(coll, CollectionPrivacy):
         return
     if coll.is_private:
         raise ValueError(
             f"Privacy cascade violation: collection {catalog_id!r}/{collection_id!r} "
-            f"has CollectionPluginConfig.is_private=True, but the items "
+            f"has CollectionPrivacy.is_private=True, but the items "
             f"routing being applied does not pin "
             f"{_PRIVATE_ITEMS_DRIVER_ID!r}.  Re-add the private driver to "
             f"operations[INDEX] (and SEARCH/READ as appropriate) or set "
@@ -1294,12 +1294,12 @@ async def _enforce_items_routing_privacy_cascade(
 
 
 # Items-side cascade registration — safe at module-load time because the
-# handler body lazy-imports ``CollectionPluginConfig`` (avoids the
+# handler body lazy-imports ``CollectionPrivacy`` (avoids the
 # storage→catalog→storage cycle that triggers when a top-level import
 # pulls catalog/catalog_config.py via the pg_sidecars path).
 #
 # The collection-side cascade handler is registered from
-# ``modules/catalog/catalog_config.py`` after ``CollectionPluginConfig``
+# ``modules/catalog/catalog_config.py`` after ``CollectionPrivacy``
 # is fully defined — see the bottom of that module.
 ItemsRoutingConfig.register_apply_handler(
     cast(_HandlerSig, _enforce_items_routing_privacy_cascade),

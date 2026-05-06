@@ -309,7 +309,7 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
 async def test_is_es_active_for_returns_false_for_private_only_routing():
     """Cycle E.2 privacy safety: a collection whose items routing pins
     ONLY ``items_elasticsearch_private_driver`` (per the cascade rule
-    when ``CollectionPluginConfig.is_private == True``) must return
+    when ``CollectionPrivacy.is_private == True``) must return
     False from ``is_es_active_for``.
 
     Without this property, the catalog bulk-reindex pipeline

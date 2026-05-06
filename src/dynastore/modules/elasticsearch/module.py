@@ -228,7 +228,7 @@ class ElasticsearchModule(ModuleProtocol):
     this module directly.
 
     Privacy is per-collection (Cycle E) — see
-    ``CollectionPluginConfig.is_private`` and the
+    ``CollectionPrivacy.is_private`` and the
     ``items_elasticsearch_private_driver`` (per-tenant geoid-only index
     + DENY policy management).  This module no longer carries
     catalog-wide private-mode toggles; the catalog-tier

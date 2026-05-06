@@ -465,7 +465,7 @@ class SearchService(ExtensionProtocol):
 
         If ``driver`` is provided, the task targets only that secondary driver.
         Privacy routing is per-collection
-        (``CollectionPluginConfig.is_private``); there is no catalog-wide
+        (``CollectionPrivacy.is_private``); there is no catalog-wide
         "private mode" to resolve here.
         """
         from dynastore.models.protocols import DatabaseProtocol

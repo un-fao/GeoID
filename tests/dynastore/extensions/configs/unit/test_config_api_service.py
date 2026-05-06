@@ -724,8 +724,9 @@ def test_catalog_policy_config_lands_at_catalog_scope():
 
 # NOTE: ``ElasticsearchCollectionConfig`` was retired in Cycle C and
 # ``ElasticsearchCatalogConfig`` was retired in Cycle E.1.  Privacy
-# moves to ``CatalogPrivacy.default_collection_privacy`` (catalog
-# tier) and (Cycle E.2) ``is_private: bool`` on ``CollectionPluginConfig``.
+# moves to ``CatalogPrivacy.collection_defaults.is_private`` (catalog
+# tier) and (Cycle F.0d) ``is_private: bool`` on ``CollectionPrivacy``
+# at ``(platform, catalog, collection, privacy)``.
 
 
 def test_catalog_es_driver_lands_under_storage_drivers_catalog():
