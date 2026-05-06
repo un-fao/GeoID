@@ -122,7 +122,7 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             "fr": "Comptes par catalogue, utilisation du stockage et statistiques des requêtes.",
             "it": "Conteggi per catalogo, uso dello storage e statistiche delle richieste.",
         },
-        required_roles=[DefaultRole.SYSADMIN.value],
+        audience_policy_id="stats_endpoint_access",
         section="admin",
         priority=18,
     )
