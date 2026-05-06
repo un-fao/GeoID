@@ -71,8 +71,16 @@ def _routing_config_keys() -> frozenset[str]:
     })
 
 
-def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, str, Optional[str]]]:
+def _place(
+    cls: Type[PluginConfig], active_scope: str,
+) -> Optional[Tuple[Optional[str], ...]]:
     """Return ``cls._address`` if visible at ``active_scope``, else ``None``.
+
+    Variable-length post Cycle D.1 — accepts today's 3-tuples
+    (e.g. ``("storage","drivers","items")`` / ``("platform","gcp",None)``)
+    and the post-D.2 tier-first shape (e.g.
+    ``("platform","catalog","collection","items","policy")``).  The
+    composer walks the tuple recursively in ``_place_at``.
 
     Filters:
     - Abstract bases (``is_abstract_base = True``) → dropped.
@@ -345,17 +353,27 @@ class ConfigApiService:
 
         def _place_at(
             target: Dict[str, Any],
-            address: Tuple[str, str, Optional[str]],
+            address: Tuple[Optional[str], ...],
             class_key: str,
             value: Any,
         ) -> None:
-            """Walk the address tuple to the leaf in ``target`` and set value."""
-            scope, topic, sub = address
-            topic_node = target.setdefault(scope, {}).setdefault(topic, {})
-            if sub is None:
-                topic_node[class_key] = value
-            else:
-                topic_node.setdefault(sub, {})[class_key] = value
+            """Walk the variable-length address tuple to the leaf and set value.
+
+            Cycle D.1: walks the tuple recursively instead of unpacking
+            ``(scope, topic, sub)``.  Skips ``None`` segments so today's
+            3-tuples with trailing ``None`` (e.g. ``("platform","gcp",None)``)
+            land at the same depth as before — zero behaviour change for
+            existing addresses.  Variable-length tuples (post Cycle D.2)
+            land at any depth: ``("platform","catalog","collection","items",
+            "policy")`` produces a 5-deep nested path before the class_key
+            leaf.
+            """
+            node = target
+            for seg in address:
+                if seg is None:
+                    continue
+                node = node.setdefault(seg, {})
+            node[class_key] = value
 
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)
@@ -372,7 +390,7 @@ class ConfigApiService:
                 and not cls.__dict__.get("is_abstract_base", False)
             ):
                 address = getattr(cls, "_address", None)
-                if address and address != ("", "", None):
+                if address:
                     inh_catalog = tree.setdefault("inherited_from_catalog", {})
                     _place_at(inh_catalog, address, class_key, payload)
                     if wants_docs:
