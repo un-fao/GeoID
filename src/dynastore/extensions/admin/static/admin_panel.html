@@ -355,22 +355,24 @@ async function loadUsers() {
   try {
     _allUsers = await apiFetch('/users');
     renderUsers(_allUsers);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderUsers(list) {
   const tb = document.getElementById('users-tbody');
   if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No users found.</td></tr>'; return; }
   tb.innerHTML = list.map(u => `
     <tr>
-      <td><strong>${u.display_name || u.subject_id}</strong></td>
-      <td><span style="color:var(--text-dim)">${u.provider || 'local'}</span></td>
-      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="badge badge-role">${r}</span>`).join('')}</div></td>
+      <td><strong>${escapeHtml(u.display_name || u.subject_id)}</strong></td>
+      <td><span style="color:var(--text-dim)">${escapeHtml(u.provider || 'local')}</span></td>
+      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="badge badge-role">${escapeHtml(r)}</span>`).join('')}</div></td>
       <td><span class="badge ${u.is_active?'badge-ok':'badge-off'}">${u.is_active?'Active':'Inactive'}</span></td>
       <td><div class="action-btns">
-        <button class="btn btn-sm btn-danger" onclick="deactivateUser('${u.id}')"><i class="fa-solid fa-ban"></i></button>
-        <button class="btn btn-sm btn-primary" onclick="openCatalogModal('${u.id}')"><i class="fa-solid fa-database"></i></button>
+        <button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${escapeHtml(u.id)}"><i class="fa-solid fa-ban"></i></button>
+        <button class="btn btn-sm btn-primary" data-action="catalog-modal" data-id="${escapeHtml(u.id)}"><i class="fa-solid fa-database"></i></button>
       </div></td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="deactivate"]').forEach(b => b.addEventListener('click', () => deactivateUser(b.dataset.id)));
+  tb.querySelectorAll('[data-action="catalog-modal"]').forEach(b => b.addEventListener('click', () => openCatalogModal(b.dataset.id)));
 }
 function filterUsers() {
   const q = document.getElementById('user-search').value.toLowerCase();
@@ -549,20 +551,21 @@ async function loadPrincipals() {
   try {
     _allPrincipals = await apiFetch('/principals');
     renderPrincipals(_allPrincipals);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderPrincipals(list) {
   const tb = document.getElementById('principals-tbody');
   if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No principals found.</td></tr>'; return; }
   tb.innerHTML = list.map(p => `
     <tr>
-      <td><strong>${p.display_name || '—'}</strong></td>
-      <td><span style="color:var(--text-dim)">${p.provider || '—'}</span></td>
-      <td style="font-family:monospace;font-size:0.8rem">${p.subject_id || '—'}</td>
-      <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="badge badge-role">${r}</span>`).join('')}</div></td>
+      <td><strong>${escapeHtml(p.display_name || '—')}</strong></td>
+      <td><span style="color:var(--text-dim)">${escapeHtml(p.provider || '—')}</span></td>
+      <td style="font-family:monospace;font-size:0.8rem">${escapeHtml(p.subject_id || '—')}</td>
+      <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="badge badge-role">${escapeHtml(r)}</span>`).join('')}</div></td>
       <td><span class="badge ${p.is_active?'badge-ok':'badge-off'}">${p.is_active?'Yes':'No'}</span></td>
-      <td><button class="btn btn-sm btn-primary" onclick="openCatalogModal('${p.id}')"><i class="fa-solid fa-database"></i> Catalog Role</button></td>
+      <td><button class="btn btn-sm btn-primary" data-action="catalog-modal" data-id="${escapeHtml(p.id)}"><i class="fa-solid fa-database"></i> Catalog Role</button></td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="catalog-modal"]').forEach(b => b.addEventListener('click', () => openCatalogModal(b.dataset.id)));
 }
 
 // ── ROLES ──
@@ -572,20 +575,21 @@ async function loadRoles() {
   try {
     _allRoles = await apiFetch('/roles');
     renderRoles(_allRoles);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderRoles(list) {
   const tb = document.getElementById('roles-tbody');
   if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No roles found.</td></tr>'; return; }
   tb.innerHTML = list.map(r => `
     <tr>
-      <td><strong>${r.name}</strong></td>
-      <td style="color:var(--text-dim)">${r.description || '—'}</td>
-      <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="badge badge-role">${p}</span>`).join('')}</div></td>
+      <td><strong>${escapeHtml(r.name)}</strong></td>
+      <td style="color:var(--text-dim)">${escapeHtml(r.description || '—')}</td>
+      <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="badge badge-role">${escapeHtml(p)}</span>`).join('')}</div></td>
       <td>
-        <button class="btn btn-sm btn-danger" onclick="deleteRole('${r.name}')"><i class="fa-solid fa-trash"></i></button>
+        <button class="btn btn-sm btn-danger" data-action="delete-role" data-name="${escapeHtml(r.name)}"><i class="fa-solid fa-trash"></i></button>
       </td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="delete-role"]').forEach(b => b.addEventListener('click', () => deleteRole(b.dataset.name)));
 }
 function openRoleModal() { document.getElementById('role-modal').classList.remove('hidden'); }
 async function createRole() {
@@ -618,7 +622,7 @@ async function loadPolicies() {
     }
     _allPolicies = await apiFetch(url);
     renderPolicies(_allPolicies);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderPolicies(list) {
   const tb = document.getElementById('policies-tbody');
@@ -626,15 +630,16 @@ function renderPolicies(list) {
   if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No policies found.</td></tr>'; return; }
   tb.innerHTML = list.map(p => `
     <tr>
-      <td><strong style="font-family:monospace">${p.id}</strong></td>
-      <td><span class="badge" style="background:${p.effect==='ALLOW'?'rgba(63,185,80,.15)':'rgba(248,81,73,.15)'};color:${p.effect==='ALLOW'?'var(--success)':'var(--danger)'}">${p.effect}</span></td>
-      <td><div class="chip-list">${(p.actions||[]).map(a=>`<span class="badge badge-role">${a}</span>`).join('')}</div></td>
-      <td style="font-family:monospace;font-size:0.75rem;max-width:260px;overflow:hidden;text-overflow:ellipsis">${(p.resources||[]).join(', ')}</td>
-      <td style="color:var(--text-dim)">${p.description || '—'}</td>
+      <td><strong style="font-family:monospace">${escapeHtml(p.id)}</strong></td>
+      <td><span class="badge" style="background:${p.effect==='ALLOW'?'rgba(63,185,80,.15)':'rgba(248,81,73,.15)'};color:${p.effect==='ALLOW'?'var(--success)':'var(--danger)'}">${escapeHtml(p.effect)}</span></td>
+      <td><div class="chip-list">${(p.actions||[]).map(a=>`<span class="badge badge-role">${escapeHtml(a)}</span>`).join('')}</div></td>
+      <td style="font-family:monospace;font-size:0.75rem;max-width:260px;overflow:hidden;text-overflow:ellipsis">${escapeHtml((p.resources||[]).join(', '))}</td>
+      <td style="color:var(--text-dim)">${escapeHtml(p.description || '—')}</td>
       <td>${sys.has(p.id) ? '<span class="badge badge-sys">System</span>' : `
-        <button class="btn btn-sm btn-danger" onclick="deletePolicy('${p.id}')"><i class="fa-solid fa-trash"></i></button>`}
+        <button class="btn btn-sm btn-danger" data-action="delete-policy" data-id="${escapeHtml(p.id)}"><i class="fa-solid fa-trash"></i></button>`}
       </td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="delete-policy"]').forEach(b => b.addEventListener('click', () => deletePolicy(b.dataset.id)));
 }
 function openPolicyModal() { document.getElementById('policy-modal').classList.remove('hidden'); }
 async function createPolicy() {
