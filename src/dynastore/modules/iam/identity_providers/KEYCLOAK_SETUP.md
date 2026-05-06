@@ -63,7 +63,7 @@ GeoID maps Keycloak roles to its internal `DefaultRole` enum (`models/protocols/
 | `sysadmin` | `SYSADMIN` | Full access. Use for break-glass admins only. |
 | `admin` | `ADMIN` | Operational admin. |
 | `user` | `USER` | Authenticated end user. |
-| `viewer` | (read-only consumer) | Optional; deployment-specific. |
+| `viewer` | `VIEWER` | Read-only; assigned to newly auto-registered principals. |
 
 > The names above are the convention shipped in the local realm export. They are case-sensitive. GeoID's middleware (`extensions/iam/middleware.py:169`) explicitly checks `DefaultRole.SYSADMIN.value in principal_role`, so the literal string `sysadmin` matters.
 

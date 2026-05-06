@@ -460,7 +460,7 @@ class IamService:
         new_p = Principal(
             id=uuid4(),
             display_name=identity.get("email", "Unknown"),
-            roles=["viewer"],  # Default role
+            roles=[self._role_config.viewer],
             attributes=attributes,
         )
         created = await self.storage.create_principal_link(new_p, identity)

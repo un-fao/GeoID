@@ -49,6 +49,7 @@ class DefaultRole(str, Enum):
     SYSADMIN = "sysadmin"
     ADMIN = "admin"
     USER = "user"
+    VIEWER = "viewer"
     ANONYMOUS = "anonymous"
 
 
@@ -89,6 +90,12 @@ class IamRoleConfig(BaseModel):
             "IAM_ROLE_USER", DefaultRole.USER.value
         ),
         description="Default role for any signed-in principal.",
+    )
+    viewer: str = Field(
+        default_factory=lambda: os.environ.get(
+            "IAM_ROLE_VIEWER", DefaultRole.VIEWER.value
+        ),
+        description="Read-only role assigned to newly auto-registered principals.",
     )
     anonymous: str = Field(
         default_factory=lambda: os.environ.get(

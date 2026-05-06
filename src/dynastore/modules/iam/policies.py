@@ -360,6 +360,11 @@ class PolicyService:
                 description="Default role for any authenticated user.",
                 policies=["self_service_access"],
             ),
+            Role(
+                name=cfg.viewer,
+                description="Read-only role for newly auto-registered principals.",
+                policies=["self_service_access"],
+            ),
         ]
 
     async def provision_default_policies(
@@ -441,7 +446,8 @@ class PolicyService:
                 _DEFAULT_HIERARCHY = [
                     (cfg.sysadmin, cfg.admin),
                     (cfg.admin,    cfg.user),
-                    (cfg.user,     cfg.anonymous),
+                    (cfg.user,     cfg.viewer),
+                    (cfg.viewer,   cfg.anonymous),
                 ]
                 for parent, child in _DEFAULT_HIERARCHY:
                     try:
