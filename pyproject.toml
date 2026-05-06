@@ -34,6 +34,7 @@ members = ["packages/extensions/*"]
 
 [tool.uv.sources]
 dynastore-ext-tasks = { workspace = true }
+dynastore-ext-stats = { workspace = true }
 
 [project.optional-dependencies]
 # ==========================================================================
@@ -95,7 +96,7 @@ extension_connected_systems = ["dynastore[extension_base,module_connected_system
 extension_iam = ["dynastore[extension_base,module_iam]"]
 extension_logs = ["dynastore[extension_base]", "httpx"]
 extension_configs = ["dynastore[extension_base]"]
-extension_stats = ["dynastore[extension_base,module_stats]"]
+extension_stats = ["dynastore[extension_base,module_stats]", "dynastore-ext-stats"]
 extension_crs = ["dynastore[extension_base,module_crs]"]
 extension_events = ["dynastore[extension_base,module_events]"]
 extension_wfs = ["dynastore[extension_base,geospatial_core]", "pyproj>=3.0.0"]
@@ -506,7 +507,7 @@ events = "dynastore.extensions.events.extension:EventsExtension"
 wfs = "dynastore.extensions.wfs.wfs_service:WFSService"
 assets = "dynastore.extensions.assets.assets_service:AssetService"
 notebooks = "dynastore.extensions.notebooks.notebooks_extension:NotebooksExtension"
-stats = "dynastore.extensions.stats.extension:StatsExtension"
+# stats: migrated to packages/extensions/stats (dynastore-ext-stats wheel) — Phase 1 pilot
 tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
 dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
 records = "dynastore.extensions.records.records_service:RecordsService"
