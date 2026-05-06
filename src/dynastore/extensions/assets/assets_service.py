@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import json
 import logging
 from typing import Dict, Any, Optional, List, Annotated, cast
 from dynastore.modules import get_protocol
@@ -34,12 +35,20 @@ from fastapi import (
 from pydantic import UUID4, BaseModel, Field, AliasChoices, ConfigDict
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.models.protocols import AssetsProtocol, AssetUploadProtocol, UploadTicket, UploadStatusResponse
+from dynastore.models.protocols import (
+    AssetsProtocol,
+    AssetUploadProtocol,
+    CatalogsProtocol,
+    ConfigsProtocol,
+    UploadTicket,
+    UploadStatusResponse,
+)
 from dynastore.models.protocols.asset_process import (
     AssetProcessDescriptor,
     AssetProcessOutput,
     AssetProcessProtocol,
 )
+from dynastore.models.driver_context import DriverContext
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 from dynastore.extensions.tools.exception_handlers import handle_exception
@@ -49,11 +58,24 @@ from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetCreate,
     AssetFilter,
+    AssetStatus,
+    AssetTypeEnum,
     AssetUpdate,
     AssetUploadDefinition,
     AssetReference,
     AssetReferencedError,
     VirtualAssetCreate,
+)
+from dynastore.modules.catalog.asset_distributed import (
+    Scope,
+    UpsertResult,
+    upsert_asset,
+)
+from dynastore.modules.catalog.write_policy_assets import AssetsWritePolicy
+from dynastore.modules.db_config.query_executor import (
+    DQLQuery,
+    ResultHandler,
+    managed_transaction,
 )
 from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.modules.processes.models import (
@@ -938,38 +960,30 @@ class AssetService(ExtensionProtocol):
         """
         Initiates an upload session for a catalog-level asset.
 
-        Returns an ``UploadTicket`` with a backend-specific upload URL.
-        For **GCS/S3** backends, PUT the file directly to ``upload_url`` using
-        the provided ``method`` and ``headers``.
-        For **local/HTTP** backends, POST the file to the server-side proxy path.
+        Stage 4.1 atomic flow:
 
-        After delivery the backend registers the asset automatically.
-        Poll ``GET /assets/catalogs/{catalog_id}/upload/{ticket_id}/status``
-        to confirm registration.
+        1. Resolve the per-collection :class:`AssetsWritePolicy` via the
+           configs waterfall.
+        2. Run the policy chain + born-claimed PENDING INSERT in a single DB
+           transaction. Policy ``REFUSE_FAIL`` raises
+           :class:`AssetSidecarRejectedError` (mapped to a structured 409 by
+           :class:`AssetSidecarRejectedExceptionHandler`); ``REFUSE`` /
+           ``REFUSE_RETURN`` echo the existing row; ``UPDATE`` mutates
+           metadata; ``NEW_VERSION`` archives + INSERTs.
+        3. Mint the signed URL via the resolved upload driver — DB-free,
+           post-commit.
+        4. Stamp the ticket id back onto the row's ``metadata._upload`` so
+           the Stage 4.2 finalize handler can correlate.
+
+        On a URL-mint failure after the row was inserted, the row is
+        soft-deleted in the same request to avoid a stuck PENDING that would
+        block a retry of the same filename.
         """
-        await require_catalog_ready(catalog_id)
-        provider = await self.resolve_upload_driver(catalog_id, collection_id=None)
-        if not provider:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="No upload backend is available. Configure a storage module (e.g. GCP, local).",
-            )
-        try:
-            return await provider.initiate_upload(
-                catalog_id=catalog_id,
-                asset_def=body.asset,
-                filename=body.filename,
-                content_type=body.content_type,
-                collection_id=None,
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Upload initiation failed for catalog '{catalog_id}': {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Upload initiation failed: {e}",
-            )
+        return await self._initiate_upload_with_policy(
+            catalog_id=catalog_id,
+            collection_id=None,
+            body=body,
+        )
 
     async def initiate_collection_upload(
         self,
@@ -1014,19 +1028,136 @@ class AssetService(ExtensionProtocol):
         """
         Initiates an upload session scoped to a collection.
 
-        Identical to the catalog-level upload endpoint but the file is stored
-        under the collection's path prefix.  The ``collection_id`` from the
-        path takes precedence.
+        Same Stage 4.1 atomic flow as
+        :meth:`initiate_catalog_upload` (policy gate + born-claimed PENDING
+        INSERT + driver URL mint + post-commit ticket stamp). The
+        ``collection_id`` from the path is authoritative; the
+        :class:`AssetsWritePolicy` is resolved at the collection scope so
+        per-collection overrides take precedence over catalog/platform tiers.
+        """
+        return await self._initiate_upload_with_policy(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            body=body,
+        )
+
+    async def _initiate_upload_with_policy(
+        self,
+        *,
+        catalog_id: str,
+        collection_id: Optional[str],
+        body: UploadRequest,
+    ) -> UploadTicket:
+        """Shared catalog/collection upload-create implementation.
+
+        Encapsulates the four-step Stage 4.1 flow so the two FastAPI route
+        functions can stay thin and OpenAPI-friendly while sharing the exact
+        same atomic semantics. The split between ``managed_transaction`` (for
+        the policy + born-claimed INSERT) and the post-commit driver call is
+        load-bearing: drivers must remain DB-free so they can be exercised
+        without a live PG connection (Stage 4.0 contract).
         """
         await require_catalog_ready(catalog_id)
-        provider = await self.resolve_upload_driver(catalog_id, collection_id=collection_id)
+
+        # 1. Resolve the engine, schema, configs service.
+        engine = get_engine()
+        if engine is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database engine not available.",
+            )
+
+        catalogs_svc = cast(
+            Optional[CatalogsProtocol], get_protocol(CatalogsProtocol)
+        )
+        if catalogs_svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Catalogs service unavailable.",
+            )
+        schema = await catalogs_svc.resolve_physical_schema(catalog_id)
+        if not schema:
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=f"No physical schema for catalog '{catalog_id}'.",
+            )
+
+        configs_svc = cast(
+            Optional[ConfigsProtocol], get_protocol(ConfigsProtocol)
+        )
+        if configs_svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Configs service unavailable.",
+            )
+
+        # 2. Load the AssetsWritePolicy via the standard waterfall.
+        policy = await configs_svc.get_config(
+            AssetsWritePolicy,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+
+        # 3. Resolve the upload driver early so a missing backend fails BEFORE
+        #    we touch the DB.
+        provider = await self.resolve_upload_driver(
+            catalog_id, collection_id=collection_id
+        )
         if not provider:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="No upload backend is available. Configure a storage module (e.g. GCP, local).",
             )
+
+        # 4. Build the AssetCreate from the upload request body. The asset_id
+        #    / asset_type / metadata come from the embedded
+        #    ``AssetUploadDefinition``; ``filename`` from the request top
+        #    level. ``owned_by`` is left None at create time — the finalize
+        #    event in Stage 4.2 will stamp it (e.g. ``"gcs"``).
+        payload = AssetCreate(
+            asset_id=body.asset.asset_id,
+            asset_type=body.asset.asset_type,
+            filename=body.filename,
+            metadata=dict(body.asset.metadata) if body.asset.metadata else {},
+            owned_by=None,
+        )
+
+        scope = Scope(
+            schema=schema, catalog_id=catalog_id, collection_id=collection_id
+        )
+
+        # 5. Atomic policy + born-claimed PENDING INSERT.
+        #    Any AssetSidecarRejectedError raised inside upsert_asset bubbles
+        #    out of this transaction and is mapped to a structured 409 by
+        #    AssetSidecarRejectedExceptionHandler.
+        async with managed_transaction(engine) as conn:
+            result: UpsertResult = await upsert_asset(
+                conn,
+                scope,
+                payload,
+                policy,
+                initial_status=AssetStatus.PENDING,
+            )
+
+        # 6. Idempotent paths: if the policy short-circuited to an existing
+        #    row, look up its previously-issued ticket (when any) and return
+        #    it instead of minting a new one. The driver's _upload_tickets
+        #    dict is the source of truth for live sessions; if the existing
+        #    row pre-dates this driver instance (e.g. process restart) the
+        #    cached ticket is gone and we surface the row as already-active
+        #    via UploadStatus completion semantics — the client should
+        #    re-poll status rather than expect a fresh URL.
+        if result.action in {"refused", "returned_existing", "updated"}:
+            existing_ticket = self._extract_existing_ticket(result.row)
+            if existing_ticket:
+                return existing_ticket
+            # Fall through: row exists but no live ticket — caller observes
+            # an idempotent 409 alternative would mask the success of the
+            # upsert. We re-mint a URL so the client can resume.
+
+        # 7. Mint the signed URL via the driver (DB-free, post-commit).
         try:
-            return await provider.initiate_upload(
+            ticket = await provider.initiate_upload(
                 catalog_id=catalog_id,
                 asset_def=body.asset,
                 filename=body.filename,
@@ -1034,15 +1165,127 @@ class AssetService(ExtensionProtocol):
                 collection_id=collection_id,
             )
         except HTTPException:
+            await self._rollback_pending_row(engine, scope, payload.asset_id)
             raise
-        except Exception as e:
+        except Exception as exc:
+            await self._rollback_pending_row(engine, scope, payload.asset_id)
             logger.error(
-                f"Upload initiation failed for '{catalog_id}/{collection_id}': {e}",
+                "Upload URL mint failed for '%s/%s' (asset=%s): %s",
+                catalog_id,
+                collection_id or "_",
+                payload.asset_id,
+                exc,
                 exc_info=True,
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Upload initiation failed: {e}",
+                detail=f"Upload initiation failed: {exc}",
+            )
+
+        # 8. Stamp the ticket onto the row's metadata so the Stage 4.2
+        #    finalize handler can correlate.
+        await self._stamp_ticket_metadata(engine, scope, payload.asset_id, ticket)
+
+        return ticket
+
+    @staticmethod
+    def _extract_existing_ticket(row: Dict[str, Any]) -> Optional[UploadTicket]:
+        """Parse the ``metadata._upload`` blob written by step 8 back into an
+        :class:`UploadTicket`. Returns ``None`` when the row never carried a
+        ticket (legacy rows, or rows whose driver session has been GC'd).
+        """
+        meta = row.get("metadata")
+        if not isinstance(meta, dict):
+            return None
+        upload = meta.get("_upload")
+        if not isinstance(upload, dict):
+            return None
+        try:
+            return UploadTicket(
+                ticket_id=str(upload["ticket_id"]),
+                upload_url=str(upload["upload_url"]),
+                method=str(upload.get("method", "PUT")),
+                headers=dict(upload.get("headers") or {}),
+                expires_at=upload["expires_at"],
+                backend=str(upload["backend"]),
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _stamp_ticket_metadata(
+        engine: Any,
+        scope: Scope,
+        asset_id: str,
+        ticket: UploadTicket,
+    ) -> None:
+        """JSON-merge the ticket fields into ``metadata._upload`` post-commit.
+
+        ``metadata = metadata || :upload_meta::jsonb`` is the standard PG
+        idiom for shallow merging — the existing keys are preserved and only
+        the ``_upload`` slot is overwritten. Uses :class:`DQLQuery` so the
+        same code path serves async (production) and sync (tests) engines.
+        """
+        upload_blob = {
+            "_upload": {
+                "ticket_id": ticket.ticket_id,
+                "upload_url": ticket.upload_url,
+                "method": ticket.method,
+                "headers": dict(ticket.headers),
+                "expires_at": ticket.expires_at.isoformat(),
+                "backend": ticket.backend,
+            }
+        }
+        sql = (
+            f'UPDATE "{scope.schema}".assets '
+            "SET metadata = metadata || CAST(:upload_meta AS jsonb), "
+            "    updated_at = NOW() "
+            "WHERE catalog_id = :catalog_id "
+            "AND collection_id IS NOT DISTINCT FROM :collection_id "
+            "AND asset_id = :asset_id"
+        )
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn,
+                catalog_id=scope.catalog_id,
+                collection_id=scope.collection_id,
+                asset_id=asset_id,
+                upload_meta=json.dumps(upload_blob),
+            )
+
+    @staticmethod
+    async def _rollback_pending_row(
+        engine: Any, scope: Scope, asset_id: str
+    ) -> None:
+        """Soft-delete the just-inserted PENDING row when URL mint fails.
+
+        Without this cleanup, the next upload attempt for the same filename
+        would surface a spurious 409 (the orphan PENDING row would still
+        match the ``FILENAME`` matcher) until Stage 6's reconcile sweep
+        catches it — far too long a delay for an interactive REST flow.
+        """
+        sql = (
+            f'UPDATE "{scope.schema}".assets '
+            "SET status = 'deleted', updated_at = NOW() "
+            "WHERE catalog_id = :catalog_id "
+            "AND collection_id IS NOT DISTINCT FROM :collection_id "
+            "AND asset_id = :asset_id "
+            "AND status = 'pending'"
+        )
+        try:
+            async with managed_transaction(engine) as conn:
+                await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                    conn,
+                    catalog_id=scope.catalog_id,
+                    collection_id=scope.collection_id,
+                    asset_id=asset_id,
+                )
+        except Exception as cleanup_exc:
+            logger.warning(
+                "Failed to soft-delete orphan PENDING row for asset=%s: %s",
+                asset_id,
+                cleanup_exc,
+                exc_info=True,
             )
 
     async def get_upload_status(

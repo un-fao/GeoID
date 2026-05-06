@@ -314,6 +314,8 @@ class TestProtocolCompliance:
 
     def _make_upload_mock(self) -> MagicMock:
         mock = MagicMock()
+        mock.driver_id = "test"
+        mock.supports_versioning = False
         mock.initiate_upload = AsyncMock()
         mock.get_upload_status = AsyncMock()
         return mock
