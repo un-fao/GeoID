@@ -135,6 +135,13 @@ class AssetService(ExtensionProtocol):
         from dynastore.tools.discovery import register_plugin
         self._upload_process = UploadAssetProcess()
         register_plugin(self._upload_process)
+        # Surface the asset write-policy PluginConfigs to the Configs API.
+        # Importing the module triggers ``TypedModelRegistry.register(cls)``
+        # in :class:`PluginConfig.__init_subclass__` — no explicit register
+        # call needed; the import side-effect is the registration.
+        from dynastore.modules.catalog import write_policy_assets as _wpa  # noqa: F401
+        _ = _wpa.AssetsWritePolicy
+        _ = _wpa.AssetWritePolicyDefaults
 
     def _setup_routes(self):
         self.router.add_api_route(
