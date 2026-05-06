@@ -292,6 +292,57 @@ async def test_iceberg_engine_release_is_noop():
 
 
 # ---------------------------------------------------------------------------
+# End-to-end: TTL eviction sweep fires the real engine_release
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ttl_sweep_fires_real_engine_release():
+    """End-to-end pin: a real ``DuckdbEngineConfig`` with ``ttl_lru``
+    policy gets its ``engine_release`` called when the TTL expires.
+
+    Wires F.6's engine_release impls into F.5's cache mechanics through
+    a single test so a future refactor that breaks the contract surfaces
+    here, not three layers deep."""
+    from dynastore.modules.db_config.engine_config import EngineLifecycleConfig
+    from dynastore.modules.db_config.engine_instance_cache import (
+        EngineInstanceCache,
+    )
+
+    cfg = DuckdbEngineConfig(
+        threads=2, max_memory_gb=1,
+        lifecycle=EngineLifecycleConfig(policy="ttl_lru", ttl_seconds=30),
+    )
+    fake_conn = MagicMock(name="duckdb_conn")
+    fake_module = types.ModuleType("duckdb")
+    fake_module.connect = MagicMock(return_value=fake_conn)
+
+    clock_value = [0.0]
+
+    def fake_clock() -> float:
+        return clock_value[0]
+
+    cache = EngineInstanceCache(
+        engine_resolver=lambda r: cfg if r == "duckdb_engine" else None,
+        clock=fake_clock,
+    )
+
+    with patch.dict(sys.modules, {"duckdb": fake_module}):
+        instance = await cache.get("duckdb_engine")
+        assert instance is fake_conn
+        # Advance past TTL.
+        clock_value[0] = 60.0
+        evicted = await cache.sweep()
+
+    assert evicted == 1
+    fake_conn.close.assert_called_once()
+    # Subsequent get re-instantiates (sweep removed the cached entry).
+    with patch.dict(sys.modules, {"duckdb": fake_module}):
+        await cache.get("duckdb_engine")
+    assert fake_module.connect.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # Engine snapshot resolver
 # ---------------------------------------------------------------------------
 
