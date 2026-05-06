@@ -326,11 +326,20 @@ class PluginConfig(PersistentModel):
     # not inherit the True value from a base that set it.
     is_abstract_base: ClassVar[bool] = False
 
-    # Explicit placement in the deep-view tree.  ``(scope, topic, sub)`` —
-    # e.g. ``("storage", "drivers", "items")`` or ``("platform", "gcp", None)``.
-    # Concrete subclasses MUST declare it; the base sentinel ``("", "", None)``
-    # triggers the ``__init_subclass__`` enforcement check.
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("", "", None)
+    # Explicit placement in the deep-view tree.  Currently 3-tuple
+    # ``(scope, topic, sub)`` — e.g. ``("storage", "drivers", "items")`` or
+    # ``("platform", "gcp", None)``.  Concrete subclasses MUST declare it;
+    # the empty-tuple base sentinel triggers the ``__init_subclass__``
+    # enforcement check via ``not addr``.
+    #
+    # Cycle D (pending) will widen this to variable-length
+    # ``Tuple[str, ...]`` so the address can carry any depth (e.g. the
+    # tier-first ``("platform", "catalog", "collection", "items", "policy")``
+    # path).  Subclass annotations may stay narrower today and migrate
+    # incrementally — the base type is intentionally permissive
+    # (``Tuple[Optional[str], ...]``) to accept both the current 3-tuple
+    # shape (with trailing ``None``) and the post-D variable-length shape.
+    _address: ClassVar[Tuple[Optional[str], ...]] = ()
 
     # Optional scope-visibility filter:
     # - ``None`` (default) → visible at every scope (collection / catalog / platform).
@@ -354,7 +363,12 @@ class PluginConfig(PersistentModel):
         # opt out via ``is_abstract_base = True``.
         if not cls.__dict__.get("is_abstract_base", False):
             addr = cls.__dict__.get("_address")
-            if addr is None or addr == ("", "", None):
+            # Sentinel-shape independent: rejects the inherited empty-tuple
+            # base default, the explicit retired ``("", "", None)`` form, AND
+            # the absence-of-declaration case in one check.  Decouples the
+            # validation from the address-tuple shape so Cycle D's widening
+            # to variable-length doesn't break the enforcement.
+            if not addr:
                 raise TypeError(
                     f"{cls.__module__}.{cls.__qualname__} is a concrete PluginConfig "
                     f"but does not declare ``_address``.  Declare e.g. "
