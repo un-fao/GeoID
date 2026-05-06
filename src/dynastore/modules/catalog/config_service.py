@@ -24,6 +24,27 @@ from dynastore.tools.cache import cached
 from dynastore.modules.storage.router import invalidate_router_cache
 
 
+def _materialise_ref_row(row: Optional[Dict[str, Any]], ref_key: str) -> Optional["PluginConfig"]:
+    """F.4c.2 — turn a ``(class_key, config_data)`` row into a validated ``PluginConfig``.
+
+    Returns ``None`` for an empty row or when the row's ``class_key`` is not in
+    the live registry (warning logged so dropped rows surface in operator
+    triage).  Inline import resolves the late-binding via
+    ``platform_config_service.resolve_config_class``.
+    """
+    if not row:
+        return None
+    cls = resolve_config_class(row["class_key"])
+    if cls is None:
+        logger.warning(
+            "get_config_by_ref: ref %r stored class_key %r not in registry",
+            ref_key,
+            row["class_key"],
+        )
+        return None
+    return cls.model_validate(row["config_data"])
+
+
 def _maybe_bust_router(cls: Type["PluginConfig"], catalog_id: Optional[str], collection_id: Optional[str]) -> None:
     """Bust the distributed router cache only for routing-config writes.
 
@@ -657,6 +678,116 @@ class ConfigService(ConfigsProtocol):
                 continue
             configs[class_key] = cls.model_validate(row["config_data"])
         return configs
+
+    # -----------------------------------------------------------------
+    # F.4c.2 — ref-keyed read API
+    # -----------------------------------------------------------------
+
+    async def list_refs_at_scope(
+        self,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        ctx: Optional[DriverContext] = None,
+    ) -> Dict[str, str]:
+        """Tier-local enumeration of ``{ref_key: class_key}`` at the implied scope."""
+        db_resource = ctx.db_resource if ctx else None
+
+        if collection_id is not None:
+            if catalog_id is None:
+                raise ValueError("catalog_id is required when collection_id is provided")
+            validate_sql_identifier(catalog_id)
+            validate_sql_identifier(collection_id)
+            async with managed_transaction(db_resource or self.engine) as conn:
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+                )
+                if not phys_schema:
+                    return {}
+                if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
+                    return {}
+                rows = await _cq.list_collection_refs(phys_schema).execute(
+                    conn, collection_id=collection_id
+                )
+            return {r["ref_key"]: r["class_key"] for r in rows}
+
+        if catalog_id is not None:
+            validate_sql_identifier(catalog_id)
+            async with managed_transaction(db_resource or self.engine) as conn:
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+                )
+                if not phys_schema:
+                    return {}
+                if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
+                    return {}
+                rows = await _cq.list_catalog_refs(phys_schema).execute(conn)
+            return {r["ref_key"]: r["class_key"] for r in rows}
+
+        # Platform scope — delegate to PlatformConfigService.list_refs.
+        platform_svc = self._get_platform_config_service()
+        getter = getattr(platform_svc, "list_refs", None)
+        if getter is None:
+            return {}
+        return await getter()
+
+    async def get_config_by_ref(
+        self,
+        ref_key: str,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        ctx: Optional[DriverContext] = None,
+    ) -> Optional[PluginConfig]:
+        """Tier-local read by ``ref_key`` at the implied scope.
+
+        Resolves the dispatch class from the row's ``class_key`` discriminator
+        and validates the JSON payload through that class.  Returns ``None``
+        when the row is absent or its ``class_key`` is no longer registered
+        (warning logged).  Does NOT walk the waterfall — refs are explicit.
+        """
+        db_resource = ctx.db_resource if ctx else None
+
+        if collection_id is not None:
+            if catalog_id is None:
+                raise ValueError("catalog_id is required when collection_id is provided")
+            validate_sql_identifier(catalog_id)
+            validate_sql_identifier(collection_id)
+            async with managed_transaction(db_resource or self.engine) as conn:
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+                )
+                if not phys_schema:
+                    return None
+                if not await check_table_exists(conn, COLLECTION_CONFIGS_TABLE, phys_schema):
+                    return None
+                row = await _cq.select_collection_config_by_ref(phys_schema).execute(
+                    conn, collection_id=collection_id, ref_key=ref_key
+                )
+            return _materialise_ref_row(row, ref_key)
+
+        if catalog_id is not None:
+            validate_sql_identifier(catalog_id)
+            async with managed_transaction(db_resource or self.engine) as conn:
+                phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                    catalog_id, ctx=DriverContext(db_resource=conn), allow_missing=True
+                )
+                if not phys_schema:
+                    return None
+                if not await check_table_exists(conn, CATALOG_CONFIGS_TABLE, phys_schema):
+                    return None
+                row = await _cq.select_catalog_config_by_ref(phys_schema).execute(
+                    conn, ref_key=ref_key
+                )
+            return _materialise_ref_row(row, ref_key)
+
+        # Platform scope — delegate to PlatformConfigService.get_config_by_ref.
+        platform_svc = self._get_platform_config_service()
+        getter = getattr(platform_svc, "get_config_by_ref", None)
+        if getter is None:
+            return None
+        return await getter(
+            ref_key,
+            ctx=DriverContext(db_resource=db_resource) if db_resource else None,
+        )
 
     async def search(
         self,

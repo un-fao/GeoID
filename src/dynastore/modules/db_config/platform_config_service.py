@@ -271,6 +271,8 @@ get_platform_config_query = _cq.get_platform_config
 upsert_platform_config_query = _cq.upsert_platform_config
 list_platform_configs_query = _cq.list_platform_configs
 delete_platform_config_query = _cq.delete_platform_config
+get_platform_config_by_ref_query = _cq.get_platform_config_by_ref
+list_platform_refs_query = _cq.list_platform_refs
 
 
 async def _register_schema(conn: DbResource, config: "PluginConfig") -> None:
@@ -644,6 +646,50 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
                 continue
             configs[cls] = cls.model_validate(row["config_data"])
         return configs
+
+    async def list_refs(self) -> Dict[str, str]:
+        """F.4c.2 — return ``{ref_key: class_key}`` for every platform-stored row.
+
+        Tier-local: does NOT walk the waterfall.  Returns ``{}`` when the
+        platform_configs table has no rows.
+        """
+        async with managed_transaction(self.engine) as conn:
+            if not await _platform_table_exists(conn):
+                return {}
+            rows = await list_platform_refs_query.execute(conn)
+        return {row["ref_key"]: row["class_key"] for row in rows}
+
+    async def get_config_by_ref(
+        self,
+        ref_key: str,
+        ctx: Optional[DriverContext] = None,
+    ) -> Optional[PluginConfig]:
+        """F.4c.2 — return the stored ``PluginConfig`` for ``ref_key`` at platform scope.
+
+        Resolves the dispatch class from the row's ``class_key`` discriminator.
+        Returns ``None`` when the row is absent or its ``class_key`` is no
+        longer registered (warning logged).  Tier-local: does NOT walk the
+        waterfall.
+        """
+        db_resource = ctx.db_resource if ctx else None
+        async with managed_transaction(db_resource or self.engine) as conn:
+            if not await _platform_table_exists(conn):
+                return None
+            row = await get_platform_config_by_ref_query.execute(
+                conn, ref_key=ref_key
+            )
+        if not row:
+            return None
+        cls = resolve_config_class(row["class_key"])
+        if cls is None:
+            logger.warning(
+                "get_config_by_ref: ref %r stored class_key %r not in registry",
+                ref_key,
+                row["class_key"],
+            )
+            return None
+        data = row["config_data"]
+        return cls.model_validate(data)
 
     async def delete_config(
         self,
