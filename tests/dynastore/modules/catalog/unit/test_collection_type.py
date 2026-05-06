@@ -1,4 +1,4 @@
-"""Pin the Phase 1.6 ``CollectionType`` PluginConfig hoist.
+"""Pin the Phase 1.6 ``CollectionInfo`` PluginConfig hoist.
 
 Before Phase 1.6, ``collection_type`` was a field on
 ``ItemsPostgresqlDriverConfig`` — the kind of a collection (VECTOR /
@@ -6,11 +6,11 @@ RASTER / RECORDS) was buried inside ONE storage backend's config and
 the other drivers (Iceberg, DuckDB, etc.) had to either re-invent or
 ignore it.
 
-After Phase 1.6, ``CollectionType`` is its own ``PluginConfig`` at
+After Phase 1.6, ``CollectionInfo`` is its own ``PluginConfig`` at
 collection scope, addressable via
 ``/configs/catalogs/{c}/collections/{c}/plugins/collection_type``.
 The PG driver (and every other capable driver) reads it via
-``configs.get_config(CollectionType, catalog_id, collection_id)`` and
+``configs.get_config(CollectionInfo, catalog_id, collection_id)`` and
 passes the ``kind.value`` to the sidecar resolver.
 
 These tests pin:
@@ -25,8 +25,8 @@ from __future__ import annotations
 import pytest
 
 from dynastore.modules.catalog.catalog_config import (
-    CollectionType,
-    CollectionTypeEnum,
+    CollectionInfo,
+    CollectionKind,
 )
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
@@ -35,26 +35,26 @@ from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
 def test_collection_type_is_a_plugin_config():
     from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-    assert issubclass(CollectionType, PluginConfig)
+    assert issubclass(CollectionInfo, PluginConfig)
 
 
 def test_collection_type_address_and_visibility():
-    assert CollectionType._address == ("platform", "catalog", "collection", "type")
-    assert CollectionType._visibility == "collection"
+    assert CollectionInfo._address == ("platform", "catalog", "collection", "info")
+    assert CollectionInfo._visibility == "collection"
 
 
 def test_collection_type_class_key_is_snake_case():
-    assert CollectionType.class_key() == "collection_type"
+    assert CollectionInfo.class_key() == "collection_type"
 
 
 def test_collection_type_default_is_vector():
-    ct = CollectionType()
-    assert ct.kind is CollectionTypeEnum.VECTOR
+    ct = CollectionInfo()
+    assert ct.kind is CollectionKind.VECTOR
 
 
 def test_collection_type_accepts_records_and_raster():
-    assert CollectionType(kind=CollectionTypeEnum.RECORDS).kind is CollectionTypeEnum.RECORDS
-    assert CollectionType(kind=CollectionTypeEnum.RASTER).kind is CollectionTypeEnum.RASTER
+    assert CollectionInfo(kind=CollectionKind.RECORDS).kind is CollectionKind.RECORDS
+    assert CollectionInfo(kind=CollectionKind.RASTER).kind is CollectionKind.RASTER
 
 
 def test_collection_type_in_registry():
@@ -67,7 +67,7 @@ def test_collection_type_in_registry():
 
     configs = list_registered_configs()
     assert "collection_type" in configs
-    assert configs["collection_type"] is CollectionType
+    assert configs["collection_type"] is CollectionInfo
 
 
 def test_pg_driver_config_no_longer_carries_collection_type():
@@ -79,7 +79,7 @@ def test_pg_driver_config_no_longer_carries_collection_type():
     of the model schema, so:
     - JSON Schema / OpenAPI no longer advertises it.
     - The PG driver's runtime path ignores it (the resolver receives
-      ``collection_type`` from its async caller's ``CollectionType``
+      ``collection_type`` from its async caller's ``CollectionInfo``
       fetch, not from this driver config).
     """
     assert "collection_type" not in ItemsPostgresqlDriverConfig.model_fields
@@ -132,10 +132,10 @@ def test_resolver_drops_explicit_geometry_for_records():
     ("RECORDS", False),
 ])
 def test_resolver_collection_type_round_trip(kind_str: str, expected_has_geometries: bool):
-    """End-to-end: ``CollectionType.kind.value`` is what the resolver
+    """End-to-end: ``CollectionInfo.kind.value`` is what the resolver
     expects, so the wire shape round-trips without a string conversion.
     """
-    ct = CollectionType(kind=CollectionTypeEnum(kind_str))
+    ct = CollectionInfo(kind=CollectionKind(kind_str))
     cfg = ItemsPostgresqlDriverConfig()
     resolved = _effective_sidecars(
         cfg, catalog_id="cat", collection_id="col",

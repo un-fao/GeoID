@@ -124,7 +124,7 @@ def test_known_consumers_have_handlers_registered():
     must end up in ``_APPLY_HANDLERS`` after import.
 
     Cycle E retired the catalog-wide private-mode apply handler
-    (``ElasticsearchCatalogConfig`` deleted; ``CatalogPolicyConfig`` is
+    (``ElasticsearchCatalogConfig`` deleted; ``CatalogPrivacy`` is
     pure data — consulted only at collection-create time as a default
     seed for the per-collection ``is_private`` flag).
     """

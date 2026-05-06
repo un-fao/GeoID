@@ -1,6 +1,6 @@
 """Cycle E.2.c slice 2 — pin the catalog-tier lifecycle hook.
 
-When an operator writes a ``CatalogPolicyConfig`` with
+When an operator writes a ``CatalogPrivacy`` with
 ``default_collection_privacy=="private"``, the apply handler must
 proactively call ``ensure_storage(catalog_id)`` on both per-tenant
 private drivers (items + collection envelope) so the indexes exist
@@ -18,7 +18,7 @@ These tests pin the handler's contract:
 - Private default + ensure_storage raises on one driver → handler
   swallows + logs, the other driver still gets called.
 
-The handler itself is registered on ``CatalogPolicyConfig`` at module
+The handler itself is registered on ``CatalogPrivacy`` at module
 import time; we exercise it directly here rather than going through
 ``ConfigsProtocol.set_config``.
 """
@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPolicyConfig,
+    CatalogPrivacy,
     _on_apply_catalog_policy_config,
 )
 
@@ -67,7 +67,7 @@ async def test_handler_noop_when_policy_is_public():
         return_value=[items_driver, coll_driver],
     ):
         await _on_apply_catalog_policy_config(
-            CatalogPolicyConfig(default_collection_privacy="public"),
+            CatalogPrivacy(default_collection_privacy="public"),
             "cat-a", None, None,
         )
 
@@ -88,7 +88,7 @@ async def test_handler_noop_when_catalog_id_missing():
         return_value=[items_driver, coll_driver],
     ):
         await _on_apply_catalog_policy_config(
-            CatalogPolicyConfig(default_collection_privacy="private"),
+            CatalogPrivacy(default_collection_privacy="private"),
             None, None, None,
         )
 
@@ -127,7 +127,7 @@ async def test_handler_calls_both_private_drivers_when_private_and_discoverable(
         side_effect=fake_get_protocols,
     ):
         await _on_apply_catalog_policy_config(
-            CatalogPolicyConfig(default_collection_privacy="private"),
+            CatalogPrivacy(default_collection_privacy="private"),
             "cat-a", None, None,
         )
 
@@ -163,7 +163,7 @@ async def test_handler_skips_missing_driver_gracefully():
     ):
         # Should not raise even though collection-private is missing.
         await _on_apply_catalog_policy_config(
-            CatalogPolicyConfig(default_collection_privacy="private"),
+            CatalogPrivacy(default_collection_privacy="private"),
             "cat-a", None, None,
         )
 
@@ -204,7 +204,7 @@ async def test_handler_swallows_ensure_storage_exceptions(caplog):
     ):
         # Should not raise.
         await _on_apply_catalog_policy_config(
-            CatalogPolicyConfig(default_collection_privacy="private"),
+            CatalogPrivacy(default_collection_privacy="private"),
             "cat-a", None, None,
         )
 
@@ -220,11 +220,11 @@ async def test_handler_swallows_ensure_storage_exceptions(caplog):
 
 @pytest.mark.asyncio
 async def test_handler_registered_on_catalog_policy_config():
-    """The handler must be in ``CatalogPolicyConfig.get_apply_handlers()``
+    """The handler must be in ``CatalogPrivacy.get_apply_handlers()``
     so the apply pipeline picks it up.  Pins the registration call at
     module load time."""
-    handlers = CatalogPolicyConfig.get_apply_handlers()
+    handlers = CatalogPrivacy.get_apply_handlers()
     assert _on_apply_catalog_policy_config in handlers, (
         "Cycle E.2.c slice 2: _on_apply_catalog_policy_config must be "
-        "registered on CatalogPolicyConfig at module import time."
+        "registered on CatalogPrivacy at module import time."
     )

@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from dynastore.modules.catalog.catalog_config import (
     CollectionPluginConfig,
-    CollectionTypeEnum,
+    CollectionKind,
     CompositePartitionConfig,
 )
 from dynastore.modules.storage.driver_config import (
@@ -86,9 +86,9 @@ class TestItemsPostgresqlDriverConfigDefaults:
 
         Phase 1.6: ``collection_type`` is no longer on
         ``ItemsPostgresqlDriverConfig`` — it lives on the new
-        ``CollectionType`` PluginConfig at collection scope.  The
+        ``CollectionInfo`` PluginConfig at collection scope.  The
         resolver receives ``collection_type`` as a kw arg from its
-        async callers (after they fetch ``CollectionType``).
+        async callers (after they fetch ``CollectionInfo``).
         """
         from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
         cfg = ItemsPostgresqlDriverConfig()
@@ -136,7 +136,7 @@ class TestItemsPostgresqlDriverConfigDefaults:
 
     def test_collection_type_field_hoisted_off(self):
         """Phase 1.6: ``collection_type`` was hoisted out of the PG driver
-        config into a standalone ``CollectionType`` PluginConfig at
+        config into a standalone ``CollectionInfo`` PluginConfig at
         collection scope.  The field is no longer part of this class's
         ``model_fields``.  See ``test_collection_type.py`` for the new
         regression suite.

@@ -194,7 +194,7 @@ class TestConfigScopeMixinAnnotations:
         assert scope == "platform_waterfall"
 
 
-# PR #153 (`feat(configs)!: hoist CollectionType into its own PluginConfig
+# PR #153 (`feat(configs)!: hoist CollectionInfo into its own PluginConfig
 # (Phase 1.6)`) replaced the per-class `get_effective_collection_config` API
 # with a tree-shaped `compose_collection_config` that returns *all* configs
 # at once. The per-class source-of-truth annotation logic the deleted

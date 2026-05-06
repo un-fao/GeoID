@@ -593,7 +593,7 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     Absorbs fields previously in ``PostgresStorageLocationConfig`` and
     PG-specific fields from ``CollectionPluginConfig`` (sidecars,
     partitioning).  ``collection_type`` was hoisted out of this class in
-    Phase 1.6 — see ``CollectionType`` PluginConfig at collection scope.
+    Phase 1.6 — see ``CollectionInfo`` PluginConfig at collection scope.
 
     CRITICAL: ``sidecars`` and ``partitioning`` are **Immutable** — they
     cannot be changed once the physical table exists.
@@ -651,10 +651,10 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
         description="Composite partition config for PG tables.",
     )
     # NB: ``collection_type`` field hoisted out of this driver config in
-    # Phase 1.6 — it's now a collection-scope ``CollectionType`` PluginConfig
+    # Phase 1.6 — it's now a collection-scope ``CollectionInfo`` PluginConfig
     # (see ``modules/catalog/catalog_config.py``) so EVERY driver reads the
     # same value, not just the PG driver.  Drivers fetch it via
-    # ``configs.get_config(CollectionType, catalog_id, collection_id)``.
+    # ``configs.get_config(CollectionInfo, catalog_id, collection_id)``.
 
     # ------------------------------------------------------------------
     # Validators (moved from CollectionPluginConfig)
@@ -675,7 +675,7 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     # class.  The geometry-strip-for-RECORDS logic now lives in
     # ``_effective_sidecars`` (the sidecar resolver), which receives the
     # collection_type from its async callers after they fetch the new
-    # ``CollectionType`` PluginConfig.
+    # ``CollectionInfo`` PluginConfig.
 
     @field_validator("partitioning", mode="before")
     @classmethod

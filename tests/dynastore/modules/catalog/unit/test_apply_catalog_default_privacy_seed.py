@@ -3,7 +3,7 @@
 ``apply_catalog_default_privacy_seed`` is invoked from
 ``CollectionService.create_collection`` to seed a freshly-created
 collection's privacy state from the catalog's
-``CatalogPolicyConfig.default_collection_privacy``.
+``CatalogPrivacy.default_collection_privacy``.
 
 These tests pin the helper's contract:
 - catalog policy missing → no-op (False return)
@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPolicyConfig,
+    CatalogPrivacy,
     CollectionPluginConfig,
     apply_catalog_default_privacy_seed,
 )
@@ -64,7 +64,7 @@ async def test_seed_noop_when_catalog_has_no_policy_row():
 @pytest.mark.asyncio
 async def test_seed_noop_when_policy_is_public():
     proto = _configs_returning(
-        CatalogPolicyConfig(default_collection_privacy="public"),
+        CatalogPrivacy(default_collection_privacy="public"),
     )
     applied = await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
@@ -101,7 +101,7 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
     items routing); we put it LAST for clarity.
     """
     proto = _configs_returning(
-        CatalogPolicyConfig(default_collection_privacy="private"),
+        CatalogPrivacy(default_collection_privacy="private"),
     )
     applied = await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
@@ -169,7 +169,7 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
 @pytest.mark.asyncio
 async def test_seed_passes_catalog_and_collection_ids_through_to_set_config():
     proto = _configs_returning(
-        CatalogPolicyConfig(default_collection_privacy="private"),
+        CatalogPrivacy(default_collection_privacy="private"),
     )
     await apply_catalog_default_privacy_seed(
         "cat-x", "col-y", configs=proto,
@@ -186,7 +186,7 @@ async def test_seed_routing_payload_has_postgresql_in_write_for_durability():
     (FATAL) + private ES (ASYNC + OUTBOX) so a private collection
     still has a durable write target."""
     proto = _configs_returning(
-        CatalogPolicyConfig(default_collection_privacy="private"),
+        CatalogPrivacy(default_collection_privacy="private"),
     )
     await apply_catalog_default_privacy_seed(
         "cat-a", "col-a", configs=proto,
