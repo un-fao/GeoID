@@ -414,11 +414,24 @@ class PolicyService:
                             parent_role=parent, child_role=child,
                             schema=schema, conn=db,
                         )
-                    except Exception:
-                        # add_role_hierarchy is upsert-by-PK in the storage
-                        # impl; if a deployment overrode the storage with a
-                        # stricter (non-idempotent) version, swallow the dup.
-                        pass
+                    except Exception as e:
+                        # add_role_hierarchy is upsert-by-PK in the default
+                        # storage impl (`INSERT ... ON CONFLICT DO NOTHING`);
+                        # the swallow exists for deployments that override
+                        # the storage with a stricter, non-idempotent
+                        # implementation. Log at WARNING so the swallow is
+                        # observable — silent failures here put the platform
+                        # into a "no inheritance" state where authenticated
+                        # users see narrower access than anonymous browsers
+                        # (the seed wires sysadmin → admin → user → anonymous,
+                        # so users *inherit* every public policy bound to
+                        # anonymous; without the chain, registering for an
+                        # account silently *removes* access).
+                        logger.warning(
+                            "provision_default_policies: failed to seed role "
+                            "hierarchy edge %r → %r in schema %r: %s",
+                            parent, child, schema, e,
+                        )
 
     # --- Evaluation ---
 
