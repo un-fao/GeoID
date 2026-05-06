@@ -64,7 +64,7 @@ class CatalogElasticsearchDriverConfig(_PluginDriverConfig):
     matches ``mappings.get_index_name(prefix, "catalog")`` ⇒
     ``{prefix}-catalogs``.
     """
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "drivers", "catalog")
+    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "catalog", "drivers")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
 

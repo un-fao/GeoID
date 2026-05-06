@@ -324,7 +324,7 @@ class ItemsRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _address: ClassVar[Tuple[str, str, str]] = ("storage", "items", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
@@ -452,7 +452,11 @@ class CollectionRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    # Collection-envelope routing — 2-tuple under storage (no items/assets fork).
+    # CollectionStore drivers are structurally distinct from items-tier drivers,
+    # so this routing config lands at ``storage.routing.{class_key}`` rather
+    # than under an items/assets sibling.
+    _address: ClassVar[Tuple[str, str]] = ("storage", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
@@ -506,7 +510,7 @@ class AssetRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _address: ClassVar[Tuple[str, str, str]] = ("storage", "assets", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
@@ -586,7 +590,7 @@ class CatalogRoutingConfig(PluginConfig):
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
-    _address: ClassVar[Tuple[str, str, Optional[str]]] = ("storage", "routing", None)
+    _address: ClassVar[Tuple[str, str, str]] = ("storage", "catalog", "routing")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
 

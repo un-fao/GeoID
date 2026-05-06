@@ -174,7 +174,7 @@ def test_compose_tree_places_classes_by_address():
     registry = _stub_registry(
         WebConfig={"_address": ("platform", "web", None)},
         catalog_core_postgresql_driver={
-            "_address": ("storage", "drivers", "catalog"),
+            "_address": ("storage", "catalog", "drivers"),
             "_visibility": "catalog",
         },
     )
@@ -190,7 +190,7 @@ def test_compose_tree_places_classes_by_address():
             include_mode="upstream",
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
-    assert "catalog_core_postgresql_driver" in tree["storage"]["drivers"]["catalog"]
+    assert "catalog_core_postgresql_driver" in tree["storage"]["catalog"]["drivers"]
     assert meta is None
 
 
@@ -199,7 +199,7 @@ def test_compose_tree_filters_collection_only_from_catalog():
     by_class = {"items_write_policy": {"on_conflict": "update"}}
     registry = _stub_registry(
         items_write_policy={
-            "_address": ("storage", "policy", None),
+            "_address": ("storage", "items", "policy"),
             "_visibility": "collection",
         },
     )
@@ -217,7 +217,7 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
     by_class = {"items_write_policy": {"on_conflict": "update"}}
     registry = _stub_registry(
         items_write_policy={
-            "_address": ("storage", "policy", None),
+            "_address": ("storage", "items", "policy"),
             "_visibility": "collection",
         },
     )
@@ -228,7 +228,7 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
         tree, _, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection",
         )
-    assert tree["storage"]["policy"]["items_write_policy"] == {"on_conflict": "update"}
+    assert tree["storage"]["items"]["policy"]["items_write_policy"] == {"on_conflict": "update"}
 
 
 def test_compose_tree_drops_abstract_bases():
@@ -426,7 +426,7 @@ def test_compose_tree_address_visibility_filters_correctly():
     by_class = {"CatalogOnly": {"x": 1}}
     registry = _stub_registry(
         CatalogOnly={
-            "_address": ("storage", "drivers", "catalog"),
+            "_address": ("storage", "catalog", "drivers"),
             "_visibility": "catalog",
         },
     )
@@ -439,14 +439,14 @@ def test_compose_tree_address_visibility_filters_correctly():
             tree, _, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope,
             )
-            assert "CatalogOnly" in tree["storage"]["drivers"]["catalog"]
+            assert "CatalogOnly" in tree["storage"]["catalog"]["drivers"]
             assert "inherited_from_catalog" not in tree
         # At collection scope: NOT in main tree, but in inherited_from_catalog
         tree, _, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection",
         )
         assert "storage" not in tree
-        assert tree["inherited_from_catalog"]["storage"]["drivers"]["catalog"]["CatalogOnly"] == {"x": 1}
+        assert tree["inherited_from_catalog"]["storage"]["catalog"]["drivers"]["CatalogOnly"] == {"x": 1}
 
 
 def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope():
@@ -464,7 +464,7 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
     }
     registry = _stub_registry(
         items_postgresql_driver={
-            "_address": ("storage", "drivers", "items"),
+            "_address": ("storage", "items", "drivers"),
             "_visibility": "collection",
         },
         elasticsearch_catalog_config={
@@ -472,11 +472,11 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
             "_visibility": "catalog",
         },
         catalog_routing_config={
-            "_address": ("storage", "routing", None),
+            "_address": ("storage", "catalog", "routing"),
             "_visibility": "catalog",
         },
         catalog_postgresql_driver={
-            "_address": ("storage", "drivers", "catalog"),
+            "_address": ("storage", "catalog", "drivers"),
             "_visibility": "catalog",
         },
         web_config={
@@ -492,7 +492,7 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
         )
 
     # Collection-vis stays in main tree
-    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    assert tree["storage"]["items"]["drivers"]["items_postgresql_driver"] == {"sidecars": []}
     # Universal-visibility configs are upstream-tier under default slim mode —
     # they go to the ``inherited`` summary, NOT inlined in the body
     assert "platform" not in tree
@@ -501,8 +501,8 @@ def test_compose_tree_surfaces_catalog_configs_as_inherited_at_collection_scope(
     # Catalog-vis configs ALL surface under inherited_from_catalog with the same shape
     inh = tree["inherited_from_catalog"]
     assert inh["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"private": True}
-    assert inh["storage"]["routing"]["catalog_routing_config"] == {"enabled": True}
-    assert inh["storage"]["drivers"]["catalog"]["catalog_postgresql_driver"] == {}
+    assert inh["storage"]["catalog"]["routing"]["catalog_routing_config"] == {"enabled": True}
+    assert inh["storage"]["catalog"]["drivers"]["catalog_postgresql_driver"] == {}
 
 
 def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
@@ -513,7 +513,7 @@ def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
     by_class = {"catalog_routing_config": {"enabled": True}}
     registry = _stub_registry(
         catalog_routing_config={
-            "_address": ("storage", "routing", None),
+            "_address": ("storage", "catalog", "routing"),
             "_visibility": "catalog",
         },
     )
@@ -528,7 +528,7 @@ def test_compose_tree_no_inherited_from_catalog_at_non_collection_scopes():
             assert "inherited_from_catalog" not in tree, (
                 f"inherited_from_catalog must NOT appear at scope={scope!r}"
             )
-            assert "catalog_routing_config" in tree["storage"]["routing"]
+            assert "catalog_routing_config" in tree["storage"]["catalog"]["routing"]
 
 
 def test_compose_tree_inherited_from_catalog_meta_mirrors_path():
@@ -579,7 +579,7 @@ def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
     }
     registry = _stub_registry(
         items_postgresql_driver={
-            "_address": ("storage", "drivers", "items"),
+            "_address": ("storage", "items", "drivers"),
             "_visibility": "collection",
         },
         web_config={"_address": ("platform", "web", None)},
@@ -594,7 +594,7 @@ def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
             # default include_mode="scope"
         )
     # Collection-owned config stays in the body
-    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    assert tree["storage"]["items"]["drivers"]["items_postgresql_driver"] == {"sidecars": []}
     # Universal-vis config is diverted to the slim summary, NOT inlined
     assert "platform" not in tree
     assert inherited == {"web_config": "platform"}
@@ -631,7 +631,7 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
     registry = _stub_registry(
         web_config={"_address": ("platform", "web", None)},
         items_postgresql_driver={
-            "_address": ("storage", "drivers", "items"),
+            "_address": ("storage", "items", "drivers"),
             "_visibility": "collection",
         },
     )
@@ -645,7 +645,7 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
         )
     # Both rendered in body, no inherited summary
     assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
-    assert tree["storage"]["drivers"]["items"]["items_postgresql_driver"] == {"sidecars": []}
+    assert tree["storage"]["items"]["drivers"]["items_postgresql_driver"] == {"sidecars": []}
     assert inherited is None
 
 
@@ -703,7 +703,7 @@ def test_catalog_es_driver_lands_under_storage_drivers_catalog():
         CatalogElasticsearchDriverConfig,
     )
 
-    assert CatalogElasticsearchDriverConfig._address == ("storage", "drivers", "catalog")
+    assert CatalogElasticsearchDriverConfig._address == ("storage", "catalog", "drivers")
     assert CatalogElasticsearchDriverConfig._visibility == "catalog"
 
 
@@ -713,7 +713,7 @@ def test_collection_es_driver_lands_under_storage_drivers_collection():
         CollectionElasticsearchDriverConfig,
     )
 
-    assert CollectionElasticsearchDriverConfig._address == ("storage", "drivers", "collection")
+    assert CollectionElasticsearchDriverConfig._address == ("storage", "collection", "drivers")
     assert CollectionElasticsearchDriverConfig._visibility == "catalog"
 
 
