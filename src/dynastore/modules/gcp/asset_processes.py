@@ -66,7 +66,11 @@ class GcsDownloadAssetProcess:
         self._max_ttl_seconds = min(max_ttl_seconds, MAX_DOWNLOAD_TTL_SECONDS)
 
     async def describe(self, asset: Asset) -> AssetProcessDescriptor:
-        applicable = asset.owned_by == "gcs" and asset.uri.startswith("gs://")
+        applicable = (
+            asset.owned_by == "gcs"
+            and bool(asset.uri)
+            and asset.uri.startswith("gs://")
+        )
         return AssetProcessDescriptor(
             process_id=self.process_id,
             title="Download",
@@ -93,7 +97,7 @@ class GcsDownloadAssetProcess:
         )
 
     async def execute(self, asset: Asset, params: Dict[str, Any]) -> AssetProcessOutput:
-        if asset.owned_by != "gcs" or not asset.uri.startswith("gs://"):
+        if asset.owned_by != "gcs" or not asset.uri or not asset.uri.startswith("gs://"):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="download process not applicable: asset is not GCS-owned.",
@@ -110,6 +114,7 @@ class GcsDownloadAssetProcess:
             )
 
         expiration = timedelta(seconds=ttl)
+        assert asset.uri is not None  # narrowed by the guard above
         signed_url = await generate_gcs_signed_url(
             asset.uri,
             method="GET",

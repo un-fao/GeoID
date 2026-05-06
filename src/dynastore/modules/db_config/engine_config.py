@@ -403,7 +403,7 @@ class DuckdbEngineConfig(EngineConfig):
         per engine is the right unit (re-creating it per request would
         defeat the cache's purpose).
         """
-        import duckdb  # type: ignore[import-not-found]  # optional extra: module_storage_duckdb
+        import duckdb  # optional extra: module_storage_duckdb
 
         conn = duckdb.connect(":memory:")
         conn.execute(f"PRAGMA threads={self.threads}")
@@ -475,7 +475,7 @@ class IcebergEngineConfig(EngineConfig):
         ``pyiceberg.catalog.load_catalog``.  PyIceberg's catalog object
         owns its own connection pooling.
         """
-        from pyiceberg.catalog import load_catalog  # type: ignore[import-not-found]  # optional extra: module_storage_iceberg
+        from pyiceberg.catalog import load_catalog  # optional extra: module_storage_iceberg
 
         properties: Dict[str, str] = {}
         if self.catalog_uri is not None:

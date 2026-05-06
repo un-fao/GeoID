@@ -502,7 +502,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 # flush log reported success.  Reproduced 2026-05-05 during
                 # the keycloak-fix browser verification.
                 from sqlalchemy import text
-                await conn.execute(
+                await conn.execute(  # type: ignore[misc]
                     text("SELECT pg_advisory_xact_lock(hashtext('iam_seed:iam'))")
                 )
 

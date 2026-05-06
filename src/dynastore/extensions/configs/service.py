@@ -245,9 +245,9 @@ class ConfigsService(ExtensionProtocol):
 
     @staticmethod
     def _reject_engine_write_at_tenant_scope(
-        cls: type, plugin_id: str, scope: str,
+        config_cls: type, plugin_id: str, scope: str,
     ) -> None:
-        """Raise 403 if ``cls`` is an :class:`EngineConfig` subclass.
+        """Raise 403 if ``config_cls`` is an :class:`EngineConfig` subclass.
 
         Engines are sysadmin-only platform-tier resources (tenant configs
         cannot influence platform resource policy — decisions #15 / #18).
@@ -257,7 +257,7 @@ class ConfigsService(ExtensionProtocol):
         writes at catalog / collection scope return a clean 403 with a
         message pointing operators to the platform-tier endpoint.
         """
-        if isinstance(cls, type) and issubclass(cls, EngineConfig):
+        if isinstance(config_cls, type) and issubclass(config_cls, EngineConfig):
             raise problem_details.engine_write_forbidden_at_tenant_scope(
                 plugin_id, scope=scope,
             )
