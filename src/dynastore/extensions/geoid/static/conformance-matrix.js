@@ -107,6 +107,28 @@
 
     a.appendChild(top);
     a.appendChild(sub);
+    if (standard.status) {
+      const pill = document.createElement("span");
+      pill.textContent = standard.status === "stable" ? "Published" : "Draft spec";
+      pill.style.alignSelf = "flex-start";
+      pill.style.marginTop = "0.35rem";
+      pill.style.padding = "0.1rem 0.55rem";
+      pill.style.borderRadius = "9999px";
+      pill.style.fontSize = "0.65rem";
+      pill.style.fontWeight = "600";
+      pill.style.letterSpacing = "0.06em";
+      pill.style.textTransform = "uppercase";
+      if (standard.status === "stable") {
+        pill.style.background = "rgba(16,185,129,0.10)";
+        pill.style.color = "#34d399";
+        pill.style.border = "1px solid rgba(16,185,129,0.25)";
+      } else {
+        pill.style.background = "rgba(245,158,11,0.10)";
+        pill.style.color = "#fbbf24";
+        pill.style.border = "1px solid rgba(245,158,11,0.25)";
+      }
+      a.appendChild(pill);
+    }
     a.dataset.state = status.state;
     return a;
   }

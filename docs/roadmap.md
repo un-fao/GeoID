@@ -1,10 +1,42 @@
-# Roadmap and Future Directions
+# Roadmap
 
-Agro-Informatics Platform (AIP) - Catalog Services is explicitly designed for evolution. The "Three Pillars" architectural foundation enables a clear and efficient path for future development without risking core stability.
+This page reflects engineering work that is in progress or imminent on the
+Catalog Services platform. Items already shipped (Tiles, Maps, Styles,
+Connected Systems, Moving Features, Coverages, DGGS, Records) live in
+`docs/components/` and on the live OGC conformance matrix on the home page.
 
-## Planned Extensions
-1. **OGC API - Tiles / 3D Tiles**: Dedicated components routing requests dynamically to vector/raster visualization tools leveraging local PG cache nodes.
-2. **Real-time Subscriptions**: Exploiting native NOTIFY channels for WS connections rendering live mapping solutions.
-3. **Advanced Access Control**: Establishing more rigid RBAC/ABAC models via separate scoped modules ensuring identity access architectures. 
+## Reliability
 
-*For active issues, current sprints, and real-time planning, reference the official repository issue tracker.*
+- **Outbox-driven multi-driver indexing** — atomic per-tenant outbox table
+  + drain task have shipped. Operational hardening (replay tooling, drain
+  metrics, alerting) is in progress.
+- **Engine instance protocol & cache** — Cycle F.5 / F.6 of the driver-ref
+  refactor have shipped. Remaining slices (catalogue + Cycle F.4 c/d/e
+  schema-touching cutovers) are planned and require a coordinated DB
+  reset on dev / review environments.
+- **Identity & access** — IAM seeding race against multi-service boots is
+  closed by partition-key-aware policy storage. Remaining items in the
+  IAM hardening list (`role_hierarchy` self-heal canary, sibling-service
+  cache invalidation under Valkey, principal-id migration) are tracked
+  in the issue queue.
+
+## OGC API surface
+
+- **OGC API – EDR (Environmental Data Retrieval)** — not yet implemented.
+  Not committed to a specific milestone.
+- **OGC API – Routes / Joins / 3D GeoVolumes** — exploratory; no immediate
+  plans to implement.
+- **SensorThings API** — exploratory; the Connected Systems implementation
+  covers the most common observation use-cases today.
+
+## Research
+
+- **Paginated datacube dimensions** — FAO-driven research proposal that
+  bridges OGC API to OLAP query patterns. This is a research extension,
+  not an OGC standard, and is intentionally surfaced separately from the
+  conformance matrix. The proposal lives under `docs/proposals/`.
+
+## Tracking
+
+For active issues, current sprints, and real-time planning, see the
+repository issue tracker.

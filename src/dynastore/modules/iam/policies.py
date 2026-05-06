@@ -276,6 +276,30 @@ class PolicyService:
                     "/docs.*",
                     "/openapi.json",
                     "/redoc",
+                    # OGC API & STAC API metadata — anonymous-visible by
+                    # spec convention. Without /conformance the home-page
+                    # live OGC matrix can never probe real platform state
+                    # and always falls back to the static snapshot. Only
+                    # the metadata surface (landing root + /conformance)
+                    # is opened here; data endpoints (/collections,
+                    # /items, item search) keep their existing gating.
+                    "/conformance/?$",
+                    "/stac/?$",
+                    "/stac/conformance/?$",
+                    "/features/?$",
+                    "/features/conformance/?$",
+                    "/processes/?$",
+                    "/processes/conformance/?$",
+                    "/records/?$",
+                    "/records/conformance/?$",
+                    "/coverages/?$",
+                    "/coverages/conformance/?$",
+                    "/dggs/?$",
+                    "/dggs/conformance/?$",
+                    "/consys/?$",
+                    "/consys/conformance/?$",
+                    "/movingfeatures/?$",
+                    "/movingfeatures/conformance/?$",
                     # /web/* — explicit safe sub-paths only; mirrors the
                     # web_public_access policy in extensions/web/web.py
                     "/web/?$",

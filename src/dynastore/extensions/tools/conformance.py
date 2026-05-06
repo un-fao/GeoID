@@ -50,6 +50,11 @@ class ConformanceSummary(BaseModel):
 
 
 # --- Pattern map: standard display name -> regex matching its conformance URIs
+# Each entry must classify URIs from a single published OGC / STAC standard.
+# Research proposals (e.g. FAO's paginated datacube-dimensions extension) are
+# deliberately NOT listed here — they are not OGC standards and surfacing
+# them as peer entries on the conformance matrix would overstate the
+# platform's standards posture.
 _STANDARD_PATTERNS: Dict[str, str] = {
     "OGC API Features": r"ogcapi-features",
     "STAC API": r"stacspec\.org|stac-api",
@@ -58,13 +63,19 @@ _STANDARD_PATTERNS: Dict[str, str] = {
     "OGC API Tiles": r"ogcapi-tiles",
     "OGC API Maps": r"ogcapi-maps",
     "OGC API Coverages": r"ogcapi-coverages",
-    "OGC API EDR": r"ogcapi-edr",
-    "OGC Dimensions": r"ogc-dimensions",
-    "OGC API Styles": r"ogcapi-styles",
+    "OGC API DGGS": r"ogcapi-dggs",
+    "OGC API Connected Systems": r"ogcapi-connectedsystems",
     "OGC API Moving Features": r"ogcapi-movingfeatures",
+    "OGC API Styles": r"ogcapi-styles",
+    "OGC API EDR": r"ogcapi-edr",
 }
 
-# Standards in the OGC REST API family that DynaStore could potentially implement
+# Standards in the OGC REST API family that DynaStore could potentially
+# implement. Items absent from `_STANDARD_PATTERNS` show up under "Roadmap"
+# on the home page until at least one extension declares a matching
+# `conformance_uris` entry. This list is for the home-page roadmap pills
+# only — every entry MUST be a published OGC standard or a recognised STAC
+# spec; research proposals do not belong here.
 _ALL_OGC_STANDARDS = [
     "OGC API Common",
     "OGC API Features",
@@ -73,17 +84,16 @@ _ALL_OGC_STANDARDS = [
     "OGC API Processes",
     "OGC API Records",
     "OGC API Coverages",
-    "OGC API EDR",
     "OGC API DGGS",
+    "OGC API Connected Systems",
+    "OGC API Moving Features",
+    "OGC API Styles",
+    "OGC API EDR",
     "OGC API Routes",
     "OGC API Joins",
-    "OGC API Styles",
     "OGC API 3D GeoVolumes",
-    "OGC API Moving Features",
-    "OGC API Connected Systems",
     "SensorThings API",
     "STAC API",
-    "OGC Dimensions",
 ]
 
 # --- Public API ---

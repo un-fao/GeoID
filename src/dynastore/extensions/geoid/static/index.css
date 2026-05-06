@@ -143,13 +143,6 @@ main {
     text-align: center;
 }
 
-@media (max-width: 1024px) {
-    main {
-        grid-template-columns: 1fr;
-        padding: 2rem 1.5rem;
-    }
-}
-
 /* Typography */
 h1 {
     font-size: clamp(2.5rem, 5vw, 3.5rem);
