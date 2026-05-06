@@ -29,6 +29,7 @@ See identity_providers/README.md for how to add new provider types.
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
+from importlib.metadata import version, PackageNotFoundError
 
 import jwt
 from jwt.exceptions import ExpiredSignatureError, InvalidTokenError, PyJWTError
@@ -36,6 +37,22 @@ from jwt.exceptions import ExpiredSignatureError, InvalidTokenError, PyJWTError
 from ..interfaces import IdentityProviderProtocol
 
 logger = logging.getLogger(__name__)
+
+
+def _user_agent() -> str:
+    """Identify outbound JWKS fetches.
+
+    The default ``Python-urllib/<py>`` UA emitted by ``urllib.request`` (used
+    internally by ``PyJWKClient``) is rejected by some WAFs, e.g. Cloudflare's
+    bot rules in front of FAO's Keycloak, which returns 403 — silently breaking
+    JWT signature validation. RFC 9110 ``<product>/<version>`` form, derived
+    from the installed package version, restores access without changing
+    behaviour for IdPs that don't filter on UA.
+    """
+    try:
+        return f"dynastore/{version('dynastore')}"
+    except PackageNotFoundError:
+        return "dynastore/unknown"
 
 
 class OidcIdentityProvider(IdentityProviderProtocol):
@@ -132,7 +149,11 @@ class OidcIdentityProvider(IdentityProviderProtocol):
 
             from jwt import PyJWKClient
             self._meta = meta
-            self._jwks_client = PyJWKClient(meta["jwks_uri"], cache_keys=True)
+            self._jwks_client = PyJWKClient(
+                meta["jwks_uri"],
+                cache_keys=True,
+                headers={"User-Agent": _user_agent()},
+            )
             self._meta_fetched_at = now
             logger.info("OIDC discovery complete: %s", discovery_url)
         except Exception as e:
