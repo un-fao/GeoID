@@ -23,6 +23,9 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional, cast
 
+import rasterio as _rasterio_scope_gate  # noqa: F401  # SCOPE gate: extension_coverages requires rasterio
+_ = _rasterio_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
+
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
