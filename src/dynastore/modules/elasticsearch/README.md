@@ -73,13 +73,13 @@ Catalog-tier privacy default is governed by `CatalogPrivacy`
 (`modules/catalog/catalog_config.py`) via the standard configuration API:
 
 ```
-PUT /configs/catalogs/{catalog_id}/policy
-{ "default_collection_privacy": "private" }
+PUT /configs/catalogs/{catalog_id}/plugins/catalog_privacy
+{ "collection_defaults": { "is_private": true } }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `default_collection_privacy` | `Literal["public","private"]` | `"public"` | Seed default for newly-created collections (consumed at collection-create time). Pure data — flipping it does not retroactively re-flag existing collections. Per-collection privacy is governed by `CollectionPluginConfig.is_private` (Cycle E.2). |
+| `collection_defaults.is_private` | `bool` | `false` | Seed default for newly-created collections (consumed at collection-create time). Pure data — flipping it does not retroactively re-flag existing collections. Per-collection privacy is governed by `CollectionPrivacy.is_private` at `(platform, catalog, collection, privacy)` (F.0d). |
 
 ## Index Design & Mappings
 
@@ -100,7 +100,7 @@ Privacy is owned by `items_elasticsearch_private_driver`
 
 1. Writes items as `{geoid, catalog_id, collection_id}` to `{prefix}-geoid-{catalog_id}` — no geometry, no STAC metadata.
 2. Manages its own DENY policies on its lifecycle (apply on `ensure_storage`, revoke on `drop_storage`, restore on lifespan-startup).
-3. Opts out of items-tier auto-default routing (`auto_register_for_routing = frozenset()`); collections turn on the private driver via explicit routing pin or, post-Cycle-E.2, via `CollectionPluginConfig.is_private = True`.
+3. Opts out of items-tier auto-default routing (`auto_register_for_routing = frozenset()`); collections turn on the private driver via explicit routing pin or, post-Cycle-E.2/F.0d, via `CollectionPrivacy.is_private = True`.
 
 Geoid lookups remain available via `GET /search/geoid/{geoid}` and `POST /search/geoid` (batch).
 

@@ -86,7 +86,7 @@ Stores the full feature (geometry simplified to fit when oversized) in a per-ten
 index `{prefix}-{catalog_id}-private-items` with `TENANT_FEATURE_MAPPING` (root `dynamic: false`).
 On `ensure_storage`, applies a catalog-wide DENY policy (`private_deny_{cat}`) blocking public
 read access. `auto_register_for_routing = frozenset()` — operators pin it explicitly OR set
-`CollectionPluginConfig.is_private = True` (Cycle E.2) which triggers the seed at create-time.
+`CollectionPrivacy.is_private = True` (Cycle E.2/F.0d) which triggers the seed at create-time.
 
 ### `collection_elasticsearch_driver` / `collection_elasticsearch_private_driver`
 
