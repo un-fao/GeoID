@@ -132,7 +132,7 @@ def test_class_key_drops_config_suffix_convention():
     """Convention pin: every bound ``*DriverConfig`` class's wire key
     equals the snake_case form of the class name with the trailing
     ``Config`` removed.  Operators copy ONE name between
-    ``routing.WRITE[].driver_id`` and ``configs.storage.drivers.{key}``.
+    ``routing.WRITE[].driver_id`` and ``configs.platform.catalog.{tier}.drivers.{driver_ref}``.
     """
     from dynastore.models.protocols.typed_driver import _registered_pairs
     from dynastore.tools.typed_store.base import _to_snake

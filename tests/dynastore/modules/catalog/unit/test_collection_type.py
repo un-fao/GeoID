@@ -44,7 +44,7 @@ def test_collection_type_address_and_visibility():
 
 
 def test_collection_type_class_key_is_snake_case():
-    assert CollectionInfo.class_key() == "collection_type"
+    assert CollectionInfo.class_key() == "collection_info"
 
 
 def test_collection_type_default_is_vector():
@@ -66,8 +66,8 @@ def test_collection_type_in_registry():
     )
 
     configs = list_registered_configs()
-    assert "collection_type" in configs
-    assert configs["collection_type"] is CollectionInfo
+    assert "collection_info" in configs
+    assert configs["collection_info"] is CollectionInfo
 
 
 def test_pg_driver_config_no_longer_carries_collection_type():

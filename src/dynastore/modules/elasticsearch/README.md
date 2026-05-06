@@ -69,7 +69,7 @@ The Docker Compose files in this repository use
 
 ### Per-Catalog Config (runtime-mutable, stored in AlloyDB)
 
-Catalog-tier privacy default is governed by `CatalogPolicyConfig`
+Catalog-tier privacy default is governed by `CatalogPrivacy`
 (`modules/catalog/catalog_config.py`) via the standard configuration API:
 
 ```

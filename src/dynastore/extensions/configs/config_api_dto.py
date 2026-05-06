@@ -50,7 +50,7 @@ class DriverRef(BaseModel):
         None,
         description=(
             "Class name of the driver's config (sibling lookup under "
-            "configs.storage.drivers.*).  Null when the driver has no "
+            "configs.platform.catalog.{tier}.drivers.*).  Null when the driver has no "
             "registered config."
         ),
     )

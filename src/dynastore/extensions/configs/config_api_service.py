@@ -17,7 +17,7 @@
 Response shape: ``configs[scope][topic][(sub)?][ClassName] -> payload``.
 Class name IS the identity — no ``class_key`` field inside the payload.
 Routing configs' ``operations[OP]`` become slim ``DriverRef`` dicts
-pointing at sibling driver configs in ``configs.storage.drivers.*``.
+pointing at sibling driver configs in ``configs.platform.catalog.{tier}.drivers.*``.
 
 Placement is read from each ``PluginConfig`` subclass's mandatory
 ``_address: ClassVar[Tuple[Optional[str], ...]]`` ClassVar (variable-length
