@@ -165,6 +165,7 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.modules.catalog.models import AssetReferenceType, CoreAssetReferenceType, EventType
+from dynastore.models.shared_models import Link
 from dynastore.models.protocols.assets import AssetsProtocol
 from dynastore.models.protocols.asset_driver import AssetStore
 from dynastore.models.driver_context import DriverContext
@@ -452,6 +453,15 @@ class Asset(AssetBase):
     size_bytes: Optional[int] = Field(default=None, description="Object size in bytes.")
     created_at: datetime
     updated_at: Optional[datetime] = None
+    links: Optional[List[Link]] = Field(
+        default=None,
+        description=(
+            "OGC API HATEOAS navigation links (``self``, ``collection``, "
+            "``alternate`` to download). Populated by the asset REST surface "
+            "on single-asset GET responses; ``None`` on rows returned by "
+            "lower layers (DB / driver) so list responses stay terse."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

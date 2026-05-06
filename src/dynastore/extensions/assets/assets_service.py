@@ -18,7 +18,7 @@
 
 import json
 import logging
-from typing import Dict, Any, Optional, List, Annotated, cast
+from typing import Dict, Any, Optional, List, Annotated, Union, cast
 from dynastore.modules import get_protocol
 from dynastore.tools.discovery import get_protocols
 from fastapi import (
@@ -35,6 +35,14 @@ from fastapi import (
 from pydantic import UUID4, BaseModel, Field, AliasChoices, ConfigDict
 
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
+from dynastore.extensions.ogc_models_shared import (
+    BulkCreationResponse,
+    IngestionReport,
+    SidecarRejection,
+)
+from dynastore.extensions.assets.conformance import ASSETS_CONFORMANCE_URIS
+from dynastore.extensions.tools.fast_api import AppJSONResponse
 from dynastore.models.protocols import (
     AssetsProtocol,
     AssetUploadProtocol,
@@ -43,6 +51,7 @@ from dynastore.models.protocols import (
     UploadTicket,
     UploadStatusResponse,
 )
+from dynastore.models.shared_models import Link
 from dynastore.models.protocols.asset_process import (
     AssetProcessDescriptor,
     AssetProcessOutput,
@@ -58,6 +67,7 @@ from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetCreate,
     AssetFilter,
+    AssetKind,
     AssetStatus,
     AssetTypeEnum,
     AssetUpdate,
@@ -67,6 +77,7 @@ from dynastore.modules.catalog.asset_service import (
     VirtualAssetCreate,
 )
 from dynastore.modules.catalog.asset_distributed import (
+    AssetSidecarRejectedError,
     Scope,
     UpsertResult,
     upsert_asset,
@@ -139,12 +150,27 @@ class UploadRequest(BaseModel):
     )
 
 
-class AssetService(ExtensionProtocol):
+class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     priority: int = 100
     """
-    Asset Service Extension.
+    Asset Service Extension — OGC API - Assets candidate.
+
     Exposes API endpoints for managing assets across catalogs and collections.
+    Inherits :class:`OGCServiceMixin` for landing-page / conformance handlers
+    and :class:`OGCTransactionMixin` for bulk-creation response builders so
+    rejections surface as 207 ``IngestionReport`` bodies symmetric with the
+    Features / Records / STAC OGC services.
     """
+
+    # OGCServiceMixin class attributes
+    conformance_uris = list(ASSETS_CONFORMANCE_URIS)
+    prefix = "/assets"
+    protocol_title = "DynaStore OGC API - Assets (draft)"
+    protocol_description = (
+        "Asset lifecycle management — upload sessions, write policies, "
+        "versioning, virtual assets, and reference-cascade safety. "
+        "Conformance URIs are draft proposals to the OGC SWG."
+    )
 
     def __init__(self, app: FastAPI):
         self.app = app
@@ -166,6 +192,61 @@ class AssetService(ExtensionProtocol):
         _ = _wpa.AssetWritePolicyDefaults
 
     def _setup_routes(self):
+        # ---------------------------------------------------------------
+        # OGC API - Assets landing page + conformance (registered BEFORE
+        # parametric ``/catalogs/{catalog_id}`` routes so they don't get
+        # shadowed by FastAPI's declaration-order match).
+        # ---------------------------------------------------------------
+        self.router.add_api_route(
+            "/",
+            self.ogc_landing_page_handler,
+            methods=["GET"],
+            summary="Landing Page (OGC API - Assets)",
+        )
+        self.router.add_api_route(
+            "/conformance",
+            self.ogc_conformance_handler,
+            methods=["GET"],
+            summary="Conformance Declaration (OGC API - Assets)",
+        )
+        # ---------------------------------------------------------------
+        # Bulk POST routes (207 IngestionReport on partial rejection).
+        # The trailing ``:bulk`` action segment cannot collide with the
+        # ``{asset_id}`` parametric routes registered later because FastAPI
+        # matches the literal ``assets:bulk`` path component first.
+        # ---------------------------------------------------------------
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/assets:bulk",
+            self.bulk_create_catalog_assets,
+            methods=["POST"],
+            summary="Bulk Create Catalog Assets",
+            description=(
+                "Atomic bulk asset creation for a catalog. Each payload is "
+                "dispatched through the per-collection AssetsWritePolicy "
+                "chain. Returns 201 ``BulkCreationResponse`` when every "
+                "asset is accepted, or 207 ``IngestionReport`` when one or "
+                "more assets are refused by the write-policy."
+            ),
+            responses={
+                201: {"description": "All assets accepted."},
+                207: {"description": "Partial or full rejection — see IngestionReport."},
+            },
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/assets:bulk",
+            self.bulk_create_collection_assets,
+            methods=["POST"],
+            summary="Bulk Create Collection Assets",
+            description=(
+                "Atomic bulk asset creation scoped to a collection. Same "
+                "semantics as the catalog-level endpoint; the AssetsWritePolicy "
+                "is resolved at the collection scope."
+            ),
+            responses={
+                201: {"description": "All assets accepted."},
+                207: {"description": "Partial or full rejection — see IngestionReport."},
+            },
+        )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
             self.list_catalog_assets,
@@ -611,6 +692,7 @@ class AssetService(ExtensionProtocol):
 
     async def get_catalog_asset(
         self,
+        request: Request,
         catalog_id: str = Path(..., description="The catalog ID"),
         asset_id: str = Path(..., description="The asset ID"),
     ):
@@ -620,6 +702,7 @@ class AssetService(ExtensionProtocol):
         )
         if not asset:
             raise HTTPException(status_code=404, detail="Asset not found")
+        asset.links = self._asset_links_for(asset, request)
         return asset
 
 
@@ -760,6 +843,7 @@ class AssetService(ExtensionProtocol):
 
     async def get_collection_asset(
         self,
+        request: Request,
         catalog_id: str = Path(..., description="The catalog ID"),
         collection_id: str = Path(..., description="The collection ID"),
         asset_id: str = Path(..., description="The asset ID"),
@@ -772,6 +856,7 @@ class AssetService(ExtensionProtocol):
             raise HTTPException(
                 status_code=404, detail="Asset not found in this collection"
             )
+        asset.links = self._asset_links_for(asset, request)
         return asset
 
 
@@ -829,6 +914,236 @@ class AssetService(ExtensionProtocol):
             )
         if success == 0:
             raise HTTPException(status_code=404, detail="Asset not found")
+
+    # =============================================================================
+    #  OGC API - Assets: BULK CREATE + HATEOAS
+    # =============================================================================
+
+    async def bulk_create_catalog_assets(
+        self,
+        request: Request,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        payloads: List[Union[AssetCreate, VirtualAssetCreate]] = Body(
+            ...,
+            description=(
+                "List of asset create payloads. Each item must be either an "
+                "``AssetCreate`` (kind=physical) or ``VirtualAssetCreate`` "
+                "(kind=virtual). The discriminator is the ``kind`` field."
+            ),
+            min_length=1,
+        ),
+    ):
+        """Bulk-create catalog-tier assets through the AssetsWritePolicy chain."""
+        return await self._bulk_create_assets(
+            request=request,
+            catalog_id=catalog_id,
+            collection_id=None,
+            payloads=payloads,
+        )
+
+    async def bulk_create_collection_assets(
+        self,
+        request: Request,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        collection_id: str = Path(..., description="The collection ID"),
+        payloads: List[Union[AssetCreate, VirtualAssetCreate]] = Body(
+            ...,
+            description=(
+                "List of asset create payloads scoped to this collection. "
+                "Each item must be ``AssetCreate`` or ``VirtualAssetCreate``."
+            ),
+            min_length=1,
+        ),
+    ):
+        """Bulk-create collection-scoped assets through the AssetsWritePolicy chain."""
+        return await self._bulk_create_assets(
+            request=request,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            payloads=payloads,
+        )
+
+    async def _bulk_create_assets(
+        self,
+        *,
+        request: Request,
+        catalog_id: str,
+        collection_id: Optional[str],
+        payloads: List[Union[AssetCreate, VirtualAssetCreate]],
+    ):
+        """Shared bulk-create implementation.
+
+        Iterates each payload through the Stage 3 ``upsert_asset`` chain
+        runner inside a single ``managed_transaction``. Per-row
+        ``AssetSidecarRejectedError`` is collected into
+        :class:`SidecarRejection` instead of aborting the batch — symmetric
+        with the items-side OGC bulk surface.
+
+        Returns:
+
+        * **HTTP 201** with :class:`BulkCreationResponse` when every payload
+          is accepted (no policy hits).
+        * **HTTP 207** with :class:`IngestionReport` when one or more
+          payloads are refused (``REFUSE_FAIL`` matched). The report carries
+          ``accepted_ids`` for rows that did land plus structured
+          ``rejections`` for the ones that didn't.
+        """
+        await require_catalog_ready(catalog_id)
+
+        engine = get_engine()
+        if engine is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database engine not available.",
+            )
+
+        catalogs_svc = cast(
+            Optional[CatalogsProtocol], get_protocol(CatalogsProtocol)
+        )
+        if catalogs_svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Catalogs service unavailable.",
+            )
+        schema = await catalogs_svc.resolve_physical_schema(catalog_id)
+        if not schema:
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=f"No physical schema for catalog '{catalog_id}'.",
+            )
+
+        configs_svc = cast(
+            Optional[ConfigsProtocol], get_protocol(ConfigsProtocol)
+        )
+        if configs_svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Configs service unavailable.",
+            )
+
+        policy = await configs_svc.get_config(
+            AssetsWritePolicy,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        scope = Scope(
+            schema=schema, catalog_id=catalog_id, collection_id=collection_id
+        )
+        policy_source = (
+            f"/configs/catalogs/{catalog_id}"
+            + (f"/collections/{collection_id}" if collection_id else "")
+            + f"/plugins/{AssetsWritePolicy.class_key()}"
+        )
+
+        accepted_ids: List[str] = []
+        accepted_rows: List[Dict[str, Any]] = []
+        rejections: List[SidecarRejection] = []
+
+        async with managed_transaction(engine) as conn:
+            for payload in payloads:
+                try:
+                    result: UpsertResult = await upsert_asset(
+                        conn,
+                        scope,
+                        payload,
+                        policy,
+                        initial_status=AssetStatus.ACTIVE,
+                    )
+                except AssetSidecarRejectedError as rej:
+                    rejections.append(
+                        SidecarRejection(
+                            external_id=rej.asset_id,
+                            sidecar_id=AssetsWritePolicy.class_key(),
+                            matcher=rej.matcher,
+                            reason=rej.reason,
+                            message=rej.message,
+                            policy_source=policy_source,
+                        )
+                    )
+                    continue
+                accepted_rows.append(result.row)
+                accepted_ids.append(str(result.row.get("asset_id")))
+
+        if rejections:
+            report = IngestionReport(
+                accepted_ids=accepted_ids,
+                rejections=rejections,
+                total=len(payloads),
+            )
+            return AppJSONResponse(
+                content=report.model_dump(by_alias=True, exclude_none=True),
+                status_code=status.HTTP_207_MULTI_STATUS,
+            )
+
+        return AppJSONResponse(
+            content=BulkCreationResponse(ids=accepted_ids).model_dump(),
+            status_code=status.HTTP_201_CREATED,
+        )
+
+    def _asset_links_for(self, asset: Asset, request: Request) -> List[Link]:
+        """Build OGC HATEOAS links for a single-asset GET response.
+
+        Always emits ``self``. Adds ``collection`` when the asset is
+        collection-scoped, and ``alternate`` (download via the parametric
+        process surface) for active physical assets.
+
+        Returns relative-path hrefs; the FastAPI app + the registered
+        root-path serve them naturally without any baked-in scheme/host.
+        """
+        from dynastore.extensions.tools.url import get_root_url
+
+        root = get_root_url(request)
+        base = f"{root}{self.prefix}/catalogs/{asset.catalog_id}"
+        links: List[Link] = []
+
+        if asset.collection_id:
+            self_href = (
+                f"{base}/collections/{asset.collection_id}"
+                f"/assets/{asset.asset_id}"
+            )
+        else:
+            self_href = f"{base}/assets/{asset.asset_id}"
+
+        links.append(
+            Link(
+                href=self_href,
+                rel="self",
+                type="application/json",
+                title="This asset",  # type: ignore[arg-type]
+            )
+        )
+
+        if asset.collection_id:
+            links.append(
+                Link(
+                    href=f"{base}/collections/{asset.collection_id}",
+                    rel="collection",
+                    type="application/json",
+                    title="Parent collection",  # type: ignore[arg-type]
+                )
+            )
+
+        if (
+            asset.kind == AssetKind.PHYSICAL
+            and asset.status == AssetStatus.ACTIVE
+        ):
+            if asset.collection_id:
+                dl_base = (
+                    f"{base}/collections/{asset.collection_id}"
+                    f"/assets/{asset.asset_id}"
+                )
+            else:
+                dl_base = f"{base}/assets/{asset.asset_id}"
+            links.append(
+                Link(
+                    href=f"{dl_base}/processes/download/execution",
+                    rel="alternate",
+                    type="application/octet-stream",
+                    title="Download asset bytes",  # type: ignore[arg-type]
+                )
+            )
+
+        return links
 
     # =============================================================================
     #  SEARCH
