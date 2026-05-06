@@ -37,27 +37,31 @@ from pydantic import BaseModel, Field, RootModel
 class DriverRef(BaseModel):
     """Slim reference to a driver configured under a routing operation.
 
-    ``config_ref`` is the class name the UI follows to look up the
-    driver's full config under the sibling ``storage.drivers.*`` topic
-    in the same response — avoiding per-routing-entry payload
-    duplication.
+    Cycle F.7d.3 replaced the ``config_ref: Optional[str]`` scalar with
+    a HATEOAS ``_links`` array.  When the driver class binds to a
+    registered config, a single ``rel="driver-config"`` link points at
+    the PATCHable endpoint under ``configs.platform.catalog.{tier}.drivers.*``.
+    Composition sub-drivers (no registered config) emit no link at all
+    — operators see only what's actionable.
     """
 
     driver_ref: str = Field(
         ..., description="Driver reference (snake_case, e.g. 'items_postgresql_driver')."
     )
-    config_ref: Optional[str] = Field(
-        None,
-        description=(
-            "Class name of the driver's config (sibling lookup under "
-            "configs.platform.catalog.{tier}.drivers.*).  Null when the driver has no "
-            "registered config."
-        ),
-    )
     on_failure: str = Field(
         "fatal", description="Failure policy: fatal | warn | ignore."
     )
     write_mode: str = Field("sync", description="Write mode: sync | async.")
+    links: List["Link"] = Field(
+        default_factory=list,
+        serialization_alias="_links",
+        description=(
+            "HATEOAS links for this routing entry.  Cycle F.7d.3: when the "
+            "driver_ref binds to a registered config class, a single "
+            "``rel=\"driver-config\"`` link points at the PATCHable "
+            "endpoint.  Composition sub-drivers emit no link."
+        ),
+    )
 
 
 class Link(BaseModel):
@@ -297,3 +301,9 @@ class PatchConfigBody(RootModel[Dict[str, Optional[Dict[str, Any]]]]):
                       inherit / class default).
     """
     pass
+
+
+# Resolve forward reference DriverRef.links: List["Link"] now that Link
+# is defined.  Cycle F.7d.3 introduced this self-reference to surface
+# the routing-entry HATEOAS link.
+DriverRef.model_rebuild()
