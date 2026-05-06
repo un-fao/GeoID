@@ -24,11 +24,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from .models import Condition
 from .exceptions import IamError
 from dynastore.modules.iam.iam_storage import AbstractIamStorage
+from dynastore.models.protocols.authorization import DefaultRole
 
 logger = logging.getLogger(__name__)
 
@@ -296,28 +298,80 @@ class LogicalNotHandler(ConditionHandler):
         c = Condition(**c_cfg)
         return not await evaluate_condition(c, ctx)
 
+class CatalogAdminConditionConfig(BaseModel):
+    """Strongly-typed config for ``catalog_admin_required``.
+
+    Every field is operator data — role *names* are foreign keys into
+    ``iam.roles`` rows. ``required_roles`` is empty by default so no
+    role gains catalog-admin authority unless the policy or operator
+    names it explicitly. ``sysadmin_role`` defaults to the seeded
+    ``DefaultRole.SYSADMIN`` name; deployments that rename the
+    platform super-user role override it.
+    """
+    required_roles: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Role names admitted at catalog scope. Each is a foreign "
+            "key into the iam.roles table. Empty (with bypasses off) "
+            "denies everyone."
+        ),
+    )
+    sysadmin_role: str = Field(
+        default=DefaultRole.SYSADMIN.value,
+        description=(
+            "Name of the platform super-user role used by the "
+            "sysadmin-bypass. Defaults to the seeded DefaultRole."
+        ),
+    )
+    allow_platform: bool = Field(
+        default=True,
+        description="When True, principals with a platform-scope grant bypass.",
+    )
+    allow_sysadmin: bool = Field(
+        default=True,
+        description="When True, principals holding ``sysadmin_role`` bypass.",
+    )
+
+
 class CatalogAdminHandler(ConditionHandler):
-    """Allow only when the principal holds an admin role in ``ctx.catalog_id``.
+    """Allow when the principal holds *any of the named roles* in ``ctx.catalog_id``.
+
+    Generic over role names — every role identity is configuration. This
+    handler does NOT bake in ``"admin"`` (or any other label); the policy
+    that uses it declares which catalog-scope role(s) authorise access
+    via ``required_roles`` (or the singular ``required_role`` alias).
+    Different policies can gate different operations on different role
+    names without any code change here.
 
     Sibling of :class:`CatalogMembershipHandler` — the membership variant
-    grants any-role-in-catalog access (suitable for read-only data routes);
-    this variant restricts to catalog admins (suitable for the
-    ``/admin/catalogs/{cat}/...`` mutation surface). Reads
-    ``catalog_id`` from ``EvaluationContext`` and the principal's
-    ``catalog_roles`` map (populated by ``IamQueryProtocol``).
+    grants any-role-in-catalog access (suitable for read-only data
+    routes); this variant gates a *named* role (suitable for the
+    ``/admin/catalogs/{cat}/...`` mutation surface and any analogous
+    catalog-scoped admin/curator/owner endpoints).
 
-    Sysadmin and platform-grant principals bypass transparently — same
-    semantics as ``CatalogMembershipHandler``.
+    Bypasses are also configurable: operators turn off sysadmin or
+    platform-grant bypass by setting ``allow_sysadmin: false`` or
+    ``allow_platform: false`` on the policy's condition config. The
+    sysadmin role name itself is a config key (``sysadmin_role``,
+    default ``DefaultRole.SYSADMIN.value``) so deployments that rename
+    the platform-tier super-user role can still wire it through.
 
-    Config keys (all optional):
+    Config keys:
+      - ``required_roles`` (list[str]) — catalog-scope role names that
+                            authorise access. Any one match is enough.
+      - ``required_role`` (str) — singular alias; convenience when the
+                            policy gates on exactly one role.
       - ``allow_platform`` (bool, default True) — ``membership.platform``
-                            True passes regardless of catalog_id.
-      - ``allow_sysadmin`` (bool, default True) — ``DefaultRole.SYSADMIN``
-                            in the principal's roles passes.
-      - ``required_role`` (str, default ``"admin"``) — the catalog-scope
-                            role name that authorises access. Override
-                            for deployments that name their catalog-admin
-                            role differently.
+                            True passes regardless of catalog role.
+      - ``allow_sysadmin`` (bool, default True) — sysadmin-role bypass.
+      - ``sysadmin_role`` (str, default ``DefaultRole.SYSADMIN.value``)
+                            — name of the platform-tier super-user role
+                            for the bypass check.
+
+    A policy that supplies neither ``required_roles`` nor ``required_role``
+    will deny on the catalog-role match step (sysadmin/platform bypasses
+    still apply). This is intentional: the role choice is the policy's
+    declaration, not the handler's default.
     """
 
     @property
@@ -326,7 +380,6 @@ class CatalogAdminHandler(ConditionHandler):
 
     async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
         from dynastore.models.protocols.iam_query import IamQueryProtocol
-        from dynastore.models.protocols.authorization import DefaultRole
         from dynastore.tools.discovery import get_protocol
         from dynastore.extensions.iam.membership_cache import get_membership_cached
 
@@ -336,8 +389,17 @@ class CatalogAdminHandler(ConditionHandler):
         principal = (ctx.extras or {}).get("principal_obj")
         if principal is None:
             return False
+
+        # Parse via Pydantic — accepts the singular ``required_role`` alias
+        # by promoting it into ``required_roles`` before validation.
+        raw = dict(config or {})
+        if "required_roles" not in raw and "required_role" in raw:
+            single = raw.pop("required_role")
+            raw["required_roles"] = [single] if single else []
+        cfg = CatalogAdminConditionConfig.model_validate(raw)
+
         roles = getattr(principal, "roles", None) or []
-        if config.get("allow_sysadmin", True) and DefaultRole.SYSADMIN.value in roles:
+        if cfg.allow_sysadmin and cfg.sysadmin_role in roles:
             return True
         provider = getattr(principal, "provider", None)
         subject_id = getattr(principal, "subject_id", None)
@@ -347,11 +409,12 @@ class CatalogAdminHandler(ConditionHandler):
         if iam_query is None:
             return False
         membership = await get_membership_cached(iam_query, provider, subject_id)
-        if config.get("allow_platform", True) and membership.get("platform"):
+        if cfg.allow_platform and membership.get("platform"):
             return True
-        required = str(config.get("required_role", "admin"))
-        catalog_roles = membership.get("catalog_roles") or {}
-        return required in (catalog_roles.get(catalog_id) or [])
+        if not cfg.required_roles:
+            return False
+        catalog_roles_for_cat = (membership.get("catalog_roles") or {}).get(catalog_id) or []
+        return any(r in catalog_roles_for_cat for r in cfg.required_roles)
 
 
 class CatalogMembershipHandler(ConditionHandler):
@@ -364,13 +427,17 @@ class CatalogMembershipHandler(ConditionHandler):
 
     Sysadmin and platform-grant principals pass transparently — those bypasses
     are part of the IAM model, not a URL-specific check, and remain configurable
-    via the ``allow_sysadmin`` / ``allow_platform`` config keys.
+    via the ``allow_sysadmin`` / ``allow_platform`` config keys. The sysadmin
+    role *name* is itself a config key so deployments that rename the
+    platform super-user role can wire it through without code changes.
 
-    Config keys (all optional, default to safe values):
-      - ``allow_platform``: bool — when True (default), ``membership.platform``
-                                    True passes regardless of catalog_id.
-      - ``allow_sysadmin``: bool — when True (default), ``DefaultRole.SYSADMIN``
-                                    in the principal's roles passes.
+    Config keys (all optional):
+      - ``allow_platform`` (bool, default True) — ``membership.platform``
+                            True passes regardless of catalog_id.
+      - ``allow_sysadmin`` (bool, default True) — sysadmin-role bypass.
+      - ``sysadmin_role`` (str, default ``DefaultRole.SYSADMIN.value``)
+                            — name of the platform super-user role for
+                            the bypass check.
     """
 
     @property
@@ -392,7 +459,8 @@ class CatalogMembershipHandler(ConditionHandler):
             # anonymous on a per-catalog policy — fail closed
             return False
         roles = getattr(principal, "roles", None) or []
-        if config.get("allow_sysadmin", True) and DefaultRole.SYSADMIN.value in roles:
+        sysadmin_role = str(config.get("sysadmin_role", DefaultRole.SYSADMIN.value))
+        if config.get("allow_sysadmin", True) and sysadmin_role in roles:
             return True
         provider = getattr(principal, "provider", None)
         subject_id = getattr(principal, "subject_id", None)
