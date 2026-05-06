@@ -1,53 +1,77 @@
 # Multi-Driver Storage Abstraction
 
-Entity-level storage abstraction that routes collection data to pluggable backends.
-Each driver is a self-contained module with its own connection lifecycle, location config,
-and capabilities. Drivers are discovered via entry points and selected at runtime through
-a hint-based routing system backed by a 4-tier config hierarchy.
+Entity-level storage abstraction that routes catalog/collection/items/asset data to pluggable backends.
+Each driver is a self-contained module with its own connection lifecycle, location config, and
+capabilities. Drivers are discovered via entry points and selected at runtime through an
+**operation-based routing system** (post-PR-#261) — one routing config per tier (items / collection /
+asset / catalog), each mapping `Operation` (WRITE / READ / SEARCH / INDEX / BACKUP / UPLOAD) to an
+ordered list of drivers.
 
 ## Architecture
 
 ```
-REST API (hint="search"|"features"|"analytics"|...)
+REST API
     │
     ▼
-get_driver(catalog_id, collection_id, hint=..., write=...)
+get_driver(operation, catalog_id, collection_id, hint=...)
     │
-    ├── StorageRoutingConfig (4-tier ConfigsProtocol hierarchy)
-    │     └── primary_driver, read_drivers, secondary_drivers, storage_locations
-    │
+    ├── ItemsRoutingConfig         — items-tier dispatch (per Operation)
+    ├── CollectionRoutingConfig    — collection-envelope dispatch
+    ├── AssetRoutingConfig         — asset-tier dispatch
+    └── CatalogRoutingConfig       — catalog-tier dispatch
+            │
+            └── operations: { Operation: [OperationDriverEntry, ...] }
+                              ▲
+                              │ first-match wins per (operation, hint)
     ▼
-CollectionStorageDriverProtocol implementation
-    ├── PostgresStorageDriver         priority=10  (wraps ItemsProtocol)
-    ├── IcebergStorageDriver          priority=20  (PyIceberg + PG SqlCatalog)
-    ├── DuckDBStorageDriver           priority=30  (file-based analytical reads)
-    ├── ElasticsearchStorageDriver    priority=50  (SFEOS DatabaseLogic)
-    └── ElasticsearchPrivateDriver priority=55  (geoid-only, DENY policies)
+Drivers (instances discovered via `dynastore.modules` entry points)
+    ├── ItemsPostgresqlDriver                   driver_id="items_postgresql_driver"
+    ├── ItemsElasticsearchDriver                driver_id="items_elasticsearch_driver"             (public, per-tenant index)
+    ├── ItemsElasticsearchPrivateDriver         driver_id="items_elasticsearch_private_driver"     (DENY-policied)
+    ├── CollectionPostgresqlDriver              driver_id="collection_postgresql_driver"
+    ├── CollectionElasticsearchDriver           driver_id="collection_elasticsearch_driver"
+    ├── CollectionElasticsearchPrivateDriver    driver_id="collection_elasticsearch_private_driver"
+    ├── CatalogPostgresqlDriver                 driver_id="catalog_postgresql_driver"
+    ├── CatalogElasticsearchDriver              driver_id="catalog_elasticsearch_driver"
+    ├── AssetPostgresqlDriver                   driver_id="asset_postgresql_driver"
+    ├── AssetElasticsearchDriver                driver_id="asset_elasticsearch_driver"
+    ├── CollectionIcebergDriver                 driver_id="collection_iceberg_driver"              (OTF: snapshots, time-travel)
+    └── CollectionDuckdbDriver                  driver_id="collection_duckdb_driver"               (analytical reads)
 ```
+
+`driver_id` is always `_to_snake(cls.__name__)` — the snake_case class key (post-PR-1e).
 
 ### Key Design Decisions
 
-- **Streaming-first**: `read_entities` returns `AsyncIterator[Feature]` — O(1) memory regardless of result size.
-- **Entity-level abstraction**: All drivers work with typed Pydantic `Feature`/`FeatureCollection` models, not raw SQL or engine-specific queries.
-- **Capability declaration**: Drivers declare what they support via `Capability` enum. The router can check capabilities before dispatching.
-- **Lazy initialization**: Connections (DuckDB singleton, Iceberg catalog) are created on first use, not at import time.
-- **Event-driven fan-out**: Secondary drivers receive writes asynchronously via the event system — no synchronous coupling.
+- **Operation-based routing** (post-PR-#261): each tier has its own routing config; each operation
+  carries an ordered list of `OperationDriverEntry`. The dispatcher picks the first entry whose hints
+  match (or the first entry overall when no hint is supplied).
+- **Streaming-first**: read paths return `AsyncIterator[Feature]` — O(1) memory regardless of result size.
+- **Entity-level abstraction**: drivers exchange typed Pydantic models (`Feature`, `FeatureCollection`),
+  not raw SQL or engine-specific queries.
+- **Capability declaration**: drivers declare what they support via `Capability` enum. The router can
+  validate capability before dispatching.
+- **Lazy initialization**: connections (DuckDB pool, Iceberg catalog) are created on first use.
+- **Async fan-out via outbox** (post-PR-#261): non-fatal `INDEX` writes land in the per-tenant
+  `storage_outbox` table and the `OutboxDrainTask` consumer dispatches them asynchronously.
 
 ## Quick Start
 
 ```python
-from dynastore.modules.storage import get_driver
+from dynastore.modules.storage.router import get_driver
+from dynastore.modules.storage.routing_config import Operation
+from dynastore.modules.storage.hints import Hint
 
-# Read — operation + hint selects the right backend
-driver = await get_driver("READ", catalog_id, collection_id, hint="search")
+# Read — Operation + Hint selects the right backend
+driver = await get_driver(Operation.READ, catalog_id, collection_id, hint=Hint.GEOMETRY_SIMPLIFIED)
 async for feature in driver.read_entities(catalog_id, collection_id, request=query):
     process(feature)
 
-# Write — operation-based routing to all configured write drivers
-driver = await get_driver("WRITE", catalog_id, collection_id)
+# Write — first WRITE entry from ItemsRoutingConfig.operations[WRITE] (durability primary)
+driver = await get_driver(Operation.WRITE, catalog_id, collection_id)
 written = await driver.write_entities(catalog_id, collection_id, feature_collection)
 
-# Check capabilities before calling OTF-specific methods
+# Capability gate (OTF-specific methods)
 from dynastore.models.protocols.storage_driver import Capability
 if Capability.TIME_TRAVEL in driver.capabilities:
     async for feature in driver.read_at_snapshot(catalog_id, collection_id, snapshot_id):
@@ -99,136 +123,141 @@ class Capability(StrEnum):
     SNAPSHOTS       = "snapshots"
 ```
 
-## StorageRoutingConfig
+## Routing Configs (per tier)
 
-Lives in the 4-tier `ConfigsProtocol` hierarchy (collection > catalog > platform > defaults).
+Each tier resolves its routing via the 4-level `ConfigsProtocol` waterfall (collection > catalog >
+platform > code defaults). The class key is the snake_case form (e.g. `items_routing_config`).
 
-```json
-// Default — backward compatible, PG only
-{"primary_driver": "postgresql"}
+```jsonc
+// items_routing_config — entity-row dispatch
+// Defaults: PG fatal WRITE, PG READ, ES public WRITE async/outbox, ES public INDEX
+{
+  "operations": {
+    "WRITE": [
+      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
+      {"driver_id": "items_elasticsearch_driver",
+       "write_mode": "async", "on_failure": "outbox", "source": "auto"}
+    ],
+    "READ":  [
+      {"driver_id": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
+      {"driver_id": "items_postgresql_driver",     "hints": ["geometry_exact"]}
+    ],
+    "INDEX": [
+      {"driver_id": "items_elasticsearch_driver",
+       "write_mode": "async", "on_failure": "outbox", "source": "auto"}
+    ]
+  }
+}
 
-// PG primary + ES secondary (async fan-out via events)
-{"primary_driver": "postgresql",
- "secondary_drivers": ["elasticsearch"]}
+// collection_routing_config — collection-envelope dispatch (CollectionStore drivers)
+{
+  "operations": {
+    "WRITE": [{"driver_id": "collection_postgresql_driver", "on_failure": "fatal"}],
+    "READ":  [{"driver_id": "collection_postgresql_driver"}],
+    "INDEX": [{"driver_id": "collection_elasticsearch_driver",
+               "write_mode": "async", "on_failure": "outbox", "source": "auto"}]
+  }
+}
 
-// Search routed to ES, everything else to PG
-{"primary_driver": "postgresql",
- "read_drivers": {"search": "elasticsearch"},
- "secondary_drivers": ["elasticsearch"]}
-
-// Analytical workload with Iceberg primary + DuckDB reads
-{"primary_driver": "iceberg",
- "read_drivers": {"analytics": "duckdb", "default": "duckdb"},
- "storage_locations": {
-   "iceberg": {
-     "driver": "iceberg",
-     "namespace": "analytics",
-     "catalog_type": "sql"
-   },
-   "duckdb": {
-     "driver": "duckdb",
-     "path": "/data/exports/*.parquet",
-     "format": "parquet"
-   }
- }}
-
-// Iceberg with GCS warehouse (auto-resolved from StorageProtocol)
-{"primary_driver": "iceberg",
- "storage_locations": {
-   "iceberg": {
-     "driver": "iceberg",
-     "catalog_type": "sql"
-   }
- }}
-
-// Iceberg with explicit S3 warehouse override
-{"primary_driver": "iceberg",
- "storage_locations": {
-   "iceberg": {
-     "driver": "iceberg",
-     "catalog_type": "sql",
-     "warehouse_uri": "s3://my-bucket/iceberg/"
-   }
- }}
+// Privacy-pinned items routing — collection.is_private=True (Cycle E.2)
+// items_elasticsearch_private_driver substitutes for the public driver in INDEX/SEARCH.
+// PG remains the durable WRITE target.
+{
+  "operations": {
+    "WRITE": [
+      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
+      {"driver_id": "items_elasticsearch_private_driver",
+       "write_mode": "async", "on_failure": "outbox"}
+    ],
+    "READ":  [{"driver_id": "items_postgresql_driver"}]
+  }
+}
 ```
 
-### Fields
+### `OperationDriverEntry` fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `primary_driver` | `DriverRef` | `"postgresql"` | Driver for writes and default reads |
-| `read_drivers` | `Dict[str, DriverRef]` | `{}` | Hint-to-driver mapping for reads |
-| `secondary_drivers` | `List[DriverRef]` | `[]` | Async write fan-out via events |
-| *(driver configs)* | See driver-specific config classes in `driver_config.py` | — | Stored per-driver via `plugin_id="driver:<name>"` |
+| `driver_id` | `str` (snake_case) | required | Snake_case `_to_snake(cls.__name__)` of a registered driver |
+| `hints` | `List[Hint]` | `[]` | Selectivity tags — `Hint` is a closed `StrEnum` (see below) |
+| `on_failure` | `FailurePolicy` | `"warn"` | `"fatal"` (raise), `"warn"` (log), `"outbox"` (defer to drain task) |
+| `write_mode` | `WriteMode` | `"sync"` | `"sync"` or `"async"`; async writes go through the outbox |
+| `source` | `Literal["operator", "auto"]` | `"operator"` | `"auto"` marks self-registered entries from the apply handler |
 
-### Read Hints
+### Apply-time auto-registration
 
-The REST API passes a hint when requesting a driver for reads:
+Each routing config has an apply handler (`_on_apply_items_routing_config` etc.) that:
 
-| Hint | Typical Use |
-|------|-------------|
-| `"default"` | General-purpose reads |
-| `"search"` | STAC/fulltext search |
-| `"features"` | OGC Features endpoint |
-| `"graph"` | Graph traversal |
-| `"analytics"` | DWH/analytical queries |
-| `"cache"` | Cache-first hot reads |
+1. Validates every `driver_id` against the discovery registry for the tier's protocol
+   (`CollectionItemsStore`, `CollectionStore`, `AssetStore`, `CatalogStore`).
+2. Auto-registers `*Indexer` drivers under `operations[INDEX]` and `*Store` drivers under
+   `operations[SEARCH]` when discoverable but missing from the persisted payload — with
+   `source="auto"` so operators can distinguish self-registered defaults from explicit pins.
+3. Calls `ensure_storage(catalog_id, collection_id)` on every referenced driver (idempotent).
+4. Invalidates the per-tier router cache.
 
-If the hint is not in `read_drivers`, falls back to `"default"` entry, then to `primary_driver`.
+### `Hint` (closed StrEnum)
 
-Custom hints can be registered:
 ```python
-from dynastore.modules.storage import register_hint
-register_hint("tiles", "Tile-optimized reads for map rendering")
+from dynastore.modules.storage.hints import Hint
+
+# Selectivity tags. Live values include:
+Hint.GEOMETRY_EXACT       # PG / Iceberg — full-precision geometry
+Hint.GEOMETRY_SIMPLIFIED  # ES — pre-simplified geometry
+Hint.AGGREGATION          # SEARCH-side aggregation pipeline
+Hint.FEATURES             # OGC Features
+Hint.OBFUSCATED           # private/obfuscated index
+# ... see src/dynastore/modules/storage/hints.py for the full catalog.
 ```
+
+Hints are not registerable at runtime (they're a closed enum, post PR #255). To add a hint, extend
+`Hint` in `hints.py` and the driver advertises it via `supported_hints: ClassVar[FrozenSet[Hint]]`.
 
 ## Router Performance
 
-Driver resolution is cached at 300s TTL (aligned with config cache) via `@cached(maxsize=4096, ttl=300)`.
+Resolution is cached at 300s TTL (aligned with config cache) via `@cached(maxsize=4096, ttl=300)`.
 The driver index (`driver_id -> instance`) is rebuilt from the discovery registry on each lookup.
+Cache invalidation is wired into every routing apply handler so config writes are visible immediately
+to subsequent reads.
 
 ---
 
 ## Driver Reference
 
-### PostgreSQL Driver
+### PostgreSQL Driver (items)
 
 | Property | Value |
 |----------|-------|
-| **driver_id** | `postgresql` |
-| **priority** | 10 |
-| **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `SOFT_DELETE`, `EXPORT` |
-| **driver config** | `PostgresCollectionDriverConfig` (`plugin_id="driver:postgresql"`) |
+| **class** | `ItemsPostgresqlDriver` |
+| **driver_id** | `items_postgresql_driver` |
+| **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `SOFT_DELETE`, `EXPORT`, `REQUIRED_ENFORCEMENT`, `UNIQUE_ENFORCEMENT` |
+| **driver config** | `ItemsPostgresqlDriverConfig` (class_key `items_postgresql_driver_config`) |
 | **dependencies** | Core (always available) |
 
-Wraps existing `ItemCrudProtocol` and `ItemQueryProtocol`. Zero SQL rewrite — all sidecar logic,
-query optimization, PostGIS, and streaming stay in the existing service layer.
+Owns SQL for the per-tenant items table (and its sidecars). The `ItemsPostgresqlDriver`
+implements `CollectionItemsStore` directly and is the source-of-truth for entity-row
+WRITE operations (durability primary). PostGIS, streaming, and per-collection sidecars
+(geometry, attributes, item_metadata, stac_metadata) are owned by this driver.
 
 ```
-write_entities  → ItemCrudProtocol.upsert()
-read_entities   → ItemQueryProtocol.stream_items()  (O(1) streaming)
-delete_entities → ItemCrudProtocol.delete_item()
-ensure_storage  → CatalogsProtocol lifecycle
-drop_storage    → CatalogsProtocol.delete_collection/catalog()
+write_entities  → upsert into per-tenant items table + sidecars (single TX)
+read_entities   → streaming SELECT with bounded fetchmany() (PostGIS for spatial)
+delete_entities → DELETE (hard) or soft-delete sidecar flag
+ensure_storage  → CREATE TABLE / partition + register sidecar columns
+drop_storage    → DROP partition or set deleted flag
 ```
 
-**Location config:**
-```json
-{
-  "driver": "postgresql",
-  "physical_schema": "public",
-  "physical_table": "my_custom_table"
-}
-```
+Routing entries reference the snake_case `driver_id`; locations are derived per-collection
+via the catalog tenant schema (no explicit location config required).
 
-### Iceberg Driver
+### Iceberg Driver (collection-tier OTF)
 
 | Property | Value |
 |----------|-------|
-| **driver_id** | `iceberg` |
-| **priority** | 20 |
+| **class** | `CollectionIcebergDriver` |
+| **driver_id** | `collection_iceberg_driver` |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `EXPORT`, `TIME_TRAVEL`, `VERSIONING`, `SNAPSHOTS`, `SCHEMA_EVOLUTION`, `SOFT_DELETE` |
-| **driver config** | `IcebergCollectionDriverConfig` (`plugin_id="driver:iceberg"`) |
+| **driver config** | `CollectionIcebergDriverConfig` |
 | **dependencies** | `pyiceberg[sql-postgres]>=0.9.0`, `pyarrow>=14.0.0` |
 
 Full Open Table Format support via PyIceberg: ACID transactions, snapshots, time-travel reads,
@@ -242,7 +271,7 @@ and schema evolution — all backed by a real Iceberg catalog.
 
 **Warehouse auto-resolution** (via `_resolve_warehouse()` → `_ensure_catalog()`):
 
-1. **Explicit** — `warehouse_uri` field in `IcebergCollectionDriverConfig` (manual override)
+1. **Explicit** — `warehouse_uri` field in `CollectionIcebergDriverConfig` (manual override)
 2. **Auto-detected** — from platform `StorageProtocol` (e.g., GCS bucket). When a collection already has a GCP bucket, the driver derives `gs://bucket/.../iceberg/` automatically
 3. **Fallback** — local temp dir (`file:///tmp/iceberg_warehouse`)
 
@@ -305,14 +334,14 @@ PostgreSQL ─── Iceberg SQL Catalog (metadata: table locations, snapshots, 
 pip install dynastore[module_storage_iceberg]
 ```
 
-### DuckDB Driver
+### DuckDB Driver (collection-tier analytical)
 
 | Property | Value |
 |----------|-------|
-| **driver_id** | `duckdb` |
-| **priority** | 30 |
+| **class** | `CollectionDuckdbDriver` |
+| **driver_id** | `collection_duckdb_driver` |
 | **capabilities** | `READ_ONLY`, `STREAMING`, `SPATIAL_FILTER`, `EXPORT` |
-| **driver config** | `DuckDbCollectionDriverConfig` (`plugin_id="driver:duckdb"`) |
+| **driver config** | `CollectionDuckdbDriverConfig` |
 | **dependencies** | `duckdb>=1.0.0` |
 
 File-based analytical reads via DuckDB's built-in readers. Reads from parquet, CSV, JSON, etc.
@@ -344,40 +373,47 @@ export_entities → COPY ... TO (format: parquet, csv, json)
 pip install dynastore[module_storage_duckdb]
 ```
 
-### Elasticsearch Driver
+### Elasticsearch Drivers (public)
 
-| Property | Value |
-|----------|-------|
-| **driver_id** | `elasticsearch` |
-| **priority** | 50 |
-| **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `FULLTEXT`, `SOFT_DELETE` |
-| **driver config** | `ElasticsearchCollectionDriverConfig` (`plugin_id="driver:elasticsearch"`) |
-| **dependencies** | `stac-fastapi-elasticsearch` (optional) |
+Three classes, one per tier. All write to per-tenant indexes:
 
-Delegates all ES operations to SFEOS `DatabaseLogic`, ensuring full read/write compatibility
-with `stac-fastapi-elasticsearch-opensearch`. Supports items, collections, and catalogs.
+| Class | driver_id | Per-tenant index |
+|-------|-----------|-------------------|
+| `ItemsElasticsearchDriver` | `items_elasticsearch_driver` | `{prefix}-items-{catalog_id}` |
+| `CollectionElasticsearchDriver` | `collection_elasticsearch_driver` | `{prefix}-collections` (shared) |
+| `CatalogElasticsearchDriver` | `catalog_elasticsearch_driver` | `{prefix}-catalogs` (shared) |
+| `AssetElasticsearchDriver` | `asset_elasticsearch_driver` | `{prefix}-assets-{catalog_id}` |
 
-```
-write_entities  → DatabaseLogic.create_item() / bulk_async()
-read_entities   → DatabaseLogic.get_one_item() / client.search()
-delete_entities → DatabaseLogic.delete_item()
-ensure_storage  → create_index_templates() + create_collection_index()
-drop_storage    → DatabaseLogic.delete_collection() / delete_catalog()
-```
+The items driver writes directly with `_routing=collection_id` and is enrolled in the platform alias
+`{prefix}-items-public` so OGC discovery routes can target one alias regardless of tenant.
 
-Additional methods: `write_catalog()`, `delete_catalog()`, `write_collection()`, `delete_collection_doc()`.
+**Capabilities:** `STREAMING`, `SPATIAL_FILTER`, `FULLTEXT`, `SOFT_DELETE`.
 
-**Event handlers:** Registers as async event listener for catalog, collection, and item lifecycle.
-Only acts when listed in `StorageRoutingConfig.secondary_drivers`.
+**Dispatch:** Driven by the corresponding routing config's `operations[INDEX]`. The
+`ReindexWorker` / `OutboxDrainTask` dispatches non-fatal entries asynchronously via the per-tenant
+`storage_outbox` table; `on_failure="outbox"` is the standard policy for the public ES INDEX entry.
 
-### Elasticsearch Private Driver
+**Direct programmatic indexing:** `index_item()` / `delete_item()` (and per-tier equivalents)
+remain available for explicit ops calls.
 
-| Property | Value |
-|----------|-------|
-| **driver_id** | `elasticsearch_private` |
-| **priority** | 55 |
-| **capabilities** | `STREAMING` |
-| **dependencies** | `stac-fastapi-elasticsearch` (optional) |
+### Elasticsearch Private Drivers (per-tenant, DENY-policied)
+
+Two classes:
+
+| Class | driver_id | Per-tenant index |
+|-------|-----------|-------------------|
+| `ItemsElasticsearchPrivateDriver` | `items_elasticsearch_private_driver` | `{prefix}-{catalog_id}-private-items` |
+| `CollectionElasticsearchPrivateDriver` | `collection_elasticsearch_private_driver` | `{prefix}-{catalog_id}-collections-private` |
+
+**Privacy contract** (Cycle E.2):
+- `auto_register_for_routing: ClassVar[FrozenSet[Operation]] = frozenset()` — opt-in only.
+  Operators pin them in routing OR set `CollectionPluginConfig.is_private=True` (plus the
+  catalog policy default) which triggers the seed at collection-create.
+- The items-private driver applies a catalog-wide DENY policy (`private_deny_{cat}`) on
+  `ensure_storage` blocking public read access at `/.../catalogs/{cat}/...`. The collection-private
+  driver does NOT manage its own DENY (the cascade rule guarantees items-private whenever
+  collection-private is pinned).
+- Write paths shrink oversized geometries via `simplify_to_fit` for the items-private index.
 
 Stores `{geoid, catalog_id, collection_id}` in a custom index with `dynamic: false` mapping.
 No geometry, no attributes, no spatial search — geoid lookup only.
@@ -396,26 +432,22 @@ On `drop_storage`, revokes it. On startup (`lifespan`), restores DENY policies.
 
 ## Driver Config System
 
-Each driver has its own typed config class in `driver_config.py` (subclass of `CollectionDriverConfig`).
-Fetch via the config waterfall using the driver's `_plugin_id`:
+Each driver has its own typed config class in `driver_config.py` (subclass of `PluginConfig` via
+`TypedDriver[ConfigCls]`). The class_key is auto-derived as `_to_snake(cls.__name__)` (post-PR-1e —
+no `_plugin_id` strings). Fetch via the standard `ConfigsProtocol` waterfall:
 
 ```python
 from dynastore.modules.storage.driver_config import (
-    PostgresCollectionDriverConfig,
-    DuckDbCollectionDriverConfig,
-    IcebergCollectionDriverConfig,
+    ItemsPostgresqlDriverConfig,
+    CollectionDuckdbDriverConfig,
+    CollectionIcebergDriverConfig,
 )
-
-# PG config (convenience helper):
-from dynastore.modules.storage.driver_config import get_pg_collection_config
-config = await get_pg_collection_config(catalog_id, collection_id)
-
-# Other drivers — use the config service directly:
 from dynastore.tools.discovery import get_protocol
-from dynastore.models.protocols import ConfigsProtocol
+from dynastore.models.protocols.configs import ConfigsProtocol
+
 configs = get_protocol(ConfigsProtocol)
 config = await configs.get_config(
-    IcebergCollectionDriverConfig._plugin_id,
+    CollectionIcebergDriverConfig,
     catalog_id=catalog_id,
     collection_id=collection_id,
 )
@@ -423,11 +455,13 @@ config = await configs.get_config(
 
 ### Driver Config Types
 
-| Driver | Config Class | Plugin ID | Key Fields |
+| Driver | Config Class | class_key | Key Fields |
 |--------|-------------|-----------|------------|
-| `postgresql` | `PostgresCollectionDriverConfig` | `driver:postgresql` | `physical_schema`, `physical_table`, `sidecars`, `partitioning` |
-| `duckdb` | `DuckDbCollectionDriverConfig` | `driver:duckdb` | `path`, `format`, `write_path`, `write_format` |
-| `iceberg` | `IcebergCollectionDriverConfig` | `driver:iceberg` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `warehouse_uri`, `warehouse_scheme`, `namespace`, `table_name` |
+| `items_postgresql_driver` | `ItemsPostgresqlDriverConfig` | `items_postgresql_driver_config` | `collection_type`, `sidecars`, `partitioning` |
+| `collection_duckdb_driver` | `CollectionDuckdbDriverConfig` | `collection_duckdb_driver_config` | `path`, `format`, `write_path`, `write_format` |
+| `collection_iceberg_driver` | `CollectionIcebergDriverConfig` | `collection_iceberg_driver_config` | `catalog_name`, `catalog_type`, `catalog_uri`, `catalog_properties`, `warehouse_uri`, `warehouse_scheme`, `namespace`, `table_name` |
+| `items_elasticsearch_driver` | `ItemsElasticsearchDriverConfig` | `items_elasticsearch_driver_config` | `index_prefix` (resolved at runtime via `get_index_prefix()`) |
+| `asset_elasticsearch_driver` | `AssetElasticsearchDriverConfig` | `asset_elasticsearch_driver_config` | `index_prefix` |
 
 ---
 
@@ -612,23 +646,25 @@ module_storage_mydatabase = ["mydatabase-client>=1.0.0"]
 
 ### Step 5: Configure Routing
 
-Use the driver in any tier of `StorageRoutingConfig`:
+Pin the driver in the appropriate tier's routing config. For an items-tier driver:
 
 ```json
+// PUT /configs/catalogs/{cat}/collections/{col}/plugins/items_routing_config
 {
-  "primary_driver": "postgresql",
-  "read_drivers": {
-    "analytics": "mydatabase"
-  },
-  "storage_locations": {
-    "mydatabase": {
-      "driver": "mydatabase",
-      "uri": "mydatabase://host:port/db",
-      "connection_pool_size": 20
-    }
+  "operations": {
+    "WRITE": [
+      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"}
+    ],
+    "READ":  [
+      {"driver_id": "my_database_driver", "hints": ["analytics"]},
+      {"driver_id": "items_postgresql_driver"}
+    ]
   }
 }
 ```
+
+The apply handler validates every `driver_id` against the discovery registry and rejects unknown
+entries with a clear error. New `Hint` values must first be added to `Hint` in `hints.py`.
 
 ### Step 6: Write Tests
 
@@ -701,24 +737,34 @@ from dynastore.modules.storage.errors import (
 src/dynastore/
 ├── models/
 │   ├── protocols/
-│   │   └── storage_driver.py            # Protocol + Capability enum
+│   │   ├── storage_driver.py            # CollectionItemsStore Protocol + Capability enum
+│   │   ├── entity_store.py              # CollectionStore / CatalogStore Protocols
+│   │   └── asset_driver.py              # AssetStore Protocol
 │   ├── ogc.py                           # Feature, FeatureCollection
 │   ├── otf.py                           # SnapshotInfo, SchemaVersion, SchemaEvolution
 │   └── query_builder.py                 # QueryRequest
 ├── modules/storage/
 │   ├── __init__.py                      # Public API exports
 │   ├── protocol.py                      # Re-export convenience
-│   ├── config.py                        # StorageRoutingConfig (PluginConfig)
-│   ├── driver_config.py                 # CollectionDriverConfig hierarchy (PG, DuckDB, Iceberg, ES)
-│   ├── router.py                        # get_driver() with cached resolution
-│   ├── errors.py                        # ReadOnlyDriverError, SoftDeleteNotSupportedError
+│   ├── routing_config.py                # ItemsRoutingConfig / CollectionRoutingConfig /
+│   │                                    # AssetRoutingConfig / CatalogRoutingConfig +
+│   │                                    # Operation, OperationDriverEntry, FailurePolicy, WriteMode
+│   ├── hints.py                         # Hint StrEnum (closed catalog)
+│   ├── driver_config.py                 # ItemsWritePolicy, ItemsSchema, *DriverConfig, ...
+│   ├── router.py                        # get_driver() with cached operation-based resolution
+│   ├── outbox_ddl.py                    # storage_outbox + index_failure_log DDL (post-PR-#261)
+│   ├── errors.py                        # ReadOnlyDriverError, SoftDeleteNotSupportedError, ConflictError
 │   └── drivers/
 │       ├── __init__.py
-│       ├── _duckdb_helpers.py           # normalize_to_dicts, dicts_to_features
-│       ├── postgresql.py                # PostgresStorageDriver
-│       ├── iceberg.py                   # IcebergStorageDriver
-│       ├── duckdb.py                    # DuckDBStorageDriver
-│       └── elasticsearch.py             # ES + ES Private drivers
+│       ├── postgresql.py                # ItemsPostgresqlDriver
+│       ├── core_postgresql.py           # CollectionPostgresqlDriver / CatalogPostgresqlDriver
+│       ├── collection_postgresql.py     # collection-envelope PG driver
+│       ├── catalog_postgresql.py        # catalog-tier PG driver
+│       ├── iceberg.py                   # CollectionIcebergDriver
+│       ├── duckdb.py                    # CollectionDuckdbDriver
+│       ├── elasticsearch.py             # ItemsElasticsearchDriver + AssetElasticsearchDriver
+│       └── elasticsearch_private/       # ItemsElasticsearchPrivateDriver +
+│                                        # CollectionElasticsearchPrivateDriver (DENY-policied)
 └── docs/components/
     └── storage_drivers.md               # This file
 ```
