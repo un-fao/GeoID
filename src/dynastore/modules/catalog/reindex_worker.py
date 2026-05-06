@@ -317,7 +317,7 @@ class ReindexWorker:
                     "envelopes) — dispatching the raw envelope for "
                     "catalog_id=%s.  Remove ``transformed=True`` from "
                     "the routing config or wait for a future milestone.",
-                    entry.driver_id, catalog_id,
+                    entry.driver_ref, catalog_id,
                 )
             outcome = await self._dispatch_one(
                 entry=entry,
@@ -398,14 +398,14 @@ class ReindexWorker:
         except asyncio.TimeoutError:
             return _apply_sla_policy(
                 sla=sla,
-                driver_id=entry.driver_id,
+                driver_ref=entry.driver_ref,
                 catalog_id=catalog_id,
                 reason=f"timeout after {sla.timeout_ms if sla else '?'}ms",
             )
         except Exception as exc:  # noqa: BLE001 — Indexer-side failure
             return _apply_sla_policy(
                 sla=sla,
-                driver_id=entry.driver_id,
+                driver_ref=entry.driver_ref,
                 catalog_id=catalog_id,
                 reason=f"driver exception: {exc}",
             )
@@ -429,7 +429,7 @@ def _resolve_entry_sla(
 def _apply_sla_policy(
     *,
     sla: Optional[DriverSla],
-    driver_id: str,
+    driver_ref: str,
     catalog_id: str,
     reason: str,
 ) -> Optional[Tuple[bool, str]]:
@@ -444,7 +444,7 @@ def _apply_sla_policy(
       a silent drop would mask consumer-level failures).
     """
     policy = sla.on_timeout if sla else "fail"
-    message = f"Indexer {driver_id}@{catalog_id}: {reason}"
+    message = f"Indexer {driver_ref}@{catalog_id}: {reason}"
     if policy == "skip":
         logger.debug("%s — SLA says skip", message)
         return None
@@ -516,12 +516,12 @@ async def _resolve_catalog_indexers(
     }
     resolved: List[Tuple[OperationDriverEntry, CatalogStore]] = []
     for entry in entries:
-        driver = driver_index.get(entry.driver_id)
+        driver = driver_index.get(entry.driver_ref)
         if driver is None:
             logger.warning(
                 "CatalogRoutingConfig INDEX entry %r is not a registered "
                 "CatalogStore — skipping",
-                entry.driver_id,
+                entry.driver_ref,
             )
             continue
         resolved.append((entry, driver))

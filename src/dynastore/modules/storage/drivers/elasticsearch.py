@@ -21,7 +21,7 @@ Elasticsearch Storage Drivers.
 
 Two drivers in this module:
 
-* ``ItemsElasticsearchDriver``  (driver_id ``"elasticsearch"``)
+* ``ItemsElasticsearchDriver``  (driver_ref ``"elasticsearch"``)
   Items are written directly to a per-tenant index
   ``{prefix}-items-{catalog_id}`` (helper :func:`get_tenant_items_index`)
   with ``_routing=collection_id`` so a single index hosts every collection
@@ -32,7 +32,7 @@ Two drivers in this module:
   dedicated ``catalog_es_driver`` / ``collection_es_driver`` modules
   fully take over (separate, scheduled migration).
 
-* ``AssetElasticsearchDriver``  (driver_id ``"elasticsearch_assets"``)
+* ``AssetElasticsearchDriver``  (driver_ref ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}``
   indices.  Driven by ``AssetRoutingConfig.operations[INDEX]`` (auto-augmented
   with discoverable ``AssetIndexer`` impls) and dispatched via
@@ -154,7 +154,7 @@ class _ElasticsearchBase:
 
     @staticmethod
     async def _is_secondary_for(
-        driver_id: str, catalog_id: str, collection_id: Optional[str],
+        driver_ref: str, catalog_id: str, collection_id: Optional[str],
     ) -> bool:
         """Check if this driver is listed in the routing config for the given scope."""
         try:
@@ -181,7 +181,7 @@ class _ElasticsearchBase:
             from typing import cast as _cast2
             ops = _cast2(Dict[str, list], routing.operations)
             return any(
-                entry.driver_id == driver_id
+                entry.driver_ref == driver_ref
                 for entries in ops.values()
                 for entry in entries
             )
@@ -190,7 +190,7 @@ class _ElasticsearchBase:
 
     @staticmethod
     async def _is_write_driver_for(
-        driver_id: str, catalog_id: str, collection_id: Optional[str],
+        driver_ref: str, catalog_id: str, collection_id: Optional[str],
     ) -> bool:
         """Check if this driver is listed in the WRITE operation of the routing config.
 
@@ -223,7 +223,7 @@ class _ElasticsearchBase:
             from typing import cast as _cast3
             ops2 = _cast3(Dict[str, list], routing.operations)
             write_entries = ops2.get(Operation.WRITE, [])
-            return any(e.driver_id == driver_id for e in write_entries)
+            return any(e.driver_ref == driver_ref for e in write_entries)
         except Exception:
             return False
 

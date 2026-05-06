@@ -16,14 +16,14 @@ from dynastore.extensions.configs.config_api_dto import (
 
 
 def test_driver_ref_defaults():
-    ref = DriverRef(driver_id="catalog_core_postgresql_driver",
+    ref = DriverRef(driver_ref="catalog_core_postgresql_driver",
                     config_ref="catalog_core_postgresql_driver")
     assert ref.on_failure == "fatal"
     assert ref.write_mode == "sync"
 
 
 def test_driver_ref_null_config_ref_is_allowed():
-    ref = DriverRef(driver_id="SomeDriver")
+    ref = DriverRef(driver_ref="SomeDriver")
     assert ref.config_ref is None
 
 
@@ -56,7 +56,7 @@ def test_catalog_response_nested_tree_roundtrip():
                         "enabled": True,
                         "operations": {
                             "WRITE": [
-                                {"driver_id": "catalog_core_postgresql_driver",
+                                {"driver_ref": "catalog_core_postgresql_driver",
                                  "config_ref": "catalog_core_postgresql_driver",
                                  "on_failure": "fatal",
                                  "write_mode": "sync"}

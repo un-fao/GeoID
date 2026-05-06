@@ -134,7 +134,7 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
         proto.set_config.await_args_list[0].args[1]
     )
     items_pinned = {
-        e.driver_id
+        e.driver_ref
         for entries in items_routing.operations.values()
         for e in entries
     }
@@ -157,7 +157,7 @@ async def test_seed_writes_three_configs_in_cascade_satisfying_order_when_privat
         proto.set_config.await_args_list[2].args[1]
     )
     coll_pinned = {
-        e.driver_id
+        e.driver_ref
         for entries in coll_routing.operations.values()
         for e in entries
     }
@@ -192,7 +192,7 @@ async def test_seed_routing_payload_has_postgresql_in_write_for_durability():
     )
     routing_payload: ItemsRoutingConfig = proto.set_config.await_args_list[0].args[1]
     write_entries = routing_payload.operations.get(Operation.WRITE, [])
-    write_drivers = [e.driver_id for e in write_entries]
+    write_drivers = [e.driver_ref for e in write_entries]
     assert "items_postgresql_driver" in write_drivers, (
         "PG must be the durable WRITE target for a private collection — "
         "without it the seed routing has no source-of-truth."

@@ -169,7 +169,7 @@ async def test_reindex_worker_dispatches_upsert_to_log_indexer(caplog):
     )
 
     indexer = LogCatalogIndexer()
-    entry = OperationDriverEntry(driver_id="LogCatalogIndexer")
+    entry = OperationDriverEntry(driver_ref="LogCatalogIndexer")
 
     worker = ReindexWorker(
         resolve_indexers=lambda: [(entry, indexer)],
@@ -216,7 +216,7 @@ async def test_reindex_worker_dispatches_delete_to_log_indexer(caplog):
     )
 
     indexer = LogCatalogIndexer()
-    entry = OperationDriverEntry(driver_id="LogCatalogIndexer")
+    entry = OperationDriverEntry(driver_ref="LogCatalogIndexer")
 
     worker = ReindexWorker(
         resolve_indexers=lambda: [(entry, indexer)],

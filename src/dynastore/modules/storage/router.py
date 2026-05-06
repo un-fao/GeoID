@@ -73,7 +73,7 @@ class ResolvedDriver(Generic[_D]):
     write_mode: WriteMode = WriteMode.SYNC
 
     @property
-    def driver_id(self) -> str:
+    def driver_ref(self) -> str:
         return type(self.driver).__name__
 
 
@@ -90,7 +90,7 @@ async def _resolve_driver_ids_cached(
     operation: str,
     hint: Optional[str],
 ) -> List[tuple]:
-    """Cached resolution: returns list of (driver_id, on_failure, write_mode) tuples."""
+    """Cached resolution: returns list of (driver_ref, on_failure, write_mode) tuples."""
     from dynastore.models.protocols.configs import ConfigsProtocol
     from dynastore.tools.discovery import get_protocol
 
@@ -156,7 +156,7 @@ async def _resolve_driver_ids_cached(
         def _entry_matches(e: _ODE) -> bool:
             if e.hints:
                 return hint in e.hints
-            drv = driver_index.get(e.driver_id)
+            drv = driver_index.get(e.driver_ref)
             if drv is None:
                 return False
             return hint in getattr(
@@ -165,7 +165,7 @@ async def _resolve_driver_ids_cached(
 
         entries = [e for e in entries if _entry_matches(e)]
 
-    return [(e.driver_id, e.on_failure, e.write_mode) for e in entries]
+    return [(e.driver_ref, e.on_failure, e.write_mode) for e in entries]
 
 
 async def resolve_drivers(
@@ -216,14 +216,14 @@ async def resolve_drivers(
         driver_index = DriverRegistry.collection_index()
 
     result = []
-    for driver_id, on_failure, write_mode in resolved_ids:
-        driver = driver_index.get(driver_id)
+    for driver_ref, on_failure, write_mode in resolved_ids:
+        driver = driver_index.get(driver_ref)
         if driver:
             result.append(ResolvedDriver(driver=driver, on_failure=on_failure, write_mode=write_mode))
         else:
             logger.warning(
                 "Driver '%s' for operation '%s' is not registered. Skipping.",
-                driver_id,
+                driver_ref,
                 operation,
             )
 
@@ -427,13 +427,13 @@ async def get_asset_upload_driver(
 
     from dynastore.tools.typed_store.base import _to_snake
     impls_by_class = {_to_snake(type(d).__name__): d for d in get_protocols(AssetUploadProtocol)}
-    for driver_id, _on_failure, _write_mode in resolved_ids:
-        impl = impls_by_class.get(driver_id)
+    for driver_ref, _on_failure, _write_mode in resolved_ids:
+        impl = impls_by_class.get(driver_ref)
         if impl is not None:
             return impl
         logger.warning(
             "Asset upload driver '%s' configured but not registered; trying "
-            "next entry.", driver_id,
+            "next entry.", driver_ref,
         )
 
     # Fallback: first-registered backend (matches legacy get_protocol behaviour).

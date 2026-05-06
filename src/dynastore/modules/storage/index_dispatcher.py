@@ -671,7 +671,7 @@ class IndexDispatcher:
         results: Dict[str, BulkResult] = {}
         entries = await self._index_entries(ctx)
         for entry in entries:
-            indexer = await self._resolve_indexer(entry.driver_id)
+            indexer = await self._resolve_indexer(entry.driver_ref)
             if indexer is None:
                 # Driver not registered locally — apply the routing
                 # entry's FailurePolicy per-op so observable behaviour
@@ -679,7 +679,7 @@ class IndexDispatcher:
                 for op in ops:
                     await self._handle_missing(entry, ctx, op)
                 continue
-            results[entry.driver_id] = await self._dispatch_bulk(
+            results[entry.driver_ref] = await self._dispatch_bulk(
                 entry, indexer, ctx, ops,
             )
         return results
@@ -708,7 +708,7 @@ class IndexDispatcher:
         ctx: IndexContext,
         op: DispatchableOp,
     ) -> None:
-        indexer = await self._resolve_indexer(entry.driver_id)
+        indexer = await self._resolve_indexer(entry.driver_ref)
         if indexer is None:
             await self._handle_missing(entry, ctx, op)
             return
@@ -719,18 +719,18 @@ class IndexDispatcher:
             return
 
         # Circuit breaker check (Phase 3 — no-op when self._breaker is None).
-        if self._breaker is not None and self._breaker.is_open(entry.driver_id):
+        if self._breaker is not None and self._breaker.is_open(entry.driver_ref):
             if entry.on_failure == FailurePolicy.OUTBOX:
                 await self._enqueue_or_warn(entry, ctx, op)
             elif entry.on_failure == FailurePolicy.FATAL:
                 raise IndexerFatal(
-                    entry.driver_id, op,
+                    entry.driver_ref, op,
                     RuntimeError("circuit breaker open"),
                 )
             else:
                 logger.debug(
                     "IndexDispatcher: breaker open for '%s' — skipping (%s).",
-                    entry.driver_id, entry.on_failure,
+                    entry.driver_ref, entry.on_failure,
                 )
             return
 
@@ -746,10 +746,10 @@ class IndexDispatcher:
             # without forcing every indexer migration in this phase.
             await indexer.index(ctx, cast(IndexOp, op))
             if self._breaker is not None:
-                self._breaker.record_success(entry.driver_id)
+                self._breaker.record_success(entry.driver_ref)
         except Exception as exc:
             if self._breaker is not None:
-                self._breaker.record_failure(entry.driver_id)
+                self._breaker.record_failure(entry.driver_ref)
             await self._handle_failure(entry, ctx, op, exc)
 
     async def _handle_missing(
@@ -774,9 +774,9 @@ class IndexDispatcher:
         policy = entry.on_failure
         if policy == FailurePolicy.FATAL:
             raise IndexerFatal(
-                entry.driver_id, op,
+                entry.driver_ref, op,
                 RuntimeError(
-                    f"indexer '{entry.driver_id}' not registered locally and "
+                    f"indexer '{entry.driver_ref}' not registered locally and "
                     f"routing entry is FATAL"
                 ),
             )
@@ -790,14 +790,14 @@ class IndexDispatcher:
                 await self._enqueue_or_warn(entry, ctx, op)
             return
         if policy == FailurePolicy.WARN:
-            key = (entry.driver_id, ctx.catalog, ctx.collection)
+            key = (entry.driver_ref, ctx.catalog, ctx.collection)
             if key not in self._missing_warning_emitted:
                 self._missing_warning_emitted.add(key)
                 logger.warning(
                     "IndexDispatcher: indexer '%s' not registered locally "
                     "(catalog=%s, collection=%s) — skipping per WARN policy. "
                     "Future occurrences for this triple are suppressed.",
-                    entry.driver_id, ctx.catalog, ctx.collection,
+                    entry.driver_ref, ctx.catalog, ctx.collection,
                 )
             return
         # IGNORE — silent.
@@ -818,20 +818,20 @@ class IndexDispatcher:
         ``(driver_id, catalog, collection)``.
         """
         if self._outbox is None:
-            key = ("__no_outbox__", entry.driver_id, ctx.catalog, ctx.collection)
+            key = ("__no_outbox__", entry.driver_ref, ctx.catalog, ctx.collection)
             if key not in self._missing_warning_emitted:
                 self._missing_warning_emitted.add(key)
                 logger.warning(
                     "IndexDispatcher: indexer '%s' missing AND no outbox "
                     "wired (catalog=%s, collection=%s); op dropped per "
                     "fallback.",
-                    entry.driver_id, ctx.catalog, ctx.collection,
+                    entry.driver_ref, ctx.catalog, ctx.collection,
                 )
             return
         from dynastore.models.protocols.indexing import OutboxRecord
         record = OutboxRecord(
             op_id=op.op_id,
-            driver_id=entry.driver_id,
+            driver_id=entry.driver_ref,
             driver_instance_id=op.driver_instance_id,
             collection_id=op.collection_id,
             op=op.op,
@@ -873,7 +873,7 @@ class IndexDispatcher:
         through its FailurePolicy (e.g. enqueued to outbox, logged WARN).
         Raises :class:`IndexerFatal` when the policy is FATAL.
         """
-        key = (entry.driver_id, ctx.catalog, ctx.collection)
+        key = (entry.driver_ref, ctx.catalog, ctx.collection)
         if key in self._ensured:
             return True
         # Some Indexer impls may not have ``ensure_indexer`` yet during the
@@ -897,15 +897,15 @@ class IndexDispatcher:
         ctx: IndexContext,
         ops: Sequence[DispatchableOp],
     ) -> BulkResult:
-        if self._breaker is not None and self._breaker.is_open(entry.driver_id):
+        if self._breaker is not None and self._breaker.is_open(entry.driver_ref):
             return BulkResult(total=len(ops), failed=len(ops), failures=[
-                {"reason": "circuit_breaker_open", "indexer": entry.driver_id},
+                {"reason": "circuit_breaker_open", "indexer": entry.driver_ref},
             ])
         # Bootstrap once per (indexer, catalog, collection).  Use the
         # first op as the failure-handling target if ensure raises.
         if ops and not await self._ensure_or_handle(entry, indexer, ctx, ops[0]):
             return BulkResult(total=len(ops), failed=len(ops), failures=[
-                {"reason": "ensure_indexer_failed", "indexer": entry.driver_id},
+                {"reason": "ensure_indexer_failed", "indexer": entry.driver_ref},
             ])
         try:
             # ``Indexer.index_bulk`` is still typed against the legacy
@@ -917,18 +917,18 @@ class IndexDispatcher:
                 ctx, cast(Sequence[IndexOp], ops),
             )
             if self._breaker is not None:
-                self._breaker.record_success(entry.driver_id)
+                self._breaker.record_success(entry.driver_ref)
             return result
         except Exception as exc:
             if self._breaker is not None:
-                self._breaker.record_failure(entry.driver_id)
+                self._breaker.record_failure(entry.driver_ref)
             # Bulk failure: apply policy to the whole batch.
             for op in ops:
                 await self._handle_failure(entry, ctx, op, exc, bulk=True)
             return BulkResult(
                 total=len(ops),
                 failed=len(ops),
-                failures=[{"reason": str(exc), "indexer": entry.driver_id}],
+                failures=[{"reason": str(exc), "indexer": entry.driver_ref}],
             )
 
     async def _handle_failure(
@@ -942,7 +942,7 @@ class IndexDispatcher:
     ) -> None:
         policy = entry.on_failure
         if policy == FailurePolicy.FATAL:
-            raise IndexerFatal(entry.driver_id, op, exc) from exc
+            raise IndexerFatal(entry.driver_ref, op, exc) from exc
         if policy == FailurePolicy.OUTBOX:
             await self._enqueue_or_warn(entry, ctx, op, original=exc)
             return
@@ -951,14 +951,14 @@ class IndexDispatcher:
             logger.warning(
                 "IndexDispatcher: indexer '%s' failed for %s "
                 "(policy=warn%s): %s",
-                entry.driver_id, descriptor,
+                entry.driver_ref, descriptor,
                 ", bulk" if bulk else "", exc,
             )
             return
         # IGNORE — silent skip
         logger.debug(
             "IndexDispatcher: indexer '%s' failed (policy=ignore): %s",
-            entry.driver_id, exc,
+            entry.driver_ref, exc,
         )
 
     # Public diagnostic — operator-facing introspection of the routing
@@ -971,11 +971,11 @@ class IndexDispatcher:
             "collection": ctx.collection,
             "indexers": [
                 {
-                    "indexer_id": e.driver_id,
+                    "indexer_id": e.driver_ref,
                     "write_mode": e.write_mode,
                     "on_failure": e.on_failure,
                     "source": getattr(e, "source", None),
-                    "registered": (await self._resolve_indexer(e.driver_id)) is not None,
+                    "registered": (await self._resolve_indexer(e.driver_ref)) is not None,
                 }
                 for e in entries
             ],
@@ -996,19 +996,19 @@ class IndexDispatcher:
         log of the original exception.  Phase 2 wires the real writer.
         """
         if self._outbox is None:
-            if entry.driver_id not in self._outbox_warning_emitted:
-                self._outbox_warning_emitted.add(entry.driver_id)
+            if entry.driver_ref not in self._outbox_warning_emitted:
+                self._outbox_warning_emitted.add(entry.driver_ref)
                 logger.warning(
                     "IndexDispatcher: indexer '%s' has on_failure=outbox but "
                     "no OutboxWriter is wired — failures degrade to WARN. "
                     "Phase 2 will activate durable retry.",
-                    entry.driver_id,
+                    entry.driver_ref,
                 )
             if original is not None:
                 logger.warning(
                     "IndexDispatcher: indexer '%s' failed for %s "
                     "(policy=outbox, degraded): %s",
-                    entry.driver_id, _describe_op(op), original,
+                    entry.driver_ref, _describe_op(op), original,
                 )
             return
 
@@ -1028,12 +1028,12 @@ class IndexDispatcher:
             logger.warning(
                 "IndexDispatcher: outbox writer for indexer '%s' has no "
                 "singular ``enqueue`` method; cannot enqueue %s.",
-                entry.driver_id, _describe_op(op),
+                entry.driver_ref, _describe_op(op),
             )
             return
         try:
             await enqueue(
-                indexer_id=entry.driver_id,
+                indexer_id=entry.driver_ref,
                 ctx=ctx,
                 op=op,
                 last_error=str(original) if original else None,
@@ -1046,7 +1046,7 @@ class IndexDispatcher:
             logger.error(
                 "IndexDispatcher: outbox enqueue failed for indexer '%s' "
                 "on %s — original error: %s, enqueue error: %s",
-                entry.driver_id, _describe_op(op), original, enqueue_exc,
+                entry.driver_ref, _describe_op(op), original, enqueue_exc,
             )
 
 

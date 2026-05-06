@@ -50,7 +50,7 @@ def _routing_with_private(*, operation: str = Operation.INDEX) -> ItemsRoutingCo
         operations={
             operation: [
                 OperationDriverEntry(
-                    driver_id="items_elasticsearch_private_driver",
+                    driver_ref="items_elasticsearch_private_driver",
                     on_failure=FailurePolicy.OUTBOX,
                     write_mode=WriteMode.ASYNC,
                 ),
@@ -64,7 +64,7 @@ def _routing_without_private() -> ItemsRoutingConfig:
         operations={
             Operation.WRITE: [
                 OperationDriverEntry(
-                    driver_id="items_postgresql_driver",
+                    driver_ref="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
             ],

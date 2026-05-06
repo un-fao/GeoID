@@ -86,7 +86,7 @@ def test_abstract_intermediate_does_not_register():
 
 
 def test_class_key_byte_matches_driver_name():
-    """The whole point: routing.WRITE[].driver_id and configs.drivers.{key}
+    """The whole point: routing.WRITE[].driver_ref and configs.drivers.{key}
     use the SAME string, so an operator copies once and the linker is the
     Python class name itself.
     """

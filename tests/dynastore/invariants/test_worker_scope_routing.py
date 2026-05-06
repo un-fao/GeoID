@@ -22,7 +22,7 @@ from dynastore.modules.storage.routing_config import (
 PYPROJECT = Path(__file__).resolve().parents[3] / "pyproject.toml"
 
 
-# Map driver_id (snake_case) to the extras alias that brings its
+# Map driver_ref (snake_case) to the extras alias that brings its
 # runtime dep. Update when new drivers ship.
 DRIVER_TO_EXTRA: dict[str, str] = {
     "items_postgresql_driver": "module_storage_postgresql",
@@ -75,9 +75,9 @@ def test_worker_scope_covers_routing_or_uses_outbox(scope: str) -> None:
 
     failures: list[str] = []
     for entry in write_entries:
-        needed = DRIVER_TO_EXTRA.get(entry.driver_id)
+        needed = DRIVER_TO_EXTRA.get(entry.driver_ref)
         if needed is None:
-            # Unknown driver_id — skip; if a new driver was added, the
+            # Unknown driver_ref — skip; if a new driver was added, the
             # mapping should be extended in this file.
             continue
         if needed in aliases:
@@ -85,7 +85,7 @@ def test_worker_scope_covers_routing_or_uses_outbox(scope: str) -> None:
         if entry.on_failure == FailurePolicy.OUTBOX:
             continue
         failures.append(
-            f"  {entry.driver_id} requires '{needed}' which is NOT in "
+            f"  {entry.driver_ref} requires '{needed}' which is NOT in "
             f"{scope}'s transitive extras AND on_failure="
             f"{entry.on_failure.name} (not OUTBOX)"
         )

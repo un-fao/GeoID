@@ -1,4 +1,4 @@
-"""get_active_indexers — multi-driver fan-out driver_id resolution.
+"""get_active_indexers — multi-driver fan-out driver_ref resolution.
 
 Mocks ``_resolve_entity_operations`` so the test exercises the helper's
 projection logic in isolation, without bringing up ConfigsProtocol.
@@ -19,7 +19,7 @@ from dynastore.modules.storage.routing_config import (
 def _ops(**by_op):
     """Build a fake operations dict from keyword pairs of OP -> [driver_ids]."""
     return {
-        op: [OperationDriverEntry(driver_id=did) for did in dids]
+        op: [OperationDriverEntry(driver_ref=did) for did in dids]
         for op, dids in by_op.items()
     }
 
@@ -61,7 +61,7 @@ async def test_works_for_each_entity_kind():
 
 @pytest.mark.asyncio
 async def test_dedupes_via_set_semantics():
-    """Same driver_id listed twice in INDEX collapses to one entry."""
+    """Same driver_ref listed twice in INDEX collapses to one entry."""
     fake = _ops(INDEX=["es_items_driver", "es_items_driver"])
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",

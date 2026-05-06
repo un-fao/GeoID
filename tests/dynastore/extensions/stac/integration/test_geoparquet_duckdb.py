@@ -160,8 +160,8 @@ async def test_geoparquet_duckdb_pipeline(
     # ------------------------------------------------------------------
     routing_config = {
         "operations": {
-            "WRITE": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "items_duckdb_driver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_ref": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_ref": "items_duckdb_driver", "hints": [], "on_failure": "fatal"}],
         }
     }
     r = await in_process_client.put(

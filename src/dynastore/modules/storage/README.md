@@ -53,17 +53,17 @@ ordered list of drivers with per-entry `on_failure` / `write_mode` / `hints` / `
 ```json
 {"operations": {
   "WRITE": [
-    {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
-    {"driver_id": "items_elasticsearch_driver", "write_mode": "async", "on_failure": "outbox"}
+    {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"},
+    {"driver_ref": "items_elasticsearch_driver", "write_mode": "async", "on_failure": "outbox"}
   ],
   "READ": [
-    {"driver_id": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
-    {"driver_id": "items_postgresql_driver", "hints": ["geometry_exact"]}
+    {"driver_ref": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
+    {"driver_ref": "items_postgresql_driver", "hints": ["geometry_exact"]}
   ]
 }}
 ```
 
-`driver_id` is always `_to_snake(cls.__name__)` (post-PR-1e). Operator API is at
+`driver_ref` is always `_to_snake(cls.__name__)` (post-PR-1e). Operator API is at
 `/configs/.../plugins/{plugin_id}` where `plugin_id` is the snake_case `class_key`.
 
 ## Drivers (summary)
@@ -109,7 +109,7 @@ to SQLite when `write_path` is configured.
 
 1. Create `drivers/<name>.py`, subclass `ModuleProtocol` (and the relevant tier protocol —
    `CollectionItemsStore` / `CollectionStore` / `AssetStore` / `CatalogStore`).
-2. Give it a class name that yields the desired `driver_id` via `_to_snake(cls.__name__)`.
+2. Give it a class name that yields the desired `driver_ref` via `_to_snake(cls.__name__)`.
 3. Implement the protocol methods.
 4. Add entry point in `pyproject.toml` under `[project.entry-points."dynastore.modules"]`.
 5. Pin in the relevant routing config (e.g. `PUT /configs/.../plugins/items_routing_config`),

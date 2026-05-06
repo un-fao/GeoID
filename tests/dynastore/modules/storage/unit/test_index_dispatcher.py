@@ -90,9 +90,9 @@ def _make_dispatcher(
     )
 
 
-def _entry(driver_id: str, *, on_failure: FailurePolicy) -> OperationDriverEntry:
+def _entry(driver_ref: str, *, on_failure: FailurePolicy) -> OperationDriverEntry:
     return OperationDriverEntry(
-        driver_id=driver_id,
+        driver_ref=driver_ref,
         on_failure=on_failure,
         write_mode=WriteMode.SYNC,
         source="auto",

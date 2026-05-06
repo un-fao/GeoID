@@ -73,7 +73,7 @@ async def test_collection_routing_falls_back_to_defaults_when_empty() -> None:
     )
     driver_ids = [entry[0] for entry in result]
     assert driver_ids[0] == "items_elasticsearch_driver", (
-        f"Expected first driver_id to be items_elasticsearch_driver from "
+        f"Expected first driver_ref to be items_elasticsearch_driver from "
         f"ItemsRoutingConfig.default_factory READ order, got {driver_ids[0]!r}."
     )
     assert "items_postgresql_driver" in driver_ids, (
@@ -100,7 +100,7 @@ async def test_asset_routing_falls_back_to_defaults_when_empty() -> None:
     assert result, "Expected fallback for AssetRoutingConfig empty operations."
     driver_ids = [entry[0] for entry in result]
     assert driver_ids[0] == "asset_elasticsearch_driver", (
-        f"Expected first driver_id to be asset_elasticsearch_driver, "
+        f"Expected first driver_ref to be asset_elasticsearch_driver, "
         f"got {driver_ids[0]!r}."
     )
     assert "asset_postgresql_driver" in driver_ids, (
@@ -116,7 +116,7 @@ async def test_explicit_entries_are_not_overridden() -> None:
     The fallback only fires for the NO-entries case."""
     explicit_config = ItemsRoutingConfig(
         operations={
-            Operation.READ: [OperationDriverEntry(driver_id="explicitly_chosen_driver")],
+            Operation.READ: [OperationDriverEntry(driver_ref="explicitly_chosen_driver")],
         }
     )
 

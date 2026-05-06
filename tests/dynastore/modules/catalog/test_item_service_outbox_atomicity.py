@@ -147,7 +147,7 @@ class _RecordingOutbox:
             raise RuntimeError("outbox enqueue failed (test)")
 
     async def claim_batch(
-        self, *, driver_id: str, catalog_id: str,
+        self, *, driver_ref: str, catalog_id: str,
         batch_size: int, claimed_by: str,
     ) -> List[Any]:
         return []
@@ -166,7 +166,7 @@ class _RecordingOutbox:
     ) -> None:
         return None
 
-    def listen(self, *, driver_id: str, catalog_id: str):  # type: ignore[no-untyped-def]
+    def listen(self, *, driver_ref: str, catalog_id: str):  # type: ignore[no-untyped-def]
         async def _empty():
             if False:
                 yield  # pragma: no cover
@@ -183,7 +183,7 @@ def _make_routing_resolver(
     operations = {
         Operation.WRITE: [
             OperationDriverEntry(
-                driver_id=d,
+                driver_ref=d,
                 on_failure=FailurePolicy.FATAL,
                 write_mode=WriteMode.SYNC,
             )
@@ -191,7 +191,7 @@ def _make_routing_resolver(
         ],
         Operation.INDEX: [
             OperationDriverEntry(
-                driver_id=d,
+                driver_ref=d,
                 on_failure=FailurePolicy.OUTBOX,
                 write_mode=WriteMode.ASYNC,
             )
@@ -212,8 +212,8 @@ def _make_routing_resolver(
 
 
 def _make_registry(driver_map: Dict[str, Any]):
-    async def lookup(driver_id: str):
-        return driver_map.get(driver_id)
+    async def lookup(driver_ref: str):
+        return driver_map.get(driver_ref)
     return lookup
 
 
@@ -278,7 +278,7 @@ async def test_upsert_bulk_coalesces_same_item_ops_in_chunk():
     assert len(outbox.enqueued_calls) == 1
     rows = outbox.enqueued_calls[0]["rows"]
     assert len(rows) == 1
-    assert rows[0].driver_id == "items_elasticsearch_driver"
+    assert rows[0].driver_ref == "items_elasticsearch_driver"
     assert rows[0].item_id == "i1"
     assert rows[0].payload == {"id": "i1", "v": 3}
     assert outbox.enqueued_calls[0]["conn"] is engine.conn

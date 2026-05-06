@@ -25,21 +25,21 @@ get_driver(operation, catalog_id, collection_id, hint=...)
                               │ first-match wins per (operation, hint)
     ▼
 Drivers (instances discovered via `dynastore.modules` entry points)
-    ├── ItemsPostgresqlDriver                   driver_id="items_postgresql_driver"
-    ├── ItemsElasticsearchDriver                driver_id="items_elasticsearch_driver"             (public, per-tenant index)
-    ├── ItemsElasticsearchPrivateDriver         driver_id="items_elasticsearch_private_driver"     (DENY-policied)
-    ├── CollectionPostgresqlDriver              driver_id="collection_postgresql_driver"
-    ├── CollectionElasticsearchDriver           driver_id="collection_elasticsearch_driver"
-    ├── CollectionElasticsearchPrivateDriver    driver_id="collection_elasticsearch_private_driver"
-    ├── CatalogPostgresqlDriver                 driver_id="catalog_postgresql_driver"
-    ├── CatalogElasticsearchDriver              driver_id="catalog_elasticsearch_driver"
-    ├── AssetPostgresqlDriver                   driver_id="asset_postgresql_driver"
-    ├── AssetElasticsearchDriver                driver_id="asset_elasticsearch_driver"
-    ├── ItemsIcebergDriver                 driver_id="items_iceberg_driver"              (OTF: snapshots, time-travel)
-    └── ItemsDuckdbDriver                  driver_id="items_duckdb_driver"               (analytical reads)
+    ├── ItemsPostgresqlDriver                   driver_ref="items_postgresql_driver"
+    ├── ItemsElasticsearchDriver                driver_ref="items_elasticsearch_driver"             (public, per-tenant index)
+    ├── ItemsElasticsearchPrivateDriver         driver_ref="items_elasticsearch_private_driver"     (DENY-policied)
+    ├── CollectionPostgresqlDriver              driver_ref="collection_postgresql_driver"
+    ├── CollectionElasticsearchDriver           driver_ref="collection_elasticsearch_driver"
+    ├── CollectionElasticsearchPrivateDriver    driver_ref="collection_elasticsearch_private_driver"
+    ├── CatalogPostgresqlDriver                 driver_ref="catalog_postgresql_driver"
+    ├── CatalogElasticsearchDriver              driver_ref="catalog_elasticsearch_driver"
+    ├── AssetPostgresqlDriver                   driver_ref="asset_postgresql_driver"
+    ├── AssetElasticsearchDriver                driver_ref="asset_elasticsearch_driver"
+    ├── ItemsIcebergDriver                 driver_ref="items_iceberg_driver"              (OTF: snapshots, time-travel)
+    └── ItemsDuckdbDriver                  driver_ref="items_duckdb_driver"               (analytical reads)
 ```
 
-`driver_id` is always `_to_snake(cls.__name__)` — the snake_case class key (post-PR-1e).
+`driver_ref` is always `_to_snake(cls.__name__)` — the snake_case class key (post-PR-1e).
 
 ### Key Design Decisions
 
@@ -134,16 +134,16 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 {
   "operations": {
     "WRITE": [
-      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
-      {"driver_id": "items_elasticsearch_driver",
+      {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"},
+      {"driver_ref": "items_elasticsearch_driver",
        "write_mode": "async", "on_failure": "outbox", "source": "auto"}
     ],
     "READ":  [
-      {"driver_id": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
-      {"driver_id": "items_postgresql_driver",     "hints": ["geometry_exact"]}
+      {"driver_ref": "items_elasticsearch_driver", "hints": ["geometry_simplified"]},
+      {"driver_ref": "items_postgresql_driver",     "hints": ["geometry_exact"]}
     ],
     "INDEX": [
-      {"driver_id": "items_elasticsearch_driver",
+      {"driver_ref": "items_elasticsearch_driver",
        "write_mode": "async", "on_failure": "outbox", "source": "auto"}
     ]
   }
@@ -152,9 +152,9 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 // collection_routing_config — collection-envelope dispatch (CollectionStore drivers)
 {
   "operations": {
-    "WRITE": [{"driver_id": "collection_postgresql_driver", "on_failure": "fatal"}],
-    "READ":  [{"driver_id": "collection_postgresql_driver"}],
-    "INDEX": [{"driver_id": "collection_elasticsearch_driver",
+    "WRITE": [{"driver_ref": "collection_postgresql_driver", "on_failure": "fatal"}],
+    "READ":  [{"driver_ref": "collection_postgresql_driver"}],
+    "INDEX": [{"driver_ref": "collection_elasticsearch_driver",
                "write_mode": "async", "on_failure": "outbox", "source": "auto"}]
   }
 }
@@ -165,11 +165,11 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 {
   "operations": {
     "WRITE": [
-      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
-      {"driver_id": "items_elasticsearch_private_driver",
+      {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"},
+      {"driver_ref": "items_elasticsearch_private_driver",
        "write_mode": "async", "on_failure": "outbox"}
     ],
-    "READ":  [{"driver_id": "items_postgresql_driver"}]
+    "READ":  [{"driver_ref": "items_postgresql_driver"}]
   }
 }
 ```
@@ -178,7 +178,7 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `driver_id` | `str` (snake_case) | required | Snake_case `_to_snake(cls.__name__)` of a registered driver |
+| `driver_ref` | `str` (snake_case) | required | Snake_case `_to_snake(cls.__name__)` of a registered driver |
 | `hints` | `List[Hint]` | `[]` | Selectivity tags — `Hint` is a closed `StrEnum` (see below) |
 | `on_failure` | `FailurePolicy` | `"warn"` | `"fatal"` (raise), `"warn"` (log), `"outbox"` (defer to drain task) |
 | `write_mode` | `WriteMode` | `"sync"` | `"sync"` or `"async"`; async writes go through the outbox |
@@ -188,7 +188,7 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 
 Each routing config has an apply handler (`_on_apply_items_routing_config` etc.) that:
 
-1. Validates every `driver_id` against the discovery registry for the tier's protocol
+1. Validates every `driver_ref` against the discovery registry for the tier's protocol
    (`CollectionItemsStore`, `CollectionStore`, `AssetStore`, `CatalogStore`).
 2. Auto-registers `*Indexer` drivers under `operations[INDEX]` and `*Store` drivers under
    `operations[SEARCH]` when discoverable but missing from the persisted payload — with
@@ -216,7 +216,7 @@ Hints are not registerable at runtime (they're a closed enum, post PR #255). To 
 ## Router Performance
 
 Resolution is cached at 300s TTL (aligned with config cache) via `@cached(maxsize=4096, ttl=300)`.
-The driver index (`driver_id -> instance`) is rebuilt from the discovery registry on each lookup.
+The driver index (`driver_ref -> instance`) is rebuilt from the discovery registry on each lookup.
 Cache invalidation is wired into every routing apply handler so config writes are visible immediately
 to subsequent reads.
 
@@ -229,7 +229,7 @@ to subsequent reads.
 | Property | Value |
 |----------|-------|
 | **class** | `ItemsPostgresqlDriver` |
-| **driver_id** | `items_postgresql_driver` |
+| **driver_ref** | `items_postgresql_driver` |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `SOFT_DELETE`, `EXPORT`, `REQUIRED_ENFORCEMENT`, `UNIQUE_ENFORCEMENT` |
 | **driver config** | `ItemsPostgresqlDriverConfig` (class_key `items_postgresql_driver_config`) |
 | **dependencies** | Core (always available) |
@@ -247,7 +247,7 @@ ensure_storage  → CREATE TABLE / partition + register sidecar columns
 drop_storage    → DROP partition or set deleted flag
 ```
 
-Routing entries reference the snake_case `driver_id`; locations are derived per-collection
+Routing entries reference the snake_case `driver_ref`; locations are derived per-collection
 via the catalog tenant schema (no explicit location config required).
 
 ### Iceberg Driver (collection-tier OTF)
@@ -255,7 +255,7 @@ via the catalog tenant schema (no explicit location config required).
 | Property | Value |
 |----------|-------|
 | **class** | `ItemsIcebergDriver` |
-| **driver_id** | `items_iceberg_driver` |
+| **driver_ref** | `items_iceberg_driver` |
 | **capabilities** | `STREAMING`, `SPATIAL_FILTER`, `EXPORT`, `TIME_TRAVEL`, `VERSIONING`, `SNAPSHOTS`, `SCHEMA_EVOLUTION`, `SOFT_DELETE` |
 | **driver config** | `ItemsIcebergDriverConfig` |
 | **dependencies** | `pyiceberg[sql-postgres]>=0.9.0`, `pyarrow>=14.0.0` |
@@ -339,7 +339,7 @@ pip install dynastore[module_storage_iceberg]
 | Property | Value |
 |----------|-------|
 | **class** | `ItemsDuckdbDriver` |
-| **driver_id** | `items_duckdb_driver` |
+| **driver_ref** | `items_duckdb_driver` |
 | **capabilities** | `READ_ONLY`, `STREAMING`, `SPATIAL_FILTER`, `EXPORT` |
 | **driver config** | `ItemsDuckdbDriverConfig` |
 | **dependencies** | `duckdb>=1.0.0` |
@@ -377,7 +377,7 @@ pip install dynastore[module_storage_duckdb]
 
 Three classes, one per tier. All write to per-tenant indexes:
 
-| Class | driver_id | Per-tenant index |
+| Class | driver_ref | Per-tenant index |
 |-------|-----------|-------------------|
 | `ItemsElasticsearchDriver` | `items_elasticsearch_driver` | `{prefix}-items-{catalog_id}` |
 | `CollectionElasticsearchDriver` | `collection_elasticsearch_driver` | `{prefix}-collections` (shared) |
@@ -400,7 +400,7 @@ remain available for explicit ops calls.
 
 Two classes:
 
-| Class | driver_id | Per-tenant index |
+| Class | driver_ref | Per-tenant index |
 |-------|-----------|-------------------|
 | `ItemsElasticsearchPrivateDriver` | `items_elasticsearch_private_driver` | `{prefix}-{catalog_id}-private-items` |
 | `CollectionElasticsearchPrivateDriver` | `collection_elasticsearch_private_driver` | `{prefix}-{catalog_id}-collections-private` |
@@ -513,7 +513,7 @@ class MyDatabaseStorageDriver(ModuleProtocol):
     """MyDatabase storage driver — what it does and when to use it."""
 
     # --- Required class attributes ---
-    driver_id: str = "mydatabase"       # Unique ID used in routing config
+    driver_ref: str = "mydatabase"       # Unique ID used in routing config
     priority: int = 40                   # Lower = higher priority
 
     # Declare what this driver supports
@@ -674,17 +674,17 @@ Pin the driver in the appropriate tier's routing config. For an items-tier drive
 {
   "operations": {
     "WRITE": [
-      {"driver_id": "items_postgresql_driver", "on_failure": "fatal"}
+      {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"}
     ],
     "READ":  [
-      {"driver_id": "my_database_driver", "hints": ["analytics"]},
-      {"driver_id": "items_postgresql_driver"}
+      {"driver_ref": "my_database_driver", "hints": ["analytics"]},
+      {"driver_ref": "items_postgresql_driver"}
     ]
   }
 }
 ```
 
-The apply handler validates every `driver_id` against the discovery registry and rejects unknown
+The apply handler validates every `driver_ref` against the discovery registry and rejects unknown
 entries with a clear error. New `Hint` values must first be added to `Hint` in `hints.py`.
 
 ### Step 6: Write Tests
@@ -698,8 +698,8 @@ from dynastore.modules.storage.drivers.mydatabase import MyDatabaseStorageDriver
 
 
 class TestMyDatabaseDriverMeta:
-    def test_driver_id(self):
-        assert MyDatabaseStorageDriver().driver_id == "mydatabase"
+    def test_driver_ref(self):
+        assert MyDatabaseStorageDriver().driver_ref == "mydatabase"
 
     def test_capabilities(self):
         caps = MyDatabaseStorageDriver().capabilities
@@ -715,7 +715,7 @@ class TestMyDatabaseWriteEntities:
 
 ### Checklist
 
-- [ ] `driver_id` is unique and matches config strings
+- [ ] `driver_ref` is unique and matches config strings
 - [ ] `is_available()` returns `False` when dependencies are missing (graceful degradation)
 - [ ] `capabilities` accurately declares supported features
 - [ ] `lifespan()` properly initializes and cleans up resources

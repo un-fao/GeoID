@@ -589,7 +589,7 @@ class AssetService(AssetsProtocol):
                     elif r.on_failure == FailurePolicy.WARN:
                         logger.warning(
                             "Secondary driver '%s' %s failed for %s: %s",
-                            r.driver_id, method_name, catalog_id, result,
+                            r.driver_ref, method_name, catalog_id, result,
                         )
 
         # Async phase: fire-and-forget
@@ -614,12 +614,12 @@ class AssetService(AssetsProtocol):
             if resolved.on_failure == FailurePolicy.FATAL:
                 logger.error(
                     "Async asset driver '%s' %s FATAL failure for %s: %s",
-                    resolved.driver_id, method_name, catalog_id, err,
+                    resolved.driver_ref, method_name, catalog_id, err,
                 )
             elif resolved.on_failure == FailurePolicy.WARN:
                 logger.warning(
                     "Async asset driver '%s' %s failed for %s: %s",
-                    resolved.driver_id, method_name, catalog_id, err,
+                    resolved.driver_ref, method_name, catalog_id, err,
                 )
 
     async def get_asset(
@@ -971,7 +971,7 @@ class AssetService(AssetsProtocol):
                         elif resolved.on_failure == FailurePolicy.WARN:
                             logger.warning(
                                 "Driver '%s' delete_asset failed for %s/%s: %s",
-                                resolved.driver_id, a["catalog_id"], a["asset_id"], err,
+                                resolved.driver_ref, a["catalog_id"], a["asset_id"], err,
                             )
 
         # Emit events. ``propagate`` is stamped on each payload so the

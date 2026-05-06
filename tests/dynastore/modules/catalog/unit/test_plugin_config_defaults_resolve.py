@@ -39,7 +39,7 @@ class TestCollectionRoutingConfigDefaults:
 
     def test_write_default_is_pg(self):
         cfg = ItemsRoutingConfig()
-        ids = [e.driver_id for e in cfg.operations[Operation.WRITE]]
+        ids = [e.driver_ref for e in cfg.operations[Operation.WRITE]]
         assert "items_postgresql_driver" in ids
 
 

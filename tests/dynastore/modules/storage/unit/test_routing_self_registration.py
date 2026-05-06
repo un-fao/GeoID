@@ -26,8 +26,8 @@ def test_collection_self_registers_missing_store_drivers():
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
     _self_register_store_drivers(cfg, metadata_index)
 
-    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
+    write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
+    read_ids = {e.driver_ref for e in cfg.operations[Operation.READ]}
     assert write_ids == {"pg_core_meta", "pg_stac_meta"}
     assert read_ids == {"pg_core_meta", "pg_stac_meta"}
 
@@ -39,7 +39,7 @@ def test_collection_preserves_operator_supplied_entry():
     cfg.operations.clear()
     cfg.operations[Operation.WRITE] = [
         OperationDriverEntry(
-            driver_id="pg_core_meta", on_failure=FailurePolicy.WARN,
+            driver_ref="pg_core_meta", on_failure=FailurePolicy.WARN,
         ),
     ]
 
@@ -47,7 +47,7 @@ def test_collection_preserves_operator_supplied_entry():
     _self_register_store_drivers(cfg, metadata_index)
 
     write_entries = {
-        e.driver_id: e for e in cfg.operations[Operation.WRITE]
+        e.driver_ref: e for e in cfg.operations[Operation.WRITE]
     }
     # Operator's PgCoreMeta entry preserved with on_failure=WARN.
     assert write_entries["pg_core_meta"].on_failure == FailurePolicy.WARN
@@ -61,12 +61,12 @@ def test_collection_no_op_when_all_drivers_already_listed():
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
     cfg.operations[Operation.WRITE] = [
-        OperationDriverEntry(driver_id="pg_core_meta"),
-        OperationDriverEntry(driver_id="pg_stac_meta"),
+        OperationDriverEntry(driver_ref="pg_core_meta"),
+        OperationDriverEntry(driver_ref="pg_stac_meta"),
     ]
     cfg.operations[Operation.READ] = [
-        OperationDriverEntry(driver_id="pg_core_meta"),
-        OperationDriverEntry(driver_id="pg_stac_meta"),
+        OperationDriverEntry(driver_ref="pg_core_meta"),
+        OperationDriverEntry(driver_ref="pg_stac_meta"),
     ]
 
     metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
@@ -84,8 +84,8 @@ def test_catalog_self_registers_missing_drivers():
     metadata_index = {"catalog_pg_core": object(), "catalog_pg_stac": object()}
     _self_register_store_drivers(cfg, metadata_index)
 
-    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
-    read_ids = {e.driver_id for e in cfg.operations[Operation.READ]}
+    write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
+    read_ids = {e.driver_ref for e in cfg.operations[Operation.READ]}
     assert write_ids == {"catalog_pg_core", "catalog_pg_stac"}
     assert read_ids == {"catalog_pg_core", "catalog_pg_stac"}
 
@@ -142,7 +142,7 @@ def test_indexer_marker_lands_in_INDEX_with_async_outbox_defaults():
 
     entries = target_ops.get(Operation.INDEX, [])
     assert len(entries) == 1
-    assert entries[0].driver_id == "_collection_es"
+    assert entries[0].driver_ref == "_collection_es"
     assert entries[0].on_failure == FailurePolicy.OUTBOX
     assert entries[0].write_mode == WriteMode.ASYNC
 
@@ -254,7 +254,7 @@ def test_end_to_end_marker_to_INDEX_entry_via_real_apply_handler():
 
         index_entries = cfg.operations.get(Operation.INDEX, [])
         assert any(
-            e.driver_id == "_dummy_catalog_indexer"
+            e.driver_ref == "_dummy_catalog_indexer"
             and e.on_failure == FailurePolicy.OUTBOX
             and e.write_mode == WriteMode.ASYNC
             for e in index_entries
@@ -282,7 +282,7 @@ def test_indexer_marker_skips_already_listed_driver():
         auto_register_for_routing: ClassVar = frozenset({Operation.INDEX})
 
     operator_entry = OperationDriverEntry(
-        driver_id="_asset_es", on_failure=FailurePolicy.FATAL,
+        driver_ref="_asset_es", on_failure=FailurePolicy.FATAL,
     )
     target_ops: dict = {Operation.INDEX: [operator_entry]}
 
@@ -337,7 +337,7 @@ def test_searcher_helper_picks_up_drivers_opting_into_search():
                lambda proto: fake_pool):
         _self_register_searchers_into(target_ops, CatalogStore)
 
-    ids = {e.driver_id for e in target_ops.get(Operation.SEARCH, [])}
+    ids = {e.driver_ref for e in target_ops.get(Operation.SEARCH, [])}
     assert ids == {"_es_cat"}
 
 
@@ -386,7 +386,7 @@ def test_searcher_helper_idempotent():
         auto_register_for_routing: ClassVar = frozenset({Operation.SEARCH})
 
     from dynastore.modules.storage.hints import Hint
-    op_entry = OperationDriverEntry(driver_id="_es_cat", hints={Hint.METADATA})
+    op_entry = OperationDriverEntry(driver_ref="_es_cat", hints={Hint.METADATA})
     target_ops: dict = {Operation.SEARCH: [op_entry]}
 
     with patch("dynastore.tools.discovery.get_protocols",
@@ -428,12 +428,12 @@ def test_catalog_routing_validator_augments_INDEX_and_SEARCH():
     with patch("dynastore.tools.discovery.get_protocols", _fake_get_protocols):
         cfg = CatalogRoutingConfig()
 
-    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
-    search_ids = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    index_ids = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
+    search_ids = {e.driver_ref for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_cat_es" in index_ids
     assert "_cat_es" in search_ids
     # Default WRITE/READ entries unchanged.
-    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
 
 
@@ -465,8 +465,8 @@ def test_collection_routing_validator_augments_INDEX_and_SEARCH():
                lambda proto: [_ColES()]):
         cfg = CollectionRoutingConfig()
 
-    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
-    search_ids = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    index_ids = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
+    search_ids = {e.driver_ref for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_col_es" in index_ids
     assert "_col_es" in search_ids
 
@@ -490,12 +490,12 @@ def test_items_routing_validator_augments_INDEX_and_SEARCH():
                lambda proto: [_ItemsES()]):
         cfg = ItemsRoutingConfig()
 
-    top_index = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
-    top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    top_index = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
+    top_search = {e.driver_ref for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_items_es" in top_index
     assert "_items_es" in top_search
     # Default WRITE/READ entries unchanged.
-    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     assert write_ids == {"items_postgresql_driver", "_items_es"} or \
            "items_postgresql_driver" in write_ids
 
@@ -524,7 +524,7 @@ def test_items_routing_search_optin_gate():
                lambda proto: [_OptedInSearcher(), _OptedOutSearcher()]):
         cfg = ItemsRoutingConfig()
 
-    top_search = {e.driver_id for e in cfg.operations.get(Operation.SEARCH, [])}
+    top_search = {e.driver_ref for e in cfg.operations.get(Operation.SEARCH, [])}
     assert "_opted_in_searcher" in top_search
     assert "_opted_out_searcher" not in top_search
 
@@ -545,7 +545,7 @@ def test_asset_routing_validator_augments_INDEX_only():
                lambda proto: [_AssetES()]):
         cfg = AssetRoutingConfig()
 
-    index_ids = {e.driver_id for e in cfg.operations.get(Operation.INDEX, [])}
+    index_ids = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
     assert "_asset_es" in index_ids
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
 
@@ -563,7 +563,7 @@ def test_validator_failure_in_discovery_does_not_break_construction():
         cfg = CatalogRoutingConfig()  # must not raise
 
     # Default WRITE/READ unaffected.
-    write_ids = {e.driver_id for e in cfg.operations[Operation.WRITE]}
+    write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     assert write_ids == {"catalog_core_postgresql_driver", "catalog_stac_postgresql_driver"}
     # INDEX/SEARCH absent because the augmentation was skipped.
     assert Operation.INDEX not in cfg.operations or cfg.operations[Operation.INDEX] == []
@@ -585,7 +585,7 @@ def test_default_entry_source_is_operator():
     """An entry constructed without ``source`` defaults to ``operator`` —
     the assumption is that any explicit construction is operator-driven
     unless an auto helper marks it otherwise."""
-    e = OperationDriverEntry(driver_id="X")
+    e = OperationDriverEntry(driver_ref="X")
     assert e.source == "operator"
 
 
@@ -673,7 +673,7 @@ def test_operator_entry_preserved_alongside_auto_entry():
         auto_register_for_routing: ClassVar = frozenset({Operation.INDEX})
 
     operator_entry = OperationDriverEntry(
-        driver_id="_op_driver", on_failure=FailurePolicy.FATAL,
+        driver_ref="_op_driver", on_failure=FailurePolicy.FATAL,
     )
     target_ops: dict = {Operation.INDEX: [operator_entry]}
 
@@ -681,7 +681,7 @@ def test_operator_entry_preserved_alongside_auto_entry():
                lambda proto: [_AutoDriver(), _OpDriver()]):
         _self_register_indexers_into(target_ops, CollectionIndexer)
 
-    by_id = {e.driver_id: e for e in target_ops[Operation.INDEX]}
+    by_id = {e.driver_ref: e for e in target_ops[Operation.INDEX]}
     # _OpDriver entry preserved with source=operator (default).
     assert by_id["_op_driver"].source == "operator"
     assert by_id["_op_driver"].on_failure == FailurePolicy.FATAL
@@ -692,8 +692,8 @@ def test_operator_entry_preserved_alongside_auto_entry():
 def test_source_field_serialises_in_model_dump():
     """The new field appears in `model_dump()` output so it surfaces in
     the configs API response without any endpoint-side changes."""
-    e_op = OperationDriverEntry(driver_id="X")
-    e_auto = OperationDriverEntry(driver_id="Y", source="auto")
+    e_op = OperationDriverEntry(driver_ref="X")
+    e_auto = OperationDriverEntry(driver_ref="Y", source="auto")
     assert e_op.model_dump()["source"] == "operator"
     assert e_auto.model_dump()["source"] == "auto"
 
@@ -702,9 +702,9 @@ def test_source_field_round_trips_via_model_validate():
     """Persisted JSONB rows that include `source` deserialise correctly.
     Rows that DON'T include it (older persisted data) get the default
     `operator` — backwards-compatible."""
-    e_new = OperationDriverEntry.model_validate({"driver_id": "X", "source": "auto"})
+    e_new = OperationDriverEntry.model_validate({"driver_ref": "X", "source": "auto"})
     assert e_new.source == "auto"
-    e_legacy = OperationDriverEntry.model_validate({"driver_id": "X"})
+    e_legacy = OperationDriverEntry.model_validate({"driver_ref": "X"})
     assert e_legacy.source == "operator"
 
 
@@ -714,7 +714,7 @@ def test_source_field_rejects_invalid_value():
     from pydantic import ValidationError
 
     with _pytest.raises(ValidationError):
-        OperationDriverEntry(driver_id="X", source="bogus")  # type: ignore[arg-type]
+        OperationDriverEntry(driver_ref="X", source="bogus")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +816,7 @@ def test_transformer_helper_picks_up_entity_transform_protocol_implementers():
                lambda proto: fake_pool):
         _self_register_transformers_into(target_ops)
 
-    ids = {e.driver_id for e in target_ops.get(Operation.TRANSFORM, [])}
+    ids = {e.driver_ref for e in target_ops.get(Operation.TRANSFORM, [])}
     assert ids == {"transformer_one", "transformer_two"}
 
 
@@ -833,7 +833,7 @@ def test_transformer_helper_idempotent_and_preserves_operator_entry():
         async def restore_from_index(self, doc, **_): return doc
 
     from dynastore.modules.storage.hints import Hint
-    op_entry = OperationDriverEntry(driver_id="custom_transformer", hints={Hint.METADATA})
+    op_entry = OperationDriverEntry(driver_ref="custom_transformer", hints={Hint.METADATA})
     target_ops: dict = {Operation.TRANSFORM: [op_entry]}
 
     with patch("dynastore.tools.discovery.get_protocols",

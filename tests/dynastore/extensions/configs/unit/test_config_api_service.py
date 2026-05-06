@@ -297,7 +297,7 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
             "enabled": True,
             "operations": {
                 "WRITE": [
-                    {"driver_id": "catalog_core_postgresql_driver",
+                    {"driver_ref": "catalog_core_postgresql_driver",
                      "on_failure": "fatal", "write_mode": "sync",
                      "hints": [], "sla": {"foo": 1}},
                 ],
@@ -317,7 +317,7 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
     write = by_class["catalog_routing_config"]["operations"]["WRITE"]
     assert len(write) == 1
     ref = write[0]
-    assert ref["driver_id"] == "catalog_core_postgresql_driver"
+    assert ref["driver_ref"] == "catalog_core_postgresql_driver"
     assert ref["config_ref"] == "catalog_core_postgresql_driver"
     assert ref["on_failure"] == "fatal"
     assert ref["write_mode"] == "sync"
@@ -330,7 +330,7 @@ def test_build_routing_refs_missing_driver_yields_null_config_ref():
     by_class = {
         "catalog_routing_config": {
             "operations": {
-                "WRITE": [{"driver_id": "UnknownDriver",
+                "WRITE": [{"driver_ref": "UnknownDriver",
                            "on_failure": "warn", "write_mode": "sync"}]
             },
         },
@@ -342,7 +342,7 @@ def test_build_routing_refs_missing_driver_yields_null_config_ref():
         svc = ConfigApiService(config_service=MagicMock())
         svc._build_routing_refs(by_class)
     ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
-    assert ref["driver_id"] == "UnknownDriver"
+    assert ref["driver_ref"] == "UnknownDriver"
     assert ref["config_ref"] is None
 
 

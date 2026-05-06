@@ -89,7 +89,7 @@ level config override::
         operations={
             **CatalogRoutingConfig().operations,
             Operation.INDEX: [
-                OperationDriverEntry(driver_id="LogCatalogIndexer"),
+                OperationDriverEntry(driver_ref="LogCatalogIndexer"),
             ],
         },
     )
