@@ -717,8 +717,16 @@ class Web(ExtensionProtocol):
     # capability protocols implemented below.
 
     def get_web_pages(self):
+        # Drop admin-section pages when no PermissionProtocol provider is
+        # registered: their required_roles can never match in deployments
+        # without IAM, so the entries would be dead in the API response.
+        # Anonymous pages (home/docs/dashboard) stay unconditional.
         from dynastore.extensions.tools.web_collect import collect_web_pages
-        return collect_web_pages(self)
+        from dynastore.models.protocols.policies import PermissionProtocol
+        pages = collect_web_pages(self)
+        if get_protocol(PermissionProtocol) is None:
+            pages = [p for p in pages if p.section != "admin"]
+        return pages
 
     def get_static_assets(self):
         from dynastore.extensions.tools.web_collect import collect_static_assets
