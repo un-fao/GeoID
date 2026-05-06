@@ -138,6 +138,16 @@ def is_update_archive(sql: str) -> bool:
     return s.lstrip().startswith("UPDATE") and "STATUS = 'DELETED'" in s
 
 
+def is_update_refs_invalidate(sql: str) -> bool:
+    """Match the UPDATE … asset_references SET valid_until = :now stamp."""
+    s = sql.upper()
+    return (
+        s.lstrip().startswith("UPDATE")
+        and "ASSET_REFERENCES" in s
+        and "VALID_UNTIL" in s
+    )
+
+
 def is_insert(sql: str) -> bool:
     return sql.lstrip().upper().startswith("INSERT")
 
@@ -584,6 +594,42 @@ async def test_race_via_message_scrape_when_constraint_attr_missing(
         await upsert_asset(conn=object(), scope=SCOPE, payload=physical(), policy=policy)
 
     assert exc_info.value.matcher == AssetIdentityMatcher.FILENAME.value
+
+
+# ---------------------------------------------------------------------------
+# F4 — NEW_VERSION archives also invalidate the asset_references rows.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_new_version_archive_stamps_asset_references_valid_until(
+    fake_dql: _Recorder,
+) -> None:
+    """When NEW_VERSION archives an existing row, it must also stamp
+    ``valid_until`` on any active asset_references for that asset_id so
+    the new row inheriting the same id isn't blocked by stale references.
+    """
+    fake_dql.when(is_select_by("asset_id"), EXISTING_ROW)
+
+    policy = AssetsWritePolicy(on_conflict=AssetWriteConflictPolicy.NEW_VERSION)
+    result = await upsert_asset(
+        conn=object(), scope=SCOPE, payload=physical(), policy=policy
+    )
+    assert result.action == "new_version"
+
+    # Both UPDATEs must be present in the captured call log:
+    archived = [c for c in fake_dql.calls if is_update_archive(c["sql"])]
+    refs_invalidated = [
+        c for c in fake_dql.calls if is_update_refs_invalidate(c["sql"])
+    ]
+    assert len(archived) == 1, "expected exactly one row-archive UPDATE"
+    assert len(refs_invalidated) == 1, (
+        "expected exactly one asset_references invalidation UPDATE"
+    )
+    # The invalidation targets the archived asset_id and only active rows.
+    binds = refs_invalidated[0]["params"]
+    assert binds["asset_id"] == EXISTING_ROW["asset_id"]
+    assert binds["catalog_id"] == SCOPE.catalog_id
 
 
 # ---------------------------------------------------------------------------

@@ -763,7 +763,13 @@ async def _archive_row(
     so flipping the row to ``status='deleted'`` is sufficient for the new
     INSERT to land — no need to rewrite ``asset_id`` or stash an extra
     "archived" suffix.
+
+    Also stamps any active ``asset_references`` for the archived asset_id
+    so a future hard-delete of the successor row (re-using the same id)
+    isn't blocked by a stale reference pointing at the version we just
+    archived.
     """
+    now = datetime.now(timezone.utc)
     sql = (
         f'UPDATE "{scope.schema}".assets '
         "SET status = 'deleted', updated_at = :updated_at "
@@ -774,9 +780,23 @@ async def _archive_row(
     )
     await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
         conn,
-        updated_at=datetime.now(timezone.utc),
+        updated_at=now,
         catalog_id=scope.catalog_id,
         collection_id=scope.collection_id,
+        asset_id=existing["asset_id"],
+    )
+
+    refs_sql = (
+        f'UPDATE "{scope.schema}".asset_references '
+        "SET valid_until = :now "
+        "WHERE catalog_id = :catalog_id "
+        "AND asset_id = :asset_id "
+        "AND valid_until IS NULL"
+    )
+    await DQLQuery(refs_sql, result_handler=ResultHandler.NONE).execute(
+        conn,
+        now=now,
+        catalog_id=scope.catalog_id,
         asset_id=existing["asset_id"],
     )
 
