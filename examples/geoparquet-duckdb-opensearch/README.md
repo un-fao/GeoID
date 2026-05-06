@@ -200,9 +200,9 @@ curl -s -X PUT \
   -H 'Content-Type: application/json' \
   -d '{
     "operations": {
-      "WRITE":  [{"driver_id": "postgresql"}],
-      "READ":   [{"driver_id": "duckdb"}],
-      "SEARCH": [{"driver_id": "elasticsearch"}]
+      "WRITE":  [{"driver_ref": "postgresql"}],
+      "READ":   [{"driver_ref": "duckdb"}],
+      "SEARCH": [{"driver_ref": "elasticsearch"}]
     }
   }' | python3 -m json.tool
 ```
@@ -290,7 +290,7 @@ driver = await catalog_svc.resolve_datasource(
     "countries",
     operation="READ",
 )
-print(f"Driver: {driver.driver_id}")  # -> "duckdb"
+print(f"Driver: {driver.driver_ref}")  # -> "duckdb"
 
 # Stream features directly from /data/countries.parquet
 async for feature in driver.read_entities("natural-earth", "countries"):

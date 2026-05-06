@@ -264,7 +264,7 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     exists. CollectionRoutingConfig.operations is Immutable, so it must be in
     place before the collection is created.
 
-    driver_id is the snake_case ``cls.class_key()`` of the implementation
+    driver_ref is the snake_case ``cls.class_key()`` of the implementation
     (post-PR-1e contract): ``items_postgresql_driver`` for
     ``ItemsPostgresqlDriver``, etc.
     """
@@ -283,8 +283,8 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
     r2 = client.put(f"{base}/plugins/collection_routing_config", json={
         "enabled": True,
         "operations": {
-            "WRITE": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
-            "READ": [{"driver_id": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
+            "WRITE": [{"driver_ref": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
+            "READ": [{"driver_ref": "items_postgresql_driver", "hints": [], "on_failure": "fatal"}],
         },
     })
     if r2.status_code not in (200, 201, 204):
@@ -293,7 +293,7 @@ def _apply_catalog_scope_driver_configs(client: httpx.Client):
             flush=True,
         )
     # Remove any stale collection-scope RoutingConfig override left by previous
-    # runs (e.g. with an old driver_id). Collection-scope overrides shadow the
+    # runs (e.g. with an old driver_ref). Collection-scope overrides shadow the
     # catalog-scope config above and would cause "driver not registered" errors.
     coll_base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
     client.delete(f"{coll_base}/plugins/collection_routing_config")

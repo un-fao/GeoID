@@ -46,7 +46,7 @@ class EntityTransformProtocol(Protocol):
     :class:`IndexerProtocol` / :class:`SearchProtocol` and as used by
     ``_self_register_indexers_into`` / ``_self_register_searchers_into``.
     ``_self_register_transformers_into`` writes
-    ``type(transformer).__name__`` into ``OperationDriverEntry.driver_id``;
+    ``type(transformer).__name__`` into ``OperationDriverEntry.driver_ref``;
     ``get_active_transformers`` resolves entries back to instances by
     class name.
 

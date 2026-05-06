@@ -516,7 +516,7 @@ class ConfigsService(ExtensionProtocol):
 
         Response shape: ``{ProtocolQualname: {class_name: DriverInfo}}``.
         Keys are the ``__qualname__`` of ``CollectionItemsStore``, ``AssetStore``,
-        and ``CollectionStore``.  Use the inner class names as driver_id
+        and ``CollectionStore``.  Use the inner class names as driver_ref
         values in the routing config's operations list.
         """
         from dynastore.extensions.configs.dto import DriverInfo, DriverListResponse
@@ -565,7 +565,7 @@ class ConfigsService(ExtensionProtocol):
             )
 
         # Group by Protocol qualname (M9 — §7 protocol-based driver grouping).
-        # Inner key is the snake_case driver_id (matches OperationDriverEntry.driver_id).
+        # Inner key is the snake_case driver_ref (matches OperationDriverEntry.driver_ref).
         from dynastore.tools.typed_store.base import _to_snake
 
         def _driver_id(d) -> str:
