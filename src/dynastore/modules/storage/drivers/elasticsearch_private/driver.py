@@ -109,7 +109,14 @@ class ItemsElasticsearchPrivateDriver(
     })
     preferred_for: FrozenSet[Hint] = frozenset()
     supported_hints: FrozenSet[Hint] = frozenset({
-        Hint.AGGREGATION, Hint.COUNT, Hint.STATISTICS,
+        Hint.SEARCH,
+        Hint.FULLTEXT,
+        Hint.SPATIAL_FILTER,
+        Hint.ATTRIBUTE_FILTER,
+        Hint.SORT,
+        Hint.AGGREGATION,
+        Hint.COUNT,
+        Hint.STATISTICS,
     })
 
     def is_available(self) -> bool:
