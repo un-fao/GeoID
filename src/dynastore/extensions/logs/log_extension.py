@@ -180,6 +180,30 @@ def _logs_dashboard_role_binding(sysadmin_role_name: Optional[str] = None) -> Ro
     )
 
 
+def _logs_system_policy(sysadmin_role_name: Optional[str] = None) -> Policy:
+    """Sysadmin-only access to the global ``/logs/system`` endpoint.
+
+    System logs contain platform-wide events, error traces, and potentially
+    sensitive configuration details — restrict to sysadmin only.
+    """
+    return Policy(
+        id="logs_system_sysadmin_access",
+        description=(
+            "Sysadmin-only access to platform-wide system logs (/logs/system)."
+        ),
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/logs/system$"],
+        effect="ALLOW",
+    )
+
+
+def _logs_system_role_binding(sysadmin_role_name: Optional[str] = None) -> Role:
+    return Role(
+        name=sysadmin_role_name or DefaultRole.SYSADMIN.value,
+        policies=["logs_system_sysadmin_access"],
+    )
+
+
 def _logs_per_catalog_policy(sysadmin_role_name: Optional[str] = None) -> Policy:
     """Per-catalog access to the canonical ``/logs/catalogs/{cat}`` surface.
 
@@ -400,10 +424,15 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
     # No direct call to PermissionProtocol — keeps the plugin agnostic
     # of the enforcement implementation.
     def get_policies(self):
-        return [_logs_dashboard_policy(), _logs_per_catalog_policy()]
+        return [
+            _logs_system_policy(),
+            _logs_dashboard_policy(),
+            _logs_per_catalog_policy(),
+        ]
 
     def get_role_bindings(self):
         return [
+            _logs_system_role_binding(),
             _logs_dashboard_role_binding(),
             *_logs_per_catalog_role_bindings(),
         ]
