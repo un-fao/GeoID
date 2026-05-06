@@ -64,6 +64,18 @@ Dep-gated (18 of 24 — pattern validated, dep sentinels carried over):
 **Orphaned (no entry-point in pyproject):**
 - `volumes` — has source under `extensions/volumes/` but isn't registered. Migration deferred pending its registration story.
 
+## Verification (2026-05-07)
+
+End-to-end install verified locally:
+1. `uv build .` — main `dynastore` wheel builds cleanly with the migrated extensions removed from its source tree (28 entry-points dropped from its `entry_points.txt`).
+2. `for ext in packages/extensions/*; do uv build $ext; done` — all 28 ext wheels build cleanly.
+3. Fresh venv + `uv pip install --no-deps dist/*.whl fastapi sqlalchemy[asyncio]` + targeted module deps:
+   - **35 entry-points** discoverable in `importlib.metadata.entry_points(group="dynastore.extensions")` — 28 from per-ext wheels + 7 still in main (admin/assets/auth/configs/iam/logs/web).
+   - **8 of 35 load successfully** with just core deps (admin, connected_systems, dggs, edr, events, iam, notebooks, stats).
+   - **27 of 35 fail with the expected missing-dep `ImportError`** — `pyproj` for crs/dwh, `rasterio` for coverages, `pygeofilter` for features, `GDAL` for gdal, `pystac` for stac, `lxml` for styles, `google-cloud-*` for gcp_bucket, etc. The dep-import sentinels from PRs #369/#370/#372 carry over cleanly through the wheel split.
+
+This is exactly the structural isolation the migration aims for: extensions whose deps aren't installed are skipped at discovery, no artificial markers, no SCOPE env reads.
+
 ## Build
 
 Each wheel builds independently:
