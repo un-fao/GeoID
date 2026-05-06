@@ -574,8 +574,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- Bootstrapping Platform & Auth ---
     bootstrap();
 
-    // --- Load OGC Compliance Data ---
-    loadOgcCompliance();
+    // OGC compliance is rendered server-side into the home page fragment
+    // (web.py home_page() reads get_conformance_summary() directly), so the
+    // browser doesn't fetch /web/dashboard/ogc-compliance on first paint.
+    // The loadOgcCompliance() function is preserved below for any future
+    // page-specific call site (admin / dashboard) that wants the live
+    // dashboard endpoint.
 
 });
 
