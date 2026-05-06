@@ -17,7 +17,7 @@ D.4 (this file) closes the cycle with cross-cutting regression tests:
    address).
 2. **PATCH transparency** — ``PATCH /configs/.../plugins/items_write_policy``
    followed by ``GET`` finds the value at the post-D.2 read path
-   (``configs.storage.items.policy.items_write_policy``).  The
+   (``configs.platform.catalog.collection.items.policy.items_write_policy``).  The
    ``class_key`` is the URL segment AND the leaf key — the round-trip
    wires unchanged.
 3. **Hierarchical ``inherited`` shape** — at collection scope under slim
@@ -220,7 +220,7 @@ async def test_patch_items_write_policy_then_get_lands_at_tier_first_path():
     """PATCH-transparency contract: a PATCH against
     ``/configs/.../plugins/items_write_policy`` updates the policy, and
     a subsequent GET surfaces the value at the post-D.2 tier-first path
-    ``configs.storage.items.policy.items_write_policy``.
+    ``configs.platform.catalog.collection.items.policy.items_write_policy``.
 
     The class_key (URL segment) IS the leaf key in the GET tree — the
     round-trip wires unchanged regardless of the address restructure.

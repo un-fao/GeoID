@@ -684,7 +684,7 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
 # ``ConfigMeta.source`` / ``.layers`` waterfall were retired in Cycle B.
 # Driver-tier entity grouping (items vs collection vs assets) now lives
 # in the tree path itself: a driver lives at
-# ``configs.storage.drivers.<entity>`` so the path encodes the bucket
+# ``configs.platform.catalog.{tier}.drivers`` so the path encodes the bucket
 # directly — no per-entry annotation needed.
 
 

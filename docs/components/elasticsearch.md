@@ -72,7 +72,7 @@ Dynamic templates are applied in order (first match wins) to handle multilingual
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `default_collection_privacy` | `Literal["public","private"]` | `"public"` | Catalog-tier seed default for newly-created collections (Cycle E.1; lives on `CatalogPolicyConfig` in `modules/catalog/catalog_config.py`) |
+| `default_collection_privacy` | `Literal["public","private"]` | `"public"` | Catalog-tier seed default for newly-created collections (Cycle E.1; lives on `CatalogPrivacy` in `modules/catalog/catalog_config.py`) |
 
 Managed via the standard configuration API:
 
@@ -108,7 +108,7 @@ The items-private driver's `_restore_deny_policies` lifespan hook scans all cata
 
 ### Catalog-level default
 
-`CatalogPolicyConfig.default_collection_privacy: Literal["public","private"]` (Cycle E.1) is consulted at collection-create time as a seed for new collections' `is_private` flag. Pure data — flipping the default does not retroactively re-flag existing collections.
+`CatalogPrivacy.default_collection_privacy: Literal["public","private"]` (Cycle E.1) is consulted at collection-create time as a seed for new collections' `is_private` flag. Pure data — flipping the default does not retroactively re-flag existing collections.
 
 ### Operational pinning
 

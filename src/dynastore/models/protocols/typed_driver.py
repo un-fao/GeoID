@@ -52,7 +52,7 @@ Migration shape
         async def upsert_metadata(self, ...): ...
 
 The wire then publishes ``CollectionPostgresqlDriver`` as the JSON key for
-both the routing entry's ``driver_id`` and the ``configs.storage.drivers.{key}``
+both the routing entry's ``driver_id`` and the ``configs.platform.catalog.{tier}.drivers.{driver_ref}``
 lookup — single name, two places.
 """
 
