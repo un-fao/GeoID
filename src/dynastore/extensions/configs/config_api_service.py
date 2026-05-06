@@ -435,14 +435,24 @@ class ConfigApiService:
     # --- Routing-ref rewrite. ---
 
     @staticmethod
-    def _build_routing_refs(by_class: Dict[str, Dict[str, Any]]) -> None:
+    def _build_routing_refs(
+        by_class: Dict[str, Dict[str, Any]],
+        base_url: str,
+    ) -> None:
         """Rewrite ``operations[OP]`` in routing configs as slim ``DriverRef``s.
 
         Driver → config-class lookup uses the registry directly: post-TypedDriver
         bind, ``class_key()`` for ``XDriverConfig`` returns the snake_case form
         of the bound driver class (e.g. ``"items_postgresql_driver"``) — the
-        same string used as ``driver_id`` in routing entries.  ``driver_id`` IS
-        the lookup key into ``list_registered_configs()``.
+        same string used as ``driver_ref`` in routing entries.  ``driver_ref``
+        IS the lookup key into ``list_registered_configs()``.
+
+        Cycle F.7d.3: when the driver_ref binds to a registered config class,
+        emit a single HATEOAS ``rel="driver-config"`` link pointing at the
+        PATCH endpoint at the active scope (``base_url`` carries the scope
+        path).  Composition sub-drivers (no registered config) emit no link
+        — operators see only what's actionable.  Replaces the old
+        ``config_ref: Optional[str]`` scalar (``null`` was confusing).
         """
         all_classes = list_registered_configs()
         for class_key in _routing_config_keys():
@@ -459,13 +469,20 @@ class ConfigApiService:
                     if not isinstance(entry, dict):
                         continue
                     driver_ref = entry.get("driver_ref", "")
-                    config_ref = driver_ref if driver_ref in all_classes else None
+                    links: List[Link] = []
+                    if driver_ref in all_classes:
+                        links.append(Link(
+                            rel="driver-config",
+                            href=f"{base_url.rstrip('/')}/plugins/{driver_ref}",
+                            method="PATCH",
+                            title="PATCH this driver's registered config",
+                        ))
                     refs.append(DriverRef(
                         driver_ref=driver_ref,
-                        config_ref=config_ref,
                         on_failure=entry.get("on_failure", "fatal"),
                         write_mode=entry.get("write_mode", "sync"),
-                    ).model_dump())
+                        links=links,
+                    ).model_dump(by_alias=True))
                 rewritten[op] = refs
             routing["operations"] = rewritten
 
@@ -649,7 +666,7 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
         )
-        self._build_routing_refs(by_class)
+        self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "collection",
             meta_mode=meta, include_mode=include, strict=strict,
@@ -676,7 +693,7 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
         )
-        self._build_routing_refs(by_class)
+        self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "catalog",
             meta_mode=meta, include_mode=include, strict=strict,
@@ -698,7 +715,7 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
         )
-        self._build_routing_refs(by_class)
+        self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "platform",
             meta_mode=meta, include_mode=include, strict=strict,

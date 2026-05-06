@@ -312,13 +312,26 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
         return_value=registry,
     ):
         svc = ConfigApiService(config_service=MagicMock())
-        svc._build_routing_refs(by_class)
+        svc._build_routing_refs(by_class, base_url="http://h/configs")
 
     write = by_class["catalog_routing_config"]["operations"]["WRITE"]
     assert len(write) == 1
     ref = write[0]
     assert ref["driver_ref"] == "catalog_core_postgresql_driver"
-    assert ref["config_ref"] == "catalog_core_postgresql_driver"
+    # Cycle F.7d.3: HATEOAS driver-config link replaces the
+    # ``config_ref`` scalar.  Single link with rel=driver-config when
+    # the driver_ref binds to a registered config.
+    assert "config_ref" not in ref
+    assert ref["_links"] == [
+        {
+            "rel": "driver-config",
+            "href": "http://h/configs/plugins/catalog_core_postgresql_driver",
+            "method": "PATCH",
+            "title": "PATCH this driver's registered config",
+            "templated": False,
+            "hrefSchema": None,
+        }
+    ]
     assert ref["on_failure"] == "fatal"
     assert ref["write_mode"] == "sync"
     # Hints / sla / other legacy fields must not survive into the ref.
@@ -326,7 +339,9 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
     assert "sla" not in ref
 
 
-def test_build_routing_refs_missing_driver_yields_null_config_ref():
+def test_build_routing_refs_unregistered_driver_emits_no_link():
+    """Cycle F.7d.3 — composition sub-drivers with no registered config
+    emit zero links.  Drops the old confusing ``config_ref: null`` shape."""
     by_class = {
         "catalog_routing_config": {
             "operations": {
@@ -340,10 +355,11 @@ def test_build_routing_refs_missing_driver_yields_null_config_ref():
         return_value={},
     ):
         svc = ConfigApiService(config_service=MagicMock())
-        svc._build_routing_refs(by_class)
+        svc._build_routing_refs(by_class, base_url="http://h/configs")
     ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
     assert ref["driver_ref"] == "UnknownDriver"
-    assert ref["config_ref"] is None
+    assert "config_ref" not in ref
+    assert ref["_links"] == []
 
 
 # ---------------------------------------------------------------------------

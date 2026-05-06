@@ -16,15 +16,20 @@ from dynastore.extensions.configs.config_api_dto import (
 
 
 def test_driver_ref_defaults():
-    ref = DriverRef(driver_ref="catalog_core_postgresql_driver",
-                    config_ref="catalog_core_postgresql_driver")
+    ref = DriverRef(driver_ref="catalog_core_postgresql_driver")
     assert ref.on_failure == "fatal"
     assert ref.write_mode == "sync"
+    assert ref.links == []
 
 
-def test_driver_ref_null_config_ref_is_allowed():
+def test_driver_ref_no_config_ref_field_post_f7d3():
+    """Cycle F.7d.3 dropped the ``config_ref: Optional[str]`` scalar.
+    Routing entries with a registered config carry a HATEOAS
+    ``rel="driver-config"`` Link instead; un-registered drivers carry
+    no link at all."""
     ref = DriverRef(driver_ref="SomeDriver")
-    assert ref.config_ref is None
+    assert not hasattr(ref, "config_ref")
+    assert ref.links == []
 
 
 def test_platform_response_defaults_slim():
@@ -57,7 +62,6 @@ def test_catalog_response_nested_tree_roundtrip():
                         "operations": {
                             "WRITE": [
                                 {"driver_ref": "catalog_core_postgresql_driver",
-                                 "config_ref": "catalog_core_postgresql_driver",
                                  "on_failure": "fatal",
                                  "write_mode": "sync"}
                             ],
