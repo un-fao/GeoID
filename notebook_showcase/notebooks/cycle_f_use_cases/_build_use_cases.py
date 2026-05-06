@@ -153,7 +153,13 @@ def _create_catalog_collection_cell() -> Dict[str, Any]:
 
 def _show_delta_helper_cell() -> Dict[str, Any]:
     return code("""
-        # Helper — show explicit-vs-effective config delta for a plugin
+        # Helper — show explicit + waterfall-resolved view for a plugin.
+        #
+        # The configs API exposes:
+        #   GET /configs/.../plugins/{plugin_id}                  → explicit (per-scope)
+        #   GET /configs/.../plugins/{plugin_id}?resolved=true    → waterfall-resolved
+        # There is NO `/effective` endpoint — the resolved form is reached via
+        # the `?resolved=true` query string.
         def show_config_delta(plugin_id: str, level: str = "collection") -> None:
             if level == "collection":
                 base = f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
@@ -162,28 +168,18 @@ def _show_delta_helper_cell() -> Dict[str, Any]:
             else:
                 raise ValueError(level)
             rx = client.get(f"{base}/plugins/{plugin_id}")
-            re_ = client.get(f"{base}/plugins/{plugin_id}/effective")
+            rr = client.get(f"{base}/plugins/{plugin_id}", params={"resolved": "true"})
             print(f"\\n=== {plugin_id} @ {level} ===")
-            print("EXPLICIT:")
+            print("EXPLICIT (only fields stored at this scope):")
             if rx.status_code == 200:
                 print(json.dumps(rx.json(), indent=2)[:600])
             else:
                 print(f"  ({rx.status_code} — none stored, every field inherited)")
-            if re_.status_code != 200:
-                print(f"  effective unavailable ({re_.status_code})")
-                return
-            eff = re_.json()
-            resolved = eff.get("resolved", eff.get("config", {}))
-            sources = eff.get("sources", {})
-            print("EFFECTIVE (resolved + per-field source):")
-            for field in sorted(resolved.keys()):
-                val = resolved[field]
-                src = sources.get(field, "?")
-                vs = json.dumps(val) if not isinstance(val, str) else val
-                if len(str(vs)) > 70:
-                    vs = str(vs)[:67] + "..."
-                marker = "*" if src == level else " "
-                print(f"  {marker} {field:<30} {vs:<60} [{src}]")
+            print("RESOLVED (waterfall over platform → catalog → collection):")
+            if rr.status_code == 200:
+                print(json.dumps(rr.json(), indent=2)[:800])
+            else:
+                print(f"  ({rr.status_code}) {rr.text[:160]}")
         """)
 
 
@@ -400,31 +396,29 @@ def nb_uc1() -> List[Dict[str, Any]]:
         """))
 
     cells.append(md(
-        "## Step 6 — Verify dual-search hint dispatch\n",
+        "## Step 6 — Verify dispatch and read items back\n",
         "\n",
-        "Same query with two different hints — geometries returned by ES are\n",
-        "simplified (lower vertex count); PG returns exact stored polygons.\n",
+        "**Important:** the routing layer's hint dispatch is **internal** —\n",
+        "it's derived from the query characteristics (geometry vs attribute\n",
+        "filter, operation type) by the search service, not exposed as a\n",
+        "user-controlled `?hint=…` query parameter.  See\n",
+        "`src/dynastore/extensions/stac/search.py` (`filter_hints` derivation)\n",
+        "and `src/dynastore/modules/storage/router.py` for the dispatch logic.\n",
+        "\n",
+        "What we verify here is the round-trip: the items posted in Step 5\n",
+        "are readable back via the STAC items list endpoint (the WRITE fanout\n",
+        "to PG primary + ES async-outbox is the load-bearing surface; ES\n",
+        "indexing happens via the outbox drain).\n",
     ))
     cells.append(code("""
-        search_url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/items"
-        # Approximated path — ES with simplified geometry
-        r_es = client.get(search_url, params={"limit": 5, "hint": "geometry_simplified"})
-        print(f"SEARCH hint=geometry_simplified: HTTP {r_es.status_code}")
-        es_features = r_es.json().get("features", []) if r_es.status_code == 200 else []
-        print(f"  features returned: {len(es_features)}")
-
-        # Exact path — PG with stored polygon
-        r_pg = client.get(search_url, params={"limit": 5, "hint": "geometry_exact"})
-        print(f"SEARCH hint=geometry_exact: HTTP {r_pg.status_code}")
-        pg_features = r_pg.json().get("features", []) if r_pg.status_code == 200 else []
-        print(f"  features returned: {len(pg_features)}")
-
-        if es_features and pg_features:
-            es_vertex_count = sum(len(c) for c in es_features[0]["geometry"]["coordinates"][0])
-            pg_vertex_count = sum(len(c) for c in pg_features[0]["geometry"]["coordinates"][0])
-            print(f"  vertex count: ES={es_vertex_count}, PG={pg_vertex_count}")
-            print(f"  same? {es_vertex_count == pg_vertex_count} — equal is fine for tiny geoms,"
-                  f" different proves hint dispatch")
+        list_url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/items"
+        r = client.get(list_url, params={"limit": 10})
+        print(f"GET items: HTTP {r.status_code}")
+        feats = r.json().get("features", []) if r.status_code == 200 else []
+        print(f"  features returned: {len(feats)}")
+        for f in feats[:3]:
+            props = f.get("properties", {})
+            print(f"    id={f.get('id')!r:<30} code={props.get('code')!r}")
         """))
 
     cells.append(md("## Teardown"))
@@ -549,28 +543,38 @@ def nb_uc2() -> List[Dict[str, Any]]:
         """))
 
     cells.append(md(
-        "## Step 5 — Ingest 2 features with same `code` from different assets\n",
+        "## Step 5 — Register 2 assets and ingest features tagged with `code=\"K42\"`\n",
         "\n",
-        "First create two STAC assets (asset_id `pack-A` and `pack-B`).  Each\n",
-        "asset contributes a feature with `properties.code = \"K42\"`.  The first\n",
-        "ingest creates the row; the second triggers the `new_version` policy.\n",
+        "Asset registration goes through `POST /assets/catalogs/{cat}/collections/{coll}`\n",
+        "with a JSON body — no multipart upload.  In a full pipeline the binary\n",
+        "lives in GCS and gets registered automatically via OBJECT_FINALIZE\n",
+        "events; here we register the asset rows directly so the items can\n",
+        "carry the `asset_id` reference.  See\n",
+        "`notebook_showcase/notebooks/ui_walkthrough/02_upload_with_reporter.ipynb`\n",
+        "for the full asset → ingestion-process flow.\n",
+        "\n",
+        "Each asset contributes one feature with `properties.code = \"K42\"`.\n",
+        "The first ingest creates the row; the second triggers the\n",
+        "`new_version` policy with the second asset's id and a bounded\n",
+        "`valid_to` on the first version.\n",
     ))
     cells.append(code("""
-        # Helper to upload a tiny GeoJSON asset blob
-        def upload_asset(asset_id: str) -> str:
-            url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/assets/{asset_id}"
-            blob = {
-                "type": "FeatureCollection",
-                "features": [],
-            }
-            files = {"file": (f"{asset_id}.geojson", json.dumps(blob), "application/geo+json")}
-            r = client.put(url, files=files, headers={k: v for k, v in client.headers.items()
-                                                      if k.lower() != "content-type"})
-            print(f"  asset PUT {asset_id}: {r.status_code}")
+        def register_asset(asset_id: str) -> str:
+            r = client.post(
+                f"/assets/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}",
+                content=json.dumps({
+                    "asset_id": asset_id,
+                    "asset_type": "ASSET",
+                    "uri": f"file:///fixtures/{asset_id}.geojson",  # placeholder
+                    "metadata": {"source": f"uc2-{RUN_ID}"},
+                }),
+            )
+            print(f"  asset register {asset_id}: HTTP {r.status_code}")
+            assert r.status_code in (200, 201, 409), f"asset register: {r.text[:200]}"
             return asset_id
 
-        asset_a = upload_asset("pack-A")
-        asset_b = upload_asset("pack-B")
+        asset_a = register_asset("pack-A")
+        asset_b = register_asset("pack-B")
 
         def ingest_with_asset(asset_id: str, idx: int) -> int:
             feat = {
@@ -596,15 +600,19 @@ def nb_uc2() -> List[Dict[str, Any]]:
         s1 = ingest_with_asset(asset_a, 0)
         s2 = ingest_with_asset(asset_b, 1)
 
-        # Read back items filtered by external_id="K42" — expect 2 rows when
-        # the new_version policy created a version row for the second asset.
-        search_url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/items"
-        r = client.get(search_url, params={"limit": 10, "external_id": "K42"})
+        # Read back items via the STAC items list endpoint.  The list endpoint
+        # only supports limit/offset/lang — to filter by external_id you would
+        # use the platform `/search/catalogs/{cat}/items-search` POST surface
+        # with a CQL2 filter; we do the simpler list + grep here.
+        list_url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/items"
+        r = client.get(list_url, params={"limit": 50})
         rows = r.json().get("features", []) if r.status_code == 200 else []
-        print(f"\\nK42 versions found: {len(rows)}")
-        for row in rows:
+        k42_rows = [row for row in rows if row.get("properties", {}).get("code") == "K42"]
+        print(f"\\nK42 versions found: {len(k42_rows)}")
+        for row in k42_rows:
             props = row.get("properties", {})
-            print(f"  geoid={row.get('id')} asset_id={props.get('asset_id')} valid_from={props.get('valid_from')} valid_to={props.get('valid_to')}")
+            print(f"  geoid={row.get('id')} asset_id={props.get('asset_id')!r} "
+                  f"valid_from={props.get('valid_from')} valid_to={props.get('valid_to')}")
         """))
 
     cells.append(md("## Teardown"))
@@ -748,15 +756,23 @@ def nb_uc3() -> List[Dict[str, Any]]:
         anon.close()
         """))
 
-    cells.append(md("## Step 7 — Authenticated SEARCH returns via both paths"))
+    cells.append(md(
+        "## Step 7 — Authenticated SEARCH returns the items\n",
+        "\n",
+        "Hint dispatch (private ES vs PG) is internal — the search service\n",
+        "derives `filter_hints` from the query, then `router.resolve_drivers`\n",
+        "picks the driver whose `supported_hints` intersect.  The user-facing\n",
+        "surface is just \"give me the items\"; the routing is invisible.\n",
+    ))
     cells.append(code("""
         if not TOKEN:
             print("(skipped: no token)")
         else:
-            for hint in ["geometry_simplified", "geometry_exact"]:
-                r = client.get(search_url, params={"limit": 5, "hint": hint})
-                feats = r.json().get("features", []) if r.status_code == 200 else []
-                print(f"  authenticated hint={hint}: HTTP {r.status_code} count={len(feats)}")
+            r = client.get(search_url, params={"limit": 5})
+            feats = r.json().get("features", []) if r.status_code == 200 else []
+            print(f"  authenticated SEARCH: HTTP {r.status_code} count={len(feats)}")
+            for f in feats[:3]:
+                print(f"    {f.get('id')} code={f.get('properties',{}).get('code')!r}")
         """))
 
     cells.append(md("## Teardown"))
@@ -799,61 +815,76 @@ def nb_uc4() -> List[Dict[str, Any]]:
     cells.append(_put_helper_cell())
 
     cells.append(md(
-        "## Step 1 — PATCH catalog-scope `assets_write_policy` to `refuse_return`\n",
+        "## Step 1 — PATCH catalog-scope `asset_write_policy_defaults` to `refuse_return`\n",
+        "\n",
+        "`AssetWritePolicyDefaults` is the posture-only class at platform/\n",
+        "catalog tier; it cascades down to all owned collections.  The full\n",
+        "matcher-bearing class `AssetsWritePolicy` lives at collection tier\n",
+        "(`assets_write_policy`).  Either works for this UC; the defaults\n",
+        "class is idiomatic for catalog-wide posture changes.\n",
     ))
     cells.append(code("""
         relaxed_policy = {
             "on_conflict": "refuse_return",
-            "identity_matchers": ["asset_id", "filename"],
+            "require_filename": False,
         }
-        put_config("assets_write_policy", relaxed_policy, level="catalog")
-        show_config_delta("assets_write_policy", level="catalog")
+        put_config("asset_write_policy_defaults", relaxed_policy, level="catalog")
+        show_config_delta("asset_write_policy_defaults", level="catalog")
         """))
 
     cells.append(md(
-        "## Step 2 — Upload + re-upload under `refuse_return`\n",
+        "## Step 2 — Register + re-register an asset under `refuse_return`\n",
         "\n",
-        "First upload: 201 Created.  Second upload of the same id: 200 OK with\n",
-        "the existing row's metadata (idempotent — no error).\n",
+        "Asset records are registered via\n",
+        "`POST /assets/catalogs/{cat}/collections/{coll}` with a JSON body\n",
+        "(no multipart upload — the binary, when there is one, lives in GCS\n",
+        "and is registered automatically via OBJECT_FINALIZE pub/sub).\n",
+        "\n",
+        "First create: 201.  Second create with same `asset_id` under\n",
+        "`refuse_return`: 200 with the existing row (idempotent).\n",
     ))
     cells.append(code("""
         ASSET_ID = "feature-pack-A"
-        url = f"/stac/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/assets/{ASSET_ID}"
-        blob = {"type": "FeatureCollection", "features": []}
-        files_form = lambda: {"file": (f"{ASSET_ID}.geojson", json.dumps(blob), "application/geo+json")}
+        register_url = f"/assets/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}"
+        body = {
+            "asset_id": ASSET_ID,
+            "asset_type": "ASSET",
+            "uri": f"file:///fixtures/{ASSET_ID}.geojson",
+            "metadata": {"source": f"uc4-{RUN_ID}"},
+        }
 
-        r1 = client.put(url, files=files_form(),
-                        headers={k: v for k, v in client.headers.items() if k.lower() != "content-type"})
-        print(f"first upload : {r1.status_code} — {r1.text[:200]}")
-        assert r1.status_code in (200, 201), f"first upload failed: {r1.status_code}"
+        r1 = client.post(register_url, content=json.dumps(body))
+        print(f"first register : {r1.status_code} — {r1.text[:200]}")
+        assert r1.status_code in (200, 201), f"first register failed: {r1.status_code}"
 
-        r2 = client.put(url, files=files_form(),
-                        headers={k: v for k, v in client.headers.items() if k.lower() != "content-type"})
-        print(f"second upload: {r2.status_code} — {r2.text[:200]}")
-        assert r2.status_code in (200, 201), f"refuse_return should be idempotent (200), got {r2.status_code}"
+        r2 = client.post(register_url, content=json.dumps(body))
+        print(f"second register: {r2.status_code} — {r2.text[:200]}")
+        # refuse_return → idempotent 200
+        assert r2.status_code in (200, 201), \\
+            f"refuse_return should be idempotent (200), got {r2.status_code}"
         print("  idempotent: refuse_return returned existing row, no error.")
         """))
 
     cells.append(md(
-        "## Step 3 — PATCH back to `refuse_fail` (the default)\n",
+        "## Step 3 — PATCH back to `refuse_fail` (the platform default)\n",
     ))
     cells.append(code("""
         strict_policy = {
             "on_conflict": "refuse_fail",
-            "identity_matchers": ["asset_id", "filename"],
+            "require_filename": False,
         }
-        put_config("assets_write_policy", strict_policy, level="catalog")
-        show_config_delta("assets_write_policy", level="catalog")
+        put_config("asset_write_policy_defaults", strict_policy, level="catalog")
+        show_config_delta("asset_write_policy_defaults", level="catalog")
         """))
 
     cells.append(md(
-        "## Step 4 — Re-upload under `refuse_fail` → 409 Conflict\n",
+        "## Step 4 — Re-register under `refuse_fail` → 409 Conflict\n",
     ))
     cells.append(code("""
-        r3 = client.put(url, files=files_form(),
-                        headers={k: v for k, v in client.headers.items() if k.lower() != "content-type"})
-        print(f"third upload : {r3.status_code} — {r3.text[:200]}")
-        assert r3.status_code == 409, f"refuse_fail should return 409 on duplicate, got {r3.status_code}"
+        r3 = client.post(register_url, content=json.dumps(body))
+        print(f"third register : {r3.status_code} — {r3.text[:200]}")
+        assert r3.status_code == 409, \\
+            f"refuse_fail should return 409 on duplicate, got {r3.status_code}"
         print("  refuse_fail confirmed: duplicate asset_id returned 409 Conflict.")
         """))
 
