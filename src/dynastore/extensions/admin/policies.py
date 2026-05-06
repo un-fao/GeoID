@@ -9,11 +9,33 @@ from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
-_ADMIN_ROLES = (DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value)
-
 
 def register_admin_policies():
-    """Register admin-access policy (sysadmin/admin only) via PermissionProtocol."""
+    """Register admin-access *policies* via ``PermissionProtocol``.
+
+    Policies are stable code-level contracts that say "this URL set, with
+    these conditions, ALLOWs". *Roles* — and which roles are bound to
+    which policies — are operator-managed in the DB
+    (``iam.roles`` / ``iam.policies`` storages, REST surface
+    ``/admin/roles`` and ``/admin/policies``). Treat the catalog-admin
+    role binding the same way you'd treat any custom role: it lives in
+    the DB, the operator manages it, the code just registers the policy.
+
+    Two policies are registered here:
+
+    - ``admin_access`` — broad ``/admin/.*`` ALLOW. Default role
+      bindings are seeded for back-compat with existing deployments
+      (sysadmin and admin); operators may add or remove bindings via
+      REST.
+
+    - ``admin_catalog_access`` — per-catalog mutation surface gated by
+      ``catalog_admin_required``. **No default role bindings**:
+      operators who want a particular role to gain catalog-admin
+      authority do it via ``POST /admin/roles`` (with ``policies:
+      ["admin_catalog_access"]``) or programmatic ``register_role``,
+      and reference the same role name in this policy's condition
+      config. Behaves like a custom role end-to-end.
+    """
     from dynastore.models.protocols.policies import PermissionProtocol
 
     pm = get_protocol(PermissionProtocol)
@@ -34,32 +56,39 @@ def register_admin_policies():
         effect="ALLOW",
     )
     pm.register_policy(admin_policy)
-
-    for role_name in _ADMIN_ROLES:
+    # Back-compat seeding: existing deployments expect SYSADMIN+ADMIN to
+    # carry admin_access. Operators may rebind via REST.
+    for role_name in (DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value):
         pm.register_role(Role(name=role_name, policies=["admin_access"]))
 
-    # Catalog-scoped admin: permits the holder of catalog-admin role to
-    # mutate role bindings within their catalog (/admin/catalogs/{cat}/...).
-    # Sysadmin/platform-admin already covered by admin_access above; the
-    # CatalogAdminHandler bypasses both via allow_sysadmin/allow_platform.
-    # Effective for catalog-only-admin principals once role grants are
-    # surfaced into request.state.principal_role (separate change). Until
-    # then this policy is harmless — the conditional check just narrows
-    # an already-granted ALLOW, never widens.
+    # Catalog-scoped admin policy. Resource regex matches every URL under
+    # /admin/catalogs/{cat}/...; the catalog_admin_required condition
+    # gates by per-catalog role grants. The condition's config carries
+    # an empty required_roles list by default — until an operator
+    # populates it (or replaces this Policy with their own variant), the
+    # condition admits only sysadmin/platform-grant principals via the
+    # bypass paths. This is intentional: no role gets catalog-admin
+    # authority unless explicitly granted via storage.
     admin_catalog_policy = Policy(
         id="admin_catalog_access",
         description=(
-            "Per-catalog admin access; requires catalog-admin role. "
-            "Sysadmin and platform-grant principals bypass."
+            "Per-catalog admin access; admits roles declared in this "
+            "policy's catalog_admin_required condition. Sysadmin and "
+            "platform-grant principals bypass."
         ),
         actions=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         resources=[r"^/admin/catalogs/[^/]+(/.*)?$"],
         effect="ALLOW",
-        conditions=[Condition(type="catalog_admin_required", config={})],
+        conditions=[
+            Condition(
+                type="catalog_admin_required",
+                config={"required_roles": []},
+            )
+        ],
     )
     pm.register_policy(admin_catalog_policy)
-    pm.register_role(
-        Role(name=DefaultRole.ADMIN.value, policies=["admin_catalog_access"])
-    )
+    # No default role bindings — operators bind via /admin/roles or by
+    # editing this policy's required_roles condition list. Mirrors how
+    # custom roles join the system.
 
     logger.debug("Admin policies registered via PermissionProtocol.")
