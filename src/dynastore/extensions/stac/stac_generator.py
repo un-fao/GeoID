@@ -80,7 +80,11 @@ SUPPORTED_STAC_EXTENSIONS = [
 
 async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, Any]:
     """Generates the root STAC Catalog."""
-    base_url = get_url(request)
+    # NOTE: derive from get_root_url (includes ``root_path``) rather than
+    # get_url (which strips it).  Behind a reverse proxy with a non-empty
+    # mount prefix, get_url(request) drops the prefix and the resulting
+    # self/root/search/conformance links 404.
+    base_url = f"{get_root_url(request)}/stac"
     root_catalog = pystac.Catalog(
         id="dynastore-stac-root",
         description="Multi-tenant OGC-compliant geospatial data platform implementing STAC API 1.0.0, OGC API Features (Parts 1-4), Processes, Records, Tiles, Maps, Coverages, and Dimensions.",
@@ -112,7 +116,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     root_catalog.add_link(
         pystac.Link(
             rel="conformance",
-            target=f"{get_root_url(request)}/conformance",
+            target=f"{base_url}/conformance",
             media_type="application/json",
             title="API Conformance",
         )

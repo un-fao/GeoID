@@ -277,6 +277,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         route_table = [
             # Catalog Discovery
             ("/", "get_stac_root_catalog", ["GET"], {}),
+            ("/conformance", "ogc_conformance_handler", ["GET"], {}),
             ("/catalogs", "list_stac_catalogs", ["GET"], {"response_class": _J}),
             ("/catalogs/{catalog_id}", "get_stac_catalog", ["GET"], {"response_class": _J}),
             ("/catalogs/{catalog_id}/collections", "list_stac_collections", ["GET"], {"response_class": _J}),
