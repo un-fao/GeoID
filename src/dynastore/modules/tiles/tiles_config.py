@@ -57,16 +57,13 @@ class TilesConfig(ExposableConfigMixin, PluginConfig):
     )
 
 
-class TilesPreseedConfig(PluginConfig):
+class TilesPreseedConfig(ExposableConfigMixin, PluginConfig):
     """
     Configuration for the Tiles Pre-seeding Process.
     This configures the background task that generates and stores tiles.
     """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "tiles", None)
-
-    # Implicitly enabled if this config is present and defaults are acceptable, 
-    # but explicit flag allows disabling without deleting config.
-    enabled: bool = Field(default=True, description="If True, the pre-seeding task will process this configuration.")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "tiles")
+    # ``enabled: bool`` provided by ExposableConfigMixin (Cycle F.0b — uniform).
     
     # What to seed
     target_tms_ids: List[str] = Field(
