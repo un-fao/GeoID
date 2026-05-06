@@ -21,7 +21,13 @@ from tests.dynastore.modules.elasticsearch.integration.conftest import (
 
 pytestmark = [
     pytest.mark.enable_extensions("stac", "features", "search"),
-    pytest.mark.enable_modules("elasticsearch"),
+    # Full default stack + elasticsearch: the STAC POST/DELETE endpoints require
+    # db_config + db + catalog + iam + collection_postgresql + catalog_postgresql.
+    # enable_modules() replaces the default list entirely, so we must repeat it.
+    pytest.mark.enable_modules(
+        "db_config", "db", "catalog", "iam", "stac",
+        "collection_postgresql", "catalog_postgresql", "elasticsearch",
+    ),
     pytest.mark.elasticsearch,
 ]
 

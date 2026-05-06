@@ -19,7 +19,6 @@ import pytest
 
 from tests.dynastore.modules.elasticsearch.integration.conftest import (
     doc_exists,
-    refresh_private_collection_index,
 )
 
 pytestmark = [
@@ -69,12 +68,6 @@ async def _private_collection_index(catalog_id: str) -> str:
     return get_tenant_collections_private_index(get_index_prefix(), catalog_id)
 
 
-async def _public_collection_index() -> str:
-    from dynastore.modules.elasticsearch.client import get_index_prefix
-    from dynastore.modules.elasticsearch.mappings import get_index_name
-    return get_index_name(get_index_prefix(), "collection")
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -105,7 +98,7 @@ async def test_upsert_metadata_lands_in_private_index(app_lifespan):
     driver = _private_driver()
     await driver.ensure_storage(cat)
     await driver.upsert_metadata(cat, col, metadata)
-    await refresh_private_collection_index(cat)
+    # upsert uses refresh=wait_for — doc is immediately searchable
 
     priv_idx = await _private_collection_index(cat)
     assert await doc_exists(priv_idx, col), "collection not found in private index"
@@ -146,7 +139,7 @@ async def test_private_not_in_shared_index(app_lifespan):
     driver = _private_driver()
     await driver.ensure_storage(cat)
     await driver.upsert_metadata(cat, col, metadata)
-    await refresh_private_collection_index(cat)
+    # upsert uses refresh=wait_for — doc is immediately searchable
 
     from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
     from dynastore.modules.elasticsearch.mappings import get_index_name
