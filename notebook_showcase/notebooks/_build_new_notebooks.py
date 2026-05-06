@@ -180,7 +180,7 @@ print("Collection created")
 # This is what removes geometry from the pipeline for this collection.
 
 driver_cfg = {
-    "class_key": "ItemsPostgresqlDriverConfig",
+    "class_key": "items_postgresql_driver_config",
     "collection_type": "RECORDS",
     "sidecars": [
         {"sidecar_type": "item_metadata"},
@@ -188,7 +188,7 @@ driver_cfg = {
     ],
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/classes/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/ItemsPostgresqlDriverConfig",
     content=json.dumps(driver_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -204,14 +204,14 @@ print("Driver config pinned: collection_type=RECORDS")
     ))
     cells.append(code("""
 routing_cfg = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config",
     content=json.dumps(routing_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -354,11 +354,11 @@ print("Catalog + collection ready")
     ))
     cells.append(code("""
 pg_cfg = {
-    "class_key": "ItemsPostgresqlDriverConfig",
+    "class_key": "items_postgresql_driver_config",
     # default VECTOR collection → geometry + attributes sidecars auto-injected
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/classes/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/ItemsPostgresqlDriverConfig",
     content=json.dumps(pg_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -373,14 +373,14 @@ assert r.status_code in (200, 201, 204), r.text[:400]
     ))
     cells.append(code("""
 es_cfg = {
-    "class_key": "ItemsElasticsearchObfuscatedDriverConfig",
+    "class_key": "items_elasticsearch_obfuscated_driver_config",
     "target": {"index_prefix": "rtng-"},
 }
 # Many deployments accept the PUT even when the driver module isn't loaded; the
 # _validate_routing_entries apply-handler catches that, with a clearer 400 than
 # the raw "module missing" error.
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/ItemsElasticsearchObfuscatedDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/items_elasticsearch_obfuscated_driver_config",
     content=json.dumps(es_cfg),
 )
 print(f"ES config PUT → {r.status_code}")
@@ -394,11 +394,11 @@ print(f"ES config PUT → {r.status_code}")
     ))
     cells.append(code("""
 duck_cfg = {
-    "class_key": "ItemsDuckdbDriverConfig",
+    "class_key": "items_duckdb_driver_config",
     "warehouse": "/tmp/duckdb-backups",
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/ItemsDuckdbDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/items_duckdb_driver_config",
     content=json.dumps(duck_cfg),
 )
 print(f"DuckDB config PUT → {r.status_code}")
@@ -413,22 +413,22 @@ print(f"DuckDB config PUT → {r.status_code}")
     ))
     cells.append(code("""
 routing_cfg = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
     "metadata": {
         "operations": {
             # INDEX — search mirror; transformed=False means "feed the raw envelope"
             "INDEX": [{
-                "driver_id": "ItemsElasticsearchObfuscatedDriver",
+                "driver_id": "items_elasticsearch_obfuscated_driver",
                 "transformed": False,
                 "on_failure": "warn",
             }],
             # BACKUP — file-sink; fmt binds the sink to the ?format=parquet query.
             "BACKUP": [{
-                "driver_id": "ItemsDuckdbDriver",
+                "driver_id": "items_duckdb_driver",
                 "transformed": False,
                 "fmt": "parquet",
                 "on_failure": "warn",
@@ -437,7 +437,7 @@ routing_cfg = {
     },
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config",
     content=json.dumps(routing_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -451,7 +451,7 @@ print("Routing configured: PG primary · ES INDEX · DuckDB BACKUP(fmt=parquet)"
     ))
     cells.append(code("""
 r = client.get(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig/effective"
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config/effective"
 )
 assert r.status_code == 200, r.text[:400]
 effective = r.json()
@@ -541,17 +541,17 @@ print("Catalog + collection ready")
 # because DuckDB is pinned as on_failure=warn.
 
 routing = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"},
-            {"driver_id": "ItemsDuckdbDriver",     "on_failure": "warn"},
+            {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
+            {"driver_id": "items_duckdb_driver",     "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
 }
-duck = {"class_key": "ItemsDuckdbDriverConfig", "warehouse": "/nonexistent/disallowed"}
-for (cls_key, body) in [("ItemsPostgresqlDriverConfig", {"class_key": "ItemsPostgresqlDriverConfig"}),
+duck = {"class_key": "items_duckdb_driver_config", "warehouse": "/nonexistent/disallowed"}
+for (cls_key, body) in [("ItemsPostgresqlDriverConfig", {"class_key": "items_postgresql_driver_config"}),
                         ("ItemsDuckdbDriverConfig", duck),
                         ("CollectionRoutingConfig", routing)]:
     r = client.put(
@@ -575,17 +575,17 @@ print(f"fan-out WRITE (warn) → {r.status_code}")
     ))
     cells.append(code("""
 routing = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "ItemsPostgresqlDriver", "hints": ["features"]},
-            {"driver_id": "ItemsElasticsearchObfuscatedDriver", "hints": ["obfuscated"], "on_failure": "warn"},
+            {"driver_id": "items_postgresql_driver", "hints": ["features"]},
+            {"driver_id": "items_elasticsearch_obfuscated_driver", "hints": ["obfuscated"], "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config",
     content=json.dumps(routing),
 )
 print(f"routing put → {r.status_code}")
@@ -613,20 +613,20 @@ print(f"hinted WRITE (features) → {r.status_code}")
     ))
     cells.append(code("""
 routing_with_transform = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
     "metadata": {
         "operations": {
-            "READ":      [{"driver_id": "MetadataPostgresqlDriver"}],
-            "TRANSFORM": [{"driver_id": "AssetPostgresqlDriver"}],
+            "READ":      [{"driver_id": "metadata_postgresql_driver"}],
+            "TRANSFORM": [{"driver_id": "asset_postgresql_driver"}],
         },
     },
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config",
     content=json.dumps(routing_with_transform),
 )
 print(f"TRANSFORM-chain routing put → {r.status_code}")
@@ -651,7 +651,7 @@ print(json.dumps(r.json(), indent=2)[:800])
     cells.append(code("""
 # 4a. Set the reporter config.
 bq_cfg = {
-    "class_key": "ItemsBigQueryDriverConfig",
+    "class_key": "items_big_query_driver_config",
     "target":         {"project_id": "demo-project", "dataset_id": "catalog", "table_name": "ingest_mirror"},
     "report_target":  {"project_id": "demo-project", "dataset_id": "catalog", "table_name": "ingest_mirror"},
     "reporter_mode":  "flat",
@@ -659,24 +659,24 @@ bq_cfg = {
     "exclude_fields": ["secret_key"],
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/ItemsBigQueryDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/items_big_query_driver_config",
     content=json.dumps(bq_cfg),
 )
 print(f"BQ reporter config put → {r.status_code}")
 
 # 4b. Pin the routing with BQ as a warn-level WRITE fan-out target.
 routing_bq = {
-    "class_key": "CollectionRoutingConfig",
+    "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "ItemsPostgresqlDriver", "on_failure": "fatal"},
-            {"driver_id": "ItemsBigQueryDriver",   "on_failure": "warn"},
+            {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
+            {"driver_id": "items_big_query_driver",   "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "ItemsPostgresqlDriver"}],
+        "READ":  [{"driver_id": "items_postgresql_driver"}],
     },
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/configs/CollectionRoutingConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config",
     content=json.dumps(routing_bq),
 )
 print(f"routing (BQ reporter) put → {r.status_code}")
