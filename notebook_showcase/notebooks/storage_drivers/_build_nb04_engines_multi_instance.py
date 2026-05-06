@@ -65,7 +65,7 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
         "**Persona:** Data Engineer / Platform Operator\n",
         "\n",
         "**Goal:** Demonstrate the multi-instance driver ref model introduced in Cycle F.4.\n",
-        "A single driver *class* (e.g. `items_postgresql_driver_config`) can be provisioned\n",
+        "A single driver *class* (e.g. `items_postgresql_driver`) can be provisioned\n",
         "under multiple operator-chosen *ref names* (`pg_lean`, `pg_full`, `pg_hot`, …).\n",
         "Each ref carries its own payload; routing entries reference refs by name.\n",
         "Hints on routing entries let the dispatcher pick the right ref at call time.\n",
@@ -190,7 +190,7 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
         "and attribute sidecars.  A STAC-served archival collection (`pg_full`) also\n",
         "needs the item-metadata and STAC-metadata overlays.\n",
         "\n",
-        "Both refs share the same driver class (`items_postgresql_driver_config`) and\n",
+        "Both refs share the same driver class (`items_postgresql_driver`) and\n",
         "the same engine (`pg_main`).  The difference is the sidecar list baked into\n",
         "the config at provisioning time (Immutable — cannot be changed post-ensure_storage).\n",
         "\n",
@@ -206,12 +206,12 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
             json={
                 # ref 1: lean — geometry + attributes only
                 "pg_lean": {
-                    "class_key": "items_postgresql_driver_config",
+                    "class_key": "items_postgresql_driver",
                     "engine_ref": "pg_main",
                 },
                 # ref 2: full — geometry + attributes + item_metadata + stac_metadata
                 "pg_full": {
-                    "class_key": "items_postgresql_driver_config",
+                    "class_key": "items_postgresql_driver",
                     "engine_ref": "pg_main",
                 },
             },
@@ -303,8 +303,8 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
         "\n",
         "| ref | driver class | engine | hint |\n",
         "|---|---|---|---|\n",
-        "| `es_fast` | `items_elasticsearch_driver_config` | `es_main` | `geometry_simplified` |\n",
-        "| `pg_exact` | `items_postgresql_driver_config` | `pg_main` | `geometry_exact` |\n",
+        "| `es_fast` | `items_elasticsearch_driver` | `es_main` | `geometry_simplified` |\n",
+        "| `pg_exact` | `items_postgresql_driver`       | `pg_main` | `geometry_exact` |\n",
         "\n",
         "Both are created at catalog scope (shared across collections) so every\n",
         "collection in the catalog can inherit them via the waterfall.\n",
@@ -316,12 +316,12 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
             f"/configs/catalogs/{CATALOG_ID}",
             json={
                 "es_fast": {
-                    "class_key": "items_elasticsearch_driver_config",
+                    "class_key": "items_elasticsearch_driver",
                     "engine_ref": "es_main",
                     "index_prefix": "items",
                 },
                 "pg_exact": {
-                    "class_key": "items_postgresql_driver_config",
+                    "class_key": "items_postgresql_driver",
                     "engine_ref": "pg_main",
                 },
             },
@@ -438,11 +438,11 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
             f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}",
             json={
                 "pg_hot": {
-                    "class_key": "items_postgresql_driver_config",
+                    "class_key": "items_postgresql_driver",
                     "engine_ref": "pg_hot",
                 },
                 "pg_cold": {
-                    "class_key": "items_postgresql_driver_config",
+                    "class_key": "items_postgresql_driver",
                     "engine_ref": "pg_cold",
                 },
                 "items_routing_config": {
@@ -531,7 +531,7 @@ def nb_engines_multi_instance() -> List[Dict[str, Any]]:
             f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}",
             json={
                 "pg_lean": {
-                    "class_key": "items_elasticsearch_driver_config",
+                    "class_key": "items_elasticsearch_driver",
                     "engine_ref": "es_main",
                 }
             },
