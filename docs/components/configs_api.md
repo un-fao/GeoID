@@ -433,6 +433,10 @@ pointing operators at the discriminator field.
   the `EngineInstanceCache` contract
 - `docs/components/sidecar_configs.md` — sidecar configurations on PG-
   backed items drivers (full default field surface)
+- `notebook_showcase/notebooks/cycle_f_use_cases/` — four worked
+  scenarios exercising this surface end-to-end (4 sidecars + dual-
+  search routing, schema enforcement + multi-version, private ES,
+  asset duplicate-refusal config round-trip)
 - `src/dynastore/extensions/configs/config_api_service.py` — composer
   source (variable-length address walker, scope filter, HATEOAS link
   builder)
