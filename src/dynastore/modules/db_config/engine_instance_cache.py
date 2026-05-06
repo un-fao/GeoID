@@ -40,9 +40,11 @@ view).  In Cycle F.1 single-instance-per-kind, every default
 deployment has one ref per engine kind; F.4c will populate the cache
 with operator-chosen ref names from stored configs.
 
-F.5 does NOT wire existing drivers to the cache — that's F.6's job.
-F.5 ships the cache + protocol mechanics + pin tests so F.6 has a
-stable contract to consume.
+F.6 wired the cache into ``DBConfigModule.lifespan`` and shipped
+``engine_init`` / ``engine_release`` on each concrete engine config.
+Until F.4c's ref-keyed driver-config storage lands, no driver consumes
+the cache in production dispatch paths — admin tooling and tests
+exercise the contract end-to-end via ``app_state.engine_cache``.
 """
 
 from __future__ import annotations
@@ -114,10 +116,10 @@ class _Entry:
 class EngineInstanceCache:
     """Lazy-instantiating engine cache with TTL eviction.
 
-    Single instance per process; F.6 will wire it up via the existing
-    ``DBConfigModule`` lifespan.  Operators do not configure the cache
-    directly — its policy comes from each engine's
-    :class:`EngineLifecycleConfig`.
+    Single instance per process — wired via ``DBConfigModule.lifespan``
+    (Cycle F.6) and exposed on ``app_state.engine_cache``.  Operators do
+    not configure the cache directly — its policy comes from each
+    engine's :class:`EngineLifecycleConfig`.
 
     Thread / coroutine safety:
         All public methods are coroutine-safe.  Concurrent ``get()``
@@ -150,8 +152,9 @@ class EngineInstanceCache:
 
         :param engine_resolver: callable mapping ``engine_ref`` →
             :class:`EngineConfig` instance (or ``None`` for unknown).
-            F.6 will wire this to read from the configs store; tests
-            inject a deterministic resolver.
+            ``DBConfigModule.lifespan`` (F.6) wires this from a snapshot
+            of platform engines (see ``engine_resolver.build_engine_snapshot``);
+            tests inject a deterministic resolver directly.
         :param sweep_interval_seconds: how often the background TTL
             sweep runs.
         :param clock: monotonic-clock callable, injectable for tests.

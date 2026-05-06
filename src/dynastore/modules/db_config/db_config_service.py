@@ -16,18 +16,14 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+from __future__ import annotations
+
 import logging
 from contextlib import asynccontextmanager, AsyncExitStack
-from typing import Optional, Protocol, runtime_checkable, Any
+from typing import Any, Optional, Protocol, runtime_checkable
+
 from dynastore.modules import ModuleProtocol
-from .db_config import DBConfig
-
-logger = logging.getLogger(__name__)
-
 from dynastore.tools.discovery import register_plugin, unregister_plugin
-from .engine_instance_cache import EngineInstanceCache
-from .engine_resolver import build_engine_snapshot, make_resolver
-from .platform_config_service import PlatformConfigService
 
 # Side-effect import — ensures the F.1 engine PluginConfig classes
 # (PostgresqlEngineConfig, ElasticsearchEngineConfig, etc.) register in
@@ -35,6 +31,12 @@ from .platform_config_service import PlatformConfigService
 # them under platform.engines.*.  DBConfigModule loads at priority=0,
 # so this is the earliest reliable trigger.
 from . import engine_config as _engine_config  # noqa: F401
+from .db_config import DBConfig
+from .engine_instance_cache import EngineInstanceCache
+from .engine_resolver import build_engine_snapshot, make_resolver
+from .platform_config_service import PlatformConfigService
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -112,7 +114,10 @@ class DBConfigModule(ModuleProtocol):
 
             yield
 
-            if hasattr(self.app_state, 'db_config'):
-                self.app_state.db_config = None
-                
+        # Stack callbacks fire on ``async with`` exit — clear ``db_config``
+        # AFTER teardown so any engine_release impl reading DBConfig (or
+        # the DSN derived from it) still sees a populated app_state.
+        if hasattr(self.app_state, 'db_config'):
+            self.app_state.db_config = None
+
         logger.info("DBConfigModule: Lifespan shutting down.")
