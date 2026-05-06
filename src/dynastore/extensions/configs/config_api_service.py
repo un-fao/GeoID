@@ -281,6 +281,7 @@ class ConfigApiService:
         active_scope: str,
         meta_mode: str = "none",
         include_mode: str = "scope",
+        strict: bool = True,
     ) -> Tuple[
         Dict[str, Any],
         Optional[Dict[str, Any]],
@@ -312,6 +313,17 @@ class ConfigApiService:
         - ``"upstream"`` — every visible class is rendered with its
           waterfall-resolved value.  Returned ``inherited`` is None.
 
+        ``strict`` (default True, Cycle F.7d.2) tightens platform-scope
+        visibility: when True, platform-scope view drops configs declared
+        with ``_visibility="catalog"`` from the body and routes them to
+        ``inherited``.  This matches the user-mental-model that platform
+        scope shows only platform-intrinsic configs (modules /
+        extensions / tasks / engines), with catalog-tier templates
+        surfaced only on demand.  When False, the previous always-true
+        platform-scope filter is restored — catalog-tier defaults appear
+        inline in the body.  Has no effect at catalog or collection
+        scope (the per-tier ``_visibility`` filter already runs there).
+
         Cycle D.3: ``inherited`` is a hierarchical tree mirroring the
         ``configs`` tree shape.  Each leaf carries ``{"source": <tier>}``
         where ``<tier>`` is ``"platform"`` / ``"catalog"`` / ``"default"``
@@ -335,10 +347,23 @@ class ConfigApiService:
         inherited_has_entries = False
 
         def _is_in_scope(cls: Type[PluginConfig], class_key: str) -> bool:
-            """Slim-mode filter: keep only configs owned by ``active_scope``."""
-            if active_scope == "platform":
-                return True
+            """Slim-mode filter: keep only configs owned by ``active_scope``.
+
+            At platform scope under ``strict=True`` (Cycle F.7d.2), drop
+            configs declared with ``_visibility="catalog"`` from the body
+            (they're catalog-tier templates stored at platform scope —
+            visible only on demand via ``inherited`` or ``strict=False``).
+            ``strict=False`` restores the previous always-true platform
+            short-circuit.
+            """
             visibility = getattr(cls, "_visibility", None)
+            if active_scope == "platform":
+                if not strict:
+                    return True
+                # Strict: only platform-intrinsic configs (visibility=None)
+                # appear in the body.  Catalog-/collection-tier templates
+                # route to ``inherited``.
+                return visibility is None
             if visibility == active_scope:
                 return True
             if sources.get(class_key) == active_scope:
@@ -508,6 +533,19 @@ class ConfigApiService:
                 ),
                 "examples": ["scope", "upstream"],
             },
+            "strict": {
+                "type": "boolean", "default": True,
+                "description": (
+                    "Cycle F.7d.2 — at platform scope, narrow the body to "
+                    "platform-intrinsic configs (``modules``, ``extensions``, "
+                    "``tasks``, ``engines``).  Catalog-/collection-tier "
+                    "templates route to ``inherited`` instead.  ``false`` "
+                    "restores the previous always-true platform-scope "
+                    "inclusion (catalog templates inline in the body).  "
+                    "No effect at catalog or collection scope."
+                ),
+                "examples": [True, False],
+            },
         }
         # NOTE: per-scope ``*_page`` and ``page_size`` slots were retired
         # in Cycle C alongside the ``categories`` paginated-children field
@@ -578,6 +616,17 @@ class ConfigApiService:
                 ),
             ),
             Link(
+                rel="alternate",
+                href=f"{base_url}?strict=false",
+                method="GET",
+                title=(
+                    "Inclusive view (Cycle F.7d.2): platform scope keeps "
+                    "catalog-/collection-tier templates inline in the body "
+                    "instead of routing them to ``inherited``.  No-op at "
+                    "catalog/collection scope."
+                ),
+            ),
+            Link(
                 rel="edit",
                 href=f"{base_url}/plugins/{{class_key}}",
                 method="PATCH",
@@ -595,6 +644,7 @@ class ConfigApiService:
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
+        strict: bool = True,
     ) -> CollectionConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
@@ -602,7 +652,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "collection",
-            meta_mode=meta, include_mode=include,
+            meta_mode=meta, include_mode=include, strict=strict,
         )
         return CollectionConfigResponse(
             links=self._build_links(
@@ -621,6 +671,7 @@ class ConfigApiService:
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
+        strict: bool = True,
     ) -> CatalogConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
@@ -628,7 +679,7 @@ class ConfigApiService:
         self._build_routing_refs(by_class)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "catalog",
-            meta_mode=meta, include_mode=include,
+            meta_mode=meta, include_mode=include, strict=strict,
         )
         return CatalogConfigResponse(
             links=self._build_links("catalog", base_url, catalog_id=catalog_id),
@@ -642,18 +693,20 @@ class ConfigApiService:
         resolved: bool = True,
         meta: str = "field",
         include: str = "scope",
+        strict: bool = True,
     ) -> PlatformConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
         )
         self._build_routing_refs(by_class)
-        tree, meta_dict, _inherited = self._compose_tree(
+        tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "platform",
-            meta_mode=meta, include_mode=include,
+            meta_mode=meta, include_mode=include, strict=strict,
         )
         return PlatformConfigResponse(
             links=self._build_links("platform", base_url),
             scope="platform", configs=tree, meta=meta_dict,
+            inherited=inherited,
         )
 
     # --- PATCH. ---

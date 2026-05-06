@@ -435,14 +435,29 @@ def test_compose_tree_address_visibility_filters_correctly():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        # At platform / catalog: rendered in body (no slim filter at platform;
-        # at catalog the class is in-scope by visibility match).
-        for scope in ("platform", "catalog"):
-            tree, _, inherited = ConfigApiService._compose_tree(
-                by_class, sources={"CatalogOnly": scope}, active_scope=scope,
-            )
-            assert "CatalogOnly" in tree["platform"]["catalog"]["drivers"]
-            assert inherited is None
+        # At platform scope under strict=True (default, Cycle F.7d.2):
+        # _visibility="catalog" routes to ``inherited`` instead of inlining.
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"CatalogOnly": "platform"}, active_scope="platform",
+        )
+        assert "platform" not in tree or "CatalogOnly" not in tree.get(
+            "platform", {}
+        ).get("catalog", {}).get("drivers", {})
+        assert inherited is not None
+        assert inherited["platform"]["catalog"]["drivers"]["CatalogOnly"] == {"source": "platform"}
+        # Platform scope under strict=False restores inclusive behavior.
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"CatalogOnly": "platform"}, active_scope="platform",
+            strict=False,
+        )
+        assert "CatalogOnly" in tree["platform"]["catalog"]["drivers"]
+        assert inherited is None
+        # At catalog scope: rendered in body via visibility match.
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources={"CatalogOnly": "catalog"}, active_scope="catalog",
+        )
+        assert "CatalogOnly" in tree["platform"]["catalog"]["drivers"]
+        assert inherited is None
         # At collection scope: NOT inlined in body; surfaces in the hierarchical
         # inherited tree at the same natural address with {source} leaf.
         tree, _, inherited = ConfigApiService._compose_tree(
@@ -451,6 +466,100 @@ def test_compose_tree_address_visibility_filters_correctly():
         assert "storage" not in tree
         assert inherited is not None
         assert inherited["platform"]["catalog"]["drivers"]["CatalogOnly"] == {"source": "catalog"}
+
+
+def test_compose_tree_strict_at_platform_routes_catalog_visibility_to_inherited():
+    """Cycle F.7d.2 — under ``strict=True`` (default), a catalog-tier
+    template (``_visibility="catalog"``) at platform scope drops out of
+    the body and surfaces in ``inherited`` at its natural address.
+
+    Pin against the user-mental-model: platform scope shows only
+    platform-intrinsic configs; catalog-tier defaults are visible only
+    on demand.
+    """
+    by_class = {
+        "platform_intrinsic": {"value": 1},
+        "catalog_template":   {"value": 2},
+    }
+    registry = _stub_registry(
+        platform_intrinsic={
+            "_address": ("platform", "modules", "web"),
+            "_visibility": None,
+        },
+        catalog_template={
+            "_address": ("platform", "catalog", "drivers"),
+            "_visibility": "catalog",
+        },
+    )
+    sources = {"platform_intrinsic": "platform", "catalog_template": "platform"}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        # Default strict=True
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources=sources, active_scope="platform",
+        )
+        # platform_intrinsic stays in body
+        assert "platform_intrinsic" in tree["platform"]["modules"]["web"]
+        # catalog_template moves to inherited at its natural address
+        assert (
+            "platform" not in tree
+            or "catalog" not in tree.get("platform", {})
+            or "catalog_template" not in tree["platform"]["catalog"].get("drivers", {})
+        )
+        assert inherited is not None
+        assert inherited["platform"]["catalog"]["drivers"]["catalog_template"] == {
+            "source": "platform"
+        }
+
+
+def test_compose_tree_strict_false_restores_inclusive_platform_behavior():
+    """Cycle F.7d.2 — ``strict=False`` brings back the previous always-true
+    platform-scope inclusion: catalog-tier templates inline in the body,
+    no inherited tree."""
+    by_class = {"catalog_template": {"value": 2}}
+    registry = _stub_registry(
+        catalog_template={
+            "_address": ("platform", "catalog", "drivers"),
+            "_visibility": "catalog",
+        },
+    )
+    sources = {"catalog_template": "platform"}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree, _, inherited = ConfigApiService._compose_tree(
+            by_class, sources=sources, active_scope="platform", strict=False,
+        )
+        assert "catalog_template" in tree["platform"]["catalog"]["drivers"]
+        assert inherited is None
+
+
+def test_compose_tree_strict_no_op_at_catalog_and_collection_scope():
+    """Cycle F.7d.2 — ``strict`` only narrows platform scope.  At catalog
+    and collection scope, the per-tier ``_visibility`` filter already
+    runs; ``strict`` is accepted for API symmetry but doesn't change
+    behavior there."""
+    by_class = {"catalog_template": {"value": 2}}
+    registry = _stub_registry(
+        catalog_template={
+            "_address": ("platform", "catalog", "drivers"),
+            "_visibility": "catalog",
+        },
+    )
+    sources = {"catalog_template": "catalog"}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        for strict in (True, False):
+            tree, _, inherited = ConfigApiService._compose_tree(
+                by_class, sources=sources, active_scope="catalog", strict=strict,
+            )
+            assert "catalog_template" in tree["platform"]["catalog"]["drivers"]
+            assert inherited is None
 
 
 def test_compose_tree_surfaces_catalog_configs_in_inherited_at_collection_scope():

@@ -260,6 +260,18 @@ class PlatformConfigResponse(BaseModel):
             "scaffold rendered when waterfall-resolved)."
         ),
     )
+    inherited: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Hierarchical breadcrumb tree mirroring the ``configs`` shape "
+            "for catalog-/collection-tier templates filtered out under "
+            "``?strict=true`` (Cycle F.7d.2).  None when no entries were "
+            "filtered (e.g. ``?strict=false`` restores the previous "
+            "always-true platform-scope inclusion).  Each leaf carries "
+            "``{\"source\": <tier>}`` indicating where the resolved value "
+            "comes from."
+        ),
+    )
     meta: Optional[Dict[str, Any]] = Field(
         None,
         description=(
