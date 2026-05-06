@@ -24,6 +24,8 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_web_page
+from dynastore.models.auth import Policy
+from dynastore.models.auth_models import Role
 from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -136,33 +138,18 @@ async def _probe_dashboards_health() -> Dict[str, bool]:
     return result
 
 
-def _register_logs_dashboard_policy(sysadmin_role_name: Optional[str] = None) -> None:
-    """Register the policy guarding the embedded dashboard proxy + page.
+def _logs_dashboard_policy() -> Policy:
+    """Pure declaration of the logs-dashboard access policy.
 
-    Args:
-        sysadmin_role_name: Role name bound to
-            ``logs_dashboard_sysadmin_access``. Defaults to
-            ``DefaultRole.SYSADMIN.value`` for back-compat. Operators
-            wiring a custom role landscape pass an explicit name (the
-            role name is a foreign key into ``iam.roles``).
+    Returned to IAM via ``LogExtension.get_policies``; never registers
+    anything itself. The proxy path is escaped because the framework
+    treats ``Policy.resources`` entries as regexes.
     """
-    from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role
-
-    pm = get_protocol(PermissionProtocol)
-    if not pm:
-        logger.warning(
-            "LogExtension: PermissionProtocol unavailable — dashboard policies not registered."
-        )
-        return
-
-    sysadmin_role_name = sysadmin_role_name or DefaultRole.SYSADMIN.value
+    import re as _re
 
     public_path = _public_path()
-    # Escape regex meta-chars; the framework treats resources as regexes.
-    import re
-    escaped = re.escape(public_path)
-
-    policy = Policy(
+    escaped = _re.escape(public_path)
+    return Policy(
         id="logs_dashboard_sysadmin_access",
         description=(
             "Sysadmin-only access to the embedded OpenSearch Dashboards / Kibana "
@@ -178,11 +165,19 @@ def _register_logs_dashboard_policy(sysadmin_role_name: Optional[str] = None) ->
         ],
         effect="ALLOW",
     )
-    pm.register_policy(policy)
-    pm.register_role(
-        Role(name=sysadmin_role_name, policies=["logs_dashboard_sysadmin_access"])
+
+
+def _logs_dashboard_role_binding(sysadmin_role_name: Optional[str] = None) -> Role:
+    """Pure declaration of the role binding for the logs policy.
+
+    ``sysadmin_role_name`` (default ``DefaultRole.SYSADMIN.value``) is a
+    foreign key into ``iam.roles``; operators wiring a custom landscape
+    pass an explicit name through their bootstrap.
+    """
+    return Role(
+        name=sysadmin_role_name or DefaultRole.SYSADMIN.value,
+        policies=["logs_dashboard_sysadmin_access"],
     )
-    logger.info("LogExtension: dashboard policy registered (path=%s).", public_path)
 
 
 from dynastore.models.protocols.logs import LogsProtocol
@@ -302,12 +297,19 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
     def database(self) -> DatabaseProtocol:
         return self.get_protocol(DatabaseProtocol)  # type: ignore[return-value]
 
+    # PolicyContributor: declare authz needs; IAM forwards centrally.
+    # No direct call to PermissionProtocol — keeps the plugin agnostic
+    # of the enforcement implementation.
+    def get_policies(self):
+        return [_logs_dashboard_policy()]
+
+    def get_role_bindings(self):
+        return [_logs_dashboard_role_binding()]
+
     @asynccontextmanager
     async def lifespan(self, app: Any):
-        # Register the sysadmin-only policy guarding both the proxy paths and
-        # the /logs/_dashboards_* status endpoints. Done unconditionally so
-        # the page's sysadmin filter works even if the DB engine is missing.
-        _register_logs_dashboard_policy()
+        # Policies declared via PolicyContributor (get_policies +
+        # get_role_bindings); IAM picks them up centrally.
 
         db = self.database
         if db:
