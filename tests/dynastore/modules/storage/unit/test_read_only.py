@@ -5,7 +5,7 @@ from dynastore.modules.storage.errors import ReadOnlyDriverError
 
 
 class ReadOnlyDriver(ReadOnlyDriverMixin):
-    driver_id = "test_readonly"
+    driver_ref = "test_readonly"
     capabilities = frozenset({Capability.READ_ONLY, Capability.STREAMING})
 
 

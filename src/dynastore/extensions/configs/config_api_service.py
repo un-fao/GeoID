@@ -433,10 +433,10 @@ class ConfigApiService:
                 for entry in entries or []:
                     if not isinstance(entry, dict):
                         continue
-                    driver_id = entry.get("driver_id", "")
-                    config_ref = driver_id if driver_id in all_classes else None
+                    driver_ref = entry.get("driver_ref", "")
+                    config_ref = driver_ref if driver_ref in all_classes else None
                     refs.append(DriverRef(
-                        driver_id=driver_id,
+                        driver_ref=driver_ref,
                         config_ref=config_ref,
                         on_failure=entry.get("on_failure", "fatal"),
                         write_mode=entry.get("write_mode", "sync"),

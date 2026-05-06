@@ -116,10 +116,10 @@ To opt a collection into per-tenant privacy:
 
 ```
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/items_routing_config
-{ "operations": { "INDEX": [{ "driver_id": "items_elasticsearch_private_driver", ... }] } }
+{ "operations": { "INDEX": [{ "driver_ref": "items_elasticsearch_private_driver", ... }] } }
 
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_routing_config
-{ "operations": { "INDEX": [{ "driver_id": "collection_elasticsearch_private_driver", ... }] } }
+{ "operations": { "INDEX": [{ "driver_ref": "collection_elasticsearch_private_driver", ... }] } }
 
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_privacy
 { "is_private": true }

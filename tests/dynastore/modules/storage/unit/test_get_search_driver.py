@@ -20,7 +20,7 @@ from dynastore.modules.storage.routing_config import (
 
 def _ops_with_search(*driver_ids):
     return {
-        "SEARCH": [OperationDriverEntry(driver_id=did) for did in driver_ids],
+        "SEARCH": [OperationDriverEntry(driver_ref=did) for did in driver_ids],
     }
 
 

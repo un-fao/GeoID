@@ -19,12 +19,12 @@ from dynastore.modules.storage.routing_config import (
 
 
 def _make_routing(operations: dict) -> ItemsRoutingConfig:
-    """Build a ItemsRoutingConfig from {operation: [(driver_id, hints, policy), ...]}."""
+    """Build a ItemsRoutingConfig from {operation: [(driver_ref, hints, policy), ...]}."""
     ops = {}
     for op, entries in operations.items():
         ops[op] = [
             OperationDriverEntry(
-                driver_id=e[0],
+                driver_ref=e[0],
                 hints=e[1] if len(e) > 1 else set(),
                 on_failure=e[2] if len(e) > 2 else FailurePolicy.FATAL,
             )
@@ -40,14 +40,14 @@ def _mock_configs_protocol(routing_config):
     return mock
 
 
-def _mock_driver(driver_id: str):
-    """Create a mock driver whose class name equals ``driver_id``.
+def _mock_driver(driver_ref: str):
+    """Create a mock driver whose class name equals ``driver_ref``.
 
     The router builds the driver index via ``type(driver).__name__`` after the
-    ``driver_id`` field was removed in favour of class-name routing keys, so
+    ``driver_ref`` field was removed in favour of class-name routing keys, so
     mocks must carry that name in their type.
     """
-    cls = type(driver_id, (MagicMock,), {})
+    cls = type(driver_ref, (MagicMock,), {})
     return cls()
 
 
@@ -311,7 +311,7 @@ class TestResolvedDriver:
     def test_driver_id_property(self):
         d = _mock_driver("postgresql")
         rd = ResolvedDriver(driver=d)
-        assert rd.driver_id == "postgresql"
+        assert rd.driver_ref == "postgresql"
 
     def test_default_failure_policy(self):
         rd = ResolvedDriver(driver=_mock_driver("pg"))
@@ -323,4 +323,4 @@ class TestResolvedDriver:
 
     def test_driver_id_falls_back_to_class_name(self):
         rd = ResolvedDriver(driver=object())
-        assert rd.driver_id == "object"
+        assert rd.driver_ref == "object"

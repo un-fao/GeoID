@@ -69,11 +69,11 @@ class _FakeCatalogs:
         ]
 
 
-def _routing_with_es(driver_id: str = "items_elasticsearch_driver"):
+def _routing_with_es(driver_ref: str = "items_elasticsearch_driver"):
     """Fake ItemsRoutingConfig listing the regular ES driver."""
     return type("Routing", (), {
         "operations": {"INDEX": [
-            type("Entry", (), {"driver_id": driver_id})()
+            type("Entry", (), {"driver_ref": driver_ref})()
         ]},
     })()
 
@@ -81,7 +81,7 @@ def _routing_with_es(driver_id: str = "items_elasticsearch_driver"):
 def _routing_without_es():
     return type("Routing", (), {
         "operations": {"INDEX": [
-            type("Entry", (), {"driver_id": "other_driver"})()
+            type("Entry", (), {"driver_ref": "other_driver"})()
         ]},
     })()
 
@@ -253,7 +253,7 @@ async def test_inputs_drop_mode_field():
 
 @pytest.mark.asyncio
 async def test_is_es_active_for_matches_snake_case_driver_id():
-    """PR-1e regression guard: ``OperationDriverEntry.driver_id`` is always
+    """PR-1e regression guard: ``OperationDriverEntry.driver_ref`` is always
     snake_case after the validator coerces it. ``is_es_active_for`` must
     compare against ``"items_elasticsearch_driver"`` — pre-PR-1e it compared
     against ``"ItemsElasticsearchDriver"`` and silently returned False for
@@ -268,7 +268,7 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
     from dynastore.tools import discovery
 
     routing = ItemsRoutingConfig(
-        operations={Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver")]},
+        operations={Operation.READ: [OperationDriverEntry(driver_ref="items_elasticsearch_driver")]},
     )
 
     async def _get_config(model, *, catalog_id, collection_id=None):
@@ -287,7 +287,7 @@ async def test_is_es_active_for_matches_snake_case_driver_id():
 
     # And conversely: a routing without ES returns False.
     routing_pg_only = ItemsRoutingConfig(
-        operations={Operation.READ: [OperationDriverEntry(driver_id="items_postgresql_driver")]},
+        operations={Operation.READ: [OperationDriverEntry(driver_ref="items_postgresql_driver")]},
     )
 
     async def _get_config_pg(model, *, catalog_id, collection_id=None):
@@ -328,9 +328,9 @@ async def test_is_es_active_for_returns_false_for_private_only_routing():
 
     routing = ItemsRoutingConfig(
         operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
+            Operation.WRITE: [OperationDriverEntry(driver_ref="items_postgresql_driver")],
             Operation.INDEX: [
-                OperationDriverEntry(driver_id="items_elasticsearch_private_driver"),
+                OperationDriverEntry(driver_ref="items_elasticsearch_private_driver"),
             ],
         },
     )
@@ -373,11 +373,11 @@ async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned
     routing = ItemsRoutingConfig(
         operations={
             Operation.WRITE: [
-                OperationDriverEntry(driver_id="items_postgresql_driver"),
-                OperationDriverEntry(driver_id="items_elasticsearch_driver"),
+                OperationDriverEntry(driver_ref="items_postgresql_driver"),
+                OperationDriverEntry(driver_ref="items_elasticsearch_driver"),
             ],
             Operation.INDEX: [
-                OperationDriverEntry(driver_id="items_elasticsearch_private_driver"),
+                OperationDriverEntry(driver_ref="items_elasticsearch_private_driver"),
             ],
         },
     )

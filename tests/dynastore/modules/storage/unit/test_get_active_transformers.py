@@ -1,6 +1,6 @@
 """get_active_transformers — ordered chain resolution by class name.
 
-Routing-config driver_id strings under operations[TRANSFORM] are resolved
+Routing-config driver_ref strings under operations[TRANSFORM] are resolved
 to live EntityTransformProtocol instances by class name, matching the
 convention used by ``_self_register_indexers_into`` /
 ``_self_register_searchers_into``.
@@ -32,7 +32,7 @@ class TransformerB:
 
 def _ops_with_transform(*driver_ids):
     return {
-        "TRANSFORM": [OperationDriverEntry(driver_id=did) for did in driver_ids],
+        "TRANSFORM": [OperationDriverEntry(driver_ref=did) for did in driver_ids],
     }
 
 

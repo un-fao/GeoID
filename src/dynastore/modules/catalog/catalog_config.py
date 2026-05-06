@@ -320,18 +320,18 @@ async def apply_catalog_default_privacy_seed(
         operations={
             Operation.WRITE: [
                 OperationDriverEntry(
-                    driver_id="items_postgresql_driver",
+                    driver_ref="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
                 OperationDriverEntry(
-                    driver_id="items_elasticsearch_private_driver",
+                    driver_ref="items_elasticsearch_private_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
                     source="auto",
                 ),
             ],
             Operation.READ: [
-                OperationDriverEntry(driver_id="items_postgresql_driver"),
+                OperationDriverEntry(driver_ref="items_postgresql_driver"),
             ],
         },
     )
@@ -371,7 +371,7 @@ async def apply_catalog_default_privacy_seed(
         operations={
             Operation.INDEX: [
                 OperationDriverEntry(
-                    driver_id="collection_elasticsearch_private_driver",
+                    driver_ref="collection_elasticsearch_private_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
                     source="auto",

@@ -73,7 +73,7 @@ class AssetEntitySyncSubscriber:
                 )
                 level(
                     "AssetEntitySync: indexer '%s' index_asset failed for "
-                    "%s/%s: %s", r.driver_id, catalog_id, asset_id, result,
+                    "%s/%s: %s", r.driver_ref, catalog_id, asset_id, result,
                 )
 
     @staticmethod
@@ -116,7 +116,7 @@ class AssetEntitySyncSubscriber:
                 )
                 level(
                     "AssetEntitySync: indexer '%s' delete_asset failed for "
-                    "%s/%s: %s", r.driver_id, catalog_id, asset_id, result,
+                    "%s/%s: %s", r.driver_ref, catalog_id, asset_id, result,
                 )
 
 

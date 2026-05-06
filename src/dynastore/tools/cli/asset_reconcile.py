@@ -125,7 +125,7 @@ async def _read_index_doc(catalog_id: str, collection_id: Optional[str], asset_i
         except Exception as exc:
             logger.debug(
                 "reconcile: indexer '%s' get_asset failed for %s/%s: %s",
-                entry.driver_id, catalog_id, asset_id, exc,
+                entry.driver_ref, catalog_id, asset_id, exc,
             )
             continue
         if doc is not None:

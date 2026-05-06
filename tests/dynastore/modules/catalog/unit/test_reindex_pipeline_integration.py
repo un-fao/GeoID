@@ -135,7 +135,7 @@ async def test_pipeline_router_emit_listener_worker_indexer(
         operations={
             **CatalogRoutingConfig().operations,
             Operation.INDEX: [
-                OperationDriverEntry(driver_id="LogCatalogIndexer"),
+                OperationDriverEntry(driver_ref="LogCatalogIndexer"),
             ],
         },
     )
@@ -247,7 +247,7 @@ async def test_pipeline_deletes_route_to_delete_catalog_metadata(
         operations={
             **CatalogRoutingConfig().operations,
             Operation.INDEX: [
-                OperationDriverEntry(driver_id="LogCatalogIndexer"),
+                OperationDriverEntry(driver_ref="LogCatalogIndexer"),
             ],
         },
     )

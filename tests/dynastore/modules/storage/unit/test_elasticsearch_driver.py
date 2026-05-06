@@ -80,8 +80,8 @@ class TestIsSecondaryFor:
 
         mock_configs = AsyncMock()
         routing = ItemsRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
-            Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver")],
+            Operation.WRITE: [OperationDriverEntry(driver_ref="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_ref="items_elasticsearch_driver")],
         })
         mock_configs.get_config = AsyncMock(return_value=routing)
 
@@ -99,8 +99,8 @@ class TestIsSecondaryFor:
 
         mock_configs = AsyncMock()
         routing = ItemsRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
-            Operation.READ: [OperationDriverEntry(driver_id="items_duckdb_driver")],
+            Operation.WRITE: [OperationDriverEntry(driver_ref="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_ref="items_duckdb_driver")],
         })
         mock_configs.get_config = AsyncMock(return_value=routing)
 

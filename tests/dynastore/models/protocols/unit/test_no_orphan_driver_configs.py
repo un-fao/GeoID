@@ -1,7 +1,7 @@
 """CI guard: every concrete ``_PluginDriverConfig`` subclass must be bound
 to a :class:`TypedDriver` — otherwise :meth:`_PluginDriverConfig.class_key`
 silently falls back to ``__qualname__`` and the operator-facing JSON wire
-key drifts away from the routing-entry ``driver_id``.
+key drifts away from the routing-entry ``driver_ref``.
 
 This walks every concrete subclass of ``_PluginDriverConfig`` reachable
 after importing the codebase's driver modules and calls
@@ -132,7 +132,7 @@ def test_class_key_drops_config_suffix_convention():
     """Convention pin: every bound ``*DriverConfig`` class's wire key
     equals the snake_case form of the class name with the trailing
     ``Config`` removed.  Operators copy ONE name between
-    ``routing.WRITE[].driver_id`` and ``configs.platform.catalog.{tier}.drivers.{driver_ref}``.
+    ``routing.WRITE[].driver_ref`` and ``configs.platform.catalog.{tier}.drivers.{driver_ref}``.
     """
     from dynastore.models.protocols.typed_driver import _registered_pairs
     from dynastore.tools.typed_store.base import _to_snake

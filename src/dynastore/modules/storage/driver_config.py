@@ -1233,7 +1233,7 @@ async def _on_apply_items_schema(
         write_entries = (routing.operations or {}).get(Operation.WRITE) or []
         if not write_entries:
             return
-        primary_id = write_entries[0].driver_id
+        primary_id = write_entries[0].driver_ref
 
         drivers = get_protocols(CollectionItemsStore) or []
         primary = next(

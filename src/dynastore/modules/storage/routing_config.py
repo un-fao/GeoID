@@ -204,9 +204,15 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
 class OperationDriverEntry(BaseModel):
     """A driver configured for a specific operation.
 
-    ``driver_id`` is immutable — changing which drivers participate in an
-    operation is a structural decision.  ``hints`` and ``on_failure`` are
-    mutable preferences that can evolve without structural impact.
+    ``driver_ref`` is immutable — changing which drivers participate in
+    an operation is a structural decision.  ``hints`` and ``on_failure``
+    are mutable preferences that can evolve without structural impact.
+
+    Cycle F.3 renamed ``driver_ref`` → ``driver_ref`` to align with the
+    F.0-F.2 ``engine_ref`` naming.  Single-instance-per-kind: the ref
+    equals the snake_case driver class name (e.g.
+    ``"items_postgresql_driver"``).  F.4 will enable operator-chosen
+    ref names when ref-keyed driver-config storage lands.
 
     Role-based driver plan additions (optional, default-inert):
 
@@ -224,14 +230,14 @@ class OperationDriverEntry(BaseModel):
                          the request's ``?format=`` query param.
     """
 
-    driver_id: Immutable[str] = Field(
-        ..., min_length=1, description="Driver identifier (e.g. 'postgresql')."
+    driver_ref: Immutable[str] = Field(
+        ..., min_length=1, description="Driver reference (e.g. 'items_postgresql_driver')."
     )
 
-    @field_validator("driver_id", mode="before")
+    @field_validator("driver_ref", mode="before")
     @classmethod
-    def _normalize_driver_id(cls, v: Any) -> Any:
-        """Coerce driver_id to snake_case (PR-1e cutover convention).
+    def _normalize_driver_ref(cls, v: Any) -> Any:
+        """Coerce driver_ref to snake_case (PR-1e + F.3 cutover convention).
 
         Accepts both PascalCase (legacy: ``"ItemsPostgresqlDriver"`` from
         auto-augment helpers + persisted configs predating snake_case) and
@@ -356,23 +362,23 @@ class ItemsRoutingConfig(PluginConfig):
             # exact geometries via ``get_driver(..., hint="geometry_exact")``.
             Operation.WRITE: [
                 OperationDriverEntry(
-                    driver_id="items_postgresql_driver",
+                    driver_ref="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
                 OperationDriverEntry(
-                    driver_id="items_elasticsearch_driver",
+                    driver_ref="items_elasticsearch_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
                 ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
-                    driver_id="items_elasticsearch_driver",
+                    driver_ref="items_elasticsearch_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
                     on_failure=FailurePolicy.WARN,
                 ),
                 OperationDriverEntry(
-                    driver_id="items_postgresql_driver",
+                    driver_ref="items_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT},
                     on_failure=FailurePolicy.FATAL,
                 ),
@@ -523,22 +529,22 @@ class AssetRoutingConfig(PluginConfig):
             # ItemsRoutingConfig.operations comment for rationale.
             Operation.WRITE: [
                 OperationDriverEntry(
-                    driver_id="asset_postgresql_driver",
+                    driver_ref="asset_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
                 OperationDriverEntry(
-                    driver_id="asset_elasticsearch_driver",
+                    driver_ref="asset_elasticsearch_driver",
                     on_failure=FailurePolicy.WARN,
                 ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
-                    driver_id="asset_elasticsearch_driver",
+                    driver_ref="asset_elasticsearch_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
                     on_failure=FailurePolicy.WARN,
                 ),
                 OperationDriverEntry(
-                    driver_id="asset_postgresql_driver",
+                    driver_ref="asset_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT},
                     on_failure=FailurePolicy.FATAL,
                 ),
@@ -602,12 +608,12 @@ class CatalogRoutingConfig(PluginConfig):
             # catalog-metadata router merges both results on READ and
             # parallelises the upsert on WRITE.
             Operation.WRITE: [
-                OperationDriverEntry(driver_id="catalog_core_postgresql_driver"),
-                OperationDriverEntry(driver_id="catalog_stac_postgresql_driver"),
+                OperationDriverEntry(driver_ref="catalog_core_postgresql_driver"),
+                OperationDriverEntry(driver_ref="catalog_stac_postgresql_driver"),
             ],
             Operation.READ: [
-                OperationDriverEntry(driver_id="catalog_core_postgresql_driver"),
-                OperationDriverEntry(driver_id="catalog_stac_postgresql_driver"),
+                OperationDriverEntry(driver_ref="catalog_core_postgresql_driver"),
+                OperationDriverEntry(driver_ref="catalog_stac_postgresql_driver"),
             ],
         },
         description=(
@@ -669,7 +675,7 @@ def _validate_routing_entries(
     """Shared validation for routing config apply handlers.
 
     Raises ``ValueError`` on:
-    1. Unknown ``driver_id``
+    1. Unknown ``driver_ref``
     2. Hint not in ``driver.supported_hints``
     3. Operation not supported (derived from driver capabilities)
     4. ``write_mode=async`` on a driver without ``DriverCapability.ASYNC``
@@ -684,12 +690,12 @@ def _validate_routing_entries(
             # config-apply on a subset deployment (test fixture, partial
             # rollout, deprecated driver) hard-fails despite the runtime
             # path being safe.
-            driver = driver_index.get(entry.driver_id)
+            driver = driver_index.get(entry.driver_ref)
             if driver is None:
                 logger.warning(
                     "%s: driver '%s' for operation '%s' is not registered. "
                     "Available: %s. Entry will be skipped at dispatch.",
-                    label, entry.driver_id, operation, sorted(driver_index),
+                    label, entry.driver_ref, operation, sorted(driver_index),
                 )
                 continue
 
@@ -699,7 +705,7 @@ def _validate_routing_entries(
             if invalid_hints:
                 raise ValueError(
                     f"{label}: hints {sorted(invalid_hints)} are not supported "
-                    f"by driver '{entry.driver_id}'. "
+                    f"by driver '{entry.driver_ref}'. "
                     f"Supported: {sorted(driver_hints)}"
                 )
 
@@ -708,7 +714,7 @@ def _validate_routing_entries(
             supported_ops = derive_supported_operations(driver_caps)
             if operation not in supported_ops:
                 raise ValueError(
-                    f"{label}: driver '{entry.driver_id}' does not support "
+                    f"{label}: driver '{entry.driver_ref}' does not support "
                     f"operation '{operation}'. "
                     f"Supported operations: {sorted(supported_ops)} "
                     f"(derived from capabilities: {sorted(driver_caps)})"
@@ -734,7 +740,7 @@ def _validate_routing_entries(
                         if DriverCapability.ASYNC not in config_caps:
                             raise ValueError(
                                 f"{label}: write_mode='async' requires "
-                                f"DriverCapability.ASYNC on driver '{entry.driver_id}'. "
+                                f"DriverCapability.ASYNC on driver '{entry.driver_ref}'. "
                                 f"Driver capabilities: {sorted(config_caps)}"
                             )
                 except ValueError:
@@ -755,7 +761,7 @@ def _validate_routing_entries(
     for operation, entries in config.operations.items():
         if not entries:
             continue
-        primary_id = entries[0].driver_id
+        primary_id = entries[0].driver_ref
         primary_driver = driver_index.get(primary_id)
         if primary_driver is None:
             continue
@@ -798,7 +804,7 @@ def _self_register_indexers_into(
     """
     from dynastore.tools.discovery import get_protocols
 
-    listed = {entry.driver_id for entry in target_ops.get(Operation.INDEX, [])}
+    listed = {entry.driver_ref for entry in target_ops.get(Operation.INDEX, [])}
     for driver in get_protocols(marker_proto):
         # Single gate on the per-Operation auto-default set.  Drivers
         # explicitly declare which Operations they auto-default into via
@@ -808,22 +814,22 @@ def _self_register_indexers_into(
         opt_in: FrozenSet[str] = getattr(type(driver), "auto_register_for_routing", frozenset())
         if Operation.INDEX not in opt_in:
             continue
-        driver_id = _to_snake(type(driver).__name__)
-        if driver_id in listed:
+        driver_ref = _to_snake(type(driver).__name__)
+        if driver_ref in listed:
             continue
         target_ops.setdefault(Operation.INDEX, []).append(
             OperationDriverEntry(
-                driver_id=driver_id,
+                driver_ref=driver_ref,
                 on_failure=FailurePolicy.OUTBOX,
                 write_mode=WriteMode.ASYNC,
                 source="auto",
             )
         )
-        listed.add(driver_id)
+        listed.add(driver_ref)
         logger.debug(
             "Routing config self-registration: appended %s indexer '%s' "
             "to operations[INDEX] (write_mode=async, on_failure=outbox, source=auto)",
-            marker_proto.__name__, driver_id,
+            marker_proto.__name__, driver_ref,
         )
 
 
@@ -845,24 +851,24 @@ def _self_register_upload_into(
     """
     from dynastore.tools.discovery import get_protocols
 
-    listed = {entry.driver_id for entry in target_ops.get(Operation.UPLOAD, [])}
+    listed = {entry.driver_ref for entry in target_ops.get(Operation.UPLOAD, [])}
     for driver in get_protocols(marker_proto):
-        driver_id = _to_snake(type(driver).__name__)
-        if driver_id in listed:
+        driver_ref = _to_snake(type(driver).__name__)
+        if driver_ref in listed:
             continue
         target_ops.setdefault(Operation.UPLOAD, []).append(
             OperationDriverEntry(
-                driver_id=driver_id,
+                driver_ref=driver_ref,
                 on_failure=FailurePolicy.FATAL,
                 write_mode=WriteMode.SYNC,
                 source="auto",
             )
         )
-        listed.add(driver_id)
+        listed.add(driver_ref)
         logger.debug(
             "Routing config self-registration: appended %s upload driver "
             "'%s' to operations[UPLOAD] (write_mode=sync, on_failure=fatal, source=auto)",
-            marker_proto.__name__, driver_id,
+            marker_proto.__name__, driver_ref,
         )
 
 
@@ -893,22 +899,22 @@ def _self_register_searchers_into(
     """
     from dynastore.tools.discovery import get_protocols
 
-    listed = {entry.driver_id for entry in target_ops.get(Operation.SEARCH, [])}
+    listed = {entry.driver_ref for entry in target_ops.get(Operation.SEARCH, [])}
     for driver in get_protocols(marker_proto):
         opt_in: FrozenSet[str] = getattr(type(driver), "auto_register_for_routing", frozenset())
         if Operation.SEARCH not in opt_in:
             continue
-        driver_id = _to_snake(type(driver).__name__)
-        if driver_id in listed:
+        driver_ref = _to_snake(type(driver).__name__)
+        if driver_ref in listed:
             continue
         target_ops.setdefault(Operation.SEARCH, []).append(
-            OperationDriverEntry(driver_id=driver_id, source="auto")
+            OperationDriverEntry(driver_ref=driver_ref, source="auto")
         )
-        listed.add(driver_id)
+        listed.add(driver_ref)
         logger.debug(
             "Routing config self-registration: appended %s SEARCH "
             "driver '%s' to operations[SEARCH] (source=auto)",
-            marker_proto.__name__, driver_id,
+            marker_proto.__name__, driver_ref,
         )
 
 
@@ -931,17 +937,17 @@ def _self_register_store_drivers(
     """
     target_ops = config.operations
     for op in op_keys:
-        listed = {entry.driver_id for entry in target_ops.get(op, [])}
-        for driver_id in store_driver_index:
-            if driver_id in listed:
+        listed = {entry.driver_ref for entry in target_ops.get(op, [])}
+        for driver_ref in store_driver_index:
+            if driver_ref in listed:
                 continue
             target_ops.setdefault(op, []).append(
-                OperationDriverEntry(driver_id=driver_id, source="auto")
+                OperationDriverEntry(driver_ref=driver_ref, source="auto")
             )
             logger.debug(
                 "Routing config self-registration: appended installed "
                 "metadata driver '%s' to operations[%s] (source=auto)",
-                driver_id, op,
+                driver_ref, op,
             )
 
 
@@ -953,7 +959,7 @@ async def _on_apply_items_routing_config(
 ) -> None:
     """Called after items routing config is written.
 
-    Validates driver_id, hints, operations, write_mode for items dispatch
+    Validates driver_ref, hints, operations, write_mode for items dispatch
     entries (``CollectionItemsStore`` drivers); auto-registers discoverable
     ``ItemIndexer`` drivers and SEARCH-capable items drivers; invalidates
     the router cache.
@@ -1020,20 +1026,20 @@ async def _on_apply_collection_routing_config(
 
     # Validate operations[READ] (CollectionStore drivers)
     for entry in config.operations.get(Operation.READ, []):
-        if entry.driver_id not in store_driver_index:
+        if entry.driver_ref not in store_driver_index:
             raise ValueError(
                 f"Collection metadata routing config: operations[READ] driver "
-                f"'{entry.driver_id}' is not registered. "
+                f"'{entry.driver_ref}' is not registered. "
                 f"Available: {sorted(store_driver_index)}"
             )
 
     # Validate operations[TRANSFORM] (CollectionItemsStore drivers — they
     # contribute item-derived metadata at READ time)
     for entry in config.operations.get(Operation.TRANSFORM, []):
-        if entry.driver_id not in driver_index:
+        if entry.driver_ref not in driver_index:
             raise ValueError(
                 f"Collection metadata routing config: operations[TRANSFORM] driver "
-                f"'{entry.driver_id}' is not registered. "
+                f"'{entry.driver_ref}' is not registered. "
                 f"Available: {sorted(driver_index)}"
             )
 
@@ -1041,10 +1047,10 @@ async def _on_apply_collection_routing_config(
     # search/export sinks — ES for INDEX, Parquet/DuckDB for BACKUP).
     for op in (Operation.INDEX, Operation.BACKUP):
         for entry in config.operations.get(op, []):
-            if entry.driver_id not in store_driver_index:
+            if entry.driver_ref not in store_driver_index:
                 raise ValueError(
                     f"Collection metadata routing config: operations[{op}] driver "
-                    f"'{entry.driver_id}' is not registered. "
+                    f"'{entry.driver_ref}' is not registered. "
                     f"Available: {sorted(store_driver_index)}"
                 )
             if op == Operation.BACKUP and not entry.fmt:
@@ -1052,7 +1058,7 @@ async def _on_apply_collection_routing_config(
                     "Collection metadata routing config: BACKUP entry '%s' "
                     "has no fmt; endpoint ?format= query will not be able to "
                     "target it.",
-                    entry.driver_id,
+                    entry.driver_ref,
                 )
 
     # Auto-register discoverable indexers + searchers — apply-handler parity
@@ -1063,7 +1069,7 @@ async def _on_apply_collection_routing_config(
     # Call ensure_storage() on READ drivers (idempotent, catalog-scoped).
     if catalog_id:
         for entry in config.operations.get(Operation.READ, []):
-            driver = store_driver_index.get(entry.driver_id)
+            driver = store_driver_index.get(entry.driver_ref)
             if driver is None:
                 continue
             try:
@@ -1071,7 +1077,7 @@ async def _on_apply_collection_routing_config(
             except Exception as exc:
                 logger.warning(
                     "ensure_storage failed for metadata driver '%s' on catalog '%s': %s",
-                    entry.driver_id, catalog_id, exc,
+                    entry.driver_ref, catalog_id, exc,
                 )
 
 
@@ -1108,7 +1114,7 @@ async def _on_apply_asset_routing_config(
         seen_ids: set[str] = set()
         for entries in config.operations.values():
             for entry in entries:
-                seen_ids.add(entry.driver_id)
+                seen_ids.add(entry.driver_ref)
         for did in seen_ids:
             driver = driver_index.get(did)
             if driver is None:
@@ -1130,7 +1136,7 @@ async def _on_apply_catalog_routing_config(
 ) -> None:
     """Called after catalog routing config is written.
 
-    Validates ``driver_id``, hints, and operation capability for every entry in
+    Validates ``driver_ref``, hints, and operation capability for every entry in
     ``config.operations`` against the ``CatalogStore`` driver registry.
     Mirrors :func:`_on_apply_routing_config` for the catalog tier.
 
@@ -1198,7 +1204,7 @@ def _items_routing_has_private_driver(routing: "ItemsRoutingConfig") -> bool:
     any operation of the given items routing config."""
     for entries in routing.operations.values():
         for entry in entries:
-            if entry.driver_id == _PRIVATE_ITEMS_DRIVER_ID:
+            if entry.driver_ref == _PRIVATE_ITEMS_DRIVER_ID:
                 return True
     return False
 
@@ -1409,7 +1415,7 @@ async def get_active_indexers(
     ops = await _resolve_entity_operations(
         catalog_id, entity=entity, collection_id=collection_id,
     )
-    return {entry.driver_id for entry in ops.get(Operation.INDEX, [])}
+    return {entry.driver_ref for entry in ops.get(Operation.INDEX, [])}
 
 
 async def get_search_driver(
@@ -1419,7 +1425,7 @@ async def get_search_driver(
     collection_id: Optional[str] = None,
     driver_hint: Optional[str] = None,
 ) -> Optional[str]:
-    """driver_id of the driver to use for SEARCH on this entity.
+    """driver_ref of the driver to use for SEARCH on this entity.
 
     Single-driver semantics: default = first entry in operations[SEARCH].
     When ``driver_hint`` is given AND present in the routing list, returns
@@ -1436,7 +1442,7 @@ async def get_search_driver(
         return None
 
     if driver_hint:
-        listed = {e.driver_id for e in entries}
+        listed = {e.driver_ref for e in entries}
         if driver_hint in listed:
             return driver_hint
         logger.warning(
@@ -1446,7 +1452,7 @@ async def get_search_driver(
             driver_hint, entity, catalog_id, collection_id, sorted(listed),
         )
 
-    return entries[0].driver_id
+    return entries[0].driver_ref
 
 
 async def get_active_transformers(
@@ -1477,14 +1483,14 @@ async def get_active_transformers(
     by_driver_id = {_to_snake(type(t).__name__): t for t in get_protocols(EntityTransformProtocol)}
     chain: List[Any] = []
     for entry in entries:
-        transformer = by_driver_id.get(entry.driver_id)
+        transformer = by_driver_id.get(entry.driver_ref)
         if transformer is None:
             logger.debug(
                 "get_active_transformers: routing lists '%s' for entity=%s "
                 "catalog=%s collection=%s but no EntityTransformProtocol "
                 "implementer registered with that class name; skipping. "
                 "Available: %s",
-                entry.driver_id, entity, catalog_id, collection_id,
+                entry.driver_ref, entity, catalog_id, collection_id,
                 sorted(by_driver_id),
             )
             continue
@@ -1542,17 +1548,17 @@ def _self_register_transformers_into(
     from dynastore.models.protocols.entity_transform import EntityTransformProtocol
     from dynastore.tools.discovery import get_protocols
 
-    listed = {entry.driver_id for entry in target_ops.get(Operation.TRANSFORM, [])}
+    listed = {entry.driver_ref for entry in target_ops.get(Operation.TRANSFORM, [])}
     for transformer in get_protocols(EntityTransformProtocol):
-        driver_id = _to_snake(type(transformer).__name__)
-        if driver_id in listed:
+        driver_ref = _to_snake(type(transformer).__name__)
+        if driver_ref in listed:
             continue
         target_ops.setdefault(Operation.TRANSFORM, []).append(
-            OperationDriverEntry(driver_id=driver_id, source="auto")
+            OperationDriverEntry(driver_ref=driver_ref, source="auto")
         )
-        listed.add(driver_id)
+        listed.add(driver_ref)
         logger.debug(
             "Routing config self-registration: appended EntityTransformProtocol "
             "driver '%s' to operations[TRANSFORM] (source=auto)",
-            driver_id,
+            driver_ref,
         )

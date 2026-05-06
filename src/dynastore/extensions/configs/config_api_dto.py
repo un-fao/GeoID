@@ -43,8 +43,8 @@ class DriverRef(BaseModel):
     duplication.
     """
 
-    driver_id: str = Field(
-        ..., description="Driver class name, e.g. 'ItemsPostgresqlDriver'."
+    driver_ref: str = Field(
+        ..., description="Driver reference (snake_case, e.g. 'items_postgresql_driver')."
     )
     config_ref: Optional[str] = Field(
         None,

@@ -258,37 +258,37 @@ class TestCollectionMetadataRouting:
         cfg = ItemsRoutingConfig()
         assert Operation.WRITE in cfg.operations
         assert Operation.READ in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "items_postgresql_driver"
+        assert cfg.operations[Operation.WRITE][0].driver_ref == "items_postgresql_driver"
 
     def test_custom_operations(self):
         cfg = ItemsRoutingConfig(operations={
-            Operation.WRITE: [OperationDriverEntry(driver_id="items_postgresql_driver")],
-            Operation.READ: [OperationDriverEntry(driver_id="items_elasticsearch_driver", hints={"search"})],
-            Operation.SEARCH: [OperationDriverEntry(driver_id="items_elasticsearch_driver", hints={"search"})],
+            Operation.WRITE: [OperationDriverEntry(driver_ref="items_postgresql_driver")],
+            Operation.READ: [OperationDriverEntry(driver_ref="items_elasticsearch_driver", hints={"search"})],
+            Operation.SEARCH: [OperationDriverEntry(driver_ref="items_elasticsearch_driver", hints={"search"})],
         })
         assert len(cfg.operations) == 3
-        assert cfg.operations[Operation.SEARCH][0].driver_id == "items_elasticsearch_driver"
+        assert cfg.operations[Operation.SEARCH][0].driver_ref == "items_elasticsearch_driver"
 
     def test_failure_policy(self):
-        entry = OperationDriverEntry(driver_id="es", on_failure=FailurePolicy.WARN)
+        entry = OperationDriverEntry(driver_ref="es", on_failure=FailurePolicy.WARN)
         assert entry.on_failure == FailurePolicy.WARN
 
     def test_default_failure_policy_is_fatal(self):
-        entry = OperationDriverEntry(driver_id="pg")
+        entry = OperationDriverEntry(driver_ref="pg")
         assert entry.on_failure == FailurePolicy.FATAL
 
     def test_pascal_case_driver_id_normalized_to_snake_case(self):
-        """PR-1e: OperationDriverEntry.driver_id field_validator coerces every
+        """PR-1e: OperationDriverEntry.driver_ref field_validator coerces every
         input through ``_to_snake``. Legacy PascalCase values from auto-augment
         helpers and persisted configs predating the cutover are read-side
         normalised so dispatcher lookups against ``DriverRegistry`` (also
         snake_case) hit instead of silently missing.
         """
-        e = OperationDriverEntry(driver_id="ItemsPostgresqlDriver")
-        assert e.driver_id == "items_postgresql_driver"
+        e = OperationDriverEntry(driver_ref="ItemsPostgresqlDriver")
+        assert e.driver_ref == "items_postgresql_driver"
         # Idempotent on already-snake_case input
-        e2 = OperationDriverEntry(driver_id="items_postgresql_driver")
-        assert e2.driver_id == "items_postgresql_driver"
+        e2 = OperationDriverEntry(driver_ref="items_postgresql_driver")
+        assert e2.driver_ref == "items_postgresql_driver"
 
     def test_es_primary_in_read_default_with_geometry_hints(self):
         """Default routing puts ES (public) at READ position 0 with the
@@ -306,14 +306,14 @@ class TestCollectionMetadataRouting:
         write = cfg.operations[Operation.WRITE]
         read = cfg.operations[Operation.READ]
         from dynastore.modules.storage.routing_config import WriteMode
-        assert [e.driver_id for e in write] == [
+        assert [e.driver_ref for e in write] == [
             "items_postgresql_driver", "items_elasticsearch_driver",
         ]
         assert write[0].on_failure == FailurePolicy.FATAL
         assert write[0].write_mode == WriteMode.SYNC
         assert write[1].on_failure == FailurePolicy.OUTBOX
         assert write[1].write_mode == WriteMode.ASYNC
-        assert [e.driver_id for e in read] == [
+        assert [e.driver_ref for e in read] == [
             "items_elasticsearch_driver", "items_postgresql_driver",
         ]
         assert read[0].hints == {"geometry_simplified"}
@@ -355,30 +355,30 @@ class TestMetadataRoutingConfig:
     def test_read_operation(self):
         cfg = CollectionRoutingConfig(operations={
             Operation.READ: [OperationDriverEntry(
-                driver_id="collection_elasticsearch_driver",
+                driver_ref="collection_elasticsearch_driver",
                 write_mode=WriteMode.FIRST,
             )],
         })
         assert len(cfg.operations[Operation.READ]) == 1
-        assert cfg.operations[Operation.READ][0].driver_id == "collection_elasticsearch_driver"
+        assert cfg.operations[Operation.READ][0].driver_ref == "collection_elasticsearch_driver"
 
     def test_transform_operation(self):
         cfg = CollectionRoutingConfig(operations={
             Operation.TRANSFORM: [OperationDriverEntry(
-                driver_id="items_iceberg_driver",
+                driver_ref="items_iceberg_driver",
                 write_mode=WriteMode.CHAIN,
                 on_failure=FailurePolicy.WARN,
             )],
         })
         entry = cfg.operations[Operation.TRANSFORM][0]
-        assert entry.driver_id == "items_iceberg_driver"
+        assert entry.driver_ref == "items_iceberg_driver"
         assert entry.write_mode == WriteMode.CHAIN
         assert entry.on_failure == FailurePolicy.WARN
 
     def test_read_and_transform_together(self):
         cfg = CollectionRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_id="collection_postgresql_driver")],
-            Operation.TRANSFORM: [OperationDriverEntry(driver_id="items_iceberg_driver")],
+            Operation.READ: [OperationDriverEntry(driver_ref="collection_postgresql_driver")],
+            Operation.TRANSFORM: [OperationDriverEntry(driver_ref="items_iceberg_driver")],
         })
         assert Operation.READ in cfg.operations
         assert Operation.TRANSFORM in cfg.operations
@@ -390,7 +390,7 @@ class TestAssetRoutingConfig:
     def test_defaults(self):
         cfg = AssetRoutingConfig()
         assert Operation.WRITE in cfg.operations
-        assert cfg.operations[Operation.WRITE][0].driver_id == "asset_postgresql_driver"
+        assert cfg.operations[Operation.WRITE][0].driver_ref == "asset_postgresql_driver"
 
 
 # ---------------------------------------------------------------------------

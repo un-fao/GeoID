@@ -47,7 +47,7 @@ def _dispatcher(entries, *, outbox=None):
     async def routing(c, col):
         return _StubRouting(entries)
 
-    async def registry(driver_id):
+    async def registry(driver_ref):
         return None
 
     return IndexDispatcher(
@@ -78,14 +78,14 @@ def op():
 
 @pytest.mark.asyncio
 async def test_missing_fatal_raises(ctx, op):
-    entry = OperationDriverEntry(driver_id="d", on_failure=FailurePolicy.FATAL)
+    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.FATAL)
     with pytest.raises(IndexerFatal):
         await _dispatcher([entry]).fan_out(ctx, op)
 
 
 @pytest.mark.asyncio
 async def test_missing_warn_logs_once(ctx, op, caplog):
-    entry = OperationDriverEntry(driver_id="d", on_failure=FailurePolicy.WARN)
+    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.WARN)
     d = _dispatcher([entry])
     with caplog.at_level(
         logging.WARNING,
@@ -99,7 +99,7 @@ async def test_missing_warn_logs_once(ctx, op, caplog):
 
 @pytest.mark.asyncio
 async def test_missing_ignore_silent(ctx, op, caplog):
-    entry = OperationDriverEntry(driver_id="d", on_failure=FailurePolicy.IGNORE)
+    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.IGNORE)
     with caplog.at_level(
         logging.WARNING,
         logger="dynastore.modules.storage.index_dispatcher",
@@ -139,7 +139,7 @@ async def test_missing_outbox_enqueues(ctx, op):
             return _empty()
 
     entry = OperationDriverEntry(
-        driver_id="d",
+        driver_ref="d",
         write_mode=WriteMode.ASYNC,
         on_failure=FailurePolicy.OUTBOX,
     )
@@ -167,12 +167,12 @@ async def test_handle_missing_with_pg_outbox_persists(async_conn, async_schema, 
     async def routing(c, col):
         return _StubRouting([
             OperationDriverEntry(
-                driver_id="missing", write_mode=WriteMode.ASYNC,
+                driver_ref="missing", write_mode=WriteMode.ASYNC,
                 on_failure=FailurePolicy.OUTBOX,
             ),
         ])
 
-    async def registry(driver_id):
+    async def registry(driver_ref):
         return None
 
     # IndexableOp.catalog_id must match the test schema so the outbox

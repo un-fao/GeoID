@@ -1025,17 +1025,17 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         async with tx_manager(engine) as conn:
             # FATAL entries: bulk-write inline through each driver.
             for entry in fatal_entries:
-                driver = await _resolve_driver(entry.driver_id)
+                driver = await _resolve_driver(entry.driver_ref)
                 if driver is None:
                     from dynastore.modules.db_config.exceptions import (
                         ConfigResolutionError,
                     )
                     raise ConfigResolutionError(
                         (
-                            f"FATAL routing entry '{entry.driver_id}' has no "
+                            f"FATAL routing entry '{entry.driver_ref}' has no "
                             f"registered driver — upsert_bulk cannot proceed."
                         ),
-                        missing_key=entry.driver_id,
+                        missing_key=entry.driver_ref,
                         required_fields=[],
                         scope_tried=["driver_registry"],
                         hint=(
@@ -1060,14 +1060,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 records: List[OutboxRecord] = []
                 for entry in async_outbox_entries:
                     inst = compute_driver_instance_id(
-                        entry.driver_id, catalog_id, collection_id,
+                        entry.driver_ref, catalog_id, collection_id,
                     )
                     for it in deduped:
                         item_id = it.get("id") if isinstance(it, dict) else None
                         item_id_str = str(item_id) if item_id is not None else None
                         records.append(OutboxRecord(
                             op_id=generate_uuidv7(),
-                            driver_id=entry.driver_id,
+                            driver_id=entry.driver_ref,
                             driver_instance_id=inst,
                             collection_id=collection_id,
                             op="upsert",
@@ -1143,7 +1143,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     elif r.on_failure == FailurePolicy.WARN:
                         logger.warning(
                             "Secondary sync driver '%s' write failed for %s/%s: %s",
-                            r.driver_id, catalog_id, collection_id, result,
+                            r.driver_ref, catalog_id, collection_id, result,
                         )
                     # IGNORE: silent
                 else:
@@ -1178,12 +1178,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             if resolved.on_failure == FailurePolicy.FATAL:
                 logger.error(
                     "Async secondary driver '%s' FATAL write failed for %s/%s: %s",
-                    resolved.driver_id, catalog_id, collection_id, err,
+                    resolved.driver_ref, catalog_id, collection_id, err,
                 )
             elif resolved.on_failure == FailurePolicy.WARN:
                 logger.warning(
                     "Async secondary driver '%s' write failed for %s/%s: %s",
-                    resolved.driver_id, catalog_id, collection_id, err,
+                    resolved.driver_ref, catalog_id, collection_id, err,
                 )
 
     async def _compensate_drivers(
@@ -1211,12 +1211,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 )
                 logger.info(
                     "Compensated driver '%s' for %s/%s (%d entities)",
-                    r.driver_id, catalog_id, collection_id, len(entity_ids),
+                    r.driver_ref, catalog_id, collection_id, len(entity_ids),
                 )
             except Exception as comp_err:
                 logger.error(
                     "Compensating rollback failed for driver '%s' on %s/%s: %s",
-                    r.driver_id, catalog_id, collection_id, comp_err,
+                    r.driver_ref, catalog_id, collection_id, comp_err,
                 )
 
     # Query methods (get_features, get_item, search_items, stream_items, etc.)

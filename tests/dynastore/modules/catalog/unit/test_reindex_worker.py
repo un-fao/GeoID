@@ -127,7 +127,7 @@ async def test_indexer_resolution_failure_nacks_for_retry():
 async def test_hydrate_failure_nacks_for_retry():
     """Router hydration failing is transient — retry so the Indexer catches up."""
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
     hydrate = AsyncMock(side_effect=RuntimeError("pg connection reset"))
 
     worker = ReindexWorker(
@@ -144,7 +144,7 @@ async def test_hydrate_failure_nacks_for_retry():
 @pytest.mark.asyncio
 async def test_successful_upsert_dispatch_acks_event():
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
     envelope = {"title": {"en": "T"}, "stac_version": "1.1.0"}
 
     worker = ReindexWorker(
@@ -163,7 +163,7 @@ async def test_successful_upsert_dispatch_acks_event():
 @pytest.mark.asyncio
 async def test_delete_event_dispatches_hard_delete():
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
     event = _make_event(payload={"catalog_id": "cat-42", "operation": "delete"})
 
     worker = ReindexWorker(
@@ -181,7 +181,7 @@ async def test_delete_event_dispatches_hard_delete():
 @pytest.mark.asyncio
 async def test_soft_delete_event_dispatches_soft_delete():
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
     event = _make_event(
         payload={"catalog_id": "cat-42", "operation": "soft_delete"},
     )
@@ -200,7 +200,7 @@ async def test_soft_delete_event_dispatches_soft_delete():
 async def test_upsert_with_none_envelope_falls_through_to_delete():
     """Primary says the catalog is gone → Indexer deletes to stay in sync."""
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
 
     worker = ReindexWorker(
         resolve_indexers=lambda: [(entry, driver)],
@@ -227,7 +227,7 @@ async def test_fail_policy_on_driver_exception_nacks(caplog):
         side_effect=RuntimeError("ES cluster red"),
     )
     entry = OperationDriverEntry(
-        driver_id="FakeIndexer",
+        driver_ref="FakeIndexer",
         sla=DriverSla(timeout_ms=1000, on_timeout="fail"),
     )
 
@@ -250,7 +250,7 @@ async def test_degrade_policy_acks_with_recorded_error(caplog):
         side_effect=RuntimeError("ES quota exceeded"),
     )
     entry = OperationDriverEntry(
-        driver_id="FakeIndexer",
+        driver_ref="FakeIndexer",
         sla=DriverSla(timeout_ms=1000, on_timeout="degrade"),
     )
 
@@ -273,7 +273,7 @@ async def test_skip_policy_treats_failure_as_clean_success(caplog):
         side_effect=RuntimeError("sink disabled"),
     )
     entry = OperationDriverEntry(
-        driver_id="FakeIndexer",
+        driver_ref="FakeIndexer",
         sla=DriverSla(timeout_ms=1000, on_timeout="skip"),
     )
 
@@ -297,7 +297,7 @@ async def test_timeout_triggers_sla_policy():
 
     driver.upsert_catalog_metadata = AsyncMock(side_effect=_slow)
     entry = OperationDriverEntry(
-        driver_id="SlowIndexer",
+        driver_ref="SlowIndexer",
         sla=DriverSla(timeout_ms=50, on_timeout="degrade"),
     )
 
@@ -317,7 +317,7 @@ async def test_no_sla_anywhere_defaults_to_fail(caplog):
     driver.upsert_catalog_metadata = AsyncMock(
         side_effect=RuntimeError("boom"),
     )
-    entry = OperationDriverEntry(driver_id="FakeIndexer")  # no entry sla
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")  # no entry sla
 
     worker = ReindexWorker(
         resolve_indexers=lambda: [(entry, driver)],
@@ -335,7 +335,7 @@ async def test_no_sla_anywhere_defaults_to_fail(caplog):
 
 def test_resolve_entry_sla_prefers_entry_override():
     entry_sla = DriverSla(timeout_ms=42, on_timeout="skip")
-    entry = OperationDriverEntry(driver_id="X", sla=entry_sla)
+    entry = OperationDriverEntry(driver_ref="X", sla=entry_sla)
     class_sla = DriverSla(timeout_ms=9999, on_timeout="fail")
     driver = MagicMock()
     driver.sla = class_sla
@@ -344,7 +344,7 @@ def test_resolve_entry_sla_prefers_entry_override():
 
 def test_resolve_entry_sla_falls_back_to_class():
     class_sla = DriverSla(timeout_ms=100, on_timeout="degrade")
-    entry = OperationDriverEntry(driver_id="X")
+    entry = OperationDriverEntry(driver_ref="X")
     driver = MagicMock()
     driver.sla = class_sla
     assert _resolve_entry_sla(entry, driver) is class_sla
@@ -353,14 +353,14 @@ def test_resolve_entry_sla_falls_back_to_class():
 def test_apply_sla_policy_skip_returns_none():
     sla = DriverSla(timeout_ms=100, on_timeout="skip")
     assert _apply_sla_policy(
-        sla=sla, driver_id="X", catalog_id="c", reason="r",
+        sla=sla, driver_ref="X", catalog_id="c", reason="r",
     ) is None
 
 
 def test_apply_sla_policy_fail_returns_fatal():
     sla = DriverSla(timeout_ms=100, on_timeout="fail")
     outcome = _apply_sla_policy(
-        sla=sla, driver_id="X", catalog_id="c", reason="r",
+        sla=sla, driver_ref="X", catalog_id="c", reason="r",
     )
     assert outcome is not None
     is_fatal, message = outcome
@@ -371,7 +371,7 @@ def test_apply_sla_policy_fail_returns_fatal():
 def test_apply_sla_policy_degrade_returns_non_fatal():
     sla = DriverSla(timeout_ms=100, on_timeout="degrade")
     outcome = _apply_sla_policy(
-        sla=sla, driver_id="X", catalog_id="c", reason="r",
+        sla=sla, driver_ref="X", catalog_id="c", reason="r",
     )
     assert outcome is not None
     is_fatal, _ = outcome
@@ -380,7 +380,7 @@ def test_apply_sla_policy_degrade_returns_non_fatal():
 
 def test_apply_sla_policy_without_sla_defaults_to_fail():
     outcome = _apply_sla_policy(
-        sla=None, driver_id="X", catalog_id="c", reason="r",
+        sla=None, driver_ref="X", catalog_id="c", reason="r",
     )
     assert outcome is not None
     assert outcome[0] is True  # fatal
@@ -395,7 +395,7 @@ def test_apply_sla_policy_without_sla_defaults_to_fail():
 async def test_batch_processes_each_event_independently():
     """A single bad event must not poison the rest of the batch."""
     driver = _make_driver("FakeIndexer")
-    entry = OperationDriverEntry(driver_id="FakeIndexer")
+    entry = OperationDriverEntry(driver_ref="FakeIndexer")
 
     # First event hydrates ok; second hydrates ok; third event is the
     # wrong type and short-circuits to ACK.
