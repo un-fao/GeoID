@@ -38,6 +38,11 @@ dynastore-ext-stats = { workspace = true }
 dynastore-ext-edr = { workspace = true }
 dynastore-ext-moving-features = { workspace = true }
 dynastore-ext-connected-systems = { workspace = true }
+dynastore-ext-dimensions = { workspace = true }
+dynastore-ext-notebooks = { workspace = true }
+dynastore-ext-proxy = { workspace = true }
+dynastore-ext-processes = { workspace = true }
+dynastore-ext-search = { workspace = true }
 
 [project.optional-dependencies]
 # ==========================================================================
@@ -86,12 +91,12 @@ extension_catalog = ["dynastore[extension_base,module_catalog]"]
 extension_stac = ["dynastore[extension_base]", "pystac[validation]>=1.13.0", "stac-pydantic[validation]>=3.1.0"]
 extension_auth = ["dynastore[extension_base]", "python-multipart>=0.0.26", "itsdangerous>=2.0"]
 extension_template = ["dynastore[extension_base]", "attrs>=25.3.0", "aiohttp>=3.12.15", "jinja2>=3.1.6", "xmltodict>=0.13.0", "httpx>=0.24.1"]
-extension_processes = ["dynastore[extension_base]", "jsonschema"]
+extension_processes = ["dynastore[extension_base]", "jsonschema", "dynastore-ext-processes"]
 extension_features = ["dynastore[extension_base,geospatial_core]", "pygeofilter[backend-sqlalchemy]"]
 extension_tiles = ["dynastore[extension_base,module_tiles]"]
 extension_volumes = ["dynastore[extension_base]", "shapely>=2.0"]
 extension_tasks = ["dynastore[extension_base,module_tasks]", "dynastore-ext-tasks"]
-extension_proxy = ["dynastore[extension_base,module_proxy]"]
+extension_proxy = ["dynastore[extension_base,module_proxy]", "dynastore-ext-proxy"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
 extension_moving_features = ["dynastore[extension_base,module_moving_features]", "dynastore-ext-moving-features"]
@@ -105,9 +110,9 @@ extension_events = ["dynastore[extension_base,module_events]"]
 extension_wfs = ["dynastore[extension_base,geospatial_core]", "pyproj>=3.0.0"]
 extension_admin = ["dynastore[extension_base,extension_iam]"]
 extension_assets = ["dynastore[extension_base]"]
-extension_notebooks = ["dynastore[extension_base,module_notebooks]"]
+extension_notebooks = ["dynastore[extension_base,module_notebooks]", "dynastore-ext-notebooks"]
 extension_records = ["dynastore[extension_base]", "pygeofilter[backend-sqlalchemy]"]
-extension_search = ["dynastore[extension_base]"]
+extension_search = ["dynastore[extension_base]", "dynastore-ext-search"]
 extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
@@ -117,7 +122,7 @@ extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2s
 module_coverages_netcdf = ["netCDF4>=1.6.0", "xarray>=2024.0.0"]
 module_coverages_zarr = ["zarr>=2.18.0", "xarray>=2024.0.0"]
 extension_dwh = ["dynastore[extension_base,dwh]", "pyproj>=3.0.0"]
-extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation"]
+extension_dimensions = ["dynastore[extension_base]", "ogc-dimensions @ git+https://github.com/ccancellieri/ogc-dimensions.git@main#subdirectory=reference-implementation", "dynastore-ext-dimensions"]
 
 # ==========================================================================
 # GRANULAR TASKS
@@ -488,17 +493,17 @@ stac = "dynastore.extensions.stac.stac_service:STACService"
 dwh = "dynastore.extensions.dwh.dwh:DwhService"
 joins = "dynastore.extensions.joins.joins_service:JoinsService"
 # tasks: migrated to packages/extensions/tasks (dynastore-ext-tasks wheel) — Phase 1 pilot
-proxy = "dynastore.extensions.proxy.proxy_service:ProxyService"
+# proxy: migrated to packages/extensions/proxy (dynastore-ext-proxy wheel)
 gdal = "dynastore.extensions.gdal.gdal_service:GdalService"
 auth = "dynastore.extensions.auth.authentication:Authentication"
 web = "dynastore.extensions.web.web:Web"
-processes = "dynastore.extensions.processes.processes_service:ProcessesService"
+# processes: migrated to packages/extensions/processes (dynastore-ext-processes wheel)
 features = "dynastore.extensions.features.features_service:OGCFeaturesService"
 template = "dynastore.extensions.template.templating:TemplatingExtension"
 admin = "dynastore.extensions.admin.admin_service:AdminService"
 geoid = "dynastore.extensions.geoid.geoid:Geoid"
 gcp_bucket = "dynastore.extensions.gcp.bucket_service:BucketService"
-search = "dynastore.extensions.search.search_service:SearchService"
+# search: migrated to packages/extensions/search (dynastore-ext-search wheel)
 styles = "dynastore.extensions.styles.styles_service:StylesService"
 # connected_systems: migrated to packages/extensions/connected_systems (dynastore-ext-connected-systems wheel)
 httpx = "dynastore.extensions.httpx.httpx_service:HttpxExtension"
@@ -509,10 +514,10 @@ crs = "dynastore.extensions.crs.crs_extension:CRSExtension"
 events = "dynastore.extensions.events.extension:EventsExtension"
 wfs = "dynastore.extensions.wfs.wfs_service:WFSService"
 assets = "dynastore.extensions.assets.assets_service:AssetService"
-notebooks = "dynastore.extensions.notebooks.notebooks_extension:NotebooksExtension"
+# notebooks: migrated to packages/extensions/notebooks (dynastore-ext-notebooks wheel)
 # stats: migrated to packages/extensions/stats (dynastore-ext-stats wheel) — Phase 1 pilot
 tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
-dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
+# dimensions: migrated to packages/extensions/dimensions (dynastore-ext-dimensions wheel)
 records = "dynastore.extensions.records.records_service:RecordsService"
 coverages = "dynastore.extensions.coverages.coverages_service:CoveragesService"
 # edr: migrated to packages/extensions/edr (dynastore-ext-edr wheel)
