@@ -67,6 +67,8 @@ class CatalogElasticsearchDriverConfig(_PluginDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "drivers")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
+
 
     index_name: Immutable[str] = Field(
         "catalogs",

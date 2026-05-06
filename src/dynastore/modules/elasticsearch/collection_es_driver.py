@@ -63,6 +63,8 @@ class CollectionElasticsearchDriverConfig(_PluginDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "drivers")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
+
 
     index_prefix: Immutable[str] = Field(
         "dynastore",
