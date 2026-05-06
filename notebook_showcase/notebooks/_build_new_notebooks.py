@@ -188,7 +188,7 @@ driver_cfg = {
     ],
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/items_postgresql_driver_config",
     content=json.dumps(driver_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -358,7 +358,7 @@ pg_cfg = {
     # default VECTOR collection → geometry + attributes sidecars auto-injected
 }
 r = client.put(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/ItemsPostgresqlDriverConfig",
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/items_postgresql_driver_config",
     content=json.dumps(pg_cfg),
 )
 assert r.status_code in (200, 201, 204), r.text[:400]
@@ -446,16 +446,16 @@ print("Routing configured: PG primary · ES INDEX · DuckDB BACKUP(fmt=parquet)"
 
     cells.append(md(
         "## Step 5 — Verify effective routing (read the resolved config)\n",
-        "The config waterfall merges platform → catalog → collection — verifying the\n"
-        "collection scope resolves correctly is a sanity check before pushing data.",
+        "The config waterfall merges platform → catalog → collection. The per-plugin\n"
+        "GET already returns the waterfall-resolved value — no /effective sub-path exists.",
     ))
     cells.append(code("""
 r = client.get(
-    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config/effective"
+    f"/configs/catalogs/{CATALOG_ID}/collections/{COLLECTION_ID}/plugins/collection_routing_config"
 )
 assert r.status_code == 200, r.text[:400]
-effective = r.json()
-print(json.dumps(effective, indent=2)[:1200])
+resolved = r.json()
+print(json.dumps(resolved, indent=2)[:1200])
 """))
 
     cells.append(md(
