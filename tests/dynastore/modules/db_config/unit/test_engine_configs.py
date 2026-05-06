@@ -95,6 +95,20 @@ def test_engine_config_marked_abstract_in_registry():
     assert EngineConfig.__dict__.get("is_abstract_base", False) is True
 
 
+def test_concrete_engine_subclass_must_override_engine_class():
+    """A concrete ``EngineConfig`` subclass that forgets to override
+    ``engine_class`` must fail at class-creation time.  Without the
+    guard, the engine would silently inherit the empty-string default
+    and be invisible to driver-side ``required_engine_class`` matching
+    (F.2)."""
+    from typing import ClassVar, Tuple
+
+    with pytest.raises(TypeError, match=r"does not declare ``engine_class``"):
+        class _BadEngineConfig(EngineConfig):  # noqa: F841
+            # Forgot to set engine_class — should fail at __init_subclass__.
+            _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+
+
 # ---------------------------------------------------------------------------
 # Concrete engine classes — discriminators + addresses + visibility
 # ---------------------------------------------------------------------------
