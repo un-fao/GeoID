@@ -325,19 +325,19 @@ class WFSService(ExtensionProtocol):
         configs_svc = await self._get_configs_service()
 
         # Phase 1.6: collection_type was hoisted out of ItemsPostgresqlDriverConfig
-        # into its own CollectionType PluginConfig. Fetch from configs_svc instead
+        # into its own CollectionInfo PluginConfig. Fetch from configs_svc instead
         # of reading driver config (which no longer exposes the attribute).
         from dynastore.modules.catalog.catalog_config import (
-            CollectionType, CollectionTypeEnum,
+            CollectionInfo, CollectionKind,
         )
 
         async def _is_vector(cat_id: str, coll_id: str) -> bool:
             ct = await configs_svc.get_config(
-                CollectionType, catalog_id=cat_id, collection_id=coll_id,
+                CollectionInfo, catalog_id=cat_id, collection_id=coll_id,
             ) if configs_svc else None
-            # Default per CollectionType.kind = VECTOR — missing config means
+            # Default per CollectionInfo.kind = VECTOR — missing config means
             # vector, matching the pre-Phase-1.6 "no driver config → include" path.
-            return ct is None or ct.kind == CollectionTypeEnum.VECTOR
+            return ct is None or ct.kind == CollectionKind.VECTOR
 
         if catalog_id:
             # Scoped request: only fetch collections for the specified catalog.

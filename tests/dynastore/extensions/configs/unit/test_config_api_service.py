@@ -712,19 +712,19 @@ def test_compose_tree_slim_at_platform_scope_is_a_noop():
 # ---------------------------------------------------------------------------
 
 def test_catalog_policy_config_lands_at_catalog_scope():
-    """``CatalogPolicyConfig`` (Cycle E.1 — replaces
+    """``CatalogPrivacy`` (Cycle E.1 — replaces
     ``ElasticsearchCatalogConfig``) carries the catalog-tier privacy
     default; address pins it under ``catalog.policy``.
     """
-    from dynastore.modules.catalog.catalog_config import CatalogPolicyConfig
+    from dynastore.modules.catalog.catalog_config import CatalogPrivacy
 
-    assert CatalogPolicyConfig._address == ("platform", "catalog", "policy")
-    assert CatalogPolicyConfig._visibility == "catalog"
+    assert CatalogPrivacy._address == ("platform", "catalog", "privacy")
+    assert CatalogPrivacy._visibility == "catalog"
 
 
 # NOTE: ``ElasticsearchCollectionConfig`` was retired in Cycle C and
 # ``ElasticsearchCatalogConfig`` was retired in Cycle E.1.  Privacy
-# moves to ``CatalogPolicyConfig.default_collection_privacy`` (catalog
+# moves to ``CatalogPrivacy.default_collection_privacy`` (catalog
 # tier) and (Cycle E.2) ``is_private: bool`` on ``CollectionPluginConfig``.
 
 

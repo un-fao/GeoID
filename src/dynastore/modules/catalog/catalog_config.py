@@ -32,13 +32,13 @@ from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
 
 
-class CollectionTypeEnum(str, Enum):
+class CollectionKind(str, Enum):
     VECTOR = "VECTOR"
     RASTER = "RASTER"
     RECORDS = "RECORDS"
 
 
-class CollectionType(PluginConfig):
+class CollectionInfo(PluginConfig):
     """Semantic kind of a collection — VECTOR, RASTER, or RECORDS.
 
     Hoisted out of ``ItemsPostgresqlDriverConfig.collection_type`` (Phase 1.6
@@ -51,11 +51,11 @@ class CollectionType(PluginConfig):
     driver's apply handler refuses payloads containing the lifted key
     (it's removed from the model entirely so Pydantic rejects on parse).
     """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "type")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "info")
     _visibility: ClassVar[Optional[str]] = "collection"
 
-    kind: CollectionTypeEnum = Field(
-        default=CollectionTypeEnum.VECTOR,
+    kind: CollectionKind = Field(
+        default=CollectionKind.VECTOR,
         description=(
             "VECTOR (default — features with geometry), RECORDS "
             "(catalog-style records, no geometry), or RASTER (coverage / "
@@ -174,7 +174,7 @@ def _register_collection_privacy_cascade_handler() -> None:
 _register_collection_privacy_cascade_handler()
 
 
-class CatalogPolicyConfig(PluginConfig):
+class CatalogPrivacy(PluginConfig):
     """Catalog-tier policy defaults — visibility, future RBAC hooks.
 
     Holds knobs that apply uniformly across a catalog's collections unless
@@ -187,7 +187,7 @@ class CatalogPolicyConfig(PluginConfig):
     source of truth — flipping the catalog default does not retroactively
     re-flag existing collections.
     """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "policy")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "privacy")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
     default_collection_privacy: Literal["public", "private"] = Field(
@@ -216,12 +216,12 @@ async def apply_catalog_default_privacy_seed(
     db_resource: Any = None,
 ) -> bool:
     """Seed a freshly-created collection's privacy state from the
-    catalog's ``CatalogPolicyConfig.default_collection_privacy``.
+    catalog's ``CatalogPrivacy.default_collection_privacy``.
 
     Returns ``True`` iff the seed was applied (catalog default is
     ``"private"`` AND ConfigsProtocol is reachable).  No-ops when:
 
-    - The catalog has no ``CatalogPolicyConfig`` row yet (default is
+    - The catalog has no ``CatalogPrivacy`` row yet (default is
       ``"public"`` per the field default; nothing to seed);
     - The catalog policy is ``"public"`` (matches the
       ``CollectionPluginConfig.is_private`` default — no writes
@@ -261,11 +261,11 @@ async def apply_catalog_default_privacy_seed(
 
     try:
         policy = await configs.get_config(
-            CatalogPolicyConfig, catalog_id=catalog_id, ctx=ctx,
+            CatalogPrivacy, catalog_id=catalog_id, ctx=ctx,
         )
     except Exception:
         return False
-    if not isinstance(policy, CatalogPolicyConfig):
+    if not isinstance(policy, CatalogPrivacy):
         return False
     if policy.default_collection_privacy != "private":
         return False
@@ -349,7 +349,7 @@ async def apply_catalog_default_privacy_seed(
 
 
 async def _on_apply_catalog_policy_config(
-    config: "CatalogPolicyConfig",
+    config: "CatalogPrivacy",
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Any,
@@ -357,7 +357,7 @@ async def _on_apply_catalog_policy_config(
     """Eagerly create per-tenant private indexes when the catalog default
     privacy is ``"private"`` (Cycle E.2.c slice 2).
 
-    Fires whenever an operator writes a ``CatalogPolicyConfig`` row.
+    Fires whenever an operator writes a ``CatalogPrivacy`` row.
     When the new value is ``"private"``, we proactively call
     ``ensure_storage(catalog_id)`` on both per-tenant private drivers so
     the indexes exist before any collection-create lands.  Without this
@@ -417,7 +417,7 @@ async def _on_apply_catalog_policy_config(
             await items_private.ensure_storage(catalog_id)
         except Exception as exc:
             logger.warning(
-                "CatalogPolicyConfig apply: items-private ensure_storage(%r) failed: %s",
+                "CatalogPrivacy apply: items-private ensure_storage(%r) failed: %s",
                 catalog_id, exc,
             )
 
@@ -434,9 +434,9 @@ async def _on_apply_catalog_policy_config(
             await coll_private.ensure_storage(catalog_id)
         except Exception as exc:
             logger.warning(
-                "CatalogPolicyConfig apply: collection-private ensure_storage(%r) failed: %s",
+                "CatalogPrivacy apply: collection-private ensure_storage(%r) failed: %s",
                 catalog_id, exc,
             )
 
 
-CatalogPolicyConfig.register_apply_handler(_on_apply_catalog_policy_config)
+CatalogPrivacy.register_apply_handler(_on_apply_catalog_policy_config)

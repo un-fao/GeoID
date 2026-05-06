@@ -582,7 +582,7 @@ class CollectionService:
                 )
 
             # 5c. Cycle E.2.c — seed the collection's privacy state
-            #     from ``CatalogPolicyConfig.default_collection_privacy``
+            #     from ``CatalogPrivacy.default_collection_privacy``
             #     when no explicit ``is_private`` was passed.  The
             #     helper writes ``ItemsRoutingConfig`` (private driver
             #     pinned) BEFORE ``CollectionPluginConfig(is_private=True)``

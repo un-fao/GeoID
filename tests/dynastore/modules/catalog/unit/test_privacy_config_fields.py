@@ -3,7 +3,7 @@
 Covers:
 - ``CollectionPluginConfig.is_private`` is ``Immutable[bool]`` —
   ``enforce_config_immutability`` rejects flips at apply time.
-- ``CatalogPolicyConfig.default_collection_privacy`` defaults to
+- ``CatalogPrivacy.default_collection_privacy`` defaults to
   ``"public"`` and accepts only the documented Literal values.
 - The privacy configs participate in PluginConfig discovery
   (``list_registered_configs``) under the right address keys.
@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPolicyConfig,
+    CatalogPrivacy,
     CollectionPluginConfig,
 )
 from dynastore.modules.db_config.platform_config_service import (
@@ -65,17 +65,17 @@ def test_is_private_unchanged_does_not_raise():
 
 
 # ---------------------------------------------------------------------------
-# CatalogPolicyConfig.default_collection_privacy — Literal["public","private"]
+# CatalogPrivacy.default_collection_privacy — Literal["public","private"]
 # ---------------------------------------------------------------------------
 
 
 def test_default_collection_privacy_default_is_public():
-    cfg = CatalogPolicyConfig()
+    cfg = CatalogPrivacy()
     assert cfg.default_collection_privacy == "public"
 
 
 def test_default_collection_privacy_accepts_private():
-    cfg = CatalogPolicyConfig(default_collection_privacy="private")
+    cfg = CatalogPrivacy(default_collection_privacy="private")
     assert cfg.default_collection_privacy == "private"
 
 
@@ -83,11 +83,11 @@ def test_default_collection_privacy_rejects_unknown_values():
     """Pydantic Literal validation should reject anything outside
     the documented enum."""
     with pytest.raises(ValidationError):
-        CatalogPolicyConfig(default_collection_privacy="hidden")
+        CatalogPrivacy(default_collection_privacy="hidden")
 
 
 def test_catalog_policy_address_and_visibility():
     """Pin the address tuple — surfaces the config under
     ``catalog.policy`` in the configs API tree."""
-    assert CatalogPolicyConfig._address == ("platform", "catalog", "policy")
-    assert CatalogPolicyConfig._visibility == "catalog"
+    assert CatalogPrivacy._address == ("platform", "catalog", "privacy")
+    assert CatalogPrivacy._visibility == "catalog"

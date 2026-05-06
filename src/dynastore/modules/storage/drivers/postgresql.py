@@ -139,7 +139,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         defaults to empty (plan §Principle — default-fast invariant).
         """
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.catalog.catalog_config import CollectionType
+        from dynastore.modules.catalog.catalog_config import CollectionInfo
         from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
         from dynastore.tools.discovery import get_protocol
 
@@ -149,8 +149,8 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         # Phase 1.6: collection_type lives on its own PluginConfig now.
         configs = get_protocol(ConfigsProtocol)
         ct = await configs.get_config(
-            CollectionType, catalog_id=catalog_id, collection_id=collection_id,
-        ) if configs else CollectionType()
+            CollectionInfo, catalog_id=catalog_id, collection_id=collection_id,
+        ) if configs else CollectionInfo()
         effective = _effective_sidecars(
             config,
             catalog_id=catalog_id,

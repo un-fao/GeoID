@@ -97,7 +97,7 @@ def _effective_sidecars(
         collection_type: ``"VECTOR"`` (default), ``"RECORDS"``, or
             ``"RASTER"``.  Hoisted out of ``ItemsPostgresqlDriverConfig``
             in Phase 1.6 — async callers fetch the
-            :class:`~dynastore.modules.catalog.catalog_config.CollectionType`
+            :class:`~dynastore.modules.catalog.catalog_config.CollectionInfo`
             PluginConfig and pass ``ct.kind.value`` here.
         context: Caller-supplied injection context dict.  Merged with
             the derived defaults (``catalog_id``, ``collection_id``,
@@ -118,7 +118,7 @@ def _effective_sidecars(
     # Phase 1.6: drop geometry sidecars for RECORDS — relocated from the
     # ``strip_geometry_for_records`` model_validator on
     # ``ItemsPostgresqlDriverConfig`` (which can no longer see
-    # ``collection_type`` since the field was hoisted to ``CollectionType``).
+    # ``collection_type`` since the field was hoisted to ``CollectionInfo``).
     if collection_type == "RECORDS" and explicit:
         from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
             GeometriesSidecarConfig,
