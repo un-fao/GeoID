@@ -70,6 +70,20 @@ get_platform_config = DQLQuery(
     result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
 )
 
+# F.4c.2 ref-keyed read API: surfaces class_key alongside config_data so callers
+# can resolve the dispatch class from the row.  ``get_platform_config`` retains
+# the SCALAR_ONE_OR_NONE semantics for class-keyed callers that already know
+# the class statically.
+get_platform_config_by_ref = DQLQuery(
+    f"SELECT class_key, config_data FROM {CONFIGS_SCHEMA}.platform_configs WHERE ref_key = :ref_key;",
+    result_handler=ResultHandler.ONE_DICT,
+)
+
+list_platform_refs = DQLQuery(
+    f"SELECT ref_key, class_key FROM {CONFIGS_SCHEMA}.platform_configs ORDER BY ref_key;",
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
 upsert_platform_config = DQLQuery(
     f"""
     INSERT INTO {CONFIGS_SCHEMA}.platform_configs (ref_key, class_key, schema_id, config_data, updated_at)
@@ -140,6 +154,24 @@ def select_catalog_config(phys_schema: str) -> DQLQuery:
     )
 
 
+def select_catalog_config_by_ref(phys_schema: str) -> DQLQuery:
+    """F.4c.2 ref-keyed read: returns class_key + config_data for a single ref_key."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT class_key, config_data FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} WHERE ref_key = :ref_key;',
+        result_handler=ResultHandler.ONE_DICT,
+    )
+
+
+def list_catalog_refs(phys_schema: str) -> DQLQuery:
+    """F.4c.2 enumerate {ref_key: class_key} for the catalog scope."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT ref_key, class_key FROM "{phys_schema}".{CATALOG_CONFIGS_TABLE} ORDER BY ref_key;',
+        result_handler=ResultHandler.ALL_DICTS,
+    )
+
+
 def select_catalog_config_for_update(phys_schema: str) -> DQLQuery:
     """SELECT config_data FOR UPDATE — used during immutability check before write."""
     validate_sql_identifier(phys_schema)
@@ -206,6 +238,24 @@ def select_collection_config(phys_schema: str) -> DQLQuery:
     return DQLQuery(
         f'SELECT config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND ref_key = :ref_key;',
         result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    )
+
+
+def select_collection_config_by_ref(phys_schema: str) -> DQLQuery:
+    """F.4c.2 ref-keyed read: returns class_key + config_data for (collection_id, ref_key)."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT class_key, config_data FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id AND ref_key = :ref_key;',
+        result_handler=ResultHandler.ONE_DICT,
+    )
+
+
+def list_collection_refs(phys_schema: str) -> DQLQuery:
+    """F.4c.2 enumerate {ref_key: class_key} for a given collection_id."""
+    validate_sql_identifier(phys_schema)
+    return DQLQuery(
+        f'SELECT ref_key, class_key FROM "{phys_schema}".{COLLECTION_CONFIGS_TABLE} WHERE collection_id = :collection_id ORDER BY ref_key;',
+        result_handler=ResultHandler.ALL_DICTS,
     )
 
 

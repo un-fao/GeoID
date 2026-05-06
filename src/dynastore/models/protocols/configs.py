@@ -17,7 +17,14 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-Configuration management protocol definitions (class-as-identity only).
+Configuration management protocol definitions.
+
+Class-as-identity is the canonical lookup ((class_key)).  Cycle F.4c.2
+introduces the parallel ref-key-as-identity API (``get_config_by_ref`` +
+``list_refs_at_scope``) so callers can read by operator-chosen instance
+name when multiple driver/engine instances of the same class are stored
+side-by-side.  For single-instance configs ``ref_key == class_key`` and
+both APIs return the same row.
 """
 
 from typing import Protocol, Optional, Any, Dict, Type, TypeVar, runtime_checkable, TYPE_CHECKING
@@ -137,5 +144,42 @@ class ConfigsProtocol(Protocol):
         """
         Searches for configurations across the hierarchy.
         ``query`` is matched against class_key (ILIKE).
+        """
+        ...
+
+    # -----------------------------------------------------------------
+    # F.4c.2 — ref-keyed read API
+    # -----------------------------------------------------------------
+
+    async def list_refs_at_scope(
+        self,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        ctx: Optional["DriverContext"] = None,
+    ) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for every stored row at the implied scope.
+
+        Tier-local: does NOT walk the waterfall.  Empty dict when nothing is
+        stored at the scope.  For single-instance configs ``ref_key`` equals
+        the row's ``class_key`` — multi-instance writes (F.4c.4) introduce
+        refs that diverge.
+        """
+        ...
+
+    async def get_config_by_ref(
+        self,
+        ref_key: str,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        ctx: Optional["DriverContext"] = None,
+    ) -> Optional["PluginConfig"]:
+        """Return the stored ``PluginConfig`` for ``(ref_key, scope)``, else ``None``.
+
+        Resolves the dispatch class from the row's ``class_key`` discriminator
+        and validates the JSON payload through that class.  Tier-local: does
+        NOT walk the waterfall — refs are explicit.  Returns ``None`` when no
+        row exists for ``ref_key`` at the implied scope, OR when the row's
+        ``class_key`` cannot be resolved against the live registry (warning
+        logged at the call site).
         """
         ...
