@@ -64,6 +64,33 @@ def get_base_url(request: Request) -> str:
         scheme = "https"
     return f"{scheme}://{url.netloc}{request.scope.get('path', '')}".rstrip('/')
 
+def enforce_https(url: str) -> str:
+    """Upgrade an absolute ``http://`` URL to ``https://`` when ``FORCE_HTTPS`` is set.
+
+    Used for client-supplied URLs (e.g. OAuth ``redirect_uri``) that bypass the
+    request-derived helpers and would otherwise carry the inner-LB scheme.
+    Non-absolute or already-https URLs are returned unchanged.
+    """
+    if FORCE_HTTPS and url.startswith("http://"):
+        return "https://" + url[len("http://"):]
+    return url
+
+
+def resolve_redirect_uri(request: Request, redirect_uri: str) -> str:
+    """Normalize an OAuth ``redirect_uri`` to an absolute, scheme-correct URL.
+
+    - Relative paths (``/foo``) are resolved against ``get_root_url(request)``,
+      which already honors ``FORCE_HTTPS``.
+    - Absolute ``http://`` URLs are upgraded via :func:`enforce_https`.
+
+    The same value must be used at ``/authorize`` and ``/token``; the IdP
+    compares them strictly.
+    """
+    if redirect_uri.startswith("/"):
+        return f"{get_root_url(request)}{redirect_uri}"
+    return enforce_https(redirect_uri)
+
+
 def get_url(request: Request, remove_qp=True) -> str:
     """Constructs the full URL from the request for link generation."""
     url = request.url

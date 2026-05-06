@@ -10,7 +10,7 @@ from dynastore.extensions import (
     ExtensionProtocol,
 )
 from dynastore.extensions.web import expose_static
-from dynastore.extensions.tools.url import build_sibling_redirect, get_root_url
+from dynastore.extensions.tools.url import build_sibling_redirect, resolve_redirect_uri
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
     CatalogsProtocol,
@@ -154,10 +154,9 @@ class Authentication(ExtensionProtocol):
             Redirects the browser to the configured identity provider's login page.
             """
             # Resolve relative redirect_uri to absolute URL so the IdP can
-            # match it against its allowed redirect URIs.
-            if redirect_uri.startswith("/"):
-                root_url = get_root_url(request)
-                redirect_uri = f"{root_url}{redirect_uri}"
+            # match it against its allowed redirect URIs; also coerce
+            # http:// → https:// when FORCE_HTTPS is set (inner LB is plain HTTP).
+            redirect_uri = resolve_redirect_uri(request, redirect_uri)
 
             if self.identity_provider:
                 auth_url = await self.identity_provider.get_authorization_url(
@@ -213,10 +212,8 @@ class Authentication(ExtensionProtocol):
             if not isinstance(redirect_uri, str):
                 redirect_uri = ""
 
-            # Resolve relative redirect_uri to absolute
-            if redirect_uri.startswith("/"):
-                root_url = get_root_url(request)
-                redirect_uri = f"{root_url}{redirect_uri}"
+            # Must match the value used at /authorize exactly (IdP compares strictly).
+            redirect_uri = resolve_redirect_uri(request, redirect_uri)
 
             if self.identity_provider:
                 try:
