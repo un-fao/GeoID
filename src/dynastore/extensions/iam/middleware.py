@@ -20,7 +20,7 @@
 import time
 import jwt
 import logging
-from typing import Optional, Callable, Awaitable
+from typing import Any, Awaitable, Callable, List, Optional
 
 from dynastore.tools.discovery import get_protocol
 
@@ -41,10 +41,70 @@ class IamMiddleware(BaseHTTPMiddleware):
     _iam_manager: Optional[AuthenticatorProtocol] = None
     _policy_service: Optional[PermissionProtocol] = None
 
+    # Sentinel role name configuration.
+    #
+    # ``catalog_admin_role`` is the catalog-tier role *checked* for
+    # presence in the caller's catalog grants — it's a foreign key into
+    # ``iam.roles`` like any other role name.
+    #
+    # ``catalog_admin_sentinel`` is the role name *added* to the
+    # principal's flat role list when the check passes. It exists so
+    # platform-tier policies can bind to a name distinct from "admin",
+    # which keeps catalog-only admins from accidentally inheriting
+    # platform-tier authority through identically-named bindings.
+    #
+    # Both are class attributes so subclasses (or test harnesses) can
+    # rename them without touching the dispatch logic.
+    catalog_admin_role: str = DefaultRole.ADMIN.value
+    catalog_admin_sentinel: str = "catalog_admin"
+
     def __init__(self, app, **kwargs):
         super().__init__(app)
         self._iam_manager: Optional[AuthenticatorProtocol] = None
         self._policy_service: Optional[PermissionProtocol] = None
+
+    async def _augment_with_catalog_sentinels(
+        self,
+        principal_role: Optional[List[str]],
+        principal_obj: Any,
+    ) -> Optional[List[str]]:
+        """Append catalog-tier sentinel role(s) to ``principal_role``.
+
+        Idempotent: if the sentinel is already present, returns
+        ``principal_role`` unchanged. Returns the input untouched when
+        ``principal_obj`` is None (anonymous) or when no
+        ``IamQueryProtocol`` is registered (slim deployment).
+        """
+        if principal_obj is None:
+            return principal_role
+        provider = getattr(principal_obj, "provider", None)
+        subject_id = getattr(principal_obj, "subject_id", None)
+        if not provider or not subject_id:
+            return principal_role
+        try:
+            from dynastore.models.protocols.iam_query import IamQueryProtocol
+            from dynastore.extensions.iam.membership_cache import (
+                get_membership_cached,
+            )
+            iam_query = get_protocol(IamQueryProtocol)
+            if iam_query is None:
+                return principal_role
+            membership = await get_membership_cached(iam_query, provider, subject_id)
+            catalog_roles = membership.get("catalog_roles") or {}
+            holds_catalog_admin = any(
+                self.catalog_admin_role in (roles or [])
+                for roles in catalog_roles.values()
+            )
+            if not holds_catalog_admin:
+                return principal_role
+            current = list(principal_role) if principal_role else []
+            if self.catalog_admin_sentinel in current:
+                return current
+            current.append(self.catalog_admin_sentinel)
+            return current
+        except Exception as e:
+            logger.debug("catalog-sentinel augmentation skipped: %s", e)
+            return principal_role
 
     def _emit_audit(
         self, event_type: str, principal_id: str, ip: str, schema: str,
@@ -146,6 +206,26 @@ class IamMiddleware(BaseHTTPMiddleware):
             principal_role,
             principal_obj,
         ) = await self._iam_manager.authenticate_and_get_role(request)  # type: ignore[union-attr]
+
+        # 1b. Derive catalog-tier sentinel role(s).
+        #
+        # ``authenticate_and_get_role`` returns *platform-tier* roles only.
+        # A principal whose only authority is "admin in catalog X" therefore
+        # carries an empty role list, so policy bindings (which match by
+        # role name) never apply to them. Augment by checking catalog
+        # memberships and adding sentinel role names that policies can bind
+        # to without conflating with platform-tier role names.
+        #
+        # Sentinel rule (default): if the caller holds the configured
+        # ``catalog_admin_role`` ("admin" by default) in any catalog,
+        # augment with the configured ``catalog_admin_sentinel`` ("catalog_admin"
+        # by default). This is the only role name added — viewer/user
+        # catalog-tier grants do NOT bleed into the flat list because that
+        # could over-grant on platform-tier policies that happen to bind
+        # those names (e.g. ``web_admin_access`` bound to "user").
+        principal_role = await self._augment_with_catalog_sentinels(
+            principal_role, principal_obj,
+        )
 
         request.state.principal_role = principal_role
         request.state.principal = principal_obj
