@@ -108,6 +108,36 @@ def value_error(
     ))
 
 
+def engine_write_forbidden_at_tenant_scope(
+    plugin_id: str, *, scope: str, instance: Optional[str] = None,
+) -> ProblemException:
+    """Cycle F.4b — reject tenant-scope writes to ``platform.engines.*``.
+
+    Engines are sysadmin-only platform-tier resources (tenant configs
+    cannot influence platform resource policy — see decision #15 / #18).
+    The existing ``configs_access`` policy gates the entire
+    ``/configs/.*`` surface to SYSADMIN, so this 403 is defence-in-
+    depth: even if the policy is misconfigured the routing layer
+    itself rejects engine writes at any scope below platform.
+
+    ``scope`` is a label like ``"catalog"`` or ``"collection"`` that
+    surfaces in the message so operators see exactly where the write
+    was attempted.
+    """
+    return ProblemException(ProblemDetails(
+        type=f"{_TYPE_BASE}/engine-write-forbidden-at-tenant-scope",
+        title="Engine configuration is sysadmin-only",
+        status=403,
+        detail=(
+            f"Engine '{plugin_id}' lives at the platform tier and cannot "
+            f"be written at {scope} scope.  Engines are managed by "
+            f"sysadmin only; PATCH or PUT them under "
+            f"``/configs/plugins/{plugin_id}`` (platform tier) instead."
+        ),
+        instance=instance,
+    ))
+
+
 def unexpected_failure(
     exc: BaseException, *, instance: Optional[str] = None,
 ) -> ProblemException:
