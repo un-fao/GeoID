@@ -538,13 +538,20 @@ class WritePolicyDefaults(PluginConfig):
 class DriverPluginConfig(_PluginDriverConfig):
     """Base for all per-driver configs.
 
-    Inherits :class:`_PluginDriverConfig`, which auto-derives ``class_key()``
-    from the ``TypedDriver[X]`` bind on the paired driver class.  Operator-
-    facing JSON wire key drops the ``Config`` suffix and matches the routing
-    entry's ``driver_id`` byte-for-byte.  No per-class ``class_key()``
-    override is needed or allowed.
+    Inherits :class:`_PluginDriverConfig`, which provides:
 
-    Fields shared across all drivers:
+    * ``class_key()`` — auto-derived from the ``TypedDriver[X]`` bind on
+      the paired driver class.  Operator-facing JSON wire key drops the
+      ``Config`` suffix and matches the routing entry's ``driver_id``
+      byte-for-byte.
+    * ``engine_ref: Optional[str]`` field (Cycle F.2) — name of the
+      platform engine this driver instance binds to.
+    * ``required_engine_class: ClassVar[str]`` — the ``engine_class``
+      discriminator of the platform engine this driver class consumes.
+    * Validator that defaults ``engine_ref`` to ``required_engine_class``
+      and rejects incompatible refs.
+
+    Fields shared across all storage drivers (NOT on the universal base):
 
     * ``capabilities`` — frozenset of :class:`DriverCapability` strings
       describing how the driver performs operations.
@@ -600,6 +607,8 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
+
+    required_engine_class: ClassVar[str] = "postgresql_engine"
 
 
     model_config = ConfigDict(extra="allow")
@@ -764,6 +773,8 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
 
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
+
 
     model_config = ConfigDict(extra="allow")
 
@@ -808,6 +819,8 @@ class ItemsElasticsearchPrivateDriverConfig(CollectionDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
 
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
+
     model_config = ConfigDict(extra="allow")
 
 
@@ -818,6 +831,8 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
+
+    required_engine_class: ClassVar[str] = "duckdb_engine"
 
 
     capabilities: FrozenSet[str] = Field(
@@ -846,6 +861,8 @@ class ItemsIcebergDriverConfig(CollectionDriverConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
+
+    required_engine_class: ClassVar[str] = "iceberg_engine"
 
 
     model_config = ConfigDict(extra="allow")
@@ -978,6 +995,8 @@ class AssetPostgresqlDriverConfig(AssetDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "assets", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
 
+    required_engine_class: ClassVar[str] = "postgresql_engine"
+
 
     capabilities: FrozenSet[str] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
@@ -988,6 +1007,8 @@ class AssetElasticsearchDriverConfig(AssetDriverConfig):
     """Elasticsearch asset driver config."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "assets", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
+
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
 
 
     model_config = ConfigDict(extra="allow")

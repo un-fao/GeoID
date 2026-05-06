@@ -59,7 +59,9 @@ lookup — single name, two places.
 from __future__ import annotations
 
 from functools import cache
-from typing import Any, ClassVar, Dict, Generic, Type, TypeVar, get_args, get_origin
+from typing import Any, ClassVar, Dict, Generic, Optional, Type, TypeVar, get_args, get_origin
+
+from pydantic import Field, model_validator
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
@@ -156,6 +158,17 @@ class _PluginDriverConfig(PluginConfig):
     so a missing ``class FooDriver(TypedDriver[FooDriverConfig])``
     declaration surfaces immediately rather than silently leaking the
     raw config class name onto the wire.
+
+    Cycle F.2 added the engine-binding fields:
+
+    * ``required_engine_class: ClassVar[str]`` — the ``engine_class``
+      discriminator of the platform engine this driver class consumes.
+      Concrete subclasses MUST declare this; the validator rejects
+      ``engine_ref`` values pointing at engines of incompatible class.
+    * ``engine_ref: Optional[str]`` field — name of the platform engine
+      this driver instance binds to.  Defaults to
+      ``required_engine_class`` (single-instance deployments); F.4
+      enables operator-chosen ref names for multi-instance.
     """
 
     # Marker for abstract intermediate base — hidden from the deep view and
@@ -166,6 +179,52 @@ class _PluginDriverConfig(PluginConfig):
     # Sentinel: subclasses MUST NOT set ``_class_key`` — derivation is
     # via the bound driver class, not a string override.
     _class_key: ClassVar[None] = None
+
+    # Engine-class compatibility discriminator (Cycle F.2).
+    # Empty on the abstract base; the validator skips the compatibility
+    # check when this is empty so abstract bases / un-migrated subclasses
+    # can still instantiate without an engine binding.
+    required_engine_class: ClassVar[str] = ""
+
+    engine_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of the platform engine this driver instance binds to. "
+            "Single-instance deployments leave this None (defaults to "
+            "the driver's ``required_engine_class``); F.4 enables "
+            "operator-chosen ref names for multi-instance.  The "
+            "validator rejects refs that point at engines of an "
+            "incompatible ``engine_class``."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _default_and_validate_engine_ref(self) -> "_PluginDriverConfig":
+        """Default ``engine_ref`` to ``required_engine_class`` and validate
+        compatibility (F.2 single-instance check; F.4 will rewrite for
+        multi-instance lookup against the engines registry).
+        """
+        cls = type(self)
+        required = cls.required_engine_class
+        if not required:
+            # Abstract base or driver class that hasn't migrated yet —
+            # skip the check so existing instantiation paths keep working.
+            return self
+        if self.engine_ref is None or self.engine_ref == "":
+            object.__setattr__(self, "engine_ref", required)
+        # F.2 static check: with single-instance-per-kind (F.1), the
+        # engine_ref must match the driver's required engine_class.
+        # F.4 will rewrite this to a registry lookup that resolves the
+        # ref to its engine_class and compares against required.
+        if self.engine_ref != required:
+            raise ValueError(
+                f"{cls.__name__}.engine_ref={self.engine_ref!r} is "
+                f"incompatible with required_engine_class={required!r}.  "
+                f"In F.2 (single-instance-per-kind) the ref must equal "
+                f"the engine's class_key.  Operator-chosen ref names "
+                f"land in F.4."
+            )
+        return self
 
     @classmethod
     def class_key(cls) -> str:

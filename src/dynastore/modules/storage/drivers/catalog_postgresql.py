@@ -227,6 +227,8 @@ class CatalogPostgresqlDriverConfig(_PluginDriverConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "drivers")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
+    required_engine_class: ClassVar[str] = "postgresql_engine"
+
 
     sidecars: Immutable[List[_PgCatalogSidecarConfig]] = Field(
         default_factory=list,
