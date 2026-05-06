@@ -60,6 +60,7 @@ from dynastore.modules.elasticsearch.collection_es_driver import (
     CollectionElasticsearchDriver,
     _bbox_to_envelope,
 )
+from dynastore.modules.storage.hints import Hint
 from dynastore.modules.storage.storage_location import StorageLocation
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,22 @@ class CollectionElasticsearchPrivateDriver(CollectionElasticsearchDriver):
 
     # Opt out of auto-default routing.  See module docstring.
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset()
+
+    # Declare the full hint surface so hint-filtered routing (router.py
+    # _entry_matches) can select this driver when an operator explicitly
+    # pins it in a CollectionRoutingConfig.  Mirrors the public driver's
+    # capability — same search/filter/aggregation methods, different index.
+    preferred_for: FrozenSet[Hint] = frozenset()
+    supported_hints: FrozenSet[Hint] = frozenset({
+        Hint.SEARCH,
+        Hint.FULLTEXT,
+        Hint.SPATIAL_FILTER,
+        Hint.ATTRIBUTE_FILTER,
+        Hint.SORT,
+        Hint.AGGREGATION,
+        Hint.COUNT,
+        Hint.STATISTICS,
+    })
 
     # Collection-tier indexer marker stays True (parent declares it).
     # capabilities inherited.

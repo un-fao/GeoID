@@ -227,6 +227,24 @@ class TestItemsElasticsearchPrivateDriverMeta:
         assert "items_elasticsearch_private_driver" in configs
         assert configs["items_elasticsearch_private_driver"] is ItemsElasticsearchPrivateDriverConfig
 
+    def test_has_search_hints(self):
+        """Private driver must expose SEARCH/FILTER/SORT hints so the routing
+        dispatcher can select it when an operator explicitly pins it in an
+        ItemsRoutingConfig.operations[SEARCH] entry."""
+        from dynastore.modules.storage.hints import Hint
+        driver = ItemsElasticsearchPrivateDriver()
+        for hint in (
+            Hint.SEARCH,
+            Hint.FULLTEXT,
+            Hint.SPATIAL_FILTER,
+            Hint.ATTRIBUTE_FILTER,
+            Hint.SORT,
+        ):
+            assert hint in driver.supported_hints, f"missing hint: {hint}"
+        # Still opt-in only — never auto-selected.
+        assert not driver.preferred_for
+        assert not driver.auto_register_for_routing
+
 
 class TestQueryRequestToEs:
     def test_empty_request(self):
