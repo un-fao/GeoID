@@ -800,7 +800,7 @@ class Web(ExtensionProtocol):
         title="Demo Data",
         icon="fa-flask",
         description="Provision or clean up the demo catalog for testing.",
-        required_roles=[DefaultRole.SYSADMIN.value],
+        audience_policy_id="web_sysadmin_access",
         section="admin",
         priority=40,
     )
@@ -917,7 +917,7 @@ async function demoAction(action) {
         title="Service Exposure",
         icon="fa-toggle-on",
         description="Toggle extensions per platform / catalog scope.",
-        required_roles=[DefaultRole.SYSADMIN.value],
+        audience_policy_id="web_sysadmin_access",
         section="admin",
         priority=20,
     )
@@ -934,7 +934,7 @@ async function demoAction(action) {
         title="Configuration Hub",
         icon="fa-sliders",
         description="Schema-driven editor for every registered plugin configuration.",
-        required_roles=[DefaultRole.SYSADMIN.value],
+        audience_policy_id="web_sysadmin_access",
         section="admin",
         priority=10,
     )
@@ -956,11 +956,7 @@ async function demoAction(action) {
         title="Governance",
         icon="fa-scale-balanced",
         description="Roles, policies and principal bindings at platform and catalog scope.",
-        required_roles=[
-            DefaultRole.SYSADMIN.value,
-            DefaultRole.ADMIN.value,
-            DefaultRole.USER.value,
-        ],
+        audience_policy_id="web_admin_access",
         section="admin",
         priority=15,
     )
@@ -979,11 +975,7 @@ async function demoAction(action) {
         title="STAC Authoring",
         icon="fa-book-atlas",
         description="Charter catalogs (sysadmin) and commission collections (catalog admin).",
-        required_roles=[
-            DefaultRole.SYSADMIN.value,
-            DefaultRole.ADMIN.value,
-            DefaultRole.USER.value,
-        ],
+        audience_policy_id="web_admin_access",
         section="admin",
         priority=12,
     )
@@ -1000,11 +992,7 @@ async function demoAction(action) {
         title="Ingest Features",
         icon="fa-upload",
         description="Drop GeoJSON into a target collection; server reports per-feature results.",
-        required_roles=[
-            DefaultRole.SYSADMIN.value,
-            DefaultRole.ADMIN.value,
-            DefaultRole.USER.value,
-        ],
+        audience_policy_id="web_admin_access",
         section="admin",
         priority=8,
     )

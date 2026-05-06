@@ -263,7 +263,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         title="Log Analytics",
         icon="fa-chart-line",
         description="Embedded OpenSearch Dashboards / Kibana view of system logs.",
-        required_roles=[DefaultRole.SYSADMIN.value],
+        audience_policy_id="logs_dashboard_sysadmin_access",
         section="admin",
         priority=25,
     )

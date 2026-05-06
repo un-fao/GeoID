@@ -376,7 +376,10 @@ class IamExtension(ExtensionProtocol):
         title="Admin",
         icon="fa-shield-halved",
         description="Administration and platform management.",
-        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value, DefaultRole.USER.value],
+        # Hub visible to anyone bound to web_admin_access (admin/user
+        # by default; sysadmin via PageVisibilityFilter bypass). Sub-pages
+        # within enforce their own audience policies.
+        audience_policy_id="web_admin_access",
         priority=10,
     )
     async def provide_admin_hub(self, request: Request):
