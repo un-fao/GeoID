@@ -38,9 +38,12 @@ class AbstractPolicyStorage(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam") -> Optional[Policy]:
+    async def get_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam", partition_key: str = "global") -> Optional[Policy]:
         """
-        Retrieve a single policy by ID.
+        Retrieve a single policy by (id, partition_key). Partition-aware
+        because the underlying table's PRIMARY KEY is composite — looking
+        up by id alone leaks rows across tenants when the same id exists
+        in multiple partitions.
         """
         ...
 
@@ -52,9 +55,11 @@ class AbstractPolicyStorage(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def delete_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam") -> bool:
+    async def delete_policy(self, policy_id: str, conn: Optional[Any] = None, schema: str = "iam", partition_key: str = "global") -> bool:
         """
-        Delete a policy by ID. Returns True if deleted, False if not found.
+        Delete a policy by (id, partition_key). Partition-aware so admin
+        deletes never cascade across partitions. Returns True if deleted,
+        False if not found.
         """
         ...
 

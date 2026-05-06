@@ -81,7 +81,12 @@ UPSERT_POLICY = DQLQuery(
 )
 
 GET_POLICY = DQLQuery(
-    "SELECT * FROM {schema}.policies WHERE id = :id;",
+    # (id, partition_key) is the table's PRIMARY KEY. Filtering by id alone
+    # would return whichever row PG happens to scan first when the same id
+    # exists in multiple partitions, leaking rows across tenants and
+    # producing the cross-partition update bug fixed in this module's
+    # update_policy.
+    "SELECT * FROM {schema}.policies WHERE id = :id AND partition_key = :partition_key;",
     result_handler=ResultHandler.ONE_DICT,
     post_processor=lambda row: Policy(**row) if row else None
 )
@@ -89,7 +94,9 @@ GET_POLICY = DQLQuery(
 
 
 DELETE_POLICY = DQLQuery(
-    "DELETE FROM {schema}.policies WHERE id = :id;",
+    # See GET_POLICY note: filter by full PK so admin deletes can never
+    # cascade across partitions.
+    "DELETE FROM {schema}.policies WHERE id = :id AND partition_key = :partition_key;",
     result_handler=ResultHandler.ROWCOUNT
 )
 
@@ -192,20 +199,25 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
 
 
 
-    async def get_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam") -> Optional[Policy]:
+    async def get_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam", partition_key: str = "global") -> Optional[Policy]:
         async with managed_transaction(conn or self.engine) as db:
-            return await GET_POLICY.execute(db, schema=schema.strip('"'), id=policy_id)
+            return await GET_POLICY.execute(db, schema=schema.strip('"'), id=policy_id, partition_key=partition_key)
 
     async def update_policy(self, policy: Policy, conn: Optional[DbResource] = None, schema: str = "iam") -> Optional[Policy]:
         async with managed_transaction(conn or self.engine) as db:
-            # Check if partition_key changed - if so, delete old row first
-            existing = await GET_POLICY.execute(db, schema=schema.strip('"'), id=policy.id)
-            
-            if existing and existing.partition_key != policy.partition_key:
-                # Delete old row from old partition
-                await DELETE_POLICY.execute(db, schema=schema.strip('"'), id=policy.id)
-            
-            # Upsert (insert or update)
+            # (id, partition_key) is the table's PRIMARY KEY — distinct
+            # partitions are independent rows. UPSERT_POLICY's
+            # ON CONFLICT (id, partition_key) DO UPDATE handles both the
+            # "row exists in this partition" and "row does not exist"
+            # cases. Crucially, no DELETE: a row identified by
+            # (id, partition_key) cannot semantically "move partitions" —
+            # callers that genuinely intend to relocate a policy must
+            # delete the old row and create a new one explicitly. The
+            # earlier implementation's GET-then-DELETE-then-INSERT branch
+            # was load-bearing for the IAM-outage class of bugs: under
+            # multi-service boot the same default policy IDs ping-pong
+            # between partition_keys, the unfiltered DELETE wiped every
+            # partition's copy, and concurrent reads saw Deny-by-Default.
             return await UPSERT_POLICY.execute(
                 db,
                 schema=schema.strip('"'),
@@ -219,9 +231,9 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
                 partition_key=policy.partition_key or "global"
             )
 
-    async def delete_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam") -> bool:
+    async def delete_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam", partition_key: str = "global") -> bool:
         async with managed_transaction(conn or self.engine) as db:
-            count = await DELETE_POLICY.execute(db, schema=schema.strip('"'), id=policy_id)
+            count = await DELETE_POLICY.execute(db, schema=schema.strip('"'), id=policy_id, partition_key=partition_key)
             return count > 0
 
     async def list_policies(self, partition_key: Optional[str] = None, limit: int = 100, offset: int = 0, conn: Optional[DbResource] = None, schema: str = "iam") -> List[Policy]:

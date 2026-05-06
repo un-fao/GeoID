@@ -186,9 +186,13 @@ class PolicyService:
                     conn, policy.partition_key, schema=schema
                 )
 
-            # 2. Check for duplicate IDs
+            # 2. Check for duplicate IDs in the target partition. Filtering
+            # by partition is required: the same id can exist across
+            # partitions (e.g., default policies seeded into both
+            # ``global`` and a catalog partition); a global lookup would
+            # spuriously reject a legitimate per-catalog create.
             existing = await self.storage.get_policy(
-                policy.id, schema=schema, conn=conn
+                policy.id, schema=schema, conn=conn, partition_key=policy.partition_key,
             )
             if existing:
                 raise ValueError(f"Policy with ID '{policy.id}' already exists.")
@@ -201,7 +205,9 @@ class PolicyService:
         self, policy_id: str, catalog_id: Optional[str] = None
     ) -> Optional[Policy]:
         schema = await self._resolve_schema(catalog_id)
-        return await self.storage.get_policy(policy_id, schema=schema)
+        return await self.storage.get_policy(
+            policy_id, schema=schema, partition_key=catalog_id or "global",
+        )
 
     async def update_policy(
         self, policy: Policy, catalog_id: Optional[str] = None
@@ -223,7 +229,9 @@ class PolicyService:
         self, policy_id: str, catalog_id: Optional[str] = None
     ) -> bool:
         schema = await self._resolve_schema(catalog_id)
-        res = await self.storage.delete_policy(policy_id, schema=schema)
+        res = await self.storage.delete_policy(
+            policy_id, schema=schema, partition_key=catalog_id or "global",
+        )
         self.invalidate_cache()
         return res
 
@@ -367,7 +375,9 @@ class PolicyService:
                 if force or policy_def.id in _ALWAYS_REFRESH:
                     await self.storage.update_policy(policy_def, schema=schema, conn=db)
                 else:
-                    existing = await self.storage.get_policy(policy_def.id, schema=schema, conn=db)
+                    existing = await self.storage.get_policy(
+                        policy_def.id, schema=schema, conn=db, partition_key=pk,
+                    )
                     if not existing:
                         await self.storage.update_policy(policy_def, schema=schema, conn=db)
 
