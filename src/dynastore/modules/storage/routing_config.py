@@ -208,9 +208,9 @@ class OperationDriverEntry(BaseModel):
     an operation is a structural decision.  ``hints`` and ``on_failure``
     are mutable preferences that can evolve without structural impact.
 
-    Cycle F.3 renamed ``driver_ref`` → ``driver_ref`` to align with the
-    F.0-F.2 ``engine_ref`` naming.  Single-instance-per-kind: the ref
-    equals the snake_case driver class name (e.g.
+    Cycle F.3 renamed the field from ``driver_id`` to ``driver_ref`` to
+    align with the F.0-F.2 ``engine_ref`` naming.  Single-instance-per-
+    kind: the ref equals the snake_case driver class name (e.g.
     ``"items_postgresql_driver"``).  F.4 will enable operator-chosen
     ref names when ref-keyed driver-config storage lands.
 

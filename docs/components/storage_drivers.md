@@ -180,7 +180,7 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
 |-------|------|---------|-------------|
 | `driver_ref` | `str` (snake_case) | required | Snake_case `_to_snake(cls.__name__)` of a registered driver |
 | `hints` | `List[Hint]` | `[]` | Selectivity tags — `Hint` is a closed `StrEnum` (see below) |
-| `on_failure` | `FailurePolicy` | `"warn"` | `"fatal"` (raise), `"warn"` (log), `"outbox"` (defer to drain task) |
+| `on_failure` | `FailurePolicy` | `"fatal"` | `"fatal"` (raise — default), `"warn"` (log), `"outbox"` (defer to drain task), `"ignore"` |
 | `write_mode` | `WriteMode` | `"sync"` | `"sync"` or `"async"`; async writes go through the outbox |
 | `source` | `Literal["operator", "auto"]` | `"operator"` | `"auto"` marks self-registered entries from the apply handler |
 

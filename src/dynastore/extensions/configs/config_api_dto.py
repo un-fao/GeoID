@@ -48,10 +48,34 @@ class DriverRef(BaseModel):
     driver_ref: str = Field(
         ..., description="Driver reference (snake_case, e.g. 'items_postgresql_driver')."
     )
+    hints: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Selectivity tags from the routing entry's ``hints`` set "
+            "(e.g. ``geometry_simplified``, ``geometry_exact``).  Empty "
+            "list means the entry responds to every hint the driver "
+            "class supports.  Lets operators distinguish multiple entries "
+            "that share the same ``driver_ref`` under one operation."
+        ),
+    )
     on_failure: str = Field(
-        "fatal", description="Failure policy: fatal | warn | ignore."
+        "fatal",
+        description=(
+            "Failure policy: ``fatal`` (raise — default), ``outbox`` "
+            "(defer to drain task; standard for ES INDEX), ``warn`` "
+            "(log + continue), ``ignore``."
+        ),
     )
     write_mode: str = Field("sync", description="Write mode: sync | async.")
+    source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Origin of the entry: ``operator`` (operator-authored) or "
+            "``auto`` (self-registered by the apply handler).  ``None`` "
+            "when the routing config did not record a source (legacy "
+            "or test-fixture entries)."
+        ),
+    )
     links: List["Link"] = Field(
         default_factory=list,
         serialization_alias="_links",

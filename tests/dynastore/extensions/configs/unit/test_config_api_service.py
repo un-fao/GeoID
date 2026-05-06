@@ -327,16 +327,95 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
             "rel": "driver-config",
             "href": "http://h/configs/plugins/catalog_core_postgresql_driver",
             "method": "PATCH",
-            "title": "PATCH this driver's registered config",
+            "title": "PATCH this driver's config at platform scope",
             "templated": False,
             "hrefSchema": None,
         }
     ]
     assert ref["on_failure"] == "fatal"
     assert ref["write_mode"] == "sync"
-    # Hints / sla / other legacy fields must not survive into the ref.
-    assert "hints" not in ref
+    # Cycle F.7d.3-fixup: hints + source surface on the slim ref so
+    # operators can distinguish hint-gated entries that share the same
+    # driver_ref under one operation.
+    assert ref["hints"] == []
+    # ``sla`` is internal — must NOT appear on the slim ref.
     assert "sla" not in ref
+
+
+def test_build_routing_refs_forwards_hints_and_source():
+    """Cycle F.7d.3-fixup — ``hints`` and ``source`` flow from the
+    routing entry through to the slim ``DriverRef``.  Without this,
+    operators reading the configs API can't tell which of two
+    same-class entries fires for which hint, nor which entries the
+    apply-handler self-registered vs operator-authored."""
+    by_class = {
+        "items_routing_config": {
+            "operations": {
+                "SEARCH": [
+                    {"driver_ref": "items_elasticsearch_driver",
+                     "hints": ["geometry_simplified"],
+                     "on_failure": "fatal", "write_mode": "sync",
+                     "source": "auto"},
+                    {"driver_ref": "items_postgresql_driver",
+                     "hints": ["geometry_exact"],
+                     "on_failure": "fatal", "write_mode": "sync",
+                     "source": "operator"},
+                ],
+            },
+        },
+    }
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(
+            items_elasticsearch_driver={"__module__": "m"},
+            items_postgresql_driver={"__module__": "m"},
+        ),
+    ):
+        ConfigApiService(config_service=MagicMock())._build_routing_refs(
+            by_class, base_url="http://h/configs",
+        )
+    [es, pg] = by_class["items_routing_config"]["operations"]["SEARCH"]
+    assert es["hints"] == ["geometry_simplified"]
+    assert es["source"] == "auto"
+    assert pg["hints"] == ["geometry_exact"]
+    assert pg["source"] == "operator"
+
+
+def test_build_routing_refs_link_title_reflects_active_scope():
+    """Cycle F.7d.3-fixup — operators reading a routing entry's
+    ``driver-config`` link from the API response see whether they're
+    about to PATCH a platform default, a catalog override, or a
+    collection override.  Title carries the scope label."""
+    by_class = {
+        "items_routing_config": {
+            "operations": {
+                "WRITE": [{"driver_ref": "items_postgresql_driver",
+                           "on_failure": "fatal", "write_mode": "sync"}]
+            },
+        },
+    }
+    registry = _stub_registry(items_postgresql_driver={"__module__": "m"})
+    cases = [
+        ("http://h/configs", "platform"),
+        ("http://h/configs/catalogs/cat1", "catalog"),
+        ("http://h/configs/catalogs/cat1/collections/coll1", "collection"),
+    ]
+    for base_url, expected_scope in cases:
+        local = {"items_routing_config": {"operations": {
+            "WRITE": [{"driver_ref": "items_postgresql_driver",
+                       "on_failure": "fatal", "write_mode": "sync"}]
+        }}}
+        with patch(
+            "dynastore.extensions.configs.config_api_service.list_registered_configs",
+            return_value=registry,
+        ):
+            ConfigApiService(config_service=MagicMock())._build_routing_refs(
+                local, base_url=base_url,
+            )
+        ref = local["items_routing_config"]["operations"]["WRITE"][0]
+        assert ref["_links"][0]["title"] == (
+            f"PATCH this driver's config at {expected_scope} scope"
+        ), f"base_url={base_url} expected scope={expected_scope}"
 
 
 def test_build_routing_refs_unregistered_driver_emits_no_link():

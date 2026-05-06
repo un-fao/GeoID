@@ -446,6 +446,21 @@ class ConfigApiService:
     # --- Routing-ref rewrite. ---
 
     @staticmethod
+    def _scope_label_from_url(base_url: str) -> str:
+        """Infer a human label for the active scope from the request URL.
+
+        Cycle F.7d.3-fixup: routing-entry HATEOAS link titles need to
+        tell operators which tier they are about to PATCH, so a
+        collection-scope ``driver-config`` link doesn't get mistaken
+        for a platform default override.
+        """
+        if "/collections/" in base_url:
+            return "collection"
+        if "/catalogs/" in base_url:
+            return "catalog"
+        return "platform"
+
+    @staticmethod
     def _build_routing_refs(
         by_class: Dict[str, Dict[str, Any]],
         base_url: str,
@@ -466,6 +481,7 @@ class ConfigApiService:
         ``config_ref: Optional[str]`` scalar (``null`` was confusing).
         """
         all_classes = list_registered_configs()
+        scope_label = ConfigApiService._scope_label_from_url(base_url)
         for class_key in _routing_config_keys():
             routing = by_class.get(class_key)
             if not routing:
@@ -486,12 +502,14 @@ class ConfigApiService:
                             rel="driver-config",
                             href=f"{base_url.rstrip('/')}/plugins/{driver_ref}",
                             method="PATCH",
-                            title="PATCH this driver's registered config",
+                            title=f"PATCH this driver's config at {scope_label} scope",
                         ))
                     refs.append(DriverRef(
                         driver_ref=driver_ref,
+                        hints=[str(h) for h in (entry.get("hints") or [])],
                         on_failure=entry.get("on_failure", "fatal"),
                         write_mode=entry.get("write_mode", "sync"),
+                        source=entry.get("source"),
                         links=links,
                     ).model_dump(by_alias=True))
                 rewritten[op] = refs
