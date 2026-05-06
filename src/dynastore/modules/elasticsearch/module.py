@@ -232,7 +232,7 @@ class ElasticsearchModule(ModuleProtocol):
     ``items_elasticsearch_private_driver`` (per-tenant geoid-only index
     + DENY policy management).  This module no longer carries
     catalog-wide private-mode toggles; the catalog-tier
-    ``CatalogPrivacy.default_collection_privacy`` only seeds the
+    ``CatalogPrivacy.collection_defaults.is_private`` only seeds the
     default for newly-created collections.
     """
 

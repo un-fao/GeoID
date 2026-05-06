@@ -407,7 +407,7 @@ Two classes:
 
 **Privacy contract** (Cycle E.2):
 - `auto_register_for_routing: ClassVar[FrozenSet[Operation]] = frozenset()` — opt-in only.
-  Operators pin them in routing OR set `CollectionPluginConfig.is_private=True` (plus the
+  Operators pin them in routing OR set `CollectionPrivacy.is_private=True` (plus the
   catalog policy default) which triggers the seed at collection-create.
 - The items-private driver applies a catalog-wide DENY policy (`private_deny_{cat}`) on
   `ensure_storage` blocking public read access at `/.../catalogs/{cat}/...`. The collection-private
