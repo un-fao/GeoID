@@ -808,3 +808,11 @@ src/dynastore/
   `meta`, `include`, `strict`), HATEOAS link catalog, scope
   strictness rules, live-shape examples at platform / catalog /
   collection scope.
+- `notebook_showcase/notebooks/cycle_f_use_cases/` — runnable
+  walkthroughs exercising drivers + sidecars + routing + write
+  policies end-to-end (UC1 dual-search with all 4 sidecars; UC2
+  schema enforcement + multi-version; UC3 private ES; UC4 asset
+  refusal round-trip).
+- `notebook_showcase/notebooks/storage_drivers/04_engines_and_multi_instance.ipynb`
+  — multi-instance driver refs (operator-chosen names sharing one
+  driver class) and engine-driven lifecycle.
