@@ -23,16 +23,76 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shlex
 import sys
 from pathlib import Path
 
-# Canonical preserved-schemas + system-cron-jobs lists are SSOT in
-# dynastore.tools.db_cleanup so the test-suite cleanup and this reset
-# script can never drift apart on what counts as system state.
-from dynastore.tools.db_cleanup import load_reset_policy_overrides
+# ── Constants — duplicated by design ───────────────────────────────────────────
+# This script is the ONE place destructive cleanup logic ships in the
+# production wheel. The same constants exist in
+# ``tests/dynastore/test_utils/db_cleanup.py`` (test-only, never in the
+# production wheel); ``tests/.../test_db_cleanup_drift.py`` pins the two
+# definitions byte-for-byte so they cannot diverge silently.
+#
+# Why duplicate instead of import? Importing from ``tests/`` is impossible
+# at runtime (tests/ isn't packaged); importing the test-utils path into
+# any production module would require shipping it in the wheel, which
+# defeats the purpose of the separation.
+
+_DEFAULT_PRESERVED_SCHEMAS = frozenset({
+    "pg_catalog",
+    "information_schema",
+    "pg_toast",
+    "cron",
+    "public",
+    "keycloak",
+    # Cloud SQL ML extension schemas — owned by the cloud SA, not the app user.
+    "ai",
+    "google_ml",
+    # PostGIS topology extension.
+    "topology",
+})
+
+_DEFAULT_SYSTEM_CRON_JOBS = (
+    "system_cleanup_orphaned_cron_jobs",
+    "monthly_cleanup_system_logs",
+)
 
 
-PRESERVED_SCHEMAS, SYSTEM_CRON_JOBS = load_reset_policy_overrides(
+def _load_reset_policy(
+    policy_file: Path,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Read ``reset_policy.env`` overrides for preserved schemas and
+    system cron jobs.  Returns the overridden values when the file
+    declares them, falling back to the canonical defaults otherwise.
+
+    File format is shell-style ``KEY=value``; lines starting with ``#``
+    and blank lines are ignored; values are parsed with :mod:`shlex`.
+    """
+    preserved: frozenset[str] = _DEFAULT_PRESERVED_SCHEMAS
+    system_cron: tuple[str, ...] = _DEFAULT_SYSTEM_CRON_JOBS
+
+    if not policy_file.exists():
+        return preserved, system_cron
+
+    for raw in policy_file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key == "PRESERVED_SCHEMAS":
+            preserved = frozenset(shlex.split(val))
+        elif key == "SYSTEM_CRON_JOBS":
+            system_cron = tuple(shlex.split(val))
+
+    return preserved, system_cron
+
+
+PRESERVED_SCHEMAS, SYSTEM_CRON_JOBS = _load_reset_policy(
     Path(__file__).parent / "reset_policy.env"
 )
 
@@ -200,11 +260,50 @@ def _resolve_database_url() -> str:
     return ""
 
 
+_PRODUCTION_ENV_NAMES = frozenset({"prod", "production"})
+
+
+def _refuse_in_production() -> None:
+    """Defense-in-depth: refuse to run when the deployment env identifies
+    itself as production. The Reset DB Cloud Run job is meant for review
+    only; the workflow file enforces ``environment: review`` at the
+    GitHub-Actions layer, but this guard runs INSIDE the container so
+    even a manual ``gcloud run jobs execute`` invocation against a
+    prod-tier deployment cannot accidentally drop schemas.
+
+    The check honours two env vars in order:
+      1. ``DYNASTORE_RESET_ALLOW_PRODUCTION=1`` — explicit opt-out for
+         truly intentional production resets (must be set per invocation).
+      2. ``DYNASTORE_ENV`` / ``ENVIRONMENT`` (case-insensitive) — when
+         either equals ``prod`` or ``production``, the run is refused
+         unless (1) is also set.
+    """
+    if os.environ.get("DYNASTORE_RESET_ALLOW_PRODUCTION") == "1":
+        return
+    env_label = (
+        os.environ.get("DYNASTORE_ENV")
+        or os.environ.get("ENVIRONMENT")
+        or ""
+    ).strip().lower()
+    if env_label in _PRODUCTION_ENV_NAMES:
+        print(
+            f"REFUSED: db_reset detected DYNASTORE_ENV/ENVIRONMENT={env_label!r} "
+            "(production tier). Set DYNASTORE_RESET_ALLOW_PRODUCTION=1 if this "
+            "is genuinely intended.",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["full", "configs"], default="full")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if not args.dry_run:
+        _refuse_in_production()
 
     url = _resolve_database_url()
     if not url:
