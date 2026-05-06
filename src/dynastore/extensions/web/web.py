@@ -1287,7 +1287,7 @@ async function demoAction(action) {
             pages = await self.web_module.get_web_pages_config(language)
             page_filter = get_protocol(PageVisibilityFilter)
             if page_filter is not None:
-                results = list(page_filter.filter_visible(pages, request))
+                results = list(await page_filter.filter_visible(pages, request))
             else:
                 # No IAM provider — show only the anonymous-visible subset.
                 results = [

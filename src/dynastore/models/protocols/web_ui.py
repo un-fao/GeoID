@@ -47,6 +47,12 @@ class WebPageSpec:
     icon: str = "fa-circle"
     description: LocalizedText = ""
     required_roles: Optional[Tuple[str, ...]] = None
+    audience_policy_id: Optional[str] = None
+    """ID of a registered ``Policy`` whose role bindings define this page's
+    audience. Preferred over ``required_roles`` for new pages: operators
+    rebind the policy to whatever roles they want via REST without
+    touching decorator code. ``required_roles`` remains as a fallback for
+    pages that haven't been migrated."""
     section: Optional[LocalizedText] = None
     priority: int = 0
     is_embed: bool = False
@@ -60,6 +66,7 @@ class WebPageSpec:
             "icon": self.icon,
             "description": self.description,
             "required_roles": list(self.required_roles) if self.required_roles else None,
+            "audience_policy_id": self.audience_policy_id,
             "priority": self.priority,
             "section": self.section,
             "is_embed": self.is_embed,

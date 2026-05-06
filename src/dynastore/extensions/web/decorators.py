@@ -53,12 +53,25 @@ def expose_web_page(
     icon: str = "fa-circle",
     description: Union[str, Dict[str, str]] = "",
     required_roles: Optional[List[str]] = None,
+    audience_policy_id: Optional[str] = None,
     priority: int = 0,
     section: Optional[Union[str, Dict[str, str]]] = None,
     is_embed: bool = False,
     enabled: bool = True,
 ):
-    """Mark a method as a web-page provider (metadata only)."""
+    """Mark a method as a web-page provider (metadata only).
+
+    Visibility metadata — preferred to least-preferred:
+
+    1. ``audience_policy_id``: id of a registered ``Policy``. The
+       visibility filter resolves the policy's role bindings at request
+       time and admits any caller whose flat role list intersects.
+       Operators rebind the policy via REST to extend the audience —
+       no decorator change needed for custom roles.
+    2. ``required_roles``: literal role-name list. Legacy / explicit
+       audience declaration. Kept for pages that haven't migrated.
+    3. Neither set: the page is anonymous-visible.
+    """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         setattr(
@@ -72,6 +85,7 @@ def expose_web_page(
                 "required_roles": (
                     tuple(required_roles) if required_roles else None
                 ),
+                "audience_policy_id": audience_policy_id,
                 "priority": priority,
                 "section": section,
                 "is_embed": is_embed,
