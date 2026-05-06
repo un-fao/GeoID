@@ -33,9 +33,21 @@ packages/
 
 ## Status (2026-05-07)
 
-- `tasks/` — **PILOT**, source migrated, building as `dynastore-ext-tasks`
-- `core/` — pending; framework code still in `src/dynastore/`
-- everything else — still in `src/dynastore/extensions/`
+**Migrated to wheels (Phase 1):**
+- `tasks/` → `dynastore-ext-tasks`
+- `stats/` → `dynastore-ext-stats`
+- `edr/` → `dynastore-ext-edr`
+- `moving_features/` → `dynastore-ext-moving-features`
+- `connected_systems/` → `dynastore-ext-connected-systems`
+
+5 of 7 ungatable extensions structurally isolated. Remaining ungatable:
+
+- `assets` — needs asset-service extraction from `modules/catalog/`
+- `logs` — needs externalised event-listener API in `dynastore-core`
+
+**Pending (Phase 2):** `core/` — framework code still in `src/dynastore/`.
+
+**Pending (Phase 3-4):** the 24 dep-gated extensions (crs, dggs, processes, features, records, coverages, wfs, dwh, styles, joins, gdal, maps, tiles, stac, geoid, gcp_bucket, search, dimensions, notebooks, proxy, template, web, iam, auth, configs, admin, httpx, documentation, events, volumes).
 
 ## Build
 
