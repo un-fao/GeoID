@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 @pytest_asyncio.fixture(loop_scope="function")
 async def keycloak_user_client(app_lifespan):
     """In-process client authenticated as testuser via Keycloak."""
-    token = await get_user_token("testuser", "testpassword")
+    token = await get_user_token("testuser", "testuser")
     transport = ASGITransport(app=app_lifespan.app)
     headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(
@@ -36,7 +36,7 @@ async def keycloak_user_client(app_lifespan):
 @pytest_asyncio.fixture(loop_scope="function")
 async def keycloak_admin_client(app_lifespan):
     """In-process client authenticated as testadmin via Keycloak."""
-    token = await get_user_token("testadmin", "testpassword")
+    token = await get_user_token("testadmin", "testadmin")
     transport = ASGITransport(app=app_lifespan.app)
     headers = {"Authorization": f"Bearer {token}"}
     async with AsyncClient(
@@ -63,7 +63,7 @@ async def keycloak_service_client(app_lifespan):
 @pytest.mark.asyncio
 async def test_user_token_resolves_principal(keycloak_user_client: AsyncClient):
     """Verify that a Keycloak user token resolves to an authenticated principal."""
-    resp = await keycloak_user_client.get("/health")
+    resp = await keycloak_user_client.get("/web/health")
     # Health endpoint should be reachable (does not require auth)
     assert resp.status_code == 200
 
@@ -71,7 +71,7 @@ async def test_user_token_resolves_principal(keycloak_user_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_admin_token_has_admin_role(keycloak_admin_client: AsyncClient):
     """Verify that the testadmin user gets admin roles."""
-    resp = await keycloak_admin_client.get("/health")
+    resp = await keycloak_admin_client.get("/web/health")
     assert resp.status_code == 200
 
 
@@ -81,7 +81,7 @@ async def test_admin_token_has_admin_role(keycloak_admin_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_service_account_token_resolves(keycloak_service_client: AsyncClient):
     """Verify that a client_credentials token resolves as a service account."""
-    resp = await keycloak_service_client.get("/health")
+    resp = await keycloak_service_client.get("/web/health")
     assert resp.status_code == 200
 
 
