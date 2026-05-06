@@ -137,7 +137,7 @@ class GcpCorsRule(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-class GcpCatalogBucketConfig(PluginConfig):
+class GcpCatalogBucketConfig(ExposableConfigMixin, PluginConfig):
     """
     Defines bucket-level configurations for a catalog. These settings are applied
     when the bucket is first created.
@@ -196,7 +196,7 @@ class TriggeredAction(BaseModel):
     execute_request_template: Dict[str, Any] = Field(..., description="A template for the 'inputs' of the OGC Process Execute request. Supports placeholder interpolation (e.g., {bucket}, {name}).")
 
 
-class GcpCollectionBucketConfig(PluginConfig):
+class GcpCollectionBucketConfig(ExposableConfigMixin, PluginConfig):
     """
     Defines object-level configurations for a specific collection within a bucket.
     These settings can override catalog-level defaults for objects belonging to this collection.
@@ -248,7 +248,7 @@ class ManagedBucketEventing(BaseModel):
         return self.blob_name_prefixes[0] if self.blob_name_prefixes else None
 
 
-class GcpEventingConfig(PluginConfig):
+class GcpEventingConfig(ExposableConfigMixin, PluginConfig):
     """
     Defines the complete, mutable eventing configuration for a catalog. This is
     stored independently from the bucket configuration.

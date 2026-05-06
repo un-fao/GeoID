@@ -2,9 +2,10 @@
 import os
 from typing import ClassVar, Dict, List, Optional, Tuple
 from pydantic import Field
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
-class TasksPluginConfig(PluginConfig):
+class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
     """Configuration for the Background Tasks module."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
 
@@ -31,7 +32,7 @@ class TasksPluginConfig(PluginConfig):
     )
 
 
-class TaskRoutingConfig(PluginConfig):
+class TaskRoutingConfig(ExposableConfigMixin, PluginConfig):
     """Service-affinity routing for the global task queue.
 
     Sibling to ``ItemsRoutingConfig`` but for the tasks tier. Maps

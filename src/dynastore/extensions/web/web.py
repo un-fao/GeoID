@@ -269,6 +269,7 @@ WEB_CONFORMANCE_URIS = [
 
 from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -327,7 +328,7 @@ class RelativeSlashRedirectMiddleware:
         await self.app(scope, receive, send)
 
 
-class WebConfig(PluginConfig):
+class WebConfig(ExposableConfigMixin, PluginConfig):
     """Configuration for the Web Platform interface."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "web")
 
