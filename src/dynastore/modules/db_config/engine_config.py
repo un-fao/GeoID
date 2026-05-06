@@ -33,12 +33,17 @@ resource policy.  Lifecycle lives ONLY on engines.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, ClassVar, Dict, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 from dynastore.tools.secrets import Secret
+
+
+def _logger() -> logging.Logger:
+    return logging.getLogger(__name__)
 
 
 class EngineLifecycleConfig(BaseModel):
@@ -216,6 +221,44 @@ class PostgresqlEngineConfig(EngineConfig):
         ),
     )
 
+    async def engine_init(self) -> Any:
+        """Build a dedicated ``asyncpg.Pool`` for this engine.
+
+        Connection URL precedence: explicit ``connection_url`` (Secret) →
+        env-driven ``DBConfig.database_url`` fallback.  The asyncpg driver
+        accepts libpq-flavoured DSNs only, so the SQLAlchemy
+        ``postgresql+asyncpg://`` prefix is normalised to ``postgresql://``
+        — matches the strip already done in the outbox-pool helper.
+        """
+        import asyncpg  # local import: keeps F.1 import light
+
+        from dynastore.modules.db_config.db_config import DBConfig
+
+        if self.connection_url is not None:
+            dsn = self.connection_url.reveal()
+        else:
+            dsn = DBConfig.database_url
+        dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
+        return await asyncpg.create_pool(
+            dsn=dsn,
+            min_size=1,
+            max_size=self.pool_size,
+            timeout=self.pool_timeout_sec,
+        )
+
+    async def engine_release(self, instance: Any) -> None:
+        """Close the asyncpg pool.  Idempotent — releasing twice is safe."""
+        close = getattr(instance, "close", None)
+        if close is None:
+            return
+        try:
+            await close()
+        except Exception:
+            logger = _logger()
+            logger.exception(
+                "PostgresqlEngineConfig: pool close raised; instance dropped."
+            )
+
 
 class ElasticsearchEngineConfig(EngineConfig):
     """Elasticsearch / OpenSearch client — backs every ES-driver class.
@@ -259,6 +302,59 @@ class ElasticsearchEngineConfig(EngineConfig):
         ),
     )
 
+    async def engine_init(self) -> Any:
+        """Build a dedicated ``AsyncOpenSearch`` client for this engine.
+
+        Honours ``cluster_url`` + ``api_key`` overrides; falls back to the
+        env-driven SFEOS client (``ELASTICSEARCH_HOSTS`` etc.) when both
+        are unset — the same source the existing ``module_elasticsearch``
+        boot path uses, so default deployments behave identically.
+        """
+        if self.cluster_url is None and self.api_key is None:
+            from dynastore.modules.elasticsearch.client import get_client
+
+            client = get_client()
+            if client is None:
+                raise RuntimeError(
+                    "ElasticsearchEngineConfig: no cluster_url override and "
+                    "the env-driven client is not initialised.  Either set "
+                    "cluster_url on the engine or ensure ElasticsearchModule "
+                    "lifespan has started before consuming the engine."
+                )
+            return client
+
+        from opensearchpy import AsyncOpenSearch  # local import
+
+        kwargs: Dict[str, Any] = {
+            "timeout": self.request_timeout_sec,
+        }
+        if self.cluster_url is not None:
+            kwargs["hosts"] = [self.cluster_url.reveal()]
+        if self.api_key is not None:
+            kwargs["http_auth"] = self.api_key.reveal()
+        return AsyncOpenSearch(**kwargs)
+
+    async def engine_release(self, instance: Any) -> None:
+        """Close the OpenSearch client.
+
+        The env-driven shared client is owned by ``ElasticsearchModule``;
+        only dedicated clients (constructed when an override is set)
+        carry a ``close`` we should call.  Best-effort: failures logged.
+        """
+        if self.cluster_url is None and self.api_key is None:
+            return  # shared client; not our responsibility
+        close = getattr(instance, "close", None)
+        if close is None:
+            return
+        try:
+            await close()
+        except Exception:
+            logger = _logger()
+            logger.exception(
+                "ElasticsearchEngineConfig: client close raised; "
+                "instance dropped."
+            )
+
 
 class DuckdbEngineConfig(EngineConfig):
     """DuckDB process pool — backs the items DuckDB driver.
@@ -294,6 +390,40 @@ class DuckdbEngineConfig(EngineConfig):
         le=64,
         description="Per-process thread count (PRAGMA threads).",
     )
+
+    async def engine_init(self) -> Any:
+        """Build an in-memory DuckDB connection with PRAGMA tuning applied.
+
+        DuckDB has no native pool — ``pool_size`` is informational; the
+        engine returns a single per-engine connection pre-configured with
+        ``threads`` and ``memory_limit``.  Concurrent query throughput
+        comes from DuckDB's internal threading, so a single connection
+        per engine is the right unit (re-creating it per request would
+        defeat the cache's purpose).
+        """
+        import duckdb  # type: ignore[import-not-found]  # optional extra: module_storage_duckdb
+
+        conn = duckdb.connect(":memory:")
+        conn.execute(f"PRAGMA threads={self.threads}")
+        conn.execute(f"PRAGMA memory_limit='{self.max_memory_gb}GB'")
+        return conn
+
+    async def engine_release(self, instance: Any) -> None:
+        """Close the DuckDB connection.  ``close()`` is sync on duckdb.
+
+        We swallow + log instead of raising — eviction is best-effort.
+        """
+        close = getattr(instance, "close", None)
+        if close is None:
+            return
+        try:
+            close()
+        except Exception:
+            logger = _logger()
+            logger.exception(
+                "DuckdbEngineConfig: connection close raised; "
+                "instance dropped."
+            )
 
 
 class IcebergEngineConfig(EngineConfig):
@@ -333,6 +463,36 @@ class IcebergEngineConfig(EngineConfig):
             "keys, REST-catalog auth tokens)."
         ),
     )
+
+    async def engine_init(self) -> Any:
+        """Load the PyIceberg catalog client for this engine.
+
+        Builds the properties dict from ``catalog_uri`` / ``warehouse_uri``
+        / ``catalog_properties`` (Secret-typed → revealed to plaintext at
+        the load-call boundary), then delegates to
+        ``pyiceberg.catalog.load_catalog``.  PyIceberg's catalog object
+        owns its own connection pooling.
+        """
+        from pyiceberg.catalog import load_catalog  # type: ignore[import-not-found]  # optional extra: module_storage_iceberg
+
+        properties: Dict[str, str] = {}
+        if self.catalog_uri is not None:
+            properties["uri"] = self.catalog_uri.reveal()
+        if self.warehouse_uri is not None:
+            properties["warehouse"] = self.warehouse_uri.reveal()
+        for key, secret in self.catalog_properties.items():
+            properties[key] = secret.reveal()
+        # Catalog name is informational for PyIceberg; using the engine's
+        # class_key keeps the name stable across boots.
+        return load_catalog(self.__class__.class_key(), **properties)
+
+    async def engine_release(self, instance: Any) -> None:
+        """PyIceberg catalogs have no explicit close — drop reference."""
+        # No-op intentional.  The catalog object's underlying SQL/HTTP
+        # clients are GC-driven; eviction frees them once the reference
+        # count drops to zero.  Documented here so a future reader does
+        # not assume we're missing a teardown call.
+        return None
 
 
 __all__ = [
