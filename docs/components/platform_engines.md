@@ -221,3 +221,6 @@ and admin tooling but does not gate production dispatch.
   `EngineInstanceProtocol` + cache mechanics
 - `src/dynastore/modules/db_config/engine_resolver.py` — boot-time
   snapshot resolver
+- `docs/components/sidecar_configs.md` — sidecar configurations
+  composed onto PG-backed items drivers (geometries, attributes,
+  item_metadata, stac_metadata)

@@ -788,8 +788,11 @@ src/dynastore/
 │                                        # CollectionElasticsearchPrivateDriver (DENY-policied)
 └── docs/components/
     ├── storage_drivers.md               # This file
-    └── platform_engines.md              # Engines layer (Cycle F): connection pools,
-                                         # lifecycle policy, engine ↔ driver compatibility
+    ├── platform_engines.md              # Engines layer (Cycle F): connection pools,
+    │                                    # lifecycle policy, engine ↔ driver compatibility
+    └── sidecar_configs.md               # Sidecar configurations (geometries,
+                                         # attributes, item_metadata, stac_metadata)
+                                         # with full default field surface
 ```
 
 ## See also
@@ -797,3 +800,6 @@ src/dynastore/
 - `docs/components/platform_engines.md` — platform-tier engine configs,
   the four engine kinds, lifecycle policy, the `EngineInstanceCache`
   contract, and the operator workflows for provisioning + maintenance.
+- `docs/components/sidecar_configs.md` — sidecars composed onto
+  PG-backed items drivers; full default field surface for every
+  shipped sidecar.
