@@ -33,7 +33,7 @@ packages/
 
 ## Status (2026-05-07)
 
-**Migrated to wheels (Phase 1) — 23 of ~31 extensions:**
+**Migrated to wheels (Phase 1) — 28 of ~33 extensions:**
 
 Ungatable (5 of 7 — structurally isolated by package install boundary):
 - `tasks` · `stats` · `edr` · `moving_features` · `connected_systems`
@@ -48,9 +48,13 @@ Dep-gated (18 of 24 — pattern validated, dep sentinels carried over):
 - `assets` — extract `asset_service` / `asset_distributed` / `write_policy_assets` from `modules/catalog/` into `extensions/assets/`
 - `logs` — externalise the catalog event-listener registration API into `dynastore-core`
 
-**Remaining dep-gated (mechanical, deferred):**
 - `gdal` · `maps` · `tiles` · `stac` · `template` — heavy surface
-- `iam` · `auth` · `configs` · `admin` · `web` — foundational; need careful migration order
+
+**Remaining (need design before mechanical migration):**
+- `iam` · `auth` · `configs` · `admin` · `web` — foundational. `web` is imported by ≥5 already-migrated wheels (`maps`, `notebooks`, `stac`, `stats`, `tiles`); its decorators (`expose_web_page`, `expose_static`) are framework helpers. Either:
+  1. Keep web's framework helpers in `dynastore-core`; carve out only the `/` index route into `dynastore-ext-web` — small refactor inside web first.
+  2. Make `web` a regular wheel and add it as an explicit dep of every wheel that uses its decorators — explicit but coupling proliferates.
+- Same shape applies to `iam`, `auth`, `configs`, `admin` to a lesser degree (PolicyContributor cross-talk).
 
 **Stays in `dynastore-core` (Phase 2):**
 - `extensions/protocols.py`, `extensions/ogc_base.py`, `extensions/ogc_models_shared.py`, `extensions/lifespan.py`, `extensions/registry.py`, `extensions/bootstrap.py`, `extensions/tools/`, `extensions/documentation/` — these are framework, not per-route extensions; lifespan.py imports from them at module top.
