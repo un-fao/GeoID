@@ -31,6 +31,7 @@ from dynastore.extensions.tools.exception_handlers import handle_exception
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
+from dynastore.modules.db_config.engine_config import EngineConfig
 from dynastore.modules.db_config.platform_config_service import (
     enforce_config_immutability,
     require_config_class,
@@ -230,6 +231,29 @@ class ConfigsService(ExtensionProtocol):
         )
 
     # =========================================================================
+    # Cycle F.4b — Tenant-engines write 403 gate
+    # =========================================================================
+
+    @staticmethod
+    def _reject_engine_write_at_tenant_scope(
+        cls: type, plugin_id: str, scope: str,
+    ) -> None:
+        """Raise 403 if ``cls`` is an :class:`EngineConfig` subclass.
+
+        Engines are sysadmin-only platform-tier resources (tenant configs
+        cannot influence platform resource policy — decisions #15 / #18).
+        The existing ``configs_access`` policy already gates the whole
+        ``/configs/.*`` surface to SYSADMIN; this routing-layer check is
+        defence-in-depth — even if the policy is misconfigured, engine
+        writes at catalog / collection scope return a clean 403 with a
+        message pointing operators to the platform-tier endpoint.
+        """
+        if isinstance(cls, type) and issubclass(cls, EngineConfig):
+            raise problem_details.engine_write_forbidden_at_tenant_scope(
+                plugin_id, scope=scope,
+            )
+
+    # =========================================================================
     # Invalidate hook — clears the exposure matrix + OpenAPI schema cache
     # =========================================================================
 
@@ -267,6 +291,7 @@ class ConfigsService(ExtensionProtocol):
     ) -> Dict[str, Any]:
         """Apply a partial config update at catalog scope."""
         from pydantic import ValidationError
+        self._gate_engine_writes_in_patch_body(body.root, scope="catalog")
         try:
             result = await self._config_api.patch_config(
                 catalog_id=catalog_id, body=body.root
@@ -290,6 +315,7 @@ class ConfigsService(ExtensionProtocol):
         with the standard RFC 7396 merge-patch semantic on the scope root.
         """
         from pydantic import ValidationError
+        self._gate_engine_writes_in_patch_body(body.root, scope="collection")
         try:
             result = await self._config_api.patch_config(
                 catalog_id=catalog_id,
@@ -302,6 +328,25 @@ class ConfigsService(ExtensionProtocol):
             raise problem_details.value_error(e)
         await self._invalidate_exposure()
         return result
+
+    @staticmethod
+    def _gate_engine_writes_in_patch_body(
+        body: Dict[str, Any], *, scope: str,
+    ) -> None:
+        """Cycle F.4b — reject tenant-scope PATCH bodies that include any
+        engine config.  Iterates the merge-patch keys, resolves each to a
+        config class, and raises 403 on the first ``EngineConfig`` hit.
+        Same gate as the per-plugin PUT/DELETE handlers; pre-validates
+        before any write fires so the bulk operation stays atomic.
+        """
+        for plugin_id in body.keys():
+            cls = resolve_config_class(plugin_id)
+            if cls is None:
+                continue  # patch_config will raise ValueError for unknown plugins
+            if isinstance(cls, type) and issubclass(cls, EngineConfig):
+                raise problem_details.engine_write_forbidden_at_tenant_scope(
+                    plugin_id, scope=scope,
+                )
 
     async def get_config_schemas(self) -> Dict[str, Any]:
         """List all registered config schemas grouped by scope and protocol (M9).
@@ -627,6 +672,7 @@ class ConfigsService(ExtensionProtocol):
         await require_catalog_ready(catalog_id)
         try:
             cls = require_config_class(plugin_id)
+            self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
             config_model = cls.model_validate(body)
 
             validated_config = await self.configs.set_config(
@@ -652,6 +698,7 @@ class ConfigsService(ExtensionProtocol):
         The effective configuration will revert to Catalog, Platform, or Code defaults.
         """
         cls = require_config_class(plugin_id)
+        self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
         await self.configs.delete_config(
             cls, catalog_id=catalog_id, collection_id=collection_id
         )
@@ -691,6 +738,7 @@ class ConfigsService(ExtensionProtocol):
         await require_catalog_ready(catalog_id)
         try:
             cls = require_config_class(plugin_id)
+            self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="catalog")
             config_model = cls.model_validate(body)
 
             validated_config = await self.configs.set_config(
@@ -713,6 +761,7 @@ class ConfigsService(ExtensionProtocol):
         The effective configuration will revert to Platform or Code defaults.
         """
         cls = require_config_class(plugin_id)
+        self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="catalog")
         await self.configs.delete_config(cls, catalog_id=catalog_id)
         await self._invalidate_exposure()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
