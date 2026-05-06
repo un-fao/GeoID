@@ -206,8 +206,8 @@ print("Driver config pinned: collection_type=RECORDS")
 routing_cfg = {
     "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "WRITE": [{"driver_ref": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
 }
 r = client.put(
@@ -415,20 +415,20 @@ print(f"DuckDB config PUT → {r.status_code}")
 routing_cfg = {
     "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "WRITE": [{"driver_ref": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
     "metadata": {
         "operations": {
             # INDEX — search mirror; transformed=False means "feed the raw envelope"
             "INDEX": [{
-                "driver_id": "items_elasticsearch_obfuscated_driver",
+                "driver_ref": "items_elasticsearch_obfuscated_driver",
                 "transformed": False,
                 "on_failure": "warn",
             }],
             # BACKUP — file-sink; fmt binds the sink to the ?format=parquet query.
             "BACKUP": [{
-                "driver_id": "items_duckdb_driver",
+                "driver_ref": "items_duckdb_driver",
                 "transformed": False,
                 "fmt": "parquet",
                 "on_failure": "warn",
@@ -544,10 +544,10 @@ routing = {
     "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
-            {"driver_id": "items_duckdb_driver",     "on_failure": "warn"},
+            {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"},
+            {"driver_ref": "items_duckdb_driver",     "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
 }
 duck = {"class_key": "items_duckdb_driver_config", "warehouse": "/nonexistent/disallowed"}
@@ -578,10 +578,10 @@ routing = {
     "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "items_postgresql_driver", "hints": ["features"]},
-            {"driver_id": "items_elasticsearch_obfuscated_driver", "hints": ["obfuscated"], "on_failure": "warn"},
+            {"driver_ref": "items_postgresql_driver", "hints": ["features"]},
+            {"driver_ref": "items_elasticsearch_obfuscated_driver", "hints": ["obfuscated"], "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
 }
 r = client.put(
@@ -615,13 +615,13 @@ print(f"hinted WRITE (features) → {r.status_code}")
 routing_with_transform = {
     "class_key": "collection_routing_config",
     "operations": {
-        "WRITE": [{"driver_id": "items_postgresql_driver", "on_failure": "fatal"}],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "WRITE": [{"driver_ref": "items_postgresql_driver", "on_failure": "fatal"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
     "metadata": {
         "operations": {
-            "READ":      [{"driver_id": "metadata_postgresql_driver"}],
-            "TRANSFORM": [{"driver_id": "asset_postgresql_driver"}],
+            "READ":      [{"driver_ref": "metadata_postgresql_driver"}],
+            "TRANSFORM": [{"driver_ref": "asset_postgresql_driver"}],
         },
     },
 }
@@ -669,10 +669,10 @@ routing_bq = {
     "class_key": "collection_routing_config",
     "operations": {
         "WRITE": [
-            {"driver_id": "items_postgresql_driver", "on_failure": "fatal"},
-            {"driver_id": "items_big_query_driver",   "on_failure": "warn"},
+            {"driver_ref": "items_postgresql_driver", "on_failure": "fatal"},
+            {"driver_ref": "items_big_query_driver",   "on_failure": "warn"},
         ],
-        "READ":  [{"driver_id": "items_postgresql_driver"}],
+        "READ":  [{"driver_ref": "items_postgresql_driver"}],
     },
 }
 r = client.put(
