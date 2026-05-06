@@ -1,7 +1,5 @@
 from tests.dynastore.test_utils.cleanup_registry import CleanupRegistry
-from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler, managed_nested_transaction
-from dynastore.modules.db_config.locking_tools import check_table_exists, force_truncate_table, force_drop_schema
-from dynastore.tools.db_cleanup import (
+from tests.dynastore.test_utils.db_cleanup import (
     CATALOG_METADATA_TABLES,
     DELETE_ORPHAN_GCP_BUCKET_RECORDS_SQL,
     SCHEMA_DROP_BATCH_SIZE,
@@ -9,6 +7,8 @@ from dynastore.tools.db_cleanup import (
     TENANT_SCHEMA_PATTERN,
     drop_schemas_batch_sql,
 )
+from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler, managed_nested_transaction
+from dynastore.modules.db_config.locking_tools import check_table_exists, force_truncate_table, force_drop_schema
 import logging
 
 logger = logging.getLogger(__name__)

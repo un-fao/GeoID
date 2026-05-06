@@ -16,10 +16,22 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Single source of truth for DB-cleanup constants and SQL fragments.
+"""DB-cleanup constants and SQL fragments — TEST-ONLY MODULE.
 
-Both the test-suite cleanup (``tests/dynastore/modules/catalog/cleanup.py``)
-and the operational reset script (``dynastore.scripts.db_reset``) need:
+This module lives under ``tests/`` so it is **not packaged into the
+production wheel**. Production-traffic code paths (FastAPI services,
+ingestion / indexing / tiles jobs) cannot import this module — the
+constants only exist when the source repository is checked out, e.g.
+when the test suite runs locally / in CI.
+
+The same constants are *also* needed at runtime by the operational
+reset entrypoint ``dynastore.scripts.db_reset`` (invoked exclusively
+by the ``Reset database (review only)`` Cloud Run job, never by API
+traffic). That script keeps its own minimal copy of the same constants,
+pinned by ``tests/.../test_db_cleanup_drift.py`` so the two
+definitions cannot diverge.
+
+What this file owns:
 
 - the regex that identifies tenant schemas (``s_<8 base36>``);
 - the canonical preserved-schema allowlist (system + platform schemas
@@ -27,21 +39,16 @@ and the operational reset script (``dynastore.scripts.db_reset``) need:
 - the canonical system-cron-job allowlist (jobs the reset must never wipe);
 - the SQL for orphan-cron-job and orphan-GCS-bucket-record cleanup;
 - the schema-batch size (PostgreSQL has a per-transaction
-  max_locks_per_transaction limit; large drops need batching).
+  ``max_locks_per_transaction`` limit; large drops need batching).
 
-This module exposes those values + small SQL-string helpers so the two
-callers stay in sync. Connection handling stays caller-side — tests
-use the dynastore SQLAlchemy engine, the reset script uses raw
-asyncpg — both consume the same constants from here.
-
-The single source of truth is normative: any rule lookup ``feedback_*``
-in memory that touched these constants now points here.
+Connection handling stays caller-side — the test-suite cleanup uses
+the dynastore SQLAlchemy engine; the reset script uses raw asyncpg —
+both consume the same constants but never call the same connection
+abstractions.
 """
 
 from __future__ import annotations
 
-import shlex
-from pathlib import Path
 from typing import FrozenSet, Iterable, Tuple
 
 
@@ -136,44 +143,3 @@ def drop_schemas_batch_sql(schema_names: Iterable[str]) -> str:
     SQL via the ``"..."`` quoting.
     """
     return "\n".join(f'DROP SCHEMA IF EXISTS "{s}" CASCADE;' for s in schema_names)
-
-
-def load_reset_policy_overrides(
-    policy_file: Path,
-) -> tuple[FrozenSet[str], Tuple[str, ...]]:
-    """Read ``reset_policy.env`` overrides for preserved schemas and
-    system cron jobs. Returns the overridden values when the file
-    declares them, falling back to the canonical defaults otherwise.
-
-    File format is shell-style ``KEY=value``:
-
-    .. code-block:: ini
-
-        PRESERVED_SCHEMAS="pg_catalog information_schema pg_toast cron public keycloak ai google_ml topology"
-        SYSTEM_CRON_JOBS="system_cleanup_orphaned_cron_jobs monthly_cleanup_system_logs"
-
-    Lines starting with ``#`` and blank lines are ignored. Values are
-    parsed with :mod:`shlex` so quoted strings with embedded spaces
-    work as expected.
-    """
-    preserved: FrozenSet[str] = DEFAULT_PRESERVED_SCHEMAS
-    system_cron: Tuple[str, ...] = DEFAULT_SYSTEM_CRON_JOBS
-
-    if not policy_file.exists():
-        return preserved, system_cron
-
-    for raw in policy_file.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        if key == "PRESERVED_SCHEMAS":
-            preserved = frozenset(shlex.split(val))
-        elif key == "SYSTEM_CRON_JOBS":
-            system_cron = tuple(shlex.split(val))
-
-    return preserved, system_cron
