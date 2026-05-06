@@ -53,6 +53,9 @@ dynastore-ext-dwh = { workspace = true }
 dynastore-ext-joins = { workspace = true }
 dynastore-ext-styles = { workspace = true }
 dynastore-ext-gcp-bucket = { workspace = true }
+dynastore-ext-geoid = { workspace = true }
+dynastore-ext-events = { workspace = true }
+dynastore-ext-httpx = { workspace = true }
 
 [project.optional-dependencies]
 # ==========================================================================
@@ -96,7 +99,7 @@ module_notebooks = ["httpx", "python-dotenv"]
 # ==========================================================================
 extension_base = ["fastapi>=0.100"]
 extension_web = ["dynastore[extension_base]", "markdown>=3.3.7"]
-extension_httpx = ["dynastore[extension_base]", "httpx"]
+extension_httpx = ["dynastore[extension_base]", "httpx", "dynastore-ext-httpx"]
 extension_catalog = ["dynastore[extension_base,module_catalog]"]
 extension_stac = ["dynastore[extension_base]", "pystac[validation]>=1.13.0", "stac-pydantic[validation]>=3.1.0"]
 extension_auth = ["dynastore[extension_base]", "python-multipart>=0.0.26", "itsdangerous>=2.0"]
@@ -116,7 +119,7 @@ extension_logs = ["dynastore[extension_base]", "httpx"]
 extension_configs = ["dynastore[extension_base]"]
 extension_stats = ["dynastore[extension_base,module_stats]", "dynastore-ext-stats"]
 extension_crs = ["dynastore[extension_base,module_crs]", "dynastore-ext-crs"]
-extension_events = ["dynastore[extension_base,module_events]"]
+extension_events = ["dynastore[extension_base,module_events]", "dynastore-ext-events"]
 extension_wfs = ["dynastore[extension_base,geospatial_core]", "pyproj>=3.0.0", "dynastore-ext-wfs"]
 extension_admin = ["dynastore[extension_base,extension_iam]"]
 extension_assets = ["dynastore[extension_base]"]
@@ -124,7 +127,7 @@ extension_notebooks = ["dynastore[extension_base,module_notebooks]", "dynastore-
 extension_records = ["dynastore[extension_base]", "pygeofilter[backend-sqlalchemy]", "dynastore-ext-records"]
 extension_search = ["dynastore[extension_base]", "dynastore-ext-search"]
 extension_gcp_bucket = ["dynastore[extension_base,module_gcp]", "dynastore-ext-gcp-bucket"]
-extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
+extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0", "dynastore-ext-geoid"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]", "rasterio>=1.4.3", "dynastore-ext-coverages"]
 extension_edr = ["dynastore[extension_base,geospatial_core]", "dynastore-ext-edr"]
@@ -511,17 +514,17 @@ web = "dynastore.extensions.web.web:Web"
 # features: migrated to packages/extensions/features (dynastore-ext-features wheel)
 template = "dynastore.extensions.template.templating:TemplatingExtension"
 admin = "dynastore.extensions.admin.admin_service:AdminService"
-geoid = "dynastore.extensions.geoid.geoid:Geoid"
+# geoid: migrated to packages/extensions/geoid (dynastore-ext-geoid wheel)
 # gcp_bucket: migrated to packages/extensions/gcp (dynastore-ext-gcp-bucket wheel)
 # search: migrated to packages/extensions/search (dynastore-ext-search wheel)
 # styles: migrated to packages/extensions/styles (dynastore-ext-styles wheel)
 # connected_systems: migrated to packages/extensions/connected_systems (dynastore-ext-connected-systems wheel)
-httpx = "dynastore.extensions.httpx.httpx_service:HttpxExtension"
+# httpx: migrated to packages/extensions/httpx (dynastore-ext-httpx wheel)
 iam = "dynastore.extensions.iam.service:IamExtension"
 logs = "dynastore.extensions.logs.log_extension:LogExtension"
 configs = "dynastore.extensions.configs.service:ConfigsService"
 # crs: migrated to packages/extensions/crs (dynastore-ext-crs wheel)
-events = "dynastore.extensions.events.extension:EventsExtension"
+# events: migrated to packages/extensions/events (dynastore-ext-events wheel)
 # wfs: migrated to packages/extensions/wfs (dynastore-ext-wfs wheel)
 assets = "dynastore.extensions.assets.assets_service:AssetService"
 # notebooks: migrated to packages/extensions/notebooks (dynastore-ext-notebooks wheel)
