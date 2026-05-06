@@ -787,5 +787,13 @@ src/dynastore/
 │       └── elasticsearch_private/       # ItemsElasticsearchPrivateDriver +
 │                                        # CollectionElasticsearchPrivateDriver (DENY-policied)
 └── docs/components/
-    └── storage_drivers.md               # This file
+    ├── storage_drivers.md               # This file
+    └── platform_engines.md              # Engines layer (Cycle F): connection pools,
+                                         # lifecycle policy, engine ↔ driver compatibility
 ```
+
+## See also
+
+- `docs/components/platform_engines.md` — platform-tier engine configs,
+  the four engine kinds, lifecycle policy, the `EngineInstanceCache`
+  contract, and the operator workflows for provisioning + maintenance.
