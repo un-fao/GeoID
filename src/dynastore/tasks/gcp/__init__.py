@@ -16,7 +16,6 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from .gcs_storage_event_task import GcsStorageEventTask
 from .gcp_catalog_cleanup_task import GcpCatalogCleanupTask
 
-__all__ = ["GcsStorageEventTask", "GcpCatalogCleanupTask"]
+__all__ = ["GcpCatalogCleanupTask"]

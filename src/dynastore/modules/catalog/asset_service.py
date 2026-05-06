@@ -26,8 +26,10 @@ registered in the catalog database.  Assets are the central linking mechanism:
 
 - **Ingestion tasks** create an asset from a source-file URI, then write
   feature rows into the collection's physical table keyed by ``asset_id``.
-- **GCS/S3 uploads** create assets automatically when the storage event fires
-  (``GcsStorageEventTask`` / future ``S3EventTask``).
+- **GCS/S3 uploads** mint a PENDING row up front (``initiate_upload``); the
+  storage backend's finalize event then activates that row inline (the GCS
+  Pub/Sub HTTP push handler runs the finalize activator in a single
+  transaction; future S3 backends will follow the same shape).
 - **Direct API calls** create assets immediately via
   ``POST /assets/catalogs/{id}`` or the collection-scoped variant.
 
@@ -121,7 +123,8 @@ Upload flow (GCS)
     )
     # → ticket.upload_url is a GCS signed resumable PUT URL
     # → PUT file to ticket.upload_url with ticket.headers
-    # → GCS fires OBJECT_FINALIZE → GcsStorageEventTask → create_asset(owned_by="gcs")
+    # → GCS fires OBJECT_FINALIZE → Pub/Sub push → inline finalize activator
+    #   transitions the PENDING row to ACTIVE in one transaction
     # → poll GET /assets/catalogs/{id}/upload/{ticket.ticket_id}/status
 
 Deletion guard

@@ -59,7 +59,8 @@ Upload flows
     #   headers: ticket.headers
     #   body: <file bytes>
 
-    # GCS fires OBJECT_FINALIZE → GcsStorageEventTask → create_asset(owned_by="gcs")
+    # GCS fires OBJECT_FINALIZE → Pub/Sub HTTP push → inline finalize activator
+    # transitions the PENDING assets row to ACTIVE in a single transaction.
 
     # Poll until status == "completed":
     from dynastore.models.protocols import UploadStatus
