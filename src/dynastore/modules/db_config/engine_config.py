@@ -33,7 +33,7 @@ resource policy.  Lifecycle lives ONLY on engines.
 
 from __future__ import annotations
 
-from typing import ClassVar, Dict, Literal, Optional, Tuple
+from typing import Any, ClassVar, Dict, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -121,9 +121,12 @@ class EngineConfig(PluginConfig):
     surfaces them keyed by their ``class_key()`` (= snake_case of the
     class name).
 
-    Sysadmin-only writes by default — the platform-tier IAM gate is the
-    enforcement point.  Per-engine RBAC carve-outs are out of scope for
-    F.1 (future cycle).
+    **IAM**: sysadmin-only writes are enforced by the existing
+    ``configs_access`` policy (``extensions/configs/policies.py``) which
+    gates the entire ``/configs/.*`` surface to the SYSADMIN role.
+    Engines need no additional policy registration — they inherit the
+    platform-tier gate.  Per-engine RBAC carve-outs are out of scope
+    for F.1 (future cycle).
     """
 
     is_abstract_base: ClassVar[bool] = True
@@ -133,6 +136,25 @@ class EngineConfig(PluginConfig):
     engine_class: ClassVar[str] = ""
 
     _visibility: ClassVar[Optional[str]] = "platform"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Concrete EngineConfig subclasses MUST override ``engine_class``
+        # to a non-empty discriminator.  Without this enforcement a typo
+        # (or copy-paste forget) would silently inherit the empty-string
+        # base default and the engine would be invisible to driver-side
+        # ``required_engine_class`` validation (F.2).
+        if not cls.__dict__.get("is_abstract_base", False):
+            engine_class_val = cls.__dict__.get("engine_class")
+            if not engine_class_val:
+                raise TypeError(
+                    f"{cls.__module__}.{cls.__qualname__} is a concrete "
+                    f"EngineConfig but does not declare ``engine_class`` "
+                    f"(or declares it empty).  Add e.g. "
+                    f"``engine_class: ClassVar[str] = \"my_engine\"`` so "
+                    f"driver-side ``required_engine_class`` checks (F.2) "
+                    f"can match this engine."
+                )
 
     enabled: bool = Field(
         default=True,
