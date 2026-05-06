@@ -27,6 +27,8 @@ from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.extensions.tools.web_collect import collect_web_pages
+from dynastore.models.auth import Policy
+from dynastore.models.auth_models import Role
 from dynastore.models.protocols.authorization import DefaultRole
 from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -39,41 +41,29 @@ logger = logging.getLogger(__name__)
 from dynastore.models.protocols.stats import StatsProtocol
 
 
-def _register_stats_policies(sysadmin_role_name: Optional[str] = None) -> None:
-    """Register the access policy for the /stats/* surface.
+def _stats_policy(sysadmin_role_name: Optional[str] = None) -> Policy:
+    """Pure declaration of the stats access policy.
 
-    Args:
-        sysadmin_role_name: Role name bound to ``stats_endpoint_access``.
-            Defaults to ``DefaultRole.SYSADMIN.value`` for back-compat;
-            operators wiring a custom role landscape pass an explicit
-            name (the role name is a foreign key into ``iam.roles``).
+    Returned to IAM via ``StatsExtension.get_policies``; never registers
+    anything itself. ``sysadmin_role_name`` (default
+    ``DefaultRole.SYSADMIN.value``) is a foreign key into ``iam.roles``
+    and only carries through to the role binding emitted alongside.
     """
-    from dynastore.models.protocols.policies import Policy, Role
-
-    pm = get_protocol(PermissionProtocol)
-    if not pm:
-        logger.warning(
-            "StatsExtension: PermissionProtocol unavailable — stats policies not registered."
-        )
-        return
-
-    sysadmin_role_name = sysadmin_role_name or DefaultRole.SYSADMIN.value
-
-    # /stats/system + /stats/catalogs/{cid}{/collections/{colid}} are operator-
-    # facing observability data. Sysadmin-only until per-catalog admin UI is
-    # wired through the tenant_scope_registry (mirrors logs_dashboard scope).
-    policy = Policy(
+    return Policy(
         id="stats_endpoint_access",
         description="Sysadmin-only access to /stats/* observability endpoints.",
         actions=["GET", "OPTIONS"],
         resources=[r"^/stats(/.*)?$"],
         effect="ALLOW",
     )
-    pm.register_policy(policy)
-    pm.register_role(
-        Role(name=sysadmin_role_name, policies=["stats_endpoint_access"])
+
+
+def _stats_role_binding(sysadmin_role_name: Optional[str] = None) -> Role:
+    """Pure declaration of the role binding for the stats policy."""
+    return Role(
+        name=sysadmin_role_name or DefaultRole.SYSADMIN.value,
+        policies=["stats_endpoint_access"],
     )
-    logger.info("StatsExtension: stats policy registered.")
 
 
 class StatsExtension(ExtensionProtocol, StatsProtocol):
@@ -104,6 +94,15 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             methods=["GET"],
             summary="Retrieve stats for a specific collection",
         )
+
+    # PolicyContributor: declare authz needs; IAM forwards centrally.
+    # No direct call to PermissionProtocol — keeps the plugin agnostic
+    # of the enforcement implementation.
+    def get_policies(self):
+        return [_stats_policy()]
+
+    def get_role_bindings(self):
+        return [_stats_role_binding()]
 
     def get_web_pages(self):
         # Skip nav registration in deployments without IAM — there are no
@@ -197,7 +196,8 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             yield
             return
 
-        _register_stats_policies()
+        # Policies declared via PolicyContributor (get_policies +
+        # get_role_bindings); IAM picks them up centrally.
         logger.info("StatsExtension initialized.")
         yield
 

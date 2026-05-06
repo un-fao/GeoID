@@ -44,7 +44,7 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web import expose_web_page
 from dynastore.models.protocols import WebModuleProtocol
 from dynastore.modules.iam.iam_service import IamService
-from dynastore.tools.discovery import get_protocol
+from dynastore.tools.discovery import get_protocol, get_protocols
 from dynastore.modules.db_config.tools import normalize_db_url
 from dynastore.modules.db_config.query_executor import DbResource
 
@@ -460,6 +460,33 @@ class IamExtension(ExtensionProtocol):
 
         # Register IAM service policies via protocol
         register_iam_service_policies()
+
+        # Discover plugin-declared policies via PolicyContributor. Plugins
+        # never touch PermissionProtocol directly — they declare here and
+        # IAM forwards centrally. Keeps IAM/auth concepts isolated from
+        # the rest of the platform.
+        try:
+            from dynastore.models.protocols.policy_contributor import PolicyContributor
+            contributors = get_protocols(PolicyContributor)
+            for contributor in contributors:
+                origin = type(contributor).__name__
+                try:
+                    for policy in contributor.get_policies() or []:
+                        self._policy_service.register_policy(policy)
+                    for role in contributor.get_role_bindings() or []:
+                        self._policy_service.register_role(role)
+                    logger.debug(
+                        "IamExtension: registered policies/bindings from %s",
+                        origin,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "IamExtension: %s contributor failed: %s",
+                        origin,
+                        e,
+                    )
+        except Exception as e:
+            logger.error("IamExtension: PolicyContributor discovery failed: %s", e)
 
         yield
 
