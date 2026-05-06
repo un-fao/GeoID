@@ -67,7 +67,7 @@ def create_landing_page(
             title=cast(Any, "List of catalogs"),
         ),
         Link(
-            href=f"{base_url}/conformance",
+            href=f"{base_url}/features/conformance",
             rel="conformance",
             type="application/json",
             title=cast(Any, "Conformance classes"),

@@ -112,7 +112,7 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
     root_catalog.add_link(
         pystac.Link(
             rel="conformance",
-            target=f"{get_root_url(request)}/conformance",
+            target=f"{get_root_url(request)}/stac/conformance",
             media_type="application/json",
             title="API Conformance",
         )
