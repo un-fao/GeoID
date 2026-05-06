@@ -27,6 +27,9 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Union, cast
 
+import pygeofilter as _pygeofilter_scope_gate  # noqa: F401  # SCOPE gate: extension_records requires pygeofilter
+_ = _pygeofilter_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from sqlalchemy.ext.asyncio import AsyncConnection
