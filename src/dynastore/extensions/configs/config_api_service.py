@@ -122,6 +122,55 @@ class ConfigApiService:
 
     # --- Effective-value resolution (unchanged shape). ---
 
+    async def _get_extra_refs(
+        self,
+        catalog_id: Optional[str],
+        collection_id: Optional[str],
+    ) -> Dict[str, Tuple[str, Dict[str, Any]]]:
+        """F.4d.1 — surface multi-instance refs (rows where ``ref_key !=
+        class_key``) at the active scope.
+
+        Returns ``{ref_key: (class_key, payload)}``.  The class-keyed canonical
+        rows (``ref_key == class_key``) are already covered by the existing
+        :meth:`_get_effective_configs` waterfall — only the *extra* refs flow
+        through this helper, so no payload is read twice.
+
+        Uses the F.4c.2 ``list_refs_at_scope`` + ``get_config_by_ref`` API
+        added on ``ConfigsProtocol``; degrades to ``{}`` when the bound
+        service does not implement them (older deployments / mocks).
+        """
+        svc = self._config_service
+        list_refs = getattr(svc, "list_refs_at_scope", None)
+        get_by_ref = getattr(svc, "get_config_by_ref", None)
+        if list_refs is None or get_by_ref is None:
+            return {}
+        ref_map: Dict[str, str] = await list_refs(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
+        if not ref_map:
+            return {}
+        all_classes = list_registered_configs()
+        out: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+        for ref_key, class_key in ref_map.items():
+            if ref_key == class_key:
+                continue  # canonical row — already in by_class
+            cls = all_classes.get(class_key)
+            if cls is None:
+                # Stored row references an unregistered class — skip
+                # (matches the warning logged inside get_config_by_ref).
+                continue
+            cfg = await get_by_ref(
+                ref_key, catalog_id=catalog_id, collection_id=collection_id,
+            )
+            if cfg is None:
+                continue
+            try:
+                payload = cfg.model_dump()
+            except Exception:
+                payload = {}
+            out[ref_key] = (class_key, payload)
+        return out
+
     async def _get_effective_configs(
         self,
         catalog_id: Optional[str],
@@ -282,6 +331,7 @@ class ConfigApiService:
         meta_mode: str = "none",
         include_mode: str = "scope",
         strict: bool = True,
+        extra_refs: Optional[Dict[str, Tuple[str, Dict[str, Any]]]] = None,
     ) -> Tuple[
         Dict[str, Any],
         Optional[Dict[str, Any]],
@@ -437,6 +487,29 @@ class ConfigApiService:
             _place_at(tree, placed, class_key, payload)
             if wants_docs:
                 _place_at(meta_tree, placed, class_key, _doc_leaf(cls))
+
+        # F.4d.1 — multi-instance ref surfacing.
+        # Each entry in ``extra_refs`` is ``ref_key → (class_key, payload)``
+        # where ``ref_key != class_key`` (canonical rows are already in
+        # ``by_class``).  Place the ref leaf under the parent class's
+        # ``_address`` so operators see ``platform.modules.tiles.tiles_secondary``
+        # alongside the canonical ``platform.modules.tiles.tiles_config``.
+        if extra_refs:
+            for ref_key, (class_key, payload) in extra_refs.items():
+                cls = all_classes.get(class_key)
+                if cls is None:
+                    continue
+                placed = _place(cls, active_scope)
+                if placed is None:
+                    continue
+                if slim and not _is_in_scope(cls, class_key):
+                    source = sources.get(class_key, "default")
+                    _place_at(inherited_tree, placed, ref_key, {"source": source})
+                    inherited_has_entries = True
+                    continue
+                _place_at(tree, placed, ref_key, payload)
+                if wants_docs:
+                    _place_at(meta_tree, placed, ref_key, _doc_leaf(cls))
         return (
             tree,
             (meta_tree if wants_docs else None),
@@ -695,10 +768,14 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
         )
+        extra_refs = await self._get_extra_refs(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
         self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "collection",
             meta_mode=meta, include_mode=include, strict=strict,
+            extra_refs=extra_refs,
         )
         return CollectionConfigResponse(
             links=self._build_links(
@@ -722,10 +799,14 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
         )
+        extra_refs = await self._get_extra_refs(
+            catalog_id=catalog_id, collection_id=None,
+        )
         self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "catalog",
             meta_mode=meta, include_mode=include, strict=strict,
+            extra_refs=extra_refs,
         )
         return CatalogConfigResponse(
             links=self._build_links("catalog", base_url, catalog_id=catalog_id),
@@ -744,10 +825,14 @@ class ConfigApiService:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
         )
+        extra_refs = await self._get_extra_refs(
+            catalog_id=None, collection_id=None,
+        )
         self._build_routing_refs(by_class, base_url)
         tree, meta_dict, inherited = self._compose_tree(
             by_class, sources, "platform",
             meta_mode=meta, include_mode=include, strict=strict,
+            extra_refs=extra_refs,
         )
         return PlatformConfigResponse(
             links=self._build_links("platform", base_url),
