@@ -163,26 +163,23 @@ class CollectionService:
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
-        # Load current collection-scope driver config (may already be pinned
-        # by a prior inline configure step) so ensure_storage sees the
-        # caller-supplied sidecars / schema.
-        if col_config is None:
-            from dynastore.modules.storage.router import get_driver as _get_driver
-            from dynastore.modules.storage.routing_config import Operation
-            try:
-                _meta_driver = await _get_driver(
-                    Operation.READ, catalog_id, collection_id
-                )
-                col_config = await _meta_driver.get_driver_config(
-                    catalog_id, collection_id, db_resource=conn,
-                )
-            except ValueError:
-                col_config = None
-
         # Provision storage. `ensure_storage` is idempotent; concurrent
         # first-inserts will both call it safely.
         try:
             write_driver = await get_driver("WRITE", catalog_id, collection_id)
+
+            # Load col_config from the WRITE driver (not the READ driver).
+            # READ driver may resolve to a different class (e.g. ES when PG
+            # is the authoritative write backend), causing AttributeError when
+            # PG's ensure_storage accesses PG-specific fields like physical_table.
+            if col_config is None:
+                try:
+                    col_config = await write_driver.get_driver_config(
+                        catalog_id, collection_id, db_resource=conn,
+                    )
+                except Exception:
+                    col_config = None
+
             await write_driver.ensure_storage(
                 catalog_id,
                 collection_id,
