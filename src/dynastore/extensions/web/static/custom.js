@@ -467,16 +467,42 @@ async function fetchDashboardStats() {
 async function fetchDashboardLogs() {
     try {
         const level = document.getElementById('log-filter-level')?.value || 'INFO';
-        const res = await fetch(`dashboard/logs?limit=50&level=${level}`);
+        const res = await fetch(`/logs/system?limit=50&level=${level}`);
         if (!res.ok) return;
-        const logs = await res.json();
+        const data = await res.json();
+        const logs = data.logs || [];
         const container = document.getElementById('dashboard-logs');
-        if (container) {
-             container.innerHTML = logs.length ? logs.map(l => {
-                 const date = l.created_at ? new Date(l.created_at) : new Date();
-                 const timeStr = isNaN(date.getTime()) ? new Date().toLocaleTimeString() : date.toLocaleTimeString();
-                 return `<div class="text-xs font-mono p-1 hover:bg-white/5 flex gap-2"><span class="text-slate-500 shrink-0">${timeStr}</span> <span class="font-bold ${l.level=='ERROR'?'text-red-400':l.level=='WARN'?'text-yellow-400':'text-blue-400'} w-12 shrink-0">${l.level}</span> <span class="break-all">${l.message}</span></div>`;
-             }).join('') : '<div class="text-slate-500 text-center py-4">No logs</div>';
+        if (!container) return;
+        while (container.firstChild) container.removeChild(container.firstChild);
+        if (!logs.length) {
+            const empty = document.createElement('div');
+            empty.className = 'text-slate-500 text-center py-4';
+            empty.textContent = 'No logs';
+            container.appendChild(empty);
+            return;
+        }
+        for (const l of logs) {
+            const ts = l.timestamp || l.created_at;
+            const date = ts ? new Date(ts) : new Date();
+            const timeStr = isNaN(date.getTime()) ? new Date().toLocaleTimeString() : date.toLocaleTimeString();
+            const row = document.createElement('div');
+            row.className = 'text-xs font-mono p-1 hover:bg-white/5 flex gap-2';
+            const tEl = document.createElement('span');
+            tEl.className = 'text-slate-500 shrink-0';
+            tEl.textContent = timeStr;
+            const levelEl = document.createElement('span');
+            const levelColor = l.level === 'ERROR' ? 'text-red-400'
+                : l.level === 'WARN' ? 'text-yellow-400'
+                : 'text-blue-400';
+            levelEl.className = `font-bold ${levelColor} w-12 shrink-0`;
+            levelEl.textContent = l.level || '';
+            const msgEl = document.createElement('span');
+            msgEl.className = 'break-all';
+            msgEl.textContent = l.message || '';
+            row.appendChild(tEl);
+            row.appendChild(levelEl);
+            row.appendChild(msgEl);
+            container.appendChild(row);
         }
     } catch(e) {}
 }

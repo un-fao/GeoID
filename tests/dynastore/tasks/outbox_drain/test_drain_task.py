@@ -1,80 +1,56 @@
 """OutboxDrainTask tests — claim, dispatch to BulkIndexer.index_bulk,
-apply BulkIndexResult per-row outcomes, record failures.
+apply BulkIndexResult per-row outcomes, and emit failure log events
+through the canonical ``log_event`` channel.
 
-Uses an inline ``_StubFailureLog`` Protocol-conformant fake instead of a
-PG-backed ``IndexFailureLog``: the PG implementation is out of scope for
-this consumer and ships separately.
+Failure observability goes through ``log_event`` (the
+``/logs/catalogs/{cat}`` surface), not a dedicated index_failure_log
+table. Tests monkeypatch ``log_event`` in the drain_task module so they
+can assert against captured calls without booting LogService.
 """
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional, Sequence
-from uuid import UUID, uuid4
+from typing import Any, List, Sequence
+from uuid import uuid4
 
 import pytest
 
 from dynastore.models.protocols.indexing import (
     BulkIndexResult,
-    IndexFailureRecord,
     IndexableOp,
     OutboxRecord,
 )
 from dynastore.modules.storage.outbox_ddl import ensure_storage_outbox_asyncpg
 from dynastore.modules.storage.pg_outbox import PgOutboxStore
+from dynastore.tasks.outbox_drain import drain_task as drain_task_mod
 from dynastore.tasks.outbox_drain.drain_task import OutboxDrainTask
 
 
-class _StubFailureLog:
-    """Protocol-conformant stand-in for ``IndexFailureLog``.
+def _capture_log_event(monkeypatch: pytest.MonkeyPatch) -> List[dict]:
+    """Replace ``log_event`` in drain_task with a capturing stub.
 
-    Records every ``record(...)`` call into ``self.records`` so tests can
-    assert against the calls without spinning up the PG-backed
-    implementation.
+    Returns the mutable list the stub appends each call's kwargs to,
+    so individual tests can assert against ``event_type`` / ``level``
+    / ``details`` without any LogService wiring.
     """
+    captured: List[dict] = []
 
-    def __init__(self) -> None:
-        self.records: List[dict] = []
+    async def _stub(**kwargs: Any) -> None:
+        captured.append(kwargs)
 
-    async def record(
-        self,
-        conn: Any,
-        *,
-        catalog_id: str,
-        collection_id: str,
-        driver_instance_id: str,
-        driver_id: str,
-        op_id: UUID,
-        item_id: Optional[str],
-        op: str,
-        attempts: int,
-        error_class: str,
-        error_message: str,
-        status: Literal["retrying", "failed"],
-        correlation_id: Optional[str] = None,
-    ) -> None:
-        self.records.append(
-            dict(
-                op_id=op_id,
-                status=status,
-                attempts=attempts,
-                error_class=error_class,
-                error_message=error_message,
-            )
-        )
-
-    async def list_failures(
-        self, **kwargs: Any,
-    ) -> Sequence[IndexFailureRecord]:
-        return []
+    monkeypatch.setattr(drain_task_mod, "log_event", _stub)
+    return captured
 
 
 @pytest.mark.asyncio
-async def test_drain_processes_ready_rows(async_conn, async_schema):
+async def test_drain_processes_ready_rows(
+    async_conn, async_schema, monkeypatch,
+):
     """Happy path: 5 ready rows → BulkIndexer reports all passed →
-    drain_once returns 5 and rows transition to ``done``."""
+    drain_once returns 5, rows transition to ``done``, no log events."""
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
 
+    captured = _capture_log_event(monkeypatch)
     store = PgOutboxStore(single_conn=async_conn)
-    failure_log = _StubFailureLog()
     await store.enqueue_bulk(
         async_conn,
         catalog_id=async_schema,
@@ -113,7 +89,6 @@ async def test_drain_processes_ready_rows(async_conn, async_schema):
         driver_id="d",
         indexer=_Indexer(),
         store=store,
-        failure_log=failure_log,
         catalog_id=async_schema,
         batch_size=10,
         worker_id="w",
@@ -124,21 +99,21 @@ async def test_drain_processes_ready_rows(async_conn, async_schema):
 
     rows = await async_conn.fetch("SELECT status FROM storage_outbox")  # type: ignore[attr-defined]
     assert all(r["status"] == "done" for r in rows)
-    # No failures should have been recorded for an all-passed batch.
-    assert failure_log.records == []
+    # No failure events for an all-passed batch.
+    assert captured == []
 
 
 @pytest.mark.asyncio
-async def test_drain_records_failure_when_threshold_reached(
-    async_conn, async_schema,
+async def test_drain_emits_retry_event_when_threshold_reached(
+    async_conn, async_schema, monkeypatch,
 ):
-    """Transient outcome with ``retry_visible_threshold=1`` — the very
-    first drain bumps next-attempts to 1, hits the threshold, writes a
-    ``retrying`` failure-log entry, and re-schedules the row."""
+    """Transient outcome with ``retry_visible_threshold=1`` — first
+    drain bumps next-attempts to 1, hits the threshold, and emits an
+    ``index_failure_retry`` log event at WARNING level."""
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
 
+    captured = _capture_log_event(monkeypatch)
     store = PgOutboxStore(single_conn=async_conn)
-    failure_log = _StubFailureLog()
     op_id = uuid4()
     await store.enqueue_bulk(
         async_conn,
@@ -174,46 +149,54 @@ async def test_drain_records_failure_when_threshold_reached(
         driver_id="d",
         indexer=_Flaky(),
         store=store,
-        failure_log=failure_log,
         catalog_id=async_schema,
         batch_size=10,
         worker_id="w",
         retry_visible_threshold=1,
     )
-    # First drain: row's next-attempts becomes 1 → meets threshold →
-    # ``_StubFailureLog.records`` should grow with a ``retrying`` entry.
     await task.drain_once()
-    assert any(
-        r["op_id"] == op_id
-        and r["status"] == "retrying"
-        and r["attempts"] >= 1
-        for r in failure_log.records
-    )
 
-    # Push ready_at back so the row is claimable again, then drain a
-    # second time to confirm classifier still records on subsequent
-    # transient outcomes.
+    retry_events = [
+        c for c in captured
+        if c.get("event_type") == "index_failure_retry"
+    ]
+    assert len(retry_events) == 1
+    e = retry_events[0]
+    assert e["level"] == "WARNING"
+    assert e["catalog_id"] == async_schema
+    assert e["collection_id"] == "cc"
+    details = e["details"]
+    assert details["op_id"] == str(op_id)
+    assert details["item_id"] == "i1"
+    assert details["status"] == "retrying"
+    assert details["attempts"] == 1
+    assert details["error_class"] == "TransientIndexerError"
+    assert details["error_message"] == "blip"
+
+    # Re-claim and drain a second time — the threshold-cross emission
+    # repeats on every transient outcome past the threshold.
     await async_conn.execute(  # type: ignore[attr-defined]
         "UPDATE storage_outbox SET ready_at = now() WHERE op_id = $1", op_id,
     )
     await task.drain_once()
-    retrying = [
-        r for r in failure_log.records
-        if r["op_id"] == op_id and r["status"] == "retrying"
+    retry_events = [
+        c for c in captured
+        if c.get("event_type") == "index_failure_retry"
     ]
-    assert len(retrying) >= 2
+    assert len(retry_events) == 2
 
 
 @pytest.mark.asyncio
-async def test_drain_marks_poison_and_records_failed(
-    async_conn, async_schema,
+async def test_drain_marks_poison_and_emits_persistent_event(
+    async_conn, async_schema, monkeypatch,
 ):
-    """Poison outcome → row goes to terminal ``failed`` and the failure
-    log gets a ``failed`` entry regardless of the retry threshold."""
+    """Poison outcome → row goes to terminal ``failed`` and one
+    ``index_failure_persistent`` ERROR event fires regardless of the
+    retry threshold."""
     await ensure_storage_outbox_asyncpg(async_conn, async_schema)
 
+    captured = _capture_log_event(monkeypatch)
     store = PgOutboxStore(single_conn=async_conn)
-    failure_log = _StubFailureLog()
     op_id = uuid4()
     await store.enqueue_bulk(
         async_conn,
@@ -249,17 +232,28 @@ async def test_drain_marks_poison_and_records_failed(
         driver_id="d",
         indexer=_Poison(),
         store=store,
-        failure_log=failure_log,
         catalog_id=async_schema,
         batch_size=10,
         worker_id="w",
     )
     await task.drain_once()
 
-    assert any(
-        r["op_id"] == op_id and r["status"] == "failed"
-        for r in failure_log.records
-    )
+    persistent_events = [
+        c for c in captured
+        if c.get("event_type") == "index_failure_persistent"
+    ]
+    assert len(persistent_events) == 1
+    e = persistent_events[0]
+    assert e["level"] == "ERROR"
+    assert e["catalog_id"] == async_schema
+    assert e["collection_id"] == "cc"
+    details = e["details"]
+    assert details["op_id"] == str(op_id)
+    assert details["item_id"] == "i1"
+    assert details["status"] == "failed"
+    assert details["error_class"] == "PoisonIndexerError"
+    assert details["error_message"] == "malformed"
+
     statuses = await async_conn.fetch(  # type: ignore[attr-defined]
         "SELECT status FROM storage_outbox WHERE op_id = $1", op_id,
     )

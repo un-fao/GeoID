@@ -1,4 +1,4 @@
-"""Tests for ``storage_outbox`` + ``index_failure_log`` DDL.
+"""Tests for ``storage_outbox`` DDL.
 
 Each test runs against a freshly created throwaway PG schema so the
 DDL is exercised against an empty namespace. The schema is dropped on
@@ -99,23 +99,6 @@ async def test_ensure_storage_outbox_idempotent(async_conn):
             schema,
         )
         assert row["n"] == 1
-    finally:
-        await _drop_schema(async_conn, schema)
-
-
-@pytest.mark.asyncio
-async def test_index_failure_log_table_exists(async_conn):
-    from dynastore.modules.storage.outbox_ddl import ensure_index_failure_log_asyncpg
-
-    schema = await _create_fresh_schema(async_conn)
-    try:
-        await ensure_index_failure_log_asyncpg(async_conn, schema)
-        row = await async_conn.fetchrow(  # type: ignore[attr-defined]
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name='index_failure_log' AND table_schema=$1",
-            schema,
-        )
-        assert row is not None
     finally:
         await _drop_schema(async_conn, schema)
 

@@ -84,18 +84,26 @@ GET /web/dashboard/                                              # Catalog picke
 GET /web/dashboard/catalogs/{catalog_id}/                        # Per-catalog HTML shell
 GET /web/dashboard/catalogs/{catalog_id}/processes/              # Per-catalog process executor shell
 GET /web/dashboard/catalogs/{catalog_id}/stats                   # Per-catalog statistics
-GET /web/dashboard/catalogs/{catalog_id}/logs?limit=50&level=INFO  # Per-catalog logs
-GET /web/dashboard/catalogs/{catalog_id}/events                  # Per-catalog events
 GET /web/dashboard/catalogs/{catalog_id}/tasks                   # Per-catalog background tasks
 GET /web/dashboard/catalogs/{catalog_id}/ogc-compliance          # Per-catalog OGC conformance
 GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/stats
-GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/logs
-GET /web/dashboard/catalogs/{catalog_id}/collections/{collection_id}/events
 ```
 
 `{catalog_id}=_system_` is the synthetic platform-scope (sysadmin-only). Catalog admins
 get 401/403 on catalogs they don't own — the gate runs in `TenantScopeMiddleware`
 before the handler, so the route bodies carry no authz code.
+
+Logs and events are NOT exposed under `/web/dashboard/`. The dashboard
+calls the canonical extension surfaces directly from the browser:
+```
+GET /logs/catalogs/{catalog_id}                # canonical (logs extension)
+GET /events/catalogs/{catalog_id}/events       # canonical (events extension)
+```
+This keeps each module exposed under exactly one REST surface (no
+proxy duplication). Per-catalog membership is enforced at the canonical
+endpoints via `catalog_membership_required`. Browser-side, the dashboard
+checks module availability before issuing the call so SCOPE-restricted
+deployments don't produce console 404s.
 
 ## Development
 

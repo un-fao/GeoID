@@ -18,7 +18,6 @@ multi-driver bulk-write architecture.
 * IndexableOp           — one durable op (one row of storage_outbox)
 * BulkIndexResult       — per-row outcome from BulkIndexer.index_bulk
 * OutboxRecord/OutboxRow — DTOs for OutboxStore
-* IndexFailureRecord    — DTO for IndexFailureLog
 
 All Protocols are runtime_checkable so `isinstance(obj, BulkIndexer)`
 works for discovery.
@@ -26,7 +25,6 @@ works for discovery.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import (
     Any, AsyncIterator, List, Literal, Optional, Protocol, Sequence, Tuple,
     runtime_checkable,
@@ -77,23 +75,6 @@ class OutboxRow:
     payload: dict[str, Any]
     idempotency_key: str
     attempts: int
-
-
-@dataclass(frozen=True)
-class IndexFailureRecord:
-    failure_id: UUID
-    occurred_at: datetime
-    collection_id: str
-    driver_id: str
-    driver_instance_id: str
-    op_id: Optional[UUID]
-    item_id: Optional[str]
-    op: str  # raw-from-DB TEXT; CHECK constraint enforces values, not the dataclass
-    attempts: int
-    error_class: str
-    error_message: str
-    status: Literal["retrying", "failed"]
-    correlation_id: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -152,33 +133,3 @@ class OutboxStore(Protocol):
     def listen(
         self, *, driver_id: str, catalog_id: str,
     ) -> AsyncIterator[Notification]: ...
-
-
-@runtime_checkable
-class IndexFailureLog(Protocol):
-    async def record(
-        self, conn, *,
-        catalog_id: str,
-        collection_id: str,
-        driver_instance_id: str,
-        driver_id: str,
-        op_id: UUID,
-        item_id: Optional[str],
-        op: str,
-        attempts: int,
-        error_class: str,
-        error_message: str,
-        status: Literal["retrying", "failed"],
-        correlation_id: Optional[str] = None,
-    ) -> None: ...
-
-    async def list_failures(
-        self, *,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        driver_id: Optional[str] = None,
-        since: Optional[datetime] = None,
-        status: Optional[Literal["retrying", "failed"]] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Sequence[IndexFailureRecord]: ...

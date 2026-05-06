@@ -773,7 +773,7 @@ src/dynastore/
 │   ├── hints.py                         # Hint StrEnum (closed catalog)
 │   ├── driver_config.py                 # ItemsWritePolicy, ItemsSchema, *DriverConfig, ...
 │   ├── router.py                        # get_driver() with cached operation-based resolution
-│   ├── outbox_ddl.py                    # storage_outbox + index_failure_log DDL (post-PR-#261)
+│   ├── outbox_ddl.py                    # storage_outbox DDL (failures emitted as log events)
 │   ├── errors.py                        # ReadOnlyDriverError, SoftDeleteNotSupportedError, ConflictError
 │   └── drivers/
 │       ├── __init__.py

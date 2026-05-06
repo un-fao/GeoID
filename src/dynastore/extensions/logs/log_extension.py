@@ -24,9 +24,9 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_web_page
-from dynastore.models.auth import Policy
+from dynastore.models.auth import Condition, Policy
 from dynastore.models.auth_models import Role
-from dynastore.models.protocols.authorization import DefaultRole
+from dynastore.models.protocols.authorization import DefaultRole, IamRoleConfig
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -180,6 +180,56 @@ def _logs_dashboard_role_binding(sysadmin_role_name: Optional[str] = None) -> Ro
     )
 
 
+def _logs_per_catalog_policy(sysadmin_role_name: Optional[str] = None) -> Policy:
+    """Per-catalog access to the canonical ``/logs/catalogs/{cat}`` surface.
+
+    Catalog members read their own catalog's logs (regular events plus
+    ``index_failure_persistent`` / ``index_failure_retry`` emitted by the
+    OUTBOX drain task). The ``catalog_membership_required`` condition
+    handler at ``modules/iam/conditions.py`` enforces membership and
+    bypasses the check for the configured sysadmin role.
+
+    The regex matches every per-catalog log path: the bare catalog
+    endpoint, the ``/logs`` suffix variant, and the per-collection
+    nested path.
+    """
+    role_name = sysadmin_role_name or IamRoleConfig().sysadmin
+    return Policy(
+        id="logs_per_catalog_access",
+        description=(
+            "Catalog members access to their catalog's logs through the "
+            "canonical /logs/ surface. Sysadmin bypass via condition."
+        ),
+        actions=["GET", "OPTIONS"],
+        resources=[r"^/logs/catalogs/[^/]+(/.*)?$"],
+        effect="ALLOW",
+        conditions=[
+            Condition(
+                type="catalog_membership_required",
+                config={"sysadmin_role": role_name},
+            ),
+        ],
+    )
+
+
+def _logs_per_catalog_role_bindings(
+    admin_role_name: Optional[str] = None,
+    user_role_name: Optional[str] = None,
+) -> List[Role]:
+    """Bind the per-catalog logs policy to ADMIN + USER roles.
+
+    Sysadmin access is handled inside the condition handler, not via a
+    separate role binding — same shape as ``web_dashboard_per_catalog_access``.
+    """
+    cfg = IamRoleConfig()
+    admin = admin_role_name or cfg.admin
+    user = user_role_name or cfg.user
+    return [
+        Role(name=admin, policies=["logs_per_catalog_access"]),
+        Role(name=user, policies=["logs_per_catalog_access"]),
+    ]
+
+
 from dynastore.models.protocols.logs import LogsProtocol
 class LogExtension(ExtensionProtocol, LogsProtocol):
     priority: int = 100
@@ -277,6 +327,55 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
 
+    @expose_web_page(
+        page_id="catalog_logs",
+        title="Catalog Logs",
+        icon="fa-list-ul",
+        description=(
+            "Per-catalog logs, event-bus history, and tasks. Calls the "
+            "canonical /logs/, /events/, /tasks/ surfaces; panels appear "
+            "only when the backing module is mounted."
+        ),
+        audience_policy_id="logs_per_catalog_access",
+        section="admin",
+        priority=20,
+    )
+    async def provide_catalog_logs_page(self, request: Request):
+        """Serve the per-catalog logs page fragment.
+
+        Calls the canonical module REST surfaces (``/logs/``, ``/events/``,
+        ``/tasks/``) directly from the browser. Server-side, we inspect
+        which modules' Protocols are mounted on the current deployment
+        SCOPE and inject a JSON ``__CATALOG_LOGS_CTX__`` block so the
+        page hides panels whose backing module is missing — preventing
+        spurious 404s on SCOPE-restricted images.
+        """
+        from dynastore.models.protocols.events import EventsProtocol
+        from dynastore.models.protocols.tasks import TasksProtocol
+
+        html_path = os.path.join(
+            os.path.dirname(__file__), "static", "catalog-logs.html"
+        )
+        if not os.path.exists(html_path):
+            raise HTTPException(
+                status_code=404,
+                detail="Catalog logs template not found.",
+            )
+        with open(html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        ctx = {
+            "modules": {
+                # LogService is registered by CatalogModule which is in
+                # every public-facing SCOPE; the panel is unconditionally
+                # visible.
+                "logs": True,
+                "events": get_protocol(EventsProtocol) is not None,
+                "tasks": get_protocol(TasksProtocol) is not None,
+            },
+        }
+        html = html.replace("__CATALOG_LOGS_CTX__", json.dumps(ctx))
+        return HTMLResponse(html)
+
     async def _get_dashboards_health(self) -> Dict[str, bool]:
         """Live probe of the four dependencies surfaced in the status strip."""
         return await _probe_dashboards_health()
@@ -301,10 +400,13 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
     # No direct call to PermissionProtocol — keeps the plugin agnostic
     # of the enforcement implementation.
     def get_policies(self):
-        return [_logs_dashboard_policy()]
+        return [_logs_dashboard_policy(), _logs_per_catalog_policy()]
 
     def get_role_bindings(self):
-        return [_logs_dashboard_role_binding()]
+        return [
+            _logs_dashboard_role_binding(),
+            *_logs_per_catalog_role_bindings(),
+        ]
 
     @asynccontextmanager
     async def lifespan(self, app: Any):

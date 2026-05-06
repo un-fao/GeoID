@@ -1,0 +1,207 @@
+<!--
+  Per-catalog logs page.
+
+  Calls canonical module REST surfaces directly from the browser:
+    /logs/catalogs/{cat}              (always — LogService is core)
+    /events/catalogs/{cat}/events     (only if EventsProtocol is mounted)
+    /tasks/catalogs/{cat}             (only if TasksProtocol is mounted)
+
+  The server-side handler injects a `__CATALOG_LOGS_CTX__` JSON block
+  listing which canonical roots are available on the current deployment
+  SCOPE so panels stay hidden for missing modules instead of producing
+  console 404s.
+-->
+<section class="space-y-6" data-page-id="catalog_logs">
+  <header class="flex items-center justify-between">
+    <div>
+      <h2 class="text-xl font-semibold text-white">Catalog Logs</h2>
+      <p class="text-sm text-slate-400">
+        Operational visibility for this catalog — log events, event-bus
+        history, and tasks. Scoped to the catalog you're currently
+        viewing.
+      </p>
+    </div>
+    <div class="text-xs text-slate-500" id="catalog-logs-catalog-id"></div>
+  </header>
+
+  <div class="glass-panel p-4 rounded-xl flex flex-wrap gap-3 items-center">
+    <label class="text-xs text-slate-400 uppercase tracking-wider">Event type</label>
+    <select id="catalog-logs-event-type"
+            class="bg-slate-900 text-white text-sm rounded px-2 py-1 border border-white/10">
+      <option value="">all</option>
+      <option value="index_failure_persistent">indexing — persistent failure</option>
+      <option value="index_failure_retry">indexing — retry visible</option>
+      <option value="exception">exception</option>
+      <option value="catalog_creation">catalog lifecycle</option>
+    </select>
+
+    <label class="text-xs text-slate-400 uppercase tracking-wider">level</label>
+    <select id="catalog-logs-level"
+            class="bg-slate-900 text-white text-sm rounded px-2 py-1 border border-white/10">
+      <option value="">all</option>
+      <option value="ERROR">ERROR</option>
+      <option value="WARNING">WARNING</option>
+      <option value="INFO">INFO</option>
+    </select>
+
+    <button id="catalog-logs-refresh"
+            class="ml-auto text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1 rounded border border-white/10">
+      <i class="fa-solid fa-rotate mr-1"></i>refresh
+    </button>
+  </div>
+
+  <article class="glass-panel p-6 rounded-xl" data-panel="logs">
+    <h3 class="text-sm font-semibold text-white mb-3">
+      <i class="fa-solid fa-list-ul mr-2"></i>Logs
+      <span class="text-xs text-slate-500 ml-2">/logs/catalogs/&hellip;</span>
+    </h3>
+    <div id="catalog-logs-table" class="text-xs text-slate-300"></div>
+  </article>
+
+  <article class="glass-panel p-6 rounded-xl hidden" data-panel="events">
+    <h3 class="text-sm font-semibold text-white mb-3">
+      <i class="fa-solid fa-bolt mr-2"></i>Events
+      <span class="text-xs text-slate-500 ml-2">/events/catalogs/&hellip;/events</span>
+    </h3>
+    <div id="catalog-events-table" class="text-xs text-slate-300"></div>
+  </article>
+
+  <article class="glass-panel p-6 rounded-xl hidden" data-panel="tasks">
+    <h3 class="text-sm font-semibold text-white mb-3">
+      <i class="fa-solid fa-list-check mr-2"></i>Tasks
+      <span class="text-xs text-slate-500 ml-2">/tasks/catalogs/&hellip;</span>
+    </h3>
+    <div id="catalog-tasks-table" class="text-xs text-slate-300"></div>
+  </article>
+</section>
+
+<script type="application/json" id="catalog-logs-ctx">
+__CATALOG_LOGS_CTX__
+</script>
+
+<script>
+(function () {
+  const ctxEl = document.getElementById("catalog-logs-ctx");
+  let ctx = { modules: { logs: true, events: false, tasks: false } };
+  try { ctx = JSON.parse(ctxEl.textContent.trim()); } catch (e) {}
+
+  for (const [name, present] of Object.entries(ctx.modules || {})) {
+    const panel = document.querySelector('[data-panel="' + name + '"]');
+    if (panel) panel.classList.toggle("hidden", !present);
+  }
+
+  function getCatalogId() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("catalog") || (window.__catalogId__ || null);
+  }
+
+  function clearChildren(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function placeholder(node, text, color) {
+    clearChildren(node);
+    const p = document.createElement("p");
+    p.className = "text-" + (color || "slate-500");
+    p.textContent = text;
+    node.appendChild(p);
+  }
+
+  function renderRows(target, rows, columns) {
+    clearChildren(target);
+    if (!rows || rows.length === 0) {
+      placeholder(target, "No entries.");
+      return;
+    }
+    const table = document.createElement("table");
+    table.className = "w-full text-[11px]";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    columns.forEach(c => {
+      const th = document.createElement("th");
+      th.className = "text-left px-2 py-1 text-slate-500 font-medium";
+      th.textContent = c;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.className = "border-t border-white/5";
+      columns.forEach(c => {
+        const td = document.createElement("td");
+        td.className = "px-2 py-1 align-top";
+        const v = r[c];
+        td.textContent = (v && typeof v === "object")
+          ? JSON.stringify(v)
+          : (v == null ? "" : String(v));
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    target.appendChild(table);
+  }
+
+  async function fetchJson(url) {
+    const r = await fetch(url, { credentials: "include" });
+    if (!r.ok) throw new Error(url + " → " + r.status);
+    return r.json();
+  }
+
+  async function loadPanel(target, url, columns, extract) {
+    placeholder(target, "Loading…");
+    try {
+      const data = await fetchJson(url);
+      const rows = extract(data);
+      renderRows(target, rows, columns);
+    } catch (e) {
+      placeholder(target, "Failed: " + e.message, "rose-400");
+    }
+  }
+
+  async function refresh() {
+    const cat = getCatalogId();
+    const idEl = document.getElementById("catalog-logs-catalog-id");
+    idEl.textContent = cat ? ("catalog: " + cat) : "(no catalog selected)";
+    if (!cat) return;
+
+    if (ctx.modules.logs) {
+      const eventType = document.getElementById("catalog-logs-event-type").value;
+      const level = document.getElementById("catalog-logs-level").value;
+      const qs = new URLSearchParams({ limit: "50" });
+      if (eventType) qs.set("event_type", eventType);
+      if (level) qs.set("level", level);
+      await loadPanel(
+        document.getElementById("catalog-logs-table"),
+        "/logs/catalogs/" + encodeURIComponent(cat) + "?" + qs.toString(),
+        ["timestamp", "level", "event_type", "message", "collection_id"],
+        d => d.logs || [],
+      );
+    }
+    if (ctx.modules.events) {
+      await loadPanel(
+        document.getElementById("catalog-events-table"),
+        "/events/catalogs/" + encodeURIComponent(cat) + "/events?limit=50",
+        ["created_at", "event_type", "shard", "collection_id"],
+        d => Array.isArray(d) ? d : (d.events || d.items || []),
+      );
+    }
+    if (ctx.modules.tasks) {
+      await loadPanel(
+        document.getElementById("catalog-tasks-table"),
+        "/tasks/catalogs/" + encodeURIComponent(cat),
+        ["task_id", "task_type", "status", "created_at"],
+        d => Array.isArray(d) ? d : (d.tasks || d.items || []),
+      );
+    }
+  }
+
+  document.getElementById("catalog-logs-refresh").addEventListener("click", refresh);
+  document.getElementById("catalog-logs-event-type").addEventListener("change", refresh);
+  document.getElementById("catalog-logs-level").addEventListener("change", refresh);
+
+  refresh();
+})();
+</script>
