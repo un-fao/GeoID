@@ -20,7 +20,9 @@ Routing configs' ``operations[OP]`` become slim ``DriverRef`` dicts
 pointing at sibling driver configs in ``configs.storage.drivers.*``.
 
 Placement is read from each ``PluginConfig`` subclass's mandatory
-``_address: ClassVar[Tuple[str, str, Optional[str]]]`` ClassVar.
+``_address: ClassVar[Tuple[Optional[str], ...]]`` ClassVar (variable-length
+post Cycle D.0; subclass annotations may stay narrower as 3-tuples and
+migrate incrementally during D.2).
 Scope filtering is read from the optional ``_visibility`` ClassVar
 (``"collection"`` / ``"catalog"`` / ``None`` = visible everywhere).
 The composer no longer owns a placement heuristic — there is exactly
@@ -85,10 +87,12 @@ def _place(cls: Type[PluginConfig], active_scope: str) -> Optional[Tuple[str, st
     if visibility == "catalog" and active_scope == "collection":
         return None
     address = getattr(cls, "_address", None)
-    if not address or address == ("", "", None):
+    if not address:
         # Defensive — concrete subclasses must declare _address (enforced in
         # PluginConfig.__init_subclass__) but skip rather than crash if a
-        # malformed entry slips through.
+        # malformed entry slips through.  ``not address`` catches both the
+        # inherited-empty-tuple base sentinel (post Cycle D.0) and the absent
+        # attribute case in one check; sentinel-shape independent.
         logger.warning(
             "PluginConfig %s.%s has no _address; skipping placement.",
             cls.__module__, cls.__name__,
