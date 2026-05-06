@@ -449,6 +449,21 @@ class ConfigsService(ExtensionProtocol):
                 "platform IS the top tier."
             ),
         ),
+        strict: bool = Query(
+            True,
+            description=(
+                "Cycle F.7d.2 — narrow the response body to configs strictly "
+                "related to the requested scope.  At platform scope, ``true`` "
+                "(default) drops catalog-/collection-tier templates from the "
+                "body and routes them to ``inherited`` instead, so platform "
+                "view shows only platform-intrinsic configs (``modules``, "
+                "``extensions``, ``tasks``, ``engines``).  ``false`` restores "
+                "the previous always-true platform-scope inclusion (catalog-"
+                "tier templates inline in the body).  No effect at catalog "
+                "or collection scope (per-tier ``_visibility`` filter already "
+                "runs there)."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -456,6 +471,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             include=include,
+            strict=strict,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -492,6 +508,15 @@ class ConfigsService(ExtensionProtocol):
                 "``{source: 'platform'}`` leaves at their natural addresses."
             ),
         ),
+        strict: bool = Query(
+            True,
+            description=(
+                "Cycle F.7d.2 — at platform scope, narrows the body to "
+                "platform-intrinsic configs only.  No effect at catalog "
+                "or collection scope; accepted for API symmetry so the "
+                "same query-string template works at every tier."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -500,6 +525,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             include=include,
+            strict=strict,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -542,6 +568,14 @@ class ConfigsService(ExtensionProtocol):
                 "callers expecting the full payload)."
             ),
         ),
+        strict: bool = Query(
+            True,
+            description=(
+                "Cycle F.7d.2 — at platform scope, narrows the body to "
+                "platform-intrinsic configs only.  No effect at catalog "
+                "or collection scope; accepted for API symmetry."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -551,6 +585,7 @@ class ConfigsService(ExtensionProtocol):
             resolved=resolved,
             meta=meta,
             include=include,
+            strict=strict,
         )
         return JSONResponse(content=response.model_dump())
 
