@@ -581,14 +581,14 @@ class CollectionService:
                     ctx=DriverContext(db_resource=conn),
                 )
 
-            # 5c. Cycle E.2.c — seed the collection's privacy state
-            #     from ``CatalogPrivacy.default_collection_privacy``
+            # 5c. Cycle E.2.c / F.0d — seed the collection's privacy state
+            #     from ``CatalogPrivacy.collection_defaults.is_private``
             #     when no explicit ``is_private`` was passed.  The
             #     helper writes ``ItemsRoutingConfig`` (private driver
-            #     pinned) BEFORE ``CollectionPluginConfig(is_private=True)``
+            #     pinned) BEFORE ``CollectionPrivacy(is_private=True)``
             #     so the cascade validator on the second write finds
-            #     the private driver already in scope.  No-op when
-            #     the catalog default is ``"public"``.
+            #     the private driver already in scope.  No-op when the
+            #     catalog default is ``is_private=False``.
             explicit_is_private: Optional[bool] = None
             if isinstance(collection_definition, dict):
                 _v = collection_definition.get("is_private")
@@ -612,7 +612,7 @@ class CollectionService:
                     )
                 except Exception as e:
                     logger.warning(
-                        "Could not apply default_collection_privacy seed for %s/%s: %s",
+                        "Could not apply CatalogPrivacy.collection_defaults.is_private seed for %s/%s: %s",
                         catalog_id, collection_model.id, e,
                     )
 

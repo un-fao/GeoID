@@ -7,7 +7,7 @@ migration in PR #261 removed; the broad ``except Exception`` swallowed
 the AttributeError and DENY policies never restored on cold boot).
 
 The fix in PR #270 rewrites the loop to scan each catalog's
-collections for any ``CollectionPluginConfig.is_private == True``
+collections for any ``CollectionPrivacy.is_private == True``
 and apply the catalog-wide DENY policy when at least one private
 collection exists.
 
@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+from dynastore.modules.catalog.catalog_config import CollectionPrivacy
 from dynastore.modules.storage.drivers.elasticsearch_private.driver import (
     ItemsElasticsearchPrivateDriver,
 )
@@ -68,19 +68,19 @@ def _catalogs_proto_with(
 def _configs_proto_with(
     privacy_by_pair: dict[tuple[str, str], bool],
 ) -> MagicMock:
-    """Returns ``CollectionPluginConfig(is_private=...)`` for the
+    """Returns ``CollectionPrivacy(is_private=...)`` for the
     requested (catalog, collection) pair.  Returns ``None`` for
     unmapped pairs (mimicking ConfigsService behaviour when no row
     exists for the collection)."""
     proto = MagicMock()
 
     async def get_config(cls: type, *, catalog_id: str, collection_id: str = "", **kwargs):
-        if cls is not CollectionPluginConfig:
+        if cls is not CollectionPrivacy:
             return None
         flag = privacy_by_pair.get((catalog_id, collection_id))
         if flag is None:
             return None
-        return CollectionPluginConfig(is_private=flag)
+        return CollectionPrivacy(is_private=flag)
 
     proto.get_config = get_config
     return proto
@@ -102,7 +102,7 @@ async def test_helper_returns_true_when_one_collection_is_private():
         ("cat-a", "col-private"): True,
     })
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, configs, "cat-a", CollectionPluginConfig,
+        catalogs_proto, configs, "cat-a", CollectionPrivacy,
     )
     assert result is True
 
@@ -118,7 +118,7 @@ async def test_helper_returns_false_when_all_collections_public():
         ("cat-a", "col-2"): False,
     })
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, configs, "cat-a", CollectionPluginConfig,
+        catalogs_proto, configs, "cat-a", CollectionPrivacy,
     )
     assert result is False
 
@@ -128,7 +128,7 @@ async def test_helper_returns_false_when_catalog_has_no_collections():
     catalogs_proto = _catalogs_proto_with([_stub_catalog("cat-empty")], {"cat-empty": []})
     configs = _configs_proto_with({})
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, configs, "cat-empty", CollectionPluginConfig,
+        catalogs_proto, configs, "cat-empty", CollectionPrivacy,
     )
     assert result is False
 
@@ -141,7 +141,7 @@ async def test_helper_returns_false_on_list_collections_exception():
     catalogs_proto.list_collections = AsyncMock(side_effect=RuntimeError("transient"))
     configs = _configs_proto_with({})
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, configs, "cat-flaky", CollectionPluginConfig,
+        catalogs_proto, configs, "cat-flaky", CollectionPrivacy,
     )
     assert result is False
 
@@ -159,11 +159,11 @@ async def test_helper_skips_collection_when_get_config_raises():
     async def get_config(cls, *, catalog_id, collection_id="", **kwargs):
         if collection_id == "col-bad":
             raise RuntimeError("transient")
-        return CollectionPluginConfig(is_private=True)
+        return CollectionPrivacy(is_private=True)
 
     proto.get_config = get_config
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, proto, "cat-a", CollectionPluginConfig,
+        catalogs_proto, proto, "cat-a", CollectionPrivacy,
     )
     assert result is True
 
@@ -181,7 +181,7 @@ async def test_helper_paginates_through_collections():
     )
     configs = _configs_proto_with(privacy_map)
     result = await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
-        catalogs_proto, configs, "cat-big", CollectionPluginConfig,
+        catalogs_proto, configs, "cat-big", CollectionPrivacy,
     )
     assert result is True
 

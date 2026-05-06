@@ -22,7 +22,7 @@ instead of the shared platform-wide ``{prefix}-collections``.
 Privacy semantics
 -----------------
 - Per-collection: the cascade rule (Cycle E.2.a) requires
-  ``CollectionPluginConfig.is_private == True`` whenever this driver is
+  ``CollectionPrivacy.is_private == True`` whenever this driver is
   pinned in :class:`CollectionRoutingConfig`.
 - DENY policy ownership stays with the items-tier private driver —
   ``items_elasticsearch_private_driver`` applies the catalog-wide

@@ -95,7 +95,7 @@ class PrivateIndexTask(TaskProtocol):
     collection's ``ItemsRoutingConfig`` pins
     ``items_elasticsearch_private_driver`` in any operation, which is
     required by the privacy cascade (Cycle E.2.a) when
-    ``CollectionPluginConfig.is_private == True``.  The full feature
+    ``CollectionPrivacy.is_private == True``.  The full feature
     is fetched via ``ItemCrudProtocol`` so the dispatcher only needs
     to send identifiers.  Geometry simplification is applied via
     ``simplify_to_fit`` to honour the ES 10MB per-doc limit.

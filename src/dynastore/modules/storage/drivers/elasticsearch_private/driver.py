@@ -91,7 +91,7 @@ class ItemsElasticsearchPrivateDriver(
 
     # Opt out of items-tier auto-default routing.  The private variant is
     # tenant-isolated DENY-policy indexing; it must only run for collections
-    # whose ``CollectionPluginConfig.is_private == True`` (Cycle E.2) — the
+    # whose ``CollectionPrivacy.is_private == True`` (Cycle E.2) — the
     # privacy-cascade validator on ``ItemsRoutingConfig`` enforces that the
     # routing pins this driver in some operation whenever the collection
     # claims is_private.  Auto-injecting into every collection's INDEX/SEARCH
@@ -539,8 +539,8 @@ class ItemsElasticsearchPrivateDriver(
         """Restore catalog-wide DENY policies at startup for any catalog
         that has at least one private collection.
 
-        Cycle E.2 cutover: privacy is per-collection now
-        (``CollectionPluginConfig.is_private``).  We scan all catalogs,
+        Cycle E.2 / F.0d cutover: privacy is per-collection now
+        (``CollectionPrivacy.is_private``).  We scan all catalogs,
         list each catalog's collections, and re-apply the DENY policy
         idempotently for any catalog with at least one private collection.
 
@@ -553,7 +553,7 @@ class ItemsElasticsearchPrivateDriver(
         try:
             from dynastore.models.protocols import CatalogsProtocol
             from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+            from dynastore.modules.catalog.catalog_config import CollectionPrivacy
             from dynastore.tools.discovery import get_protocol
 
             catalogs_proto = get_protocol(CatalogsProtocol)
@@ -573,7 +573,7 @@ class ItemsElasticsearchPrivateDriver(
                     if not catalog_id:
                         continue
                     if await self._catalog_has_private_collection(
-                        catalogs_proto, configs, catalog_id, CollectionPluginConfig,
+                        catalogs_proto, configs, catalog_id, CollectionPrivacy,
                     ):
                         await self._apply_deny_policy(catalog_id)
                         logger.info(

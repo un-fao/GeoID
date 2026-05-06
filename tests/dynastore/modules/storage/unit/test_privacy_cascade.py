@@ -6,12 +6,12 @@ Pins the cascade rule resolved with the user 2026-05-05:
     Items-public + collection-private is rejected.
 
 Detection:
-- Collection privacy: ``CollectionPluginConfig.is_private == True``
+- Collection privacy: ``CollectionPrivacy.is_private == True``
 - Items privacy:    presence of ``items_elasticsearch_private_driver`` in
                      any operation of ``ItemsRoutingConfig.operations``
 
 Enforcement points:
-- Apply on ``CollectionPluginConfig``: rejects when is_private=True and
+- Apply on ``CollectionPrivacy``: rejects when is_private=True and
   the sibling items routing lacks the private driver.
 - Apply on ``ItemsRoutingConfig``: rejects when the new routing drops
   the private driver but the sibling collection still claims is_private.
@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
+from dynastore.modules.catalog.catalog_config import CollectionPrivacy
 from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     ItemsRoutingConfig,
@@ -115,7 +115,7 @@ def test_has_private_driver_finds_entry_in_any_operation():
 @pytest.mark.asyncio
 async def test_collection_cascade_passes_when_is_private_false():
     """Public collections impose no constraint on items routing."""
-    cfg = CollectionPluginConfig(is_private=False)
+    cfg = CollectionPrivacy(is_private=False)
     proto = _stub_configs_protocol(_routing_without_private())
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
@@ -126,7 +126,7 @@ async def test_collection_cascade_passes_when_is_private_false():
 
 @pytest.mark.asyncio
 async def test_collection_cascade_passes_when_items_routing_has_private_driver():
-    cfg = CollectionPluginConfig(is_private=True)
+    cfg = CollectionPrivacy(is_private=True)
     proto = _stub_configs_protocol(_routing_with_private())
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
@@ -137,7 +137,7 @@ async def test_collection_cascade_passes_when_items_routing_has_private_driver()
 
 @pytest.mark.asyncio
 async def test_collection_cascade_rejects_private_collection_with_public_items():
-    cfg = CollectionPluginConfig(is_private=True)
+    cfg = CollectionPrivacy(is_private=True)
     proto = _stub_configs_protocol(_routing_without_private())
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
@@ -151,7 +151,7 @@ async def test_collection_cascade_rejects_private_collection_with_public_items()
 @pytest.mark.asyncio
 async def test_collection_cascade_noop_at_platform_scope():
     """Apply at platform/catalog scope (no collection_id) bypasses cascade."""
-    cfg = CollectionPluginConfig(is_private=True)
+    cfg = CollectionPrivacy(is_private=True)
     proto = _stub_configs_protocol(_routing_without_private())
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
@@ -166,7 +166,7 @@ async def test_collection_cascade_noop_when_configs_protocol_unavailable():
     """ConfigsProtocol discovery unavailable (early fixture / partial
     deployment) → cascade defers to the items-routing apply handler on
     its next write."""
-    cfg = CollectionPluginConfig(is_private=True)
+    cfg = CollectionPrivacy(is_private=True)
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=None,
     ):
@@ -178,7 +178,7 @@ async def test_collection_cascade_noop_when_configs_protocol_unavailable():
 async def test_collection_cascade_noop_when_routing_lookup_returns_none():
     """No items routing yet for this catalog/collection — cascade
     defers."""
-    cfg = CollectionPluginConfig(is_private=True)
+    cfg = CollectionPrivacy(is_private=True)
     proto = _stub_configs_protocol(None)
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
@@ -195,7 +195,7 @@ async def test_collection_cascade_noop_when_routing_lookup_returns_none():
 async def test_items_cascade_passes_when_routing_keeps_private_driver():
     """Routing still pins the private driver — cascade trivially OK."""
     routing = _routing_with_private()
-    proto = _stub_configs_protocol(CollectionPluginConfig(is_private=True))
+    proto = _stub_configs_protocol(CollectionPrivacy(is_private=True))
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
     ):
@@ -209,7 +209,7 @@ async def test_items_cascade_passes_when_routing_keeps_private_driver():
 @pytest.mark.asyncio
 async def test_items_cascade_passes_when_collection_is_public():
     routing = _routing_without_private()
-    proto = _stub_configs_protocol(CollectionPluginConfig(is_private=False))
+    proto = _stub_configs_protocol(CollectionPrivacy(is_private=False))
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
     ):
@@ -221,7 +221,7 @@ async def test_items_cascade_passes_when_collection_is_public():
 @pytest.mark.asyncio
 async def test_items_cascade_rejects_dropping_private_driver_when_collection_is_private():
     routing = _routing_without_private()
-    proto = _stub_configs_protocol(CollectionPluginConfig(is_private=True))
+    proto = _stub_configs_protocol(CollectionPrivacy(is_private=True))
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
     ):
@@ -236,7 +236,7 @@ async def test_items_cascade_rejects_dropping_private_driver_when_collection_is_
 @pytest.mark.asyncio
 async def test_items_cascade_noop_at_platform_scope():
     routing = _routing_without_private()
-    proto = _stub_configs_protocol(CollectionPluginConfig(is_private=True))
+    proto = _stub_configs_protocol(CollectionPrivacy(is_private=True))
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=proto,
     ):

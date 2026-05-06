@@ -56,7 +56,7 @@ async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
 
     **Privacy safety property** (Cycle E.2): a collection routed *only*
     through ``items_elasticsearch_private_driver`` (per the privacy
-    cascade when ``CollectionPluginConfig.is_private == True``) returns
+    cascade when ``CollectionPrivacy.is_private == True``) returns
     False here.  Callers that gate bulk reindex on this guard therefore
     cannot accidentally fan out private-collection items into the
     per-tenant *public* index ``{prefix}-{cat}-items`` — the private

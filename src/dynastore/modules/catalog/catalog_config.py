@@ -26,7 +26,7 @@ from dynastore.modules.db_config.platform_config_service import (
     Immutable,
     PluginConfig,
 )
-from typing import Any, ClassVar, List, Literal, Optional, Tuple
+from typing import Any, ClassVar, List, Optional, Tuple
 
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import GeometriesSidecarConfig
@@ -106,6 +106,12 @@ class CollectionPluginConfig(PluginConfig):
 
     Storage routing is handled by ``ItemsRoutingConfig``
     (``plugin_id = "items_routing_config"``).
+
+    Privacy state has moved to ``CollectionPrivacy`` at
+    ``(platform, catalog, collection, privacy)`` — see the dedicated class
+    below.  Cycle F.0d harmonised the privacy surface so catalog and
+    collection both expose ``is_private: bool`` under a uniform
+    ``privacy`` slot.
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "envelope")
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -131,42 +137,61 @@ class CollectionPluginConfig(PluginConfig):
         ),
     )
 
-    is_private: Immutable[bool] = Field(
-        default=False,
-        description=(
-            "Privacy flag for this collection (Cycle E.2). When True, the "
-            "routing-resolution layer auto-substitutes the private variants "
-            "of the items + collection ES drivers in INDEX/SEARCH "
-            "operations, and the per-tenant private indexes "
-            "({prefix}-geoid-{catalog} for items + "
-            "{prefix}-{catalog}-collections-private for collection "
-            "envelopes) carry DENY policies blocking GET access to "
-            "all_users.  Immutable: flipping privacy on an existing "
-            "collection requires moving its docs across indexes "
-            "(schema-level operation, not a runtime PATCH).  Cascade "
-            "rule: collection-private REQUIRES items-private (reverse "
-            "direction allowed); the cascade is enforced by the apply "
-            "handlers on this class and ItemsRoutingConfig."
-        ),
-    )
-
 
 CollectionPluginConfig.model_rebuild()
 
 
-# Cycle E.2 — register the collection-side privacy-cascade handler.  The
-# helper itself lives in ``modules/storage/routing_config`` because it
+class CollectionPrivacy(PluginConfig):
+    """Per-collection privacy state.
+
+    Cycle F.0d hoisted ``is_private`` out of ``CollectionPluginConfig``
+    onto its own ``PluginConfig`` so the catalog and collection tiers
+    expose a uniform privacy surface (per H4 — both tiers carry
+    ``is_private: bool`` under a ``privacy`` slot).
+
+    When ``is_private == True``, the routing-resolution layer
+    auto-substitutes the private variants of the items + collection ES
+    drivers in INDEX/SEARCH operations, and the per-tenant private
+    indexes (``{prefix}-geoid-{catalog}`` for items +
+    ``{prefix}-{catalog}-collections-private`` for collection envelopes)
+    carry DENY policies blocking GET access to ``all_users``.
+
+    Immutable: flipping privacy on an existing collection requires
+    moving its docs across indexes (schema-level operation, not a
+    runtime PATCH).
+
+    Cascade rule: collection-private REQUIRES items-private (reverse
+    direction allowed); the cascade is enforced by the apply handlers
+    on this class and ``ItemsRoutingConfig``.
+    """
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "privacy")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    is_private: Immutable[bool] = Field(
+        default=False,
+        description=(
+            "When True, the items + collection ES drivers route to the "
+            "private variants and the per-tenant indexes carry DENY "
+            "policies blocking GET access to all_users.  Immutable: "
+            "flipping privacy on an existing collection requires moving "
+            "its docs across indexes."
+        ),
+    )
+
+
+# Cycle E.2 / F.0d — register the collection-side privacy-cascade handler.
+# The helper itself lives in ``modules/storage/routing_config`` because it
 # inspects ``ItemsRoutingConfig``; we do the registration HERE so it
-# fires only after ``CollectionPluginConfig`` is fully defined (avoids
+# fires only after ``CollectionPrivacy`` is fully defined (avoids
 # the storage→catalog→storage import cycle that would trigger if the
 # storage module attempted ``from modules.catalog.catalog_config import
-# CollectionPluginConfig`` at its own module-load time).
+# CollectionPrivacy`` at its own module-load time).
 def _register_collection_privacy_cascade_handler() -> None:
     from dynastore.modules.storage.routing_config import (
         _enforce_collection_privacy_cascade,
     )
 
-    CollectionPluginConfig.register_apply_handler(
+    CollectionPrivacy.register_apply_handler(
         _enforce_collection_privacy_cascade,
     )
 
@@ -174,31 +199,53 @@ def _register_collection_privacy_cascade_handler() -> None:
 _register_collection_privacy_cascade_handler()
 
 
-class CatalogPrivacy(PluginConfig):
-    """Catalog-tier policy defaults — visibility, future RBAC hooks.
+class CollectionPrivacyDefaults(BaseModel):
+    """Catalog-level defaults seeded onto newly-created collections.
 
-    Holds knobs that apply uniformly across a catalog's collections unless
-    overridden per-collection.  Today: ``default_collection_privacy``.
-    Future: read/write permission defaults for the ``is_private`` cascade.
+    Mirrors the leaf shape of ``CollectionPrivacy`` so operators see
+    the same field name at both tiers (H4 harmonisation).  This is a
+    plain ``BaseModel`` (not a ``PluginConfig``) because it is embedded
+    inside ``CatalogPrivacy``; the per-collection persisted shape is
+    ``CollectionPrivacy``.
+    """
+
+    is_private: bool = Field(
+        default=False,
+        description=(
+            "Default ``is_private`` value for newly-created collections "
+            "in this catalog.  Existing collections are unaffected by "
+            "changes — their own ``CollectionPrivacy.is_private`` is "
+            "authoritative."
+        ),
+    )
+
+
+class CatalogPrivacy(PluginConfig):
+    """Catalog-tier privacy defaults — visibility, future RBAC hooks.
+
+    Holds knobs that apply uniformly across a catalog's collections
+    unless overridden per-collection.  Today: ``collection_defaults``
+    (``is_private`` default seeded onto new collections).  Future:
+    read/write permission defaults for the ``is_private`` cascade.
 
     The privacy default is read at collection-create time to seed
-    ``CollectionPluginConfig.is_private`` when the operator does not pass
-    one explicitly.  After creation the collection's own flag is the
-    source of truth — flipping the catalog default does not retroactively
-    re-flag existing collections.
+    ``CollectionPrivacy.is_private`` when the operator does not pass
+    one explicitly.  After creation the collection's own
+    ``CollectionPrivacy.is_private`` is the source of truth — flipping
+    the catalog default does not retroactively re-flag existing
+    collections.
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "privacy")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    default_collection_privacy: Literal["public", "private"] = Field(
-        default="public",
+    collection_defaults: CollectionPrivacyDefaults = Field(
+        default_factory=CollectionPrivacyDefaults,
         description=(
-            "Default privacy for newly-created collections in this catalog. "
-            "When 'private', new collections are seeded with "
-            "is_private=True (auto-resolves the private items + collection ES "
-            "indexers, applies DENY policies). Existing collections are "
-            "unaffected by changes to this default — their own is_private "
-            "field is authoritative."
+            "Default privacy state seeded onto newly-created collections "
+            "in this catalog.  When ``collection_defaults.is_private`` is "
+            "True, new collections are seeded with the private items + "
+            "collection ES drivers pinned and the per-tenant private "
+            "indexes pre-created."
         ),
     )
 
@@ -216,16 +263,15 @@ async def apply_catalog_default_privacy_seed(
     db_resource: Any = None,
 ) -> bool:
     """Seed a freshly-created collection's privacy state from the
-    catalog's ``CatalogPrivacy.default_collection_privacy``.
+    catalog's ``CatalogPrivacy.collection_defaults.is_private``.
 
     Returns ``True`` iff the seed was applied (catalog default is
-    ``"private"`` AND ConfigsProtocol is reachable).  No-ops when:
+    ``is_private=True`` AND ConfigsProtocol is reachable).  No-ops when:
 
     - The catalog has no ``CatalogPrivacy`` row yet (default is
-      ``"public"`` per the field default; nothing to seed);
-    - The catalog policy is ``"public"`` (matches the
-      ``CollectionPluginConfig.is_private`` default — no writes
-      needed);
+      ``is_private=False`` per the field default; nothing to seed);
+    - The catalog default is ``is_private=False`` (matches the
+      ``CollectionPrivacy.is_private`` default — no writes needed);
     - ``configs`` is ``None`` (early-fixture / partial-deployment path
       — caller's apply handler eventually catches the cascade on
       a later config write).
@@ -238,10 +284,10 @@ async def apply_catalog_default_privacy_seed(
     create-time seed path.
 
     Apply ordering matters: we write ``ItemsRoutingConfig`` BEFORE
-    ``CollectionPluginConfig`` so the cascade validator on the
+    ``CollectionPrivacy`` so the cascade validator on the
     second write finds the private driver already pinned.  The
     inverse order would trigger an immediate cascade rejection on
-    ``CollectionPluginConfig`` apply (because items routing wouldn't
+    ``CollectionPrivacy`` apply (because items routing wouldn't
     yet have the private driver).
     """
     if configs is None:
@@ -267,7 +313,7 @@ async def apply_catalog_default_privacy_seed(
         return False
     if not isinstance(policy, CatalogPrivacy):
         return False
-    if policy.default_collection_privacy != "private":
+    if not policy.collection_defaults.is_private:
         return False
 
     private_items_routing = ItemsRoutingConfig(
@@ -297,8 +343,8 @@ async def apply_catalog_default_privacy_seed(
         ctx=ctx,
     )
     await configs.set_config(
-        CollectionPluginConfig,
-        CollectionPluginConfig(is_private=True),
+        CollectionPrivacy,
+        CollectionPrivacy(is_private=True),
         catalog_id=catalog_id,
         collection_id=collection_id,
         ctx=ctx,
@@ -348,27 +394,25 @@ async def apply_catalog_default_privacy_seed(
 # ---------------------------------------------------------------------------
 
 
-async def _on_apply_catalog_policy_config(
+async def _on_apply_catalog_privacy(
     config: "CatalogPrivacy",
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Any,
 ) -> None:
     """Eagerly create per-tenant private indexes when the catalog default
-    privacy is ``"private"`` (Cycle E.2.c slice 2).
+    privacy is ``is_private=True`` (Cycle E.2.c slice 2).
 
     Fires whenever an operator writes a ``CatalogPrivacy`` row.
-    When the new value is ``"private"``, we proactively call
-    ``ensure_storage(catalog_id)`` on both per-tenant private drivers so
-    the indexes exist before any collection-create lands.  Without this
-    hook the drivers' lazy-create fallback covers the first-write race,
-    but eager creation:
+    When ``collection_defaults.is_private`` is True, we proactively
+    call ``ensure_storage(catalog_id)`` on both per-tenant private
+    drivers so the indexes exist before any collection-create lands.
+    Without this hook the drivers' lazy-create fallback covers the
+    first-write race, but eager creation:
 
     - Removes the first-write latency spike;
     - Lets operators verify ``GET _cat/indices`` shows the per-tenant
-      private indexes immediately after flipping the policy;
-    - Aligns with the verification step in
-      ``~/.claude/plans/binary-leaping-lightning.md`` item #11.
+      private indexes immediately after flipping the policy.
 
     Idempotent — both drivers' ``ensure_storage`` swallow
     ``resource_already_exists`` so re-applying the same policy is a
@@ -376,11 +420,11 @@ async def _on_apply_catalog_policy_config(
 
     No-op when:
 
-    - ``default_collection_privacy != "private"`` — public is the
+    - ``collection_defaults.is_private`` is False — public is the
       default; flipping back to public does NOT drop the existing
       per-tenant indexes (the catalog policy applies to NEW
-      collections; existing ``CollectionPluginConfig.is_private``
-      flags remain authoritative for already-created collections).
+      collections; existing ``CollectionPrivacy.is_private`` flags
+      remain authoritative for already-created collections).
     - ``catalog_id`` is ``None`` (platform-tier write — there's no
       tenant to bootstrap indexes for).
     - The relevant private driver isn't installed (deployment SCOPE
@@ -389,7 +433,7 @@ async def _on_apply_catalog_policy_config(
     import logging
     logger = logging.getLogger(__name__)
 
-    if config.default_collection_privacy != "private":
+    if not config.collection_defaults.is_private:
         return
     if not catalog_id:
         return
@@ -439,4 +483,4 @@ async def _on_apply_catalog_policy_config(
             )
 
 
-CatalogPrivacy.register_apply_handler(_on_apply_catalog_policy_config)
+CatalogPrivacy.register_apply_handler(_on_apply_catalog_privacy)
