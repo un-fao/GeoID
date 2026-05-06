@@ -149,28 +149,28 @@ async def test_dashboard_stats_endpoint(
     assert "average_latency_ms" in data
 
 
-async def test_dashboard_logs_endpoint(
+async def test_canonical_logs_endpoint(
     sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str
 ):
-    """Test the dashboard logs endpoint returns 200 and a list (path-based)."""
+    """Per-catalog logs flow through the canonical /logs/ surface; the
+    dashboard proxy was removed in favour of direct browser calls."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/catalogs/{my_catalog_id}/logs?limit=5"
+        f"/logs/catalogs/{my_catalog_id}?limit=5"
     )
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
+    assert "logs" in data
+    assert isinstance(data["logs"], list)
 
 
-async def test_dashboard_events_endpoint(
+async def test_canonical_events_endpoint(
     sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str
 ):
-    """Test the dashboard events endpoint returns 200 and a list (path-based)."""
+    """Per-catalog events flow through the canonical /events/ surface."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/catalogs/{my_catalog_id}/events?limit=5"
+        f"/events/catalogs/{my_catalog_id}/events?limit=5"
     )
     assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
 
 
 async def test_dashboard_catalogs_endpoint(
@@ -224,15 +224,15 @@ async def test_docs_manifest_endpoint(sysadmin_in_process_client_module: AsyncCl
             assert "title" in item
 
 
-async def test_dashboard_logs_pagination(sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str):
-    """Test that the logs endpoint respects the limit parameter."""
+async def test_canonical_logs_pagination(sysadmin_in_process_client_module: AsyncClient, my_catalog_id: str):
+    """Canonical /logs/ surface respects the limit parameter."""
     response = await sysadmin_in_process_client_module.get(
-        f"/web/dashboard/catalogs/{my_catalog_id}/logs?limit=1"
+        f"/logs/catalogs/{my_catalog_id}?limit=1"
     )
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) <= 1
+    assert "logs" in data
+    assert len(data["logs"]) <= 1
 
 
 async def test_dashboard_collections_unknown_catalog(

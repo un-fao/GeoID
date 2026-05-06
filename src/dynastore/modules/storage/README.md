@@ -17,7 +17,7 @@ appropriate per-tier routing config (`ItemsRoutingConfig` / `CollectionRoutingCo
 | `hints.py` | `Hint` (closed `StrEnum`) — selectivity tags advertised by drivers and consumed by the router |
 | `driver_config.py` | `ItemsWritePolicy`, `ItemsSchema`, per-driver `*DriverConfig` classes (PluginConfig waterfall) |
 | `router.py` | `get_driver(operation, catalog_id, collection_id, hint=...)` — cached operation-based resolution |
-| `outbox_ddl.py` | Per-tenant `storage_outbox` + `index_failure_log` DDL for async fan-out (PR-#261) |
+| `outbox_ddl.py` | Per-tenant `storage_outbox` DDL for async fan-out. Indexing failures are emitted as structured log events through `LogService`. |
 | `protocol.py` | Re-export convenience for `CollectionItemsStore` and friends |
 | `drivers/postgresql.py` | `ItemsPostgresqlDriver` — items-tier durability primary |
 | `drivers/elasticsearch.py` | `ItemsElasticsearchDriver` + `AssetElasticsearchDriver` — public per-tenant indexes |

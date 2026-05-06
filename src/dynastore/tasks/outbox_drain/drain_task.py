@@ -18,16 +18,25 @@ Failure model
 * ``transient`` → :meth:`OutboxStore.mark_retry` (PG row goes back to
   ``ready`` with bumped ``attempts`` and a backoff-driven ``ready_at``).
   When the row's NEXT-attempts crosses
-  ``retry_visible_threshold`` we also write a ``status='retrying'``
-  entry to :class:`IndexFailureLog` so tenants can see rows that are
-  actually struggling, not every transient blip.
-* ``poison``    → :meth:`OutboxStore.mark_failed` (terminal) plus a
-  ``status='failed'`` entry in :class:`IndexFailureLog` regardless of
-  threshold (poison is by definition non-recoverable).
+  ``retry_visible_threshold`` we also emit an
+  ``event_type='index_failure_retry'`` (level=WARNING) log event so
+  tenants can see rows that are actually struggling, not every
+  transient blip.
+* ``poison``    → :meth:`OutboxStore.mark_failed` (terminal) plus an
+  ``event_type='index_failure_persistent'`` (level=ERROR) log event
+  regardless of threshold (poison is by definition non-recoverable).
 
 Whole-batch exception (e.g. indexer crashed): every row is funnelled
 to the transient path so the outbox doesn't lose data, with a single
 shared error message.
+
+Failure surfacing
+-----------------
+
+All failure visibility goes through the canonical ``/logs/`` channel
+via :func:`dynastore.modules.catalog.log_manager.log_event`. The drain
+task has no dedicated REST/storage surface — admins read failures via
+``GET /logs/catalogs/{cat}?event_type=index_failure_*``.
 """
 from __future__ import annotations
 
@@ -38,10 +47,10 @@ from dynastore.models.protocols.indexing import (
     BulkIndexer,
     BulkIndexResult,
     IndexableOp,
-    IndexFailureLog,
     OutboxRow,
     OutboxStore,
 )
+from dynastore.modules.catalog.log_manager import log_event
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.tasks.protocols import TaskProtocol
 
@@ -51,10 +60,10 @@ logger = logging.getLogger(__name__)
 class OutboxDrainTask(TaskProtocol):
     """Drain ``storage_outbox`` for one ``(driver_id, catalog_id)`` pair.
 
-    Holds references to a concrete :class:`BulkIndexer`, an
-    :class:`OutboxStore`, and an :class:`IndexFailureLog`. The catalog
-    is fixed at construction — production wires one task instance per
-    active tenant under the parent Cloud Run Job's main loop.
+    Holds references to a concrete :class:`BulkIndexer` and an
+    :class:`OutboxStore`. The catalog is fixed at construction —
+    production wires one task instance per active tenant under the
+    parent Cloud Run Job's main loop.
     """
 
     priority: int = 100
@@ -67,7 +76,6 @@ class OutboxDrainTask(TaskProtocol):
         driver_id: str | None = None,
         indexer: BulkIndexer | None = None,
         store: OutboxStore | None = None,
-        failure_log: IndexFailureLog | None = None,
         catalog_id: str | None = None,
         batch_size: int = 1500,
         worker_id: str = "drain",
@@ -84,7 +92,6 @@ class OutboxDrainTask(TaskProtocol):
         self.driver_id = driver_id
         self.indexer = indexer
         self.store = store
-        self.failure_log = failure_log
         self.catalog_id = catalog_id
         self.batch_size = batch_size
         self.worker_id = worker_id
@@ -110,7 +117,7 @@ class OutboxDrainTask(TaskProtocol):
             "catalog_id": self.catalog_id,
         }
 
-    def _require_configured(self) -> tuple[str, BulkIndexer, OutboxStore, IndexFailureLog, str]:
+    def _require_configured(self) -> tuple[str, BulkIndexer, OutboxStore, str]:
         """Assert all collaborators are set; return them as a non-Optional tuple.
 
         Used by ``drain_once`` so pyright can narrow the Optional fields
@@ -121,7 +128,6 @@ class OutboxDrainTask(TaskProtocol):
                 ("driver_id", self.driver_id),
                 ("indexer", self.indexer),
                 ("store", self.store),
-                ("failure_log", self.failure_log),
                 ("catalog_id", self.catalog_id),
             ) if value is None
         ]
@@ -130,19 +136,15 @@ class OutboxDrainTask(TaskProtocol):
                 f"OutboxDrainTask not configured: missing {missing}. "
                 f"The task framework registers a zero-arg placeholder; "
                 f"production callers must construct with explicit kwargs "
-                f"(driver_id, indexer, store, failure_log, catalog_id) "
-                f"before invoking drain."
+                f"(driver_id, indexer, store, catalog_id) before invoking "
+                f"drain."
             )
         # Cast through assert for pyright narrowing.
         assert self.driver_id is not None
         assert self.indexer is not None
         assert self.store is not None
-        assert self.failure_log is not None
         assert self.catalog_id is not None
-        return (
-            self.driver_id, self.indexer, self.store,
-            self.failure_log, self.catalog_id,
-        )
+        return (self.driver_id, self.indexer, self.store, self.catalog_id)
 
     async def drain_once(self) -> int:
         """Claim a single batch and apply outcomes; return rows-handled.
@@ -152,7 +154,7 @@ class OutboxDrainTask(TaskProtocol):
         to the terminal ``failed`` status. Per-row poison classification
         is the indexer's responsibility, not the drain task's.
         """
-        driver_id, indexer, store, failure_log, catalog_id = self._require_configured()
+        driver_id, indexer, store, catalog_id = self._require_configured()
         rows = await store.claim_batch(
             driver_id=driver_id,
             catalog_id=catalog_id,
@@ -178,10 +180,10 @@ class OutboxDrainTask(TaskProtocol):
                 error=str(exc),
                 attempts_seen=rows[0].attempts,
             )
-            await self._record_retry_visible(rows, str(exc), failure_log, catalog_id)
+            await self._emit_retry_events(rows, str(exc), catalog_id)
             return len(rows)
 
-        await self._apply_outcomes(rows, result, store, failure_log, catalog_id)
+        await self._apply_outcomes(rows, result, store, catalog_id)
         return len(rows)
 
     async def _apply_outcomes(
@@ -189,11 +191,10 @@ class OutboxDrainTask(TaskProtocol):
         rows: Sequence[OutboxRow],
         result: BulkIndexResult,
         store: OutboxStore,
-        failure_log: IndexFailureLog,
         catalog_id: str,
     ) -> None:
         """Partition ``rows`` per ``result`` and apply the right
-        ``mark_*`` and :class:`IndexFailureLog` writes."""
+        ``mark_*`` updates plus log emissions for transient/poison."""
         rows_by_id = {r.op_id: r for r in rows}
 
         if result.passed:
@@ -212,9 +213,7 @@ class OutboxDrainTask(TaskProtocol):
                 attempts_seen=rows_by_id[tids[0]].attempts,
             )
             transient_rows = [rows_by_id[op_id] for op_id in tids]
-            await self._record_retry_visible(
-                transient_rows, errs_by_id, failure_log, catalog_id,
-            )
+            await self._emit_retry_events(transient_rows, errs_by_id, catalog_id)
 
         if result.poison:
             pids = [op_id for op_id, _ in result.poison]
@@ -224,34 +223,41 @@ class OutboxDrainTask(TaskProtocol):
                 catalog_id=catalog_id, op_ids=pids, error=joined,
             )
             for r in (rows_by_id[op_id] for op_id in pids):
-                await failure_log.record(
-                    None,
+                attempts = r.attempts + 1
+                await log_event(
                     catalog_id=catalog_id,
                     collection_id=r.collection_id,
-                    driver_instance_id=r.driver_instance_id,
-                    driver_id=r.driver_id,
-                    op_id=r.op_id,
-                    item_id=r.item_id,
-                    op=r.op,
-                    attempts=r.attempts + 1,
-                    error_class="PoisonIndexerError",
-                    error_message=errs_by_id[r.op_id],
-                    status="failed",
+                    event_type="index_failure_persistent",
+                    level="ERROR",
+                    message=(
+                        f"Indexing failed for item {r.item_id} after "
+                        f"{attempts} attempts"
+                    ),
+                    details={
+                        "driver_id": r.driver_id,
+                        "driver_instance_id": r.driver_instance_id,
+                        "op_id": str(r.op_id),
+                        "item_id": r.item_id,
+                        "op": r.op,
+                        "attempts": attempts,
+                        "error_class": "PoisonIndexerError",
+                        "error_message": errs_by_id[r.op_id],
+                        "status": "failed",
+                    },
                 )
 
-    async def _record_retry_visible(
+    async def _emit_retry_events(
         self,
         rows: Sequence[OutboxRow],
         errs: Union[str, Mapping[Any, str]],
-        failure_log: IndexFailureLog,
         catalog_id: str,
     ) -> None:
-        """Write to :class:`IndexFailureLog` only when the row's NEXT
-        attempts crosses ``retry_visible_threshold``.
+        """Emit an ``index_failure_retry`` log event when the row's
+        NEXT-attempts crosses ``retry_visible_threshold``.
 
-        Keeps the failure log focused on rows that are actually
+        Keeps the failure stream focused on rows that are actually
         struggling, not every transient blip — under a healthy retry
-        curve the log stays readable for tenants.
+        curve admins aren't drowned in noise.
         """
         for r in rows:
             next_attempts = r.attempts + 1
@@ -262,19 +268,26 @@ class OutboxDrainTask(TaskProtocol):
                 if isinstance(errs, str)
                 else errs.get(r.op_id, "transient")
             )
-            await failure_log.record(
-                None,
+            await log_event(
                 catalog_id=catalog_id,
                 collection_id=r.collection_id,
-                driver_instance_id=r.driver_instance_id,
-                driver_id=r.driver_id,
-                op_id=r.op_id,
-                item_id=r.item_id,
-                op=r.op,
-                attempts=next_attempts,
-                error_class="TransientIndexerError",
-                error_message=err_msg,
-                status="retrying",
+                event_type="index_failure_retry",
+                level="WARNING",
+                message=(
+                    f"Indexing retry visible for item {r.item_id} "
+                    f"(attempt {next_attempts})"
+                ),
+                details={
+                    "driver_id": r.driver_id,
+                    "driver_instance_id": r.driver_instance_id,
+                    "op_id": str(r.op_id),
+                    "item_id": r.item_id,
+                    "op": r.op,
+                    "attempts": next_attempts,
+                    "error_class": "TransientIndexerError",
+                    "error_message": err_msg,
+                    "status": "retrying",
+                },
             )
 
     @staticmethod

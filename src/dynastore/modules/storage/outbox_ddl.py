@@ -1,4 +1,4 @@
-"""storage_outbox + index_failure_log DDL.
+"""storage_outbox DDL.
 
 Created at per-catalog schema bootstrap (alongside other tenant DDLs).
 The outbox table carries an AFTER INSERT trigger that emits
@@ -11,13 +11,12 @@ call time. ``schema`` is validated through
 :func:`dynastore.tools.db.validate_sql_identifier` before any string
 formatting so a caller-controlled schema can never inject SQL.
 
-Two entry points are exposed for each table:
+Two entry points:
 
-* :func:`ensure_storage_outbox` / :func:`ensure_index_failure_log` —
-  production path. Runs through :class:`DDLQuery` so the auto-inferred
-  existence-check shortcut + advisory locking kick in on warm boots.
-* :func:`ensure_storage_outbox_asyncpg` /
-  :func:`ensure_index_failure_log_asyncpg` — test path. Executes the same
+* :func:`ensure_storage_outbox` — production path. Runs through
+  :class:`DDLQuery` so the auto-inferred existence-check shortcut +
+  advisory locking kick in on warm boots.
+* :func:`ensure_storage_outbox_asyncpg` — test path. Executes the same
   rendered DDL on a raw ``asyncpg.Connection`` so LISTEN / NOTIFY can be
   exercised against the same physical session that runs the DDL. NOT for
   production catalog bootstrap.
@@ -86,34 +85,6 @@ CREATE TRIGGER storage_outbox_notify_trg
 """
 
 
-_INDEX_FAILURE_LOG_DDL_TEMPLATE = """
-CREATE TABLE IF NOT EXISTS {schema}.index_failure_log (
-    failure_id          UUID         PRIMARY KEY,
-    occurred_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    collection_id       TEXT         NOT NULL,
-    driver_id           TEXT         NOT NULL,
-    driver_instance_id  TEXT         NOT NULL,
-    op_id               UUID,
-    item_id             TEXT,
-    op                  TEXT         NOT NULL,
-    attempts            INT          NOT NULL,
-    error_class         TEXT         NOT NULL,
-    error_message       TEXT         NOT NULL,
-    status              TEXT         NOT NULL,
-    correlation_id      TEXT,
-    CONSTRAINT index_failure_log_status_chk
-        CHECK (status IN ('retrying', 'failed'))
-);
-
-CREATE INDEX IF NOT EXISTS index_failure_log_browse_idx
-    ON {schema}.index_failure_log (collection_id, occurred_at DESC);
-
-CREATE INDEX IF NOT EXISTS index_failure_log_status_idx
-    ON {schema}.index_failure_log (status, occurred_at DESC)
-    WHERE status = 'failed';
-"""
-
-
 def _storage_outbox_ddl(schema: str) -> str:
     """Render the storage_outbox DDL with ``schema`` baked in.
 
@@ -122,16 +93,6 @@ def _storage_outbox_ddl(schema: str) -> str:
     """
     validate_sql_identifier(schema)
     return _STORAGE_OUTBOX_DDL_TEMPLATE.format(schema=f'"{schema}"')
-
-
-def _index_failure_log_ddl(schema: str) -> str:
-    """Render the index_failure_log DDL with ``schema`` baked in.
-
-    ``schema`` is validated up front so the subsequent
-    ``str.format`` cannot interpolate an injection vector.
-    """
-    validate_sql_identifier(schema)
-    return _INDEX_FAILURE_LOG_DDL_TEMPLATE.format(schema=f'"{schema}"')
 
 
 async def ensure_storage_outbox(db_resource: Any, schema: str) -> None:
@@ -165,24 +126,4 @@ async def ensure_storage_outbox_asyncpg(conn: Any, schema: str) -> None:
     CREATE blocks; we hand the rendered script over as a single execute.
     """
     ddl = _storage_outbox_ddl(schema)
-    await conn.execute(ddl)
-
-
-async def ensure_index_failure_log(db_resource: Any, schema: str) -> None:
-    """Apply index_failure_log DDL via :class:`DDLQuery` (production path).
-
-    See :func:`ensure_storage_outbox` for the rationale on routing through
-    :class:`DDLQuery`.
-    """
-    ddl = _index_failure_log_ddl(schema)
-    await DDLQuery(ddl).execute(db_resource)
-
-
-async def ensure_index_failure_log_asyncpg(conn: Any, schema: str) -> None:
-    """Apply index_failure_log DDL on a raw ``asyncpg.Connection`` (test path).
-
-    See :func:`ensure_storage_outbox_asyncpg` for the rationale on the raw
-    asyncpg surface.
-    """
-    ddl = _index_failure_log_ddl(schema)
     await conn.execute(ddl)

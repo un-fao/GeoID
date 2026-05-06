@@ -125,9 +125,9 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
         ),
         Policy(
             id="web_dashboard_platform_access",
-            description="Sysadmin-only access to platform-tier dashboard endpoints (stats, logs, events, tasks).",
+            description="Sysadmin-only access to platform-tier dashboard endpoints (stats, tasks).",
             actions=["GET", "OPTIONS"],
-            resources=[r"^/web/dashboard/(stats|logs|events|tasks)/?$"],
+            resources=[r"^/web/dashboard/(stats|tasks)/?$"],
             effect="ALLOW",
         ),
         Policy(
@@ -1782,56 +1782,6 @@ async function demoAction(action) {
                 else {"total_requests": 0, "average_latency_ms": 0}
             )
 
-        async def _list_logs(
-            catalog_id: str,
-            collection_id: Optional[str],
-            event_type: Optional[str],
-            level: Optional[str],
-            limit: int,
-            offset: int,
-        ) -> List[Dict[str, Any]]:
-            from dynastore.models.protocols.logs import LogsProtocol
-            from dynastore.tools.discovery import get_protocol
-
-            log_ext = get_protocol(LogsProtocol)
-            if log_ext:
-                logs = await log_ext.list_logs(
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                    event_type=event_type,
-                    level=level,
-                    limit=limit,
-                    offset=offset,
-                )
-                return [l if isinstance(l, dict) else l.model_dump() for l in logs]
-            return []
-
-        async def _search_events(
-            catalog_id: str,
-            collection_id: Optional[str],
-            event_type: Optional[str],
-            limit: int,
-            offset: int,
-        ) -> List[Dict[str, Any]]:
-            from dynastore.modules.catalog.catalog_module import _module_instance
-            catalog_mod = _module_instance
-            if catalog_mod and hasattr(catalog_mod, "event_service"):
-                from dynastore.tools.protocol_helpers import get_engine
-                engine = get_engine()
-                events = await cast(Any, catalog_mod).event_service.search_events(
-                    engine=engine,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                    event_type=event_type,
-                    limit=limit,
-                    offset=offset,
-                )
-                for event in events:
-                    if "created_at" in event and event["created_at"]:
-                        event["created_at"] = event["created_at"].isoformat()
-                return events
-            return []
-
         # ----- Platform-tier dashboard endpoints (sysadmin-only via Policy) -- #
 
         @self.router.get("/dashboard/stats", response_class=JSONResponse)
@@ -1842,22 +1792,9 @@ async function demoAction(action) {
         ):
             return await _stats_summary("_system_", None, principal_id, start_date, end_date)
 
-        @self.router.get("/dashboard/logs", response_class=JSONResponse)
-        async def get_dashboard_platform_logs(
-            event_type: Optional[str] = Query(None, description="Optional event type filter."),
-            level: Optional[str] = Query(None, description="Optional log level (e.g., ERROR, INFO)."),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            return await _list_logs("_system_", None, event_type, level, limit, offset)
-
-        @self.router.get("/dashboard/events", response_class=JSONResponse)
-        async def get_dashboard_platform_events(
-            event_type: Optional[str] = Query(None, description="Optional event type filter."),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            return await _search_events("_system_", None, event_type, limit, offset)
+        # /dashboard/logs and /dashboard/events deleted: callers now hit
+        # the canonical /logs/ and /events/ extension surfaces directly
+        # (one canonical REST surface per module — no dashboard proxies).
 
         @self.router.get("/dashboard/tasks", response_class=JSONResponse)
         async def get_dashboard_platform_tasks():
@@ -1911,51 +1848,10 @@ async function demoAction(action) {
                 return tasks
             return []
 
-        @self.router.get("/dashboard/catalogs/{catalog_id}/logs", response_class=JSONResponse)
-        async def get_dashboard_logs(
-            catalog_id: str,
-            event_type: Optional[str] = Query(None, description="Optional event type filter."),
-            level: Optional[str] = Query(None, description="Optional log level (e.g., ERROR, INFO)."),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            return await _list_logs(catalog_id, None, event_type, level, limit, offset)
-
-        @self.router.get(
-            "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/logs",
-            response_class=JSONResponse,
-        )
-        async def get_dashboard_logs_per_collection(
-            catalog_id: str,
-            collection_id: str,
-            event_type: Optional[str] = Query(None),
-            level: Optional[str] = Query(None),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0),
-        ):
-            return await _list_logs(catalog_id, collection_id, event_type, level, limit, offset)
-
-        @self.router.get("/dashboard/catalogs/{catalog_id}/events", response_class=JSONResponse)
-        async def get_dashboard_events(
-            catalog_id: str,
-            event_type: Optional[str] = Query(None, description="Optional event type filter."),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0, description="Pagination offset."),
-        ):
-            return await _search_events(catalog_id, None, event_type, limit, offset)
-
-        @self.router.get(
-            "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/events",
-            response_class=JSONResponse,
-        )
-        async def get_dashboard_events_per_collection(
-            catalog_id: str,
-            collection_id: str,
-            event_type: Optional[str] = Query(None),
-            limit: int = Query(50, ge=1, le=1000),
-            offset: int = Query(0, ge=0),
-        ):
-            return await _search_events(catalog_id, collection_id, event_type, limit, offset)
+        # /dashboard/catalogs/{cat}[/collections/{col}]/{logs,events} deleted:
+        # callers fetch canonical /logs/catalogs/{cat}... and /events/catalogs/{cat}...
+        # directly. Per-catalog access is enforced at the canonical endpoints
+        # (catalog_membership_required condition).
 
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/ogc-compliance",
