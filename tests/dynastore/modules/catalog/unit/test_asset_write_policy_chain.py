@@ -586,6 +586,74 @@ async def test_race_via_message_scrape_when_constraint_attr_missing(
     assert exc_info.value.matcher == AssetIdentityMatcher.FILENAME.value
 
 
+# ---------------------------------------------------------------------------
+# F2 — content_hash algo-prefix semantics
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_strips_algo_prefix() -> None:
+    assert ad._normalize_content_hash("md5:abc==") == "abc=="
+    assert ad._normalize_content_hash("sha256:0a1b") == "0a1b"
+    # Untagged values pass through.
+    assert ad._normalize_content_hash("legacyhex") == "legacyhex"
+    assert ad._normalize_content_hash(None) is None
+    assert ad._normalize_content_hash("") is None
+
+
+def test_split_returns_algo_and_value() -> None:
+    assert ad._split_content_hash("md5:abc==") == ("md5", "abc==")
+    assert ad._split_content_hash("sha256:01ff") == ("sha256", "01ff")
+    assert ad._split_content_hash("untagged") == (None, "untagged")
+    assert ad._split_content_hash(None) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_content_hash_probe_sends_both_tagged_and_raw_binds(
+    fake_dql: _Recorder,
+) -> None:
+    """The probe SQL OR-clauses on (tagged) and (raw) so legacy untagged
+    rows continue to match. Verify both binds are present."""
+    fake_dql.when(is_select_by("content_hash"), EXISTING_ROW)
+
+    payload = physical()
+    object.__setattr__(payload, "content_hash", "md5:abc==")
+    policy = AssetsWritePolicy(
+        identity_matchers=[AssetIdentityMatcher.CONTENT_HASH],
+    )
+    with pytest.raises(AssetSidecarRejectedError):
+        await upsert_asset(conn=object(), scope=SCOPE, payload=payload, policy=policy)
+
+    # Find the SELECT call hitting content_hash.
+    probe_call = next(c for c in fake_dql.calls if "content_hash" in c["sql"])
+    assert probe_call["params"]["tagged"] == "md5:abc=="
+    assert probe_call["params"]["raw"] == "abc=="
+
+
+@pytest.mark.asyncio
+async def test_hash_gating_normalizes_across_tagged_and_untagged(
+    fake_dql: _Recorder,
+) -> None:
+    """Existing row stores ``md5:abc==`` (post-Stage-F2 finalize); the
+    payload carries the bare ``abc==`` (e.g., a re-finalize or a legacy
+    caller). The gating compare must still treat them as equal and
+    short-circuit UPDATE → REFUSE_RETURN."""
+    tagged_existing = dict(EXISTING_ROW, content_hash="md5:abc==")
+    fake_dql.when(is_select_by("asset_id"), tagged_existing)
+
+    policy = AssetsWritePolicy(
+        on_conflict=AssetWriteConflictPolicy.UPDATE,
+        skip_if_unchanged_content_hash=True,
+    )
+    payload = physical()
+    object.__setattr__(payload, "content_hash", "abc==")  # untagged, raw
+
+    result = await upsert_asset(
+        conn=object(), scope=SCOPE, payload=payload, policy=policy
+    )
+    assert result.action == "returned_existing"
+    assert not any(is_update_metadata(c["sql"]) for c in fake_dql.calls)
+
+
 @pytest.mark.asyncio
 async def test_race_in_new_version_path_preserves_existing_id(
     fake_dql: _Recorder, monkeypatch: pytest.MonkeyPatch
