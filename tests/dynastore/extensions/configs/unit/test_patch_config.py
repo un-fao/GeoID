@@ -95,14 +95,22 @@ async def test_patch_null_deletes_config():
 
 @pytest.mark.asyncio
 async def test_patch_unknown_plugin_raises_value_error():
-    """PATCH with unknown plugin_id raises ValueError before any write."""
+    """PATCH with an unknown body key + no discriminator raises a clear
+    ValueError before any write fires.
+
+    Post-Cycle F.4d.2 the composer treats unknown body keys as possible
+    multi-instance ref names: a plain ``{"NonExistentConfig":
+    {"enabled": False}}`` body fails because no ``class_key`` (or
+    ``driver_class``) is provided to resolve the dispatch class.  The
+    error message points operators at the discriminator field.
+    """
     from dynastore.extensions.configs.config_api_service import ConfigApiService
 
     stored: Dict = {}
     config_svc = _make_config_service(stored)
     api = ConfigApiService(config_service=config_svc)
 
-    with pytest.raises(ValueError, match="Unknown config class"):
+    with pytest.raises(ValueError, match=r"must include 'class_key'"):
         await api.patch_config(
             catalog_id=None,
             body={"NonExistentConfig": {"enabled": False}},

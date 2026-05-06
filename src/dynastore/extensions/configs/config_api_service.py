@@ -852,28 +852,119 @@ class ConfigApiService:
         """Validate-then-write partial update of one or more configs at a scope.
 
         Body is RFC 7396 merge-patch over the scope's plugin set: each top-level
-        key is a ``plugin_id``; value is the new payload, or ``null`` to delete
-        the override.  Atomic at the scope level — the validation pass runs to
-        completion before any write fires.
+        key is either a ``class_key`` (single-instance, class-as-identity path)
+        or a multi-instance ``ref_key`` (Cycle F.4d.2).  Value is the new
+        payload, or ``null`` to delete the override.  Atomic at the scope
+        level — the validation pass runs to completion before any write fires.
+
+        Multi-instance ref entries (key not in
+        :func:`list_registered_configs`) require a ``class_key`` (or
+        ``driver_class``) discriminator inside the body so the composer can
+        resolve the dispatch class and validate the payload.  Deletes
+        (``value is None``) for an unknown key are allowed without a
+        discriminator — the F.4c.4 ``delete_config_by_ref`` returns False
+        for no-op without surfacing an error.
+
+        Set-by-ref dispatches to :meth:`ConfigsProtocol.set_config_by_ref`
+        (refusing to overwrite a stored row whose ``class_key`` differs
+        from the discriminator).  Class-keyed entries keep the existing
+        :meth:`ConfigsProtocol.set_config` path so single-instance writes
+        retain their cache invalidation + apply-handler shape.
         """
         all_classes = list_registered_configs()
-        prepared: List[Tuple[str, Type[PluginConfig], Optional[Dict[str, Any]]]] = []
+        # Prepared per-entry: (key, cls_or_None, merged_or_None, is_ref).
+        # ``is_ref`` selects the by-ref dispatch on the write phase.
+        prepared: List[
+            Tuple[str, Optional[Type[PluginConfig]], Optional[Dict[str, Any]], bool]
+        ] = []
 
         for plugin_id, value in body.items():
             cls = all_classes.get(plugin_id)
-            if cls is None:
-                raise ValueError(f"Unknown config class '{plugin_id}'")
-            if value is None:
-                prepared.append((plugin_id, cls, None))
+            if cls is not None:
+                # Class-keyed path (existing semantics).
+                if value is None:
+                    prepared.append((plugin_id, cls, None, False))
+                    continue
+                current = (await self._config_service.get_persisted_config(
+                    cls, catalog_id=catalog_id, collection_id=collection_id,
+                )) or {}
+                merged = {**current, **value}
+                cls.model_validate(merged)  # raises on bad data
+                prepared.append((plugin_id, cls, merged, False))
                 continue
-            current = (await self._config_service.get_persisted_config(
-                cls, catalog_id=catalog_id, collection_id=collection_id,
-            )) or {}
-            merged = {**current, **value}
-            cls.model_validate(merged)  # raises on bad data
-            prepared.append((plugin_id, cls, merged))
 
-        for plugin_id, cls, merged in prepared:
+            # Multi-instance ref path (F.4d.2).  ``plugin_id`` is a ref_key.
+            if value is None:
+                # Delete an unknown ref — defer existence check to the
+                # service-layer delete which returns False for no-op.
+                prepared.append((plugin_id, None, None, True))
+                continue
+            # Body must carry the dispatch discriminator.  Accept either
+            # ``class_key`` or ``driver_class`` (Cycle F.2 alias for the
+            # driver subset of PluginConfigs); strip from the merged
+            # payload so it doesn't reach Pydantic validation.
+            value = dict(value)
+            class_key = value.pop("class_key", None) or value.pop("driver_class", None)
+            if not class_key:
+                raise ValueError(
+                    f"Unknown ref '{plugin_id}': body must include "
+                    f"'class_key' (or 'driver_class') to create or update "
+                    f"a multi-instance row.  Existing class-keyed configs "
+                    f"are: {sorted(all_classes)[:5]}..."
+                )
+            cls = all_classes.get(class_key)
+            if cls is None:
+                raise ValueError(
+                    f"ref '{plugin_id}': body discriminator class_key="
+                    f"{class_key!r} is not a registered config class."
+                )
+            # Try to merge against an existing row at this ref (F.4c.2
+            # ``get_config_by_ref``).  Service that doesn't implement the
+            # F.4c read API → treat as a fresh write (no merge base).
+            get_by_ref = getattr(self._config_service, "get_config_by_ref", None)
+            current_dict: Dict[str, Any] = {}
+            if get_by_ref is not None:
+                existing = await get_by_ref(
+                    plugin_id, catalog_id=catalog_id, collection_id=collection_id,
+                )
+                if existing is not None:
+                    try:
+                        current_dict = existing.model_dump(exclude_unset=True)
+                    except Exception:
+                        current_dict = {}
+            merged = {**current_dict, **value}
+            cls.model_validate(merged)  # raises on bad data
+            prepared.append((plugin_id, cls, merged, True))
+
+        for plugin_id, cls, merged, is_ref in prepared:
+            if is_ref:
+                if merged is None:
+                    deleter = getattr(
+                        self._config_service, "delete_config_by_ref", None,
+                    )
+                    if deleter is not None:
+                        await deleter(
+                            plugin_id, catalog_id=catalog_id,
+                            collection_id=collection_id,
+                        )
+                else:
+                    assert cls is not None  # set guarded above
+                    setter = getattr(
+                        self._config_service, "set_config_by_ref", None,
+                    )
+                    if setter is None:
+                        raise RuntimeError(
+                            "config service lacks set_config_by_ref; "
+                            "F.4c.4 service-layer write API not available"
+                        )
+                    validated = cls.model_validate(merged)
+                    await setter(
+                        plugin_id, validated, catalog_id=catalog_id,
+                        collection_id=collection_id,
+                    )
+                continue
+
+            assert cls is not None  # class-keyed path always carries cls
             if merged is None:
                 await self._config_service.delete_config(
                     cls, catalog_id=catalog_id, collection_id=collection_id,
@@ -883,7 +974,7 @@ class ConfigApiService:
                 await self._config_service.set_config(
                     cls, validated, catalog_id=catalog_id, collection_id=collection_id,
                 )
-        return {"updated": [p for p, _, _ in prepared]}
+        return {"updated": [p for p, _, _, _ in prepared]}
 
     # --- Pagination helpers. ---
 
