@@ -498,6 +498,9 @@ class StacVirtualMixin(_Host):
             from dynastore.modules.stac.stac_config import AssetAccessMode
             from fastapi.responses import RedirectResponse
 
+            if asset.uri is None:
+                raise HTTPException(status_code=404, detail="Asset has no URI.")
+
             if stac_config.asset_tracking.access_mode == AssetAccessMode.PROXY:
                 try:
                     from dynastore.modules.proxy.proxy_module import create_short_url

@@ -501,6 +501,8 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
     async def lifespan(self, app_state: Any) -> typing.AsyncGenerator[None, None]:
         if not hasattr(self, "get_platform_config_internal_cached"):
             self._setup_cache()
+        if self.engine is not None:
+            await self.initialize_storage(self.engine)
         logger.info("PlatformConfigService: Started.")
         yield
         logger.info("PlatformConfigService: Stopped.")

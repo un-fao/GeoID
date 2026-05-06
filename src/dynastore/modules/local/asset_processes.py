@@ -41,7 +41,11 @@ class LocalDownloadAssetProcess:
     http_method: HTTPMethod = "GET"
 
     async def describe(self, asset: Asset) -> AssetProcessDescriptor:
-        applicable = asset.owned_by == "local" and asset.uri.startswith("file://")
+        applicable = (
+            asset.owned_by == "local"
+            and bool(asset.uri)
+            and asset.uri.startswith("file://")
+        )
         return AssetProcessDescriptor(
             process_id=self.process_id,
             title="Download",
@@ -60,7 +64,7 @@ class LocalDownloadAssetProcess:
     async def execute(
         self, asset: Asset, params: Dict[str, Any]
     ) -> AssetProcessOutput:
-        if asset.owned_by != "local" or not asset.uri.startswith("file://"):
+        if asset.owned_by != "local" or not asset.uri or not asset.uri.startswith("file://"):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
