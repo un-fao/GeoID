@@ -33,21 +33,32 @@ packages/
 
 ## Status (2026-05-07)
 
-**Migrated to wheels (Phase 1):**
-- `tasks/` → `dynastore-ext-tasks`
-- `stats/` → `dynastore-ext-stats`
-- `edr/` → `dynastore-ext-edr`
-- `moving_features/` → `dynastore-ext-moving-features`
-- `connected_systems/` → `dynastore-ext-connected-systems`
+**Migrated to wheels (Phase 1) — 23 of ~31 extensions:**
 
-5 of 7 ungatable extensions structurally isolated. Remaining ungatable:
+Ungatable (5 of 7 — structurally isolated by package install boundary):
+- `tasks` · `stats` · `edr` · `moving_features` · `connected_systems`
 
-- `assets` — needs asset-service extraction from `modules/catalog/`
-- `logs` — needs externalised event-listener API in `dynastore-core`
+Dep-gated (18 of 24 — pattern validated, dep sentinels carried over):
+- `dimensions` · `notebooks` · `proxy` · `processes` · `search`
+- `crs` · `dggs` · `features` · `records` · `coverages`
+- `wfs` · `dwh` · `joins` · `styles` · `gcp_bucket` (source dir `gcp/`)
+- `geoid` · `events` · `httpx`
 
-**Pending (Phase 2):** `core/` — framework code still in `src/dynastore/`.
+**Remaining ungatable (need real refactor before they can wheel-split):**
+- `assets` — extract `asset_service` / `asset_distributed` / `write_policy_assets` from `modules/catalog/` into `extensions/assets/`
+- `logs` — externalise the catalog event-listener registration API into `dynastore-core`
 
-**Pending (Phase 3-4):** the 24 dep-gated extensions (crs, dggs, processes, features, records, coverages, wfs, dwh, styles, joins, gdal, maps, tiles, stac, geoid, gcp_bucket, search, dimensions, notebooks, proxy, template, web, iam, auth, configs, admin, httpx, documentation, events, volumes).
+**Remaining dep-gated (mechanical, deferred):**
+- `gdal` · `maps` · `tiles` · `stac` · `template` — heavy surface
+- `iam` · `auth` · `configs` · `admin` · `web` — foundational; need careful migration order
+
+**Stays in `dynastore-core` (Phase 2):**
+- `extensions/protocols.py`, `extensions/ogc_base.py`, `extensions/ogc_models_shared.py`, `extensions/lifespan.py`, `extensions/registry.py`, `extensions/bootstrap.py`, `extensions/tools/`, `extensions/documentation/` — these are framework, not per-route extensions; lifespan.py imports from them at module top.
+- `modules/`, `tools/`, `models/` — framework.
+- Top-level `extensions/__init__.py` collapses to PEP 420 namespace once dynastore-core split lands; the transitional re-export facade from PR #376 stays until then.
+
+**Orphaned (no entry-point in pyproject):**
+- `volumes` — has source under `extensions/volumes/` but isn't registered. Migration deferred pending its registration story.
 
 ## Build
 
