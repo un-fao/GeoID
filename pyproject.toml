@@ -24,6 +24,17 @@ readme = "README.md"
 requires = ["setuptools>=80.9.0", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
+# ===========================================================================
+# uv workspace — per-extension wheel split (Phase 1+).
+# Each member under packages/* produces its own pip-installable wheel
+# (e.g. dynastore-ext-tasks). See packages/README.md for the migration plan.
+# ===========================================================================
+[tool.uv.workspace]
+members = ["packages/extensions/*"]
+
+[tool.uv.sources]
+dynastore-ext-tasks = { workspace = true }
+
 [project.optional-dependencies]
 # ==========================================================================
 # GRANULAR MODULES — building blocks, one per domain
@@ -75,7 +86,7 @@ extension_processes = ["dynastore[extension_base]", "jsonschema"]
 extension_features = ["dynastore[extension_base,geospatial_core]", "pygeofilter[backend-sqlalchemy]"]
 extension_tiles = ["dynastore[extension_base,module_tiles]"]
 extension_volumes = ["dynastore[extension_base]", "shapely>=2.0"]
-extension_tasks = ["dynastore[extension_base,module_tasks]"]
+extension_tasks = ["dynastore[extension_base,module_tasks]", "dynastore-ext-tasks"]
 extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
@@ -472,7 +483,7 @@ maps = "dynastore.extensions.maps.maps_service:MapsService"
 stac = "dynastore.extensions.stac.stac_service:STACService"
 dwh = "dynastore.extensions.dwh.dwh:DwhService"
 joins = "dynastore.extensions.joins.joins_service:JoinsService"
-tasks = "dynastore.extensions.tasks.tasks_service:TasksService"
+# tasks: migrated to packages/extensions/tasks (dynastore-ext-tasks wheel) — Phase 1 pilot
 proxy = "dynastore.extensions.proxy.proxy_service:ProxyService"
 gdal = "dynastore.extensions.gdal.gdal_service:GdalService"
 auth = "dynastore.extensions.auth.authentication:Authentication"
