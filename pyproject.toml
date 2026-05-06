@@ -35,6 +35,9 @@ members = ["packages/extensions/*"]
 [tool.uv.sources]
 dynastore-ext-tasks = { workspace = true }
 dynastore-ext-stats = { workspace = true }
+dynastore-ext-edr = { workspace = true }
+dynastore-ext-moving-features = { workspace = true }
+dynastore-ext-connected-systems = { workspace = true }
 
 [project.optional-dependencies]
 # ==========================================================================
@@ -91,8 +94,8 @@ extension_tasks = ["dynastore[extension_base,module_tasks]", "dynastore-ext-task
 extension_proxy = ["dynastore[extension_base,module_proxy]"]
 extension_gdal = ["dynastore[extension_base,module_gdal]"]
 extension_styles = ["dynastore[extension_base,module_styles]"]
-extension_moving_features = ["dynastore[extension_base,module_moving_features]"]
-extension_connected_systems = ["dynastore[extension_base,module_connected_systems]"]
+extension_moving_features = ["dynastore[extension_base,module_moving_features]", "dynastore-ext-moving-features"]
+extension_connected_systems = ["dynastore[extension_base,module_connected_systems]", "dynastore-ext-connected-systems"]
 extension_iam = ["dynastore[extension_base,module_iam]"]
 extension_logs = ["dynastore[extension_base]", "httpx"]
 extension_configs = ["dynastore[extension_base]"]
@@ -109,7 +112,7 @@ extension_gcp_bucket = ["dynastore[extension_base,module_gcp]"]
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.12.3"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]", "rasterio>=1.4.3"]
-extension_edr = ["dynastore[extension_base,geospatial_core]"]
+extension_edr = ["dynastore[extension_base,geospatial_core]", "dynastore-ext-edr"]
 extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2sphere>=0.2.5"]
 module_coverages_netcdf = ["netCDF4>=1.6.0", "xarray>=2024.0.0"]
 module_coverages_zarr = ["zarr>=2.18.0", "xarray>=2024.0.0"]
@@ -497,7 +500,7 @@ geoid = "dynastore.extensions.geoid.geoid:Geoid"
 gcp_bucket = "dynastore.extensions.gcp.bucket_service:BucketService"
 search = "dynastore.extensions.search.search_service:SearchService"
 styles = "dynastore.extensions.styles.styles_service:StylesService"
-connected_systems = "dynastore.extensions.connected_systems.consys_service:ConnectedSystemsService"
+# connected_systems: migrated to packages/extensions/connected_systems (dynastore-ext-connected-systems wheel)
 httpx = "dynastore.extensions.httpx.httpx_service:HttpxExtension"
 iam = "dynastore.extensions.iam.service:IamExtension"
 logs = "dynastore.extensions.logs.log_extension:LogExtension"
@@ -512,8 +515,8 @@ tiles = "dynastore.extensions.tiles.tiles_service:TilesService"
 dimensions = "dynastore.extensions.dimensions.dimensions_extension:DimensionsExtension"
 records = "dynastore.extensions.records.records_service:RecordsService"
 coverages = "dynastore.extensions.coverages.coverages_service:CoveragesService"
-edr = "dynastore.extensions.edr.edr_service:EDRService"
-moving_features = "dynastore.extensions.moving_features.mf_service:MovingFeaturesService"
+# edr: migrated to packages/extensions/edr (dynastore-ext-edr wheel)
+# moving_features: migrated to packages/extensions/moving_features (dynastore-ext-moving-features wheel)
 dggs = "dynastore.extensions.dggs.dggs_service:DGGSService"
 
 [project.entry-points."dynastore.tasks"]
