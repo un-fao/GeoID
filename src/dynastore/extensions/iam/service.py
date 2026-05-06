@@ -437,7 +437,10 @@ class IamExtension(ExtensionProtocol):
         title="Admin Panel",
         icon="fa-users-gear",
         description="Manage users, roles, policies and catalog permissions.",
-        required_roles=[DefaultRole.SYSADMIN.value, DefaultRole.ADMIN.value],
+        # Audience driven by the admin_access policy's role bindings —
+        # operators rebind the policy via REST to extend access (e.g. to
+        # custom roles like data_curator) without editing this decorator.
+        audience_policy_id="admin_access",
         section="admin",
         priority=20,
     )

@@ -34,14 +34,22 @@ from starlette.requests import Request
 class PageVisibilityFilter(Protocol):
     """Filter a flat page list down to entries the caller may see.
 
-    Each page dict is expected to carry an ``id`` and an optional
-    ``required_roles: list[str]``. Implementations decide admissibility
+    Each page dict is expected to carry an ``id`` and either of two
+    optional audience-declaration fields: ``audience_policy_id``
+    (preferred — references a registered ``Policy`` whose role bindings
+    define the audience) or ``required_roles: list[str]`` (legacy —
+    literal role-name list). Implementations decide admissibility
     however they like (role match, sysadmin bypass, condition
     evaluation) — the contract here is purely "given these pages and
     this request, which should the caller see?".
+
+    Async because resolving ``audience_policy_id`` typically requires
+    reading the role-policy registry, which IAM exposes as an async
+    surface. Implementations may still be effectively synchronous if
+    they cache or only read in-memory state.
     """
 
-    def filter_visible(
+    async def filter_visible(
         self,
         pages: List[Dict[str, Any]],
         request: Request,
