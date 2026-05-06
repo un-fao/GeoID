@@ -1,34 +1,20 @@
 name: Test
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
+# Auto-triggers on push/pull_request were dropped to control CI minutes. The
+# suite now runs:
+#   - once daily on schedule (regression catch);
+#   - on demand via workflow_dispatch (Actions tab → Test → Run workflow,
+#     or `gh workflow run test.yml --ref <branch>`);
+#   - via workflow_call from dynastore / fao-aip-catalog deploy gates, so
+#     production deploys remain test-gated.
 on:
-  push:
-    branches: [main]
-    # Skip CI for documentation / version-bump / notebook-only changes —
-    # source code paths still trigger. See
-    # `project_geoid_ci_minutes_optimization.md` for the cost rationale.
-    paths-ignore:
-      - 'geoid-refs.json'
-      - 'VERSION'
-      - 'CHANGES.md'
-      - '**/*.md'
-      - 'docs/**'
-      - 'notebook_showcase/**'
-      - '**/*.png'
-      - '**/*.svg'
-      - '**/*.jpg'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - 'geoid-refs.json'
-      - 'VERSION'
-      - 'CHANGES.md'
-      - '**/*.md'
-      - 'docs/**'
-      - 'notebook_showcase/**'
-      - '**/*.png'
-      - '**/*.svg'
-      - '**/*.jpg'
+  schedule:
+    # Daily nightly run at 04:00 UTC (~05/06 Europe/Rome). Surfaces overnight
+    # regressions before the workday starts without burning minutes on every
+    # push or PR. Remove this entry to fully disable scheduled runs.
+    - cron: '0 4 * * *'
+
   workflow_dispatch:
     inputs:
       run_integration:
