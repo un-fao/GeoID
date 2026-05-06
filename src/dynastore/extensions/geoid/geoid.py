@@ -1,4 +1,5 @@
 import os
+import html
 import logging
 import itertools
 from typing import List, Any, Dict, Optional, Callable
@@ -305,15 +306,17 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
     async def geoid_home_page(self, language: str = "en") -> str:
         """Platform-home embed: Three Pillars, live OGC matrix, capabilities, get-started.
 
-        Returned HTML is server-rendered. The injected <script> uses createElement
-        APIs only — no HTML-string injection client-side — so the page is XSS-safe
-        even if downstream operators rebrand strings via REST overrides.
+        Returned HTML is server-rendered. Operator-supplied copy strings are
+        passed through ``html.escape`` before interpolation. The injected
+        ``<script>`` blocks build the DOM via ``createElement`` only — no
+        ``innerHTML`` — so the page is XSS-safe by construction.
         """
         lang = (language or "en").lower().split("-")[0]
         if lang not in ("en", "es", "fr"):
             lang = "en"
 
         copy = _GEOID_HOME_COPY[lang]
+        e = lambda k: html.escape(copy[k])
 
         return f"""
         <script>
@@ -325,51 +328,51 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
           <!-- Hero -->
           <section class="text-center py-8">
             <h2 class="text-3xl md:text-5xl font-bold text-white tracking-tight mb-4">
-              {copy['hero_lead']}
+              {e('hero_lead')}
               <span class="block text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-                {copy['hero_accent']}
+                {e('hero_accent')}
               </span>
             </h2>
-            <p class="text-slate-400 max-w-3xl mx-auto text-lg">{copy['hero_body']}</p>
+            <p class="text-slate-400 max-w-3xl mx-auto text-lg">{e('hero_body')}</p>
             <div class="flex gap-3 justify-center mt-8 flex-wrap">
               <button onclick="switchTab('docs')"
                 class="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-all shadow-lg shadow-blue-500/20">
-                {copy['cta_docs']}
+                {e('cta_docs')}
               </button>
               <button onclick="switchTab('stac_browser')"
                 class="px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold transition-all border border-white/10">
-                {copy['cta_explore']}
+                {e('cta_explore')}
               </button>
             </div>
           </section>
 
           <!-- Three Pillars -->
           <section>
-            <h3 class="text-2xl font-bold text-white mb-2">{copy['pillars_heading']}</h3>
-            <p class="text-slate-400 mb-6">{copy['pillars_sub']}</p>
+            <h3 class="text-2xl font-bold text-white mb-2">{e('pillars_heading')}</h3>
+            <p class="text-slate-400 mb-6">{e('pillars_sub')}</p>
             <div class="grid md:grid-cols-3 gap-4">
               <div class="glass-panel p-6 rounded-xl border border-white/5">
-                <div class="text-xs uppercase tracking-widest font-bold text-blue-400 mb-2">{copy['pillar_modules_kicker']}</div>
-                <h4 class="text-xl font-semibold text-white mb-2">{copy['pillar_modules_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['pillar_modules_body']}</p>
+                <div class="text-xs uppercase tracking-widest font-bold text-blue-400 mb-2">{e('pillar_modules_kicker')}</div>
+                <h4 class="text-xl font-semibold text-white mb-2">{e('pillar_modules_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('pillar_modules_body')}</p>
               </div>
               <div class="glass-panel p-6 rounded-xl border border-white/5">
-                <div class="text-xs uppercase tracking-widest font-bold text-emerald-400 mb-2">{copy['pillar_extensions_kicker']}</div>
-                <h4 class="text-xl font-semibold text-white mb-2">{copy['pillar_extensions_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['pillar_extensions_body']}</p>
+                <div class="text-xs uppercase tracking-widest font-bold text-emerald-400 mb-2">{e('pillar_extensions_kicker')}</div>
+                <h4 class="text-xl font-semibold text-white mb-2">{e('pillar_extensions_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('pillar_extensions_body')}</p>
               </div>
               <div class="glass-panel p-6 rounded-xl border border-white/5">
-                <div class="text-xs uppercase tracking-widest font-bold text-purple-400 mb-2">{copy['pillar_tasks_kicker']}</div>
-                <h4 class="text-xl font-semibold text-white mb-2">{copy['pillar_tasks_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['pillar_tasks_body']}</p>
+                <div class="text-xs uppercase tracking-widest font-bold text-purple-400 mb-2">{e('pillar_tasks_kicker')}</div>
+                <h4 class="text-xl font-semibold text-white mb-2">{e('pillar_tasks_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('pillar_tasks_body')}</p>
               </div>
             </div>
           </section>
 
           <!-- Live OGC matrix -->
           <section>
-            <h3 class="text-2xl font-bold text-white mb-2">{copy['matrix_heading']}</h3>
-            <p class="text-slate-400 mb-6">{copy['matrix_sub']}</p>
+            <h3 class="text-2xl font-bold text-white mb-2">{e('matrix_heading')}</h3>
+            <p class="text-slate-400 mb-6">{e('matrix_sub')}</p>
             <div id="ogc-matrix" data-snapshot="/web/geoid/conformance-snapshot.json"
                  class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
             <p id="ogc-matrix-footer" class="mt-4 text-sm text-slate-500 text-center"></p>
@@ -377,50 +380,50 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
 
           <!-- Capabilities -->
           <section>
-            <h3 class="text-2xl font-bold text-white mb-2">{copy['cap_heading']}</h3>
+            <h3 class="text-2xl font-bold text-white mb-2">{e('cap_heading')}</h3>
             <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_tenancy_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_tenancy_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_tenancy_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_tenancy_body')}</p>
               </div>
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_ogc_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_ogc_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_ogc_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_ogc_body')}</p>
               </div>
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_scale_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_scale_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_scale_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_scale_body')}</p>
               </div>
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_authz_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_authz_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_authz_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_authz_body')}</p>
               </div>
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_assets_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_assets_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_assets_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_assets_body')}</p>
               </div>
               <div class="glass-panel p-5 rounded-xl border border-white/5">
-                <h4 class="font-semibold text-white mb-1">{copy['cap_olap_title']}</h4>
-                <p class="text-slate-400 text-sm">{copy['cap_olap_body']}</p>
+                <h4 class="font-semibold text-white mb-1">{e('cap_olap_title')}</h4>
+                <p class="text-slate-400 text-sm">{e('cap_olap_body')}</p>
               </div>
             </div>
           </section>
 
           <!-- Get started -->
           <section>
-            <h3 class="text-2xl font-bold text-white mb-2">{copy['qs_heading']}</h3>
+            <h3 class="text-2xl font-bold text-white mb-2">{e('qs_heading')}</h3>
             <ol class="space-y-4 list-none pl-0">
               <li class="glass-panel p-4 rounded-xl border border-white/5">
-                <div class="text-sm font-semibold text-slate-300 mb-2">{copy['qs_step1']}</div>
+                <div class="text-sm font-semibold text-slate-300 mb-2">{e('qs_step1')}</div>
                 <pre class="bg-slate-950 rounded-lg p-3 overflow-auto text-xs text-emerald-300 font-mono">curl https://example.org/stac/catalogs</pre>
               </li>
               <li class="glass-panel p-4 rounded-xl border border-white/5">
-                <div class="text-sm font-semibold text-slate-300 mb-2">{copy['qs_step2']}</div>
-                <a href="/notebooks" class="text-blue-400 hover:text-blue-300 text-sm">{copy['qs_step2_link']}</a>
+                <div class="text-sm font-semibold text-slate-300 mb-2">{e('qs_step2')}</div>
+                <a href="/notebooks" class="text-blue-400 hover:text-blue-300 text-sm">{e('qs_step2_link')}</a>
               </li>
               <li class="glass-panel p-4 rounded-xl border border-white/5">
-                <div class="text-sm font-semibold text-slate-300 mb-2">{copy['qs_step3']}</div>
-                <a href="#docs" onclick="switchTab('docs')" class="text-blue-400 hover:text-blue-300 text-sm">{copy['qs_step3_link']}</a>
+                <div class="text-sm font-semibold text-slate-300 mb-2">{e('qs_step3')}</div>
+                <button type="button" onclick="switchTab('docs')" class="text-blue-400 hover:text-blue-300 text-sm bg-transparent border-0 p-0 cursor-pointer text-left">{e('qs_step3_link')}</button>
               </li>
             </ol>
           </section>
