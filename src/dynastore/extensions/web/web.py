@@ -741,27 +741,170 @@ class Web(ExtensionProtocol):
 
     @expose_web_page(page_id="home", title="Home", icon="fa-home", priority=-100)
     def home_page(self, language: str = "en"):
-        # We wrap the content in a container that can be appended to or replaced
-        return """
+        """Server-rendered home fragment with localized hero + live OGC coverage panel.
+
+        The hero block is wrapped in ``ds-default-home`` so brand-overriding
+        embeds (e.g. ``geoid_home_page``) can hide it via the existing JS
+        ``document.querySelectorAll('.ds-default-home').forEach(...)`` pattern.
+
+        The OGC coverage panel reads ``get_conformance_summary()`` directly so
+        anonymous visitors see the platform's standards posture without an
+        extra API call (the dashboard endpoint at /web/dashboard/ogc-compliance
+        is admin/user-gated). Always-fresh: re-rendered each request.
+        """
+        from dynastore.extensions.tools.conformance import get_conformance_summary
+
+        lang = (language or "en").lower().split("-")[0]
+        if lang not in ("en", "es", "fr"):
+            lang = "en"
+
+        # Localized hero copy. Same en/es/fr coverage as the GeoID embed
+        # (``geoid_home_page``) and the GeoID standalone page templates.
+        BADGE = {
+            "en": "Agro-Informatics Platform",
+            "es": "Plataforma Agro-Informática",
+            "fr": "Plateforme Agro-Informatique",
+        }
+        TITLE = {
+            "en": "Agro-Informatics Hub",
+            "es": "Centro Agro-Informático",
+            "fr": "Plateforme Agro-Informatique",
+        }
+        SUBTITLE = {
+            "en": "Digital Agricultural Infrastructure",
+            "es": "Infraestructura Agrícola Digital",
+            "fr": "Infrastructure Agricole Numérique",
+        }
+        DESCRIPTION = {
+            "en": "High-performance geospatial data catalog and processing platform for agricultural intelligence.",
+            "es": "Plataforma de catálogo y procesamiento de datos geoespaciales de alto rendimiento para inteligencia agrícola.",
+            "fr": "Plateforme haute performance de catalogage et de traitement de données géospatiales pour l'intelligence agricole.",
+        }
+        DOCS_LABEL = {"en": "Documentation", "es": "Documentación", "fr": "Documentation"}
+        EXPLORE_LABEL = {"en": "Explore Data", "es": "Explorar Datos", "fr": "Explorer les données"}
+        STAC_TITLE = {"en": "STAC Browser", "es": "Navegador STAC", "fr": "Navigateur STAC"}
+        STAC_DESC = {
+            "en": "Explore satellite imagery and geospatial assets using the STAC standard.",
+            "es": "Explora imágenes satelitales y activos geoespaciales con el estándar STAC.",
+            "fr": "Parcourez l'imagerie satellite et les actifs géospatiaux avec le standard STAC.",
+        }
+        MAP_TITLE = {"en": "Map Viewer", "es": "Visor de Mapas", "fr": "Visualiseur de cartes"}
+        MAP_DESC = {
+            "en": "Visualize tiled datasets and explore geospatial layers in real-time.",
+            "es": "Visualiza conjuntos de datos en mosaico y explora capas geoespaciales en tiempo real.",
+            "fr": "Visualisez des jeux de données tuilés et explorez des couches géospatiales en temps réel.",
+        }
+        STATS_TITLE = {"en": "Platform Stats", "es": "Estadísticas de la Plataforma", "fr": "Statistiques de la plateforme"}
+        STATS_DESC = {
+            "en": "Monitor system health, usage statistics, and background task progress.",
+            "es": "Supervisa el estado del sistema, el uso y el progreso de las tareas en segundo plano.",
+            "fr": "Surveillez l'état du système, les statistiques d'usage et la progression des tâches.",
+        }
+        STANDARDS_TITLE = {
+            "en": "Standards & Conformance",
+            "es": "Estándares y Conformidad",
+            "fr": "Standards et Conformité",
+        }
+        STANDARDS_LEAD = {
+            "en": "Live count of OGC API conformance classes the platform advertises, grouped by standard.",
+            "es": "Recuento en vivo de clases de conformidad OGC API que la plataforma declara, agrupadas por estándar.",
+            "fr": "Décompte en direct des classes de conformité OGC API déclarées par la plateforme, groupées par standard.",
+        }
+        ROADMAP_LABEL = {
+            "en": "Roadmap — not yet implemented",
+            "es": "Hoja de ruta — aún no implementado",
+            "fr": "Feuille de route — non encore implémenté",
+        }
+        TOTAL_LABEL = {
+            "en": "conformance classes across",
+            "es": "clases de conformidad en",
+            "fr": "classes de conformité réparties sur",
+        }
+        FAMILIES_LABEL = {"en": "standard families", "es": "familias de estándares", "fr": "familles de standards"}
+
+        # OGC coverage — server-rendered from the live conformance registry.
+        try:
+            summary = get_conformance_summary()
+            standards_html_parts: List[str] = []
+            for s in summary.standards:
+                standards_html_parts.append(
+                    f"""
+                    <div class="glass-panel p-4 rounded-xl border border-white/5">
+                        <div class="flex items-center justify-between mb-1">
+                            <h4 class="text-sm font-semibold text-white">{s.name}</h4>
+                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                                {s.implemented}
+                            </span>
+                        </div>
+                        <div class="text-[10px] text-slate-500 uppercase tracking-wider">{s.status}</div>
+                    </div>
+                    """
+                )
+            standards_grid = "".join(standards_html_parts) or (
+                f'<div class="text-slate-500 text-sm col-span-full">No conformance classes registered.</div>'
+            )
+
+            not_impl_pills = "".join(
+                f'<span class="px-2 py-1 rounded-full text-[11px] text-slate-500 border border-slate-700/60 bg-slate-800/40">{name}</span>'
+                for name in summary.not_implemented
+            ) or '<span class="text-slate-500 text-sm">All advertised standards have at least one conformance class registered.</span>'
+
+            ogc_total = summary.total_conformance_classes
+            ogc_families = len(summary.standards)
+        except Exception:
+            # Degrade gracefully if the conformance registry is unavailable —
+            # the page must still render for anonymous visitors.
+            standards_grid = ""
+            not_impl_pills = ""
+            ogc_total = 0
+            ogc_families = 0
+
+        ogc_panel = ""
+        if standards_grid:
+            ogc_panel = f"""
+            <section class="mt-16 ds-default-home">
+                <div class="flex items-end justify-between mb-6 flex-wrap gap-3">
+                    <div>
+                        <h2 class="text-2xl font-bold text-white mb-1">{STANDARDS_TITLE[lang]}</h2>
+                        <p class="text-slate-400 text-sm">{STANDARDS_LEAD[lang]}</p>
+                    </div>
+                    <div class="text-right text-xs text-slate-500">
+                        <span class="text-emerald-300 font-bold">{ogc_total}</span> {TOTAL_LABEL[lang]}
+                        <span class="text-emerald-300 font-bold">{ogc_families}</span> {FAMILIES_LABEL[lang]}
+                    </div>
+                </div>
+                <div class="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {standards_grid}
+                </div>
+                <div class="mt-6 pt-4 border-t border-white/5">
+                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">{ROADMAP_LABEL[lang]}</h4>
+                    <div class="flex flex-wrap gap-2">
+                        {not_impl_pills}
+                    </div>
+                </div>
+            </section>
+            """
+
+        return f"""
         <div id="section-home" class="fade-in max-w-7xl mx-auto">
             <header class="py-16 text-center ds-default-home">
                 <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 text-xs font-medium mb-6">
                     <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    Agro-Informatics Platform
+                    {BADGE[lang]}
                 </div>
                 <h1 class="text-4xl md:text-6xl font-bold text-white mb-6 tracking-tight">
-                    <span id="home-title">Agro-Informatics Hub</span><br>
-                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-400" id="home-subtitle">Digital Agricultural Infrastructure</span>
+                    <span id="home-title">{TITLE[lang]}</span><br>
+                    <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-400" id="home-subtitle">{SUBTITLE[lang]}</span>
                 </h1>
                 <p class="text-slate-400 max-w-2xl mx-auto mb-10" id="home-description">
-                    High-performance geospatial data catalog and processing platform for agricultural intelligence.
+                    {DESCRIPTION[lang]}
                 </p>
                 <div class="flex items-center justify-center gap-6" id="home-actions">
                     <button onclick="switchTab('docs')" class="px-6 py-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-medium transition-all">
-                        Documentation
+                        {DOCS_LABEL[lang]}
                     </button>
                     <button onclick="switchTab('stac_browser')" class="px-6 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-lg shadow-emerald-500/20 transition-all">
-                        Explore Data
+                        {EXPLORE_LABEL[lang]}
                     </button>
                 </div>
             </header>
@@ -769,30 +912,32 @@ class Web(ExtensionProtocol):
             <div id="home-content-append" class="space-y-12">
                 <!-- Extensions can append content here or replace parts via JS -->
             </div>
-            
+
             <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mt-12 ds-default-home" id="home-featured-grid">
                  <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-emerald-500/30 transition-colors group cursor-pointer" onclick="switchTab('stac_browser')">
                     <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-4 group-hover:scale-110 transition-transform">
                         <i class="fa-solid fa-layer-group text-xl"></i>
                     </div>
-                    <h3 class="text-xl font-semibold text-white mb-2">STAC Browser</h3>
-                    <p class="text-slate-400 text-sm">Explore satellite imagery and geospatial assets using the STAC standard.</p>
+                    <h3 class="text-xl font-semibold text-white mb-2">{STAC_TITLE[lang]}</h3>
+                    <p class="text-slate-400 text-sm">{STAC_DESC[lang]}</p>
                  </div>
                  <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-blue-500/30 transition-colors group cursor-pointer" onclick="switchTab('map_viewer')">
                     <div class="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 mb-4 group-hover:scale-110 transition-transform">
                         <i class="fa-solid fa-map text-xl"></i>
                     </div>
-                    <h3 class="text-xl font-semibold text-white mb-2">Map Viewer</h3>
-                    <p class="text-slate-400 text-sm">Visualize tiled datasets and explore geospatial layers in real-time.</p>
+                    <h3 class="text-xl font-semibold text-white mb-2">{MAP_TITLE[lang]}</h3>
+                    <p class="text-slate-400 text-sm">{MAP_DESC[lang]}</p>
                  </div>
                  <div class="glass-panel p-6 rounded-2xl border border-white/5 hover:border-purple-500/30 transition-colors group cursor-pointer" onclick="switchTab('dashboard')">
                     <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400 mb-4 group-hover:scale-110 transition-transform">
                         <i class="fa-solid fa-gauge-high text-xl"></i>
                     </div>
-                    <h3 class="text-xl font-semibold text-white mb-2">Platform Stats</h3>
-                    <p class="text-slate-400 text-sm">Monitor system health, usage statistics, and background task progress.</p>
+                    <h3 class="text-xl font-semibold text-white mb-2">{STATS_TITLE[lang]}</h3>
+                    <p class="text-slate-400 text-sm">{STATS_DESC[lang]}</p>
                  </div>
             </div>
+
+            {ogc_panel}
         </div>
         """
 
