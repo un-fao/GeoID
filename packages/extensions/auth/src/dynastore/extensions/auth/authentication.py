@@ -79,10 +79,31 @@ def _derive_fernet_key(jwt_secret: str) -> bytes:
 # Identity Provider configuration.
 # IDP_* are the canonical names; KEYCLOAK_* are accepted as aliases for
 # backward compatibility with existing deployments.
-IDP_ISSUER_URL    = os.getenv("IDP_ISSUER_URL")    or os.getenv("KEYCLOAK_ISSUER_URL")
-IDP_CLIENT_ID     = os.getenv("IDP_CLIENT_ID")     or os.getenv("KEYCLOAK_CLIENT_ID")
-IDP_CLIENT_SECRET = os.getenv("IDP_CLIENT_SECRET") or os.getenv("KEYCLOAK_CLIENT_SECRET")
-IDP_PUBLIC_URL    = os.getenv("IDP_PUBLIC_URL")    or os.getenv("KEYCLOAK_PUBLIC_URL")
+#
+# Two-client OAuth/OIDC is the standard layout: a public SPA login client
+# (``IDP_CLIENT_ID``, e.g. ``geoid-fe``) and a separate API audience
+# (``IDP_AUDIENCE``, e.g. ``geoid-be``). Single-client legacy setups can leave
+# ``IDP_AUDIENCE`` unset; it falls back to ``IDP_CLIENT_ID`` and a one-shot
+# deprecation warning is emitted at startup.
+IDP_ISSUER_URL       = os.getenv("IDP_ISSUER_URL")    or os.getenv("KEYCLOAK_ISSUER_URL")
+IDP_CLIENT_ID        = os.getenv("IDP_CLIENT_ID")     or os.getenv("KEYCLOAK_CLIENT_ID")
+IDP_CLIENT_SECRET    = os.getenv("IDP_CLIENT_SECRET") or os.getenv("KEYCLOAK_CLIENT_SECRET")
+IDP_PUBLIC_URL       = os.getenv("IDP_PUBLIC_URL")    or os.getenv("KEYCLOAK_PUBLIC_URL")
+IDP_AUDIENCE         = os.getenv("IDP_AUDIENCE")      or os.getenv("KEYCLOAK_AUDIENCE")
+# Dotted JSON path used to locate roles in the JWT. ``${IDP_AUDIENCE}`` is
+# substituted with the resolved audience. Defaults to
+# ``resource_access.${IDP_AUDIENCE}.roles``. Common operator overrides:
+# ``resource_access.account.roles`` (sysadmin role on Keycloak's built-in
+# account client) or ``realm_access.roles``.
+IDP_ROLES_CLAIM_PATH = os.getenv("IDP_ROLES_CLAIM_PATH")
+
+if IDP_CLIENT_ID and not IDP_AUDIENCE:
+    IDP_AUDIENCE = IDP_CLIENT_ID
+    logger.warning(
+        "IDP_AUDIENCE is unset, falling back to IDP_CLIENT_ID for token "
+        "audience validation. This is deprecated and will be removed in the "
+        "next minor; set IDP_AUDIENCE explicitly."
+    )
 
 
 class Authentication(ExtensionProtocol):
@@ -294,11 +315,16 @@ class Authentication(ExtensionProtocol):
 
         if IDP_ISSUER_URL and IDP_CLIENT_ID:
             from dynastore.modules.iam.identity_providers import OidcIdentityProvider
+            # Pass ``audience`` explicitly so the constructor fallback
+            # (``audience or client_id``) cannot silently mask a missing
+            # IDP_AUDIENCE in two-client setups.
             self.identity_provider = OidcIdentityProvider(
                 issuer_url=IDP_ISSUER_URL,
                 client_id=IDP_CLIENT_ID,
                 client_secret=IDP_CLIENT_SECRET,
                 public_url=IDP_PUBLIC_URL,
+                audience=IDP_AUDIENCE,
+                roles_claim_path=IDP_ROLES_CLAIM_PATH,
             )
             logger.info("✓ OIDC identity provider initialized: %s", IDP_ISSUER_URL)
         else:

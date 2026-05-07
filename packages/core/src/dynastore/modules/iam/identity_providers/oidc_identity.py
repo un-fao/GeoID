@@ -67,12 +67,23 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         issuer_url:    OIDC issuer URL (backend-internal). Used for discovery,
                        token validation, and userinfo calls.
                        Example: ``http://keycloak:8080/realms/myrealm``
-        client_id:     OAuth2 client ID registered with the IdP.
+        client_id:     OAuth2 client ID registered with the IdP. In two-client
+                       deployments this is the SPA / login client (e.g.
+                       ``geoid-fe``); it is **not** used for audience
+                       validation — see ``audience``.
         client_secret: OAuth2 client secret (for confidential clients).
-        audience:      Expected ``aud`` claim. Defaults to ``client_id``.
+        audience:      Expected ``aud`` claim (e.g. ``geoid-be``). When the
+                       login client and the API audience are the same client,
+                       pass the same value as ``client_id``. Defaults to
+                       ``client_id`` for legacy single-client setups.
         public_url:    Public-facing issuer URL for browser redirects.
                        Example: ``http://localhost:8180/realms/myrealm``
                        Defaults to ``issuer_url``.
+        roles_claim_path: Reserved for upcoming operator-shaped role
+                       extraction; stored verbatim on the instance.
+                       ``${audience}`` is substituted with the resolved
+                       audience. Defaults to
+                       ``resource_access.${audience}.roles`` when ``None``.
     """
 
     def __init__(
@@ -82,12 +93,20 @@ class OidcIdentityProvider(IdentityProviderProtocol):
         client_secret: Optional[str] = None,
         audience: Optional[str] = None,
         public_url: Optional[str] = None,
+        roles_claim_path: Optional[str] = None,
     ):
         self.issuer_url = issuer_url.rstrip("/")
         self.public_url = (public_url or issuer_url).rstrip("/")
         self.client_id = client_id
         self.client_secret = client_secret
         self.audience = audience or client_id
+
+        # Store the roles claim path with ``${audience}`` substituted. The
+        # extraction method is added in a follow-up commit; this commit only
+        # widens the constructor so authentication.py can pass the value
+        # through from IDP_ROLES_CLAIM_PATH.
+        raw_path = roles_claim_path or "resource_access.${audience}.roles"
+        self.roles_claim_path = raw_path.replace("${audience}", self.audience)
 
         self._meta: Optional[Dict[str, Any]] = None
         self._jwks_client = None  # jwt.PyJWKClient, initialised after discovery
