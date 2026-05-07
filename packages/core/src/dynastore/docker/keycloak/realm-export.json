@@ -128,11 +128,21 @@
       "serviceAccountsEnabled": false,
       "redirectUris": [
         "http://localhost:8080/*",
-        "http://localhost:3000/*"
+        "http://localhost:3000/*",
+        "http://localhost:80/*",
+        "http://localhost/*",
+        "http://localhost:81/*",
+        "http://localhost:8082/*",
+        "http://localhost:8083/*"
       ],
       "webOrigins": [
         "http://localhost:8080",
         "http://localhost:3000",
+        "http://localhost:80",
+        "http://localhost",
+        "http://localhost:81",
+        "http://localhost:8082",
+        "http://localhost:8083",
         "+"
       ],
       "defaultClientScopes": [
@@ -153,6 +163,17 @@
             "userinfo.token.claim": "true",
             "access.token.claim": "true",
             "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "geoid-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
           }
         }
       ]
