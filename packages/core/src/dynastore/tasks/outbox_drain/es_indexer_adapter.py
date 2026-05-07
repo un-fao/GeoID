@@ -87,9 +87,11 @@ class ESBulkIndexer:
         # original :class:`IndexableOp` regardless of which kind it is.
         bulk_body: List[Any] = []
         op_index_map: List[IndexableOp] = []
+        catalogs_in_batch: set[str] = set()
 
         for op in ops:
             index_name = self._index_name(op.catalog_id)
+            catalogs_in_batch.add(op.catalog_id)
             if op.op == "delete":
                 bulk_body.append({
                     "delete": {
@@ -108,6 +110,18 @@ class ESBulkIndexer:
                 })
                 bulk_body.append(op.payload)
             op_index_map.append(op)
+
+        # Add each touched per-tenant index to the platform public alias.
+        # Idempotent — already-aliased indices skip cheaply ES-side. Without
+        # this, ES auto-creates the per-tenant index on first bulk write
+        # (drain path doesn't go through ItemsElasticsearchDriver.ensure_storage),
+        # leaving the new index unaliased and invisible to alias-based
+        # cross-catalog search.
+        from dynastore.modules.elasticsearch.aliases import (
+            add_index_to_public_alias,
+        )
+        for catalog_id in catalogs_in_batch:
+            await add_index_to_public_alias(self._index_name(catalog_id))
 
         es = self._get_client()
 
