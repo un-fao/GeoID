@@ -616,7 +616,7 @@ async function loadPolicies() {
   const tb = document.getElementById('policies-tbody');
   tb.innerHTML = '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
   try {
-    let url = `${_ADMIN_ROOT}/policies`;
+    let url = `/policies`;
     if (_csPolicies && _csPolicies.state.catalogId && _csPolicies.state.catalogId !== '_system_') {
       url += `?catalog_id=${encodeURIComponent(_csPolicies.state.catalogId)}`;
     }
