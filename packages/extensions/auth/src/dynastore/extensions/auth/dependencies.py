@@ -1,6 +1,5 @@
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer
-from typing import Optional, List
+from fastapi import Depends, HTTPException, Header, status, Request
+from typing import Optional
 
 from dynastore.modules import get_protocol
 from dynastore.tools.discovery import get_protocols
@@ -8,7 +7,6 @@ from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.modules.iam.interfaces import IdentityProviderProtocol
 from dynastore.models.auth import Principal
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 async def get_authenticator() -> AuthenticatorProtocol:
     protocol = get_protocol(AuthenticatorProtocol)
@@ -16,14 +14,28 @@ async def get_authenticator() -> AuthenticatorProtocol:
         raise HTTPException(status_code=500, detail="Authenticator implementation not available")
     return protocol
 
+
 async def get_current_active_user(
     request: Request,
-    token: str = Depends(oauth2_scheme),
+    authorization: Optional[str] = Header(None),
     manager: AuthenticatorProtocol = Depends(get_authenticator),
 ) -> Principal:
     """
-    Validates the token and returns the current active principal (user).
+    Validates the bearer token and returns the current active principal.
+
+    Extracts the token from the ``Authorization: Bearer <token>`` header
+    directly. The previous OAuth2PasswordBearer-based extraction advertised
+    a Resource-Owner-Password-Credentials flow that the IdP (Keycloak
+    ``geoid-fe`` client) does not enable, so we read the header explicitly.
     """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization[7:]
+
     # We use the manager's central authentication method which handles
     # Identity Provider tokens (JWTs via Keycloak).
 
