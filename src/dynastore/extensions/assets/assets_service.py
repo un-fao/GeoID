@@ -1497,6 +1497,19 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         #    out of this transaction and is mapped to a structured 409 by
         #    AssetSidecarRejectedExceptionHandler.
         async with managed_transaction(engine) as conn:
+            # Lazy activation: the assets table is partitioned by collection_id.
+            # The partition is created by ensure_storage (inside activate_collection).
+            # A collection is pending until its first write; activate here so the
+            # INSERT below finds its partition.
+            if collection_id is not None:
+                if not await catalogs_svc.is_active(
+                    catalog_id, collection_id, db_resource=conn,
+                ):
+                    await catalogs_svc.activate_collection(
+                        catalog_id, collection_id,
+                        ctx=DriverContext(db_resource=conn),
+                    )
+
             result: UpsertResult = await upsert_asset(
                 conn,
                 scope,
