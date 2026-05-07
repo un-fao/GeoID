@@ -1,4 +1,5 @@
-from fastapi import Depends, HTTPException, Header, status, Request
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 
 from dynastore.modules import get_protocol
@@ -6,6 +7,12 @@ from dynastore.tools.discovery import get_protocols
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.modules.iam.interfaces import IdentityProviderProtocol
 from dynastore.models.auth import Principal
+
+
+# Module-level scheme — the ``scheme_name`` must match the key registered
+# under ``components.securitySchemes`` by ``build_iam_openapi_schema`` so
+# Swagger UI links the dependency to the right security scheme entry.
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
 
 
 async def get_authenticator() -> AuthenticatorProtocol:
@@ -17,24 +24,26 @@ async def get_authenticator() -> AuthenticatorProtocol:
 
 async def get_current_active_user(
     request: Request,
-    authorization: Optional[str] = Header(None),
+    bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     manager: AuthenticatorProtocol = Depends(get_authenticator),
 ) -> Principal:
     """
     Validates the bearer token and returns the current active principal.
 
-    Extracts the token from the ``Authorization: Bearer <token>`` header
-    directly. The previous OAuth2PasswordBearer-based extraction advertised
-    a Resource-Owner-Password-Credentials flow that the IdP (Keycloak
-    ``geoid-fe`` client) does not enable, so we read the header explicitly.
+    Reads the credential from FastAPI's ``HTTPBearer`` dependency rather
+    than the raw ``Authorization`` header. The previous OAuth2PasswordBearer
+    -based extraction advertised a Resource-Owner-Password-Credentials flow
+    that the IdP (Keycloak ``geoid-fe`` client) does not enable; using
+    ``HTTPBearer`` keeps the OpenAPI surface aligned with the actual scheme
+    declared in IAM's ``components.securitySchemes``.
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if bearer is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization[7:]
+    token = bearer.credentials
 
     # We use the manager's central authentication method which handles
     # Identity Provider tokens (JWTs via Keycloak).

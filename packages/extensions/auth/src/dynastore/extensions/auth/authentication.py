@@ -2,8 +2,9 @@ import os
 import hashlib
 import secrets
 from typing import List, Any, Dict, Optional
-from fastapi import APIRouter, FastAPI, Request, Depends, HTTPException, Form, Header
+from fastapi import APIRouter, FastAPI, Request, Depends, HTTPException, Form
 from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -21,6 +22,13 @@ from starlette.middleware.sessions import SessionMiddleware
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Module-level scheme so FastAPI registers a single ``HTTPBearer`` security
+# scheme in the generated OpenAPI document. ``scheme_name`` matches the key
+# used by IAM's ``build_iam_openapi_schema`` so Swagger UI ties the
+# dependency to the right entry in ``components.securitySchemes`` and
+# renders a lock icon on each operation.
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
 
 _SYSADMIN_PROP_KEY = "auth_sysadmin_password_enc"
 
@@ -191,7 +199,9 @@ class Authentication(ExtensionProtocol):
 
         @self.router.get("/userinfo")
         @self.router.get("/me")
-        async def userinfo(authorization: str = Header(None)):
+        async def userinfo(
+            bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+        ):
             """
             OAuth2 UserInfo Endpoint.
             Returns normalized user profile from the validated JWT token.
@@ -199,10 +209,10 @@ class Authentication(ExtensionProtocol):
             check) when the token was issued for a different audience (e.g.
             ``account``) but signature + expiry + issuer are still verified.
             """
-            if not authorization or not authorization.startswith("Bearer "):
+            if bearer is None:
                 raise HTTPException(401, "Missing or invalid Authorization header")
 
-            token = authorization[7:]
+            token = bearer.credentials
 
             if self.identity_provider:
                 identity = await self.identity_provider.validate_token(token)
@@ -286,12 +296,15 @@ class Authentication(ExtensionProtocol):
             return RedirectResponse(url=redirect_uri)
 
         @self.router.get("/debug")
-        async def debug_auth(request: Request, authorization: str = Header(None)):
+        async def debug_auth(
+            request: Request,
+            bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+        ):
             """Debug endpoint to inspect authentication state. Requires a valid Bearer token."""
-            if not authorization or not authorization.startswith("Bearer "):
+            if bearer is None:
                 raise HTTPException(401, "Missing or invalid Authorization header")
 
-            token = authorization[7:]
+            token = bearer.credentials
             user_info = None
 
             if self.identity_provider:
