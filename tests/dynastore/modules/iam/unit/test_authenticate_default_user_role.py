@@ -43,10 +43,12 @@ def _build_iam_service_for_hs256(secret: str) -> Any:
     """Construct a minimal IamService instance wired just enough to exercise
     ``authenticate_and_get_role`` along the HS256 fallback path."""
     from dynastore.modules.iam.iam_service import IamService
+    from dynastore.models.protocols.authorization import IamRoleConfig
 
     svc = object.__new__(IamService)
     svc.storage = _FakeStorage()
     svc._identity_providers = [_FakeIdentityProvider()]
+    svc._role_config = IamRoleConfig()
 
     async def _get_jwt_secrets_for_verification() -> List[str]:
         return [secret]
@@ -148,8 +150,12 @@ def test_normalize_authenticated_roles_helper_defaults() -> None:
     from two separate auth-flow branches.
     """
     from dynastore.modules.iam.iam_service import IamService
+    from dynastore.models.protocols.authorization import IamRoleConfig
 
-    norm = IamService._normalize_authenticated_roles
+    # _normalize_authenticated_roles is an instance method — build a minimal stub.
+    svc = object.__new__(IamService)
+    svc._role_config = IamRoleConfig()
+    norm = svc._normalize_authenticated_roles
     # None / empty list → USER default
     assert norm(None) == [DefaultRole.USER.value]
     assert norm([]) == [DefaultRole.USER.value]
