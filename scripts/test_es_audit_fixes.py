@@ -290,25 +290,45 @@ class Runner:
             self._skip("T5 alias maintenance", "no --es-url/--es-key provided")
             return
 
-        alias = self._es_get("/dynastore-items/_count")
-        if alias is None:
-            self._fail("T5 alias maintenance", "could not reach ES cluster")
+        # Probe via _search on the alias filtered to our catalog's items —
+        # if count > 0, our per-catalog index is reachable through the alias.
+        # (_alias and _mapping require view_index_metadata, which the read-only key lacks.)
+        r = requests.post(
+            f"{self.es_url}/dynastore-items/_search",
+            headers=self._es_headers(),
+            json={
+                "query": {"term": {"catalog_id": self.catalog_id}},
+                "size": 0,
+            },
+            timeout=30,
+        )
+        if not r.ok:
+            body = r.json()
+            if "index_not_found" in str(body):
+                self._fail("T5 alias maintenance",
+                           "dynastore-items alias does not exist at all")
+            else:
+                self._fail("T5 alias maintenance", f"ES search error: {r.status_code}")
             return
 
-        # Check if our per-catalog index is in the alias
-        alias_info = self._es_get("/_alias/dynastore-items")
-        if alias_info is None:
-            self._fail("T5 alias maintenance", "alias lookup failed")
-            return
+        alias_count = r.json().get("hits", {}).get("total", {}).get("value", 0)
+        # Also count directly from the per-catalog index for comparison
+        direct = requests.post(
+            f"{self.es_url}/dynastore-{self.catalog_id}-items/_search",
+            headers=self._es_headers(),
+            json={"size": 0},
+            timeout=30,
+        )
+        direct_count = direct.json().get("hits", {}).get("total", {}).get("value", 0) if direct.ok else "?"
 
-        expected_index = f"dynastore-{self.catalog_id}-items"
-        if expected_index in alias_info:
+        if alias_count > 0:
             self._ok("T5 alias maintenance",
-                     f"{expected_index!r} is in dynastore-items alias")
+                     f"alias search hit {alias_count} item(s) for our catalog "
+                     f"(direct index has {direct_count})")
         else:
-            indices_in_alias = list(alias_info.keys())
             self._fail("T5 alias maintenance",
-                       f"{expected_index!r} NOT in alias. Alias members: {indices_in_alias}")
+                       f"alias search returned 0 for catalog {self.catalog_id!r} "
+                       f"(direct index has {direct_count} — alias not updated)")
 
     # ==================================================================
     # T6 — is_private field in collection mapping  (commit 93923dc)
@@ -320,46 +340,58 @@ class Runner:
             self._skip("T6 is_private mapping", "no --es-url/--es-key provided")
             return
 
-        mapping = self._es_get("/dynastore-collections/_mapping")
-        if mapping is None:
-            self._fail("T6 is_private mapping", "could not reach ES cluster")
-            return
-
-        props = {}
-        for idx_body in mapping.values():
-            props = (idx_body.get("mappings", {})
-                             .get("properties", {}))
-            break
-
-        if "is_private" in props:
-            field_type = props["is_private"].get("type")
-            self._ok("T6 is_private mapping", f"field present, type={field_type}")
-        else:
-            self._fail("T6 is_private mapping",
-                       f"is_private NOT in mapping. Fields: {list(props)[:10]}")
-
-        # Also verify our test collection has the field populated
-        search_body = {
-            "query": {"term": {"collection_id": self.coll_id}},
-            "_source": ["collection_id", "is_private"],
-            "size": 1,
-        }
-        doc = requests.post(
+        # Use a terms aggregation — works with read privilege only.
+        # If the field is mapped as boolean, the agg returns true/false/missing buckets.
+        # Before the fix all 15 docs return MISSING; after the fix our new collection
+        # returns a boolean value.
+        r = requests.post(
             f"{self.es_url}/dynastore-collections/_search",
             headers=self._es_headers(),
-            json=search_body,
+            json={
+                "size": 0,
+                "aggs": {"priv": {"terms": {"field": "is_private", "missing": "__MISSING__"}}},
+            },
+            timeout=30,
+        )
+        if not r.ok:
+            self._fail("T6 is_private mapping", f"ES search failed: {r.status_code}")
+            return
+        buckets = r.json().get("aggregations", {}).get("priv", {}).get("buckets", [])
+        bucket_keys = [b["key"] for b in buckets]
+        # Any bucket that is not "__MISSING__" means real values are present
+        real_values = [k for k in bucket_keys if k != "__MISSING__"]
+
+        if real_values:
+            self._ok("T6 is_private mapping",
+                     f"field has indexed values: {real_values} "
+                     f"(buckets: {buckets})")
+        else:
+            self._fail("T6 is_private mapping",
+                       f"all docs have is_private=MISSING — field not indexed. "
+                       f"Buckets: {buckets}")
+
+        # Also check our specific new collection doc
+        doc_r = requests.post(
+            f"{self.es_url}/dynastore-collections/_search",
+            headers=self._es_headers(),
+            json={
+                "query": {"term": {"collection_id": self.coll_id}},
+                "_source": ["collection_id", "is_private"],
+                "size": 1,
+            },
             timeout=30,
         ).json()
-        hits = doc.get("hits", {}).get("hits", [])
+        hits = doc_r.get("hits", {}).get("hits", [])
         if hits:
             src = hits[0].get("_source", {})
             if "is_private" in src:
-                self._ok("T6 is_private value", f"doc has is_private={src['is_private']}")
+                self._ok("T6 is_private value (new collection)",
+                         f"doc has is_private={src['is_private']}")
             else:
-                self._fail("T6 is_private value",
+                self._fail("T6 is_private value (new collection)",
                            f"doc missing is_private. Source: {src}")
         else:
-            self._skip("T6 is_private value",
+            self._skip("T6 is_private value (new collection)",
                        "collection not yet indexed in ES (may need time)")
 
     # ==================================================================
