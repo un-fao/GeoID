@@ -34,3 +34,29 @@ class CatalogLookupAudience(PluginConfig):
             "endpoints accept anonymous (no Authorization header) requests."
         ),
     )
+
+
+class CollectionWriteAudience(PluginConfig):
+    """Per-collection opt-in to anonymous item creation.
+
+    When ``allow_anonymous_create=True``, unauthenticated callers can POST
+    new items to ``/stac/catalogs/{this_cat}/collections/{this_col}/items``.
+    All other operations on the collection follow the normal IAM rules.
+
+    Default is False (auth required). Use cases: a public 'intake' collection
+    where citizen-science contributors submit observations without onboarding,
+    governed by the platform's duplicate-handling policy and edge rate limits.
+
+        PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_write_audience
+        {"allow_anonymous_create": true}
+    """
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "write_audience")
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    allow_anonymous_create: bool = Field(
+        default=False,
+        description=(
+            "When True, POST /stac/catalogs/{cat}/collections/{col}/items "
+            "accepts unauthenticated requests for THIS collection only."
+        ),
+    )
