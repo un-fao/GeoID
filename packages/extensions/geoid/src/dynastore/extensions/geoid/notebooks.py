@@ -33,4 +33,24 @@ def build_contributions():
             tags=["geoid", "lookup", "anonymous", "iam", "demo"],
             notebook_path=_HERE / "lookup_only_demo.ipynb",
         ),
+        NotebookContribution(
+            notebook_id="public_and_private_collections",
+            title={"en": "Public vs Private Collections — customer demo"},
+            description={
+                "en": (
+                    "End-to-end walkthrough of the two access scenarios on the "
+                    "live review env. Scenario A creates a public catalog + "
+                    "collection, ingests 3 STAC items, polls the OUTBOX drain, "
+                    "and proves both authenticated and anonymous STAC search "
+                    "return them. Scenario B repeats the flow with "
+                    "collection_privacy.is_private=true and proves anonymous "
+                    "STAC search returns 0 features while the authenticated "
+                    "user still sees everything. Includes catalog-readiness "
+                    "polls, OUTBOX drain polls, and a PG-hint fallback probe "
+                    "so failures point at the actual layer at fault."
+                )
+            },
+            tags=["geoid", "stac", "elasticsearch", "privacy", "demo"],
+            notebook_path=_HERE / "public_and_private_collections.ipynb",
+        ),
     ]
