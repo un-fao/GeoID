@@ -101,6 +101,13 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         # Policies declared via PolicyContributor; IAM forwards centrally.
         yield
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def get_policies(self):
         return records_policies()
 

@@ -66,3 +66,19 @@ register_platform_notebook(
     },
     tags=["catalog", "metadata", "elasticsearch", "search", "configuration"],
 )
+
+# Operational ES showcases — migrated from showcase/opensearch/
+register_platform_notebook(
+    notebook_id="elasticsearch_trigger_full_catalog_reindex",
+    registered_by=_REG,
+    notebook_path=_HERE / "os01_trigger_full_catalog_reindex.ipynb",
+    title={"en": "Trigger a Full Catalog Reindex"},
+    tags=["elasticsearch", "reindex", "operations"],
+)
+register_platform_notebook(
+    notebook_id="elasticsearch_pipeline_health_and_geometry_check",
+    registered_by=_REG,
+    notebook_path=_HERE / "os02_es_pipeline_health_and_geometry_check.ipynb",
+    title={"en": "ES Pipeline Health + Geometry Check"},
+    tags=["elasticsearch", "health", "geometry", "operations"],
+)

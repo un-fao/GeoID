@@ -172,6 +172,17 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         "Conformance URIs are draft proposals to the OGC SWG."
     )
 
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        yield
+
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def __init__(self, app: FastAPI):
         self.app = app
         self.router = APIRouter(prefix="/assets", tags=["Assets"])

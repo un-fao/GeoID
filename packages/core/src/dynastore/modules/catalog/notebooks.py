@@ -47,6 +47,68 @@ register_platform_notebook(
     registered_by=_REG,
     notebook_path=_HERE / "shapefile_strict_schema.ipynb",
     title={"en": "Strict-Schema Collection from a Shapefile"},
-    description={"en": "End-to-end demo: upload shapefile → derive schema via OGR → enforce strict schema → optimize storage by columns → refuse duplicate identity. Combines PRs #178 (strict_unknown_fields), #179 (materialize_fields_as_columns), #180 (post-ingest ANALYZE), #181 (extract_ogr_schema)."},
+    description={"en": "End-to-end demo: upload shapefile → derive schema via OGR → enforce strict schema → optimize storage by columns → refuse duplicate identity."},
     tags=["collection", "schema", "shapefile", "strict-mode", "ogr", "ingestion", "demo"],
+)
+
+# Catalog provisioning + collection lifecycle — migrated from showcase/catalog/
+register_platform_notebook(
+    notebook_id="catalog_provision_tenant_catalog",
+    registered_by=_REG,
+    notebook_path=_HERE / "cat01_provision_tenant_catalog.ipynb",
+    title={"en": "Provision a Tenant Catalog"},
+    tags=["catalog", "tenant", "provisioning"],
+)
+register_platform_notebook(
+    notebook_id="catalog_create_collection_with_layerconfig",
+    registered_by=_REG,
+    notebook_path=_HERE / "cat02_create_collection_with_layerconfig.ipynb",
+    title={"en": "Create a Collection with layer_config"},
+    tags=["catalog", "collection", "layer-config"],
+)
+register_platform_notebook(
+    notebook_id="catalog_schema_evolution_add_column",
+    registered_by=_REG,
+    notebook_path=_HERE / "cat03_schema_evolution_add_column.ipynb",
+    title={"en": "Schema Evolution — Add a Column"},
+    tags=["catalog", "schema", "evolution", "migration"],
+)
+
+# Write policy — migrated from showcase/write_policy/
+register_platform_notebook(
+    notebook_id="write_policy_external_id_deduplication",
+    registered_by=_REG,
+    notebook_path=_HERE / "wp01_external_id_deduplication.ipynb",
+    title={"en": "Write Policy — external_id Deduplication"},
+    tags=["catalog", "write-policy", "external-id", "deduplication"],
+)
+register_platform_notebook(
+    notebook_id="write_policy_content_hash_idempotent_update",
+    registered_by=_REG,
+    notebook_path=_HERE / "wp02_content_hash_idempotent_update.ipynb",
+    title={"en": "Write Policy — content_hash Idempotent Update"},
+    tags=["catalog", "write-policy", "content-hash", "idempotent"],
+)
+
+# Transactional ingest — migrated from showcase/transactions/
+register_platform_notebook(
+    notebook_id="catalog_stac_item_ingest",
+    registered_by=_REG,
+    notebook_path=_HERE / "tx01_stac_item_ingest.ipynb",
+    title={"en": "STAC Item Ingest"},
+    tags=["catalog", "stac", "ingest", "transaction"],
+)
+register_platform_notebook(
+    notebook_id="catalog_bulk_feature_ingest",
+    registered_by=_REG,
+    notebook_path=_HERE / "tx02_bulk_feature_ingest.ipynb",
+    title={"en": "Bulk Feature Ingest"},
+    tags=["catalog", "bulk", "ingest", "transaction"],
+)
+register_platform_notebook(
+    notebook_id="catalog_soft_delete_by_external_id",
+    registered_by=_REG,
+    notebook_path=_HERE / "tx03_soft_delete_by_external_id.ipynb",
+    title={"en": "Soft Delete by external_id"},
+    tags=["catalog", "soft-delete", "external-id"],
 )

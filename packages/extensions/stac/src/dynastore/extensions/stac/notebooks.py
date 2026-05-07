@@ -1,12 +1,11 @@
 """NotebookContributorProtocol contributions for the STAC extension.
 
-Picked up at runtime via ``NotebooksModule.lifespan`` -> ``get_protocols(
-NotebookContributorProtocol)``. The extension class's ``get_notebooks``
-calls :func:`build_contributions` here.
+Picked up via ``NotebooksModule.lifespan`` -> ``get_protocols(
+NotebookContributorProtocol)``. ``STACService.get_notebooks`` calls
+:func:`build_contributions` here.
 
 No import-time registration and no hard dependency on the notebooks
-module — ``NotebookContribution`` is imported lazily so the extension
-stays loadable in SCOPEs that don't include the notebooks module.
+module — imports are lazy.
 """
 from pathlib import Path
 
@@ -14,9 +13,14 @@ _HERE = Path(__file__).parent / "notebooks"
 
 
 def build_contributions():
-    from dynastore.modules.notebooks.contribution import NotebookContribution
+    try:
+        from dynastore.modules.notebooks.contribution import NotebookContribution
+        from dynastore.modules.notebooks.folder_discovery import discover_notebooks
+    except Exception:
+        return []
 
-    return [
+    # Explicit entries with rich titles/descriptions take precedence.
+    explicit = [
         NotebookContribution(
             notebook_id="stac_catalog_collection_lifecycle",
             title={"en": "Catalog / Collection Lifecycle — STAC"},
@@ -47,3 +51,11 @@ def build_contributions():
             notebook_path=_HERE / "virtual_asset_collections.ipynb",
         ),
     ]
+    explicit_paths = {c.notebook_path for c in explicit}
+
+    # Auto-discover anything else in the folder (e.g. se01_gdal_to_stac_…).
+    discovered = [
+        c for c in discover_notebooks(_HERE, prefix="stac")
+        if c.notebook_path not in explicit_paths
+    ]
+    return explicit + discovered

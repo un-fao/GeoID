@@ -112,6 +112,9 @@ class NotebooksModule(ModuleProtocol):
                 "dynastore.modules.catalog.notebooks",
                 "dynastore.modules.storage.notebooks",
                 "dynastore.modules.elasticsearch.notebooks",
+                "dynastore.modules.gcp.notebooks",
+                "dynastore.modules.iam.notebooks",
+                "dynastore.modules.notebooks.showcase_registrations",
                 "dynastore.tasks.ingestion.notebooks",
                 "dynastore.tasks.dimensions_materialize.notebooks",
             ):

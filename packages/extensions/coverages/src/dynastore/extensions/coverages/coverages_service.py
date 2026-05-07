@@ -275,6 +275,13 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         logger.info("CoveragesService: policies registered.")
         yield
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def get_policies(self):
         return [ogc_public_access_policy("coverages")]
 
