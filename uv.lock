@@ -10,6 +10,55 @@ resolution-markers = [
     "(python_full_version < '3.13' and platform_machine != 'ARM64') or (python_full_version < '3.13' and sys_platform != 'win32')",
 ]
 
+[manifest]
+members = [
+    "dynastore",
+    "dynastore-ext-admin",
+    "dynastore-ext-assets",
+    "dynastore-ext-auth",
+    "dynastore-ext-configs",
+    "dynastore-ext-connected-systems",
+    "dynastore-ext-coverages",
+    "dynastore-ext-crs",
+    "dynastore-ext-dggs",
+    "dynastore-ext-dimensions",
+    "dynastore-ext-dwh",
+    "dynastore-ext-edr",
+    "dynastore-ext-events",
+    "dynastore-ext-features",
+    "dynastore-ext-gcp-bucket",
+    "dynastore-ext-gdal",
+    "dynastore-ext-geoid",
+    "dynastore-ext-httpx",
+    "dynastore-ext-iam",
+    "dynastore-ext-joins",
+    "dynastore-ext-logs",
+    "dynastore-ext-maps",
+    "dynastore-ext-moving-features",
+    "dynastore-ext-notebooks",
+    "dynastore-ext-processes",
+    "dynastore-ext-proxy",
+    "dynastore-ext-records",
+    "dynastore-ext-search",
+    "dynastore-ext-stac",
+    "dynastore-ext-stats",
+    "dynastore-ext-styles",
+    "dynastore-ext-tasks",
+    "dynastore-ext-template",
+    "dynastore-ext-tiles",
+    "dynastore-ext-web",
+    "dynastore-ext-wfs",
+]
+
+[[package]]
+name = "affine"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/98/d2f0bb06385069e799fc7d2870d9e078cfa0fa396dc8a2b81227d0da08b9/affine-2.4.0.tar.gz", hash = "sha256:a24d818d6a836c131976d22f8c27b8d3ca32d0af64c1d8d29deb7bafa4da1eea", size = 17132, upload-time = "2023-01-19T23:44:30.696Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/f7/85273299ab57117850cc0a936c64151171fac4da49bc6fba0dad984a7c5f/affine-2.4.0-py3-none-any.whl", hash = "sha256:8a3df80e2b2378aef598a83c1392efd47967afec4242021a0b06b4c7cbc61a92", size = 15662, upload-time = "2023-01-19T23:44:28.833Z" },
+]
+
 [[package]]
 name = "aiofiles"
 version = "24.1.0"
@@ -787,6 +836,33 @@ all = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -811,6 +887,7 @@ all = [
     { name = "ogc-dimensions" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
@@ -821,10 +898,14 @@ all = [
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "user-agents" },
     { name = "valkey" },
 ]
@@ -832,6 +913,24 @@ api-catalog = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -849,21 +948,34 @@ api-catalog = [
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyjwt" },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 api-features = [
     { name = "asyncpg" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
@@ -874,6 +986,7 @@ api-features = [
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -884,6 +997,31 @@ api-full = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -902,10 +1040,12 @@ api-full = [
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "markdown" },
+    { name = "morecantile" },
     { name = "msgpack" },
     { name = "numpy" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pydantic", extra = ["email"] },
@@ -915,30 +1055,61 @@ api-full = [
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 api-maps = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "attrs" },
+    { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-httpx" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-template" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
+    { name = "gcloud-aio-storage" },
+    { name = "gcsfs" },
     { name = "gdal" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "jinja2" },
+    { name = "lxml" },
     { name = "markdown" },
+    { name = "morecantile" },
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
@@ -946,9 +1117,13 @@ api-maps = [
     { name = "pyproj" },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "valkey" },
     { name = "xmltodict" },
 ]
@@ -956,26 +1131,53 @@ api-maps-open = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "attrs" },
+    { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-httpx" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-template" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
+    { name = "gcloud-aio-storage" },
+    { name = "gcsfs" },
     { name = "gdal" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "lxml" },
     { name = "markdown" },
+    { name = "morecantile" },
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyproj" },
     { name = "python-dateutil" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "urllib3" },
     { name = "valkey" },
     { name = "xmltodict" },
 ]
@@ -983,6 +1185,21 @@ api-open = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -999,30 +1216,46 @@ api-open = [
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 assets = [
+    { name = "dynastore-ext-assets" },
     { name = "fastapi" },
 ]
 auth = [
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "itsdangerous" },
+    { name = "markdown" },
     { name = "python-multipart" },
 ]
 auth-grp = [
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "itsdangerous" },
+    { name = "markdown" },
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
     { name = "python-multipart" },
+    { name = "tenacity" },
 ]
 cache = [
     { name = "msgpack" },
@@ -1035,6 +1268,7 @@ catalog = [
     { name = "sqlalchemy" },
 ]
 catalog-data-grp = [
+    { name = "dynastore-ext-features" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
@@ -1042,16 +1276,33 @@ catalog-data-grp = [
     { name = "sqlalchemy" },
 ]
 catalog-grp = [
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pystac", extra = ["validation"] },
+    { name = "python-multipart" },
     { name = "shapely" },
     { name = "sqlalchemy" },
     { name = "stac-pydantic", extra = ["validation"] },
 ]
 catalog-local = [
     { name = "asyncpg" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
@@ -1065,6 +1316,7 @@ catalog-local = [
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -1072,7 +1324,12 @@ catalog-local = [
     { name = "valkey" },
 ]
 catalog-routes-grp = [
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
+    { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pystac", extra = ["validation"] },
     { name = "stac-pydantic", extra = ["validation"] },
 ]
@@ -1086,8 +1343,11 @@ catalog-task-gcp-catalog-cleanup = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
+    { name = "pmtiles" },
+    { name = "requests" },
     { name = "shapely" },
     { name = "sqlalchemy" },
+    { name = "urllib3" },
 ]
 catalog-task-gcp-provision = [
     { name = "charset-normalizer" },
@@ -1098,25 +1358,23 @@ catalog-task-gcp-provision = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
-]
-catalog-task-gcs-storage-event = [
-    { name = "charset-normalizer" },
-    { name = "gcloud-aio-storage" },
-    { name = "gcsfs" },
-    { name = "geojson-pydantic" },
-    { name = "google-cloud-bigquery" },
-    { name = "google-cloud-pubsub" },
-    { name = "google-cloud-run" },
-    { name = "google-cloud-storage" },
-    { name = "httpx" },
-    { name = "shapely" },
-    { name = "sqlalchemy" },
+    { name = "pmtiles" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 configs = [
+    { name = "dynastore-ext-configs" },
+    { name = "fastapi" },
+]
+connected-systems = [
+    { name = "dynastore-ext-connected-systems" },
     { name = "fastapi" },
 ]
 core = [
     { name = "asyncpg" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "h3" },
@@ -1129,6 +1387,7 @@ core = [
     { name = "valkey" },
 ]
 crs = [
+    { name = "dynastore-ext-crs" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pyproj" },
@@ -1188,6 +1447,7 @@ dev = [
     { name = "ruff" },
 ]
 dimensions = [
+    { name = "dynastore-ext-dimensions" },
     { name = "fastapi" },
     { name = "ogc-dimensions" },
 ]
@@ -1200,16 +1460,31 @@ drivers-grp = [
 ]
 dwh = [
     { name = "db-dtypes" },
+    { name = "dynastore-ext-joins" },
     { name = "google-cloud-bigquery" },
     { name = "pandas" },
 ]
 dwh-grp = [
+    { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-joins" },
     { name = "fastapi" },
+    { name = "gcloud-aio-storage" },
+    { name = "gcsfs" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-storage" },
+    { name = "httpx" },
     { name = "pandas" },
+    { name = "pmtiles" },
+    { name = "pyproj" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 edr = [
+    { name = "dynastore-ext-edr" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
@@ -1219,20 +1494,31 @@ elasticsearch = [
     { name = "opensearch-py", extra = ["async"] },
 ]
 events = [
+    { name = "dynastore-ext-events" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
 extension-admin = [
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "markdown" },
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
+    { name = "tenacity" },
 ]
 extension-assets = [
+    { name = "dynastore-ext-assets" },
     { name = "fastapi" },
 ]
 extension-auth = [
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "itsdangerous" },
+    { name = "markdown" },
     { name = "python-multipart" },
 ]
 extension-base = [
@@ -1245,20 +1531,29 @@ extension-catalog = [
     { name = "sqlalchemy" },
 ]
 extension-configs = [
+    { name = "dynastore-ext-configs" },
+    { name = "fastapi" },
+]
+extension-connected-systems = [
+    { name = "dynastore-ext-connected-systems" },
     { name = "fastapi" },
 ]
 extension-coverages = [
+    { name = "dynastore-ext-coverages" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
+    { name = "rasterio" },
     { name = "shapely" },
 ]
 extension-crs = [
+    { name = "dynastore-ext-crs" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pyproj" },
     { name = "shapely" },
 ]
 extension-dggs = [
+    { name = "dynastore-ext-dggs" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "h3" },
@@ -1266,25 +1561,32 @@ extension-dggs = [
     { name = "shapely" },
 ]
 extension-dimensions = [
+    { name = "dynastore-ext-dimensions" },
     { name = "fastapi" },
     { name = "ogc-dimensions" },
 ]
 extension-dwh = [
     { name = "db-dtypes" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-joins" },
     { name = "fastapi" },
     { name = "google-cloud-bigquery" },
     { name = "pandas" },
+    { name = "pyproj" },
 ]
 extension-edr = [
+    { name = "dynastore-ext-edr" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
 ]
 extension-events = [
+    { name = "dynastore-ext-events" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
 extension-features = [
+    { name = "dynastore-ext-features" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
@@ -1292,6 +1594,7 @@ extension-features = [
 ]
 extension-gcp-bucket = [
     { name = "charset-normalizer" },
+    { name = "dynastore-ext-gcp-bucket" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1300,95 +1603,135 @@ extension-gcp-bucket = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
+    { name = "pmtiles" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 extension-gdal = [
+    { name = "dynastore-ext-gdal" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
 ]
 extension-geoid = [
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "markdown" },
     { name = "user-agents" },
 ]
 extension-httpx = [
+    { name = "dynastore-ext-httpx" },
     { name = "fastapi" },
     { name = "httpx" },
 ]
 extension-iam = [
-    { name = "fastapi" },
-    { name = "pydantic", extra = ["email"] },
-    { name = "pyjwt" },
-]
-extension-logs = [
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "markdown" },
+    { name = "pydantic", extra = ["email"] },
+    { name = "pyjwt" },
+    { name = "tenacity" },
+]
+extension-logs = [
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-web" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "markdown" },
 ]
 extension-maps = [
+    { name = "dynastore-ext-maps" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
 ]
 extension-moving-features = [
+    { name = "dynastore-ext-moving-features" },
     { name = "fastapi" },
 ]
 extension-notebooks = [
+    { name = "dynastore-ext-notebooks" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "python-dotenv" },
 ]
 extension-processes = [
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "jsonschema" },
 ]
 extension-proxy = [
+    { name = "dynastore-ext-proxy" },
     { name = "fastapi" },
 ]
 extension-records = [
+    { name = "dynastore-ext-records" },
     { name = "fastapi" },
+    { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
 ]
 extension-search = [
+    { name = "dynastore-ext-search" },
     { name = "fastapi" },
 ]
 extension-stac = [
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "pystac", extra = ["validation"] },
     { name = "stac-pydantic", extra = ["validation"] },
 ]
 extension-stats = [
+    { name = "dynastore-ext-stats" },
     { name = "fastapi" },
 ]
 extension-styles = [
+    { name = "dynastore-ext-styles" },
     { name = "fastapi" },
+    { name = "lxml" },
 ]
 extension-tasks = [
+    { name = "dynastore-ext-tasks" },
     { name = "fastapi" },
 ]
 extension-template = [
     { name = "aiohttp" },
     { name = "attrs" },
+    { name = "dynastore-ext-template" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "xmltodict" },
 ]
 extension-tiles = [
+    { name = "dynastore-ext-tiles" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
+    { name = "morecantile" },
+    { name = "pmtiles" },
+    { name = "shapely" },
+]
+extension-volumes = [
+    { name = "fastapi" },
     { name = "shapely" },
 ]
 extension-web = [
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "markdown" },
 ]
 extension-wfs = [
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
+    { name = "pyproj" },
     { name = "shapely" },
 ]
 features = [
+    { name = "dynastore-ext-features" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
@@ -1396,6 +1739,7 @@ features = [
 ]
 gcp = [
     { name = "charset-normalizer" },
+    { name = "dynastore-ext-gcp-bucket" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1404,9 +1748,13 @@ gcp = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
+    { name = "pmtiles" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 gcp-routes-grp = [
     { name = "charset-normalizer" },
+    { name = "dynastore-ext-gcp-bucket" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1415,14 +1763,20 @@ gcp-routes-grp = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
+    { name = "pmtiles" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 gdal = [
+    { name = "dynastore-ext-gdal" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
 ]
 geoid = [
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "markdown" },
     { name = "user-agents" },
@@ -1431,6 +1785,25 @@ geoid-service = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1448,17 +1821,22 @@ geoid-service = [
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyjwt" },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "user-agents" },
     { name = "valkey" },
 ]
@@ -1487,6 +1865,9 @@ geospatial-io = [
 google-grp = [
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-joins" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1496,11 +1877,20 @@ google-grp = [
     { name = "google-cloud-storage" },
     { name = "httpx" },
     { name = "pandas" },
+    { name = "pmtiles" },
+    { name = "pyproj" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 iam = [
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "markdown" },
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
+    { name = "tenacity" },
 ]
 index-grp = [
     { name = "httpx" },
@@ -1508,6 +1898,7 @@ index-grp = [
 ]
 ingestion = [
     { name = "charset-normalizer" },
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -1524,16 +1915,20 @@ ingestion = [
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "numpy" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
     { name = "python-dateutil" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy" },
+    { name = "urllib3" },
 ]
 joins = [
     { name = "db-dtypes" },
+    { name = "dynastore-ext-joins" },
     { name = "google-cloud-bigquery" },
     { name = "pandas" },
 ]
@@ -1542,20 +1937,35 @@ lite-build = [
     { name = "jupyterlite-pyodide-kernel" },
 ]
 logs = [
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "markdown" },
 ]
 maps = [
+    { name = "dynastore-ext-maps" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geojson-pydantic" },
     { name = "shapely" },
 ]
 maps-grp = [
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geojson-pydantic" },
+    { name = "lxml" },
+    { name = "morecantile" },
+    { name = "pmtiles" },
     { name = "pyproj" },
+    { name = "rasterio" },
     { name = "shapely" },
 ]
 module-cache = [
@@ -1628,6 +2038,9 @@ module-gcp = [
     { name = "google-cloud-run" },
     { name = "google-cloud-storage" },
     { name = "httpx" },
+    { name = "pmtiles" },
+    { name = "requests" },
+    { name = "urllib3" },
 ]
 module-gdal = [
     { name = "gdal" },
@@ -1637,6 +2050,10 @@ module-gdal = [
 module-iam = [
     { name = "pydantic", extra = ["email"] },
     { name = "pyjwt" },
+    { name = "tenacity" },
+]
+module-local = [
+    { name = "python-multipart" },
 ]
 module-notebooks = [
     { name = "httpx" },
@@ -1653,7 +2070,7 @@ module-storage-elasticsearch-assets = [
     { name = "httpx" },
     { name = "opensearch-py", extra = ["async"] },
 ]
-module-storage-elasticsearch-obfuscated = [
+module-storage-elasticsearch-private = [
     { name = "httpx" },
     { name = "opensearch-py", extra = ["async"] },
 ]
@@ -1661,18 +2078,29 @@ module-storage-iceberg = [
     { name = "pyarrow" },
     { name = "pyiceberg", extra = ["sql-postgres"] },
 ]
+module-styles = [
+    { name = "lxml" },
+]
 module-tiles = [
     { name = "geojson-pydantic" },
+    { name = "morecantile" },
+    { name = "pmtiles" },
     { name = "shapely" },
 ]
 monitor-grp = [
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "markdown" },
 ]
 moving-features = [
+    { name = "dynastore-ext-moving-features" },
     { name = "fastapi" },
 ]
 notebooks = [
+    { name = "dynastore-ext-notebooks" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "python-dotenv" },
@@ -1691,11 +2119,25 @@ notebooks-test = [
     { name = "python-dotenv" },
     { name = "requests" },
 ]
+outbox-drain = [
+    { name = "dynastore-ext-processes" },
+    { name = "fastapi" },
+    { name = "geoalchemy2" },
+    { name = "h3" },
+    { name = "jsonschema" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "psycopg2-binary" },
+    { name = "python-dateutil" },
+    { name = "s2sphere" },
+    { name = "sqlalchemy" },
+]
 processes = [
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "jsonschema" },
 ]
 proxy = [
+    { name = "dynastore-ext-proxy" },
     { name = "fastapi" },
 ]
 psycopg-pool = [
@@ -1706,6 +2148,23 @@ scope-catalog = [
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
     { name = "duckdb" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-notebooks" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1723,17 +2182,22 @@ scope-catalog = [
     { name = "ogc-dimensions" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyiceberg", extra = ["sql-postgres"] },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 scope-geoid = [
@@ -1741,6 +2205,27 @@ scope-geoid = [
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
     { name = "duckdb" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-notebooks" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "gcloud-aio-storage" },
     { name = "gcsfs" },
@@ -1759,20 +2244,25 @@ scope-geoid = [
     { name = "ogc-dimensions" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyiceberg", extra = ["sql-postgres"] },
     { name = "pyjwt" },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "user-agents" },
     { name = "valkey" },
 ]
@@ -1780,29 +2270,56 @@ scope-maps = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "attrs" },
+    { name = "charset-normalizer" },
     { name = "db-dtypes" },
     { name = "duckdb" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-httpx" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-template" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
+    { name = "gcloud-aio-storage" },
+    { name = "gcsfs" },
     { name = "gdal" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-storage" },
     { name = "h3" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "lxml" },
     { name = "markdown" },
+    { name = "morecantile" },
     { name = "msgpack" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyiceberg", extra = ["sql-postgres"] },
     { name = "pyproj" },
     { name = "python-dateutil" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "urllib3" },
     { name = "valkey" },
     { name = "xmltodict" },
 ]
@@ -1810,6 +2327,13 @@ scope-tools = [
     { name = "aiohttp" },
     { name = "asyncpg" },
     { name = "attrs" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-notebooks" },
+    { name = "dynastore-ext-proxy" },
+    { name = "dynastore-ext-template" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "h3" },
@@ -1830,6 +2354,19 @@ scope-worker = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -1860,27 +2397,35 @@ scope-worker = [
     { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 search = [
+    { name = "dynastore-ext-search" },
     { name = "fastapi" },
 ]
 stac = [
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "pystac", extra = ["validation"] },
     { name = "stac-pydantic", extra = ["validation"] },
 ]
 stats = [
+    { name = "dynastore-ext-stats" },
     { name = "fastapi" },
 ]
 styles = [
+    { name = "dynastore-ext-styles" },
     { name = "fastapi" },
+    { name = "lxml" },
 ]
 task-base = [
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "h3" },
@@ -1892,11 +2437,13 @@ task-base = [
     { name = "sqlalchemy" },
 ]
 task-dimensions-materialize-deps = [
+    { name = "dynastore-ext-dimensions" },
     { name = "fastapi" },
     { name = "ogc-dimensions" },
 ]
 task-dwh-join-deps = [
     { name = "db-dtypes" },
+    { name = "dynastore-ext-joins" },
     { name = "google-cloud-bigquery" },
     { name = "pandas" },
 ]
@@ -1909,6 +2456,7 @@ task-elasticsearch-indexer-deps = [
     { name = "opensearch-py", extra = ["async"] },
 ]
 task-export-features-deps = [
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
     { name = "pystac", extra = ["validation"] },
@@ -1934,14 +2482,11 @@ task-ingestion-deps = [
     { name = "httpx" },
     { name = "lxml" },
     { name = "numpy" },
-    { name = "pyarrow" },
-    { name = "shapely" },
-]
-task-tiles-export-deps = [
-    { name = "geojson-pydantic" },
-    { name = "morecantile" },
     { name = "pmtiles" },
+    { name = "pyarrow" },
+    { name = "requests" },
     { name = "shapely" },
+    { name = "urllib3" },
 ]
 task-tiles-preseed-deps = [
     { name = "geojson-pydantic" },
@@ -1949,11 +2494,13 @@ task-tiles-preseed-deps = [
     { name = "shapely" },
 ]
 tasks = [
+    { name = "dynastore-ext-tasks" },
     { name = "fastapi" },
 ]
 template = [
     { name = "aiohttp" },
     { name = "attrs" },
+    { name = "dynastore-ext-template" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -1969,13 +2516,18 @@ test = [
     { name = "requests" },
 ]
 tiles = [
+    { name = "dynastore-ext-tiles" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
+    { name = "morecantile" },
+    { name = "pmtiles" },
     { name = "shapely" },
 ]
 tools-core-grp = [
     { name = "aiohttp" },
     { name = "attrs" },
+    { name = "dynastore-ext-httpx" },
+    { name = "dynastore-ext-template" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -1984,6 +2536,10 @@ tools-core-grp = [
 tools-grp = [
     { name = "aiohttp" },
     { name = "attrs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-httpx" },
+    { name = "dynastore-ext-notebooks" },
+    { name = "dynastore-ext-template" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -1998,6 +2554,34 @@ typecheck = [
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
     { name = "duckdb" },
+    { name = "dynastore-ext-admin" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-auth" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-coverages" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-geoid" },
+    { name = "dynastore-ext-iam" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-maps" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-styles" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-template" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
+    { name = "dynastore-ext-wfs" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -2035,15 +2619,20 @@ typecheck = [
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "rasterio" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "tenacity" },
+    { name = "urllib3" },
     { name = "user-agents" },
     { name = "valkey" },
     { name = "xmltodict" },
 ]
 web = [
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "markdown" },
 ]
@@ -2051,6 +2640,25 @@ worker-local = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-logs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-stats" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -2074,6 +2682,7 @@ worker-local = [
     { name = "ogc-dimensions" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
@@ -2081,16 +2690,36 @@ worker-local = [
     { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 worker-service = [
     { name = "asyncpg" },
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-configs" },
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
+    { name = "dynastore-ext-tasks" },
+    { name = "dynastore-ext-tiles" },
+    { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -2114,6 +2743,7 @@ worker-service = [
     { name = "ogc-dimensions" },
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
@@ -2121,15 +2751,21 @@ worker-service = [
     { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
     { name = "valkey" },
 ]
 worker-task-dimensions-materialize = [
+    { name = "dynastore-ext-dimensions" },
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
+    { name = "geojson-pydantic" },
     { name = "h3" },
     { name = "jsonschema" },
     { name = "ogc-dimensions" },
@@ -2137,25 +2773,33 @@ worker-task-dimensions-materialize = [
     { name = "psycopg2-binary" },
     { name = "python-dateutil" },
     { name = "s2sphere" },
+    { name = "shapely" },
     { name = "sqlalchemy" },
 ]
 worker-task-dwh-join = [
     { name = "db-dtypes" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
+    { name = "geojson-pydantic" },
     { name = "google-cloud-bigquery" },
     { name = "h3" },
     { name = "jsonschema" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
+    { name = "pyproj" },
     { name = "python-dateutil" },
     { name = "s2sphere" },
+    { name = "shapely" },
     { name = "sqlalchemy" },
 ]
 worker-task-elasticsearch-indexer = [
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
+    { name = "geojson-pydantic" },
     { name = "h3" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -2164,24 +2808,40 @@ worker-task-elasticsearch-indexer = [
     { name = "psycopg2-binary" },
     { name = "python-dateutil" },
     { name = "s2sphere" },
+    { name = "shapely" },
     { name = "sqlalchemy" },
 ]
 worker-task-export-features = [
+    { name = "charset-normalizer" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
+    { name = "gcloud-aio-storage" },
+    { name = "gcsfs" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
+    { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pubsub" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-storage" },
     { name = "h3" },
+    { name = "httpx" },
     { name = "jsonschema" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy" },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
 ]
 worker-task-gdal = [
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-processes" },
     { name = "fastapi" },
     { name = "gdal" },
     { name = "geoalchemy2" },
@@ -2198,6 +2858,17 @@ worker-task-gdal = [
 worker-task-ingestion = [
     { name = "charset-normalizer" },
     { name = "db-dtypes" },
+    { name = "duckdb" },
+    { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-features" },
+    { name = "dynastore-ext-gcp-bucket" },
+    { name = "dynastore-ext-gdal" },
+    { name = "dynastore-ext-joins" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-records" },
+    { name = "dynastore-ext-search" },
+    { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "fiona" },
     { name = "gcloud-aio-storage" },
@@ -2215,19 +2886,29 @@ worker-task-ingestion = [
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "numpy" },
+    { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
+    { name = "pmtiles" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "pyiceberg", extra = ["sql-postgres"] },
+    { name = "pyproj" },
     { name = "pystac", extra = ["validation"] },
     { name = "python-dateutil" },
+    { name = "python-multipart" },
+    { name = "requests" },
     { name = "s2sphere" },
     { name = "shapely" },
     { name = "sqlalchemy" },
     { name = "stac-pydantic", extra = ["validation"] },
+    { name = "urllib3" },
 ]
-worker-task-tiles-export = [
+worker-task-tiles-preseed = [
+    { name = "dynastore-ext-crs" },
+    { name = "dynastore-ext-processes" },
+    { name = "dynastore-ext-tiles" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "geojson-pydantic" },
@@ -2243,21 +2924,6 @@ worker-task-tiles-export = [
     { name = "shapely" },
     { name = "sqlalchemy" },
 ]
-worker-task-tiles-preseed = [
-    { name = "fastapi" },
-    { name = "geoalchemy2" },
-    { name = "geojson-pydantic" },
-    { name = "h3" },
-    { name = "jsonschema" },
-    { name = "morecantile" },
-    { name = "psycopg", extra = ["binary", "pool"] },
-    { name = "psycopg2-binary" },
-    { name = "pyproj" },
-    { name = "python-dateutil" },
-    { name = "s2sphere" },
-    { name = "shapely" },
-    { name = "sqlalchemy" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -2265,11 +2931,11 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'module-db'" },
     { name = "attrs", marker = "extra == 'extension-template'", specifier = ">=25.3.0" },
     { name = "black", marker = "extra == 'dev'" },
-    { name = "charset-normalizer", marker = "extra == 'module-gcp'" },
+    { name = "charset-normalizer", marker = "extra == 'module-gcp'", specifier = ">=3" },
     { name = "db-dtypes", marker = "extra == 'joins'" },
     { name = "debugpy", marker = "extra == 'dev'" },
     { name = "duckdb", marker = "extra == 'module-storage-duckdb'", specifier = ">=1.0.0" },
-    { name = "dynastore", extras = ["all", "drivers-grp", "extension-template", "task-tiles-export-deps", "task-tiles-preseed-deps"], marker = "extra == 'typecheck'" },
+    { name = "dynastore", extras = ["all", "drivers-grp", "extension-template", "task-tiles-preseed-deps"], marker = "extra == 'typecheck'" },
     { name = "dynastore", extras = ["api-catalog", "extension-geoid"], marker = "extra == 'geoid-service'" },
     { name = "dynastore", extras = ["api-catalog", "geospatial-io", "maps-grp"], marker = "extra == 'api-full'" },
     { name = "dynastore", extras = ["api-full", "geoid-service", "worker-service"], marker = "extra == 'all'" },
@@ -2281,19 +2947,18 @@ requires-dist = [
     { name = "dynastore", extras = ["cache", "configs", "db-async", "events", "storage", "web"], marker = "extra == 'core'" },
     { name = "dynastore", extras = ["cache", "core", "dimensions", "notebooks", "proxy", "template"], marker = "extra == 'scope-tools'" },
     { name = "dynastore", extras = ["catalog", "features", "geospatial-core"], marker = "extra == 'catalog-data-grp'" },
-    { name = "dynastore", extras = ["catalog-data-grp", "catalog-routes-grp"], marker = "extra == 'catalog-grp'" },
+    { name = "dynastore", extras = ["catalog-data-grp", "catalog-routes-grp", "module-local"], marker = "extra == 'catalog-grp'" },
     { name = "dynastore", extras = ["catalog-data-grp", "core", "drivers-grp", "dwh-grp", "maps-grp", "module-cache", "module-catalog-elasticsearch", "tools-core-grp"], marker = "extra == 'scope-maps'" },
     { name = "dynastore", extras = ["catalog-data-grp", "core", "dwh-grp", "maps-grp", "module-catalog-elasticsearch", "tools-core-grp"], marker = "extra == 'api-maps-open'" },
-    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "core", "dimensions", "drivers-grp", "google-grp", "index-grp", "module-cache", "monitor-grp", "notebooks", "processes", "tasks"], marker = "extra == 'scope-catalog'" },
-    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "core", "google-grp", "index-grp", "ingestion", "processes", "tasks", "worker-task-dimensions-materialize", "worker-task-dwh-join", "worker-task-export-features", "worker-task-gdal", "worker-task-tiles-preseed"], marker = "extra == 'worker-service'" },
-    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "core", "google-grp", "index-grp", "monitor-grp", "processes", "tasks"], marker = "extra == 'api-open'" },
+    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "core", "dimensions", "drivers-grp", "google-grp", "index-grp", "module-cache", "monitor-grp", "notebooks", "processes", "tasks"], marker = "extra == 'scope-catalog'" },
+    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "core", "google-grp", "index-grp", "ingestion", "processes", "tasks", "worker-task-dimensions-materialize", "worker-task-dwh-join", "worker-task-export-features", "worker-task-gdal", "worker-task-tiles-preseed"], marker = "extra == 'worker-service'" },
+    { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "core", "google-grp", "index-grp", "monitor-grp", "processes", "tasks"], marker = "extra == 'api-open'" },
     { name = "dynastore", extras = ["catalog-grp", "core"], marker = "extra == 'api-features'" },
     { name = "dynastore", extras = ["catalog-grp", "core", "index-grp", "monitor-grp", "processes"], marker = "extra == 'catalog-local'" },
-    { name = "dynastore", extras = ["catalog-grp", "gdal", "google-grp", "ingestion"], marker = "extra == 'worker-task-ingestion'" },
-    { name = "dynastore", extras = ["catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "core", "extension-dwh", "gcp", "index-grp", "ingestion", "module-catalog", "tasks", "worker-task-dimensions-materialize", "worker-task-dwh-join", "worker-task-export-features", "worker-task-gdal", "worker-task-tiles-export", "worker-task-tiles-preseed"], marker = "extra == 'scope-worker'" },
+    { name = "dynastore", extras = ["catalog-grp", "drivers-grp", "gdal", "google-grp", "ingestion"], marker = "extra == 'worker-task-ingestion'" },
+    { name = "dynastore", extras = ["catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "core", "extension-dwh", "gcp", "index-grp", "ingestion", "module-catalog", "tasks", "worker-task-dimensions-materialize", "worker-task-dwh-join", "worker-task-export-features", "worker-task-gdal", "worker-task-tiles-preseed"], marker = "extra == 'scope-worker'" },
     { name = "dynastore", extras = ["crs", "extension-coverages", "extension-wfs", "gdal", "maps", "styles", "tiles"], marker = "extra == 'maps-grp'" },
-    { name = "dynastore", extras = ["crs", "task-base", "tiles"], marker = "extra == 'worker-task-tiles-export'" },
-    { name = "dynastore", extras = ["crs", "task-base", "tiles"], marker = "extra == 'worker-task-tiles-preseed'" },
+    { name = "dynastore", extras = ["crs", "module-catalog", "module-storage-postgresql", "task-base", "tiles"], marker = "extra == 'worker-task-tiles-preseed'" },
     { name = "dynastore", extras = ["datastore", "db-config"], marker = "extra == 'db-sync'" },
     { name = "dynastore", extras = ["db", "db-config"], marker = "extra == 'db-async'" },
     { name = "dynastore", extras = ["db-async"], marker = "extra == 'module-db'" },
@@ -2302,26 +2967,28 @@ requires-dist = [
     { name = "dynastore", extras = ["dimensions", "notebooks", "tools-core-grp"], marker = "extra == 'tools-grp'" },
     { name = "dynastore", extras = ["dwh"], marker = "extra == 'task-dwh-join-deps'" },
     { name = "dynastore", extras = ["dwh", "extension-base"], marker = "extra == 'extension-dwh'" },
-    { name = "dynastore", extras = ["dwh", "task-base"], marker = "extra == 'worker-task-dwh-join'" },
+    { name = "dynastore", extras = ["dwh", "module-catalog", "module-crs", "module-storage-postgresql", "task-base"], marker = "extra == 'worker-task-dwh-join'" },
     { name = "dynastore", extras = ["dwh-grp", "gcp-routes-grp"], marker = "extra == 'google-grp'" },
-    { name = "dynastore", extras = ["elasticsearch", "task-base", "task-elasticsearch-indexer-deps"], marker = "extra == 'worker-task-elasticsearch-indexer'" },
+    { name = "dynastore", extras = ["elasticsearch", "module-catalog", "module-storage-postgresql", "outbox-drain", "task-base", "task-elasticsearch-indexer-deps"], marker = "extra == 'worker-task-elasticsearch-indexer'" },
     { name = "dynastore", extras = ["elasticsearch", "task-elasticsearch-indexer-deps"], marker = "extra == 'index-grp'" },
     { name = "dynastore", extras = ["extension-assets"], marker = "extra == 'assets'" },
     { name = "dynastore", extras = ["extension-auth"], marker = "extra == 'auth'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-assets'" },
-    { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-auth'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-configs'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-dimensions'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-httpx'" },
-    { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-logs'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-processes'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-records'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-search'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-stac'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-template'" },
+    { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-volumes'" },
     { name = "dynastore", extras = ["extension-base"], marker = "extra == 'extension-web'" },
     { name = "dynastore", extras = ["extension-base", "extension-iam"], marker = "extra == 'extension-admin'" },
+    { name = "dynastore", extras = ["extension-base", "extension-web"], marker = "extra == 'extension-auth'" },
     { name = "dynastore", extras = ["extension-base", "extension-web"], marker = "extra == 'extension-geoid'" },
+    { name = "dynastore", extras = ["extension-base", "extension-web"], marker = "extra == 'extension-logs'" },
+    { name = "dynastore", extras = ["extension-base", "extension-web", "module-iam"], marker = "extra == 'extension-iam'" },
     { name = "dynastore", extras = ["extension-base", "geospatial-core"], marker = "extra == 'extension-coverages'" },
     { name = "dynastore", extras = ["extension-base", "geospatial-core"], marker = "extra == 'extension-dggs'" },
     { name = "dynastore", extras = ["extension-base", "geospatial-core"], marker = "extra == 'extension-edr'" },
@@ -2329,11 +2996,11 @@ requires-dist = [
     { name = "dynastore", extras = ["extension-base", "geospatial-core"], marker = "extra == 'extension-wfs'" },
     { name = "dynastore", extras = ["extension-base", "geospatial-core", "mvt"], marker = "extra == 'extension-maps'" },
     { name = "dynastore", extras = ["extension-base", "module-catalog"], marker = "extra == 'extension-catalog'" },
+    { name = "dynastore", extras = ["extension-base", "module-connected-systems"], marker = "extra == 'extension-connected-systems'" },
     { name = "dynastore", extras = ["extension-base", "module-crs"], marker = "extra == 'extension-crs'" },
     { name = "dynastore", extras = ["extension-base", "module-events"], marker = "extra == 'extension-events'" },
     { name = "dynastore", extras = ["extension-base", "module-gcp"], marker = "extra == 'extension-gcp-bucket'" },
     { name = "dynastore", extras = ["extension-base", "module-gdal"], marker = "extra == 'extension-gdal'" },
-    { name = "dynastore", extras = ["extension-base", "module-iam"], marker = "extra == 'extension-iam'" },
     { name = "dynastore", extras = ["extension-base", "module-moving-features"], marker = "extra == 'extension-moving-features'" },
     { name = "dynastore", extras = ["extension-base", "module-notebooks"], marker = "extra == 'extension-notebooks'" },
     { name = "dynastore", extras = ["extension-base", "module-proxy"], marker = "extra == 'extension-proxy'" },
@@ -2343,11 +3010,12 @@ requires-dist = [
     { name = "dynastore", extras = ["extension-base", "module-tiles"], marker = "extra == 'extension-tiles'" },
     { name = "dynastore", extras = ["extension-catalog", "module-catalog"], marker = "extra == 'catalog'" },
     { name = "dynastore", extras = ["extension-configs"], marker = "extra == 'configs'" },
+    { name = "dynastore", extras = ["extension-connected-systems", "module-connected-systems"], marker = "extra == 'connected-systems'" },
     { name = "dynastore", extras = ["extension-crs", "module-crs"], marker = "extra == 'crs'" },
     { name = "dynastore", extras = ["extension-dimensions"], marker = "extra == 'dimensions'" },
     { name = "dynastore", extras = ["extension-dimensions"], marker = "extra == 'task-dimensions-materialize-deps'" },
-    { name = "dynastore", extras = ["extension-dimensions", "task-base"], marker = "extra == 'worker-task-dimensions-materialize'" },
-    { name = "dynastore", extras = ["extension-dwh"], marker = "extra == 'dwh-grp'" },
+    { name = "dynastore", extras = ["extension-dimensions", "module-catalog", "module-storage-postgresql", "task-base"], marker = "extra == 'worker-task-dimensions-materialize'" },
+    { name = "dynastore", extras = ["extension-dwh", "module-gcp"], marker = "extra == 'dwh-grp'" },
     { name = "dynastore", extras = ["extension-edr"], marker = "extra == 'edr'" },
     { name = "dynastore", extras = ["extension-events", "module-events"], marker = "extra == 'events'" },
     { name = "dynastore", extras = ["extension-features"], marker = "extra == 'features'" },
@@ -2371,24 +3039,22 @@ requires-dist = [
     { name = "dynastore", extras = ["extension-tiles", "module-tiles"], marker = "extra == 'tiles'" },
     { name = "dynastore", extras = ["extension-web"], marker = "extra == 'web'" },
     { name = "dynastore", extras = ["gcp"], marker = "extra == 'gcp-routes-grp'" },
-    { name = "dynastore", extras = ["gdal", "task-base"], marker = "extra == 'worker-task-gdal'" },
+    { name = "dynastore", extras = ["gdal", "module-catalog", "module-storage-postgresql", "task-base"], marker = "extra == 'worker-task-gdal'" },
     { name = "dynastore", extras = ["geospatial", "module-gcp"], marker = "extra == 'task-ingestion-deps'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'geospatial-io'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'module-catalog'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'module-crs'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'module-gdal'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'module-tiles'" },
-    { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'task-tiles-export-deps'" },
     { name = "dynastore", extras = ["geospatial-core"], marker = "extra == 'task-tiles-preseed-deps'" },
+    { name = "dynastore", extras = ["geospatial-core", "module-gcp", "module-storage-postgresql", "stac", "task-base"], marker = "extra == 'worker-task-export-features'" },
     { name = "dynastore", extras = ["geospatial-core", "stac"], marker = "extra == 'task-export-features-deps'" },
-    { name = "dynastore", extras = ["geospatial-core", "stac", "task-base"], marker = "extra == 'worker-task-export-features'" },
     { name = "dynastore", extras = ["geospatial-io"], marker = "extra == 'geospatial'" },
     { name = "dynastore", extras = ["joins"], marker = "extra == 'dwh'" },
     { name = "dynastore", extras = ["logs", "stats"], marker = "extra == 'monitor-grp'" },
     { name = "dynastore", extras = ["module-cache"], marker = "extra == 'cache'" },
     { name = "dynastore", extras = ["module-catalog", "module-gcp"], marker = "extra == 'catalog-task-gcp-catalog-cleanup'" },
-    { name = "dynastore", extras = ["module-catalog", "module-gcp"], marker = "extra == 'catalog-task-gcs-storage-event'" },
-    { name = "dynastore", extras = ["module-catalog-elasticsearch", "module-collection-elasticsearch", "module-metadata-postgresql", "module-storage-duckdb", "module-storage-elasticsearch", "module-storage-elasticsearch-assets", "module-storage-elasticsearch-obfuscated", "module-storage-iceberg", "module-storage-postgresql"], marker = "extra == 'drivers-grp'" },
+    { name = "dynastore", extras = ["module-catalog-elasticsearch", "module-collection-elasticsearch", "module-storage-duckdb", "module-storage-elasticsearch", "module-storage-elasticsearch-assets", "module-storage-elasticsearch-private", "module-storage-iceberg", "module-storage-postgresql"], marker = "extra == 'drivers-grp'" },
     { name = "dynastore", extras = ["module-datastore"], marker = "extra == 'datastore'" },
     { name = "dynastore", extras = ["module-db"], marker = "extra == 'db'" },
     { name = "dynastore", extras = ["module-db-config"], marker = "extra == 'db-config'" },
@@ -2396,7 +3062,7 @@ requires-dist = [
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-collection-elasticsearch'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-assets'" },
-    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-obfuscated'" },
+    { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'module-storage-elasticsearch-private'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'task-elasticsearch-deps'" },
     { name = "dynastore", extras = ["module-elasticsearch"], marker = "extra == 'task-elasticsearch-indexer-deps'" },
     { name = "dynastore", extras = ["module-elasticsearch", "task-elasticsearch-deps"], marker = "extra == 'elasticsearch'" },
@@ -2405,8 +3071,44 @@ requires-dist = [
     { name = "dynastore", extras = ["module-gdal"], marker = "extra == 'task-gdal-deps'" },
     { name = "dynastore", extras = ["module-storage"], marker = "extra == 'storage'" },
     { name = "dynastore", extras = ["monitor-grp", "worker-service"], marker = "extra == 'worker-local'" },
+    { name = "dynastore", extras = ["task-base"], marker = "extra == 'outbox-drain'" },
     { name = "dynastore", extras = ["test"], marker = "extra == 'dev'" },
     { name = "dynastore", extras = ["test"], marker = "extra == 'notebooks-test'" },
+    { name = "dynastore-ext-admin", marker = "extra == 'extension-admin'", editable = "packages/extensions/admin" },
+    { name = "dynastore-ext-assets", marker = "extra == 'extension-assets'", editable = "packages/extensions/assets" },
+    { name = "dynastore-ext-auth", marker = "extra == 'extension-auth'", editable = "packages/extensions/auth" },
+    { name = "dynastore-ext-configs", marker = "extra == 'extension-configs'", editable = "packages/extensions/configs" },
+    { name = "dynastore-ext-connected-systems", marker = "extra == 'extension-connected-systems'", editable = "packages/extensions/connected_systems" },
+    { name = "dynastore-ext-coverages", marker = "extra == 'extension-coverages'", editable = "packages/extensions/coverages" },
+    { name = "dynastore-ext-crs", marker = "extra == 'extension-crs'", editable = "packages/extensions/crs" },
+    { name = "dynastore-ext-dggs", marker = "extra == 'extension-dggs'", editable = "packages/extensions/dggs" },
+    { name = "dynastore-ext-dimensions", marker = "extra == 'extension-dimensions'", editable = "packages/extensions/dimensions" },
+    { name = "dynastore-ext-dwh", marker = "extra == 'extension-dwh'", editable = "packages/extensions/dwh" },
+    { name = "dynastore-ext-edr", marker = "extra == 'extension-edr'", editable = "packages/extensions/edr" },
+    { name = "dynastore-ext-events", marker = "extra == 'extension-events'", editable = "packages/extensions/events" },
+    { name = "dynastore-ext-features", marker = "extra == 'extension-features'", editable = "packages/extensions/features" },
+    { name = "dynastore-ext-gcp-bucket", marker = "extra == 'extension-gcp-bucket'", editable = "packages/extensions/gcp" },
+    { name = "dynastore-ext-gdal", marker = "extra == 'extension-gdal'", editable = "packages/extensions/gdal" },
+    { name = "dynastore-ext-geoid", marker = "extra == 'extension-geoid'", editable = "packages/extensions/geoid" },
+    { name = "dynastore-ext-httpx", marker = "extra == 'extension-httpx'", editable = "packages/extensions/httpx" },
+    { name = "dynastore-ext-iam", marker = "extra == 'extension-iam'", editable = "packages/extensions/iam" },
+    { name = "dynastore-ext-joins", marker = "extra == 'joins'", editable = "packages/extensions/joins" },
+    { name = "dynastore-ext-logs", marker = "extra == 'extension-logs'", editable = "packages/extensions/logs" },
+    { name = "dynastore-ext-maps", marker = "extra == 'extension-maps'", editable = "packages/extensions/maps" },
+    { name = "dynastore-ext-moving-features", marker = "extra == 'extension-moving-features'", editable = "packages/extensions/moving_features" },
+    { name = "dynastore-ext-notebooks", marker = "extra == 'extension-notebooks'", editable = "packages/extensions/notebooks" },
+    { name = "dynastore-ext-processes", marker = "extra == 'extension-processes'", editable = "packages/extensions/processes" },
+    { name = "dynastore-ext-proxy", marker = "extra == 'extension-proxy'", editable = "packages/extensions/proxy" },
+    { name = "dynastore-ext-records", marker = "extra == 'extension-records'", editable = "packages/extensions/records" },
+    { name = "dynastore-ext-search", marker = "extra == 'extension-search'", editable = "packages/extensions/search" },
+    { name = "dynastore-ext-stac", marker = "extra == 'extension-stac'", editable = "packages/extensions/stac" },
+    { name = "dynastore-ext-stats", marker = "extra == 'extension-stats'", editable = "packages/extensions/stats" },
+    { name = "dynastore-ext-styles", marker = "extra == 'extension-styles'", editable = "packages/extensions/styles" },
+    { name = "dynastore-ext-tasks", marker = "extra == 'extension-tasks'", editable = "packages/extensions/tasks" },
+    { name = "dynastore-ext-template", marker = "extra == 'extension-template'", editable = "packages/extensions/template" },
+    { name = "dynastore-ext-tiles", marker = "extra == 'extension-tiles'", editable = "packages/extensions/tiles" },
+    { name = "dynastore-ext-web", marker = "extra == 'extension-web'", editable = "packages/extensions/web" },
+    { name = "dynastore-ext-wfs", marker = "extra == 'extension-wfs'", editable = "packages/extensions/wfs" },
     { name = "fastapi", marker = "extra == 'extension-base'", specifier = ">=0.100" },
     { name = "fiona", marker = "extra == 'geospatial-io'", specifier = ">=1.9.4" },
     { name = "gcloud-aio-storage", marker = "extra == 'module-gcp'", specifier = "==9.6.0" },
@@ -2424,6 +3126,7 @@ requires-dist = [
     { name = "h3", marker = "extra == 'extension-dggs'", specifier = ">=4.1.0" },
     { name = "h3", marker = "extra == 'module-db-config'", specifier = ">=4.4.2" },
     { name = "httpx", marker = "extra == 'extension-httpx'" },
+    { name = "httpx", marker = "extra == 'extension-iam'", specifier = ">=0.24.1" },
     { name = "httpx", marker = "extra == 'extension-logs'" },
     { name = "httpx", marker = "extra == 'extension-template'", specifier = ">=0.24.1" },
     { name = "httpx", marker = "extra == 'module-elasticsearch'" },
@@ -2438,10 +3141,10 @@ requires-dist = [
     { name = "jupyterlite-core", marker = "extra == 'lite-build'", specifier = ">=0.4" },
     { name = "jupyterlite-pyodide-kernel", marker = "extra == 'lite-build'", specifier = ">=0.4" },
     { name = "lxml", marker = "extra == 'geospatial-io'", specifier = ">=6.1.0,<7" },
+    { name = "lxml", marker = "extra == 'module-styles'", specifier = ">=4.9" },
     { name = "markdown", marker = "extra == 'extension-web'", specifier = ">=3.3.7" },
-    { name = "morecantile", marker = "extra == 'task-tiles-export-deps'", specifier = ">=7.0.3,<8" },
+    { name = "morecantile", marker = "extra == 'module-tiles'", specifier = ">=7.0.3,<8" },
     { name = "morecantile", marker = "extra == 'task-tiles-preseed-deps'", specifier = ">=7.0.3,<8" },
-    { name = "morecantile", marker = "extra == 'worker-task-tiles-export'", specifier = ">=7.0.3,<8" },
     { name = "morecantile", marker = "extra == 'worker-task-tiles-preseed'", specifier = ">=7.0.3,<8" },
     { name = "msgpack", marker = "extra == 'module-cache'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'" },
@@ -2453,8 +3156,8 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.9.0" },
     { name = "orjson", marker = "extra == 'test'", specifier = ">=3.9.15" },
     { name = "pandas", marker = "extra == 'joins'" },
-    { name = "pmtiles", marker = "extra == 'task-tiles-export-deps'", specifier = ">=3.2.0" },
-    { name = "pmtiles", marker = "extra == 'worker-task-tiles-export'", specifier = ">=3.2.0" },
+    { name = "pmtiles", marker = "extra == 'module-gcp'", specifier = ">=3.2.0" },
+    { name = "pmtiles", marker = "extra == 'module-tiles'", specifier = ">=3.2.0" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'module-events'" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'psycopg-pool'" },
     { name = "psycopg2-binary", marker = "extra == 'module-datastore'", specifier = ">=2.9.7" },
@@ -2465,8 +3168,12 @@ requires-dist = [
     { name = "pydantic-extra-types", specifier = ">=2.10.6" },
     { name = "pydantic-settings", specifier = ">=2.3.0" },
     { name = "pygeofilter", extras = ["backend-sqlalchemy"], marker = "extra == 'extension-features'" },
+    { name = "pygeofilter", extras = ["backend-sqlalchemy"], marker = "extra == 'extension-records'" },
     { name = "pyiceberg", extras = ["sql-postgres"], marker = "extra == 'module-storage-iceberg'", specifier = ">=0.9.0" },
+    { name = "pyjwt", marker = "extra == 'extension-iam'", specifier = ">=2.8.0" },
     { name = "pyjwt", marker = "extra == 'module-iam'", specifier = ">=2.0.0" },
+    { name = "pyproj", marker = "extra == 'extension-dwh'", specifier = ">=3.0.0" },
+    { name = "pyproj", marker = "extra == 'extension-wfs'", specifier = ">=3.0.0" },
     { name = "pyproj", marker = "extra == 'module-crs'", specifier = ">=3.0.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.390" },
     { name = "pystac", extras = ["validation"], marker = "extra == 'extension-stac'", specifier = ">=1.13.0" },
@@ -2481,15 +3188,21 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'module-notebooks'" },
     { name = "python-dotenv", marker = "extra == 'notebooks-test'", specifier = ">=1.0" },
     { name = "python-multipart", marker = "extra == 'extension-auth'", specifier = ">=0.0.26" },
+    { name = "python-multipart", marker = "extra == 'module-local'", specifier = ">=0.0.9" },
+    { name = "rasterio", marker = "extra == 'extension-coverages'", specifier = ">=1.4.3" },
+    { name = "requests", marker = "extra == 'module-gcp'", specifier = ">=2.32" },
     { name = "requests", marker = "extra == 'test'", specifier = ">=2.31.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "s2sphere", marker = "extra == 'extension-dggs'", specifier = ">=0.2.5" },
     { name = "s2sphere", marker = "extra == 'module-db-config'", specifier = ">=0.2.5" },
+    { name = "shapely", marker = "extra == 'extension-volumes'", specifier = ">=2.0" },
     { name = "shapely", marker = "extra == 'geospatial-core'", specifier = ">=2.1.1" },
     { name = "sqlalchemy", marker = "extra == 'module-catalog'", specifier = ">=2.0.0" },
     { name = "sqlalchemy", marker = "extra == 'module-db-config'" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'module-db'" },
     { name = "stac-pydantic", extras = ["validation"], marker = "extra == 'extension-stac'", specifier = ">=3.1.0" },
+    { name = "tenacity", marker = "extra == 'module-iam'", specifier = ">=8.0" },
+    { name = "urllib3", marker = "extra == 'module-gcp'", specifier = ">=2.0,<3" },
     { name = "user-agents", marker = "extra == 'extension-geoid'", specifier = ">=2.2.0" },
     { name = "valkey", marker = "extra == 'module-cache'", specifier = ">=6.0" },
     { name = "xarray", marker = "extra == 'module-coverages-netcdf'", specifier = ">=2024.0.0" },
@@ -2497,7 +3210,651 @@ requires-dist = [
     { name = "xmltodict", marker = "extra == 'extension-template'", specifier = ">=0.13.0" },
     { name = "zarr", marker = "extra == 'module-coverages-zarr'", specifier = ">=2.18.0" },
 ]
-provides-extras = ["module-storage", "module-storage-postgresql", "module-storage-duckdb", "module-storage-iceberg", "module-storage-elasticsearch", "module-storage-elasticsearch-obfuscated", "module-storage-elasticsearch-assets", "module-metadata-postgresql", "module-collection-elasticsearch", "module-catalog-elasticsearch", "module-stac", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-moving-features", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-moving-features", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-edr", "extension-dggs", "module-coverages-netcdf", "module-coverages-zarr", "extension-dwh", "extension-dimensions", "task-gdal-deps", "task-elasticsearch-deps", "task-elasticsearch-indexer-deps", "task-ingestion-deps", "task-dwh-join-deps", "task-export-features-deps", "task-tiles-preseed-deps", "task-tiles-export-deps", "task-dimensions-materialize-deps", "catalog-task-gcp-provision", "catalog-task-gcs-storage-event", "catalog-task-gcp-catalog-cleanup", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "moving-features", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "edr", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-data-grp", "catalog-routes-grp", "catalog-grp", "maps-grp", "dwh-grp", "gcp-routes-grp", "google-grp", "auth-grp", "tools-core-grp", "tools-grp", "monitor-grp", "index-grp", "drivers-grp", "task-base", "ingestion", "worker-task-dwh-join", "worker-task-ingestion", "worker-task-export-features", "worker-task-tiles-preseed", "worker-task-tiles-export", "worker-task-gdal", "worker-task-dimensions-materialize", "worker-task-elasticsearch-indexer", "api-open", "api-catalog", "api-maps-open", "api-maps", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "typecheck", "test", "notebooks-test", "lite-build", "dev", "mvt", "joins", "dwh", "psycopg-pool"]
+provides-extras = ["module-storage", "module-storage-postgresql", "module-storage-duckdb", "module-storage-iceberg", "module-storage-elasticsearch", "module-storage-elasticsearch-private", "module-storage-elasticsearch-assets", "module-collection-elasticsearch", "module-catalog-elasticsearch", "module-stac", "module-catalog", "module-gcp", "module-datastore", "module-db-config", "module-iam", "module-local", "module-db", "module-crs", "module-events", "module-elasticsearch", "module-gdal", "module-tiles", "module-cache", "module-tasks", "module-proxy", "module-styles", "module-moving-features", "module-connected-systems", "module-stats", "module-notebooks", "extension-base", "extension-web", "extension-httpx", "extension-catalog", "extension-stac", "extension-auth", "extension-template", "extension-processes", "extension-features", "extension-tiles", "extension-volumes", "extension-tasks", "extension-proxy", "extension-gdal", "extension-styles", "extension-moving-features", "extension-connected-systems", "extension-iam", "extension-logs", "extension-configs", "extension-stats", "extension-crs", "extension-events", "extension-wfs", "extension-admin", "extension-assets", "extension-notebooks", "extension-records", "extension-search", "extension-gcp-bucket", "extension-geoid", "extension-maps", "extension-coverages", "extension-edr", "extension-dggs", "module-coverages-netcdf", "module-coverages-zarr", "extension-dwh", "extension-dimensions", "task-gdal-deps", "task-elasticsearch-deps", "task-elasticsearch-indexer-deps", "task-ingestion-deps", "task-dwh-join-deps", "task-export-features-deps", "task-tiles-preseed-deps", "task-dimensions-materialize-deps", "catalog-task-gcp-provision", "catalog-task-gcp-catalog-cleanup", "catalog", "gcp", "datastore", "db-config", "iam", "db", "crs", "cache", "events", "elasticsearch", "gdal", "maps", "stac", "stats", "web", "geoid", "processes", "features", "styles", "moving-features", "connected-systems", "tiles", "tasks", "proxy", "logs", "assets", "configs", "search", "storage", "auth", "template", "dimensions", "notebooks", "edr", "geospatial-core", "geospatial-io", "geospatial", "db-async", "db-sync", "core", "catalog-data-grp", "catalog-routes-grp", "catalog-grp", "maps-grp", "dwh-grp", "gcp-routes-grp", "google-grp", "auth-grp", "tools-core-grp", "tools-grp", "monitor-grp", "index-grp", "drivers-grp", "task-base", "ingestion", "outbox-drain", "worker-task-dwh-join", "worker-task-ingestion", "worker-task-export-features", "worker-task-tiles-preseed", "worker-task-gdal", "worker-task-dimensions-materialize", "worker-task-elasticsearch-indexer", "api-open", "api-catalog", "api-maps-open", "api-maps", "api-features", "api-full", "geoid-service", "worker-service", "catalog-local", "worker-local", "scope-catalog", "scope-geoid", "scope-worker", "scope-tools", "scope-maps", "all", "typecheck", "test", "notebooks-test", "lite-build", "dev", "mvt", "joins", "dwh", "psycopg-pool"]
+
+[[package]]
+name = "dynastore-ext-admin"
+source = { editable = "packages/extensions/admin" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-assets"
+source = { editable = "packages/extensions/assets" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-auth"
+source = { editable = "packages/extensions/auth" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "dynastore-ext-web" },
+    { name = "fastapi" },
+    { name = "itsdangerous" },
+    { name = "python-multipart" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "dynastore-ext-web", editable = "packages/extensions/web" },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "itsdangerous", specifier = ">=2.2.0" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+]
+
+[[package]]
+name = "dynastore-ext-configs"
+source = { editable = "packages/extensions/configs" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-connected-systems"
+version = "0.0.0"
+source = { editable = "packages/extensions/connected_systems" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
+]
+
+[[package]]
+name = "dynastore-ext-coverages"
+version = "0.0.0"
+source = { editable = "packages/extensions/coverages" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "geojson-pydantic" },
+    { name = "rasterio" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "rasterio", specifier = ">=1.4.3" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-crs"
+version = "0.0.0"
+source = { editable = "packages/extensions/crs" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "pyproj" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "pyproj", specifier = ">=3.0.0" },
+]
+
+[[package]]
+name = "dynastore-ext-dggs"
+version = "0.0.0"
+source = { editable = "packages/extensions/dggs" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "h3" },
+    { name = "s2sphere" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "h3", specifier = ">=4.1.0" },
+    { name = "s2sphere", specifier = ">=0.2.5" },
+]
+
+[[package]]
+name = "dynastore-ext-dimensions"
+version = "0.0.0"
+source = { editable = "packages/extensions/dimensions" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "ogc-dimensions" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "ogc-dimensions", git = "https://github.com/ccancellieri/ogc-dimensions.git?subdirectory=reference-implementation&rev=main" },
+]
+
+[[package]]
+name = "dynastore-ext-dwh"
+version = "0.0.0"
+source = { editable = "packages/extensions/dwh" }
+dependencies = [
+    { name = "db-dtypes" },
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "google-cloud-bigquery" },
+    { name = "pandas" },
+    { name = "pyproj" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "db-dtypes" },
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "google-cloud-bigquery" },
+    { name = "pandas" },
+    { name = "pyproj", specifier = ">=3.0.0" },
+]
+
+[[package]]
+name = "dynastore-ext-edr"
+version = "0.0.0"
+source = { editable = "packages/extensions/edr" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "geojson-pydantic" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-events"
+version = "0.0.0"
+source = { editable = "packages/extensions/events" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-features"
+version = "0.0.0"
+source = { editable = "packages/extensions/features" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "geojson-pydantic" },
+    { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "pygeofilter", extras = ["backend-sqlalchemy"] },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-gcp-bucket"
+version = "0.0.0"
+source = { editable = "packages/extensions/gcp" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "google-cloud-storage" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "google-cloud-storage", specifier = ">=3.1.0" },
+]
+
+[[package]]
+name = "dynastore-ext-gdal"
+version = "0.0.0"
+source = { editable = "packages/extensions/gdal" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "dynastore-ext-httpx" },
+    { name = "fastapi" },
+    { name = "gdal" },
+    { name = "geojson-pydantic" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "dynastore-ext-httpx", editable = "packages/extensions/httpx" },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "gdal", specifier = "==3.12.3" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-geoid"
+version = "0.0.0"
+source = { editable = "packages/extensions/geoid" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "user-agents" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "user-agents", specifier = ">=2.2.0" },
+]
+
+[[package]]
+name = "dynastore-ext-httpx"
+version = "0.0.0"
+source = { editable = "packages/extensions/httpx" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "httpx" },
+]
+
+[[package]]
+name = "dynastore-ext-iam"
+source = { editable = "packages/extensions/iam" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "dynastore-ext-web" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pyjwt" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "dynastore-ext-web", editable = "packages/extensions/web" },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "httpx", specifier = ">=0.24.1" },
+    { name = "pyjwt", specifier = ">=2.8.0" },
+]
+
+[[package]]
+name = "dynastore-ext-joins"
+version = "0.0.0"
+source = { editable = "packages/extensions/joins" }
+dependencies = [
+    { name = "db-dtypes" },
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "google-cloud-bigquery" },
+    { name = "pandas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "db-dtypes" },
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "google-cloud-bigquery" },
+    { name = "pandas" },
+]
+
+[[package]]
+name = "dynastore-ext-logs"
+source = { editable = "packages/extensions/logs" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "dynastore-ext-web" },
+    { name = "fastapi" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "dynastore-ext-web", editable = "packages/extensions/web" },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "httpx", specifier = ">=0.24.1" },
+]
+
+[[package]]
+name = "dynastore-ext-maps"
+version = "0.0.0"
+source = { editable = "packages/extensions/maps" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "gdal" },
+    { name = "geojson-pydantic" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "gdal", specifier = "==3.12.3" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-moving-features"
+version = "0.0.0"
+source = { editable = "packages/extensions/moving_features" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
+]
+
+[[package]]
+name = "dynastore-ext-notebooks"
+version = "0.0.0"
+source = { editable = "packages/extensions/notebooks" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "python-dotenv" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "httpx" },
+    { name = "python-dotenv" },
+]
+
+[[package]]
+name = "dynastore-ext-processes"
+version = "0.0.0"
+source = { editable = "packages/extensions/processes" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "jsonschema" },
+]
+
+[[package]]
+name = "dynastore-ext-proxy"
+version = "0.0.0"
+source = { editable = "packages/extensions/proxy" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-records"
+version = "0.0.0"
+source = { editable = "packages/extensions/records" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "pygeofilter", extras = ["backend-sqlalchemy"] },
+]
+
+[[package]]
+name = "dynastore-ext-search"
+version = "0.0.0"
+source = { editable = "packages/extensions/search" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-stac"
+version = "0.0.0"
+source = { editable = "packages/extensions/stac" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "pystac", extra = ["validation"] },
+    { name = "stac-pydantic", extra = ["validation"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "pystac", extras = ["validation"], specifier = ">=1.13.0" },
+    { name = "stac-pydantic", extras = ["validation"], specifier = ">=3.1.0" },
+]
+
+[[package]]
+name = "dynastore-ext-stats"
+version = "0.0.0"
+source = { editable = "packages/extensions/stats" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+]
+
+[[package]]
+name = "dynastore-ext-styles"
+version = "0.0.0"
+source = { editable = "packages/extensions/styles" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "lxml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "lxml", specifier = ">=4.9" },
+]
+
+[[package]]
+name = "dynastore-ext-tasks"
+version = "0.0.0"
+source = { editable = "packages/extensions/tasks" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
+    { name = "uvicorn" },
+]
+
+[[package]]
+name = "dynastore-ext-template"
+version = "0.0.0"
+source = { editable = "packages/extensions/template" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "attrs" },
+    { name = "dynastore" },
+    { name = "dynastore-ext-httpx" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "xmltodict" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.12.15" },
+    { name = "attrs", specifier = ">=25.3.0" },
+    { name = "dynastore", editable = "." },
+    { name = "dynastore-ext-httpx", editable = "packages/extensions/httpx" },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "httpx", specifier = ">=0.24.1" },
+    { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "xmltodict", specifier = ">=0.13.0" },
+]
+
+[[package]]
+name = "dynastore-ext-tiles"
+version = "0.0.0"
+source = { editable = "packages/extensions/tiles" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "geojson-pydantic" },
+    { name = "morecantile" },
+    { name = "pmtiles" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "morecantile", specifier = ">=7.0.3,<8" },
+    { name = "pmtiles", specifier = ">=3.2.0" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
+
+[[package]]
+name = "dynastore-ext-web"
+source = { editable = "packages/extensions/web" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "markdown" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "markdown", specifier = ">=3.3.7" },
+    { name = "uvicorn" },
+]
+
+[[package]]
+name = "dynastore-ext-wfs"
+version = "0.0.0"
+source = { editable = "packages/extensions/wfs" }
+dependencies = [
+    { name = "dynastore" },
+    { name = "fastapi" },
+    { name = "geojson-pydantic" },
+    { name = "pyproj" },
+    { name = "shapely" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynastore", editable = "." },
+    { name = "fastapi", specifier = ">=0.100" },
+    { name = "geojson-pydantic", specifier = ">=1.0.0" },
+    { name = "pyproj", specifier = ">=3.0.0" },
+    { name = "shapely", specifier = ">=2.1.1" },
+]
 
 [[package]]
 name = "email-validator"
@@ -5295,6 +6652,54 @@ wheels = [
 ]
 
 [[package]]
+name = "rasterio"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "affine" },
+    { name = "attrs" },
+    { name = "certifi" },
+    { name = "click" },
+    { name = "click-plugins" },
+    { name = "cligj" },
+    { name = "numpy" },
+    { name = "pyparsing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ec/fa/fce8dc9f09e5bc6520b6fc1b4ecfa510af9ca06eb42ad7bdff9c9b8989d0/rasterio-1.4.4.tar.gz", hash = "sha256:c95424e2c7f009b8f7df1095d645c52895cd332c0c2e1b4c2e073ea28b930320", size = 445004, upload-time = "2025-12-12T18:01:08.971Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/fc/63d89ddfcb4643730553683ee322566b9b15fe56d026e4c21c4f4f5d9d26/rasterio-1.4.4-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:f3c4f0cbd188f893011f2a0a6dc2852b3892799b3a0d79eddf92f2b115ec7ed7", size = 21120715, upload-time = "2025-12-12T17:59:19.35Z" },
+    { url = "https://files.pythonhosted.org/packages/43/70/2c003f76a23dbb078fdee35c8e2ec490d2ad8982f4dc956ba08b56027b87/rasterio-1.4.4-cp312-cp312-macosx_15_0_x86_64.whl", hash = "sha256:6fce26090b9f509eab337228420145947c491a13628965410f25bc3e6e05cf75", size = 25732944, upload-time = "2025-12-12T17:59:22.533Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/cc/4a8e92362c0ff496dd1007c3dcba66e9ededf1a45eca8ad1db302b071c49/rasterio-1.4.4-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:c1c722da390dc264aeccdc0dc200ca37923875d910ca4cd5bec0fec351bb818e", size = 34295209, upload-time = "2025-12-12T17:59:26.035Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/6d/717d2dec47fbefad33ca0d27bd5f0d543b1d1bc9fcab5ef82a13adaaf38d/rasterio-1.4.4-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:98b6dfb8282b2a54b9d75c3dc8d2520a69bbc66916c7d43de8e0bbf6e0240ca1", size = 35661866, upload-time = "2025-12-12T17:59:29.928Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/60/ae3351fba2726ec0976974ce2eb030c159edd3363b8771e832b8db571c24/rasterio-1.4.4-cp312-cp312-win_amd64.whl", hash = "sha256:9513f4c7a6d93b45098f8dff2421fa9516604e3bfbf35aa144484a88d36a321f", size = 25682853, upload-time = "2025-12-12T17:59:35.869Z" },
+    { url = "https://files.pythonhosted.org/packages/38/ee/35387296bbacfc5cbbb4273228b1b959793d3ce38b0402a07f11a248420b/rasterio-1.4.4-cp312-cp312-win_arm64.whl", hash = "sha256:60b49a482e0f12f12ce9d2cc3090add02f89f3d422e85f2cffaa9207adb83c04", size = 24043249, upload-time = "2025-12-12T17:59:39.915Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/fe/e3e37041c49956f4f4cbe473c3fe290aaba96ed20e9c07da304e0cad2015/rasterio-1.4.4-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:df26c96aa81ffbd0b33189680859211eadf9950123c21579f84de73bb0f91d81", size = 21107336, upload-time = "2025-12-12T17:59:43.585Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/02/c217fdcc8e80a4b7d1b1bc4529d78f98452816e9add53ff8742049a77ae7/rasterio-1.4.4-cp313-cp313-macosx_15_0_x86_64.whl", hash = "sha256:b3af0ecc922a80f3755516629f7948e37bade9077b5f5c12a3869a5e7f01619b", size = 25719929, upload-time = "2025-12-12T17:59:47.64Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/d0/7f177f37bc9595d809dabb0073abd0c42358469f6b10875192b46331c652/rasterio-1.4.4-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:7ce3b0f9a22e95a27790087908753973644d7c3877d495ec9bd6e04a25233ca4", size = 34198845, upload-time = "2025-12-12T17:59:52.405Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/84/66c0d9cca2a09074ec2ce6fffa87709ca51b0d197ae742d835e841bac660/rasterio-1.4.4-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:c072450caa96428b1218b030500bb908fd6f09bc013a88969ff81a124b6a112a", size = 35576074, upload-time = "2025-12-12T17:59:56.392Z" },
+    { url = "https://files.pythonhosted.org/packages/32/68/f7df5478458ace2fa50be43e9fab1a39957a0e71afaa3e6147ec289e0fc8/rasterio-1.4.4-cp313-cp313-win_amd64.whl", hash = "sha256:16ee92ef10c0ba89f45f9c2b40fca9f971f357385f04ee9b716fb09cbd9ce20c", size = 25680573, upload-time = "2025-12-12T18:00:00.45Z" },
+    { url = "https://files.pythonhosted.org/packages/34/e5/1bdaccb658430dfd391ad4a63d206546f36639d7e4130bf31f125c6525b4/rasterio-1.4.4-cp313-cp313-win_arm64.whl", hash = "sha256:65c10afe64b5e488185aaff0b659e08eda22c89285b54a3e433b80e6c6621770", size = 24040367, upload-time = "2025-12-12T18:00:04.443Z" },
+    { url = "https://files.pythonhosted.org/packages/32/76/54643a7d1d650fd7f1acea9093c298603e4c01bba6f90be2254310b48507/rasterio-1.4.4-cp313-cp313t-macosx_14_0_arm64.whl", hash = "sha256:18c2c1130e789dc2771d0aa5ec4b56d5b8a0097c648ccb94882d5ff3ab55c928", size = 21247203, upload-time = "2025-12-12T18:00:07.547Z" },
+    { url = "https://files.pythonhosted.org/packages/76/ef/434b4849ccd6a3e03a0b1ac37c963c1771564945745613d15c5d96ce768d/rasterio-1.4.4-cp313-cp313t-macosx_15_0_x86_64.whl", hash = "sha256:2d1654b7ffa6f3dde42c5fd27159ae45148c11e352de26f12fe7313a3236aeed", size = 25822050, upload-time = "2025-12-12T18:00:11.081Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/fa/fe9a478aa0cde246da58baeb0df3248c7ca174e4d9c9b27e81b504e40a76/rasterio-1.4.4-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:c4022cbddb659856e120603b12233cec8913ae760fff220657ce888c3c6b9f9d", size = 34833783, upload-time = "2025-12-12T18:00:14.525Z" },
+    { url = "https://files.pythonhosted.org/packages/04/cd/ed4716590dbcd4b8ae633417d758564e510bee4d6aaac5050a0f6d5179c5/rasterio-1.4.4-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:96b88880551a07b7a3b50439483cefbd9af91a09e19ff2b736815994e5671314", size = 35738114, upload-time = "2025-12-12T18:00:17.96Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/29/da7050d11ba1d041e0333ac14768e6e9ca1aa2b9fa8416f317d2650ed276/rasterio-1.4.4-cp313-cp313t-win_amd64.whl", hash = "sha256:def75d486d0ab8f306f918a913c425ed57159495518c54efe8e18d5164d37d90", size = 25896835, upload-time = "2025-12-12T18:00:21.411Z" },
+    { url = "https://files.pythonhosted.org/packages/88/80/304dbe5434c4aa8dfaf90480c16d770161796a6a61fa88e72e8a402153df/rasterio-1.4.4-cp313-cp313t-win_arm64.whl", hash = "sha256:770b7e86f6c565e6f9cf30f6fa4479a5a2bab4e10ff44fe7acfd518ca4a71d1b", size = 24128074, upload-time = "2025-12-12T18:00:24.653Z" },
+    { url = "https://files.pythonhosted.org/packages/03/01/d5a3dc51cd5fef62b76ecc77d33c1ca20de305fed7e16c71bcdf4858e466/rasterio-1.4.4-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:019693f14a83ae9225cb57c16e466901d0e6284962dcf13a9f4bb1175b979011", size = 21120237, upload-time = "2025-12-12T18:00:27.723Z" },
+    { url = "https://files.pythonhosted.org/packages/50/da/db18362602b17327c0e00c9e9c0847c1c4ac657c1a289169ca06a26faccb/rasterio-1.4.4-cp314-cp314-macosx_15_0_x86_64.whl", hash = "sha256:87d7c3e97e3b40c9041d1602e2dcb4fc2d88abe6c645fccb4939dec297a91cf8", size = 25720506, upload-time = "2025-12-12T18:00:30.592Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/8f/a15d66c9c05bffb176c9707ef1f2bfcf9c0b835272937c80ac7207a20b5c/rasterio-1.4.4-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:a2401e4c43a31c7382154d4042b60a63b9bca5886802983c5c9362cdc5b09548", size = 34153931, upload-time = "2025-12-12T18:00:33.852Z" },
+    { url = "https://files.pythonhosted.org/packages/05/2d/cd778286b910db7a3f0bc1743ca362173f1fbb7365137e4982ca857b6d26/rasterio-1.4.4-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:6c4287d8934d953f7870b8e2a1df1096fbf47eba39ad0f777a31ea500f4e5010", size = 35421139, upload-time = "2025-12-12T18:00:37.482Z" },
+    { url = "https://files.pythonhosted.org/packages/70/97/13a2e33aede8d7a42178c696a6a93868d1f9560f73de05033a1675f0806a/rasterio-1.4.4-cp314-cp314-win_amd64.whl", hash = "sha256:c3ba1871549221140661227dd4fa1f9a472ded4a6d2f2c2e367b0648bb15b99d", size = 26419132, upload-time = "2025-12-12T18:00:40.871Z" },
+    { url = "https://files.pythonhosted.org/packages/27/d8/2dcfcb362d6a2fd07c14cfb803a345a7926d4d9fb6243e196df105671e97/rasterio-1.4.4-cp314-cp314-win_arm64.whl", hash = "sha256:7c9d7dc824cb8d222808be153643cd4e65ea3e1f66019ada1ccd630221edfe30", size = 24800998, upload-time = "2025-12-12T18:00:45.332Z" },
+    { url = "https://files.pythonhosted.org/packages/13/f8/16e9b648e7f16cadb41df7c0116dbab26b4a2ba02c85cbe3f744065bdf56/rasterio-1.4.4-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:98e17bded830a59992d9f8f8d9f227ce1c4be0694930afcc4360358f5cb1a5db", size = 21247046, upload-time = "2025-12-12T18:00:49.429Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/ea/f3dc3a25d7591821d488f5c5eb89f6abcd1f5c8e2ef4bd2792f965cbc9c8/rasterio-1.4.4-cp314-cp314t-macosx_15_0_x86_64.whl", hash = "sha256:56134ca203f952855e60774b06672033cf65057eb9810fcc5c1a75f1921053a3", size = 25821677, upload-time = "2025-12-12T18:00:52.458Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/d3/1e038350218e852f904c8dc4ab751aa023a2e82e68998767b7b42e33832c/rasterio-1.4.4-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:52edde65515b33fe4314c8a44a9ee2fc00b550deed6d56e1a8d085d42bbca3e6", size = 34829572, upload-time = "2025-12-12T18:00:56.294Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/ce/28abf7a5f5d9cb014c2e14cc396bebe953b3deefbf604d49f4322e73fa35/rasterio-1.4.4-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:d61d3f2c171c64050bd75e54a5d964ff7f165b3f5d2b92c9ee09b9716aa1b8bf", size = 35735171, upload-time = "2025-12-12T18:00:59.531Z" },
+    { url = "https://files.pythonhosted.org/packages/54/91/1ce35cfda2d56dacd6395faf20a5290268bd9009c53393ac42b5f9bb2c4c/rasterio-1.4.4-cp314-cp314t-win_amd64.whl", hash = "sha256:40137fe512c0d6e96c0167a0ae4e56d82c488f244163c45494b7392e51c844de", size = 26700712, upload-time = "2025-12-12T18:01:03.023Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/33/4d13f48a8f01d782ffc1eece20821586518f3f515dca7cf152bca9fd22d4/rasterio-1.4.4-cp314-cp314t-win_arm64.whl", hash = "sha256:29ec3a794454b5bb255c9c0374cc380030a8a1e295c81eee7feb036802d2a9e3", size = 24875933, upload-time = "2025-12-12T18:01:06.134Z" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5853,6 +7258,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e3/e1/63c5bfb485a945010c8cbc7a52f85573561737648d36b30394248730a7bc/user-agents-2.2.0.tar.gz", hash = "sha256:d36d25178db65308d1458c5fa4ab39c9b2619377010130329f3955e7626ead26", size = 9525, upload-time = "2020-08-23T06:01:56.382Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/1c/20bb3d7b2bad56d881e3704131ddedbb16eb787101306887dff349064662/user_agents-2.2.0-py3-none-any.whl", hash = "sha256:a98c4dc72ecbc64812c4534108806fb0a0b3a11ec3fd1eafe807cee5b0a942e7", size = 9614, upload-time = "2020-08-23T06:01:54.047Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.46.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1f/93/041fca8274050e40e6791f267d82e0e2e27dd165627bd640d3e0e378d877/uvicorn-0.46.0.tar.gz", hash = "sha256:fb9da0926999cc6cb22dc7cd71a94a632f078e6ae47ff683c5c420750fb7413d", size = 88758, upload-time = "2026-04-23T07:16:00.151Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/a3/5b1562db76a5a488274b2332a97199b32d0442aca0ed193697fd47786316/uvicorn-0.46.0-py3-none-any.whl", hash = "sha256:bbebbcbed972d162afca128605223022bedd345b7bc7855ce66deb31487a9048", size = 70926, upload-time = "2026-04-23T07:15:58.355Z" },
 ]
 
 [[package]]

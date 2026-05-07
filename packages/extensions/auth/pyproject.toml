@@ -1,0 +1,39 @@
+#    Copyright 2025 FAO — Apache 2.0; see ../../LICENSE.
+
+[project]
+name = "dynastore-ext-auth"
+dynamic = ["version"]
+description = "DynaStore Auth extension — OIDC/OAuth2 authentication, session management."
+requires-python = ">=3.12"
+license-files = ["../../../LICENSE"]
+dependencies = [
+    "fastapi>=0.100",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.2.0",
+    "dynastore-ext-web",
+    "DynaStore",
+]
+
+[project.entry-points."dynastore.extensions"]
+auth = "dynastore.extensions.auth.authentication:Authentication"
+
+[build-system]
+requires = ["setuptools>=80.9.0", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"dynastore.extensions.auth" = ["static/**/*"]
+
+[tool.uv.sources]
+dynastore = { workspace = true }
+dynastore-ext-web = { workspace = true }
+
+[tool.setuptools_scm]
+version_file = "src/dynastore/extensions/auth/_scm_version.py"
+local_scheme = "no-local-version"
+
+fallback_version = "0.0.0+unknown"
