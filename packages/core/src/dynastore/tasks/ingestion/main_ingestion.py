@@ -226,7 +226,7 @@ async def run_ingestion_task(
         for resolved in write_drivers:
             await resolved.driver.ensure_storage(
                 catalog_id, collection_id,
-                col_config=catalog_config, db_resource=engine,
+                db_resource=engine,
             )
 
         asset_manager = catalog_module.assets

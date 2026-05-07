@@ -403,13 +403,6 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                     catalog_id, collection_id, e,
                 )
 
-        # Normalise col_config: ensure it is an ItemsPostgresqlDriverConfig.
-        # Callers may pass None (not yet stored) or a config resolved from a
-        # different driver class (e.g. ES when ES is the READ driver).
-        # Fall back to defaults so downstream attribute accesses stay type-safe.
-        if not isinstance(col_config, ItemsPostgresqlDriverConfig):
-            col_config = ItemsPostgresqlDriverConfig()
-
         # --- Generate physical table name if not provided ---
         # Prefer the name already stored in col_config (idempotent re-runs);
         # only generate a new name if the collection is truly new.

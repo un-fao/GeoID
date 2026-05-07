@@ -148,7 +148,6 @@ class CollectionService:
         collection_id: str,
         *,
         conn: DbResource,
-        col_config: Optional[Any] = None,
     ) -> None:
         """Provision storage + pin routing for a pending collection.
 
@@ -164,27 +163,14 @@ class CollectionService:
         from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
         # Provision storage. `ensure_storage` is idempotent; concurrent
-        # first-inserts will both call it safely.
+        # first-inserts will both call it safely.  Each driver self-fetches
+        # its own config — no cross-driver type confusion possible.
         try:
             write_driver = await get_driver("WRITE", catalog_id, collection_id)
-
-            # Load col_config from the WRITE driver (not the READ driver).
-            # READ driver may resolve to a different class (e.g. ES when PG
-            # is the authoritative write backend), causing AttributeError when
-            # PG's ensure_storage accesses PG-specific fields like physical_table.
-            if col_config is None:
-                try:
-                    col_config = await write_driver.get_driver_config(
-                        catalog_id, collection_id, db_resource=conn,
-                    )
-                except Exception:
-                    col_config = None
-
             await write_driver.ensure_storage(
                 catalog_id,
                 collection_id,
                 db_resource=conn,
-                col_config=col_config,
             )
         except ValueError:
             # No storage drivers registered — PG-native tables are handled
