@@ -461,6 +461,17 @@ class Web(ExtensionProtocol):
 
         yield
 
+    # NotebookContributorProtocol — opt-in surface picked up by
+    # NotebooksModule via discovery. Returns [] when NotebookContribution
+    # can't be imported so the extension stays loadable in SCOPEs that
+    # don't include the notebooks module.
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def __init__(self, app: Optional[FastAPI] = None):
         self.app = app
 

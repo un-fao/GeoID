@@ -50,10 +50,64 @@ class NotebooksModule(ModuleProtocol):
 
             # Trigger built-in notebook registrations BEFORE seeding so the
             # in-memory registry is populated when `seed_platform_notebooks`
-            # reads it. Each submodule registers via `register_platform_notebook`
-            # at import time. Wrapped per-module so an ImportError (deps absent
-            # in this SCOPE) or any other error (malformed registration, missing
-            # helper) just skips that module rather than aborting startup.
+            # reads it.
+            #
+            # Two pickup paths run side-by-side:
+            #
+            # 1. NotebookContributorProtocol — preferred. Any module or
+            #    extension that exposes ``get_notebooks() -> list[NotebookContribution]``
+            #    is discovered through the protocol registry. If a contributor
+            #    isn't loaded in this SCOPE, it's simply absent from the
+            #    discovery result; no import errors, no hard dependency on
+            #    ``register_platform_notebook`` at extension import time.
+            #
+            # 2. Legacy module-path imports — kept for the four pre-protocol
+            #    submodules that register at import time. New code should
+            #    use the protocol instead. This list is frozen and won't grow.
+            try:
+                from dynastore.models.protocols.notebook_contributor import (
+                    NotebookContributorProtocol,
+                )
+                from dynastore.tools.discovery import get_protocols
+                from .example_registry import register_platform_notebook
+
+                contributors = get_protocols(NotebookContributorProtocol)
+                for contributor in contributors:
+                    contributor_label = type(contributor).__name__
+                    try:
+                        contributions = contributor.get_notebooks() or []
+                    except Exception as e:
+                        logger.warning(
+                            f"NotebooksModule: {contributor_label}.get_notebooks() "
+                            f"raised; skipping. Error: {e}",
+                            exc_info=True,
+                        )
+                        continue
+                    for nb in contributions:
+                        try:
+                            register_platform_notebook(
+                                notebook_id=nb.notebook_id,
+                                registered_by=contributor_label,
+                                notebook_path=nb.notebook_path,
+                                notebook_content=nb.notebook_content,
+                                title=nb.title,
+                                description=nb.description,
+                                tags=list(nb.tags or []),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"NotebooksModule: failed to register "
+                                f"contribution '{nb.notebook_id}' from "
+                                f"{contributor_label}: {e}",
+                                exc_info=True,
+                            )
+            except Exception as e:
+                logger.warning(
+                    f"NotebooksModule: protocol-based contributor discovery "
+                    f"failed; falling back to legacy imports only. Error: {e}",
+                    exc_info=True,
+                )
+
             for mod_path in (
                 "dynastore.modules.catalog.notebooks",
                 "dynastore.modules.storage.notebooks",
@@ -73,7 +127,6 @@ class NotebooksModule(ModuleProtocol):
                         f"'{mod_path}' — module deps not present in this SCOPE: {e}"
                     )
                 except Exception as e:
-                    # Defensive: a bad registration must not crash startup.
                     logger.warning(
                         f"NotebooksModule: built-in registrations from "
                         f"'{mod_path}' failed; skipping. Error: {e}",

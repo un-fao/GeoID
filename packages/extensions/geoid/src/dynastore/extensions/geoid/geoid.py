@@ -179,10 +179,18 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
         register_condition_handler(CatalogLookupAudienceHandler())
         register_condition_handler(CollectionWriteAudienceHandler())
         register_geoid_policies()
-        # Import for side effect: registers showcase notebooks into the
-        # platform notebook table so JupyterLite picks them up.
-        from . import notebooks  # noqa: F401
         yield
+
+    # NotebookContributorProtocol — opt-in surface picked up by
+    # NotebooksModule via discovery. Returns [] when NotebookContribution
+    # can't be imported so the extension stays loadable in SCOPEs that
+    # don't include the notebooks module.
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
 
     # ------------------------------------------------------------------ #
     #  StaticFilesProtocol                                                 #

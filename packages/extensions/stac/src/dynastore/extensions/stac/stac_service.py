@@ -219,10 +219,18 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         # Policies declared via PolicyContributor; IAM forwards centrally.
-        # Side-effect import: registers showcase notebooks into the platform
-        # notebook table so JupyterLite picks them up.
-        from . import notebooks  # noqa: F401
         yield
+
+    # NotebookContributorProtocol — opt-in surface picked up by
+    # NotebooksModule via discovery. Returning an empty list when
+    # NotebookContribution can't be imported keeps the extension
+    # usable in SCOPEs that don't load the notebooks module.
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
 
     def get_policies(self):
         return stac_policies()
