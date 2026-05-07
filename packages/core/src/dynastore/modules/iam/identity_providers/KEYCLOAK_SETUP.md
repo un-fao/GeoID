@@ -218,7 +218,7 @@ The fallback in `oidc_identity.py:238` only fires when `sub` is absent in the to
 **Mitigation options** in priority order:
 
 1. **Re-trigger IAM seeding** — if your auto-grant code runs on every login (resolves the JWT's `realm_access.roles` and creates fresh grants for the new principal), the new principal will get its grants on first login post-deploy. Most local dev stacks behave this way.
-2. **Reconcile via SQL** — for environments where grants were created manually, find each `oidc:<username>` principal and re-create the grants under the new `oidc:<uuid>` row. Match via `iam.identity_links` if present, or via `display_name`.
+2. **Reconcile via SQL** — for environments where grants were created manually, find each `oidc:<username>` principal and re-create the grants under the new `oidc:<uuid>` row. A ready-to-run script is provided at `identity_providers/reconcile_oidc_sub_mapper.sql`. It copies platform and catalog-scoped grants from each orphaned principal to its `display_name`-matched successor, then marks the old row inactive (non-destructive, reversible). Run in a transaction; use `ROLLBACK` instead of `COMMIT` for a dry run first.
 3. **Defer the mapper** — if (1) and (2) are not feasible, leave the realm's old behavior intact and rely on the `preferred_username` fallback. Document this and revisit when downstream tooling requires the canonical OIDC `sub`.
 
 Symptom of the orphan state: every authenticated request returns `403 Deny by Default — No matching ALLOW policy found` from the moment the mapper takes effect, until the new principal accumulates grants. The `iam.principals` table will show a new row with `identifier = 'oidc:<uuid>'` and zero rows in `iam.grants` for that `subject_ref`.
