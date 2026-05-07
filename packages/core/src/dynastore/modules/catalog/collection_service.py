@@ -1106,3 +1106,57 @@ class CollectionService:
             return True
 
 
+async def _sync_collection_privacy_to_es(
+    config: Any,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[Any],
+) -> None:
+    """Apply handler for ``CollectionPrivacy`` — re-upsert the collection's
+    metadata so the denormalised ``is_private`` in ``dynastore-collections``
+    stays in sync with the privacy plugin.
+
+    Without this, a direct PATCH on ``CollectionPrivacy`` updates the configs
+    table but leaves the search index lagging until the next collection-model
+    write touches the doc. Operators expect privacy edits to take effect at
+    search time immediately after the PATCH commits.
+
+    No-op at platform/catalog scope — privacy is a per-collection concept.
+    Best-effort: any error is logged and swallowed (the privacy write itself
+    has already committed by the time apply handlers run).
+    """
+    from dynastore.modules.catalog.catalog_config import CollectionPrivacy
+    if not isinstance(config, CollectionPrivacy):
+        return
+    if not catalog_id or not collection_id:
+        return
+
+    try:
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            return
+        collection_model = await catalogs.get_collection(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+        if collection_model is None:
+            return
+        metadata_payload = collection_model.model_dump(
+            by_alias=True, exclude_none=True,
+        )
+        metadata_payload["is_private"] = bool(
+            getattr(config, "is_private", False),
+        )
+        from dynastore.modules.catalog.collection_router import (
+            upsert_collection_metadata as _route_upsert_metadata,
+        )
+        await _route_upsert_metadata(
+            catalog_id, collection_id, metadata_payload,
+            db_resource=db_resource,
+        )
+    except Exception as e:
+        logger.warning(
+            "CollectionPrivacy → ES sync failed for %s/%s: %s "
+            "(search index will lag until next metadata write).",
+            catalog_id, collection_id, e,
+        )
+
