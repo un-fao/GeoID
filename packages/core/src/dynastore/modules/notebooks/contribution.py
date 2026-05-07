@@ -7,7 +7,7 @@ seeds `notebooks.platform_notebooks` (ON CONFLICT DO NOTHING).
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dynastore.models.localization import LocalizedText
 
@@ -42,7 +42,9 @@ class NotebookContribution(BaseModel):
         default=None,
         description=(
             "Allowlist of catalog ids the notebook is meant for. "
-            "None or [] means it applies to every catalog."
+            "Canonical 'applies to every catalog' value is None; an empty list "
+            "is normalised to None at construction so downstream consumers only "
+            "ever see one representation."
         ),
     )
     registered_by: str = Field(
@@ -52,6 +54,19 @@ class NotebookContribution(BaseModel):
             "and grouping in the admin view. No default — orphan rows are bugs."
         ),
     )
+
+    @field_validator("applies_to", mode="after")
+    @classmethod
+    def _empty_applies_to_is_none(cls, value: list[str] | None) -> list[str] | None:
+        """Normalise an empty allowlist to ``None``.
+
+        Both ``None`` and ``[]`` semantically mean "applies to every catalog";
+        collapsing to a single canonical form (``None``) keeps aggregator and
+        SQL filter code simple downstream.
+        """
+        if value is not None and len(value) == 0:
+            return None
+        return value
 
     @model_validator(mode="after")
     def _exactly_one_source(self) -> "NotebookContribution":

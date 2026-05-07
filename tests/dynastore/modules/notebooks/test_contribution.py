@@ -8,7 +8,9 @@ from dynastore.modules.notebooks.contribution import NotebookContribution
 
 
 def test_path_or_content_required():
-    with pytest.raises(ValidationError, match="notebook_path.*notebook_content"):
+    with pytest.raises(
+        ValidationError, match="Provide one of notebook_path or notebook_content"
+    ):
         NotebookContribution(
             notebook_id="x",
             title=LocalizedText(en="X"),
@@ -51,3 +53,14 @@ def test_applies_to_accepts_list_of_ids():
         applies_to=["demo-catalog", "spanner-catalog"],
     )
     assert c.applies_to == ["demo-catalog", "spanner-catalog"]
+
+
+def test_applies_to_empty_list_normalised_to_none():
+    c = NotebookContribution(
+        notebook_id="x",
+        title=LocalizedText(en="X"),
+        registered_by="t",
+        notebook_content={},
+        applies_to=[],
+    )
+    assert c.applies_to is None
