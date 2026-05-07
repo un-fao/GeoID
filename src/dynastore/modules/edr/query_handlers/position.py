@@ -59,15 +59,13 @@ def extract_point_values(
             row = max(0, min(box.row_off, ref.height - 1))
             box = WindowBox(col, row, 1, 1)
 
-        import rasterio.windows  # type: ignore[import]
+        import rasterio.windows
 
         values: Dict[int, Optional[float]] = {}
         for band_idx in range(1, ds.count + 1):
             arr = ds.read(
                 band_idx,
-                window=rasterio.windows.Window(
-                    box.col_off, box.row_off, box.width, box.height
-                ),
+                window=rasterio.windows.Window(box.col_off, box.row_off, box.width, box.height),  # type: ignore
             )
             values[band_idx] = float(arr.flat[0]) if arr.size > 0 else None
         return values
