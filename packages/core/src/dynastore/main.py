@@ -28,7 +28,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import sys
 import os
 from contextlib import asynccontextmanager
-from dynastore import modules, extensions, tasks
+from dynastore import modules, tasks
+from dynastore.modules import (
+    lifespan as modules_lifespan,
+    discover_modules,
+    instantiate_modules,
+    get_protocol,
+)
+from dynastore.extensions.lifespan import lifespan as extensions_lifespan
 from dynastore._version import VERSION, get_build_info
 from dynastore.extensions.tools.fast_api import ORJSONResponse
 from dynastore.extensions.bootstrap import bootstrap_app
@@ -125,13 +132,13 @@ async def lifespan(app: FastAPI):
     # /local-upload, /local-download endpoints) can reach it without
     # being promoted to extensions.
     app.state.app = app
-    async with modules.lifespan(app.state):
+    async with modules_lifespan(app.state):
         logger.info("--- [main.py] Modules are active. ---")
         # Extensions can now reliably access services from modules and task instances.
-        async with extensions.lifespan(app):
+        async with extensions_lifespan(app):
             # Flush any pending policy/role registrations from extensions
             from dynastore.models.protocols.policies import PermissionProtocol
-            pm = modules.get_protocol(PermissionProtocol)
+            pm = get_protocol(PermissionProtocol)
             flush = getattr(pm, "flush_pending_registrations", None)
             if flush is not None:
                 await flush()
@@ -246,13 +253,13 @@ async def run_worker(concurrency: int = 1):
     app_state = SimpleNamespace()
 
     # 1. Discover all modules based on SCOPE environment variable.
-    modules.discover_modules()
+    discover_modules()
 
     # 2. Instantiate all discovered modules using the shared state object.
-    modules.instantiate_modules(app_state)
+    instantiate_modules(app_state)
 
     # 3. Run module lifespans — TasksModule will start the dispatcher and queue listener.
-    async with modules.lifespan(app_state):
+    async with modules_lifespan(app_state):
         logger.info("--- [main.py] Worker running. Dispatcher managed by TasksModule. ---")
         # Block until manually terminated (SIGTERM will set the shutdown event
         # inside TasksModule and clean up gracefully).

@@ -887,7 +887,8 @@ async def app_lifespan(
         # which is triggered by modules.lifespan(app.state) above.
 
         try:
-            await stack.enter_async_context(extensions.lifespan(app))
+            from dynastore.extensions.lifespan import lifespan as _ext_lifespan
+            await stack.enter_async_context(_ext_lifespan(app))
         except Exception as e:
             import logging
 
@@ -1071,7 +1072,8 @@ async def app_lifespan_module(request):
             logging.getLogger(__name__).warning(f"Tests: Could not apply GCP config: {e}")
 
         try:
-            await stack.enter_async_context(extensions.lifespan(app))
+            from dynastore.extensions.lifespan import lifespan as _ext_lifespan
+            await stack.enter_async_context(_ext_lifespan(app))
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f"Extension lifespan partially failed: {e}")

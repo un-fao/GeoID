@@ -32,15 +32,20 @@ async def main():
     app_state = AppState()
     # 1. Discover all modules based on the SCOPE environment variable.
     #    This populates the internal module registry.
-    modules.discover_modules() # Populates the registry with module classes.
+    from dynastore.modules import (
+        discover_modules,
+        instantiate_modules,
+        lifespan as modules_lifespan,
+    )
+    discover_modules() # Populates the registry with module classes.
 
     # 1.5. Instantiate all discovered modules using the shared state object.
-    modules.instantiate_modules(app_state)
+    instantiate_modules(app_state)
 
     # 2. Use the modules.lifespan context manager. This is the key.
     #    It will instantiate all discovered modules and enter their individual
     #    lifespan contexts, setting up database connections, event listeners, etc.
-    async with modules.lifespan(app_state):
+    async with modules_lifespan(app_state):
         logger.info("--- [main_worker.py] All module lifespans entered. Starting Procrastinate worker... ---")
         # Get the app instance *after* the lifespan has started and configured it.
         procrastinate_app = get_procrastinate_app()
