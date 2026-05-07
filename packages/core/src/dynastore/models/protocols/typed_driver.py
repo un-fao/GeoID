@@ -153,6 +153,19 @@ class TypedDriver(Generic[ConfigT]):
                 "A config class can serve at most one driver class.",
             )
         _DRIVER_REGISTRY[direct_bind] = cls
+        # Re-key the bound config in TypedModelRegistry: at config-class
+        # creation time the bind hadn't happened yet, so the config registered
+        # under its qualname-derived key (e.g. ``items_postgresql_driver_config``).
+        # Now that the driver is bound, ``class_key()`` returns the driver-derived
+        # key (``items_postgresql_driver``); ensure ``TypedModelRegistry.get()``
+        # finds it under that operator-facing key. Without this, lookups via
+        # ``resolve_config_class("items_postgresql_driver")`` return ``None`` even
+        # though ``list_registered_configs()`` (which calls ``cls.class_key()``
+        # at iteration time) lists the same class under the post-bind key.
+        from dynastore.tools.typed_store.registry import TypedModelRegistry
+        new_key = direct_bind.class_key()
+        if TypedModelRegistry.get(new_key) is not direct_bind:
+            TypedModelRegistry._by_key[new_key] = direct_bind
 
 
 class _PluginDriverConfig(PluginConfig):

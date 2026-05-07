@@ -574,8 +574,8 @@ class ConfigApiService:
                         links.append(Link(
                             rel="driver-config",
                             href=f"{base_url.rstrip('/')}/plugins/{driver_ref}",
-                            method="PATCH",
-                            title=f"PATCH this driver's config at {scope_label} scope",
+                            method="PUT",
+                            title=f"PUT this driver's config at {scope_label} scope",
                         ))
                     refs.append(DriverRef(
                         driver_ref=driver_ref,
@@ -748,8 +748,8 @@ class ConfigApiService:
             Link(
                 rel="edit",
                 href=f"{base_url}/plugins/{{class_key}}",
-                method="PATCH",
-                title="Modify a single config class at this scope",
+                method="PUT",
+                title="Replace a single config class at this scope (use PATCH on parent scope for partial multi-plugin merge-patch)",
                 templated=True,
             ),
         ]
