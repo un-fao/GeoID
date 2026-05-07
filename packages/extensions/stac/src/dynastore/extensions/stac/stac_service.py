@@ -930,28 +930,44 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         if not was_single:
             return self._build_bulk_creation_response(accepted_rows)
 
-        # Single-item path: render a full STAC Item response
-        new_row = accepted_rows[0]
-        response_item = await stac_generator.create_item_from_feature(
-            request=request,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            stac_config=stac_config,
-            lang=language,
-            feature=new_row,
-        )
-        if not response_item:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to generate STAC Item from created row.",
+        # Single-item path: render a full STAC Item response.
+        # NOTE: the write transaction has already committed at this point.
+        # Rendering failures are surfaced via handle_exception but do NOT
+        # roll back the written item — it is safely in PG and the OUTBOX.
+        try:
+            new_row = accepted_rows[0]
+            response_item = await stac_generator.create_item_from_feature(
+                request=request,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                stac_config=stac_config,
+                lang=language,
+                feature=new_row,
             )
-        logical_id = new_row.id or items_to_validate[0].id
-        response_item.id = str(logical_id)
-        return JSONResponse(
-            content=response_item.to_dict(),
-            status_code=status.HTTP_201_CREATED,
-            headers={"Location": f"{get_url(request)}/{logical_id}"},
-        )
+            if not response_item:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to generate STAC Item from created row.",
+                )
+            logical_id = new_row.id or items_to_validate[0].id
+            response_item.id = str(logical_id)
+            return JSONResponse(
+                content=response_item.to_dict(),
+                status_code=status.HTTP_201_CREATED,
+                headers={"Location": f"{get_url(request)}/{logical_id}"},
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            _exc = handle_exception(
+                e,
+                resource_name="STAC Item",
+                resource_id=f"{catalog_id}:{collection_id}",
+                operation="STAC Item response rendering",
+            )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def update_stac_item(
         self,
