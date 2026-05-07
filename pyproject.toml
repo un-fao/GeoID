@@ -469,42 +469,13 @@ dwh = ["dynastore[joins]"]
 psycopg_pool = ["psycopg[binary,pool]"]
 
 
-[project.entry-points."dynastore.extensions"]
-# maps: migrated to packages/extensions/maps (dynastore-ext-maps wheel)
-# stac: migrated to packages/extensions/stac (dynastore-ext-stac wheel)
-# dwh: migrated to packages/extensions/dwh (dynastore-ext-dwh wheel)
-# joins: migrated to packages/extensions/joins (dynastore-ext-joins wheel)
-# tasks: migrated to packages/extensions/tasks (dynastore-ext-tasks wheel) — Phase 1 pilot
-# proxy: migrated to packages/extensions/proxy (dynastore-ext-proxy wheel)
-# gdal: migrated to packages/extensions/gdal (dynastore-ext-gdal wheel)
-# auth: migrated to packages/extensions/auth (dynastore-ext-auth wheel)
-# web: migrated to packages/extensions/web (dynastore-ext-web wheel)
-# processes: migrated to packages/extensions/processes (dynastore-ext-processes wheel)
-# features: migrated to packages/extensions/features (dynastore-ext-features wheel)
-# template: migrated to packages/extensions/template (dynastore-ext-template wheel)
-# admin: migrated to packages/extensions/admin (dynastore-ext-admin wheel)
-# geoid: migrated to packages/extensions/geoid (dynastore-ext-geoid wheel)
-# gcp_bucket: migrated to packages/extensions/gcp (dynastore-ext-gcp-bucket wheel)
-# search: migrated to packages/extensions/search (dynastore-ext-search wheel)
-# styles: migrated to packages/extensions/styles (dynastore-ext-styles wheel)
-# connected_systems: migrated to packages/extensions/connected_systems (dynastore-ext-connected-systems wheel)
-# httpx: migrated to packages/extensions/httpx (dynastore-ext-httpx wheel)
-# iam: migrated to packages/extensions/iam (dynastore-ext-iam wheel)
-# logs: migrated to packages/extensions/logs (dynastore-ext-logs wheel)
-# configs: migrated to packages/extensions/configs (dynastore-ext-configs wheel)
-# crs: migrated to packages/extensions/crs (dynastore-ext-crs wheel)
-# events: migrated to packages/extensions/events (dynastore-ext-events wheel)
-# wfs: migrated to packages/extensions/wfs (dynastore-ext-wfs wheel)
-# assets: migrated to packages/extensions/assets (dynastore-ext-assets wheel)
-# notebooks: migrated to packages/extensions/notebooks (dynastore-ext-notebooks wheel)
-# stats: migrated to packages/extensions/stats (dynastore-ext-stats wheel) — Phase 1 pilot
-# tiles: migrated to packages/extensions/tiles (dynastore-ext-tiles wheel)
-# dimensions: migrated to packages/extensions/dimensions (dynastore-ext-dimensions wheel)
-# records: migrated to packages/extensions/records (dynastore-ext-records wheel)
-# coverages: migrated to packages/extensions/coverages (dynastore-ext-coverages wheel)
-# edr: migrated to packages/extensions/edr (dynastore-ext-edr wheel)
-# moving_features: migrated to packages/extensions/moving_features (dynastore-ext-moving-features wheel)
-# dggs: migrated to packages/extensions/dggs (dynastore-ext-dggs wheel)
+# `[project.entry-points."dynastore.extensions"]` is intentionally NOT
+# declared here. After the per-extension wheel migration (#397/#398) every
+# extension ships its own wheel under packages/extensions/<name>/ and its
+# `[project.entry-points."dynastore.extensions"]` block lives in that
+# wheel's pyproject.toml. The runtime aggregates contributions from every
+# installed wheel via importlib.metadata, so SCOPE alone gates which
+# extensions register at boot.
 
 
 [tool.setuptools]
