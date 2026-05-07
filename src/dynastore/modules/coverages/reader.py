@@ -23,5 +23,5 @@ def read_window_iter(ds, box: WindowBox, band: int = 1, block: int = 512) -> Ite
         rh = min(block, box.row_off + box.height - row)
         for col in range(box.col_off, box.col_off + box.width, block):
             cw = min(block, box.col_off + box.width - col)
-            arr = ds.read(band, window=Window(col, row, cw, rh))
+            arr = ds.read(band, window=Window(col, row, cw, rh))  # type: ignore
             yield np.asarray(arr)

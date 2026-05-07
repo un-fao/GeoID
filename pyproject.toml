@@ -602,7 +602,11 @@ reportUnknownMemberType = false
 reportUnknownParameterType = false
 reportUnknownVariableType = false
 reportMissingParameterType = false
-reportUnnecessaryTypeIgnoreComment = "warning"
+# Disabled: optional cross-env packages (rasterio, zarr, osgeo, _scm_version)
+# are present in CI but absent in local dev venvs.  Any # type: ignore on
+# their import lines is necessary locally but "unnecessary" in CI, creating
+# false-positive warnings that fail --warnings-mode builds.
+reportUnnecessaryTypeIgnoreComment = "none"
 # Many runtime deps ship as binary wheels without source (.py) files; pyright
 # resolves them via stubs. The "could not be resolved from source" warning is
 # noise that doesn't indicate a real problem.
@@ -623,11 +627,15 @@ root = "src/dynastore/modules/gdal"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
+root = "src/dynastore/modules/edr"
+reportMissingImports = "none"
+
+[[tool.pyright.executionEnvironments]]
 root = "src/dynastore/tasks/gdal"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/tasks/ingestion/readers"
+root = "src/dynastore/tasks/ingestion"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]

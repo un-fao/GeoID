@@ -38,7 +38,7 @@ import logging
 from typing import Any, Dict, Optional
 
 # Hard import — gates this module on services with module_gdal in scope.
-from osgeo import ogr, gdal  # noqa: F401  # type: ignore[import-not-found]
+from osgeo import ogr, gdal  # noqa: F401
 
 from dynastore.models.protocols.field_definition import FieldDefinition
 

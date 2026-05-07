@@ -26,5 +26,5 @@ def write_geotiff(
         ) as dst:
             for col, row, arr in tiles:
                 h, w = arr.shape[-2], arr.shape[-1]
-                dst.write(arr, 1, window=rasterio.windows.Window(col, row, w, h))
+                dst.write(arr, 1, window=rasterio.windows.Window(col, row, w, h))  # type: ignore
         yield mem.read()
