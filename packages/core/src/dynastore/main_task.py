@@ -125,7 +125,8 @@ async def main(task_name: str, payload: dict, schema: str):
     back to PENDING after locked_until lapses, causing an infinite re-enqueue
     loop (one Cloud Run Job execution per reap cycle).
     """
-    from dynastore import modules, tasks
+    from dynastore.modules import lifespan as modules_lifespan
+    from dynastore import tasks
     from dynastore.tasks.bootstrap import bootstrap_task_env
     from dynastore.modules.tasks.models import TaskUpdate, TaskStatusEnum, PermanentTaskFailure
     from datetime import datetime, timezone
@@ -139,7 +140,7 @@ async def main(task_name: str, payload: dict, schema: str):
     bootstrap_task_env(app_state)
 
     # 2. Execute the module lifecycles to initialize them and attach to the app_state.
-    async with modules.lifespan(app_state):
+    async with modules_lifespan(app_state):
         try:
             logger.info("--- [main_task.py] Foundational Modules are active. ---")
 
