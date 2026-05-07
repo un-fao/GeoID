@@ -132,6 +132,119 @@ def iam_service_role_bindings(
 
 from dynastore.extensions.iam.guards import ensure_privileged_role_assignment
 
+
+def _build_oauth2_endpoints() -> tuple[str, str]:
+    """Resolve absolute Keycloak ``authorize`` / ``token`` URLs from env.
+
+    Resolution order:
+    1. If ``IDP_ISSUER_URL`` is set, derive the realm path from it (e.g.
+       ``/realms/fao-aip-auth-review``).
+    2. If ``IDP_PUBLIC_URL`` is also set and points at a different scheme+
+       host than the issuer URL, swap the host so the browser hits the
+       public-reachable Keycloak instead of an internal hostname.
+    3. If ``IDP_ISSUER_URL`` is unset, fall back to the relative paths
+       ``/auth/authorize`` + ``/auth/token`` (development default — Swagger
+       UI's Authorize button will be non-functional but the schema still
+       renders) and emit a one-shot warning.
+    """
+    issuer = os.getenv("IDP_ISSUER_URL")
+    if not issuer:
+        logger.warning(
+            "IDP_ISSUER_URL not set; Swagger Authorize button will use "
+            "relative URLs and may not work end-to-end."
+        )
+        return "/auth/authorize", "/auth/token"
+
+    from urllib.parse import urlparse, urlunparse
+
+    issuer = issuer.rstrip("/")
+    parsed = urlparse(issuer)
+    realm_path = parsed.path  # e.g. ``/realms/fao-aip-auth-review``
+
+    public = os.getenv("IDP_PUBLIC_URL")
+    if public:
+        public = public.rstrip("/")
+        public_parsed = urlparse(public)
+        # Only swap when the public URL actually differs in scheme+host;
+        # otherwise the issuer URL is already browser-reachable.
+        same_origin = (
+            public_parsed.scheme == parsed.scheme
+            and public_parsed.netloc == parsed.netloc
+        )
+        if not same_origin:
+            base = urlunparse(
+                (public_parsed.scheme, public_parsed.netloc, realm_path, "", "", "")
+            )
+        else:
+            base = issuer
+    else:
+        base = issuer
+
+    return (
+        f"{base}/protocol/openid-connect/auth",
+        f"{base}/protocol/openid-connect/token",
+    )
+
+
+def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
+    """Build the OpenAPI schema with IAM security schemes + global security.
+
+    Extracted from ``IamExtension.configure_app.custom_openapi`` so unit
+    tests can exercise it without booting the IAM middleware stack.
+    """
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        servers=app.servers,
+    )
+
+    if "components" not in openapi_schema:
+        openapi_schema["components"] = {}
+    if "securitySchemes" not in openapi_schema["components"]:
+        openapi_schema["components"]["securitySchemes"] = {}
+
+    auth_url, token_url = _build_oauth2_endpoints()
+
+    openapi_schema["components"]["securitySchemes"]["HTTPBearer"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "Paste a JWT access token obtained from your Keycloak login "
+            "(web UI or `/auth/web/`)."
+        ),
+    }
+    openapi_schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"] = {
+        "type": "oauth2",
+        "description": "OIDC Authorization Code flow via Keycloak (use the Authorize button above).",
+        "flows": {
+            "authorizationCode": {
+                "authorizationUrl": auth_url,
+                "tokenUrl": token_url,
+                "scopes": {
+                    "openid": "OpenID Connect",
+                    "email": "User email",
+                    "profile": "User profile",
+                },
+            }
+        },
+    }
+
+    # Top-level default security: every operation inherits a lock icon in
+    # Swagger UI. Routes that are intentionally public (e.g. /health,
+    # /auth/jwks.json) opt out by setting ``security=[]`` on their
+    # decorator. Per OpenAPI 3.0, multiple entries in this list are an
+    # OR — the request only needs one of them.
+    openapi_schema["security"] = [
+        {"HTTPBearer": []},
+        {"OAuth2AuthorizationCode": ["openid", "email", "profile"]},
+    ]
+
+    return openapi_schema
+
+
 # --- DTOs (Data Transfer Objects) ---
 
 
@@ -331,43 +444,7 @@ class IamExtension(ExtensionProtocol):
             if app.openapi_schema:
                 return app.openapi_schema
 
-            openapi_schema = get_openapi(
-                title=app.title,
-                version=app.version,
-                description=app.description,
-                routes=app.routes,
-                servers=app.servers,
-            )
-
-            if "components" not in openapi_schema:
-                openapi_schema["components"] = {}
-            if "securitySchemes" not in openapi_schema["components"]:
-                openapi_schema["components"]["securitySchemes"] = {}
-
-            # Define Schemes
-            openapi_schema["components"]["securitySchemes"]["HTTPBearer"] = {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT",
-                "description": "Paste a JWT access token obtained from /auth/token.",
-            }
-            openapi_schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"] = {
-                "type": "oauth2",
-                "description": "OIDC Authorization Code flow via Keycloak (use the Authorize button above).",
-                "flows": {
-                    "authorizationCode": {
-                        "authorizationUrl": "/auth/authorize",
-                        "tokenUrl": "/auth/token",
-                        "scopes": {
-                            "openid": "OpenID Connect",
-                            "email": "User email",
-                            "profile": "User profile",
-                        },
-                    }
-                },
-            }
-
-            app.openapi_schema = openapi_schema
+            app.openapi_schema = build_iam_openapi_schema(app)
             return app.openapi_schema
 
         app.openapi = custom_openapi
