@@ -256,12 +256,16 @@ db_sync = ["dynastore[db_config,datastore]"]
 #   *  processes    — standalone; on catalog (cloud) or worker (on-prem)
 #
 # ==========================================================================
-core = ["dynastore[db_async,web,configs,events,storage,cache]"]
+core = ["dynastore[db_async,web,configs,storage,cache]"]
 # catalog_grp split: data layer (needed by maps for collection reads + /features)
 # vs public catalog routers (stac/assets/search/records — not on maps).
+# `events` is the data-plane events extension — its module ships in dynastore-core
+# and is always importable, but the REST surface mounts only where catalog_grp is
+# included (api_open, scope_catalog, catalog_local, api_features, worker_service).
+# Maps + tools deliberately do not pull catalog_grp → no /events route.
 catalog_data_grp = ["dynastore[geospatial_core,catalog,features]"]
 catalog_routes_grp = ["dynastore[stac,assets,search,extension_records]"]
-catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp,module_local]"]
+catalog_grp = ["dynastore[catalog_data_grp,catalog_routes_grp,module_local,events]"]
 maps_grp = ["dynastore[styles,maps,extension_wfs,tiles,crs,gdal,extension_coverages]"]
 # google_grp split: dwh is rendering input (BQ joins also live here),
 # gcp is the bucket-admin router (not on maps).
@@ -401,7 +405,9 @@ api_open = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,process
 api_catalog = ["dynastore[api_open,auth_grp]"]
 # api_maps_open: vector producer + raster renderer, no auth.
 # Surface limited to: /maps /tiles /styles /wfs /features /coverages /crs /gdal /dwh /joins
-# (plus ALWAYS_ON: /configs /web /events /admin /iam /auth /tools /template /httpx).
+# (plus ALWAYS_ON: /configs /web /tools /template /httpx).
+# Removed from always-on: /events (now gated by catalog_grp); /admin /iam /auth
+# (now gated by auth_grp post per-extension wheel migration).
 # Excluded vs. legacy: catalog_routes_grp (stac/assets/search/records),
 # gcp_routes_grp, monitor_grp (stats/logs), dimensions, notebooks.
 api_maps_open = ["dynastore[core,catalog_data_grp,maps_grp,dwh_grp,tools_core_grp,module_catalog_elasticsearch]"]

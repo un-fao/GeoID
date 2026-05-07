@@ -1073,7 +1073,6 @@ api-maps = [
     { name = "dynastore-ext-coverages" },
     { name = "dynastore-ext-crs" },
     { name = "dynastore-ext-dwh" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-features" },
     { name = "dynastore-ext-gdal" },
     { name = "dynastore-ext-httpx" },
@@ -1106,7 +1105,6 @@ api-maps = [
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
     { name = "pmtiles" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyjwt" },
@@ -1133,7 +1131,6 @@ api-maps-open = [
     { name = "dynastore-ext-coverages" },
     { name = "dynastore-ext-crs" },
     { name = "dynastore-ext-dwh" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-features" },
     { name = "dynastore-ext-gdal" },
     { name = "dynastore-ext-httpx" },
@@ -1164,7 +1161,6 @@ api-maps-open = [
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
     { name = "pmtiles" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyproj" },
     { name = "python-dateutil" },
@@ -1273,12 +1269,14 @@ catalog-data-grp = [
 ]
 catalog-grp = [
     { name = "dynastore-ext-assets" },
+    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-features" },
     { name = "dynastore-ext-records" },
     { name = "dynastore-ext-search" },
     { name = "dynastore-ext-stac" },
     { name = "fastapi" },
     { name = "geojson-pydantic" },
+    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pystac", extra = ["validation"] },
     { name = "python-multipart" },
@@ -1369,14 +1367,12 @@ connected-systems = [
 core = [
     { name = "asyncpg" },
     { name = "dynastore-ext-configs" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-web" },
     { name = "fastapi" },
     { name = "geoalchemy2" },
     { name = "h3" },
     { name = "markdown" },
     { name = "msgpack" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "python-dateutil" },
     { name = "s2sphere" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -2273,7 +2269,6 @@ scope-maps = [
     { name = "dynastore-ext-coverages" },
     { name = "dynastore-ext-crs" },
     { name = "dynastore-ext-dwh" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-features" },
     { name = "dynastore-ext-gdal" },
     { name = "dynastore-ext-httpx" },
@@ -2304,7 +2299,6 @@ scope-maps = [
     { name = "opensearch-py", extra = ["async"] },
     { name = "pandas" },
     { name = "pmtiles" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pygeofilter", extra = ["backend-sqlalchemy"] },
     { name = "pyiceberg", extra = ["sql-postgres"] },
@@ -2325,7 +2319,6 @@ scope-tools = [
     { name = "attrs" },
     { name = "dynastore-ext-configs" },
     { name = "dynastore-ext-dimensions" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-notebooks" },
     { name = "dynastore-ext-proxy" },
     { name = "dynastore-ext-template" },
@@ -2338,7 +2331,6 @@ scope-tools = [
     { name = "markdown" },
     { name = "msgpack" },
     { name = "ogc-dimensions" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
     { name = "s2sphere" },
@@ -2354,7 +2346,6 @@ scope-worker = [
     { name = "dynastore-ext-crs" },
     { name = "dynastore-ext-dimensions" },
     { name = "dynastore-ext-dwh" },
-    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-gcp-bucket" },
     { name = "dynastore-ext-gdal" },
     { name = "dynastore-ext-joins" },
@@ -2857,6 +2848,7 @@ worker-task-ingestion = [
     { name = "duckdb" },
     { name = "dynastore-ext-assets" },
     { name = "dynastore-ext-dwh" },
+    { name = "dynastore-ext-events" },
     { name = "dynastore-ext-features" },
     { name = "dynastore-ext-gcp-bucket" },
     { name = "dynastore-ext-gdal" },
@@ -2940,10 +2932,10 @@ requires-dist = [
     { name = "dynastore", extras = ["assets", "extension-records", "search", "stac"], marker = "extra == 'catalog-routes-grp'" },
     { name = "dynastore", extras = ["auth", "extension-admin", "iam"], marker = "extra == 'auth-grp'" },
     { name = "dynastore", extras = ["auth-grp", "extension-geoid", "scope-catalog"], marker = "extra == 'scope-geoid'" },
-    { name = "dynastore", extras = ["cache", "configs", "db-async", "events", "storage", "web"], marker = "extra == 'core'" },
+    { name = "dynastore", extras = ["cache", "configs", "db-async", "storage", "web"], marker = "extra == 'core'" },
     { name = "dynastore", extras = ["cache", "core", "dimensions", "notebooks", "proxy", "template"], marker = "extra == 'scope-tools'" },
     { name = "dynastore", extras = ["catalog", "features", "geospatial-core"], marker = "extra == 'catalog-data-grp'" },
-    { name = "dynastore", extras = ["catalog-data-grp", "catalog-routes-grp", "module-local"], marker = "extra == 'catalog-grp'" },
+    { name = "dynastore", extras = ["catalog-data-grp", "catalog-routes-grp", "events", "module-local"], marker = "extra == 'catalog-grp'" },
     { name = "dynastore", extras = ["catalog-data-grp", "core", "drivers-grp", "dwh-grp", "maps-grp", "module-cache", "module-catalog-elasticsearch", "tools-core-grp"], marker = "extra == 'scope-maps'" },
     { name = "dynastore", extras = ["catalog-data-grp", "core", "dwh-grp", "maps-grp", "module-catalog-elasticsearch", "tools-core-grp"], marker = "extra == 'api-maps-open'" },
     { name = "dynastore", extras = ["catalog-grp", "catalog-task-gcp-catalog-cleanup", "catalog-task-gcp-provision", "core", "dimensions", "drivers-grp", "google-grp", "index-grp", "module-cache", "monitor-grp", "notebooks", "processes", "tasks"], marker = "extra == 'scope-catalog'" },
@@ -3289,7 +3281,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-connected-systems"
-version = "0.0.0"
 source = { editable = "packages/extensions/connected_systems" }
 dependencies = [
     { name = "dynastore" },
@@ -3306,7 +3297,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-coverages"
-version = "0.0.0"
 source = { editable = "packages/extensions/coverages" }
 dependencies = [
     { name = "dynastore" },
@@ -3327,7 +3317,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-crs"
-version = "0.0.0"
 source = { editable = "packages/extensions/crs" }
 dependencies = [
     { name = "dynastore" },
@@ -3344,7 +3333,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-dggs"
-version = "0.0.0"
 source = { editable = "packages/extensions/dggs" }
 dependencies = [
     { name = "dynastore" },
@@ -3363,7 +3351,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-dimensions"
-version = "0.0.0"
 source = { editable = "packages/extensions/dimensions" }
 dependencies = [
     { name = "dynastore" },
@@ -3380,7 +3367,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-dwh"
-version = "0.0.0"
 source = { editable = "packages/extensions/dwh" }
 dependencies = [
     { name = "db-dtypes" },
@@ -3403,7 +3389,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-edr"
-version = "0.0.0"
 source = { editable = "packages/extensions/edr" }
 dependencies = [
     { name = "dynastore" },
@@ -3422,7 +3407,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-events"
-version = "0.0.0"
 source = { editable = "packages/extensions/events" }
 dependencies = [
     { name = "dynastore" },
@@ -3437,7 +3421,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-features"
-version = "0.0.0"
 source = { editable = "packages/extensions/features" }
 dependencies = [
     { name = "dynastore" },
@@ -3458,7 +3441,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-gcp-bucket"
-version = "0.0.0"
 source = { editable = "packages/extensions/gcp" }
 dependencies = [
     { name = "dynastore" },
@@ -3475,7 +3457,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-gdal"
-version = "0.0.0"
 source = { editable = "packages/extensions/gdal" }
 dependencies = [
     { name = "dynastore" },
@@ -3498,7 +3479,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-geoid"
-version = "0.0.0"
 source = { editable = "packages/extensions/geoid" }
 dependencies = [
     { name = "dynastore" },
@@ -3515,7 +3495,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-httpx"
-version = "0.0.0"
 source = { editable = "packages/extensions/httpx" }
 dependencies = [
     { name = "dynastore" },
@@ -3552,7 +3531,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-joins"
-version = "0.0.0"
 source = { editable = "packages/extensions/joins" }
 dependencies = [
     { name = "db-dtypes" },
@@ -3591,7 +3569,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-maps"
-version = "0.0.0"
 source = { editable = "packages/extensions/maps" }
 dependencies = [
     { name = "dynastore" },
@@ -3612,7 +3589,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-moving-features"
-version = "0.0.0"
 source = { editable = "packages/extensions/moving_features" }
 dependencies = [
     { name = "dynastore" },
@@ -3629,7 +3605,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-notebooks"
-version = "0.0.0"
 source = { editable = "packages/extensions/notebooks" }
 dependencies = [
     { name = "dynastore" },
@@ -3648,7 +3623,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-processes"
-version = "0.0.0"
 source = { editable = "packages/extensions/processes" }
 dependencies = [
     { name = "dynastore" },
@@ -3665,7 +3639,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-proxy"
-version = "0.0.0"
 source = { editable = "packages/extensions/proxy" }
 dependencies = [
     { name = "dynastore" },
@@ -3680,7 +3653,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-records"
-version = "0.0.0"
 source = { editable = "packages/extensions/records" }
 dependencies = [
     { name = "dynastore" },
@@ -3697,7 +3669,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-search"
-version = "0.0.0"
 source = { editable = "packages/extensions/search" }
 dependencies = [
     { name = "dynastore" },
@@ -3712,7 +3683,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-stac"
-version = "0.0.0"
 source = { editable = "packages/extensions/stac" }
 dependencies = [
     { name = "dynastore" },
@@ -3731,7 +3701,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-stats"
-version = "0.0.0"
 source = { editable = "packages/extensions/stats" }
 dependencies = [
     { name = "dynastore" },
@@ -3746,7 +3715,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-styles"
-version = "0.0.0"
 source = { editable = "packages/extensions/styles" }
 dependencies = [
     { name = "dynastore" },
@@ -3763,7 +3731,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-tasks"
-version = "0.0.0"
 source = { editable = "packages/extensions/tasks" }
 dependencies = [
     { name = "dynastore" },
@@ -3782,7 +3749,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-template"
-version = "0.0.0"
 source = { editable = "packages/extensions/template" }
 dependencies = [
     { name = "aiohttp" },
@@ -3809,7 +3775,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-tiles"
-version = "0.0.0"
 source = { editable = "packages/extensions/tiles" }
 dependencies = [
     { name = "dynastore" },
@@ -3850,7 +3815,6 @@ requires-dist = [
 
 [[package]]
 name = "dynastore-ext-wfs"
-version = "0.0.0"
 source = { editable = "packages/extensions/wfs" }
 dependencies = [
     { name = "dynastore" },
