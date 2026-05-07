@@ -60,25 +60,53 @@ def register_geoid_policies():
         conditions=_LOOKUP_PUBLIC_CONDITION,
         effect="ALLOW",
     ))
+    # DENY enumeration routes only — exact-item GET
+    # ``/{stac|features}/catalogs/{cat}/collections/{coll}/items/{id}`` is
+    # deliberately NOT in the resource list so the broad
+    # ``stac_public_access`` / ``features_public_access`` ALLOW policy still
+    # surfaces it. Anonymous clients on lookup-only catalogs can therefore:
+    #   * /search/catalogs/{cat}/geoid/{geoid}              (geoid lookup)
+    #   * POST /search/catalogs/{cat}/geoid                  (batch + ext-id)
+    #   * GET .../collections/{coll}/items/{id}              (exact item)
+    # ...and nothing else. Collection/item enumeration and items-search are
+    # blocked.
+    _STAC_ENUMERATION_RESOURCES = [
+        r"/stac/catalogs/[^/]+",
+        r"/stac/catalogs/[^/]+/collections",
+        r"/stac/catalogs/[^/]+/collections/[^/]+",
+        r"/stac/catalogs/[^/]+/collections/[^/]+/items",
+        r"/stac/catalogs/[^/]+/search",
+        r"/stac/catalogs/[^/]+/collections/search",
+    ]
+    _FEATURES_ENUMERATION_RESOURCES = [
+        r"/features/catalogs/[^/]+",
+        r"/features/catalogs/[^/]+/collections",
+        r"/features/catalogs/[^/]+/collections/[^/]+",
+        r"/features/catalogs/[^/]+/collections/[^/]+/items",
+        r"/features/catalogs/[^/]+/search",
+    ]
     pm.register_policy(Policy(
         id="geoid_anonymous_stac_deny_lookup_only",
         description=(
             "Block anonymous access to STAC enumeration on catalogs that have "
-            "opted into lookup-only mode (CatalogLookupAudience.is_public=True)."
+            "opted into lookup-only mode (CatalogLookupAudience.is_public=True). "
+            "Exact-item GET (.../items/{id}) is NOT in this resource list and "
+            "remains allowed via stac_public_access."
         ),
         actions=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        resources=[r"/stac/catalogs/[^/]+(/.*)?"],
+        resources=_STAC_ENUMERATION_RESOURCES,
         conditions=_LOOKUP_PUBLIC_CONDITION,
         effect="DENY",
     ))
     pm.register_policy(Policy(
         id="geoid_anonymous_features_deny_lookup_only",
         description=(
-            "Block anonymous access to OGC Features on catalogs that have "
-            "opted into lookup-only mode."
+            "Block anonymous access to OGC Features enumeration on catalogs "
+            "that have opted into lookup-only mode. Exact-item GET is NOT in "
+            "this resource list and remains allowed via features_public_access."
         ),
         actions=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        resources=[r"/features/catalogs/[^/]+(/.*)?"],
+        resources=_FEATURES_ENUMERATION_RESOURCES,
         conditions=_LOOKUP_PUBLIC_CONDITION,
         effect="DENY",
     ))
