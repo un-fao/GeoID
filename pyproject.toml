@@ -245,8 +245,10 @@ db_sync = ["dynastore[db_config,datastore]"]
 # ==========================================================================
 # DOMAIN GROUPS — major functional areas, composable independently
 #
-#   0. core         — async DB, web framework, system config & events
-#   1. catalog_grp  — data catalog, features, STAC, assets, search, records
+#   0. core         — async DB, web framework, system config (events module
+#                     is in dynastore-core too but its REST surface is gated
+#                     by catalog_grp since #401)
+#   1. catalog_grp  — data catalog, features, STAC, assets, search, records, events
 #   2. maps_grp     — rendering: WFS, tiles, CRS, styles, maps
 #   3. google_grp   — GCP storage, BigQuery DWH
 #   4. auth_grp     — iam + auth + admin  (always the LAST wrapper)
@@ -345,9 +347,9 @@ worker_task_elasticsearch_indexer = ["dynastore[task_base,module_catalog,elastic
 #   ┌──────────────────────────────────────────────────────────┐
 #   │  Domain groups (all WITHOUT auth)                        │
 #   ├──────────────────────────────────────────────────────────┤
-#   │  core        = db_async + web + configs + events         │
+#   │  core        = db_async + web + configs + storage+cache  │
 #   │  catalog_grp = geospatial + catalog + features + stac    │
-#   │               + assets + search + records                │
+#   │               + assets + search + records + events       │
 #   │  maps_grp    = styles + maps + wfs + tiles + crs + gdal  │
 #   │  google_grp  = gcp + dwh                                 │
 #   │  tools_grp   = httpx + template                          │
