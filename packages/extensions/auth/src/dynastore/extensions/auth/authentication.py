@@ -122,7 +122,9 @@ class Authentication(ExtensionProtocol):
     - Permission checking (that's authorization, not authentication)
     """
 
-    router: APIRouter = APIRouter(tags=["Authentication"], prefix="/auth")
+    router: APIRouter = APIRouter(
+        tags=["Authentication & Authorization"], prefix="/auth"
+    )
 
     # Active identity provider instance (set during lifespan)
     identity_provider = None

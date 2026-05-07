@@ -242,6 +242,39 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
         {"OAuth2AuthorizationCode": ["openid", "email", "profile"]},
     ]
 
+    # Group every authentication / authorization / admin-user route under a
+    # single tag so Swagger UI lists them together instead of scattering them
+    # across "auth", "iam", "admin", and untagged sections. Drop the legacy
+    # tag-array entries that the rename leaves orphaned.
+    authn_authz_tag = {
+        "name": "Authentication & Authorization",
+        "description": (
+            "OIDC login, JWT validation, user/role/policy management. "
+            "All routes under /auth, /iam, and /admin/users."
+        ),
+    }
+    legacy_tag_names = {
+        "auth",
+        "iam",
+        "admin",
+        "Authentication",
+        "Authorization Management",
+        "Self-Service Authorization",
+        "Identity & Access Governance",
+        "IAM Governance",
+        "Credentials",
+        "Admin",
+    }
+    existing_tags = openapi_schema.get("tags") or []
+    pruned_tags = [
+        tag for tag in existing_tags if tag.get("name") not in legacy_tag_names
+    ]
+    if not any(
+        tag.get("name") == authn_authz_tag["name"] for tag in pruned_tags
+    ):
+        pruned_tags.append(authn_authz_tag)
+    openapi_schema["tags"] = pruned_tags
+
     return openapi_schema
 
 
@@ -315,17 +348,23 @@ class IamExtension(ExtensionProtocol):
     priority: int = 100
     # Base router for high-level categorization
     router: APIRouter = APIRouter(
-        prefix="/iam", tags=["Identity & Access Governance"]
+        prefix="/iam", tags=["Authentication & Authorization"]
     )
 
     # Standardized Auth Endpoints (OIDC/OAuth2 compatible)
-    auth_router: APIRouter = APIRouter(prefix="/auth", tags=["Authentication"])
+    auth_router: APIRouter = APIRouter(
+        prefix="/auth", tags=["Authentication & Authorization"]
+    )
 
     # Governance Endpoints (Principals, Roles, Policies)
-    gov_router: APIRouter = APIRouter(prefix="/governance", tags=["IAM Governance"])
+    gov_router: APIRouter = APIRouter(
+        prefix="/governance", tags=["Authentication & Authorization"]
+    )
 
     # Stats Endpoints (kept from removed credentials router)
-    stats_router: APIRouter = APIRouter(prefix="/credentials", tags=["Credentials"])
+    stats_router: APIRouter = APIRouter(
+        prefix="/credentials", tags=["Authentication & Authorization"]
+    )
 
     def get_web_pages(self):
         from dynastore.extensions.tools.web_collect import collect_web_pages
