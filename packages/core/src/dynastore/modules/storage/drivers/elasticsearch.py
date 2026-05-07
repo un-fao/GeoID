@@ -803,11 +803,11 @@ class ItemsElasticsearchDriver(
         """Idempotently create the per-tenant items index and enrol it
         in the platform public alias.
 
-        The index ``{prefix}-items-{catalog_id}`` hosts every collection's
+        The index ``{prefix}-{catalog_id}-items`` hosts every collection's
         items for this catalog; collection scoping is enforced via
-        ``_routing=collection_id`` on every write/read. Membership in
-        ``{prefix}-items-public`` makes the data discoverable through OGC
-        search routes regardless of tenant.
+        ``_routing=collection_id`` on every write/read. Membership in the
+        platform public alias ``{prefix}-items`` makes the data
+        discoverable through OGC search routes regardless of tenant.
 
         ``collection_id`` is accepted for protocol parity but ignored —
         the same tenant index serves all collections of the catalog.

@@ -362,6 +362,12 @@ class ItemsRoutingConfig(PluginConfig):
             # READ orders ES first for fast simplified-geometry search; PG
             # carries the ``geometry_exact`` hint so a consumer can request
             # exact geometries via ``get_driver(..., hint="geometry_exact")``.
+            #
+            # SEARCH mirrors READ — ES first, PG fallback. The explicit
+            # default here overrides the auto-discovery dispatch in
+            # ``_self_register_searchers_into``, which would otherwise
+            # register drivers in arbitrary order and could place PG
+            # ahead of ES at collection scope.
             Operation.WRITE: [
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
