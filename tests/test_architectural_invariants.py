@@ -108,6 +108,9 @@ _ALLOWED_CROSS_EXTENSION_PREFIXES = (
     "dynastore.extensions.web.decorators",
     # Auth dependencies are the shared JWT + IAM context helpers.
     "dynastore.extensions.auth.dependencies",
+    # Shared lifespan helpers (lifespan context manager + apply_app_configurations)
+    # moved from the package root to extensions/lifespan.py in PR #376.
+    "dynastore.extensions.lifespan",
 )
 
 # Ratchet: known cross-extension imports that predate the capability-protocol

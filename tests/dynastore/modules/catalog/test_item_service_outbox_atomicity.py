@@ -278,7 +278,7 @@ async def test_upsert_bulk_coalesces_same_item_ops_in_chunk():
     assert len(outbox.enqueued_calls) == 1
     rows = outbox.enqueued_calls[0]["rows"]
     assert len(rows) == 1
-    assert rows[0].driver_ref == "items_elasticsearch_driver"
+    assert rows[0].driver_id == "items_elasticsearch_driver"
     assert rows[0].item_id == "i1"
     assert rows[0].payload == {"id": "i1", "v": 3}
     assert outbox.enqueued_calls[0]["conn"] is engine.conn

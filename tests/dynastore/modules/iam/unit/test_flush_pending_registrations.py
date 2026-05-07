@@ -123,7 +123,9 @@ async def test_flush_opens_single_transaction_for_all_pending() -> None:
 
         async def __aenter__(self):
             enter_count["n"] += 1
-            return MagicMock()  # conn
+            conn = MagicMock()
+            conn.execute = AsyncMock(return_value=None)
+            return conn
 
         async def __aexit__(self, *_):
             return False
@@ -155,7 +157,9 @@ async def test_flush_propagates_storage_exception_instead_of_swallowing() -> Non
             pass
 
         async def __aenter__(self):
-            return MagicMock()
+            conn = MagicMock()
+            conn.execute = AsyncMock(return_value=None)
+            return conn
 
         async def __aexit__(self, *_):
             return False
@@ -189,7 +193,9 @@ async def test_flush_clears_pending_buffers_before_attempting_persist() -> None:
             pass
 
         async def __aenter__(self):
-            return MagicMock()
+            conn = MagicMock()
+            conn.execute = AsyncMock(return_value=None)
+            return conn
 
         async def __aexit__(self, *_):
             return False
@@ -243,7 +249,9 @@ async def test_retry_on_serialization_failure_eventually_succeeds() -> None:
             attempts["n"] += 1
             if attempts["n"] < 3:
                 raise _PgError("40001", "serialization_failure")
-            return MagicMock()
+            conn = MagicMock()
+            conn.execute = AsyncMock(return_value=None)
+            return conn
 
         async def __aexit__(self, *_):
             return False
@@ -271,7 +279,9 @@ async def test_retry_on_deadlock_detected_eventually_succeeds() -> None:
             attempts["n"] += 1
             if attempts["n"] < 2:
                 raise _PgError("40P01", "deadlock_detected")
-            return MagicMock()
+            conn = MagicMock()
+            conn.execute = AsyncMock(return_value=None)
+            return conn
 
         async def __aexit__(self, *_):
             return False
