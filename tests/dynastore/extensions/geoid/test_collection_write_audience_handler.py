@@ -13,7 +13,7 @@ async def test_handler_type_is_collection_write_anonymous_allowed():
 
 
 @pytest.mark.asyncio
-async def test_handler_returns_true_when_collection_allows_anonymous_create(monkeypatch):
+async def test_handler_returns_true_when_collection_allows_via_extras(monkeypatch):
     from dynastore.extensions.geoid.configs import CollectionWriteAudience
     from dynastore.extensions.geoid.conditions import CollectionWriteAudienceHandler
 
@@ -29,9 +29,33 @@ async def test_handler_returns_true_when_collection_allows_anonymous_create(monk
 
     ctx = MagicMock()
     ctx.catalog_id = "cat"
-    # The handler reads collection_id from the URL path via ctx.extras or path parse.
-    # We pass it via ctx.extras["collection_id"] — handler must read it from there.
     ctx.extras = {"collection_id": "intake_col"}
+    assert await handler.evaluate({}, ctx) is True
+    fake_configs.get_config.assert_awaited_once_with(
+        CollectionWriteAudience, catalog_id="cat", collection_id="intake_col",
+    )
+
+
+@pytest.mark.asyncio
+async def test_handler_returns_true_when_collection_id_parsed_from_path(monkeypatch):
+    """When extras has no collection_id, the handler parses ctx.path."""
+    from dynastore.extensions.geoid.configs import CollectionWriteAudience
+    from dynastore.extensions.geoid.conditions import CollectionWriteAudienceHandler
+
+    handler = CollectionWriteAudienceHandler()
+    fake_configs = MagicMock()
+    fake_configs.get_config = AsyncMock(
+        return_value=CollectionWriteAudience(allow_anonymous_create=True),
+    )
+    monkeypatch.setattr(
+        "dynastore.extensions.geoid.conditions.get_protocol",
+        lambda _proto: fake_configs,
+    )
+
+    ctx = MagicMock()
+    ctx.catalog_id = "cat"
+    ctx.extras = {}
+    ctx.path = "/stac/catalogs/cat/collections/intake_col/items"
     assert await handler.evaluate({}, ctx) is True
     fake_configs.get_config.assert_awaited_once_with(
         CollectionWriteAudience, catalog_id="cat", collection_id="intake_col",
@@ -76,6 +100,7 @@ async def test_handler_returns_false_when_catalog_id_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_handler_returns_false_when_collection_id_missing(monkeypatch):
+    """No collection_id in extras AND path doesn't match → fail closed."""
     from dynastore.extensions.geoid.conditions import CollectionWriteAudienceHandler
 
     handler = CollectionWriteAudienceHandler()
@@ -86,6 +111,7 @@ async def test_handler_returns_false_when_collection_id_missing(monkeypatch):
     ctx = MagicMock()
     ctx.catalog_id = "cat"
     ctx.extras = {}
+    ctx.path = "/some/unrelated/path"
     assert await handler.evaluate({}, ctx) is False
 
 

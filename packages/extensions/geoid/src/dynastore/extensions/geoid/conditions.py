@@ -1,8 +1,27 @@
 """Geoid-extension ConditionHandlers — register at extension lifespan startup."""
-from typing import Any, Dict
+import re
+from typing import Any, Dict, Optional
 
 from dynastore.modules.iam.conditions import ConditionHandler, EvaluationContext
 from dynastore.tools.discovery import get_protocol
+
+_COLLECTION_PATH_RE = re.compile(r"/catalogs/[^/]+/collections/(?P<col>[^/]+)(?:/|$)")
+
+
+def _resolve_collection_id(ctx: EvaluationContext) -> Optional[str]:
+    """Return collection_id from ctx.extras or by parsing ctx.path.
+
+    The IamMiddleware extracts catalog_id from /catalogs/{cat}/... but does
+    not extract collection_id today. We parse it from the path here so the
+    handler stays self-contained inside the geoid extension.
+    """
+    extras = getattr(ctx, "extras", None) or {}
+    col = extras.get("collection_id")
+    if col:
+        return col
+    path = getattr(ctx, "path", "") or ""
+    m = _COLLECTION_PATH_RE.search(path)
+    return m.group("col") if m else None
 
 
 class CatalogLookupAudienceHandler(ConditionHandler):
@@ -40,10 +59,11 @@ class CollectionWriteAudienceHandler(ConditionHandler):
     for the request's (catalog_id, collection_id). Used by the geoid-extension
     anonymous-create policy on /stac/.../collections/{col}/items.
 
-    The collection_id is read from ``ctx.extras['collection_id']``. The
-    IamMiddleware extracts collection_id from the URL path the same way it
-    extracts catalog_id; if the platform's middleware doesn't populate this
-    yet, this handler still fails closed (returns False).
+    The collection_id is resolved by ``_resolve_collection_id``: prefer
+    ``ctx.extras['collection_id']`` (if some future middleware populates it),
+    otherwise fall back to a regex parse of ``ctx.path``. The handler stays
+    self-contained inside the geoid extension — no core middleware change
+    required.
 
     Fails closed on missing catalog_id, missing collection_id, missing
     ConfigsProtocol, or any error.
@@ -60,8 +80,7 @@ class CollectionWriteAudienceHandler(ConditionHandler):
         catalog_id = ctx.catalog_id
         if not catalog_id:
             return False
-        extras = getattr(ctx, "extras", None) or {}
-        collection_id = extras.get("collection_id")
+        collection_id = _resolve_collection_id(ctx)
         if not collection_id:
             return False
         configs = get_protocol(ConfigsProtocol)
