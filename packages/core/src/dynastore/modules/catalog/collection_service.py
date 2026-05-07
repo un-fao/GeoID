@@ -634,6 +634,35 @@ class CollectionService:
             metadata_payload = collection_model.model_dump(
                 by_alias=True, exclude_none=True
             )
+            # Denormalise CollectionPrivacyConfig.is_private into the
+            # metadata payload so search-capable drivers (notably the
+            # ES collection driver) can filter on it without joining
+            # back to the configs table. The Pydantic dump above does
+            # not carry it because is_private lives in a separate
+            # PluginConfig (CollectionPrivacy), not on the Collection
+            # model itself.
+            try:
+                from dynastore.modules.catalog.catalog_config import (
+                    CollectionPrivacy,
+                )
+                _privacy_configs = get_protocol(ConfigsProtocol)
+                if _privacy_configs is not None:
+                    _privacy_cfg = await _privacy_configs.get_config(
+                        CollectionPrivacy,
+                        catalog_id=catalog_id,
+                        collection_id=collection_model.id,
+                        ctx=DriverContext(db_resource=conn),
+                    )
+                    metadata_payload["is_private"] = bool(
+                        getattr(_privacy_cfg, "is_private", False),
+                    )
+            except Exception as _e:
+                logger.debug(
+                    "Could not resolve CollectionPrivacy for %s/%s "
+                    "during metadata write (is_private will be missing "
+                    "from search index): %s",
+                    catalog_id, collection_model.id, _e,
+                )
             await _route_upsert_metadata(
                 catalog_id, collection_model.id, metadata_payload,
                 db_resource=conn,
@@ -842,6 +871,29 @@ class CollectionService:
             metadata_payload = merged_model.model_dump(
                 by_alias=True, exclude_none=True
             )
+            # Denormalise CollectionPrivacy.is_private — see create_collection
+            # for rationale (search-capable drivers filter on this).
+            try:
+                from dynastore.modules.catalog.catalog_config import (
+                    CollectionPrivacy,
+                )
+                _privacy_configs = get_protocol(ConfigsProtocol)
+                if _privacy_configs is not None:
+                    _privacy_cfg = await _privacy_configs.get_config(
+                        CollectionPrivacy,
+                        catalog_id=catalog_id,
+                        collection_id=collection_id,
+                        ctx=DriverContext(db_resource=conn),
+                    )
+                    metadata_payload["is_private"] = bool(
+                        getattr(_privacy_cfg, "is_private", False),
+                    )
+            except Exception as _e:
+                logger.debug(
+                    "Could not resolve CollectionPrivacy for %s/%s "
+                    "during metadata write: %s",
+                    catalog_id, collection_id, _e,
+                )
             await _route_upsert_metadata(
                 catalog_id, collection_id, metadata_payload,
                 db_resource=conn,
