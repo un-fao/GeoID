@@ -652,8 +652,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         # Phase 3 — pre-create unique partitions on a brief DDL conn so the
         # write tx isn't holding a write lock during DDL coordination.
+        # Prefer self.engine (fresh pool connection) over engine so DDL runs in
+        # its own independent transaction instead of a SAVEPOINT on the outer
+        # connection. A DDL failure inside a SAVEPOINT poisons the outer
+        # connection's asyncpg wire state even after rollback, causing
+        # InFailedSQLTransactionError on the next SAVEPOINT open (Phase 4).
         if col_config.partitioning.enabled and unique_partition_values:
-            async with managed_transaction(engine) as ddl_conn:
+            async with managed_transaction(self.engine or engine) as ddl_conn:
                 for p_val in unique_partition_values:
                     await self.ensure_partition_exists(
                         catalog_id, collection_id, col_config, p_val,

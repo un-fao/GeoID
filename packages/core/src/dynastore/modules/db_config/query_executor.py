@@ -1257,6 +1257,14 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                     except (PendingRollbackError, InvalidRequestError):
                         # Outer tx already aborted — SAVEPOINT is gone.
                         pass
+                    except Exception:
+                        # asyncpg raises InFailedSQLTransactionError when the
+                        # wire-level transaction is in error state and any SQL
+                        # (including ROLLBACK TO SAVEPOINT) is attempted. The
+                        # outer managed_transaction will issue the real ROLLBACK
+                        # when it exits, so swallow this secondary failure and
+                        # let the original exception propagate via `raise`.
+                        pass
                     raise
                 else:
                     try:
@@ -1292,6 +1300,8 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                         savepoint.rollback()
                     except (PendingRollbackError, InvalidRequestError):
                         pass
+                    except Exception:
+                        pass  # absorb asyncpg-level rollback failure; outer tx handles it
                     raise
                 else:
                     try:
