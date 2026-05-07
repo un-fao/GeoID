@@ -783,7 +783,7 @@ class TemplatingExtension(ExtensionProtocol):
     async def post_xml_to_json(
         xml_data: str = Body(..., media_type="application/xml", embed=True,  # type: ignore
                             max_length=MAX_XML_SIZE,
-                            example="<root><item id='1'>Content</item></root>"),
+                            examples=["<root><item id='1'>Content</item></root>"]),
         parser: str = Query("elementtree", 
                         description="Parser to use: elementtree, lxml, or xmltodict",
                         enum=["elementtree", "lxml", "xmltodict"]),

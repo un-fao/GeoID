@@ -1,4 +1,4 @@
-import asyncio
+import inspect
 
 class CleanupRegistry:
     _handlers = []
@@ -14,7 +14,7 @@ class CleanupRegistry:
         logger = logging.getLogger(__name__)
         for handler in cls._handlers:
             try:
-                if asyncio.iscoroutinefunction(handler):
+                if inspect.iscoroutinefunction(handler):
                     await handler(conn)
                 else:
                     handler(conn)
