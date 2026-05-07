@@ -574,7 +574,7 @@ root = "packages/extensions/coverages/src/dynastore/extensions/coverages"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/extensions/maps"
+root = "packages/extensions/maps/src/dynastore/extensions/maps"
 reportMissingImports = "none"
 
 # Machine compositions have been moved to docker/.env (Docker) and
