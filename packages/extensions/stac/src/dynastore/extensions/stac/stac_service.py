@@ -914,19 +914,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             logger.error(f"Validation error in add_stac_item: {e}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
-            logger.exception(
-                f"Unexpected error in add_stac_item for {catalog_id}/{collection_id}: {e}"
+            _exc = handle_exception(
+                e,
+                resource_name="STAC Item",
+                resource_id=f"{catalog_id}:{collection_id}",
+                operation="STAC Item creation",
             )
-            if hasattr(e, "__class__") and "ValidationError" in e.__class__.__name__:
-                logger.error(f"Pydantic validation details: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"STAC Item validation failed: {str(e)}",
-                )
-            raise HTTPException(
-                status_code=500,
-                detail="An unexpected error occurred during STAC item creation.",
-            )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
         if rejections:
             return self._build_rejection_response(accepted_rows, rejections, batch_size)
@@ -1049,11 +1045,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
-            logger.exception(f"Unexpected error in update_stac_item: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="An unexpected error occurred during STAC item update.",
+            _exc = handle_exception(
+                e,
+                resource_name="STAC Item",
+                resource_id=f"{catalog_id}:{collection_id}:{item_id}",
+                operation="STAC Item update",
             )
+            if isinstance(_exc, HTTPException):
+                raise _exc
+            return _exc
 
     async def delete_stac_item(
         self,
