@@ -24,7 +24,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"dynastore.extensions.geoid" = ["*.md", "static/**/*"]
+"dynastore.extensions.geoid" = ["*.md", "static/**/*", "notebooks/*.ipynb"]
 
 [tool.uv.sources]
 dynastore = { workspace = true }
