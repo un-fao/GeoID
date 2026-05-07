@@ -2,6 +2,7 @@ import os
 import html
 import logging
 import itertools
+from contextlib import asynccontextmanager
 from typing import List, Any, Dict, Optional, Callable
 
 from fastapi import FastAPI
@@ -166,6 +167,16 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
         self.app = app
 
         self.static_dir = os.path.join(os.path.dirname(__file__), "static")
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        from dynastore.modules.iam.conditions import register_condition_handler
+        from .conditions import CatalogLookupAudienceHandler
+        from .policies import register_geoid_policies
+
+        register_condition_handler(CatalogLookupAudienceHandler())
+        register_geoid_policies()
+        yield
 
     # ------------------------------------------------------------------ #
     #  StaticFilesProtocol                                                 #

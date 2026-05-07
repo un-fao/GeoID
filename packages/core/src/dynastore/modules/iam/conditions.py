@@ -477,41 +477,6 @@ class CatalogMembershipHandler(ConditionHandler):
         return catalog_id in (membership.get("catalogs") or [])
 
 
-class CatalogLookupAudienceHandler(ConditionHandler):
-    """Allow when ``CatalogLookupAudience.is_public`` is True for the request's
-    catalog. Used by the search-extension anonymous-lookup policy.
-
-    Fails closed on every uncertainty:
-    - missing ``ctx.catalog_id`` (path didn't carry one),
-    - ``ConfigsProtocol`` not registered,
-    - ``get_config`` raised an exception,
-    - the resolved policy is not a ``CatalogLookupAudience`` instance.
-
-    Reads no fields from ``config`` — the gate is purely about the catalog's
-    declared public-lookup audience.
-    """
-
-    @property
-    def type(self) -> str:
-        return "catalog_lookup_public_allowed"
-
-    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.catalog.catalog_config import CatalogLookupAudience
-
-        catalog_id = ctx.catalog_id
-        if not catalog_id:
-            return False
-        configs = get_protocol(ConfigsProtocol)
-        if configs is None:
-            return False
-        try:
-            policy = await configs.get_config(CatalogLookupAudience, catalog_id=catalog_id)
-        except Exception:
-            return False
-        return isinstance(policy, CatalogLookupAudience) and bool(policy.is_public)
-
-
 # --- Registry ---
 
 class ConditionRegistry:
@@ -530,7 +495,6 @@ class ConditionRegistry:
         self.register(LogicalNotHandler())
         self.register(CatalogMembershipHandler())
         self.register(CatalogAdminHandler())
-        self.register(CatalogLookupAudienceHandler())
         # Filter inspection framework (geospatial, temporal, etc.)
         from dynastore.modules.iam.filter_inspectors import filter_handler
         self.register(filter_handler)

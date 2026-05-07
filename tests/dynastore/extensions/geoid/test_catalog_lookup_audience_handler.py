@@ -6,7 +6,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_handler_type_is_catalog_lookup_public_allowed():
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     assert handler.type == "catalog_lookup_public_allowed"
@@ -14,14 +14,14 @@ async def test_handler_type_is_catalog_lookup_public_allowed():
 
 @pytest.mark.asyncio
 async def test_handler_returns_true_when_catalog_is_public(monkeypatch):
-    from dynastore.modules.catalog.catalog_config import CatalogLookupAudience
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.configs import CatalogLookupAudience
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     fake_configs = MagicMock()
     fake_configs.get_config = AsyncMock(return_value=CatalogLookupAudience(is_public=True))
     monkeypatch.setattr(
-        "dynastore.modules.iam.conditions.get_protocol",
+        "dynastore.extensions.geoid.conditions.get_protocol",
         lambda _proto: fake_configs,
     )
 
@@ -35,14 +35,14 @@ async def test_handler_returns_true_when_catalog_is_public(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_handler_returns_false_when_catalog_is_private(monkeypatch):
-    from dynastore.modules.catalog.catalog_config import CatalogLookupAudience
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.configs import CatalogLookupAudience
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     fake_configs = MagicMock()
     fake_configs.get_config = AsyncMock(return_value=CatalogLookupAudience(is_public=False))
     monkeypatch.setattr(
-        "dynastore.modules.iam.conditions.get_protocol",
+        "dynastore.extensions.geoid.conditions.get_protocol",
         lambda _proto: fake_configs,
     )
 
@@ -54,11 +54,11 @@ async def test_handler_returns_false_when_catalog_is_private(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_returns_false_when_catalog_id_missing(monkeypatch):
     """No catalog_id in context → fail closed."""
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     monkeypatch.setattr(
-        "dynastore.modules.iam.conditions.get_protocol",
+        "dynastore.extensions.geoid.conditions.get_protocol",
         lambda _proto: MagicMock(),
     )
     ctx = MagicMock()
@@ -69,11 +69,11 @@ async def test_handler_returns_false_when_catalog_id_missing(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_returns_false_when_configs_protocol_unavailable(monkeypatch):
     """ConfigsProtocol not loaded → fail closed."""
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     monkeypatch.setattr(
-        "dynastore.modules.iam.conditions.get_protocol",
+        "dynastore.extensions.geoid.conditions.get_protocol",
         lambda _proto: None,
     )
     ctx = MagicMock()
@@ -84,13 +84,13 @@ async def test_handler_returns_false_when_configs_protocol_unavailable(monkeypat
 @pytest.mark.asyncio
 async def test_handler_returns_false_when_get_config_raises(monkeypatch):
     """ConfigsProtocol error → fail closed."""
-    from dynastore.modules.iam.conditions import CatalogLookupAudienceHandler
+    from dynastore.extensions.geoid.conditions import CatalogLookupAudienceHandler
 
     handler = CatalogLookupAudienceHandler()
     fake_configs = MagicMock()
     fake_configs.get_config = AsyncMock(side_effect=RuntimeError("config store down"))
     monkeypatch.setattr(
-        "dynastore.modules.iam.conditions.get_protocol",
+        "dynastore.extensions.geoid.conditions.get_protocol",
         lambda _proto: fake_configs,
     )
     ctx = MagicMock()

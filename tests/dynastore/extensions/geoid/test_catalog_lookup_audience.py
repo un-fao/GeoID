@@ -1,5 +1,5 @@
 """Unit tests for CatalogLookupAudience PluginConfig (mirror of CatalogPrivacy)."""
-from dynastore.modules.catalog.catalog_config import CatalogLookupAudience
+from dynastore.extensions.geoid.configs import CatalogLookupAudience
 
 
 def test_default_is_private_audience():

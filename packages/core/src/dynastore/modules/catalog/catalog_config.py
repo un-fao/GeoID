@@ -250,27 +250,7 @@ class CatalogPrivacy(PluginConfig):
     )
 
 
-class CatalogLookupAudience(PluginConfig):
-    """Per-catalog opt-in to anonymous lookup endpoints.
-
-    When ``is_public=True``, the GET/POST /search/catalogs/{this_catalog}/geoid
-    endpoints accept unauthenticated requests for THIS catalog only. Lookups
-    still hit the per-tenant data — no cross-catalog leakage.
-
-    Default is ``is_public=False`` (auth-required); anonymous lookup is a
-    deliberate, per-catalog opt-in.
-    """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "lookup_audience")
-    _visibility: ClassVar[Optional[str]] = "catalog"
-
-    is_public: bool = Field(
-        default=False,
-        description=(
-            "When True, the catalog's /search/catalogs/{cat}/geoid lookup "
-            "endpoints accept anonymous (no Authorization header) requests."
-        ),
-    )
-
+# CatalogLookupAudience moved to packages/extensions/geoid/.../configs.py
 
 # ---------------------------------------------------------------------------
 # Cycle E.2.c — collection-create seed flow
