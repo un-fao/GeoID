@@ -1,0 +1,32 @@
+#    Copyright 2025 FAO — Apache 2.0; see ../../LICENSE.
+
+[project]
+name = "dynastore-ext-assets"
+dynamic = ["version"]
+description = "DynaStore Assets extension — asset REST API, upload, write-policy, OGC transactions."
+requires-python = ">=3.12"
+license-files = ["../../../LICENSE"]
+dependencies = [
+    "fastapi>=0.100",
+    "DynaStore",
+]
+
+[project.entry-points."dynastore.extensions"]
+assets = "dynastore.extensions.assets.assets_service:AssetService"
+
+[build-system]
+requires = ["setuptools>=80.9.0", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.uv.sources]
+dynastore = { workspace = true }
+
+[tool.setuptools_scm]
+version_file = "src/dynastore/extensions/assets/_scm_version.py"
+local_scheme = "no-local-version"
+
+fallback_version = "0.0.0+unknown"

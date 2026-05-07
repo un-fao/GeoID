@@ -59,6 +59,10 @@ RUN python3.12 -m venv ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV PYTHONPATH=${APP_DIR}/src
 
+# Install uv for workspace-aware package resolution (pip cannot resolve
+# workspace-local packages declared in [tool.uv.sources]).
+RUN ${VENV_PATH}/bin/pip install uv
+
 # Build-time commit hash for version info (no .git in runtime image)
 ARG BUILD_COMMIT=unknown
 ENV BUILD_COMMIT=${BUILD_COMMIT}
@@ -77,6 +81,9 @@ ARG APP_VERSION=
 # pyproject.toml + the stubbed src tree alone; source-only commits hit
 # the cache and skip the heavy GDAL / pyiceberg / etc. install.
 COPY pyproject.toml LICENSE README.md requirements*.txt pytest.ini* setup.cfg* .coveragerc* ./
+# Workspace extension packages — must be present so uv can resolve
+# dynastore-ext-* workspace members declared in [tool.uv.sources].
+COPY packages/ ./packages/
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.
@@ -110,21 +117,30 @@ ARG BUILD_JUPYTERLITE=false
 # has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
 # → driverShortName='Parquet').  Force fiona to rebuild from sdist against
 # the system libgdal so it inherits every driver the base image ships.
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/uv \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DYNASTORE=0.0.0 \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools setuptools-scm wheel && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DYNASTORE=0.0.0 \
-    ${VENV_PATH}/bin/pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 \
+    ${VENV_PATH}/bin/uv pip install --no-binary fiona ".[${SCOPE}]" uvicorn gunicorn
 
 # Layer 3: real source overlay. Fast layer — busts when src/, tests/, or
-# APP_VERSION change. Re-installs dynastore --no-deps so the wheel metadata
-# (and therefore importlib.metadata.version("DynaStore")) reflects the real
-# version baked in via SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DYNASTORE.
+# APP_VERSION change. Re-installs dynastore + every workspace ext wheel
+# --no-deps so the wheel metadata (and therefore
+# importlib.metadata.version("DynaStore") / version("dynastore-ext-*"))
+# reflects the real version baked in via SETUPTOOLS_SCM_PRETEND_VERSION.
+# Layer 2 used "0.0.0" as a cache-stable placeholder; this layer overwrites
+# the wheel metadata with APP_VERSION (CI passes the real git-describe value).
 COPY src ./src
 COPY tests ./tests
 RUN --mount=type=cache,target=/root/.cache/pip \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DYNASTORE="${APP_VERSION:-0.0.0+unknown}" \
-    ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation .
+    ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation . && \
+    for pkg in packages/extensions/*/; do \
+        SETUPTOOLS_SCM_PRETEND_VERSION="${APP_VERSION:-0.0.0+unknown}" \
+        ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation "$pkg" \
+            || { echo "ERROR: re-install failed for $pkg"; exit 1; }; \
+    done
 
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT).
 # Read them from the local source tree (Layer 3 has overlaid the real files);
@@ -177,8 +193,10 @@ ARG APP_DIR=/dynastore
 WORKDIR ${APP_DIR}
 
 ARG SCOPE=test,all
-RUN --mount=type=cache,target=/root/.cache/pip \
-    ${VENV_PATH}/bin/pip install ".[${SCOPE},dev]"
+ARG APP_VERSION=
+RUN --mount=type=cache,target=/root/.cache/uv \
+    SETUPTOOLS_SCM_PRETEND_VERSION="${APP_VERSION:-0.0.0+unknown}" \
+    ${VENV_PATH}/bin/uv pip install ".[${SCOPE},dev]"
 
 # STAGE 3: Development (Specific for local development with debugging)
 FROM tester AS development
