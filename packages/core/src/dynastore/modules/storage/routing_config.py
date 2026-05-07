@@ -385,6 +385,16 @@ class ItemsRoutingConfig(PluginConfig):
                     on_failure=FailurePolicy.FATAL,
                 ),
             ],
+            Operation.SEARCH: [
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+                OperationDriverEntry(
+                    driver_ref="items_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
         },
         description=(
             "Operation → ordered driver list for items dispatch.  "
