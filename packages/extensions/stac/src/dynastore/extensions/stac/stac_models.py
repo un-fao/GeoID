@@ -476,6 +476,21 @@ class STACItem(Feature):
             # Pydantic will surface a proper type error; skip STAC-specific validation.
             return values  # type: ignore[return-value]
 
+        # Pre-validate bbox length: geojson_pydantic's bbox validator does
+        # ``bbox[1] > bbox[1 + offset]`` with offset in {2, 3} and raises a
+        # bare IndexError on lists of length < 4 (or odd lengths) instead of a
+        # Pydantic ValidationError. That escapes FastAPI's 422 path and
+        # surfaces as a 500. Reject obviously malformed bbox here so the
+        # client gets a clean 422.
+        bbox = values.get("bbox")
+        if bbox is not None:
+            if not isinstance(bbox, (list, tuple)):
+                raise ValueError("bbox must be a list of numbers (length 4 or 6).")
+            if len(bbox) not in (4, 6):
+                raise ValueError(
+                    f"bbox must have 4 (2D) or 6 (3D) elements; got {len(bbox)}."
+                )
+
         try:
             # 1. Prepare a flattened version for strict STAC validation
             # Standard pystac expects strings for title/description/etc.
