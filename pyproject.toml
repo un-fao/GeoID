@@ -528,12 +528,26 @@ pythonPlatform = "Linux"
 typeCheckingMode = "basic"
 venvPath = "."
 venv = ".venv"
-include = ["src/dynastore"]
+# Type-check the workspace tree: dynastore-core + every per-extension wheel.
+# (After the Phase 1 move, src/ at the repo root no longer exists; all
+# Python source lives under packages/core/src/ and packages/extensions/*/src/.)
+include = [
+    "packages/core/src/dynastore",
+    "packages/extensions/*/src/dynastore",
+]
+extraPaths = [
+    "packages/core/src",
+    "packages/extensions/coverages/src",
+    "packages/extensions/gdal/src",
+    "packages/extensions/notebooks/src",
+    "packages/extensions/template/src",
+    "packages/extensions/web/src",
+]
 exclude = [
     "**/__pycache__",
+    "**/build",
     "tests",
     "scripts",
-    "build",
 ]
 reportMissingTypeStubs = false
 reportUnknownMemberType = false
@@ -551,33 +565,33 @@ reportUnnecessaryTypeIgnoreComment = "none"
 reportMissingModuleSource = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/models/protocols"
+root = "packages/core/src/dynastore/models/protocols"
 typeCheckingMode = "strict"
 
 # Optional-extra raster paths (rasterio): silence missing-import noise on files
 # that lazy-import these at call time. Runtime guards with try/except.
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/modules/coverages"
+root = "packages/core/src/dynastore/modules/coverages"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/modules/gdal"
+root = "packages/core/src/dynastore/modules/gdal"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/modules/edr"
+root = "packages/core/src/dynastore/modules/edr"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/tasks/gdal"
+root = "packages/core/src/dynastore/tasks/gdal"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/tasks/ingestion"
+root = "packages/core/src/dynastore/tasks/ingestion/readers"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
-root = "src/dynastore/extensions/coverages"
+root = "packages/extensions/coverages/src/dynastore/extensions/coverages"
 reportMissingImports = "none"
 
 [[tool.pyright.executionEnvironments]]
