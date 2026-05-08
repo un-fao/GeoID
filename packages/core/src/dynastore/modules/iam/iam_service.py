@@ -257,8 +257,24 @@ class IamService:
             provider=provider, subject_id=subject_id, conn=conn
         ) or []
 
-        # 5. Build runtime Principal
+        # 5. Resolve the real platform principal_id from identity_links so
+        #    the returned Principal carries a stable identifier — without
+        #    this, Pydantic's default_factory=uuid4 produces a fresh
+        #    random UUID on every call, breaking any caller that uses
+        #    ``principal.id`` to write back to the DB (e.g. the OIDC role
+        #    sync reconciler grants would land on orphan principal_ids).
+        #    If no principal row exists for this identity, fall through
+        #    to None so the caller can auto-register a fresh one with a
+        #    properly persisted id.
+        existing = await self.storage.get_principal_by_identity(
+            provider=provider, subject_id=subject_id, conn=conn
+        )
+        if existing is None:
+            return None
+
+        # 6. Build runtime Principal — re-use the persisted id.
         return Principal(
+            id=existing.id,
             provider=provider,
             subject_id=subject_id,
             display_name=auth_metadata.get("display_name")
