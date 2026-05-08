@@ -22,6 +22,36 @@ def test_postgresql_driver_advertises_tiles_hint():
     assert Hint.TILES in ItemsPostgresqlDriver.supported_hints
 
 
+def test_default_items_routing_resolves_tiles_hint_to_postgres():
+    """Default ItemsRoutingConfig must yield PG when filtering READ by Hint.TILES.
+
+    Regression: 72de4a7 added Hint.TILES to PG's class-level supported_hints
+    but the per-entry strict-pinning in _entry_matches blocked fallback when
+    the entry's own ``hints`` was non-empty (PG entry pinned to GEOMETRY_EXACT).
+    Tile reads against a fresh deploy hit ValueError("No collection driver
+    found for ... hint='tiles'"). This test exercises the real default config
+    end-to-end through resolve_drivers' filter to pin the contract.
+    """
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig, Operation,
+    )
+
+    cfg = ItemsRoutingConfig()
+    pg_entries = [
+        e for e in cfg.operations[Operation.READ]
+        if e.driver_ref == "items_postgresql_driver"
+    ]
+    assert pg_entries, "PG must be in default READ routing"
+    # _entry_matches uses strict mode when hints is non-empty: hint must be
+    # in entry.hints. PG's class supported_hints is only consulted when the
+    # entry's own hints set is empty. So Hint.TILES MUST be pinned on the
+    # entry — pinning only on the driver class is not enough.
+    assert any(Hint.TILES in e.hints for e in pg_entries), (
+        f"PG READ entry must pin Hint.TILES; got "
+        f"{[sorted(e.hints) for e in pg_entries]}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_tile_resolution_params_routes_with_tiles_hint():
     """get_tile_resolution_params must call get_driver with hint=Hint.TILES."""

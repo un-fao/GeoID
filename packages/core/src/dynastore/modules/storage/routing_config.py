@@ -387,7 +387,7 @@ class ItemsRoutingConfig(PluginConfig):
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
-                    hints={Hint.GEOMETRY_EXACT},
+                    hints={Hint.GEOMETRY_EXACT, Hint.TILES},
                     on_failure=FailurePolicy.FATAL,
                 ),
             ],
