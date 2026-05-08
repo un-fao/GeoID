@@ -132,8 +132,6 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
     is_collection_indexer: ClassVar[bool] = True
 
-    indexer_id: ClassVar[str] = "collection_elasticsearch_driver"
-
     # Collection ES is the canonical async indexer + primary SEARCH
     # backend for collection metadata routing.  Auto-defaults into both
     # Operations.

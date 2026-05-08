@@ -76,10 +76,6 @@ class CollectionElasticsearchPrivateDriver(CollectionElasticsearchDriver):
     ``{prefix}-{catalog_id}-collections-private``.
     """
 
-    # Distinct indexer id so the dispatcher can distinguish private
-    # writes from public ones in routing configs.
-    indexer_id: ClassVar[str] = "collection_elasticsearch_private_driver"
-
     # Opt out of auto-default routing.  See module docstring.
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset()
 

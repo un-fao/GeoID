@@ -323,12 +323,6 @@ class ItemsElasticsearchDriver(
 
     is_item_indexer: ClassVar[bool] = True
 
-    # Generic Indexer Protocol — slim per-item / bulk surface used by the
-    # ``IndexDispatcher``.  The legacy ``_on_item_upsert``/``_on_item_delete``
-    # event listeners remain in place during Phase 2; Phase 2c removes them
-    # once item_service.upsert calls the dispatcher directly.
-    indexer_id: ClassVar[str] = "items_elasticsearch_driver"
-
     # ES (public) is the canonical async indexer + primary SEARCH
     # backend for items routing.  Auto-defaults into both Operations.
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})
@@ -1485,11 +1479,6 @@ class AssetElasticsearchDriver(
     """
 
     is_asset_indexer: ClassVar[bool] = True
-
-    # Generic Indexer Protocol — slim per-item / bulk surface used by the
-    # ``IndexDispatcher``.  Asset ops route through the same dispatcher
-    # via ``AssetRoutingConfig.operations[INDEX]``.
-    indexer_id: ClassVar[str] = "asset_elasticsearch_driver"
 
     # Asset ES is the canonical async indexer + primary SEARCH backend
     # for asset metadata routing.  Auto-defaults into both Operations.

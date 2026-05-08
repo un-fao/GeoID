@@ -82,11 +82,6 @@ class ItemsElasticsearchPrivateDriver(
     Registered as ``storage_elasticsearch_private`` via entry points.
     """
 
-    # Generic Indexer Protocol — slim per-item / bulk surface used by the
-    # ``IndexDispatcher``.  The private driver opts in as ``ItemIndexer``
-    # via the existing routing config; this attribute identifies it on
-    # the dispatcher side.
-    indexer_id: ClassVar[str] = "items_elasticsearch_private_driver"
     is_item_indexer: ClassVar[bool] = True
 
     # Opt out of items-tier auto-default routing.  The private variant is

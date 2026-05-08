@@ -127,9 +127,11 @@ class Indexer(Protocol):
     (bulk reindex, ensure_index, mapping management) on their concrete
     classes — those are operator/admin surfaces, not part of the per-item
     write path.
-    """
 
-    indexer_id: ClassVar[str]
+    Identity: ``_to_snake(type(driver).__name__)`` — same convention used
+    by ``DriverRegistry``, ``_self_register_indexers_into``, and the
+    ``index_propagation`` task.  No separate ``indexer_id`` attribute.
+    """
 
     async def ensure_indexer(self, ctx: IndexContext) -> None:
         """Ensure this indexer's per-tenant storage is provisioned.

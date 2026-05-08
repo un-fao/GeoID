@@ -141,8 +141,6 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
 
     is_catalog_indexer: ClassVar[bool] = True
 
-    indexer_id: ClassVar[str] = "catalog_elasticsearch_driver"
-
     # Catalog ES is the canonical async indexer + primary SEARCH backend
     # for catalog metadata routing.  Auto-defaults into both Operations.
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})

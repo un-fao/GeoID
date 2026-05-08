@@ -487,8 +487,11 @@ def _make_default_routing_resolver():
 
 
 def _make_default_indexer_registry():
-    """Build a registry that resolves an :class:`Indexer` by ``indexer_id``
-    via the protocol discovery system.
+    """Build a registry that resolves an :class:`Indexer` by class identity.
+
+    Identity is ``_to_snake(type(impl).__name__)`` — same convention as
+    ``_self_register_indexers_into`` (routing_config.py) and
+    ``index_propagation/task.py``. No separate ``indexer_id`` attribute.
 
     Cached after first build because the set of registered indexers is
     fixed once app startup completes.
@@ -499,10 +502,11 @@ def _make_default_indexer_registry():
         if indexer_id in cache:
             return cache[indexer_id]
         from dynastore.tools.discovery import get_protocols
+        from dynastore.tools.typed_store.base import _to_snake
 
         match: Optional[Indexer] = None
         for impl in get_protocols(Indexer):
-            if getattr(impl, "indexer_id", None) == indexer_id:
+            if _to_snake(type(impl).__name__) == indexer_id:
                 match = impl
                 break
         cache[indexer_id] = match
