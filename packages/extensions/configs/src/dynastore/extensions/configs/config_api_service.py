@@ -199,7 +199,12 @@ class ConfigApiService:
         all_classes = list_registered_configs()
 
         def _to_data_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-            return {it["plugin_id"]: (it.get("config_data") or {}) for it in items}
+            # ConfigService.list_configs returns rows shaped as
+            # {"plugin_id": <class_key>, "config": <delta-dict>}. Earlier
+            # drafts of this loader read "config_data" / "items" — that
+            # contract never matched, so every composed view silently
+            # rendered code defaults regardless of stored tier rows.
+            return {it["plugin_id"]: (it.get("config") or {}) for it in items}
 
         if not resolved:
             tier_data: Dict[str, Dict[str, Dict[str, Any]]] = {
@@ -211,22 +216,22 @@ class ConfigApiService:
                     limit=1000, offset=0,
                 )
                 source = "collection"
-                tier_data["collection"] = _to_data_map(result.get("items", []))
+                tier_data["collection"] = _to_data_map(result.get("results", []))
             elif catalog_id:
                 result = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
                 source = "catalog"
-                tier_data["catalog"] = _to_data_map(result.get("items", []))
+                tier_data["catalog"] = _to_data_map(result.get("results", []))
             else:
                 result = await svc.list_configs(limit=1000, offset=0)
                 source = "platform"
-                tier_data["platform"] = _to_data_map(result.get("items", []))
+                tier_data["platform"] = _to_data_map(result.get("results", []))
 
             by_class: Dict[str, Dict[str, Any]] = {}
             sources: Dict[str, str] = {}
-            for item in result.get("items", []):
+            for item in result.get("results", []):
                 class_key: str = item["plugin_id"]
                 cls = all_classes.get(class_key)
-                raw: Dict[str, Any] = item.get("config_data") or {}
+                raw: Dict[str, Any] = item.get("config") or {}
                 try:
                     by_class[class_key] = (
                         cls.model_validate(raw).model_dump() if cls else raw
@@ -249,12 +254,12 @@ class ConfigApiService:
                 catalog_id=catalog_id, collection_id=collection_id,
                 limit=1000, offset=0,
             )
-            collection_data = _to_data_map(r.get("items", []))
+            collection_data = _to_data_map(r.get("results", []))
         if catalog_id:
             r = await svc.list_configs(catalog_id=catalog_id, limit=1000, offset=0)
-            catalog_data = _to_data_map(r.get("items", []))
+            catalog_data = _to_data_map(r.get("results", []))
         r = await svc.list_configs(limit=1000, offset=0)
-        platform_data = _to_data_map(r.get("items", []))
+        platform_data = _to_data_map(r.get("results", []))
 
         by_class: Dict[str, Dict[str, Any]] = {}
         sources: Dict[str, str] = {}

@@ -32,7 +32,7 @@ def _default_config_side_effect(config_cls, catalog_id=None, collection_id=None,
 @pytest.fixture()
 def mock_config_service():
     svc = MagicMock()
-    svc.list_configs = AsyncMock(return_value={"items": [], "total": 0})
+    svc.list_configs = AsyncMock(return_value={"results": [], "total": 0})
     svc.get_config = AsyncMock(side_effect=_default_config_side_effect)
     return svc
 
@@ -77,13 +77,13 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and collection_id:
             return {
-                "items": [
+                "results": [
                     {"plugin_id": "write_policy_defaults",
-                     "config_data": {"require_identity_key": True}},
+                     "config": {"require_identity_key": True}},
                 ],
                 "total": 1,
             }
-        return {"items": [], "total": 0}
+        return {"results": [], "total": 0}
 
     svc_mock = MagicMock()
     svc_mock.list_configs = AsyncMock(side_effect=list_side_effect)
@@ -109,13 +109,13 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
     async def list_side_effect(catalog_id=None, collection_id=None, **_):
         if catalog_id and not collection_id:
             return {
-                "items": [
+                "results": [
                     {"plugin_id": "items_routing_config",
-                     "config_data": {"enabled": False}},
+                     "config": {"enabled": False}},
                 ],
                 "total": 1,
             }
-        return {"items": [], "total": 0}
+        return {"results": [], "total": 0}
 
     async def get_side_effect(config_cls, catalog_id=None, collection_id=None, **_):
         if isinstance(config_cls, str):
@@ -135,6 +135,56 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
         catalog_id="my-catalog", collection_id=None, resolved=True,
     )
     assert sources["items_routing_config"] == "catalog"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolved", [True, False])
+async def test_get_effective_configs_consumes_real_list_configs_row_shape(resolved):
+    """Locks the loader's contract against ``ConfigService.list_configs``.
+
+    ``ConfigService.list_configs`` returns ``{"total", "results": [{"plugin_id",
+    "config"}, ...]}`` (config_service.py). An earlier draft of the composed
+    loader read ``{"items": [{"plugin_id", "config_data"}]}`` instead — every
+    composed view (both ``resolved=true`` and ``resolved=false``) silently
+    ignored stored tier rows and rendered code defaults, so a collection-level
+    write-policy override never surfaced in
+    ``GET /configs/.../collections/{c}``. This test feeds the real wire shape
+    and asserts the override survives the merge in both branches.
+    """
+    from dynastore.modules.storage.driver_config import WritePolicyDefaults
+
+    async def list_side_effect(catalog_id=None, collection_id=None, **_):
+        if catalog_id and collection_id:
+            return {
+                "total": 1,
+                "results": [
+                    {"plugin_id": "write_policy_defaults",
+                     "config": {"require_identity_key": True}},
+                ],
+            }
+        return {"total": 0, "results": []}
+
+    svc_mock = MagicMock()
+    svc_mock.list_configs = AsyncMock(side_effect=list_side_effect)
+
+    svc = ConfigApiService(config_service=svc_mock)
+    by_class, sources, tier_data = await svc._get_effective_configs(
+        catalog_id="cat-x", collection_id="coll-y", resolved=resolved,
+    )
+
+    assert sources["write_policy_defaults"] == "collection", (
+        "stored collection-tier row must surface as source=collection; "
+        "regression for items/results & config_data/config field-name drift"
+    )
+    assert by_class["write_policy_defaults"]["require_identity_key"] is True
+    assert tier_data["collection"]["write_policy_defaults"] == {
+        "require_identity_key": True,
+    }
+    if resolved:
+        # resolved path round-trips through the model so other defaults appear
+        assert set(by_class["write_policy_defaults"].keys()) == set(
+            WritePolicyDefaults().model_dump().keys()
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -189,17 +189,17 @@ def _make_config_service(stored: Dict[Any, Any]):
         stored.pop(key, None)
 
     async def _list_configs(catalog_id=None, collection_id=None, **_):
-        items = [
+        results = [
             {
                 "plugin_id": _to_plugin_id(k[0]),
-                "config_data": (
+                "config": (
                     v.model_dump() if hasattr(v, "model_dump") else dict(v)
                 ),
             }
             for k, v in stored.items()
             if k[1] == catalog_id and k[2] == collection_id
         ]
-        return {"items": items, "total": len(items)}
+        return {"results": results, "total": len(results)}
 
     svc.get_config = AsyncMock(side_effect=_get_config)
     svc.get_persisted_config = AsyncMock(side_effect=_get_persisted_config)
