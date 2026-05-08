@@ -111,6 +111,28 @@ class SidecarRejectedError(Exception):
         self.reason = reason
 
 
+class IndexMappingMismatchError(Exception):
+    """Live ES index mapping is missing a field the writer just sent.
+
+    Surfaces when an ES write fails with ``illegal_argument_exception``
+    because a code-side field (e.g. ``is_private``) was added after the
+    index was created and the index was never re-rolled. Maps to HTTP
+    503 + Retry-After: operator action (recreate index / reindex)
+    fixes it; the request itself is well-formed.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        index: str | None = None,
+        field: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.index = index
+        self.field = field
+
+
 class UniqueConstraintViolationError(Exception):
     """A ``FieldDefinition.unique=True`` field collided with an existing value.
 

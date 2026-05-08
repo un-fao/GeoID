@@ -298,6 +298,38 @@ class UnknownFieldsExceptionHandler(ExceptionHandler):
         )
 
 
+class IndexMappingMismatchExceptionHandler(ExceptionHandler):
+    """Maps ``IndexMappingMismatchError`` to HTTP 503 + Retry-After.
+
+    Raised when an ES write fails with ``illegal_argument_exception``
+    because the live index mapping is missing a field the writer just
+    sent. The request payload is well-formed; operator action (re-roll
+    the index / reindex) fixes it. 503 + Retry-After tells clients
+    "transient — try again later" instead of demoting to a generic 500.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.errors import IndexMappingMismatchError
+
+        return isinstance(exception, IndexMappingMismatchError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "type": "https://docs.dynastore.io/errors/index-mapping-mismatch",
+                "title": "Index mapping is out of date",
+                "status": status.HTTP_503_SERVICE_UNAVAILABLE,
+                "detail": str(exception),
+                "index": getattr(exception, "index", None),
+                "field": getattr(exception, "field", None),
+            },
+            headers={"Retry-After": "60"},
+        )
+
+
 class AssetSidecarRejectedExceptionHandler(ExceptionHandler):
     """Maps ``AssetSidecarRejectedError`` to HTTP 409 with structured body.
 
@@ -456,6 +488,7 @@ class ExceptionHandlerRegistry:
         self.register(ConflictExceptionHandler())
         self.register(ConstraintViolationExceptionHandler())
         self.register(UnknownFieldsExceptionHandler())
+        self.register(IndexMappingMismatchExceptionHandler())
         self.register(AssetSidecarRejectedExceptionHandler())
         self.register(ImmutableConfigExceptionHandler())
         self.register(PluginNotFoundExceptionHandler())

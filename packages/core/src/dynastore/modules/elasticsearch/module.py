@@ -94,6 +94,43 @@ async def _find_overbroad_dynastore_data_stream_templates(
     return offending
 
 
+async def _warn_if_mapping_drifted(
+    es: Any, index: str, expected_mapping: Dict[str, Any],
+) -> None:
+    """Warn when ``index`` is missing top-level properties present in
+    ``expected_mapping``.
+
+    Catches the "field added in code, index never re-rolled" class of
+    bug (e.g. ``is_private`` added to ``COLLECTION_MAPPING`` post-F.0d
+    but live ``dynastore-collections`` predates it). Top-level only:
+    deep mapping equality is fragile (ES adds metadata) and field
+    additions are by far the common case. Operator sees an actionable
+    log line at startup; runtime writes that touch the missing field
+    surface ``IndexMappingMismatchError`` → 503.
+    """
+    try:
+        live = await es.indices.get_mapping(index=index)
+    except Exception as exc:
+        logger.debug(
+            "ElasticsearchModule: drift check skipped for '%s' (get_mapping failed: %s)",
+            index, exc,
+        )
+        return
+    live_props = (
+        (live or {}).get(index, {}).get("mappings", {}).get("properties", {})
+        if isinstance(live, dict) else {}
+    )
+    expected_props = (expected_mapping or {}).get("properties", {}) or {}
+    missing = sorted(set(expected_props) - set(live_props))
+    if missing:
+        logger.warning(
+            "ElasticsearchModule: index '%s' mapping is missing fields %s "
+            "declared in code. Writes touching those fields will fail with "
+            "503 IndexMappingMismatch until the index is re-rolled.",
+            index, missing,
+        )
+
+
 async def _is_data_stream(es: Any, name: str) -> bool:
     """Return True when ``name`` exists as a data stream in OpenSearch.
 
@@ -385,6 +422,8 @@ class ElasticsearchModule(ModuleProtocol):
                             "ElasticsearchModule: Created shared index '%s'.",
                             shared_name,
                         )
+                    else:
+                        await _warn_if_mapping_drifted(es, shared_name, mapping)
                 except RuntimeError:
                     # Re-raise our explicit fail-fast — must surface to the
                     # operator, never get swallowed by the broad except below.
