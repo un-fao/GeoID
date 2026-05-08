@@ -62,11 +62,13 @@ async def get_stac_items_paginated(
         },
     )
 
+    from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
     query_response = await items_svc.stream_items(
         catalog_id=catalog_id,
         collection_id=collection_id,
         request=request,
         ctx=DriverContext(db_resource=conn) if conn is not None else None,
+        consumer=ConsumerType.STAC,
     )
 
     if query_response is None:

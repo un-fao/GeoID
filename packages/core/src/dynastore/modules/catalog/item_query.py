@@ -340,6 +340,7 @@ class ItemQueryMixin:
         collection_id: str,
         col_config: ItemsPostgresqlDriverConfig,
         db_resource: Optional[DbResource] = None,
+        consumer: ConsumerType = ConsumerType.GENERIC,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Applies registered query transformations and generates optimized SQL.
@@ -367,7 +368,7 @@ class ItemQueryMixin:
             from dynastore.modules.tools.cql import parse_cql_filter
 
             # Use a temporary optimizer to get all available fields for validation
-            temp_optimizer = QueryOptimizer(col_config)
+            temp_optimizer = QueryOptimizer(col_config, consumer=consumer)
             queryable_fields = temp_optimizer.get_all_queryable_fields()
 
             # Create mapping for CQL parser
@@ -424,7 +425,7 @@ class ItemQueryMixin:
                 f"db_resource={'passed' if db_resource is not None else 'absent'})"
             )
 
-        optimizer = QueryOptimizer(col_config)
+        optimizer = QueryOptimizer(col_config, consumer=consumer)
         sql, params = optimizer.build_optimized_query(
             query_request, schema=phys_schema, table=phys_table
         )
@@ -697,7 +698,7 @@ class ItemQueryMixin:
             }
             sql, params = await self._apply_query_transformations(
                 request, context, catalog_id, collection_id, col_config,
-                db_resource=conn,
+                db_resource=conn, consumer=consumer,
             )
 
             total_count = None
@@ -736,6 +737,7 @@ class ItemQueryMixin:
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         db_resource: Optional[DbResource] = None,
+        consumer: ConsumerType = ConsumerType.GENERIC,
     ):
         """Standardized preparation for search results."""
         async with managed_transaction(db_resource or self.engine) as conn:
@@ -749,7 +751,7 @@ class ItemQueryMixin:
             }
             sql, params = await self._apply_query_transformations(
                 request, context, catalog_id, collection_id, col_config,
-                db_resource=conn,
+                db_resource=conn, consumer=consumer,
             )
 
             params.update({
@@ -768,6 +770,7 @@ class ItemQueryMixin:
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
+        consumer: ConsumerType = ConsumerType.GENERIC,
     ) -> List[Feature]:
         """
         Search and retrieve items using optimized query generation.
@@ -805,7 +808,7 @@ class ItemQueryMixin:
             return []
 
         async with self._prepare_search(
-            catalog_id, collection_id, request, config, db_resource
+            catalog_id, collection_id, request, config, db_resource, consumer=consumer,
         ) as (query, conn, params):
             rows = await query.execute(conn, **params)
             col_config = params.get("col_config")

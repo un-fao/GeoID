@@ -21,6 +21,7 @@ from typing import Dict, List, Any, Tuple, Set, Optional
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
+    ConsumerType,
     SidecarProtocol,
     FieldDefinition,
     FieldCapability,
@@ -54,8 +55,15 @@ class QueryOptimizer:
     requested in ``QueryRequest``, avoiding unnecessary table JOINs.
     """
 
-    def __init__(self, col_config: ItemsPostgresqlDriverConfig):
+    def __init__(
+        self,
+        col_config: ItemsPostgresqlDriverConfig,
+        consumer: Optional[ConsumerType] = None,
+    ):
         self.col_config = col_config
+        # Default to GENERIC when no consumer is supplied — preserves the
+        # pre-consumer-aware behaviour for ad-hoc/internal callers.
+        self.consumer: ConsumerType = consumer or ConsumerType.GENERIC
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
 
@@ -302,11 +310,32 @@ class QueryOptimizer:
         """
         required_sidecars = set()
 
+        # Helper: a sidecar serves the active consumer when its
+        # ``serves_consumers()`` is None (consumer-agnostic) or includes
+        # the active consumer.  Used both for the ``select *`` shortcut
+        # and the final filter step below.
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+            SidecarRegistry as _SR,
+        )
+
+        def _serves_active_consumer(sc_config: SidecarConfig) -> bool:
+            sc = _SR.get_sidecar(sc_config, lenient=True)
+            if sc is None:
+                return True  # unknown sidecar — keep prior behaviour
+            served = type(sc).serves_consumers()
+            return served is None or self.consumer in served
+
         # Check SELECT fields
         for sel in query.select:
             if sel.field == "*":
-                # Need all sidecars if selecting *
-                return list(driver_sidecars(self.col_config))
+                # Need all sidecars that serve the active consumer when
+                # selecting *.  Consumer-specific sidecars (e.g.
+                # stac_metadata for non-STAC consumers) are skipped — the
+                # caller asked for "everything for *this* response shape".
+                return [
+                    sc for sc in driver_sidecars(self.col_config)
+                    if _serves_active_consumer(sc)
+                ]
 
             if sel.field in self.field_index:
                 sidecar, _ = self.field_index[sel.field]

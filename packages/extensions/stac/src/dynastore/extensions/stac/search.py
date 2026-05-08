@@ -469,8 +469,10 @@ async def search_items(
     for collection_id in target_collections:
         config = collection_configs[collection_id]
 
-        # Instantiate QueryOptimizer for this collection
-        optimizer = QueryOptimizer(config)
+        # Instantiate QueryOptimizer for this collection — STAC search needs
+        # the stac_metadata sidecar in the SELECT/JOIN.
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+        optimizer = QueryOptimizer(config, consumer=ConsumerType.STAC)
 
         # --- Query Request Construction ---
 

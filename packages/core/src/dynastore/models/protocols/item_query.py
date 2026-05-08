@@ -62,12 +62,17 @@ class ItemQueryProtocol(Protocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional["DriverContext"] = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> List[Feature]:
         """
         Search and return a list of features matching the request.
 
         Internally uses ``QueryOptimizer.build_optimized_query`` so only
         the sidecars required for the SELECT / WHERE clauses are joined.
+
+        The ``consumer`` parameter controls which sidecar fields are
+        projected into the SQL (e.g. STAC payload columns are skipped for
+        OGC Features) and which sidecars run ``map_row_to_feature``.
         """
         ...
 

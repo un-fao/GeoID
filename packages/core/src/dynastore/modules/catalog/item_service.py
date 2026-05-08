@@ -286,23 +286,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         sidecar_configs = _effective_sidecars(
             col_config, catalog_id="", collection_id="",
         )
-        # Read-time-only overlays. The STAC overlay sidecar
-        # (``StacItemsSidecar``) has no DDL and no own table — it merges
-        # external_assets / external_extensions / extra_fields written by
-        # ItemMetadataSidecar back into the rendered Feature. It cannot
-        # live in ``col_config.sidecars`` because its config type is not
-        # in the ``ItemsPostgresqlDriverConfig.sidecars`` discriminated
-        # Union (cross-package: extensions/stac → modules/storage would
-        # be a circular import). Append it here at READ time only — its
-        # ``map_row_to_feature`` gates internally on ``ConsumerType`` so
-        # non-STAC consumers (OGC Features) get an early-return no-op.
-        try:
-            from dynastore.extensions.stac.stac_items_sidecar import (
-                StacItemsSidecarConfig,
-            )
-            sidecar_configs = list(sidecar_configs) + [StacItemsSidecarConfig()]
-        except ImportError:
-            pass  # STAC extension not installed
+        # Note: ``stac_metadata`` is now a first-class sidecar with its
+        # own DDL/JOIN/SELECT (PR-G2). When the stac extension is loaded,
+        # ``SidecarRegistry.get_injected_sidecar_configs`` already injects
+        # ``StacItemsSidecarConfig`` into the effective list above — no
+        # read-time overlay append needed. Consumer-gating happens at
+        # SQL-build time in ``QueryOptimizer`` so non-STAC consumers don't
+        # JOIN or SELECT the stac_metadata payload columns.
 
         if sidecar_configs:
             # Gather all internal columns to prevent property leaking across sidecars
@@ -583,8 +573,33 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
             sidecars: List[Any] = []
             if sidecar_configs:
+                from dynastore.modules.db_config.exceptions import ConfigResolutionError
                 for sc_config in sidecar_configs:
-                    sidecars.append(SidecarRegistry.get_sidecar(sc_config))
+                    try:
+                        sidecars.append(SidecarRegistry.get_sidecar(sc_config))
+                    except ValueError as exc:
+                        sidecar_type = getattr(sc_config, "sidecar_type", "<unknown>")
+                        extra = (
+                            "extension_stac" if sidecar_type == "stac_metadata"
+                            else f"extension for sidecar '{sidecar_type}'"
+                        )
+                        raise ConfigResolutionError(
+                            (
+                                f"Collection '{catalog_id}/{collection_id}' is configured with "
+                                f"sidecar '{sidecar_type}', but the required extension is not "
+                                f"installed in this service. Reinstall with the "
+                                f"'dynastore[{extra}]' extra, or remove '{sidecar_type}' "
+                                f"from the collection's sidecars."
+                            ),
+                            missing_key=f"sidecar:{sidecar_type}",
+                            scope_tried=[f"catalog={catalog_id}", f"collection={collection_id}"],
+                            hint=(
+                                f"Sidecar '{sidecar_type}' is persisted on this collection "
+                                f"but no implementation is registered in this service's SCOPE. "
+                                f"Install 'dynastore[{extra}]' or drop the sidecar from the "
+                                f"collection config."
+                            ),
+                        ) from exc
 
             # Run item_metadata before attributes so its in-place prune of
             # feature.properties takes effect before attributes captures them.

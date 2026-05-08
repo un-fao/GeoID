@@ -385,9 +385,11 @@ class StacVirtualMixin(_Host):
             )
 
             # Fetch features using ItemService.stream_items to get QueryResponse
+            from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
             query_res = await items_svc.stream_items(
                 catalog_id, collection_id, request=query_req,
                 ctx=DriverContext(db_resource=conn) if conn is not None else None,
+                consumer=ConsumerType.STAC,
             )
 
             total_count = query_res.total_count or 0

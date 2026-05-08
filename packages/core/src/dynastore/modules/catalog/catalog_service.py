@@ -1793,10 +1793,13 @@ class CatalogService(CatalogsProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> List[Dict[str, Any]]:
         """Search and retrieve items using optimized query generation."""
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.search_items(  # type: ignore[return-value]
-            catalog_id, collection_id, request, config=config, ctx=ctx
+            catalog_id, collection_id, request, config=config, ctx=ctx,
+            consumer=consumer or _CT.GENERIC,
         )
 
     async def stream_items(

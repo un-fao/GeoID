@@ -361,16 +361,36 @@ class ItemMetadataSidecar(SidecarProtocol):
             data = dict(feature)
 
         from dynastore.tools.discovery import get_protocols
-        from dynastore.extensions.stac.stac_extension_protocol import (
-            StacExtensionProtocol,
-        )
+        try:
+            from dynastore.extensions.stac.stac_extension_protocol import (
+                StacExtensionProtocol,
+            )
+            from dynastore.extensions.stac.metadata_helpers import (
+                prune_managed_content_sync,
+                prune_stac_managed_properties,
+            )
+        except ImportError as exc:
+            from dynastore.modules.db_config.exceptions import ConfigResolutionError
+            catalog_id = context.get("catalog_id", "<unknown>")
+            collection_id = context.get("collection_id", "<unknown>")
+            raise ConfigResolutionError(
+                (
+                    f"ItemMetadataSidecar.prepare_upsert_payload requires the STAC extension "
+                    f"for managed-content pruning, but 'dynastore.extensions.stac' is not "
+                    f"importable in this service. Collection '{catalog_id}/{collection_id}' "
+                    f"cannot be written from a SCOPE that omits 'dynastore[extension_stac]'. "
+                    f"Reinstall with the STAC extra, or write to this collection from a "
+                    f"STAC-aware service."
+                ),
+                missing_key="extension:stac",
+                scope_tried=[f"catalog={catalog_id}", f"collection={collection_id}"],
+                hint=(
+                    "Install 'dynastore[extension_stac]' in this service, or route writes "
+                    "for STAC-managed collections to a service whose SCOPE includes it."
+                ),
+            ) from exc
 
         providers = get_protocols(StacExtensionProtocol)
-
-        from dynastore.extensions.stac.metadata_helpers import (
-            prune_managed_content_sync,
-            prune_stac_managed_properties,
-        )
 
         pruned = prune_managed_content_sync(data, providers)
 

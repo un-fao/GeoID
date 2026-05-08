@@ -1012,9 +1012,10 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 ),
             )
 
-            # --- OGC post-processing wrapper (defense-in-depth) ---
-            from dynastore.extensions.stac.stac_items_sidecar import STAC_FEATURES_STRIP
-            from dynastore.extensions.features.ogc_generator import _map_validity_to_ogc
+            # --- OGC post-processing wrapper ---
+            from dynastore.extensions.features.ogc_generator import (
+                _map_validity_to_ogc,
+            )
 
             collection_url = (
                 f"{root_url}/features/catalogs/{catalog_id}"
@@ -1023,16 +1024,6 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
 
             async def _ogc_post_process(items):
                 async for feature in items:
-                    # Strip any residual STAC fields (defense-in-depth)
-                    for key in STAC_FEATURES_STRIP:
-                        if hasattr(feature, key):
-                            try:
-                                delattr(feature, key)
-                            except Exception:
-                                pass
-                        if feature.properties and key in feature.properties:
-                            feature.properties.pop(key, None)
-
                     if feature.properties:
                         # Map validity → start_datetime / end_datetime
                         _map_validity_to_ogc(feature.properties)

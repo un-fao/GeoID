@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
     from geojson_pydantic import Feature
     from dynastore.models.query_builder import QueryResponse
+    from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
 
 from dynastore.modules import ModuleProtocol
 from dynastore.modules.db_config.query_executor import (
@@ -638,9 +639,12 @@ class CatalogModule(ModuleProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> "List[Feature]":
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.search_items(  # type: ignore[return-value]
-            catalog_id, collection_id, request, config=config, ctx=ctx
+            catalog_id, collection_id, request, config=config, ctx=ctx,
+            consumer=consumer or _CT.GENERIC,
         )
 
     async def stream_items(
@@ -650,9 +654,12 @@ class CatalogModule(ModuleProtocol):
         request: QueryRequest,
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
+        consumer: "Optional[ConsumerType]" = None,
     ) -> "QueryResponse":
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.stream_items(
-            catalog_id, collection_id, request, config=config, ctx=ctx
+            catalog_id, collection_id, request, config=config, ctx=ctx,
+            consumer=consumer or _CT.GENERIC,
         )
 
     # === Schema/Table Resolution ===

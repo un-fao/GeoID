@@ -568,6 +568,22 @@ class SidecarProtocol(ABC):
         """
         return True
 
+    @classmethod
+    def serves_consumers(cls) -> Optional[set]:
+        """Consumers whose responses need this sidecar's projected columns.
+
+        Returns ``None`` (default) for consumer-agnostic sidecars (geometry,
+        attributes, item_metadata) — they always JOIN/SELECT.
+
+        Returns a set of ``ConsumerType`` for consumer-specific sidecars
+        whose payload only matters to particular response shapes (e.g.
+        ``StacItemsSidecar`` → ``{ConsumerType.STAC}``).  When a query is
+        running for a consumer not in that set, ``QueryOptimizer`` skips
+        the JOIN+SELECT unless the caller explicitly references one of
+        this sidecar's fields in ``query.select / filters / sort``.
+        """
+        return None
+
     @property
     def provides_feature_id(self) -> bool:
         """

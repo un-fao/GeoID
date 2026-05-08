@@ -47,14 +47,6 @@ from dynastore.extensions.stac.stac_metadata_config import (
 
 logger = logging.getLogger(__name__)
 
-# STAC-specific output fields that must NOT appear in OGC Features responses.
-# Kept for defense-in-depth stripping at the Features extension layer.
-STAC_FEATURES_STRIP: Set[str] = {
-    "stac_extensions",
-    "stac_version",
-    "assets",
-}
-
 # Raw column aliases produced by the stac_metadata sidecar's SQL join.
 STAC_METADATA_RAW_COLUMNS: Set[str] = {
     "external_extensions",
@@ -104,6 +96,21 @@ class StacItemsSidecar(SidecarProtocol):
     def is_mandatory(self) -> bool:
         """Not mandatory — items can exist without STAC content."""
         return False
+
+    @classmethod
+    def serves_consumers(cls) -> Optional[set]:
+        """STAC payload columns are only useful for STAC responses.
+
+        OGC Features / Records / generic reads don't surface
+        ``external_extensions / external_assets / extra_fields``, so the
+        optimizer should skip this sidecar's JOIN+SELECT for those
+        consumers (unless the caller explicitly selects/filters one of
+        its columns).
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars.base import (
+            ConsumerType,
+        )
+        return {ConsumerType.STAC}
 
     @property
     def provides_feature_id(self) -> bool:
