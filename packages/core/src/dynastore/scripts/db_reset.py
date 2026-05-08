@@ -180,6 +180,118 @@ async def _reset_configs(conn, dry_run: bool) -> None:
     _log("configs schema DDL recreated OK")
 
 
+# Roles that own Cloud SQL / AlloyDB system objects living in `public`.
+# Anything they own is preserved by `_clean_public_schema`.
+_SYSTEM_RELATION_OWNERS = (
+    "cloudsqlsuperuser", "cloudsqladmin", "cloudsqlagent",
+    "cloudsqliamuser", "cloudsqliamserviceaccount", "cloudsqlimportexport",
+    "cloudsqlreplica",
+    "alloydbsuperuser", "alloydbadmin", "alloydbagent",
+    "alloydbiamuser", "alloydbimportexport", "alloydbreplica",
+    "postgres",
+)
+
+_RELKIND_TO_DROP = {
+    "r": "TABLE",
+    "p": "TABLE",            # partitioned table
+    "v": "VIEW",
+    "m": "MATERIALIZED VIEW",
+    "S": "SEQUENCE",
+    "f": "FOREIGN TABLE",
+}
+
+
+async def _list_public_app_relations(conn) -> list[tuple[str, str]]:
+    """Return [(relkind, relname)] for objects in `public` that are
+    app-created — i.e. not owned by a Cloud SQL/AlloyDB system role and not
+    bound to any installed extension via pg_depend (deptype='e')."""
+    rows = await conn.fetch(
+        """
+        SELECT c.relkind::text AS relkind, c.relname AS relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_roles r     ON r.oid = c.relowner
+        WHERE n.nspname = 'public'
+          AND c.relkind = ANY($1::char[])
+          AND r.rolname != ALL($2::text[])
+          AND NOT EXISTS (
+                SELECT 1 FROM pg_depend d
+                WHERE d.objid = c.oid AND d.deptype = 'e'
+          )
+        ORDER BY c.relkind, c.relname;
+        """,
+        list(_RELKIND_TO_DROP.keys()),
+        list(_SYSTEM_RELATION_OWNERS),
+    )
+    return [(r["relkind"], r["relname"]) for r in rows]
+
+
+async def _clean_public_schema(conn, dry_run: bool) -> None:
+    """Drop app-created relations inside `public`, preserving extension-owned
+    objects (PostGIS, pg_cron, AlloyDB columnar views, etc.) and anything
+    owned by a Cloud SQL/AlloyDB system role."""
+    targets = await _list_public_app_relations(conn)
+    if not targets:
+        _log("public: no app-owned relations to drop.")
+        return
+
+    if dry_run:
+        _log(f"-- DRY RUN: public app relations ({len(targets)}) --")
+        for kind, name in targets:
+            _log(f'DROP {_RELKIND_TO_DROP[kind]} IF EXISTS public."{name}" CASCADE;')
+        return
+
+    dropped = 0
+    for kind, name in targets:
+        sql_kind = _RELKIND_TO_DROP[kind]
+        try:
+            await conn.execute(f'DROP {sql_kind} IF EXISTS public."{name}" CASCADE;')
+            dropped += 1
+        except Exception as e:
+            _log(f"  skipped public.{name} ({sql_kind}): {e}")
+    _log(f"public: dropped {dropped}/{len(targets)} app-owned relations")
+
+
+async def _wipe_cron_jobs(conn, dry_run: bool) -> None:
+    """Remove non-system rows from `cron.job` via ``cron.unschedule(jobid)``.
+
+    A bare ``DELETE FROM cron.job`` silently no-ops on Cloud SQL / AlloyDB
+    when the connecting role does not own the row — pg_cron applies row-level
+    security on `cron.job`. ``cron.unschedule`` is the documented API and is
+    SECURITY DEFINER, so it works as long as the caller can call the
+    function (granted by default to PUBLIC for the job owner; we additionally
+    tolerate per-row failures so partial cleanup still progresses)."""
+    try:
+        rows = await conn.fetch(
+            "SELECT jobid, jobname FROM cron.job "
+            "WHERE jobname != ALL($1::text[]) "
+            "ORDER BY jobid;",
+            list(SYSTEM_CRON_JOBS),
+        )
+    except Exception as e:
+        _log(f"cron wipe skipped (pg_cron not available?): {e}")
+        return
+
+    if not rows:
+        _log("cron.job: nothing to wipe.")
+        return
+
+    if dry_run:
+        _log(f"-- DRY RUN: cron jobs to unschedule ({len(rows)}) --")
+        for r in rows:
+            _log(f"SELECT cron.unschedule({r['jobid']}); -- {r['jobname']}")
+        return
+
+    ok = 0
+    for r in rows:
+        try:
+            await conn.execute("SELECT cron.unschedule($1::bigint);", r["jobid"])
+            ok += 1
+        except Exception as e:
+            _log(f"  cron.unschedule({r['jobid']}, {r['jobname']!r}) failed: {e}")
+    _log(f"cron jobs unscheduled: {ok}/{len(rows)}")
+
+
 async def _reset_full(conn, dry_run: bool) -> None:
     rows = await conn.fetch(
         "SELECT nspname FROM pg_namespace "
@@ -200,7 +312,8 @@ async def _reset_full(conn, dry_run: bool) -> None:
         _log("-- DRY RUN: no changes applied --")
         for s in schemas:
             _log(f'DROP SCHEMA IF EXISTS "{s}" CASCADE;')
-        _log(f"DELETE FROM cron.job WHERE jobname != ALL(ARRAY{list(SYSTEM_CRON_JOBS)});")
+        await _clean_public_schema(conn, dry_run=True)
+        await _wipe_cron_jobs(conn, dry_run=True)
         _log(_get_platform_ddl())
         return
 
@@ -211,14 +324,8 @@ async def _reset_full(conn, dry_run: bool) -> None:
         except Exception as e:
             _log(f"  skipped schema {schema!r}: {e}")
 
-    try:
-        del_result = await conn.execute(
-            "DELETE FROM cron.job WHERE jobname != ALL($1::text[]);",
-            list(SYSTEM_CRON_JOBS),
-        )
-        _log(f"cron jobs wiped: {del_result}")
-    except Exception as e:
-        _log(f"cron wipe skipped (pg_cron not available?): {e}")
+    await _clean_public_schema(conn, dry_run=False)
+    await _wipe_cron_jobs(conn, dry_run=False)
 
     await conn.execute("CREATE SCHEMA IF NOT EXISTS keycloak;")
 
