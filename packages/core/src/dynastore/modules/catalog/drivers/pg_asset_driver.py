@@ -461,7 +461,15 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
         """Return asset dicts matching the query.
 
         ``query`` is an optional dict of ``{field: value}`` equality filters.
-        JSONB paths are supported via dot notation: ``{"metadata.provider": "ESA"}``.
+        JSONB paths are supported via dot notation:
+        ``{"metadata.provider": "ESA"}``, ``{"metadata.sensor.name": "MSI"}``.
+
+        Multiple ``metadata.*`` filters are folded into a single JSONB
+        ``@>`` containment predicate so the planner can use the
+        ``idx_assets_metadata_gin_*`` GIN index. Containment is
+        **type-strict**: ``{"metadata.size": 100}`` matches stored JSON
+        number ``100``, not the string ``"100"``. Pass values in the
+        type they're stored under.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
@@ -480,19 +488,44 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
         }
 
         if query:
+            metadata_container: Dict[str, Any] = {}
             for i, (field, value) in enumerate(query.items()):
-                key = f"qval_{i}"
                 if field.startswith("metadata."):
-                    parts = field.split(".")
-                    path = "->".join(f"'{p}'" for p in parts[1:-1])
-                    leaf = f"->>'{parts[-1]}'"
-                    expr = f"metadata{'->' + path if path else ''}{leaf}"
+                    parts = field.split(".")[1:]
+                    if not parts or any(not p for p in parts):
+                        raise ValueError(
+                            f"invalid metadata path {field!r}: empty segment"
+                        )
+                    d: Any = metadata_container
+                    for p in parts[:-1]:
+                        nxt = d.setdefault(p, {})
+                        if not isinstance(nxt, dict):
+                            raise ValueError(
+                                f"conflicting filter on metadata path "
+                                f"{field!r}: earlier filter set a scalar at "
+                                f"the same prefix"
+                            )
+                        d = nxt
+                    leaf = parts[-1]
+                    if leaf in d and isinstance(d[leaf], dict):
+                        raise ValueError(
+                            f"conflicting filter on metadata path "
+                            f"{field!r}: earlier filter set a sub-object "
+                            f"at the same key"
+                        )
+                    d[leaf] = value
                 else:
                     from dynastore.tools.db import validate_sql_identifier
                     validate_sql_identifier(field)
-                    expr = f'"{field}"'
-                where_parts.append(f"{expr} = :{key}")
-                params[key] = value
+                    key = f"qval_{i}"
+                    where_parts.append(f'"{field}" = :{key}')
+                    params[key] = value
+
+            if metadata_container:
+                where_parts.append(
+                    "metadata @> CAST(:metadata_container AS jsonb)"
+                )
+                params["metadata_container"] = json.dumps(metadata_container)
 
         sql = (
             f'SELECT asset_id, catalog_id, collection_id, asset_type, kind, status, '
