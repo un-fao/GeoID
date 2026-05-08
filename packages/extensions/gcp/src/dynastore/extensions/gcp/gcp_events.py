@@ -661,6 +661,7 @@ async def handle_asset_events(
         )
         return None
 
+    from dynastore.models.driver_context import DriverContext
     from dynastore.models.protocols import DatabaseProtocol
     from dynastore.modules.gcp.gcp_finalize_activator import (
         activate,
@@ -676,7 +677,12 @@ async def handle_asset_events(
     if catalogs_svc is None:
         logger.warning("handle_asset_events: CatalogsProtocol not available.")
         return None
-    schema = await catalogs_svc.resolve_physical_schema(catalog_id)
+    # Bypass the per-process catalog-model cache: on multi-instance Cloud Run
+    # the Pub/Sub push can land on an instance whose cache predates this
+    # catalog's creation. ctx forces a direct DB read.
+    schema = await catalogs_svc.resolve_physical_schema(
+        catalog_id, ctx=DriverContext(db_resource=db.engine), allow_missing=True
+    )
     if not schema:
         logger.warning(
             f"handle_asset_events: no physical schema for catalog '{catalog_id}'."

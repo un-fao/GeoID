@@ -275,6 +275,18 @@ async def run_ingestion_task(
             if asset is None:
                 raise RuntimeError("Pre-operations returned no asset.")
 
+        from dynastore.modules.catalog.asset_service import AssetStatus
+
+        if asset.status == AssetStatus.PENDING:
+            raise RuntimeError(
+                f"Asset {asset.asset_id} is PENDING (kind={asset.kind}): "
+                f"OBJECT_FINALIZE has not activated this asset yet. Either "
+                f"upload completed but the GCS push event was lost / dropped "
+                f"(check handle_asset_events logs for 'no physical schema' "
+                f"or 'orphan finalize'), or upload is still in flight. "
+                f"Re-submit ingestion only after status=='active'."
+            )
+
         source_file_path = asset.uri or asset.href
         if source_file_path is None:
             raise RuntimeError(
