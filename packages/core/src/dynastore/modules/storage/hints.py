@@ -107,6 +107,14 @@ class Hint(StrEnum):
     GEOMETRY_SIMPLIFIED = "geometry_simplified"
     GEOMETRY_EXACT = "geometry_exact"
 
+    # Driver can produce MVT-shaped geometry rows that the tile renderer
+    # wraps in ``ST_AsMVT``.  Today only PG advertises this; future ES /
+    # DuckDB drivers opt in by adding it to ``supported_hints`` and
+    # implementing ``get_features_query(geom_format="MVT")``.  Tile reads
+    # MUST pass ``hint=Hint.TILES`` so first-match routing returns a
+    # tile-capable driver even when ES is listed first for READ.
+    TILES = "tiles"
+
     # ── Search / read-variant flavours ────────────────────────────────
     # These are flavours of ``Operation.SEARCH`` (or ``Operation.READ``).
     # The caller asks for a specific shape; the dispatcher picks an

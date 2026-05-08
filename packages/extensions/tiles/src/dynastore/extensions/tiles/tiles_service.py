@@ -626,7 +626,12 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
                     resolved_collections.append(meta)
 
             if not resolved_collections:
-                logger.info(f"No valid collections found for {dataset}/{collections}")
+                logger.warning(
+                    "No valid collections found for %s/%s "
+                    "(requested=%d) — see tile metadata warnings above for "
+                    "the underlying driver/routing failure",
+                    dataset, collections, len(requested_cols_list),
+                )
                 return self._finalize_response(request, b"")
 
             # L2 cache miss — try PMTiles archive fallback before hitting PostGIS

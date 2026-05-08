@@ -864,20 +864,44 @@ async def get_tile_resolution_params(
         # 1. Resolve Physical Names (Cached inside catalogs protocol)
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
+            logger.warning(
+                "tile metadata: CatalogsProtocol not registered for %s/%s",
+                catalog_id, collection_id,
+            )
             return {}
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import Operation
+        from dynastore.modules.storage.hints import Hint
 
         try:
-            driver = await get_driver(Operation.READ, catalog_id, collection_id)
+            # Hint.TILES forces routing to a tile-capable driver (today: PG).
+            # Without it, default READ routing returns ES first when ES is
+            # listed ahead of PG, and ES has no schema/table identifiers.
+            driver = await get_driver(
+                Operation.READ, catalog_id, collection_id, hint=Hint.TILES
+            )
             location = await driver.location(catalog_id, collection_id)
-        except (ValueError, Exception):
+        except Exception:
+            logger.warning(
+                "tile metadata: no tile-capable driver for %s/%s — "
+                "add Hint.TILES to a driver's supported_hints or to the "
+                "items READ routing entry",
+                catalog_id, collection_id,
+                exc_info=True,
+            )
             return {}
 
         phys_schema = location.identifiers.get("schema")
         phys_table = location.identifiers.get("table")
 
         if not phys_schema or not phys_table:
+            logger.warning(
+                "tile metadata: driver %s for %s/%s returned location "
+                "without schema/table identifiers (got keys=%s) — "
+                "tile rendering currently requires PG-style identifiers",
+                type(driver).__name__, catalog_id, collection_id,
+                sorted(location.identifiers.keys()),
+            )
             return {}
 
         # 2. Resolve Source SRID (Cached)

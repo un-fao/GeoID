@@ -85,6 +85,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         Hint.FEATURES, Hint.WRITE, Hint.METADATA,
         Hint.JOIN,  # primary side of OGC API - Joins (extensions/joins/joins_service.py)
         Hint.GEOMETRY_EXACT,  # PR #185 default routing: PG returns full-precision geometries
+        Hint.TILES,  # ST_AsMVT renderer dispatches here via tiles_module.get_tile_resolution_params
         Hint.SPATIAL_FILTER, Hint.ATTRIBUTE_FILTER, Hint.SORT, Hint.GROUP_BY,
         Hint.AGGREGATION, Hint.COUNT, Hint.STATISTICS,
     })
