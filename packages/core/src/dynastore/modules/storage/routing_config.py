@@ -186,7 +186,7 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
 
     mapping: Dict[str, Set[str]] = {
         Capability.WRITE: {Operation.WRITE, Operation.INDEX, Operation.BACKUP},
-        Capability.READ: {Operation.READ},
+        Capability.READ: {Operation.READ, Operation.SEARCH},
         Capability.EXPORT: {Operation.BACKUP},
     }
     ops: Set[str] = set()
