@@ -43,8 +43,6 @@ _BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
 class PgOutboxStore:
     """Postgres-backed :class:`OutboxStore` implementation."""
 
-    indexer_id: str = "pg_outbox"
-
     def __init__(
         self,
         *,

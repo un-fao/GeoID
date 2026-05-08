@@ -71,7 +71,6 @@ class ESBulkIndexer:
     pre-serialised STAC item payloads emitted by the dispatcher.
     """
 
-    indexer_id: str = "items_elasticsearch_driver"
     preferred_chunk_size: int = 1500
 
     def __init__(self, driver: Any) -> None:
