@@ -306,6 +306,18 @@ class CatalogModule(ModuleProtocol):
                     "may continue to hit 23505 until next boot.", exc,
                 )
 
+            from dynastore.modules.db_config.assets_metadata_gin_migration import (
+                migrate_assets_metadata_gin_index,
+            )
+            try:
+                await migrate_assets_metadata_gin_index(engine)
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "Assets metadata GIN backfill aborted: %s. Metadata "
+                    "containment queries on affected catalogs may sequential "
+                    "scan until next boot.", exc,
+                )
+
             # 5. Register Internal Observers
             # Observers will use get_protocol() to access services
             register_event_listener(

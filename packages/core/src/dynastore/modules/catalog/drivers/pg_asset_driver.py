@@ -215,6 +215,8 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
             WHERE status = 'pending';
         CREATE INDEX IF NOT EXISTS idx_assets_created_at_{schema_tag}
             ON "{schema}".assets (created_at);
+        CREATE INDEX IF NOT EXISTS idx_assets_metadata_gin_{schema_tag}
+            ON "{schema}".assets USING GIN (metadata jsonb_path_ops);
         """
 
         refs_ddl = f"""
