@@ -19,7 +19,7 @@ from dynastore.models.protocols.indexer import (
 )
 from dynastore.modules.storage.index_dispatcher import (
     IndexDispatcher, IndexerFatal, TaskTableOutboxWriter,
-    _bind_named_to_positional, get_index_dispatcher, reset_index_dispatcher,
+    get_index_dispatcher, reset_index_dispatcher,
 )
 from dynastore.modules.storage.routing_config import (
     FailurePolicy, Operation, OperationDriverEntry, WriteMode,
@@ -321,13 +321,24 @@ async def test_fan_out_bulk_returns_per_indexer_results():
 
 
 class _FakePgConn:
-    """Stub connection that records executed SQL for inspection."""
+    """Stub connection that records executed SQL for inspection.
+
+    Shaped for the SQLAlchemy sync ``Connection`` contract because
+    ``DQLExecutor`` routes non-SA-async resources through the sync
+    workflow (``conn.execute(statement, parameters)``). The fake is
+    intentionally NOT a real ``AsyncConnection`` — that keeps the test
+    independent of a live engine while exercising the same outbox path
+    the production wiring uses.
+    """
 
     def __init__(self) -> None:
         self.calls: List[tuple] = []
 
-    async def execute(self, sql, *args):
-        self.calls.append((sql, args))
+    def execute(self, statement, parameters=None):
+        # ``statement`` is a SQLAlchemy ``TextClause`` — render to str so
+        # asserts can match on the INSERT shape regardless of bind form.
+        self.calls.append((str(statement), parameters or {}))
+        return None
 
 
 @pytest.mark.asyncio
@@ -365,22 +376,15 @@ async def test_outbox_writer_inserts_task_row_on_caller_conn():
         last_error="ES timeout",
     )
     assert len(conn.calls) == 1
-    sql, args = conn.calls[0]
+    sql, params = conn.calls[0]
 
     # SQL must INSERT into the tasks table with task_type='index_propagation'.
     assert "INSERT INTO tasks.tasks" in sql
-    # Named placeholders should have been translated to $N positional args.
-    assert "$1" in sql
-
-    # Inspect the bind args by reconstructing the named->positional mapping.
-    # We re-bind to verify the inputs JSON contains the indexer_id payload.
-    inputs_json = next(
-        (a for a in args if isinstance(a, str) and "items_elasticsearch_driver" in a),
-        None,
-    )
-    assert inputs_json is not None
+    # Named binds preserved (DQLQuery uses sqlalchemy text named binds).
+    assert ":task_id" in sql
+    # ``inputs`` is a JSON-serialized payload bound by name.
     import json as _json
-    inputs = _json.loads(inputs_json)
+    inputs = _json.loads(params["inputs"])
     assert inputs["indexer_id"] == "items_elasticsearch_driver"
     assert inputs["entity_id"] == "item-1"
     assert inputs["op_type"] == "upsert"
@@ -433,14 +437,6 @@ async def test_default_dispatcher_describe_with_no_routing_returns_empty_indexer
     assert info["indexers"] == [] or all(
         isinstance(x, dict) for x in info["indexers"]
     )
-
-
-def test_bind_named_to_positional_handles_repeated_names():
-    sql, args = _bind_named_to_positional(
-        "SELECT :a, :b, :a, :c", {"a": 1, "b": 2, "c": 3},
-    )
-    assert sql == "SELECT $1, $2, $1, $3"
-    assert args == [1, 2, 3]
 
 
 # ---------------------------------------------------------------------------
