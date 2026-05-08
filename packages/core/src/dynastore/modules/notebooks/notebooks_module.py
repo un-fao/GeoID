@@ -115,13 +115,9 @@ class NotebooksModule(ModuleProtocol):
                 "dynastore.modules.gcp.notebooks",
                 "dynastore.modules.iam.notebooks",
                 "dynastore.modules.notebooks.showcase_registrations",
+                "dynastore.modules.notebooks.geoid_demo_registrations",
                 "dynastore.tasks.ingestion.notebooks",
                 "dynastore.tasks.dimensions_materialize.notebooks",
-                # Extensions whose service class isn't loaded in the
-                # catalog SCOPE still ship platform notebooks via this
-                # module-import side-effect path — same pattern as
-                # ``dynastore.extensions.dimensions.__init__``.
-                "dynastore.extensions.geoid.notebook_registrations",
             ):
                 try:
                     __import__(mod_path)
