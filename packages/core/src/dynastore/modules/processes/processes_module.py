@@ -109,6 +109,7 @@ async def execute_process(
     background_tasks: Optional[Any] = None,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
+    dedup_key: Optional[str] = None,
 ) -> Any:
     """
     Core logic for executing a process.
@@ -118,6 +119,11 @@ async def execute_process(
       2. Validate inputs against JSON Schema
       3. Resolve execution mode from preference + process constraints
       4. Delegate to ExecutionEngine.execute()
+
+    ``dedup_key``: optional idempotency token. When set, the runner passes it
+    to ``TaskCreate`` so the DB partial unique index on
+    ``(schema_name, dedup_key)`` for non-terminal tasks collapses redelivered
+    events into a single task. Returns ``None`` on a dedup hit.
     """
     # 1. Find the requested process definition.
     process: Optional[models.Process] = None
@@ -151,4 +157,5 @@ async def execute_process(
         caller_id=caller_id,
         db_schema=db_schema or "public",
         background_tasks=background_tasks,
+        dedup_key=dedup_key,
     )

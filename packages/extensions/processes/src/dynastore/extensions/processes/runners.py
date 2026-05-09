@@ -113,10 +113,16 @@ class FastAPIBackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
         # Create the task record in the database for tracking.
         task_create_request = TaskCreate(
-            caller_id=context.caller_id, task_type=str(context.task_type), inputs=context.inputs
+            caller_id=context.caller_id,
+            task_type=str(context.task_type),
+            inputs=context.inputs,
+            dedup_key=context.dedup_key,
         )
         new_task = await tasks_module.create_task(context.engine, task_create_request, schema=context.db_schema)
         if new_task is None:
+            if context.dedup_key is not None:
+                # Dedup hit. Caller asked for idempotency; signal soft-success.
+                return None
             raise RuntimeError("FastAPIBackgroundRunner: create_task returned None (dedup hit on a non-dedup task).")
         logger.info(f"Created task '{new_task.task_id}' for FastAPI background execution.")
 

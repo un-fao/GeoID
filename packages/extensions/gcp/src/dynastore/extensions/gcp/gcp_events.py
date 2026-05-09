@@ -506,46 +506,36 @@ async def _trigger_configured_actions(
             if engine is None:
                 raise RuntimeError("No DatabaseProtocol engine available to execute process.")
 
-            # Ingestion: pre-create the task with a dedup_key keyed on the GCS
-            # object `generation`. Pub/Sub OBJECT_FINALIZE is at-least-once, so
-            # without this guard a redelivered finalize would spawn a second
-            # ingestion job against the same asset version. Same shape as the
-            # cleanup adapters below.
+            # Ingestion: derive a dedup_key keyed on the GCS object generation
+            # (monotonic per-version). Pub/Sub OBJECT_FINALIZE is at-least-once;
+            # without this token a redelivered finalize would spawn a second
+            # job against the same asset version. The runner forwards the key
+            # to TaskCreate; the DB partial unique index on
+            # (schema_name, dedup_key) for non-terminal tasks collapses the
+            # redelivery into a single task.
+            dedup_key: Optional[str] = None
             if action.process_id == "ingestion" and generation is not None:
-                from dynastore.models.tasks import TaskCreate
-                from dynastore.modules.tasks.tasks_module import (
-                    create_task_for_catalog,
+                dedup_key = (
+                    f"ingestion:{catalog_id}:{collection_id}:"
+                    f"{asset_id}:{generation}"
                 )
 
-                task_data = TaskCreate(
-                    task_type=action.process_id,
-                    caller_id=f"gcp_event:{event_type.value}",
-                    inputs=execute_payload.model_dump(),
-                    collection_id=collection_id,
-                    dedup_key=(
-                        f"ingestion:{catalog_id}:{collection_id}:"
-                        f"{asset_id}:{generation}"
-                    ),
+            result = await processes_module.execute_process(
+                process_id=action.process_id,
+                execution_request=execute_payload,
+                engine=engine,
+                caller_id=f"gcp_event:{event_type.value}",
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                dedup_key=dedup_key,
+            )
+            if dedup_key is not None and result is None:
+                logger.info(
+                    f"Dedup: process '{action.process_id}' for "
+                    f"{catalog_id}:{collection_id}:{asset_id}@{generation} "
+                    f"already in flight; skipping redelivery."
                 )
-                task = await create_task_for_catalog(engine, task_data, catalog_id)
-                if task is None:
-                    logger.info(
-                        f"Dedup: ingestion task for "
-                        f"{catalog_id}:{collection_id}:{asset_id}@{generation} "
-                        f"already in flight; skipping redelivery."
-                    )
-                else:
-                    logger.info(
-                        f"Enqueued ingestion task '{task.task_id}' for object "
-                        f"'{context['name']}' (generation={generation})."
-                    )
             else:
-                await processes_module.execute_process(
-                    process_id=action.process_id,
-                    execution_request=execute_payload,
-                    engine=engine,
-                    caller_id=f"gcp_event:{event_type.value}",
-                )
                 logger.info(
                     f"Successfully deferred process '{action.process_id}' for object '{context['name']}'."
                 )

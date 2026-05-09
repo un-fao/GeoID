@@ -97,6 +97,12 @@ class RunnerContext(BaseModel):
     asset: Optional[Any] = None
     db_schema: str = "tasks"
     extra_context: Dict[str, Any]
+    dedup_key: Optional[str] = None
+    """Idempotency token. When set, runners pass this to ``TaskCreate`` so the
+    DB partial unique index on ``(schema_name, dedup_key)`` for non-terminal
+    tasks collapses redelivered events into a single task. ``create_task``
+    returns ``None`` on a dedup hit; the runner then returns ``None`` and
+    ``ExecutionEngine.execute`` short-circuits without trying other runners."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
