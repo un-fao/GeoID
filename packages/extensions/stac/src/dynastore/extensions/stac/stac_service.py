@@ -296,9 +296,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # Write Operations
             ("/catalogs", "create_stac_catalog", ["POST"], {"status_code": status.HTTP_201_CREATED}),
             ("/catalogs/{catalog_id}/collections", "create_stac_collection", ["POST"], {"status_code": status.HTTP_201_CREATED}),
-            ("/catalogs/{catalog_id}", "update_stac_catalog", ["PUT", "PATCH"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}", "replace_stac_catalog", ["PUT"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}", "update_stac_catalog", ["PATCH"], {"status_code": status.HTTP_200_OK}),
             ("/catalogs/{catalog_id}", "delete_stac_catalog", ["DELETE"], {}),
-            ("/catalogs/{catalog_id}/collections/{collection_id}", "update_stac_collection", ["PUT", "PATCH"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}", "replace_stac_collection", ["PUT"], {"status_code": status.HTTP_200_OK}),
+            ("/catalogs/{catalog_id}/collections/{collection_id}", "update_stac_collection", ["PATCH"], {"status_code": status.HTTP_200_OK}),
             ("/catalogs/{catalog_id}/collections/{collection_id}", "delete_stac_collection", ["DELETE"], {}),
             # Item Endpoints
             ("/catalogs/{catalog_id}/collections/{collection_id}/items", "get_stac_collection_items", ["GET"], {"response_class": _J}),
@@ -607,6 +609,59 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 raise _exc
             return _exc
 
+    async def replace_stac_catalog(
+        self,
+        catalog_id: str,
+        definition: STACCatalogRequest,
+        language: str = Depends(get_language),
+    ):
+        # OGC API Features Part 4 / STAC Transaction Extension: PUT replaces
+        # the whole resource with the request body. Required-field validation
+        # is enforced by ``STACCatalogRequest`` (the same model used on POST),
+        # so a partial body is rejected at the framework boundary.
+        from dynastore.models.localization import is_multilanguage_input
+
+        if definition.id != catalog_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Body 'id' ({definition.id!r}) must match path catalog_id "
+                    f"({catalog_id!r})."
+                ),
+            )
+
+        # ``exclude_unset=False``: include every model field — fields the
+        # client did not supply default to None and clear the corresponding
+        # column. This is what makes PUT a true replace rather than a merge.
+        input_data = definition.model_dump(exclude_unset=False)
+        use_lang = (
+            "*"
+            if any(
+                is_multilanguage_input(input_data.get(f))
+                for f in [
+                    "title",
+                    "description",
+                    "keywords",
+                    "license",
+                    "extra_metadata",
+                ]
+            )
+            else language
+        )
+
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
+        updated = await catalogs_svc.update_catalog(
+            catalog_id, input_data, lang=use_lang
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Catalog '{catalog_id}' not found.",
+            )
+        localized_data, _ = stac_localize(updated, language)
+        return JSONResponse(content=localized_data)
+
     async def update_stac_catalog(
         self,
         catalog_id: str,
@@ -661,6 +716,59 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 detail=f"Catalog '{catalog_id}' not found.",
             )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    async def replace_stac_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request_body: STACCollectionRequest,
+        language: str = Depends(get_language),
+    ):
+        # OGC API Features Part 4 / STAC Transaction Extension: PUT replaces
+        # the whole collection. ``STACCollectionRequest`` enforces required
+        # STAC fields (id/type/license/extent/...) so partial bodies fail
+        # before reaching the manager.
+        from dynastore.models.localization import is_multilanguage_input
+
+        if request_body.id != collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Body 'id' ({request_body.id!r}) must match path collection_id "
+                    f"({collection_id!r})."
+                ),
+            )
+
+        input_data = request_body.model_dump(exclude_unset=False)
+        validate_stac_collection(input_data)
+
+        use_lang = (
+            "*"
+            if any(
+                is_multilanguage_input(input_data.get(f))
+                for f in [
+                    "title",
+                    "description",
+                    "keywords",
+                    "license",
+                    "extra_metadata",
+                ]
+            )
+            else language
+        )
+
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
+        updated = await catalogs_svc.update_collection(
+            catalog_id, collection_id, input_data, lang=use_lang
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
+        localized_data, _ = stac_localize(updated, language)
+        return JSONResponse(content=localized_data)
 
     async def update_stac_collection(
         self,
