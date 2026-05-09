@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -73,12 +74,14 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def initialize(self, app_state: object = None) -> None:
+    @asynccontextmanager
+    async def lifespan(self, app_state: object = None):
         await self.buffer.start()
         logger.info("ElasticsearchStatsDriver: Initialized.")
-
-    async def shutdown(self) -> None:
-        await self.buffer.stop()
+        try:
+            yield
+        finally:
+            await self.buffer.stop()
 
     # ------------------------------------------------------------------
     # AbstractStatsDriver interface
