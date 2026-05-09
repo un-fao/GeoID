@@ -62,9 +62,10 @@ def _read_uri_list_from_source(module_path: str, var_name: str) -> set:
     the heavy import while still exercising the actual source-of-truth.
     """
     import ast
-    from pathlib import Path
 
-    src = Path(__file__).resolve().parents[3] / "src" / "dynastore" / module_path
+    from tests._repo_paths import find_in_packages
+
+    src = find_in_packages(module_path)
     tree = ast.parse(src.read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):

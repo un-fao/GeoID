@@ -14,12 +14,11 @@ own ``service_name``) and are not checked here.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-# Repo-relative path: this test lives at tests/dynastore/, parents[2] is the repo root.
-_CONFIG_ROOT = Path(__file__).resolve().parents[2] / "src" / "dynastore" / "docker" / "config"
+from tests._repo_paths import CORE_SRC
+
+_CONFIG_ROOT = CORE_SRC / "docker" / "config"
 _SERVICES = ("catalog", "geoid", "maps", "tools", "worker")
 
 

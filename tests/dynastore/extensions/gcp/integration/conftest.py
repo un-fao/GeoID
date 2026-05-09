@@ -1,9 +1,10 @@
 import pytest
 import pytest_asyncio
 import os
-from pathlib import Path
 
-_CREDS_FILE = Path(__file__).parents[5] / "src" / "dynastore" / "modules" / "gcp" / "application_default_credentials_geospatial-review.json"
+from tests._repo_paths import CORE_SRC
+
+_CREDS_FILE = CORE_SRC / "modules" / "gcp" / "application_default_credentials_geospatial-review.json"
 _REAL_PROJECT = "fao-aip-geospatial-review"
 _REAL_REGION = "europe-west1"
 
