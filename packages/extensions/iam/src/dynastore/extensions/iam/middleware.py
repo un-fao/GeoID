@@ -33,6 +33,7 @@ from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.models.protocols.authorization import IamRoleConfig
 from dynastore.modules.iam.models import PolicyBundle
+from dynastore.modules.iam.exceptions import InvalidAuthTokenError
 
 logger = logging.getLogger(__name__)
 
@@ -209,10 +210,19 @@ class IamMiddleware(BaseHTTPMiddleware):
         schema = await self._iam_manager.resolve_schema(catalog_id)  # type: ignore[union-attr,attr-defined]
 
         # 1. Authenticate and get Principal
-        (
-            principal_role,
-            principal_obj,
-        ) = await self._iam_manager.authenticate_and_get_role(request)  # type: ignore[union-attr]
+        try:
+            (
+                principal_role,
+                principal_obj,
+            ) = await self._iam_manager.authenticate_and_get_role(request)  # type: ignore[union-attr]
+        except InvalidAuthTokenError as e:
+            # Token was present but unverifiable — fail closed with 401
+            # rather than degrading to anonymous (issues #415/#416/#417).
+            return JSONResponse(
+                {"detail": str(e) or "Invalid authentication token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
         # 1b. Derive catalog-tier sentinel role(s).
         #
