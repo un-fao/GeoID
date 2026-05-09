@@ -21,7 +21,6 @@
 import logging
 import secrets
 import os
-import time
 import jwt
 from contextlib import asynccontextmanager
 from typing import List, Optional, Tuple, Any, Dict, Union, AsyncGenerator
@@ -49,6 +48,7 @@ from .exceptions import (
 )
 from . import oidc_role_sync
 from .oidc_role_sync_config import OidcRoleSyncConfig
+from dynastore.tools.ttl_gate import TTLGate
 
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules import get_protocol
@@ -92,9 +92,11 @@ class IamService:
         # as the fallback) so seed-time naming stays consistent with
         # runtime checks throughout the request lifecycle.
         self._role_config = role_config or IamRoleConfig()
-        # Per-principal "last synced at" monotonic clock; bounds OIDC
-        # reconciliation to one DB write window per TTL per principal.
-        self._oidc_sync_cache: Dict[UUID, float] = {}
+        # Bounded per-principal throttle + serialization lock for OIDC
+        # reconciliation. TTL is updated lazily from PluginConfig on first
+        # use (see ``_get_oidc_sync_gate``).
+        self._oidc_sync_gate: Optional[TTLGate[UUID]] = None
+        self._oidc_sync_gate_ttl: float = -1.0
 
     async def get_jwt_secret(self) -> str:
         """Retrieves or generates the active JWT secret."""
@@ -367,6 +369,18 @@ class IamService:
             logger.debug("OidcRoleSyncConfig unavailable; using defaults", exc_info=True)
             return OidcRoleSyncConfig()
 
+    def _get_oidc_sync_gate(self, ttl_seconds: float) -> TTLGate[UUID]:
+        """Lazily construct (or rebuild on TTL change) the OIDC reconciler
+        throttle. Bounded LRU at 4096 keys — large enough for any realistic
+        single-pod authenticated-principal set, small enough to bound RAM."""
+        if (
+            self._oidc_sync_gate is None
+            or self._oidc_sync_gate_ttl != ttl_seconds
+        ):
+            self._oidc_sync_gate = TTLGate(maxsize=4096, ttl_seconds=ttl_seconds)
+            self._oidc_sync_gate_ttl = ttl_seconds
+        return self._oidc_sync_gate
+
     async def _reconcile_oidc_roles(
         self, principal: Principal, identity: Dict[str, Any]
     ) -> bool:
@@ -386,90 +400,99 @@ class IamService:
             except Exception:
                 return False
 
-        now = time.monotonic()
-        last = self._oidc_sync_cache.get(principal_id, 0.0)
-        if now - last < cfg.ttl_seconds:
-            return False
+        gate = self._get_oidc_sync_gate(cfg.ttl_seconds)
+        async with gate.acquire(principal_id) as gate_handle:
+            if not gate_handle.should_run:
+                return False
 
-        raw_claims = identity.get("raw_claims") or {}
-        issuer = raw_claims.get("iss") if isinstance(raw_claims, dict) else None
-        if not oidc_role_sync.is_issuer_allowed(issuer, cfg.issuer_whitelist):
-            logger.warning(
-                "OIDC role sync skipped: issuer %r not in whitelist for principal %s",
-                issuer, principal_id,
-            )
-            self._oidc_sync_cache[principal_id] = now
-            return False
-
-        oidc_roles = identity.get("roles") or []
-        mapped_internal = set(cfg.role_mapping.values())
-        try:
-            current_platform_roles = await self.storage.list_platform_roles(
-                principal_id
-            )
-        except Exception:
-            logger.debug(
-                "list_platform_roles failed during OIDC sync; skipping",
-                exc_info=True,
-            )
-            return False
-
-        # Restrict the diff to roles the mapping owns; everything else
-        # (catalog-scope, viewer, manually-granted unrelated roles) is
-        # left untouched by design.
-        scoped_current = [r for r in current_platform_roles if r in mapped_internal]
-        actions = oidc_role_sync.diff(
-            oidc_roles=oidc_roles,
-            current_internal_roles=scoped_current,
-            role_mapping=cfg.role_mapping,
-        )
-
-        if not actions:
-            self._oidc_sync_cache[principal_id] = now
-            return False
-
-        granted: List[str] = []
-        revoked: List[str] = []
-        for act in actions:
-            try:
-                if act.action == "grant":
-                    await self.storage.grant_platform_role(
-                        principal_id=principal_id, role_name=act.role_name
-                    )
-                    granted.append(act.role_name)
-                else:
-                    await self.storage.revoke_platform_role(
-                        principal_id=principal_id, role_name=act.role_name
-                    )
-                    revoked.append(act.role_name)
-            except Exception:
-                logger.exception(
-                    "OIDC role sync %s failed for principal=%s role=%s",
-                    act.action, principal_id, act.role_name,
+            raw_claims = identity.get("raw_claims") or {}
+            issuer = raw_claims.get("iss") if isinstance(raw_claims, dict) else None
+            if not oidc_role_sync.is_issuer_allowed(issuer, cfg.issuer_whitelist):
+                logger.warning(
+                    "OIDC role sync skipped: issuer %r not in whitelist for principal %s",
+                    issuer, principal_id,
                 )
+                gate_handle.mark()
+                return False
 
-        if granted or revoked:
+            oidc_roles = identity.get("roles") or []
+            mapped_internal = set(cfg.role_mapping.values())
             try:
-                await self.storage.log_audit_event(
-                    event_type="oidc_role_sync",
-                    principal_id=str(principal_id),
-                    detail={
-                        "source": "oidc_sync",
-                        "issuer": issuer,
-                        "granted": granted,
-                        "revoked": revoked,
-                        "oidc_roles": list(oidc_roles),
-                    },
+                current_platform_roles = await self.storage.list_platform_roles(
+                    principal_id
                 )
             except Exception:
-                logger.debug("audit write for oidc_role_sync failed", exc_info=True)
-            logger.info(
-                "OIDC role sync principal=%s granted=%s revoked=%s",
-                principal_id, granted, revoked,
+                logger.debug(
+                    "list_platform_roles failed during OIDC sync; skipping",
+                    exc_info=True,
+                )
+                # Don't mark — let the next request retry immediately.
+                return False
+
+            # Restrict the diff to roles the mapping owns; everything else
+            # (catalog-scope, viewer, manually-granted unrelated roles) is
+            # left untouched by design.
+            scoped_current = [r for r in current_platform_roles if r in mapped_internal]
+            actions = oidc_role_sync.diff(
+                oidc_roles=oidc_roles,
+                current_internal_roles=scoped_current,
+                role_mapping=cfg.role_mapping,
             )
 
-        self._oidc_sync_cache[principal_id] = now
-        return bool(granted or revoked)
+            if not actions:
+                gate_handle.mark()
+                return False
+
+            granted: List[str] = []
+            revoked: List[str] = []
+            for act in actions:
+                try:
+                    if act.action == "grant":
+                        await self.storage.grant_platform_role(
+                            principal_id=principal_id, role_name=act.role_name
+                        )
+                        granted.append(act.role_name)
+                    else:
+                        await self.storage.revoke_platform_role(
+                            principal_id=principal_id, role_name=act.role_name
+                        )
+                        revoked.append(act.role_name)
+                except Exception:
+                    logger.exception(
+                        "OIDC role sync %s failed for principal=%s role=%s",
+                        act.action, principal_id, act.role_name,
+                    )
+
+            if granted or revoked:
+                try:
+                    await self.storage.log_audit_event(
+                        event_type="oidc_role_sync",
+                        principal_id=str(principal_id),
+                        detail={
+                            "source": "oidc_sync",
+                            "issuer": issuer,
+                            "granted": granted,
+                            "revoked": revoked,
+                            "oidc_roles": list(oidc_roles),
+                        },
+                    )
+                except Exception:
+                    # Sysadmin add/remove without an audit row is the
+                    # load-bearing failure mode — escalate so it surfaces
+                    # in log alerts, not just a debug line lost in noise.
+                    logger.warning(
+                        "audit write for oidc_role_sync failed (principal=%s "
+                        "granted=%s revoked=%s)",
+                        principal_id, granted, revoked,
+                        exc_info=True,
+                    )
+                logger.info(
+                    "OIDC role sync principal=%s granted=%s revoked=%s",
+                    principal_id, granted, revoked,
+                )
+
+            gate_handle.mark()
+            return bool(granted or revoked)
 
     async def _auto_register_principal(
         self, identity: Dict[str, Any], catalog_id: str
