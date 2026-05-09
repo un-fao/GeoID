@@ -78,6 +78,7 @@ from datetime import datetime, timezone
 from dynastore.extensions.tools.url import get_url, get_parent_url, get_root_url
 from dynastore.tools.discovery import get_protocol, get_protocols
 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+from dynastore.models.localization import normalize_i18n_for_replace
 
 logger = logging.getLogger(__name__)
 from dynastore.modules.db_config.exceptions import TableNotFoundError
@@ -86,50 +87,6 @@ from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.models.protocols.web import StaticFilesProtocol
 import os
 from .stac_virtual import StacVirtualMixin
-
-# Only the plain-text i18n fields are wrapped here. ``license`` is a
-# structured ``LicenseUpdate`` object (``license_id``, ``license_url``,
-# ``license_text``) and ``extra_metadata`` is opaque/free-form — both
-# would break if blindly wrapped as ``{lang: value}``.
-_REPLACE_I18N_FIELDS = ("title", "description", "keywords")
-
-
-def _normalize_i18n_fields_for_replace(
-    input_data: dict, language: str
-) -> dict:
-    """Wrap string-shaped i18n fields as ``{language: value}`` so the
-    replace dict can be passed to the merge layer with ``lang='*'``.
-
-    PUT replace bodies legitimately mix shapes — a user can supply
-    ``description`` as a multilanguage dict and ``title`` as a plain
-    string. The merge layer expects one canonical shape per call: either
-    every i18n field is a multilanguage dict (``lang='*'``) or every
-    i18n field is a plain string keyed by ``lang=<code>``. Mixed input
-    plus ``lang=<code>`` raises ``Conflicting language parameters``;
-    mixed input plus ``lang='*'`` writes the string under the literal
-    ``'*'`` key, which ``LocalizedText`` rejects.
-
-    Wrapping any string-shaped i18n field in ``{language: value}``
-    canonicalises the whole dict to multilanguage form, after which
-    ``lang='*'`` is unambiguous.
-    """
-    from dynastore.models.localization import is_multilanguage_input
-
-    out = dict(input_data)
-    for field in _REPLACE_I18N_FIELDS:
-        value = out.get(field)
-        if isinstance(value, str) and value:
-            out[field] = {language: value}
-        elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
-            # ``keywords`` arrives as a flat list of strings; wrap to
-            # ``{language: [...]}`` so it round-trips through the
-            # multilanguage layer.
-            out[field] = {language: value}
-        elif is_multilanguage_input(value):
-            # Already a multilanguage dict — leave as-is.
-            pass
-    return out
-
 
 def _assert_stac_capable_collection_stack() -> None:
     """Verify the catalog-tier can persist a STAC envelope; warn on the
@@ -675,7 +632,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         # ``exclude_unset=False``: include every model field so absent
         # optionals are written as None — true replace semantics.
         input_data = definition.model_dump(exclude_unset=False)
-        input_data = _normalize_i18n_fields_for_replace(input_data, language)
+        input_data = normalize_i18n_for_replace(input_data, language)
 
         catalogs_svc = await self._get_catalogs_service()
         await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
@@ -767,7 +724,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         input_data = request_body.model_dump(exclude_unset=False)
         validate_stac_collection(input_data)
-        input_data = _normalize_i18n_fields_for_replace(input_data, language)
+        input_data = normalize_i18n_for_replace(input_data, language)
 
         catalogs_svc = await self._get_catalogs_service()
         await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
