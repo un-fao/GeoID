@@ -53,11 +53,13 @@ _FORBIDDEN_ROOTS = (
 
 
 def _iter_layer1_modules():
-    pkg_root = Path(__file__).resolve().parents[3] / "src" / "dynastore" / "tools" / "typed_store"
+    from tests._repo_paths import CORE_SRC
+    pkg_root = CORE_SRC / "tools" / "typed_store"
     return pkg_root.rglob("*.py")
 
 
 def test_layer1_has_no_db_imports() -> None:
+    from tests._repo_paths import REPO_ROOT
     offenders: list[tuple[str, str]] = []
     for path in _iter_layer1_modules():
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -69,7 +71,7 @@ def test_layer1_has_no_db_imports() -> None:
                 mod_names.extend(alias.name for alias in node.names)
             for mod in mod_names:
                 if any(mod == root or mod.startswith(root + ".") for root in _FORBIDDEN_ROOTS):
-                    offenders.append((str(path.relative_to(path.parents[4])), mod))
+                    offenders.append((str(path.relative_to(REPO_ROOT)), mod))
     assert not offenders, (
         "Layer 1 (tools/typed_store) must stay DB-free. Offenders: " + repr(offenders)
     )

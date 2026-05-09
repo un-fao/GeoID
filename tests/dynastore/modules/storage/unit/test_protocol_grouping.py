@@ -16,7 +16,7 @@ from typing import Optional
 
 import pytest
 
-_REPO_ROOT = Path(__file__).parents[6]  # geoid/
+from tests._repo_paths import REPO_ROOT as _REPO_ROOT
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ class TestOldProtocolNamesAbsent:
     def _grep(self, name: str) -> list[str]:
         result = subprocess.run(
             ["grep", "-r", "--include=*.py", "-l", name,
-             "src/dynastore", "tests/dynastore"],
+             "packages", "tests/dynastore"],
             capture_output=True, text=True, cwd=_REPO_ROOT,
         )
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]

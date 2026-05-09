@@ -25,12 +25,12 @@ from pathlib import Path
 
 import pytest
 
-_REPO_SRC = Path(__file__).resolve().parents[5] / "src" / "dynastore"
+from tests._repo_paths import CORE_SRC
 
 _GUARDED_SERVICES = [
-    _REPO_SRC / "modules" / "catalog" / "collection_service.py",
-    _REPO_SRC / "modules" / "catalog" / "catalog_service.py",
-    _REPO_SRC / "modules" / "catalog" / "asset_service.py",
+    CORE_SRC / "modules" / "catalog" / "collection_service.py",
+    CORE_SRC / "modules" / "catalog" / "catalog_service.py",
+    CORE_SRC / "modules" / "catalog" / "asset_service.py",
 ]
 
 # Symbols that generic services must NOT import or reference at the
