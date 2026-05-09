@@ -200,9 +200,13 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
             caller_id=context.caller_id,
             task_type=str(context.task_type),
             inputs=context.inputs,
+            dedup_key=context.dedup_key,
         )
-        
+
         job = await tasks_mgr.create_task(context.engine, task_create_request, schema=context.db_schema)
+        if job is None:
+            # Dedup hit. Caller asked for idempotency; signal soft-success.
+            return None
         logger.info(f"Created audit task '{job.task_id}' for synchronous process '{context.task_type}'.")
         
         # ... (rest of the logic remains the same, but using tasks_mgr) ...
@@ -319,11 +323,15 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             caller_id=context.caller_id,
             task_type=str(context.task_type),
             inputs=context.inputs,
+            dedup_key=context.dedup_key,
         )
         job = await tasks_mgr.create_task(
             context.engine, task_create_request, schema=context.db_schema,
             initial_status="RUNNING",
         )
+        if job is None:
+            # Dedup hit. Caller asked for idempotency; signal soft-success.
+            return None
         logger.info(f"Created audit task '{job.task_id}' for async process '{context.task_type}'.")
 
         from dynastore.tasks import hydrate_task_payload

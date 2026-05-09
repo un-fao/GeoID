@@ -124,6 +124,7 @@ class ExecutionEngine:
         caller_id: str = SYSTEM_USER_ID,
         db_schema: str = "tasks",
         background_tasks: Any = None,
+        dedup_key: Optional[str] = None,
         **extras: Any,
     ) -> Any:
         """
@@ -155,6 +156,7 @@ class ExecutionEngine:
             caller_id=caller_id,
             inputs=inputs,
             db_schema=db_schema,
+            dedup_key=dedup_key,
             extra_context={
                 "background_tasks": background_tasks,
                 **{k: v for k, v in extras.items() if v is not None},
@@ -163,6 +165,7 @@ class ExecutionEngine:
 
         result = None
         last_error: Optional[Exception] = None
+        dedup_hit = False
 
         for runner in runners:
             try:
@@ -179,6 +182,19 @@ class ExecutionEngine:
                         runner.__class__.__name__,
                     )
                     break
+                # `result is None` with a `dedup_key` set is the agreed
+                # signal from runners that a non-terminal task with the
+                # same key already exists. Short-circuit: do not try
+                # other runners (which would insert their own row).
+                if dedup_key is not None:
+                    dedup_hit = True
+                    logger.info(
+                        "ExecutionEngine: dedup hit on '%s' for task '%s'; "
+                        "no new task scheduled.",
+                        dedup_key,
+                        task_type,
+                    )
+                    break
             except Exception as e:
                 last_error = e
                 logger.warning(
@@ -189,7 +205,7 @@ class ExecutionEngine:
                 )
                 continue
 
-        if result is None:
+        if result is None and not dedup_hit:
             raise RuntimeError(
                 f"All runners for mode '{mode.value}' failed for "
                 f"task '{task_type}'. Last error: {last_error}"
