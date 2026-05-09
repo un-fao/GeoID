@@ -87,6 +87,50 @@ from dynastore.models.protocols.web import StaticFilesProtocol
 import os
 from .stac_virtual import StacVirtualMixin
 
+# Only the plain-text i18n fields are wrapped here. ``license`` is a
+# structured ``LicenseUpdate`` object (``license_id``, ``license_url``,
+# ``license_text``) and ``extra_metadata`` is opaque/free-form — both
+# would break if blindly wrapped as ``{lang: value}``.
+_REPLACE_I18N_FIELDS = ("title", "description", "keywords")
+
+
+def _normalize_i18n_fields_for_replace(
+    input_data: dict, language: str
+) -> dict:
+    """Wrap string-shaped i18n fields as ``{language: value}`` so the
+    replace dict can be passed to the merge layer with ``lang='*'``.
+
+    PUT replace bodies legitimately mix shapes — a user can supply
+    ``description`` as a multilanguage dict and ``title`` as a plain
+    string. The merge layer expects one canonical shape per call: either
+    every i18n field is a multilanguage dict (``lang='*'``) or every
+    i18n field is a plain string keyed by ``lang=<code>``. Mixed input
+    plus ``lang=<code>`` raises ``Conflicting language parameters``;
+    mixed input plus ``lang='*'`` writes the string under the literal
+    ``'*'`` key, which ``LocalizedText`` rejects.
+
+    Wrapping any string-shaped i18n field in ``{language: value}``
+    canonicalises the whole dict to multilanguage form, after which
+    ``lang='*'`` is unambiguous.
+    """
+    from dynastore.models.localization import is_multilanguage_input
+
+    out = dict(input_data)
+    for field in _REPLACE_I18N_FIELDS:
+        value = out.get(field)
+        if isinstance(value, str) and value:
+            out[field] = {language: value}
+        elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+            # ``keywords`` arrives as a flat list of strings; wrap to
+            # ``{language: [...]}`` so it round-trips through the
+            # multilanguage layer.
+            out[field] = {language: value}
+        elif is_multilanguage_input(value):
+            # Already a multilanguage dict — leave as-is.
+            pass
+    return out
+
+
 def _assert_stac_capable_collection_stack() -> None:
     """Verify the catalog-tier can persist a STAC envelope; warn on the
     collection tier.
@@ -619,8 +663,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         # the whole resource with the request body. Required-field validation
         # is enforced by ``STACCatalogRequest`` (the same model used on POST),
         # so a partial body is rejected at the framework boundary.
-        from dynastore.models.localization import is_multilanguage_input
-
         if definition.id != catalog_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -630,29 +672,15 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 ),
             )
 
-        # ``exclude_unset=False``: include every model field — fields the
-        # client did not supply default to None and clear the corresponding
-        # column. This is what makes PUT a true replace rather than a merge.
+        # ``exclude_unset=False``: include every model field so absent
+        # optionals are written as None — true replace semantics.
         input_data = definition.model_dump(exclude_unset=False)
-        use_lang = (
-            "*"
-            if any(
-                is_multilanguage_input(input_data.get(f))
-                for f in [
-                    "title",
-                    "description",
-                    "keywords",
-                    "license",
-                    "extra_metadata",
-                ]
-            )
-            else language
-        )
+        input_data = _normalize_i18n_fields_for_replace(input_data, language)
 
         catalogs_svc = await self._get_catalogs_service()
         await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
         updated = await catalogs_svc.update_catalog(
-            catalog_id, input_data, lang=use_lang
+            catalog_id, input_data, lang="*"
         )
         if not updated:
             raise HTTPException(
@@ -728,8 +756,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         # the whole collection. ``STACCollectionRequest`` enforces required
         # STAC fields (id/type/license/extent/...) so partial bodies fail
         # before reaching the manager.
-        from dynastore.models.localization import is_multilanguage_input
-
         if request_body.id != collection_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -741,26 +767,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         input_data = request_body.model_dump(exclude_unset=False)
         validate_stac_collection(input_data)
-
-        use_lang = (
-            "*"
-            if any(
-                is_multilanguage_input(input_data.get(f))
-                for f in [
-                    "title",
-                    "description",
-                    "keywords",
-                    "license",
-                    "extra_metadata",
-                ]
-            )
-            else language
-        )
+        input_data = _normalize_i18n_fields_for_replace(input_data, language)
 
         catalogs_svc = await self._get_catalogs_service()
         await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
         updated = await catalogs_svc.update_collection(
-            catalog_id, collection_id, input_data, lang=use_lang
+            catalog_id, collection_id, input_data, lang="*"
         )
         if not updated:
             raise HTTPException(
