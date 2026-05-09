@@ -415,16 +415,18 @@ class Web(ExtensionProtocol):
         @app.get("", include_in_schema=False)
         @app.get("/", include_in_schema=False)
         async def root_redirect(request: Request):
-            # Use relative redirect so it resolves correctly behind any
-            # path-prefix proxy (avoids root_path duplication).
-            return RedirectResponse(url="web/")
+            # Absolute path including root_path: a relative "web/" resolves
+            # against the parent when the request URL has no trailing slash
+            # (e.g. /geospatial/v2/api/auth → /geospatial/v2/api/web/).
+            root_path = request.scope.get("root_path", "").rstrip("/")
+            return RedirectResponse(url=f"{root_path}/web/")
 
         # Explicitly handle /web redirect to ensure consistent behavior
         # regardless of Router prefix mounting order or strict slashes config.
         @app.get("/web", include_in_schema=False)
         async def web_redirect(request: Request):
-            # Relative redirect — trailing slash for consistent static-asset resolution
-            return RedirectResponse(url="web/")
+            root_path = request.scope.get("root_path", "").rstrip("/")
+            return RedirectResponse(url=f"{root_path}/web/")
 
         #     # Prepend the new route to avoid being shadowed by path converters.
         #     # This is a common pattern when dynamically adding routes to a FastAPI app instance.
