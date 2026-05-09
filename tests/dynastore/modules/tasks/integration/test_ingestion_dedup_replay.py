@@ -186,3 +186,134 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.xdist_group(name="serial")
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize("terminal_status", ["FAILED", "DEAD_LETTER", "COMPLETED"])
+@pytest.mark.enable_modules(
+    "db_config", "db", "catalog", "tasks", "collection_postgresql", "catalog_postgresql"
+)
+@pytest.mark.enable_extensions("features", "assets", "stac")
+async def test_terminal_status_releases_dedup_key_for_reingestion(
+    app_lifespan, sysadmin_in_process_client, terminal_status
+):
+    """Closes followup #2b — operator-driven re-ingestion after a terminal release.
+
+    The partial unique index excludes ``COMPLETED``/``FAILED``/``DEAD_LETTER``
+    (see ``tasks_module.py:149-150``) and the application-level pre-check in
+    ``enqueue`` uses the same ``NOT IN`` set (``tasks_module.py:1172``). Once
+    a row reaches a terminal status, its ``dedup_key`` is *released*: the
+    next ingestion with the same key must produce a fresh PENDING row.
+
+    This is the contract operators rely on when re-ingesting after a failure
+    (manual retry of a DEAD_LETTERed asset, or re-uploading a fixed source
+    over the same GCS generation). Synthetic ``task_type`` per #432 lesson.
+    """
+    in_process_client = sysadmin_in_process_client
+    catalog_id = f"cat_release_{generate_test_id(10)}"
+    collection_id = f"col_release_{generate_test_id(10)}"
+    asset_id = f"asset_{generate_test_id(8)}"
+    generation = "1715250000000099"
+    task_type = f"ingestion_dedup_release_test_{generate_test_id(8)}"
+
+    resp = await in_process_client.post(
+        "/features/catalogs",
+        json={"id": catalog_id, "title": "Dedup Release Test Catalog"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    catalogs = get_protocol(CatalogsProtocol)
+    schema = await catalogs.resolve_physical_schema(
+        catalog_id, ctx=DriverContext(db_resource=app_lifespan.engine)
+    )
+    assert schema, "physical schema must resolve"
+
+    dedup_key = _ingestion_dedup_key(catalog_id, collection_id, asset_id, generation)
+    inputs = _ingestion_inputs(catalog_id, collection_id, asset_id, generation)
+    task_schema = tasks_module.get_task_schema()
+
+    # 1. First ingestion — establishes the locked dedup_key.
+    first = await tasks_module.create_task_for_catalog(
+        app_lifespan.engine,
+        TaskCreate(
+            task_type=task_type,
+            caller_id="gcp_event:OBJECT_FINALIZE",
+            inputs=inputs,
+            collection_id=collection_id,
+            dedup_key=dedup_key,
+        ),
+        catalog_id=catalog_id,
+    )
+    assert first is not None
+    first_task_id = first.task_id
+
+    # 2. Sanity: while non-terminal, dedup is still in force.
+    blocked = await tasks_module.create_task_for_catalog(
+        app_lifespan.engine,
+        TaskCreate(
+            task_type=task_type,
+            caller_id="gcp_event:OBJECT_FINALIZE",
+            inputs=inputs,
+            collection_id=collection_id,
+            dedup_key=dedup_key,
+        ),
+        catalog_id=catalog_id,
+    )
+    assert blocked is None, "pre-release dedup must still block redelivery"
+
+    # 3. Flip the first row to terminal status (simulates the natural
+    #    progression: claim → run → fail / complete / dead-letter).
+    update_sql = (
+        f'UPDATE "{task_schema}".tasks '
+        f'SET status = :status '
+        f'WHERE task_id = :task_id'
+    )
+    async with app_lifespan.engine.begin() as conn:
+        await DQLQuery(update_sql, result_handler=ResultHandler.NONE).execute(
+            conn, status=terminal_status, task_id=first_task_id
+        )
+
+    # 4. Re-ingestion with the same dedup_key — MUST create a fresh row.
+    released = await tasks_module.create_task_for_catalog(
+        app_lifespan.engine,
+        TaskCreate(
+            task_type=task_type,
+            caller_id="gcp_event:OBJECT_FINALIZE.retry",
+            inputs=inputs,
+            collection_id=collection_id,
+            dedup_key=dedup_key,
+        ),
+        catalog_id=catalog_id,
+    )
+    assert released is not None, (
+        f"After flipping the first row to {terminal_status}, the same "
+        f"dedup_key must be reusable. The pre-check or partial index "
+        f"regressed — operators cannot retry failed ingestions."
+    )
+    assert released.task_id != first_task_id
+    assert released.dedup_key == dedup_key
+
+    # 5. DB-level invariant: two rows now share the dedup_key — one
+    #    terminal, one fresh PENDING. The partial index permits this.
+    async with app_lifespan.engine.connect() as conn:
+        rows = await DQLQuery(
+            f'SELECT task_id, status FROM "{task_schema}".tasks '
+            f'WHERE schema_name = :schema_name '
+            f'AND dedup_key = :dedup_key '
+            f'AND task_type = :task_type '
+            f'ORDER BY timestamp ASC',
+            result_handler=ResultHandler.ALL_DICTS,
+        ).execute(
+            conn,
+            schema_name=schema,
+            dedup_key=dedup_key,
+            task_type=task_type,
+        )
+    assert len(rows) == 2, (
+        f"expected 2 rows (one {terminal_status}, one PENDING), got {len(rows)}"
+    )
+    statuses = {r["status"] for r in rows}
+    assert statuses == {terminal_status, "PENDING"}, (
+        f"expected statuses {{{terminal_status}, PENDING}}, got {statuses}"
+    )
+
