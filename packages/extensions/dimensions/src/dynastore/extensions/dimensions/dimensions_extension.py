@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DIMENSIONS_CATALOG_ID = "_dimensions_"
+from dynastore.models.dimensions import DIMENSIONS_CATALOG_ID  # noqa: F401  (re-export for back-compat)
 """Internal catalog ID for materialized dimension collections."""
 
 UPSERT_BATCH_SIZE = 500
