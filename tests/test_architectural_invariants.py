@@ -14,14 +14,50 @@ from typing import Iterator
 
 import pytest
 
-SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "dynastore"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Phase 1 (PR #397) split sources across:
+#   packages/core/src/dynastore           — core, modules, models, tasks, tools,
+#                                           and shared extensions/ infra (tools,
+#                                           lifespan, ogc_base, …)
+#   packages/extensions/<name>/src/dynastore/extensions/<name>
+#                                         — one folder per per-extension package
+# Every per-package layout exposes a top-level ``dynastore`` namespace; we walk
+# all of them as a single logical source tree.
+_PACKAGE_ROOTS: tuple[Path, ...] = tuple(
+    p for p in (
+        _REPO_ROOT / "packages" / "core" / "src" / "dynastore",
+        *sorted((_REPO_ROOT / "packages" / "extensions").glob("*/src/dynastore")),
+    )
+    if p.is_dir()
+)
+assert _PACKAGE_ROOTS, (
+    "No dynastore source roots found under packages/. The architectural "
+    "invariants test cannot run if the source tree is missing."
+)
 
 
-def _iter_py(root: Path) -> Iterator[Path]:
-    for path in root.rglob("*.py"):
-        if "__pycache__" in path.parts:
+def _iter_py(*roots: Path) -> Iterator[Path]:
+    for root in roots:
+        if not root.is_dir():
             continue
-        yield path
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            yield path
+
+
+def _logical_path(path: Path) -> Path:
+    """Return ``path`` rewritten to look as if every package root were the
+    same ``dynastore/`` tree. Lets waiver keys stay package-relative regardless
+    of the per-extension layout (extension/<name>/src/dynastore/extensions/...
+    collapses to extensions/<name>/...)."""
+    for root in _PACKAGE_ROOTS:
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    return path
 
 
 def _imports(path: Path) -> list[tuple[int, str]]:
@@ -44,7 +80,10 @@ def _imports(path: Path) -> list[tuple[int, str]]:
 # import any symbol that pulls the IAM-only extras (pydantic[email], PyJWT)
 # or ties it to FastAPI.
 
-_IAM_AUTHZ = SRC_ROOT / "modules" / "iam" / "authorization"
+_IAM_AUTHZ_ROOTS: tuple[Path, ...] = tuple(
+    r / "modules" / "iam" / "authorization" for r in _PACKAGE_ROOTS
+    if (r / "modules" / "iam" / "authorization").is_dir()
+)
 
 _FORBIDDEN_IAM_AUTHZ_MODULES = {
     "jwt",
@@ -60,7 +99,7 @@ _FORBIDDEN_IAM_AUTHZ_SYMBOL_PATTERNS = [
 
 def test_authorization_submodule_has_no_heavy_deps() -> None:
     violations: list[str] = []
-    for path in _iter_py(_IAM_AUTHZ):
+    for path in _iter_py(*_IAM_AUTHZ_ROOTS):
         for lineno, module in _imports(path):
             root = module.split(".")[0]
             if root in _FORBIDDEN_IAM_AUTHZ_MODULES:
@@ -88,7 +127,9 @@ def test_authorization_submodule_has_no_heavy_deps() -> None:
 #   * extensions/documentation.py — opt-in metadata helper
 #   * extensions/XXX/ → extensions/XXX/** (self-imports always ok)
 
-_EXTENSIONS_ROOT = SRC_ROOT / "extensions"
+_EXTENSIONS_ROOTS: tuple[Path, ...] = tuple(
+    r / "extensions" for r in _PACKAGE_ROOTS if (r / "extensions").is_dir()
+)
 
 _ALLOWED_CROSS_EXTENSION_PREFIXES = (
     # Framework / shared infra
@@ -122,9 +163,6 @@ _WAIVED_CROSS_EXTENSION_IMPORTS: frozenset[str] = frozenset(
         "extensions/stac/stac_virtual.py:dynastore.extensions.dimensions.dimensions_extension",
         # records → features: shares OGC feature rendering.
         "extensions/records/records_service.py:dynastore.extensions.features.features_service",
-        # features ↔ stac: items sidecar straddles both protocols.
-        "extensions/features/ogc_generator.py:dynastore.extensions.stac.stac_items_sidecar",
-        "extensions/features/features_service.py:dynastore.extensions.stac.stac_items_sidecar",
         # stac → search: STAC API search dispatches to the platform-tier
         # SearchService when ES is the resolved READ primary and the query
         # is structural-only. Slated for capability-protocol promotion
@@ -148,25 +186,27 @@ _WAIVED_CROSS_EXTENSION_IMPORTS: frozenset[str] = frozenset(
 
 
 def _own_extension(path: Path) -> str | None:
-    try:
-        rel = path.relative_to(_EXTENSIONS_ROOT)
-    except ValueError:
-        return None
-    parts = rel.parts
-    # extensions/foo/bar.py → "foo"; extensions/foo.py → "foo"
-    if len(parts) == 1:
-        return parts[0].removesuffix(".py")
-    return parts[0]
+    for ext_root in _EXTENSIONS_ROOTS:
+        try:
+            rel = path.relative_to(ext_root)
+        except ValueError:
+            continue
+        parts = rel.parts
+        # extensions/foo/bar.py → "foo"; extensions/foo.py → "foo"
+        if len(parts) == 1:
+            return parts[0].removesuffix(".py")
+        return parts[0]
+    return None
 
 
 def test_extensions_do_not_cross_import() -> None:
     new_violations: list[str] = []
     stale_waivers: set[str] = set(_WAIVED_CROSS_EXTENSION_IMPORTS)
-    for path in _iter_py(_EXTENSIONS_ROOT):
+    for path in _iter_py(*_EXTENSIONS_ROOTS):
         own = _own_extension(path)
         if own is None:
             continue
-        rel = path.relative_to(SRC_ROOT)
+        rel = _logical_path(path)
         for lineno, module in _imports(path):
             if not module.startswith("dynastore.extensions."):
                 continue
@@ -233,7 +273,7 @@ _DELETED_MODULES = {
 
 # Allow references inside this test file (naming the deleted symbols) and
 # inside frozen historical plan artifacts under docs/superpowers/plans/.
-_SYMBOL_SCAN_ROOT = SRC_ROOT
+_SYMBOL_SCAN_ROOTS = _PACKAGE_ROOTS
 
 
 @pytest.mark.parametrize(
@@ -243,7 +283,7 @@ _SYMBOL_SCAN_ROOT = SRC_ROOT
 def test_deleted_symbol_stays_deleted(symbol: str, reason: str) -> None:
     pat = re.compile(rf"\b{re.escape(symbol)}\b")
     hits: list[str] = []
-    for path in _iter_py(_SYMBOL_SCAN_ROOT):
+    for path in _iter_py(*_SYMBOL_SCAN_ROOTS):
         text = path.read_text(encoding="utf-8")
         for m in pat.finditer(text):
             line = text[: m.start()].count("\n") + 1
@@ -257,7 +297,7 @@ def test_deleted_symbol_stays_deleted(symbol: str, reason: str) -> None:
 )
 def test_deleted_module_stays_deleted(module: str, reason: str) -> None:
     hits: list[str] = []
-    for path in _iter_py(_SYMBOL_SCAN_ROOT):
+    for path in _iter_py(*_SYMBOL_SCAN_ROOTS):
         for lineno, mod in _imports(path):
             if mod == module or mod.startswith(module + "."):
                 hits.append(f"{path}:{lineno}")
