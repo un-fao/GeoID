@@ -9,20 +9,21 @@
 
 ## How to Run
 
+See [local-development.md](local-development.md) for the day-to-day workflow (Makefile targets, troubleshooting). For coverage runs specifically:
+
 ```bash
 # Start the dev db (host-bound to 127.0.0.1:54320 for psql access)
-docker compose -f src/dynastore/docker/docker-compose.yml -f src/dynastore/docker/docker-compose.dev.yml up -d db
+make db-up
 
 # Run with coverage (local, sequential)
 .venv/bin/pytest tests -p no:xdist -o "addopts=" -q --tb=no \
-    --cov=src/dynastore --cov-report=term
+    --cov=packages/core/src/dynastore --cov-report=term
 
 # Run with coverage (parallel, faster)
-.venv/bin/pytest tests -q --tb=no \
-    --cov=src/dynastore --cov-report=html --cov-report=term
+make test-coverage
 
 # Run via Docker (full integration stack)
-docker compose -f src/dynastore/docker/docker-compose.yml up -d \
+docker compose -f packages/core/src/dynastore/docker/docker-compose.yml up -d \
     db elasticsearch keycloak catalog worker
 ```
 
