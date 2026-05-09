@@ -260,7 +260,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         if not collection_meta:
             raise HTTPException(status_code=404, detail=f"Collection '{collection_id}' not found.")
 
-        from dynastore.extensions.features.features_service import parse_ogc_query_request
+        from dynastore.extensions.tools.query import parse_ogc_query_request
 
         request_obj = parse_ogc_query_request(
             bbox=None,

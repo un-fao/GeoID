@@ -159,16 +159,11 @@ _ALLOWED_CROSS_EXTENSION_PREFIXES = (
 )
 
 # Ratchet: known cross-extension imports that predate the capability-protocol
-# refactor. New entries must not be added. Fix an entry by replacing the
-# import with a get_protocols(<CapabilityProtocol>) call and remove it here.
-_WAIVED_CROSS_EXTENSION_IMPORTS: frozenset[str] = frozenset(
-    {
-        # stac → dimensions: STAC virtual items inspect the dimensions ext.
-        "extensions/stac/stac_virtual.py:dynastore.extensions.dimensions.dimensions_extension",
-        # records → features: shares OGC feature rendering.
-        "extensions/records/records_service.py:dynastore.extensions.features.features_service",
-    }
-)
+# refactor. The waiver list is now empty — any new cross-extension import
+# triggers the ratchet immediately. Fix violations by reaching through
+# `_ALLOWED_CROSS_EXTENSION_PREFIXES` (shared infra) or by introducing a
+# capability-Protocol in `dynastore.models.protocols`.
+_WAIVED_CROSS_EXTENSION_IMPORTS: frozenset[str] = frozenset()
 
 
 def _own_extension(path: Path) -> str | None:

@@ -574,12 +574,7 @@ class StacVirtualMixin(_Host):
 
         Returns ``None`` otherwise; caller falls back to the normal lookup.
         """
-        try:
-            from dynastore.extensions.dimensions.dimensions_extension import (
-                DIMENSIONS_CATALOG_ID,
-            )
-        except Exception:
-            return None
+        from dynastore.models.dimensions import DIMENSIONS_CATALOG_ID
         if catalog_id != DIMENSIONS_CATALOG_ID or collection_id != hierarchy_id:
             return None
         try:
