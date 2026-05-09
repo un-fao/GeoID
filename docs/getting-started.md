@@ -27,7 +27,7 @@ Plus a custom OGC Dimensions extension (research) for paginated datacube dimensi
 1. Bring up the dev stack:
 
    ```bash
-   docker compose -f src/dynastore/docker/dev.compose.yml up -d
+   docker compose -f packages/core/src/dynastore/docker/docker-compose.yml -f packages/core/src/dynastore/docker/docker-compose.dev.yml up -d
    ```
 
 2. Discover catalogs:
