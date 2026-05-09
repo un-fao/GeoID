@@ -9,9 +9,29 @@
 
 import { apiUrl } from "./url.js";
 
+// Build an Authorization header from the Bearer token stored by the login
+// flow in custom.js. Platform may override the storage key via
+// window.DS_TOKEN_KEY (set from the platform config); we fall back to the
+// shipped default "ds_token". Returns {} when no token is present so the
+// call still goes out and surfaces the 401 to the page.
+function authHeader() {
+  if (typeof window === "undefined") return {};
+  const key = window.DS_TOKEN_KEY || "ds_token";
+  const ls = (typeof localStorage !== "undefined") ? localStorage : null;
+  const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
+  const token = (ls && ls.getItem(key))
+    || (ss && ss.getItem(key))
+    || (ls && ls.getItem("ds_token"))
+    || (ss && ss.getItem("ds_token"));
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export async function getJSON(url) {
   const target = apiUrl(url);
-  const r = await fetch(target, { credentials: "same-origin" });
+  const r = await fetch(target, {
+    credentials: "same-origin",
+    headers: { ...authHeader() },
+  });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     const err = new Error(`${r.status} ${target}: ${text.slice(0, 400)}`);
@@ -26,7 +46,7 @@ export async function patchJSON(url, body) {
   const target = apiUrl(url);
   const r = await fetch(target, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     credentials: "same-origin",
     body: JSON.stringify(body),
   });
@@ -86,9 +106,12 @@ export function fetchSchemas() {
 }
 
 // Identity — used to gate admin pages. Returns { principal, roles }.
+// Path is "/auth/me": when the auth service's apiBase already ends in
+// "/auth", the absolute path is "/geospatial/v2/api/auth/auth/me",
+// which is where IamExtension mounts the /me handler.
 export async function fetchMe() {
   try {
-    return await getJSON("/me");
+    return await getJSON("/auth/me");
   } catch (e) {
     if (e.status === 401) return { principal: null, roles: [] };
     throw e;
@@ -106,7 +129,9 @@ async function sendJSON(method, url, body, { expectJSON = true } = {}) {
   const init = {
     method,
     credentials: "same-origin",
-    headers: body == null ? {} : { "Content-Type": "application/json" },
+    headers: body == null
+      ? { ...authHeader() }
+      : { "Content-Type": "application/json", ...authHeader() },
   };
   if (body != null) init.body = JSON.stringify(body);
   const r = await fetch(target, init);
@@ -210,7 +235,7 @@ export async function postFeatures(catalogId, collectionId, payload) {
   const r = await fetch(target, {
     method: "POST",
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify(payload),
   });
   const text = await r.text().catch(() => "");
@@ -227,4 +252,4 @@ export async function postFeatures(catalogId, collectionId, payload) {
 
 // /me/catalogs: returns list of {catalog_id, roles, ...} for the signed-in
 // principal. Used to discover "catalog admin" scope.
-export const fetchMyCatalogs = () => getJSON("/me/catalogs");
+export const fetchMyCatalogs = () => getJSON("/auth/me/catalogs");
