@@ -25,6 +25,7 @@ Add ``module_cache`` to the deployment scope extras to activate::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -33,6 +34,11 @@ from typing import AsyncGenerator
 from dynastore.modules.protocols import ModuleProtocol
 
 logger = logging.getLogger(__name__)
+
+# Bounded TCP probe at startup. Without this, CacheModule blocks the entire
+# app lifespan when Valkey is network-unreachable (TCP SYN with no route
+# never raises) and the Cloud Run startup probe times out.
+_VALKEY_PROBE_TIMEOUT = float(os.getenv("VALKEY_PROBE_TIMEOUT", "5"))
 
 
 class CacheModule(ModuleProtocol):
@@ -84,7 +90,7 @@ class CacheModule(ModuleProtocol):
             return
 
         try:
-            info = await backend.info()
+            info = await asyncio.wait_for(backend.info(), timeout=_VALKEY_PROBE_TIMEOUT)
             version = info.get("server", {}).get("redis_version", "?")
             mode = info.get("server", {}).get("redis_mode", "standalone")
             used_mb = info.get("memory", {}).get("used_memory_human", "?")
@@ -93,9 +99,10 @@ class CacheModule(ModuleProtocol):
                 version, mode, used_mb, _safe_url,
             )
         except Exception as exc:
+            _reason = "probe timed out" if isinstance(exc, asyncio.TimeoutError) else str(exc)
             logger.warning(
                 "CacheModule: Valkey unreachable at %s (%s) — falling back to local cache.",
-                _safe_url, exc,
+                _safe_url, _reason,
             )
             logger.warning(
                 "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
