@@ -514,7 +514,7 @@ async function submitCatalogGrant() {
   try {
     let pid = subject;
     if (!/^[0-9a-fA-F-]{36}$/.test(subject)) {
-      const matches = await apiFetch(`/principals?identifier=${encodeURIComponent(subject)}&limit=1`);
+      const matches = await apiFetch(`/principals?q=${encodeURIComponent(subject)}&limit=1`);
       if (!matches || !matches.length) {
         throw new Error(`No principal matched '${subject}'.`);
       }
