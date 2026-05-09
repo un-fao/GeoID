@@ -114,17 +114,18 @@ class AdminService(ExtensionProtocol):
         principals = await mgr.list_principals(limit=limit, offset=offset)
         if provider is not None:
             principals = [p for p in principals if p.provider == provider]
-        return [
-            PrincipalResponse(
+        out = []
+        for p in principals:
+            granted = await mgr.storage.list_platform_roles(principal_id=p.id)
+            out.append(PrincipalResponse(
                 id=str(p.id),
                 provider=p.provider,
                 subject_id=p.subject_id,
                 display_name=p.display_name,
-                roles=p.roles,
+                roles=list(granted),
                 is_active=p.is_active,
-            )
-            for p in principals
-        ]
+            ))
+        return out
 
     @router.post("/users", summary="Create a new local user", status_code=201)
     async def create_user(body: UserCreate):  # type: ignore[reportGeneralTypeIssues]
@@ -169,9 +170,10 @@ class AdminService(ExtensionProtocol):
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="User not found.")
+        granted = await mgr.storage.list_platform_roles(principal_id=p.id)
         return PrincipalResponse(
             id=str(p.id), provider=p.provider, subject_id=p.subject_id,
-            display_name=p.display_name, roles=p.roles, is_active=p.is_active,
+            display_name=p.display_name, roles=list(granted), is_active=p.is_active,
         )
 
     @router.put("/users/{principal_id}", summary="Update user")
@@ -215,13 +217,14 @@ class AdminService(ExtensionProtocol):
         results = await mgr.search_principals(
             identifier=q, role=role, limit=limit, offset=offset, catalog_id=catalog_id
         )
-        return [
-            PrincipalResponse(
+        out = []
+        for p in results:
+            granted = await mgr.storage.list_platform_roles(principal_id=p.id)
+            out.append(PrincipalResponse(
                 id=str(p.id), provider=p.provider, subject_id=p.subject_id,
-                display_name=p.display_name, roles=p.roles, is_active=p.is_active,
-            )
-            for p in results
-        ]
+                display_name=p.display_name, roles=list(granted), is_active=p.is_active,
+            ))
+        return out
 
     # ---- Platform-scope role grants (D6 — `iam.grants`) -----------------
 
@@ -235,6 +238,12 @@ class AdminService(ExtensionProtocol):
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
+        registered = await mgr.list_roles(catalog_id=None)
+        if not any(r.name == body.role for r in registered):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Role '{body.role}' is not registered in the platform role registry.",
+            )
         try:
             await mgr.storage.grant_platform_role(
                 principal_id=principal_id,
@@ -289,6 +298,12 @@ class AdminService(ExtensionProtocol):
         p = await mgr.get_principal(principal_id)
         if not p:
             raise HTTPException(status_code=404, detail="Principal not found.")
+        registered = await mgr.list_roles(catalog_id=catalog_id)
+        if not any(r.name == body.role for r in registered):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Role '{body.role}' is not registered for catalog '{catalog_id}'.",
+            )
         try:
             await mgr.storage.grant_catalog_role(
                 principal_id=principal_id,
@@ -398,6 +413,20 @@ class AdminService(ExtensionProtocol):
             )
             for r in roles
         ]
+
+    @router.get("/roles/{role_name}", summary="Get role details")
+    async def get_role(role_name: str, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
+        mgr = _iam()
+        roles = await mgr.list_roles(catalog_id=catalog_id)
+        role = next((r for r in roles if r.name == role_name), None)
+        if not role:
+            raise HTTPException(status_code=404, detail=f"Role '{role_name}' not found.")
+        return RoleResponse(
+            name=role.name,
+            description=role.description,
+            policies=role.policies or [],
+            parent_roles=role.parent_roles or [],
+        )
 
     @router.post("/roles", summary="Create a new role", status_code=201)
     async def create_role(body: RoleCreate, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
