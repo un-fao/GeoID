@@ -9,14 +9,24 @@ Asserts:
 
 * the second call returns ``None`` (dedup hit, by application-layer
   pre-check in ``create_task``)
-* exactly one row exists in ``<schema>.tasks`` with
-  ``task_type='ingestion'`` and the redelivery-keyed ``dedup_key``
+* exactly one row exists in ``<schema>.tasks`` matching the
+  redelivery-keyed ``dedup_key``
 * a third call with a different ``generation`` token (i.e. a new asset
   version) creates a second distinct row — the dedup must collapse only
   redeliveries of the *same* version.
 
 The dedup_key formula must remain ``ingestion:{cat}:{coll}:{asset}:{gen}``
 (see ``packages/extensions/gcp/src/dynastore/extensions/gcp/gcp_events.py``).
+
+Implementation note — ``task_type`` is a unique synthetic value rather
+than ``"ingestion"``: with the ``tasks`` module enabled, the
+``BackgroundRunner`` auto-claims real PENDING ingestion rows and would
+race the test by mutating ``status`` (PENDING → ACTIVE → FAILED) between
+the two ``create_task_for_catalog`` calls. A synthetic type has no
+registered runner, so the row stays PENDING for the duration of the
+test — the dedup pre-check sees a stable non-terminal row and the
+assertion is deterministic. The dedup primitive itself is task-type-
+agnostic; pinning the formula is the contract under test.
 """
 from __future__ import annotations
 
@@ -65,6 +75,8 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
     collection_id = f"col_dedup_{generate_test_id(10)}"
     asset_id = f"asset_{generate_test_id(8)}"
     generation = "1715250000000001"
+    # Synthetic task_type — no registered runner = no dispatcher race.
+    task_type = f"ingestion_dedup_test_{generate_test_id(8)}"
 
     # 1. Provision catalog (real schema is created). The dedup contract is
     # at (schema_name, dedup_key) level — collection creation is not
@@ -88,7 +100,7 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
     first = await tasks_module.create_task_for_catalog(
         app_lifespan.engine,
         TaskCreate(
-            task_type="ingestion",
+            task_type=task_type,
             caller_id="gcp_event:OBJECT_FINALIZE",
             inputs=inputs,
             collection_id=collection_id,
@@ -104,7 +116,7 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
     second = await tasks_module.create_task_for_catalog(
         app_lifespan.engine,
         TaskCreate(
-            task_type="ingestion",
+            task_type=task_type,
             caller_id="gcp_event:OBJECT_FINALIZE",
             inputs=inputs,
             collection_id=collection_id,
@@ -124,14 +136,14 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
         f'SELECT COUNT(*) FROM "{task_schema}".tasks '
         f'WHERE schema_name = :schema_name '
         f'AND dedup_key = :dedup_key '
-        f"AND task_type = 'ingestion'"
+        f'AND task_type = :task_type'
     )
     async with app_lifespan.engine.connect() as conn:
         count = await DQLQuery(
             count_sql, result_handler=ResultHandler.SCALAR_ONE
-        ).execute(conn, schema_name=schema, dedup_key=dedup_key)
+        ).execute(conn, schema_name=schema, dedup_key=dedup_key, task_type=task_type)
     assert count == 1, (
-        f"expected exactly 1 ingestion task row for dedup_key={dedup_key} "
+        f"expected exactly 1 task row for dedup_key={dedup_key} "
         f"in schema={schema}, got {count}. Pub/Sub at-least-once delivery "
         f"is now visible to downstream consumers."
     )
@@ -142,7 +154,7 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
     third = await tasks_module.create_task_for_catalog(
         app_lifespan.engine,
         TaskCreate(
-            task_type="ingestion",
+            task_type=task_type,
             caller_id="gcp_event:OBJECT_FINALIZE",
             inputs=_ingestion_inputs(catalog_id, collection_id, asset_id, new_generation),
             collection_id=collection_id,
@@ -160,16 +172,17 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
         total = await DQLQuery(
             f'SELECT COUNT(*) FROM "{task_schema}".tasks '
             f'WHERE schema_name = :schema_name '
-            f"AND task_type = 'ingestion' "
+            f'AND task_type = :task_type '
             f'AND dedup_key LIKE :prefix',
             result_handler=ResultHandler.SCALAR_ONE,
         ).execute(
             conn,
             schema_name=schema,
+            task_type=task_type,
             prefix=f"ingestion:{catalog_id}:{collection_id}:{asset_id}:%",
         )
     assert total == 2, (
-        f"expected 2 ingestion rows (one per generation), got {total}"
+        f"expected 2 rows (one per generation), got {total}"
     )
 
 
