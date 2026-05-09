@@ -893,8 +893,9 @@ class IamExtension(ExtensionProtocol):
     async def search_principals(
         self, # Added self
         request: Request,
-        identifier: Optional[str] = Query(
-            None, description="Filter by identifier (partial match)"
+        q: Optional[str] = Query(
+            None,
+            description="Free-text partial match on principal identifier (OGC API - Records §7.7)",
         ),
         role: Optional[str] = Query(
             None, description="Filter by metadata 'role' field"
@@ -904,7 +905,7 @@ class IamExtension(ExtensionProtocol):
     ):
         catalog_id = getattr(request.state, "catalog_id", None)
         return await self.iam_manager.search_principals(
-            identifier=identifier,
+            identifier=q,
             role=role,
             limit=limit,
             offset=offset,

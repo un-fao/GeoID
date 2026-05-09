@@ -205,7 +205,7 @@ class AdminService(ExtensionProtocol):
 
     @router.get("/principals", summary="Search principals (all providers)")
     async def search_principals(
-        identifier: Optional[str] = Query(None),  # type: ignore[reportGeneralTypeIssues]
+        q: Optional[str] = Query(None, description="Free-text partial match on principal identifier (OGC API - Records §7.7)"),  # type: ignore[reportGeneralTypeIssues]
         role: Optional[str] = Query(None),
         catalog_id: Optional[str] = Query(None),
         limit: int = Query(50, ge=1, le=500),
@@ -213,7 +213,7 @@ class AdminService(ExtensionProtocol):
     ):
         mgr = _iam()
         results = await mgr.search_principals(
-            identifier=identifier, role=role, limit=limit, offset=offset, catalog_id=catalog_id
+            identifier=q, role=role, limit=limit, offset=offset, catalog_id=catalog_id
         )
         return [
             PrincipalResponse(
