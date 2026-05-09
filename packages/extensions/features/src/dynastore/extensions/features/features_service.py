@@ -290,8 +290,14 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}",
+            self.replace_catalog,
+            methods=["PUT"],
+            response_model=Catalog,
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}",
             self.update_catalog,
-            methods=["PUT", "PATCH"],
+            methods=["PATCH"],
             response_model=Catalog,
         )
         self.router.add_api_route(
@@ -323,8 +329,14 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}",
+            self.replace_collection,
+            methods=["PUT"],
+            response_model=ogc_models.OGCCollection,
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}",
             self.update_collection,
-            methods=["PUT", "PATCH"],
+            methods=["PATCH"],
             response_model=ogc_models.OGCCollection,
         )
         self.router.add_api_route(
@@ -550,6 +562,55 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             ).model_dump(),
         ]
         return JSONResponse(content=catalog_dict)
+
+    async def replace_catalog(
+        self,
+        catalog_id: str,
+        definition: ogc_models.CatalogReplaceRequest,
+        conn: AsyncConnection = Depends(get_async_connection),
+        language: str = Depends(get_language),
+    ):
+        # OGC API Features Part 4: PUT replaces the whole resource. The
+        # request model enforces ``id`` so partial bodies fail at the
+        # framework boundary; ``model_dump(exclude_unset=False)`` writes
+        # every field — fields the client did not supply default to None
+        # and clear the corresponding column.
+        if definition.id != catalog_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Body 'id' ({definition.id!r}) must match path catalog_id "
+                    f"({catalog_id!r})."
+                ),
+            )
+
+        catalogs_svc = await self._get_catalogs_service()
+        catalog_dict = definition.model_dump(exclude_unset=False)
+
+        from dynastore.models.localization import is_multilanguage_input
+
+        use_lang = (
+            "*"
+            if any(
+                is_multilanguage_input(catalog_dict.get(f))
+                for f in [
+                    "title",
+                    "description",
+                    "keywords",
+                    "license",
+                    "extra_metadata",
+                ]
+            )
+            else language
+        )
+
+        catalog = await catalogs_svc.update_catalog(
+            catalog_id, catalog_dict, lang=use_lang, ctx=DriverContext(db_resource=conn)
+        )
+        if not catalog:
+            raise HTTPException(status_code=404, detail="Catalog not found")
+        localized_data, _ = catalog.localize(language)
+        return JSONResponse(content=localized_data)
 
     async def update_catalog(
         self,
@@ -810,6 +871,59 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         if rewritten is None:
             raise HTTPException(status_code=404, detail="Collection not found")
         return JSONResponse(content=rewritten, status_code=status.HTTP_200_OK)
+
+    async def replace_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        collection_def: ogc_models.CollectionReplaceRequest,
+        language: str = Depends(get_language),
+    ):
+        # OGC API Features Part 4: PUT replaces the whole collection.
+        # ``CollectionReplaceRequest`` enforces ``id``; partial bodies fail
+        # at the framework boundary.
+        if collection_def.id != collection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Body 'id' ({collection_def.id!r}) must match path collection_id "
+                    f"({collection_id!r})."
+                ),
+            )
+
+        catalogs_svc = await self._get_catalogs_service()
+        updates_dict = collection_def.model_dump(exclude_unset=False)
+
+        from dynastore.models.localization import is_multilanguage_input
+
+        use_lang = (
+            "*"
+            if any(
+                is_multilanguage_input(updates_dict.get(f))
+                for f in [
+                    "title",
+                    "description",
+                    "keywords",
+                    "license",
+                    "extra_metadata",
+                ]
+            )
+            else language
+        )
+
+        updated_collection = await catalogs_svc.update_collection(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            updates=updates_dict,
+            lang=use_lang,
+        )
+        if not updated_collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
+        collection, _ = updated_collection.localize(language)
+        return JSONResponse(content=collection, status_code=status.HTTP_200_OK)
 
     async def update_collection(
         self,

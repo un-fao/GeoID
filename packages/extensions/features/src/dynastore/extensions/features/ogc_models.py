@@ -168,6 +168,22 @@ class CollectionDefinition(BaseModel):
     )
 
 
+class CatalogReplaceRequest(CatalogDefinition):
+    """PUT-replace body for a Catalog. ``id`` is required so partial bodies
+    are rejected at the framework boundary (OGC API Features Part 4 PUT
+    semantics)."""
+
+    id: str = Field(description="Unique identifier for the catalog.")
+
+
+class CollectionReplaceRequest(CollectionDefinition):
+    """PUT-replace body for a Collection. ``id`` is required so partial
+    bodies are rejected at the framework boundary (OGC API Features Part 4
+    PUT semantics)."""
+
+    id: str = Field(description="Unique identifier for the collection.")
+
+
 # Canonical LandingPage — single source in ogc_common_models
 from dynastore.extensions.tools.ogc_common_models import LandingPage
 
