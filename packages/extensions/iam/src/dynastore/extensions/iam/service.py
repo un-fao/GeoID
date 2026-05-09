@@ -576,7 +576,7 @@ class IamExtension(ExtensionProtocol):
     )
     async def provide_admin_panel(self, request: Request):
         from dynastore._version import VERSION
-        file_path = os.path.join(os.path.dirname(__file__), "..", "admin", "static", "admin_panel.html")
+        file_path = os.path.join(os.path.dirname(__file__), "..", "admin", "admin_panel.html")
         with open(os.path.normpath(file_path), "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read().replace("{{VERSION}}", VERSION))
 
