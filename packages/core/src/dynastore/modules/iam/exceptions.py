@@ -27,3 +27,9 @@ class QuotaExceededError(IamError):
 
 class ConflictingResourceError(IamError):
     status_code = 409
+
+class InvalidAuthTokenError(IamError):
+    """Raised when an Authorization header is present but no provider
+    (OIDC nor HS256 fallback) can validate it. Distinguishes "invalid
+    token" from "no token" — the latter still degrades to anonymous."""
+    status_code = 401

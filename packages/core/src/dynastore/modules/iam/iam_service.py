@@ -45,6 +45,7 @@ from .exceptions import (
     RateLimitExceededError,
     QuotaExceededError,
     IamError,
+    InvalidAuthTokenError,
 )
 from . import oidc_role_sync
 from .oidc_role_sync_config import OidcRoleSyncConfig
@@ -995,5 +996,12 @@ class IamService:
         except Exception as e:
             logger.debug("Internal HS256 fallback failed: %s", e)
 
-        # No valid identity found
-        return [self._role_config.anonymous], None
+        # A token was present but no provider could validate it and the
+        # HS256 fallback yielded no payload. Fail closed with 401 rather
+        # than degrading to anonymous — degrading would let invalid-token
+        # callers reach handlers gated only by ``role != anonymous`` and
+        # bypass sysadmin checks on endpoints like POST /stac/catalogs,
+        # GET /admin/users, GET /logs/system. (issues #415/#416/#417)
+        raise InvalidAuthTokenError(
+            "Authorization token present but could not be validated"
+        )
