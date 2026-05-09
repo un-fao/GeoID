@@ -326,7 +326,11 @@ class PolicyService:
                 id="self_service_access",
                 description="Allows authenticated users to access their own /me endpoints.",
                 actions=["GET"],
-                resources=["/iam/me/.*", "/auth/me"],
+                # `/iam/me` (no trailing path) must be listed explicitly: the
+                # matcher uses re.match (start-anchored), so `/iam/me/.*`
+                # alone does not cover the bare path. `/auth/userinfo` is
+                # the OIDC-spec alias of `/auth/me`.
+                resources=["/iam/me", "/iam/me/.*", "/auth/me", "/auth/userinfo"],
                 effect="ALLOW",
                 partition_key=partition_key,
             ),

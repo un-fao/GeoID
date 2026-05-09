@@ -100,14 +100,20 @@ class AdminService(ExtensionProtocol):
     # User Management (/admin/users)
     # -------------------------------------------------------------------------
 
-    @router.get("/users", summary="List local users")
+    @router.get("/users", summary="List principals (optionally filtered by provider)")
     async def list_users(
         limit: int = Query(50, ge=1, le=500),  # type: ignore[reportGeneralTypeIssues]
         offset: int = Query(0, ge=0),
+        provider: Optional[str] = Query(
+            None,
+            description="Filter by identity provider (e.g. 'local', 'oidc', 'system'). "
+            "Omit to list all principals.",
+        ),
     ):
         mgr = _iam()
         principals = await mgr.list_principals(limit=limit, offset=offset)
-        local = [p for p in principals if p.provider in ("local", "system", None)]
+        if provider is not None:
+            principals = [p for p in principals if p.provider == provider]
         return [
             PrincipalResponse(
                 id=str(p.id),
@@ -117,7 +123,7 @@ class AdminService(ExtensionProtocol):
                 roles=p.roles,
                 is_active=p.is_active,
             )
-            for p in local
+            for p in principals
         ]
 
     @router.post("/users", summary="Create a new local user", status_code=201)

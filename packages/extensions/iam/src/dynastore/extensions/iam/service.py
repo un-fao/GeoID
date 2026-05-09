@@ -103,7 +103,11 @@ def iam_service_policies():
             id="self_service_authorization_api",
             description="Allows authenticated users to view their own roles and catalog access",
             actions=["GET"],
-            resources=["/me", "/me/available-roles", "/me/roles/.*", "/me/catalogs.*"],
+            # me_router is mounted at /iam/me; resources must include the
+            # /iam/ prefix because the matcher is start-anchored. The bare
+            # /iam/me path needs its own entry — `.*` requires ≥1 trailing
+            # char and would not match `/iam/me`.
+            resources=["/iam/me", "/iam/me/.*", "/auth/me", "/auth/userinfo"],
             effect="ALLOW",
             partition_key="global",
         ),
