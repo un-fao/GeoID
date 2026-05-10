@@ -43,6 +43,8 @@ from pyproj import CRS
 
 from dynastore.extensions.registry import get_extension_instance
 from dynastore.extensions import protocols
+from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.configs import ConfigsProtocol
 from dynastore.models.protocols.web import WebModuleProtocol, StaticFilesProtocol
@@ -84,7 +86,7 @@ OGC_API_TILES_URIS = [
 ]
 
 
-class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
+class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceMixin):
     priority: int = 100
     """
     Provides OGC API - Tiles functionality.
@@ -92,6 +94,9 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
     """
 
     conformance_uris: List[str] = OGC_API_TILES_URIS
+    prefix = "/tiles"
+    protocol_title = "DynaStore OGC API - Tiles"
+    protocol_description = "Vector tile generation (MVT) backed by PostGIS"
     router: APIRouter
 
     def get_web_pages(self):
@@ -131,6 +136,15 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
         )
 
     def _register_routes(self):
+        # OGC API Common: landing + conformance (delegated to OGCServiceMixin)
+        self.router.add_api_route(
+            "/", self.get_landing_page, methods=["GET"],
+            response_model=LandingPage, summary="OGC API - Tiles landing page", name="get_tiles_landing_page",
+        )
+        self.router.add_api_route(
+            "/conformance", self.get_conformance, methods=["GET"],
+            response_model=Conformance, summary="OGC API - Tiles conformance", name="get_tiles_conformance",
+        )
         # Tile Matrix Sets
         self.router.add_api_route(
             "/{dataset}/tileMatrixSets", self.create_tile_matrix_set, methods=["POST"],
@@ -225,6 +239,14 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol):
             return Response(content=f"Template map.html not found", status_code=404)
         with open(file_path, "r", encoding="utf-8") as f:
             return Response(content=f.read(), media_type="text/html")
+
+    # --- OGC API Common (delegated to OGCServiceMixin) ---
+
+    async def get_landing_page(self, request: Request) -> LandingPage:
+        return await self.ogc_landing_page_handler(request)
+
+    async def get_conformance(self, request: Request) -> Conformance:
+        return await self.ogc_conformance_handler(request)
 
     # --- Tile Matrix Sets Endpoints ---
 
