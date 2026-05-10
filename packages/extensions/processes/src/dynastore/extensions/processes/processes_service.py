@@ -39,6 +39,8 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.extensions.tools.exception_handlers import http_errors
 from dynastore.models.protocols import CatalogsProtocol
@@ -367,6 +369,15 @@ async def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Proc
         if process:
             return process
     return None
+
+
+@router.get(
+    "/conformance",
+    response_model=Conformance,
+    name="get_processes_conformance",
+)
+async def get_processes_conformance() -> Conformance:
+    return Conformance(conformsTo=PROCESSES_CONFORMANCE)
 
 
 @router.get(
@@ -1307,7 +1318,7 @@ def _handle_job_results(task: Task, job_id: uuid.UUID):
     return task.outputs or {}
 
 
-class ProcessesService(ExtensionProtocol):
+class ProcessesService(ExtensionProtocol, OGCServiceMixin):
     priority: int = 100
     """
     Implements the OGC API - Processes standard.
@@ -1316,6 +1327,9 @@ class ProcessesService(ExtensionProtocol):
     """
 
     conformance_uris = PROCESSES_CONFORMANCE
+    prefix = "/processes"
+    protocol_title = "DynaStore OGC API - Processes"
+    protocol_description = "Process discovery and execution per OGC API - Processes"
     router = router
 
 

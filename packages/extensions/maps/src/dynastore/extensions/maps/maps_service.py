@@ -43,6 +43,8 @@ from dynastore.models.localization import LocalizedText
 from .maps_models import MapsLandingPage, DatasetMaps, MapContent, Link
 from .maps_config import MapsConfig
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.web.decorators import expose_web_page
 import os
 
@@ -145,10 +147,13 @@ def _return_empty_tile(width, height):
     return Response(content=empty_png, media_type="image/png")
 
 from .policies import maps_policies, maps_role_bindings
-class MapsService(ExtensionProtocol):
+class MapsService(ExtensionProtocol, OGCServiceMixin):
     priority: int = 100
     """Provides OGC API - Maps (WMS-like) functionality with filtering and Tiling."""
     conformance_uris = OGC_API_MAPS_URIS
+    prefix = "/maps"
+    protocol_title = "DynaStore OGC API - Maps"
+    protocol_description = "Map rendering (WMS-like) with filtering and tiling"
     router:APIRouter = APIRouter(tags=["OGC API - Maps (WMS)"], prefix="/maps")
     process_pool: Optional[ProcessPoolExecutor] = None
 
@@ -203,6 +208,10 @@ class MapsService(ExtensionProtocol):
             media_type="image/png",
             roles=("thumbnail", "visual"),
         )
+
+    @router.get("/conformance", response_model=Conformance)
+    async def get_maps_conformance() -> Conformance:  # type: ignore[reportGeneralTypeIssues]
+        return Conformance(conformsTo=OGC_API_MAPS_URIS)
 
     @router.get("/", response_model=MapsLandingPage)
     async def get_maps_landing_page(request: Request):  # type: ignore[reportGeneralTypeIssues]

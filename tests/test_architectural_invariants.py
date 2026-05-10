@@ -219,6 +219,59 @@ def test_extensions_do_not_cross_import() -> None:
     assert not errors, "\n\n".join(errors)
 
 
+# ---- Rule 2b -----------------------------------------------------------
+# Any service class declaring `conformance_uris` (i.e. an OGC-protocol
+# extension) must inherit `OGCServiceMixin` so it picks up the shared
+# landing/conformance handlers and helper getters. Pure AST scan — looks
+# for ClassDefs with a `conformance_uris = ...` body and verifies one of
+# the bases is `OGCServiceMixin`.
+
+_OGC_MIXIN_INVARIANT_EXEMPT = {
+    # The mixin itself defines the ClassVar — can't inherit from itself.
+    "OGCServiceMixin",
+    # The capability protocol that defines the attribute as part of its
+    # structural contract; not a service implementation.
+    "ConformanceContributor",
+}
+
+
+def test_ogc_services_inherit_mixin() -> None:
+    offenders: list[str] = []
+    for path in _iter_py(*_PACKAGE_ROOTS):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name in _OGC_MIXIN_INVARIANT_EXEMPT:
+                continue
+            declares_uris = any(
+                isinstance(stmt, (ast.Assign, ast.AnnAssign))
+                and any(
+                    (isinstance(t, ast.Name) and t.id == "conformance_uris")
+                    for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
+                )
+                for stmt in node.body
+            )
+            if not declares_uris:
+                continue
+            base_names = {
+                b.id if isinstance(b, ast.Name) else (
+                    b.attr if isinstance(b, ast.Attribute) else ""
+                )
+                for b in node.bases
+            }
+            if "OGCServiceMixin" not in base_names:
+                offenders.append(f"{path}:{node.lineno} class {node.name}")
+    assert not offenders, (
+        "Classes declaring `conformance_uris` must inherit OGCServiceMixin "
+        "(see packages/core/src/dynastore/extensions/ogc_base.py):\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 # ---- Rule 3 ------------------------------------------------------------
 # Legacy symbols deleted in the refactor must stay deleted. A regression
 # here means a stale branch was merged or a revert snuck through.

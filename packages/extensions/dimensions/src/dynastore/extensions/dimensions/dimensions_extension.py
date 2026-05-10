@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, FastAPI
 
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.models.driver_context import DriverContext
 
 # ``ogc_dimensions`` is an optional extra (extension_dimensions).
@@ -658,7 +659,7 @@ async def materialize_all_dimensions(
 # ---------------------------------------------------------------------------
 
 
-class DimensionsExtension(ExtensionProtocol):
+class DimensionsExtension(ExtensionProtocol, OGCServiceMixin):
     priority: int = 200
     conformance_uris = OGC_DIMENSIONS_URIS
 
