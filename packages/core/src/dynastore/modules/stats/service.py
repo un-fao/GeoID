@@ -52,6 +52,9 @@ class StatsService(ProtocolPlugin[object]):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    async def initialize(self, app_state: object = None) -> None:
+        """Satisfies StatsProtocol structural check; lifecycle is managed via lifespan()."""
+
     @asynccontextmanager
     async def lifespan(self, app_state: object):
         """Standard lifecycle hook for the service."""
