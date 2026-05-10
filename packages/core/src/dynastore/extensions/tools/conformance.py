@@ -147,6 +147,27 @@ def get_active_conformance() -> Conformance:
     return Conformance(conformsTo=sorted(_collect_uris()))
 
 
+def get_ogc_service_prefixes() -> List[str]:
+    """Router prefixes (e.g. ``"/maps"``) for every loaded OGC service.
+
+    Walks every registered ``ConformanceContributor`` (which every
+    ``OGCServiceMixin`` subclass is, structurally) and collects each
+    contributor's ``prefix`` ClassVar. Non-OGC services don't inherit the
+    mixin and are therefore not returned. Result is deduplicated and
+    sorted for deterministic output.
+
+    Used by the catalog-privacy DENY policy emitter so the resource
+    pattern self-maintains as new OGC protocols come online — no
+    hardcoded protocol list to keep in sync.
+    """
+    prefixes: Set[str] = set()
+    for contributor in get_protocols(ConformanceContributor):
+        prefix = getattr(contributor, "prefix", "") or ""
+        if prefix.startswith("/"):
+            prefixes.add(prefix.lstrip("/"))
+    return sorted(prefixes)
+
+
 def get_conformance_summary() -> ConformanceSummary:
     """
     Returns a structured summary of OGC API compliance grouped by standard family.

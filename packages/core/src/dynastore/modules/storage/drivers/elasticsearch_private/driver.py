@@ -498,14 +498,30 @@ class ItemsElasticsearchPrivateDriver(
         if not perm:
             return
 
+        from dynastore.extensions.tools.conformance import get_ogc_service_prefixes
+
+        ogc_prefixes = get_ogc_service_prefixes()
+        if ogc_prefixes:
+            prefix_alt = "|".join(re.escape(p) for p in ogc_prefixes)
+            resource_pattern = (
+                f"/({prefix_alt})/catalogs/{re.escape(catalog_id)}(/.*)?"
+            )
+        else:
+            resource_pattern = (
+                f"/[^/]+/catalogs/{re.escape(catalog_id)}(/.*)?"
+            )
+            logger.warning(
+                "PrivateDriver: no OGCServiceMixin contributors registered; "
+                "falling back to wildcard DENY pattern for catalog '%s'.",
+                catalog_id,
+            )
+
         policy_id = f"private_deny_{catalog_id}"
         deny_policy = Policy(
             id=policy_id,
             description=f"Blocks public access to private catalog: {catalog_id}",
             actions=["GET"],
-            resources=[
-                f"/(catalog|stac|features|tiles|wfs|maps)/catalogs/{re.escape(catalog_id)}(/.*)?",
-            ],
+            resources=[resource_pattern],
             effect="DENY",
         )
 

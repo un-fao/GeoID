@@ -17,6 +17,7 @@ mockable) and the lifespan loop's integration with that helper.
 """
 from __future__ import annotations
 
+import re
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -260,3 +261,89 @@ async def test_restore_swallows_unexpected_failures():
     ):
         # No exception should propagate.
         await driver._restore_deny_policies()
+
+
+# ---------------------------------------------------------------------------
+# DENY resource pattern is built from the OGCServiceMixin registry
+# (issue #454 item 2 — Fix 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_deny_policy_uses_ogc_prefix_registry():
+    """``_apply_deny_policy`` must build its resource regex from
+    ``get_ogc_service_prefixes()`` so the pattern self-maintains as new
+    OGC protocols come online — no hardcoded protocol list to drift."""
+    captured: list = []
+
+    fake_perm = MagicMock()
+    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    fake_perm.register_role.return_value = None
+    fake_perm.create_policy = AsyncMock()
+
+    with patch(
+        "dynastore.tools.discovery.get_protocol", return_value=fake_perm,
+    ), patch(
+        "dynastore.extensions.tools.conformance.get_ogc_service_prefixes",
+        return_value=["features", "maps", "records", "stac", "tiles"],
+    ):
+        await ItemsElasticsearchPrivateDriver._apply_deny_policy("cat-x")
+
+    assert len(captured) == 1
+    pol = captured[0]
+    assert pol.effect == "DENY"
+    assert pol.actions == ["GET"]
+    pat = pol.resources[0]
+    # All registry-supplied prefixes appear in the alternation
+    for p in ("features", "maps", "records", "stac", "tiles"):
+        assert p in pat
+    # Catalog id is regex-escaped and present
+    assert re.escape("cat-x") in pat
+    # No legacy hardcoded entries remain
+    assert "wfs" not in pat
+    # `catalog` (singular) is not auto-included unless a real prefix exists
+    assert "/(catalog|" not in pat
+
+
+@pytest.mark.asyncio
+async def test_apply_deny_policy_falls_back_to_wildcard_when_registry_empty():
+    """If discovery returns no OGC contributors (early lifecycle / test
+    fixture), DENY must still fail-closed by emitting a wildcard
+    pattern and logging a warning rather than skipping the policy."""
+    captured: list = []
+
+    fake_perm = MagicMock()
+    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    fake_perm.register_role.return_value = None
+    fake_perm.create_policy = AsyncMock()
+
+    with patch(
+        "dynastore.tools.discovery.get_protocol", return_value=fake_perm,
+    ), patch(
+        "dynastore.extensions.tools.conformance.get_ogc_service_prefixes",
+        return_value=[],
+    ):
+        await ItemsElasticsearchPrivateDriver._apply_deny_policy("cat-y")
+
+    assert len(captured) == 1
+    pat = captured[0].resources[0]
+    assert pat.startswith("/[^/]+/catalogs/")
+    assert re.escape("cat-y") in pat
+
+
+def test_get_ogc_service_prefixes_filters_to_path_prefixes():
+    """The helper must accept only ``"/x"``-shaped prefixes (drops empty
+    string defaults from the mixin and any non-path values)."""
+    from dynastore.extensions.tools.conformance import get_ogc_service_prefixes
+
+    fake_a = MagicMock(prefix="/maps")
+    fake_b = MagicMock(prefix="")  # default mixin value — must be dropped
+    fake_c = MagicMock(prefix="/records")
+    fake_d = MagicMock(spec=[])  # no `prefix` attribute at all
+    with patch(
+        "dynastore.extensions.tools.conformance.get_protocols",
+        return_value=[fake_a, fake_b, fake_c, fake_d],
+    ):
+        result = get_ogc_service_prefixes()
+
+    assert result == ["maps", "records"]
