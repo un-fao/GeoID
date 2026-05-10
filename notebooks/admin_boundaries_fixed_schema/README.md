@@ -61,9 +61,15 @@ The notebook documents three gaps that need real platform work before the
 walkthrough can be promised to customers without caveats. Each is called out in
 a `**Gap A/B/C**` markdown cell at the relevant step:
 
-- **Gap A** — no `bootstrap-schema` endpoint; step 0 is a 2-step copy/paste
-  from `tasks/gdal/gdalinfo_task.py` output into
-  `CollectionPluginConfig.sidecars[*].attribute_schema`.
+- **Gap A** — by design, there is **no** bespoke `bootstrap-schema` endpoint.
+  The platform's contract is that every HTTP surface is an OGC conformance
+  class; bootstrapping a fixed schema is a composition of two existing
+  surfaces (issue #473, PR #477). Step 0b in `walkthrough.ipynb` shows the
+  full sequence: `POST .../assets/{id}/processes/gdal/execution`
+  (OGC API - Processes) → local OGR→Postgres type map →
+  `GET`/`PUT /configs/.../plugins/items_postgresql_driver` (PluginConfig API).
+  The cell is gated by `BOOTSTRAP_FROM = None` and is documentary; users
+  copy-paste the snippet to bootstrap from a real asset.
 - **Gap B** — OTF as **WRITE-primary** is not live-tested in review env;
   the notebook keeps PG as primary and notes how to swap.
 - **Gap C** — GCS tile-cache config + observability lives in
