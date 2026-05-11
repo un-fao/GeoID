@@ -842,8 +842,9 @@ class ItemsElasticsearchDriver(
         from dynastore.modules.elasticsearch.aliases import (
             add_index_to_public_alias,
         )
-        from dynastore.modules.elasticsearch.mappings import (
-            ITEM_MAPPING, get_items_index_settings,
+        from dynastore.modules.elasticsearch.mappings import ITEM_MAPPING
+        from dynastore.modules.elasticsearch.index_config import (
+            get_items_index_settings,
         )
 
         es = _es_client_required()
@@ -863,7 +864,7 @@ class ItemsElasticsearchDriver(
                 await es.indices.create(
                     index=index_name,
                     body={
-                        "settings": get_items_index_settings(),
+                        "settings": await get_items_index_settings(),
                         "mappings": ITEM_MAPPING,
                     },
                 )
@@ -1526,7 +1527,10 @@ class AssetElasticsearchDriver(
     ) -> None:
         """Index a single asset document."""
         from dynastore.modules.elasticsearch.mappings import (
-            get_assets_index_name, ASSET_MAPPING, get_assets_index_settings,
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
         )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
@@ -1537,7 +1541,7 @@ class AssetElasticsearchDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_assets_index_settings(),
+                    "settings": await get_assets_index_settings(),
                     "mappings": ASSET_MAPPING,
                 },
                 ignore=400,
@@ -1634,7 +1638,10 @@ class AssetElasticsearchDriver(
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
         from dynastore.modules.elasticsearch.mappings import (
-            get_assets_index_name, ASSET_MAPPING, get_assets_index_settings,
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
         )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
@@ -1646,7 +1653,7 @@ class AssetElasticsearchDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_assets_index_settings(),
+                    "settings": await get_assets_index_settings(),
                     "mappings": ASSET_MAPPING,
                 },
                 ignore=400,
@@ -1740,7 +1747,10 @@ class AssetElasticsearchDriver(
         **kwargs,
     ) -> None:
         from dynastore.modules.elasticsearch.mappings import (
-            get_assets_index_name, ASSET_MAPPING, get_assets_index_settings,
+            get_assets_index_name, ASSET_MAPPING,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
         )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
@@ -1750,7 +1760,7 @@ class AssetElasticsearchDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_assets_index_settings(),
+                    "settings": await get_assets_index_settings(),
                     "mappings": ASSET_MAPPING,
                 },
                 ignore=400,

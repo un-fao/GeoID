@@ -159,6 +159,8 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
             get_private_items_index_settings,
         )
         from dynastore.tools.geometry_simplify import simplify_to_fit
@@ -171,7 +173,7 @@ class ItemsElasticsearchPrivateDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_private_items_index_settings(),
+                    "settings": await get_private_items_index_settings(),
                     "mappings": TENANT_FEATURE_MAPPING,
                 },
                 ignore=400,
@@ -288,6 +290,8 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
             get_private_items_index_settings,
         )
 
@@ -298,7 +302,7 @@ class ItemsElasticsearchPrivateDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_private_items_index_settings(),
+                    "settings": await get_private_items_index_settings(),
                     "mappings": TENANT_FEATURE_MAPPING,
                 },
                 ignore=400,
@@ -381,6 +385,8 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
             get_private_items_index_settings,
         )
 
@@ -404,7 +410,7 @@ class ItemsElasticsearchPrivateDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_private_items_index_settings(),
+                    "settings": await get_private_items_index_settings(),
                     "mappings": TENANT_FEATURE_MAPPING,
                 },
                 ignore=400,
@@ -432,6 +438,8 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.modules.storage.drivers.elasticsearch_private.mappings import (
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
+        )
+        from dynastore.modules.elasticsearch.index_config import (
             get_private_items_index_settings,
         )
         from dynastore.tools.geometry_simplify import simplify_to_fit
@@ -450,7 +458,7 @@ class ItemsElasticsearchPrivateDriver(
             await es.indices.create(
                 index=index_name,
                 body={
-                    "settings": get_private_items_index_settings(),
+                    "settings": await get_private_items_index_settings(),
                     "mappings": TENANT_FEATURE_MAPPING,
                 },
                 ignore=400,
