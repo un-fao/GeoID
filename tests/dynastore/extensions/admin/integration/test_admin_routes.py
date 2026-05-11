@@ -183,6 +183,21 @@ async def test_list_catalog_users_returns_200(
 
 @MARKER
 @pytest.mark.asyncio
+async def test_list_catalogs_for_admin_returns_200(
+    sysadmin_in_process_client: AsyncClient, setup_catalogs
+):
+    """GET /admin/catalogs — 200 with a list of {id, title} entries (issue #495)."""
+    r = await sysadmin_in_process_client.get("/admin/catalogs")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert isinstance(data, list)
+    assert all("id" in c and "title" in c for c in data)
+    seen = {c["id"] for c in data}
+    assert setup_catalogs[0] in seen
+
+
+@MARKER
+@pytest.mark.asyncio
 async def test_list_catalog_users_unknown_catalog_404(
     sysadmin_in_process_client: AsyncClient,
 ):

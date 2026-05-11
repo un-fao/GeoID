@@ -409,10 +409,7 @@ async function loadCatalogPermissionsCatalogs() {
   sel.innerHTML = '<option>Loading…</option>';
   grantBtn.disabled = true;
   try {
-    const headers = await getAuthHeaders();
-    const res = await fetch(`${_ADMIN_ROOT}/catalogs?limit=200`, { headers });
-    if (!res.ok) throw new Error(res.statusText);
-    const cats = await res.json();
+    const cats = await apiFetch('/catalogs?limit=200');
     if (!cats.length) {
       sel.innerHTML = '<option>No catalogs available</option>';
       document.getElementById('cp-tbody').innerHTML = '<tr><td colspan="5" class="empty">No catalogs to manage.</td></tr>';

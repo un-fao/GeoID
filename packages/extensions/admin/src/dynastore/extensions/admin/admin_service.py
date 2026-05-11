@@ -283,6 +283,30 @@ class AdminService(ExtensionProtocol):
 
     # ---- Catalog-scope role grants (D6 — `{catalog_schema}.grants`) -----
 
+    @router.get(
+        "/catalogs",
+        summary="List catalogs (admin picker for catalog-scope role grants)",
+    )
+    async def list_catalogs_for_admin(
+        limit: int = Query(200, ge=1, le=1000),  # type: ignore[reportGeneralTypeIssues]
+        offset: int = Query(0, ge=0),
+        lang: str = Query("en"),
+        q: Optional[str] = Query(None, description="Free-text partial match on id/title/description"),
+    ):
+        catalogs_svc = get_protocol(CatalogsProtocol)
+        if catalogs_svc is None:
+            raise HTTPException(status_code=503, detail="Catalogs service not available.")
+        items = await catalogs_svc.list_catalogs(limit=limit, offset=offset, lang=lang, q=q)
+        out = []
+        for c in items:
+            title_raw = c.model_dump(mode="json").get("title")
+            if isinstance(title_raw, dict):
+                title = title_raw.get(lang) or next(iter(title_raw.values()), None)
+            else:
+                title = title_raw
+            out.append({"id": c.id, "title": title or c.id})
+        return out
+
     @router.post(
         "/catalogs/{catalog_id}/principals/{principal_id}/roles",
         status_code=204,
