@@ -634,6 +634,26 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 async with managed_transaction(engine) as probe_conn:
                     await _assert_current_partition_ready(probe_conn, schema)
 
+                # Capability publisher (#502) initial refresh runs SYNCHRONOUSLY
+                # before the dispatcher is submitted — otherwise create_task'd
+                # coroutines race and the dispatcher could evaluate a row
+                # before any pod has published a sentinel, causing a
+                # false-positive DLQ. Fail-open if the cache isn't ready.
+                from dynastore.modules.tasks.capability_publisher import (
+                    _collect_local_capabilities,
+                    _refresh_once,
+                    run_capability_publisher,
+                )
+                try:
+                    await _refresh_once(
+                        _collect_local_capabilities(), ttl_seconds=cap_ttl,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "TasksModule: initial capability publish skipped: %s",
+                        exc,
+                    )
+
                 executor.submit(start_queue_listener(engine, shutdown_event, poll_timeout=poll_interval), task_name="service:queue_listener")
                 executor.submit(run_dispatcher(engine, None, shutdown_event), task_name="service:dispatcher")
                 # Stuck-PENDING warner — periodic read-only scan for tasks that
@@ -644,14 +664,10 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                     _warn_stuck_pending_tasks(engine, schema, shutdown_event),
                     task_name="service:stuck_pending_warner",
                 )
-                # Capability publisher (#502) — refreshes shared-cache liveness
-                # sentinels so the dispatcher's reactive reaper can DLQ task
-                # rows whose required capability has no live worker anywhere
-                # in the deployment. Runs in every pod; the primitive is
-                # naturally idempotent (all pods write the same key).
-                from dynastore.modules.tasks.capability_publisher import (
-                    run_capability_publisher,
-                )
+                # Async refresh loop. Initial publish already ran
+                # synchronously above (before run_dispatcher was submitted)
+                # so dispatcher reactive-reaper checks never see an empty
+                # cache during cold start.
                 executor.submit(
                     run_capability_publisher(
                         shutdown_event,
