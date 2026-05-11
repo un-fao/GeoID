@@ -747,100 +747,21 @@ class ConfigApiService:
     # --- JSON Hyper-Schema link assembly. ---
 
     @staticmethod
-    def _query_param_schema(scope: str) -> Dict[str, Any]:
-        """JSON Schema 2020-12 describing the query params for ``scope``.
+    def _query_param_schema() -> Dict[str, Any]:
+        """JSON Schema 2020-12 describing the composed-config query params.
 
         Used as ``hrefSchema`` on the ``self`` link so operators discover
-        supported query parameters with descriptions and examples — without
-        scanning the OpenAPI document. Returned schema is JSON Schema, not
-        OpenAPI Parameter Object, by design (the user asked for alignment
-        with general standards, not just OpenAPI/FastAPI).
+        supported query parameters with descriptions and examples without
+        scanning the OpenAPI document.  Sourced from
+        ``_composed_query_params.QUERY_PARAM_SCHEMA`` so the description /
+        enum / default text is single-sourced with the FastAPI handler
+        signatures.
         """
-        common: Dict[str, Any] = {
-            "resolved": {
-                "type": "boolean", "default": True,
-                "description": (
-                    "When true (default): all registered configs with "
-                    "waterfall-resolved values; the top-level ``inherited`` "
-                    "tree (hierarchical, mirrors ``configs`` shape) tells "
-                    "you which tier provided each upstream value. "
-                    "When false: only configs explicitly stored at this "
-                    "scope (delta-only, safe for read-modify-write flows)."
-                ),
-                "examples": [True, False],
-            },
-            "meta": {
-                "type": "string", "enum": ["none", "field", "schema"],
-                "default": "field",
-                "description": (
-                    "Per-class documentation mode injected INLINE on each "
-                    "in-scope plugin leaf as a ``_meta`` sibling.  "
-                    "``none`` — no ``_meta`` key on any leaf. ``field`` "
-                    "(default) — leaf carries ``_meta = {field_docs: "
-                    "{field_name: description}}``. ``schema`` — leaf "
-                    "carries ``_meta = {json_schema: <full Pydantic "
-                    "schema 2020-12>}`` (heavier, form-builder ready)."
-                ),
-                "examples": ["field", "schema", "none"],
-            },
-            "links": {
-                "type": "string", "enum": ["none", "minimal", "full"],
-                "default": "none",
-                "description": (
-                    "Per-plugin HATEOAS edit affordances injected INLINE on "
-                    "each in-scope leaf as a ``_links`` sibling.  Each leaf "
-                    "gets 4 affordances: ``self`` (GET), ``edit`` (PUT — "
-                    "replace), ``edit`` (DELETE — clear override), "
-                    "``describedby`` (GET registry/{class_key}).  "
-                    "``none`` (default) — no ``_links`` on any leaf, "
-                    "wire-compatible with pre-#517 clients.  ``minimal`` — "
-                    "``rel``/``href``/``method`` only.  ``full`` — adds a "
-                    "contextual ``title`` per link naming the class key "
-                    "and tier (catalog/collection ids included)."
-                ),
-                "examples": ["none", "minimal", "full"],
-            },
-            "include": {
-                "type": "string", "enum": ["scope", "upstream"],
-                "default": "scope",
-                "description": (
-                    "Body-rendering mode. ``scope`` (default) — body lists "
-                    "only configs owned by the active scope; upstream-tier "
-                    "configs are summarised in the hierarchical "
-                    "``inherited`` tree (mirrors ``configs`` shape; leaves "
-                    "carry ``{source: <tier>}``). ``upstream`` — every "
-                    "visible class rendered with its waterfall-resolved "
-                    "value (today's verbose default; useful when you want "
-                    "the full payload)."
-                ),
-                "examples": ["scope", "upstream"],
-            },
-            "strict": {
-                "type": "boolean", "default": True,
-                "description": (
-                    "Cycle F.7d.2 — at platform scope, narrow the body to "
-                    "platform-intrinsic configs (``modules``, ``extensions``, "
-                    "``tasks``, ``engines``).  Catalog-/collection-tier "
-                    "templates route to ``inherited`` instead.  ``false`` "
-                    "restores the previous always-true platform-scope "
-                    "inclusion (catalog templates inline in the body).  "
-                    "No effect at catalog or collection scope."
-                ),
-                "examples": [True, False],
-            },
-        }
-        # NOTE: per-scope ``*_page`` and ``page_size`` slots were retired
-        # in Cycle C alongside the ``categories`` paginated-children field
-        # and the depth-expansion machinery.  Operators discover children
-        # via the existing list endpoints (``GET /catalogs``,
-        # ``GET /catalogs/{cat}/collections``, ``GET .../assets``).
-        properties = dict(common)
-        return {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": False,
-        }
+        from dynastore.extensions.configs._composed_query_params import (
+            QUERY_PARAM_SCHEMA,
+        )
+
+        return QUERY_PARAM_SCHEMA
 
     @staticmethod
     def _build_links(scope: str, base_url: str) -> List[Link]:
@@ -859,7 +780,7 @@ class ConfigApiService:
                 href=base_url,
                 method="GET",
                 title=f"This {scope} config view",
-                hrefSchema=ConfigApiService._query_param_schema(scope),
+                hrefSchema=ConfigApiService._query_param_schema(),
             ),
         ]
 
