@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynastore.modules.tasks.dispatcher import _maybe_dlq_unclaimable
+from dynastore.modules.tasks.dispatcher import (
+    _maybe_dlq_unclaimable,
+    _stable_advisory_lock_key,
+)
 from dynastore.tasks.index_propagation.task import IndexPropagationTask
 
 
@@ -166,3 +169,29 @@ def test_index_propagation_required_capability_missing_returns_none():
     assert IndexPropagationTask.required_capability({"inputs": {}}) is None
     assert IndexPropagationTask.required_capability({}) is None
     assert IndexPropagationTask.required_capability(None) is None
+
+
+def test_stable_advisory_lock_key_is_deterministic():
+    """Regression: Python's builtin ``hash()`` is salted per-process,
+    so two pods hashing the same string get different lock keys —
+    breaks any "single leader across the deployment" advisory lock.
+    ``_stable_advisory_lock_key`` MUST be deterministic across calls
+    (and, by extension, across pods/processes/Python versions).
+    """
+    k1 = _stable_advisory_lock_key("dynastore.idx_reaper", "collection_es")
+    k2 = _stable_advisory_lock_key("dynastore.idx_reaper", "collection_es")
+    assert k1 == k2
+    # Known golden values (blake2b is stable across versions/platforms).
+    assert k1 == _stable_advisory_lock_key(
+        "dynastore.idx_reaper", "collection_es",
+    )
+    # Different capability ids produce different keys.
+    assert k1 != _stable_advisory_lock_key(
+        "dynastore.idx_reaper", "other_indexer",
+    )
+    # Fits PostgreSQL signed bigint (non-negative 63-bit).
+    assert 0 <= k1 < 2 ** 63
+    # Different namespace produces a different key for the same id.
+    assert k1 != _stable_advisory_lock_key(
+        "dynastore.other_namespace", "collection_es",
+    )

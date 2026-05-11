@@ -43,11 +43,30 @@ Both are stateless: any worker instance can resume any task after a crash.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
+
+
+def _stable_advisory_lock_key(*parts: str) -> int:
+    """Process-stable signed bigint for ``pg_try_advisory_xact_lock``.
+
+    Python's builtin ``hash()`` is salted per-process (PEP 456) unless
+    ``PYTHONHASHSEED`` is fixed — two pods hashing the same string will
+    pick different lock keys, so any "single-leader across the deployment"
+    guarantee that depends on it is silently broken. ``hashlib.blake2b``
+    is deterministic across pods, processes, and Python versions.
+
+    Returns a non-negative 63-bit int that fits PostgreSQL's signed
+    bigint ``pg_try_advisory_xact_lock(bigint)`` signature.
+    """
+    h = hashlib.blake2b(
+        b"\x00".join(p.encode("utf-8") for p in parts), digest_size=8,
+    )
+    return int.from_bytes(h.digest(), "big") & 0x7FFFFFFFFFFFFFFF
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -236,9 +255,9 @@ async def _maybe_dlq_unclaimable(
         if await is_capability_live(capability_id):
             return False
 
-        lock_key = hash(
-            ("dynastore.idx_reaper", capability_id),
-        ) & 0x7FFFFFFFFFFFFFFF
+        lock_key = _stable_advisory_lock_key(
+            "dynastore.idx_reaper", capability_id,
+        )
         schema = get_task_schema()
         error_message = (
             f"reaped: no live worker advertises capability {capability_id!r} "
@@ -313,7 +332,7 @@ async def _run_janitor(
     from dynastore.modules.tasks.tasks_module import find_stale_tasks, fail_task, cleanup_orphan_tasks
     from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, managed_transaction
 
-    _JANITOR_LOCK_KEY = hash("dynastore.janitor.global") & 0x7FFFFFFFFFFFFFFF
+    _JANITOR_LOCK_KEY = _stable_advisory_lock_key("dynastore.janitor.global")
 
     async with managed_transaction(engine) as conn:
         try:
