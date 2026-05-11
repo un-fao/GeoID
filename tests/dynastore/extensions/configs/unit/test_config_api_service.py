@@ -549,6 +549,7 @@ async def test_compose_catalog_meta_field_inlines_meta_on_leaf(mock_config_servi
                       new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch(
              "dynastore.extensions.configs.config_api_service.list_registered_configs",
              return_value=registry,

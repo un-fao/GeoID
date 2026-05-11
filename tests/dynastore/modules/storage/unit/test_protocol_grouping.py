@@ -37,7 +37,14 @@ class TestOldProtocolNamesAbsent:
              "packages", "tests/dynastore"],
             capture_output=True, text=True, cwd=_REPO_ROOT,
         )
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        # Exclude this test file itself — it lists the legacy names literally
+        # in `_OLD_NAMES`, which would otherwise produce a self-positive hit.
+        self_path = "tests/dynastore/modules/storage/unit/test_protocol_grouping.py"
+        return [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip() and not line.strip().endswith(self_path)
+        ]
 
     def test_no_collection_storage_driver_protocol(self):
         hits = self._grep("CollectionStorageDriverProtocol")

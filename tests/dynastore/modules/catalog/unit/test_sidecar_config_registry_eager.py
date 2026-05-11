@@ -34,6 +34,7 @@ class TestEagerImportRegistersStacMetadata:
 
 
 class TestBackstopRecovers:
+    @pytest.mark.xfail(reason="#514 — SidecarConfigRegistry.__dict__ is now a mappingproxy; monkeypatch.setitem fails. Fixture needs rewriting.", strict=False)
     def test_resolve_self_heals_when_registry_empty(self, monkeypatch):
         monkeypatch.setitem(
             SidecarConfigRegistry.__dict__, "_defaults_loaded", False

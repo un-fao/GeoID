@@ -161,6 +161,7 @@ jobs:
             -v "$WORKSPACE":/dynastore/workspace \
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
             -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
             -e DYNASTORE_DDL_STATEMENT_TIMEOUT=120s \
@@ -299,6 +300,7 @@ jobs:
             -v "$WORKSPACE":/dynastore/workspace \
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
             --env-file packages/core/src/dynastore/docker/.env \
             -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
@@ -308,7 +310,7 @@ jobs:
             -e LOG_LEVEL=INFO \
             -e PYTEST_CURRENT_TEST=true \
             geoid-test-runner:ci \
-            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; /opt/venv/bin/pytest "${TESTS[@]}" --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
+            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; PYTHONUNBUFFERED=1 /opt/venv/bin/pytest "${TESTS[@]}" -v --tb=short -p no:cacheprovider --durations=20 --junitxml=/dynastore/workspace/test-results.xml'
 
       - name: Display db logs on failure
         if: failure()
@@ -406,6 +408,7 @@ jobs:
             -v "$WORKSPACE":/dynastore/workspace \
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
+            -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
             --env-file packages/core/src/dynastore/docker/.env \
             -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \

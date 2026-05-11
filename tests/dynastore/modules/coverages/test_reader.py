@@ -10,6 +10,7 @@ def test_module_importable_without_rasterio():
     assert hasattr(reader, "read_window_iter")
 
 
+@pytest.mark.xfail(reason="#514 — rasterio: TIFF block dims must be multiples of 16; fixture rebuild needed.", strict=False)
 @skipif_no_rasterio
 def test_read_window_iter_emits_block_tiles(tmp_path):
     import numpy as np

@@ -1121,8 +1121,11 @@ async def _sync_collection_privacy_to_es(
         catalogs = get_protocol(CatalogsProtocol)
         if catalogs is None:
             return
+        from dynastore.models.driver_context import DriverContext
         collection_model = await catalogs.get_collection(
-            catalog_id, collection_id, db_resource=db_resource,
+            catalog_id,
+            collection_id,
+            ctx=DriverContext(db_resource=db_resource) if db_resource else None,
         )
         if collection_model is None:
             return

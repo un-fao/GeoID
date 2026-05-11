@@ -37,7 +37,12 @@ import re
 from pathlib import Path
 
 
-_PYPROJECT = Path(__file__).parent.parent.parent.parent.parent / "pyproject.toml"
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+_PYPROJECT = _REPO_ROOT / "pyproject.toml"
+# Entry-points (and the dynastore source tree) live in the core sub-package
+# since the Phase 1 packages restructure (PR #397). SCOPE extras stayed in the
+# root pyproject.toml; entry-points + sources moved to packages/core/.
+_CORE_PYPROJECT = _REPO_ROOT / "packages" / "core" / "pyproject.toml"
 
 
 def _scope_definition(scope: str) -> str:
@@ -186,8 +191,8 @@ def _all_worker_task_scope_names() -> list[str]:
 
 def _all_dynastore_tasks_entry_points() -> dict[str, str]:
     """Return ``{entry_point_name: target_str}`` for the ``dynastore.tasks``
-    entry-point group declared in pyproject.toml."""
-    text = _PYPROJECT.read_text()
+    entry-point group declared in packages/core/pyproject.toml."""
+    text = _CORE_PYPROJECT.read_text()
     in_group = False
     out: dict[str, str] = {}
     for line in text.splitlines():
@@ -285,7 +290,7 @@ def test_every_dynastore_tasks_entry_point_resolves_to_existing_module() -> None
     at a module file that exists on disk. Catches typos in the entry-point
     declaration (path drift after a rename refactor)."""
     entry_points = _all_dynastore_tasks_entry_points()
-    src_root = _PYPROJECT.parent / "src"
+    src_root = _CORE_PYPROJECT.parent / "src"
 
     bad: list[str] = []
     for ep_name, ep_target in entry_points.items():
