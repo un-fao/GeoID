@@ -16,6 +16,8 @@ import pathlib
 
 import pytest
 
+from tests._repo_paths import CORE_SRC as _CORE_SRC
+
 
 # Each entry: relative path under src/ → list of acceptable top-level imports.
 # At least one must appear as a top-level ``import X`` or ``from X import …``
@@ -33,7 +35,7 @@ HEAVY_TASK_GATES = {
 }
 
 
-SRC_ROOT = pathlib.Path(__file__).resolve().parents[4] / "src"
+SRC_ROOT = _CORE_SRC.parent
 
 
 def _top_level_imports(path: pathlib.Path) -> list[str]:
