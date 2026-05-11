@@ -20,9 +20,16 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Query, status, Request, FastAPI
+from fastapi import APIRouter, status, Request, FastAPI
 from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.configs._composed_query_params import (
+    IncludeQuery,
+    LinksQuery,
+    MetaQuery,
+    ResolvedQuery,
+    StrictQuery,
+)
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
@@ -421,71 +428,11 @@ class ConfigsService(ExtensionProtocol):
     async def get_platform_config_composed(
         self,
         request: Request,
-        resolved: bool = Query(
-            True,
-            description=(
-                "When true (default): all registered configs with waterfall-resolved values. "
-                "When false: only configs explicitly stored at platform scope."
-            ),
-        ),
-        meta: str = Query(
-            "field",
-            pattern="^(none|field|schema)$",
-            description=(
-                "Per-class documentation mode injected INLINE on each "
-                "in-scope plugin leaf as a ``_meta`` sibling.  "
-                "``field`` (default): leaf carries ``_meta = {field_docs: "
-                "{field_name: description}}``.  ``schema``: leaf carries "
-                "``_meta = {json_schema: <full Pydantic schema>}`` "
-                "(title/description/type/default/examples/constraints — "
-                "everything a form-builder needs; heavier).  ``none``: "
-                "no ``_meta`` key on any leaf."
-            ),
-        ),
-        include: str = Query(
-            "scope",
-            pattern="^(scope|upstream)$",
-            description=(
-                "Body-rendering mode. ``scope`` (default): body shows configs "
-                "owned by this scope (``_visibility`` matches OR an explicit "
-                "row exists here). Upstream-tier configs are summarised in "
-                "the hierarchical ``inherited`` tree — leaves carry "
-                "``{source: <tier>}`` at the same address the resolved value "
-                "would land at if inlined. ``upstream``: every visible "
-                "class is rendered with its waterfall-resolved value (today's "
-                "verbose mode). At platform scope this flag is a no-op since "
-                "platform IS the top tier."
-            ),
-        ),
-        strict: bool = Query(
-            True,
-            description=(
-                "Cycle F.7d.2 — narrow the response body to configs strictly "
-                "related to the requested scope.  At platform scope, ``true`` "
-                "(default) drops catalog-/collection-tier templates from the "
-                "body and routes them to ``inherited`` instead, so platform "
-                "view shows only platform-intrinsic configs (``modules``, "
-                "``extensions``, ``tasks``, ``engines``).  ``false`` restores "
-                "the previous always-true platform-scope inclusion (catalog-"
-                "tier templates inline in the body).  No effect at catalog "
-                "or collection scope (per-tier ``_visibility`` filter already "
-                "runs there)."
-            ),
-        ),
-        links: str = Query(
-            "none",
-            pattern="^(none|minimal|full)$",
-            description=(
-                "Per-plugin HATEOAS edit affordances injected INLINE on "
-                "each in-scope leaf as a ``_links`` sibling — ``self`` "
-                "(GET), ``edit`` (PUT — replace), ``edit`` (DELETE — clear "
-                "override), ``describedby`` (GET registry/{class_key}).  "
-                "``none`` (default): no ``_links`` on any leaf, "
-                "wire-compatible with pre-#517 clients.  ``minimal``: "
-                "rel/href/method only.  ``full``: adds a contextual "
-                "``title`` per link naming the class key and tier."
-            ),
-        ),
+        resolved: ResolvedQuery = True,
+        meta: MetaQuery = "field",
+        include: IncludeQuery = "scope",
+        strict: StrictQuery = True,
+        links: LinksQuery = "none",
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -502,53 +449,11 @@ class ConfigsService(ExtensionProtocol):
         self,
         catalog_id: str,
         request: Request,
-        resolved: bool = Query(
-            True,
-            description=(
-                "When true (default): all registered configs with waterfall-resolved values. "
-                "When false: only configs explicitly stored at this catalog scope."
-            ),
-        ),
-        meta: str = Query(
-            "field",
-            pattern="^(none|field|schema)$",
-            description=(
-                "Per-class documentation mode injected INLINE on each "
-                "in-scope leaf as ``_meta``. ``field`` (default): "
-                "``{field_docs: {...}}``. ``schema``: ``{json_schema: "
-                "{...}}``. ``none``: no ``_meta`` key. See platform "
-                "endpoint for full notes."
-            ),
-        ),
-        include: str = Query(
-            "scope",
-            pattern="^(scope|upstream)$",
-            description=(
-                "Body-rendering mode. See platform endpoint for full notes. "
-                "At catalog scope, ``scope`` filters out platform-tier "
-                "configs that have no catalog override; they appear in the "
-                "hierarchical ``inherited`` tree instead, with "
-                "``{source: 'platform'}`` leaves at their natural addresses."
-            ),
-        ),
-        strict: bool = Query(
-            True,
-            description=(
-                "Cycle F.7d.2 — at platform scope, narrows the body to "
-                "platform-intrinsic configs only.  No effect at catalog "
-                "or collection scope; accepted for API symmetry so the "
-                "same query-string template works at every tier."
-            ),
-        ),
-        links: str = Query(
-            "none",
-            pattern="^(none|minimal|full)$",
-            description=(
-                "Per-plugin HATEOAS affordances injected INLINE on each "
-                "leaf as ``_links``. ``none`` (default) / ``minimal`` / "
-                "``full``. See platform endpoint for full notes."
-            ),
-        ),
+        resolved: ResolvedQuery = True,
+        meta: MetaQuery = "field",
+        include: IncludeQuery = "scope",
+        strict: StrictQuery = True,
+        links: LinksQuery = "none",
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -567,57 +472,11 @@ class ConfigsService(ExtensionProtocol):
         catalog_id: str,
         collection_id: str,
         request: Request,
-        resolved: bool = Query(
-            True,
-            description=(
-                "When true (default): all registered configs with waterfall-resolved values. "
-                "When false: only configs explicitly stored at this collection scope."
-            ),
-        ),
-        meta: str = Query(
-            "field",
-            pattern="^(none|field|schema)$",
-            description=(
-                "Per-class documentation mode injected INLINE on each "
-                "in-scope leaf as ``_meta``. ``field`` (default): "
-                "``{field_docs: {...}}``. ``schema``: ``{json_schema: "
-                "{...}}``. ``none``: no ``_meta`` key. See platform "
-                "endpoint for full notes."
-            ),
-        ),
-        include: str = Query(
-            "scope",
-            pattern="^(scope|upstream)$",
-            description=(
-                "Body-rendering mode. ``scope`` (default): body shows only "
-                "configs owned by this collection — collection-visibility "
-                "configs (routing, items-driver with sidecars) and any "
-                "explicit collection-level overrides. Upstream-tier configs "
-                "(catalog and platform) appear in the hierarchical "
-                "``inherited`` tree as ``{source: <tier>}`` leaves at their "
-                "natural addresses (mirrors ``configs`` tree shape). "
-                "``upstream``: every visible class is rendered with its "
-                "waterfall-resolved value (today's verbose mode, useful for "
-                "callers expecting the full payload)."
-            ),
-        ),
-        strict: bool = Query(
-            True,
-            description=(
-                "Cycle F.7d.2 — at platform scope, narrows the body to "
-                "platform-intrinsic configs only.  No effect at catalog "
-                "or collection scope; accepted for API symmetry."
-            ),
-        ),
-        links: str = Query(
-            "none",
-            pattern="^(none|minimal|full)$",
-            description=(
-                "Per-plugin HATEOAS affordances injected INLINE on each "
-                "leaf as ``_links``. ``none`` (default) / ``minimal`` / "
-                "``full``. See platform endpoint for full notes."
-            ),
-        ),
+        resolved: ResolvedQuery = True,
+        meta: MetaQuery = "field",
+        include: IncludeQuery = "scope",
+        strict: StrictQuery = True,
+        links: LinksQuery = "none",
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
