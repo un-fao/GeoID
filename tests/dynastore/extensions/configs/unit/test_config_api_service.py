@@ -373,6 +373,10 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
     # ``config_ref`` scalar.  Single link with rel=driver-config when
     # the driver_ref binds to a registered config.
     assert "config_ref" not in ref
+    # #520: routing-entry _links use exclude_none=True, matching the
+    # shape emitted by ``_leaf_links``.  ``hrefSchema`` (and any other
+    # None field) is dropped; ``templated: False`` survives because it
+    # has a non-None default.
     assert ref["_links"] == [
         {
             "rel": "driver-config",
@@ -380,7 +384,6 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
             "method": "PUT",
             "title": "PUT this driver's config at platform scope",
             "templated": False,
-            "hrefSchema": None,
         }
     ]
     assert ref["on_failure"] == "fatal"
