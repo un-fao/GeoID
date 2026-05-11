@@ -59,7 +59,7 @@ def _extract_title_from_notebook(path: Path) -> str | None:
     return None
 
 
-def discover_notebooks(folder: Path, *, prefix: str = "") -> List:
+def discover_notebooks(folder: Path, *, prefix: str = "", registered_by: str | None = None) -> List:
     """Return a list of :class:`NotebookContribution` for every ``*.ipynb``
     in ``folder`` (sorted, non-recursive).
 
@@ -97,6 +97,7 @@ def discover_notebooks(folder: Path, *, prefix: str = "") -> List:
                 notebook_id=nb_id,
                 title={"en": title},
                 notebook_path=ipynb,
+                registered_by=registered_by or prefix or "unknown",
             )
         )
     return out
