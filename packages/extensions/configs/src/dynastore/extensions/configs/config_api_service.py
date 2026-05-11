@@ -337,26 +337,40 @@ class ConfigApiService:
         include_mode: str = "scope",
         strict: bool = True,
         extra_refs: Optional[Dict[str, Tuple[str, Dict[str, Any]]]] = None,
+        *,
+        links_mode: str = "none",
+        base_url: str = "",
+        configs_root_url: str = "",
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
     ) -> Tuple[
         Dict[str, Any],
         Optional[Dict[str, Any]],
-        Optional[Dict[str, Any]],
     ]:
-        """Bucket visible classes into a tier-first tree and optionally build hierarchical meta.
+        """Bucket visible classes into a tier-first tree.
 
-        ``meta_mode`` controls per-class field documentation in the
-        hierarchical ``meta`` tree:
+        ``meta_mode`` controls per-class field documentation injected
+        inline on each in-scope leaf as a ``_meta`` sibling:
 
-        - ``"none"`` — no docs; ``meta`` returned as ``None``.
-        - ``"field"`` (default) — leaf is ``{"field_docs": {field_name:
-          description}}``, extracted from the class JSON Schema.
-          Lightweight, suitable for dashboards.
-        - ``"schema"`` — leaf is ``{"json_schema": <full Pydantic schema>}``.
-          Heavier; suitable for form-builders.
+        - ``"none"`` — no ``_meta`` key on any leaf.
+        - ``"field"`` (default) — leaf carries ``_meta = {"field_docs":
+          {field_name: description}}``, extracted from the class JSON
+          Schema.  Lightweight, suitable for dashboards.
+        - ``"schema"`` — leaf carries ``_meta = {"json_schema": <full
+          Pydantic schema>}``.  Heavier; suitable for form-builders.
 
-        The ``meta`` tree mirrors the ``configs`` tree shape exactly:
-        the same path that produces a payload in ``configs`` produces
-        the docs leaf in ``meta``.
+        Per #517: the field docs / schema are inlined on the leaf
+        (alongside ``_links``) instead of mirroring the tree shape in a
+        parallel top-level ``meta`` field.  Single source of truth, no
+        cross-walk required.
+
+        ``links_mode`` controls per-leaf HATEOAS edit affordances injected
+        inline as a ``_links`` sibling (see ``_leaf_links``):
+
+        - ``"none"`` (default) — no ``_links`` on any leaf.
+        - ``"minimal"`` — ``rel``/``href``/``method`` per link, no titles.
+        - ``"full"`` — adds a contextual ``title`` per link naming the
+          class key and tier (catalog/collection ids included).
 
         ``include_mode`` controls scope-vs-waterfall payload rendering:
 
@@ -388,18 +402,18 @@ class ConfigApiService:
         configs at collection scope flow through the same ``inherited``
         tree as platform-tier ones — single uniform mechanism.
 
-        Returns ``(tree, meta, inherited)``.  ``meta`` is None unless
-        ``meta_mode != "none"``.  ``inherited`` is None unless
+        Returns ``(tree, inherited)``.  ``inherited`` is None unless
         ``include_mode == "scope"`` and at least one upstream class was
         filtered out.
         """
         wants_docs = meta_mode in ("field", "schema")
+        wants_links = links_mode in ("minimal", "full")
         slim = include_mode == "scope"
         all_classes = list_registered_configs()
         tree: Dict[str, Any] = {}
-        meta_tree: Dict[str, Any] = {}
         inherited_tree: Dict[str, Any] = {}
         inherited_has_entries = False
+        scope_label = ConfigApiService._scope_label_from_url(base_url)
 
         def _is_in_scope(cls: Type[PluginConfig], class_key: str) -> bool:
             """Slim-mode filter: keep only configs owned by ``active_scope``.
@@ -466,6 +480,41 @@ class ConfigApiService:
                 node = node.setdefault(seg, {})
             node[class_key] = value
 
+        def _decorate(
+            payload: Dict[str, Any],
+            cls: Type[PluginConfig],
+            class_key: str,
+            ref_key: str,
+        ) -> Dict[str, Any]:
+            """Inject ``_meta`` and ``_links`` siblings into an in-scope leaf.
+
+            Mutates ``payload`` and returns it (cheaper than copying; the
+            dict comes from ``_get_effective_configs`` and has no other
+            consumer past this point).  Assertion guards against a
+            ``PluginConfig`` ever growing a field named ``_meta`` /
+            ``_links`` and silently colliding.
+            """
+            if wants_docs:
+                assert "_meta" not in payload, (
+                    f"{class_key}: leaf already has _meta — field name collides"
+                )
+                payload["_meta"] = _doc_leaf(cls)
+            if wants_links:
+                assert "_links" not in payload, (
+                    f"{class_key}: leaf already has _links — field name collides"
+                )
+                payload["_links"] = ConfigApiService._leaf_links(
+                    class_key=class_key,
+                    ref_key=ref_key,
+                    base_url=base_url,
+                    configs_root_url=configs_root_url,
+                    scope_label=scope_label,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    mode=links_mode,
+                )
+            return payload
+
         for class_key, payload in by_class.items():
             cls = all_classes.get(class_key)
             if cls is None:
@@ -479,19 +528,16 @@ class ConfigApiService:
             # from collection's POV) to the hierarchical ``inherited``
             # tree instead of inlining their bodies.  Catalog-tier configs
             # flow through here too — no separate sibling block (Cycle D.3
-            # dropped ``inherited_from_catalog``).
+            # dropped ``inherited_from_catalog``).  Inherited placeholders
+            # are NOT actionable at the active scope, so they carry no
+            # ``_meta`` / ``_links``.
             if slim and not _is_in_scope(cls, class_key):
                 source = sources.get(class_key, "default")
                 _place_at(inherited_tree, placed, class_key, {"source": source})
                 inherited_has_entries = True
-                # NB: meta entries for inherited (slim-suppressed) classes
-                # are intentionally absent — the inherited tree is a
-                # breadcrumb, not a documentation surface.
                 continue
 
-            _place_at(tree, placed, class_key, payload)
-            if wants_docs:
-                _place_at(meta_tree, placed, class_key, _doc_leaf(cls))
+            _place_at(tree, placed, class_key, _decorate(payload, cls, class_key, class_key))
 
         # F.4d.1 — multi-instance ref surfacing.
         # Each entry in ``extra_refs`` is ``ref_key → (class_key, payload)``
@@ -499,6 +545,9 @@ class ConfigApiService:
         # ``by_class``).  Place the ref leaf under the parent class's
         # ``_address`` so operators see ``platform.modules.tiles.tiles_secondary``
         # alongside the canonical ``platform.modules.tiles.tiles_config``.
+        # Multi-instance leaves use ``ref_key`` for self/edit (the
+        # per-instance CRUD URL) and the canonical ``class_key`` for
+        # ``describedby`` (schema is per-class, not per-instance).
         if extra_refs:
             for ref_key, (class_key, payload) in extra_refs.items():
                 cls = all_classes.get(class_key)
@@ -512,12 +561,9 @@ class ConfigApiService:
                     _place_at(inherited_tree, placed, ref_key, {"source": source})
                     inherited_has_entries = True
                     continue
-                _place_at(tree, placed, ref_key, payload)
-                if wants_docs:
-                    _place_at(meta_tree, placed, ref_key, _doc_leaf(cls))
+                _place_at(tree, placed, ref_key, _decorate(payload, cls, class_key, ref_key))
         return (
             tree,
-            (meta_tree if wants_docs else None),
             (inherited_tree if (slim and inherited_has_entries) else None),
         )
 
@@ -537,6 +583,101 @@ class ConfigApiService:
         if "/catalogs/" in base_url:
             return "catalog"
         return "platform"
+
+    @staticmethod
+    def _configs_root_url(base_url: str) -> str:
+        """Strip ``/catalogs/{x}[/collections/{y}]`` from a composed-config URL.
+
+        The registry endpoint (``/registry/{plugin_id}``) is scope-agnostic
+        and lives at the configs router root.  Per-leaf ``describedby``
+        links must therefore use the root URL even when the surrounding
+        request is scoped.  Drops a trailing slash for consistent joining.
+        """
+        url = base_url.rstrip("/")
+        # Order matters: ``/collections/`` is always nested under
+        # ``/catalogs/`` so cut the deeper segment first.
+        idx = url.find("/catalogs/")
+        if idx >= 0:
+            url = url[:idx]
+        return url
+
+    @staticmethod
+    def _leaf_links(
+        *,
+        class_key: str,
+        ref_key: str,
+        base_url: str,
+        configs_root_url: str,
+        scope_label: str,
+        catalog_id: Optional[str],
+        collection_id: Optional[str],
+        mode: str,
+    ) -> List[Dict[str, Any]]:
+        """Build the per-leaf HATEOAS ``_links`` array.
+
+        Four affordances per leaf:
+
+        - ``rel="self"`` ``GET {base_url}/plugins/{ref_key}`` — read the
+          effective plugin config at the active scope.
+        - ``rel="edit"`` ``PUT {base_url}/plugins/{ref_key}`` — replace
+          the scope-tier override (full body required).
+        - ``rel="edit"`` ``DELETE {base_url}/plugins/{ref_key}`` — clear
+          the scope-tier override; falls back to the upstream waterfall.
+        - ``rel="describedby"`` ``GET {configs_root_url}/registry/{class_key}``
+          — JSON Schema entry.  Registry is scope-agnostic; uses the
+          canonical ``class_key`` (not ``ref_key``) because multi-instance
+          refs share the canonical class's schema.
+
+        ``mode == "minimal"`` emits rel/href/method only; ``mode == "full"``
+        adds a contextual ``title`` per link naming the class key and tier
+        (including catalog/collection ids when present).
+        """
+        base = base_url.rstrip("/")
+        plugin_href = f"{base}/plugins/{ref_key}"
+        schema_href = f"{configs_root_url.rstrip('/')}/registry/{class_key}"
+
+        if scope_label == "collection" and catalog_id and collection_id:
+            tier_phrase = f"collection '{catalog_id}/{collection_id}'"
+        elif scope_label == "catalog" and catalog_id:
+            tier_phrase = f"catalog '{catalog_id}'"
+        else:
+            tier_phrase = "platform scope"
+
+        def _title(text: str) -> Optional[str]:
+            return text if mode == "full" else None
+
+        links: List[Link] = [
+            Link(
+                rel="self",
+                href=plugin_href,
+                method="GET",
+                title=_title(f"Read {ref_key} at {tier_phrase}"),
+            ),
+            Link(
+                rel="edit",
+                href=plugin_href,
+                method="PUT",
+                title=_title(
+                    f"Replace {ref_key} at {tier_phrase} (full body required)"
+                ),
+            ),
+            Link(
+                rel="edit",
+                href=plugin_href,
+                method="DELETE",
+                title=_title(
+                    f"Clear {ref_key} override at {tier_phrase}; "
+                    "falls back to the upstream waterfall"
+                ),
+            ),
+            Link(
+                rel="describedby",
+                href=schema_href,
+                method="GET",
+                title=_title(f"JSON Schema for {class_key}"),
+            ),
+        ]
+        return [lk.model_dump(by_alias=True, exclude_none=True) for lk in links]
 
     @staticmethod
     def _build_routing_refs(
@@ -589,7 +730,7 @@ class ConfigApiService:
                         write_mode=entry.get("write_mode", "sync"),
                         source=entry.get("source"),
                         links=links,
-                    ).model_dump(by_alias=True))
+                    ).model_dump(by_alias=True, exclude_none=True))
                 rewritten[op] = refs
             routing["operations"] = rewritten
 
@@ -606,159 +747,42 @@ class ConfigApiService:
     # --- JSON Hyper-Schema link assembly. ---
 
     @staticmethod
-    def _query_param_schema(scope: str) -> Dict[str, Any]:
-        """JSON Schema 2020-12 describing the query params for ``scope``.
+    def _query_param_schema() -> Dict[str, Any]:
+        """JSON Schema 2020-12 describing the composed-config query params.
 
         Used as ``hrefSchema`` on the ``self`` link so operators discover
-        supported query parameters with descriptions and examples — without
-        scanning the OpenAPI document. Returned schema is JSON Schema, not
-        OpenAPI Parameter Object, by design (the user asked for alignment
-        with general standards, not just OpenAPI/FastAPI).
+        supported query parameters with descriptions and examples without
+        scanning the OpenAPI document.  Sourced from
+        ``_composed_query_params.QUERY_PARAM_SCHEMA`` so the description /
+        enum / default text is single-sourced with the FastAPI handler
+        signatures.
         """
-        common: Dict[str, Any] = {
-            "resolved": {
-                "type": "boolean", "default": True,
-                "description": (
-                    "When true (default): all registered configs with "
-                    "waterfall-resolved values; the top-level ``inherited`` "
-                    "tree (hierarchical, mirrors ``configs`` shape) tells "
-                    "you which tier provided each upstream value. "
-                    "When false: only configs explicitly stored at this "
-                    "scope (delta-only, safe for read-modify-write flows)."
-                ),
-                "examples": [True, False],
-            },
-            "meta": {
-                "type": "string", "enum": ["none", "field", "schema"],
-                "default": "field",
-                "description": (
-                    "Documentation mode for the hierarchical ``meta`` tree. "
-                    "``none`` — ``meta`` returned as null. ``field`` "
-                    "(default) — leaf at the configs path is "
-                    "``{field_docs: {field_name: description}}`` per class. "
-                    "``schema`` — leaf is ``{json_schema: <full Pydantic "
-                    "schema 2020-12>}`` per class (heavier, form-builder "
-                    "ready)."
-                ),
-                "examples": ["field", "schema", "none"],
-            },
-            "include": {
-                "type": "string", "enum": ["scope", "upstream"],
-                "default": "scope",
-                "description": (
-                    "Body-rendering mode. ``scope`` (default) — body lists "
-                    "only configs owned by the active scope; upstream-tier "
-                    "configs are summarised in the hierarchical "
-                    "``inherited`` tree (mirrors ``configs`` shape; leaves "
-                    "carry ``{source: <tier>}``). ``upstream`` — every "
-                    "visible class rendered with its waterfall-resolved "
-                    "value (today's verbose default; useful when you want "
-                    "the full payload)."
-                ),
-                "examples": ["scope", "upstream"],
-            },
-            "strict": {
-                "type": "boolean", "default": True,
-                "description": (
-                    "Cycle F.7d.2 — at platform scope, narrow the body to "
-                    "platform-intrinsic configs (``modules``, ``extensions``, "
-                    "``tasks``, ``engines``).  Catalog-/collection-tier "
-                    "templates route to ``inherited`` instead.  ``false`` "
-                    "restores the previous always-true platform-scope "
-                    "inclusion (catalog templates inline in the body).  "
-                    "No effect at catalog or collection scope."
-                ),
-                "examples": [True, False],
-            },
-        }
-        # NOTE: per-scope ``*_page`` and ``page_size`` slots were retired
-        # in Cycle C alongside the ``categories`` paginated-children field
-        # and the depth-expansion machinery.  Operators discover children
-        # via the existing list endpoints (``GET /catalogs``,
-        # ``GET /catalogs/{cat}/collections``, ``GET .../assets``).
-        properties = dict(common)
-        return {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": False,
-        }
+        from dynastore.extensions.configs._composed_query_params import (
+            QUERY_PARAM_SCHEMA,
+        )
+
+        return QUERY_PARAM_SCHEMA
 
     @staticmethod
-    def _build_links(
-        scope: str,
-        base_url: str,
-        catalog_id: Optional[str] = None,
-        collection_id: Optional[str] = None,
-    ) -> List[Link]:
+    def _build_links(scope: str, base_url: str) -> List[Link]:
         """Assemble the response-level ``_links`` block.
 
-        Includes:
-        - ``self`` with ``hrefSchema`` describing all query parameters.
-        - ``alternate`` representations (other ``docs=`` modes).
-        - ``edit`` (templated) for per-class PATCH at this scope.
-
-        ``base_url`` is the URL without query string; the per-class CRUD
-        endpoint convention is ``<base_url>/plugins/{class_key}``.
+        Holds a single ``self`` entry whose ``hrefSchema`` advertises the
+        supported query parameters (``resolved``, ``meta``, ``include``,
+        ``strict``, ``links``).  Per-plugin edit affordances live INLINE
+        on each leaf in ``configs`` as a ``_links`` sibling — see
+        ``_leaf_links``.  ``scope`` is the active tier name used for the
+        link title and ``hrefSchema`` selection.
         """
-        links: List[Link] = [
+        return [
             Link(
                 rel="self",
                 href=base_url,
                 method="GET",
-                title=f"This {scope} config view (default mode)",
-                hrefSchema=ConfigApiService._query_param_schema(scope),
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?meta=schema",
-                method="GET",
-                title="Same view with full JSON Schema per class (form-builder mode)",
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?meta=none",
-                method="GET",
-                title="Same view without field documentation (lean mode)",
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?resolved=false",
-                method="GET",
-                title=(
-                    "Delta-only: configs explicitly stored at this scope "
-                    "(safe for read-modify-write flows)"
-                ),
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?include=upstream",
-                method="GET",
-                title=(
-                    "Full waterfall: every visible class rendered with its "
-                    "resolved value (verbose; today's pre-slim default)"
-                ),
-            ),
-            Link(
-                rel="alternate",
-                href=f"{base_url}?strict=false",
-                method="GET",
-                title=(
-                    "Inclusive view (Cycle F.7d.2): platform scope keeps "
-                    "catalog-/collection-tier templates inline in the body "
-                    "instead of routing them to ``inherited``.  No-op at "
-                    "catalog/collection scope."
-                ),
-            ),
-            Link(
-                rel="edit",
-                href=f"{base_url}/plugins/{{class_key}}",
-                method="PUT",
-                title="Replace a single config class at this scope (use PATCH on parent scope for partial multi-plugin merge-patch)",
-                templated=True,
+                title=f"This {scope} config view",
+                hrefSchema=ConfigApiService._query_param_schema(),
             ),
         ]
-        return links
 
     async def compose_collection_config(
         self,
@@ -769,6 +793,7 @@ class ConfigApiService:
         meta: str = "field",
         include: str = "scope",
         strict: bool = True,
+        links: str = "none",
     ) -> CollectionConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=collection_id, resolved=resolved,
@@ -777,19 +802,20 @@ class ConfigApiService:
             catalog_id=catalog_id, collection_id=collection_id,
         )
         self._build_routing_refs(by_class, base_url)
-        tree, meta_dict, inherited = self._compose_tree(
+        configs_root_url = self._configs_root_url(base_url)
+        tree, inherited = self._compose_tree(
             by_class, sources, "collection",
             meta_mode=meta, include_mode=include, strict=strict,
             extra_refs=extra_refs,
+            links_mode=links, base_url=base_url,
+            configs_root_url=configs_root_url,
+            catalog_id=catalog_id, collection_id=collection_id,
         )
         return CollectionConfigResponse(
-            links=self._build_links(
-                "collection", base_url,
-                catalog_id=catalog_id, collection_id=collection_id,
-            ),
+            links=self._build_links("collection", base_url),
             collection_id=collection_id, catalog_id=catalog_id,
             inherited=inherited,
-            configs=tree, meta=meta_dict,
+            configs=tree,
         )
 
     async def compose_catalog_config(
@@ -800,6 +826,7 @@ class ConfigApiService:
         meta: str = "field",
         include: str = "scope",
         strict: bool = True,
+        links: str = "none",
     ) -> CatalogConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=catalog_id, collection_id=None, resolved=resolved,
@@ -808,15 +835,19 @@ class ConfigApiService:
             catalog_id=catalog_id, collection_id=None,
         )
         self._build_routing_refs(by_class, base_url)
-        tree, meta_dict, inherited = self._compose_tree(
+        configs_root_url = self._configs_root_url(base_url)
+        tree, inherited = self._compose_tree(
             by_class, sources, "catalog",
             meta_mode=meta, include_mode=include, strict=strict,
             extra_refs=extra_refs,
+            links_mode=links, base_url=base_url,
+            configs_root_url=configs_root_url,
+            catalog_id=catalog_id, collection_id=None,
         )
         return CatalogConfigResponse(
-            links=self._build_links("catalog", base_url, catalog_id=catalog_id),
+            links=self._build_links("catalog", base_url),
             catalog_id=catalog_id, inherited=inherited,
-            configs=tree, meta=meta_dict,
+            configs=tree,
         )
 
     async def compose_platform_config(
@@ -826,6 +857,7 @@ class ConfigApiService:
         meta: str = "field",
         include: str = "scope",
         strict: bool = True,
+        links: str = "none",
     ) -> PlatformConfigResponse:
         by_class, sources, _tier_data = await self._get_effective_configs(
             catalog_id=None, collection_id=None, resolved=resolved,
@@ -834,14 +866,18 @@ class ConfigApiService:
             catalog_id=None, collection_id=None,
         )
         self._build_routing_refs(by_class, base_url)
-        tree, meta_dict, inherited = self._compose_tree(
+        configs_root_url = self._configs_root_url(base_url)
+        tree, inherited = self._compose_tree(
             by_class, sources, "platform",
             meta_mode=meta, include_mode=include, strict=strict,
             extra_refs=extra_refs,
+            links_mode=links, base_url=base_url,
+            configs_root_url=configs_root_url,
+            catalog_id=None, collection_id=None,
         )
         return PlatformConfigResponse(
             links=self._build_links("platform", base_url),
-            scope="platform", configs=tree, meta=meta_dict,
+            scope="platform", configs=tree,
             inherited=inherited,
         )
 

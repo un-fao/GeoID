@@ -2,8 +2,10 @@
 
 Asserts that the new DTOs carry no legacy envelope keys (``class_key``,
 ``value``, ``source``, ``resolved_drivers``) and that the nested
-``configs`` tree + optional ``meta`` field roundtrip through pydantic
-cleanly.
+``configs`` tree roundtrips through pydantic cleanly.  Post-#517 the
+top-level ``meta`` parallel tree is gone — per-class field docs live
+INLINE on each leaf as ``_meta`` (asserted in test_config_api_service.py
+via the composer).
 """
 
 from dynastore.extensions.configs.config_api_dto import (
@@ -36,10 +38,11 @@ def test_platform_response_defaults_slim():
     r = PlatformConfigResponse()
     assert r.scope == "platform"
     assert r.configs == {}
-    assert r.meta is None
-    # ``categories`` and ``routing_resolution`` were retired in Cycle C.
+    # ``categories``, ``routing_resolution`` and (#517) the top-level
+    # ``meta`` parallel tree were all retired.
     assert not hasattr(r, "categories")
     assert not hasattr(r, "routing_resolution")
+    assert not hasattr(r, "meta")
 
 
 def test_platform_response_no_legacy_keys():
@@ -75,7 +78,7 @@ def test_catalog_response_nested_tree_roundtrip():
         },
     )
     assert r.catalog_id == "cat_1"
-    assert r.meta is None
+    assert not hasattr(r, "meta")
     assert "routing" in r.configs["storage"]
 
 
@@ -85,24 +88,36 @@ def test_collection_response_carries_ids():
     assert r.collection_id == "coll"
 
 
-def test_meta_hierarchical_payload():
-    """Cycle B: ``meta`` mirrors the configs tree shape.  Each leaf is
-    a plain dict carrying ``{field_docs}`` or ``{json_schema}``."""
+def test_inline_meta_and_links_on_leaf_payload():
+    """Post-#517: per-class docs and HATEOAS edit affordances live INLINE
+    on each plugin leaf as ``_meta`` and ``_links`` siblings of the
+    plugin's own fields.  The top-level ``meta`` parallel tree is gone.
+
+    The composer injects these — here we only assert the response model
+    accepts arbitrary nested dicts in ``configs`` (the leaf may carry
+    ``_meta`` / ``_links`` alongside the plugin's own fields).
+    """
     r = CatalogConfigResponse(
         catalog_id="cat",
-        configs={},
-        meta={
+        configs={
             "platform": {
                 "web": {
                     "web_config": {
-                        "field_docs": {"brand_name": "Display name."},
+                        "brand_name": "DynaStore",
+                        "_meta": {"field_docs": {"brand_name": "Display name."}},
+                        "_links": [
+                            {"rel": "self", "method": "GET",
+                             "href": "/configs/catalogs/cat/plugins/web_config"},
+                        ],
                     },
                 },
             },
         },
     )
-    assert r.meta is not None
-    assert r.meta["platform"]["web"]["web_config"]["field_docs"]["brand_name"] == "Display name."
+    leaf = r.configs["platform"]["web"]["web_config"]
+    assert leaf["brand_name"] == "DynaStore"
+    assert leaf["_meta"]["field_docs"]["brand_name"] == "Display name."
+    assert leaf["_links"][0]["rel"] == "self"
 
 
 def test_patch_body_accepts_null_for_delete():

@@ -1,7 +1,7 @@
 # dynastore/modules/tasks/tasks_config.py
 import os
 from typing import ClassVar, Dict, List, Optional, Tuple
-from pydantic import Field
+from pydantic import Field, model_validator
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import PluginConfig
 
@@ -30,6 +30,46 @@ class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
             "on the next service restart."
         ),
     )
+
+    capability_publisher_ttl_seconds: float = Field(
+        default=60.0,
+        ge=10.0,
+        le=600.0,
+        description=(
+            "TTL (seconds) for capability liveness sentinel keys written to "
+            "the shared cache by every pod that can service a capability "
+            "(e.g. an Indexer registered in this process). Read by the "
+            "reactive reaper (#502): when the last pod with a capability "
+            "dies, no one refreshes the key, the TTL expires, and "
+            "unclaimable task rows are DLQed on the next dispatcher pass. "
+            "Pair with capability_publisher_refresh_seconds <= ttl/2 so "
+            "one missed tick is absorbed."
+        ),
+    )
+
+    capability_publisher_refresh_seconds: float = Field(
+        default=30.0,
+        ge=5.0,
+        description=(
+            "How often each pod refreshes its capability sentinel keys. "
+            "Must be <= capability_publisher_ttl_seconds / 2 to tolerate a "
+            "single missed tick without false-positive DLQs."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _enforce_refresh_le_half_ttl(self) -> "TasksPluginConfig":
+        if self.capability_publisher_refresh_seconds > self.capability_publisher_ttl_seconds / 2:
+            raise ValueError(
+                "capability_publisher_refresh_seconds "
+                f"({self.capability_publisher_refresh_seconds}s) must be "
+                "<= capability_publisher_ttl_seconds / 2 "
+                f"({self.capability_publisher_ttl_seconds / 2}s). A refresh "
+                "interval larger than half the TTL means one missed tick "
+                "expires the sentinel and the reactive reaper false-DLQs "
+                "live capabilities."
+            )
+        return self
 
 
 class TaskRoutingConfig(ExposableConfigMixin, PluginConfig):

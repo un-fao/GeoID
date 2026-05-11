@@ -104,10 +104,11 @@ class IndexPropagationInputs(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _registered_indexer_ids() -> List[str]:
+def registered_indexer_ids() -> List[str]:
     """Snake-cased class names of every :class:`Indexer` registered in this
-    process.  Used by both :meth:`IndexPropagationTask.can_claim` and
-    :meth:`IndexPropagationTask.run`.
+    process.  Used by :meth:`IndexPropagationTask.can_claim`,
+    :meth:`IndexPropagationTask.run`, and the capability publisher that
+    keeps the shared cache liveness sentinel keys refreshed (#502).
     """
     from dynastore.models.protocols.indexer import Indexer
     from dynastore.modules.storage.routing_config import _to_snake
@@ -130,6 +131,25 @@ class IndexPropagationTask(TaskProtocol):
         return True
 
     @classmethod
+    def required_capability(cls, payload: Any) -> Optional[str]:
+        """The capability id needed to run a given row = its ``indexer_id``.
+
+        Used by the dispatcher's reactive reaper (#502): when ``can_claim``
+        rejects a row, the dispatcher consults the shared-cache liveness
+        oracle for this capability id and DLQs the row if no live worker
+        advertises it.
+        """
+        try:
+            inputs_raw = (payload.get("inputs") if isinstance(payload, dict)
+                          else getattr(payload, "inputs", None)) or {}
+            if isinstance(inputs_raw, dict):
+                cap = inputs_raw.get("indexer_id")
+                return cap if isinstance(cap, str) and cap else None
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    @classmethod
     def can_claim(cls, payload: Any) -> bool:
         """Return ``True`` iff the target :class:`Indexer` is registered
         in this process.
@@ -146,7 +166,7 @@ class IndexPropagationTask(TaskProtocol):
                 # Malformed row — let the runner fail it explicitly with a
                 # meaningful error rather than silently leaving it PENDING.
                 return True
-            return indexer_id in _registered_indexer_ids()
+            return indexer_id in registered_indexer_ids()
         except Exception:  # noqa: BLE001 — fail-open to preserve legacy behaviour
             logger.warning(
                 "IndexPropagationTask.can_claim: predicate raised; defaulting "

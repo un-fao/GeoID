@@ -232,6 +232,8 @@ async def test_patch_items_write_policy_then_get_lands_at_tier_first_path():
     """
     from dynastore.extensions.configs.config_api_service import ConfigApiService
 
+    from unittest.mock import AsyncMock, patch as _patch
+
     stored: Dict[Any, Any] = {}
     config_svc = _make_config_service(stored)
     api = ConfigApiService(config_service=config_svc)
@@ -247,12 +249,13 @@ async def test_patch_items_write_policy_then_get_lands_at_tier_first_path():
     # GET via compose_collection_config (resolved=True default; include=upstream
     # to surface even at the active scope without the slim filter so we can
     # see the patched value inline at its tier-first address).
-    response = await api.compose_collection_config(
-        base_url="http://test",
-        catalog_id="cat-x",
-        collection_id="coll-y",
-        include="upstream",
-    )
+    with _patch.object(api, "_get_extra_refs", new=AsyncMock(return_value={})):
+        response = await api.compose_collection_config(
+            base_url="http://test",
+            catalog_id="cat-x",
+            collection_id="coll-y",
+            include="upstream",
+        )
 
     leaf = (
         response.configs.get("platform", {})
@@ -299,7 +302,7 @@ def test_compose_collection_inherited_mirrors_configs_for_real_classes():
     if "tiles_config" not in list_registered_configs():
         pytest.skip("tiles_config not registered (slim runtime build)")
 
-    tree, _, inherited = ConfigApiService._compose_tree(
+    tree, inherited = ConfigApiService._compose_tree(
         by_class, sources=sources, active_scope="collection",
     )
 
