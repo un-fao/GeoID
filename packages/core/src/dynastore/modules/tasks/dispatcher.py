@@ -272,8 +272,8 @@ async def _maybe_dlq_unclaimable(
                 return False
 
             # Re-check liveness inside the locked transaction: another pod
-                # may have appeared between the unlocked oracle call above and
-                # the lock acquisition. Conservative double-check is cheap.
+            # may have appeared between the unlocked oracle call above and
+            # the lock acquisition. Conservative double-check is cheap.
             if await is_capability_live(capability_id):
                 return False
 

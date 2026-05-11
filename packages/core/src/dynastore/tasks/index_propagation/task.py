@@ -116,9 +116,6 @@ def registered_indexer_ids() -> List[str]:
     return [_to_snake(type(impl).__name__) for impl in get_protocols(Indexer)]
 
 
-_registered_indexer_ids = registered_indexer_ids
-
-
 class IndexPropagationTask(TaskProtocol):
     """Drain one outbox row by re-invoking the target ``Indexer.index_bulk``.
 
@@ -169,7 +166,7 @@ class IndexPropagationTask(TaskProtocol):
                 # Malformed row — let the runner fail it explicitly with a
                 # meaningful error rather than silently leaving it PENDING.
                 return True
-            return indexer_id in _registered_indexer_ids()
+            return indexer_id in registered_indexer_ids()
         except Exception:  # noqa: BLE001 — fail-open to preserve legacy behaviour
             logger.warning(
                 "IndexPropagationTask.can_claim: predicate raised; defaulting "
