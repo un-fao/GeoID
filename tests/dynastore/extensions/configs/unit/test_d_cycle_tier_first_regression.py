@@ -206,6 +206,11 @@ def _make_config_service(stored: Dict[Any, Any]):
     svc.set_config = AsyncMock(side_effect=_set_config)
     svc.delete_config = AsyncMock(side_effect=_delete_config)
     svc.list_configs = AsyncMock(side_effect=_list_configs)
+    # `_get_extra_refs` does `getattr(svc, "list_refs_at_scope", None)` and
+    # bails when None — but MagicMock auto-creates attributes, so we have to
+    # explicitly null them out for the getattr-is-None branch to fire.
+    svc.list_refs_at_scope = None
+    svc.get_config_by_ref = None
     return svc
 
 

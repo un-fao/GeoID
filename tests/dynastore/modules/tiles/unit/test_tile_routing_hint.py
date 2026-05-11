@@ -72,6 +72,11 @@ async def test_get_tile_resolution_params_routes_with_tiles_hint():
 
     get_driver_mock = AsyncMock(return_value=fake_driver)
 
+    # Stand-in for the DriverContext class: skip strict pydantic validation
+    # of db_resource (the conn fixture below is a bare AsyncMock, not a real
+    # AsyncConnection). The test only cares that get_driver receives hint=
+    # Hint.TILES, not how the surrounding code wires the context.
+    fake_driver_ctx = lambda **kw: kw  # noqa: E731 — local stub
     with (
         patch.object(tiles_module, "_get_engine", return_value=AsyncMock()),
         patch("dynastore.modules.tiles.tiles_module.managed_transaction") as mt,
@@ -80,6 +85,7 @@ async def test_get_tile_resolution_params_routes_with_tiles_hint():
         patch("dynastore.modules.storage.router.get_driver", new=get_driver_mock),
         patch.object(tiles_module, "get_collection_source_srid",
                      new=AsyncMock(return_value=4326)),
+        patch.object(tiles_module, "DriverContext", new=fake_driver_ctx),
     ):
         # async context manager stub for managed_transaction
         mt.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())

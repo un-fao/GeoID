@@ -376,8 +376,8 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
         {
             "rel": "driver-config",
             "href": "http://h/configs/plugins/catalog_core_postgresql_driver",
-            "method": "PATCH",
-            "title": "PATCH this driver's config at platform scope",
+            "method": "PUT",
+            "title": "PUT this driver's config at platform scope",
             "templated": False,
             "hrefSchema": None,
         }
@@ -464,7 +464,7 @@ def test_build_routing_refs_link_title_reflects_active_scope():
             )
         ref = local["items_routing_config"]["operations"]["WRITE"][0]
         assert ref["_links"][0]["title"] == (
-            f"PATCH this driver's config at {expected_scope} scope"
+            f"PUT this driver's config at {expected_scope} scope"
         ), f"base_url={base_url} expected scope={expected_scope}"
 
 
@@ -510,7 +510,8 @@ async def test_compose_collection_config_meta_none(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
-         patch.object(svc, "_build_routing_refs", new=MagicMock()):
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})):
         response = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="col",
             meta="none",
@@ -540,6 +541,7 @@ async def test_compose_catalog_meta_field_populates_hierarchical_meta(mock_confi
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch(
              "dynastore.extensions.configs.config_api_service.list_registered_configs",
              return_value=registry,
@@ -558,7 +560,8 @@ async def test_compose_platform_config_sets_platform_scope(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
-         patch.object(svc, "_build_routing_refs", new=MagicMock()):
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})):
         r = await svc.compose_platform_config(base_url="http://test")
     assert r.scope == "platform"
 
