@@ -23,10 +23,17 @@ driver configs inline under routing entries, no ``class_key`` field
 Tier-of-origin information lives in the top-level ``inherited`` tree,
 which mirrors the ``configs`` shape — each leaf carries
 ``{"source": <tier>}`` at the same address the resolved value would
-land at if rendered.  The ``meta`` field carries field-level docs or
-full JSON Schema per class, also hierarchical and mirroring the
-``configs`` tree shape; mode is selected via ``?meta=none|field|schema``
-(default ``field``).
+land at if rendered.
+
+Field-level docs and per-class HATEOAS edit affordances live INLINE on
+each plugin leaf:
+
+- ``_meta`` — ``{"field_docs": {field: description}}`` (default
+  ``?meta=field``) or ``{"json_schema": {...}}`` (``?meta=schema``).
+  Suppressed entirely with ``?meta=none``.
+- ``_links`` — per-leaf HATEOAS edit affordances pointing at the active
+  scope's per-plugin CRUD endpoint and at the registry's JSON Schema
+  entry.  Suppressed by default; opt-in via ``?links=minimal|full``.
 """
 
 from typing import Any, Dict, List, Optional
@@ -149,15 +156,13 @@ class Link(BaseModel):
 # config-API restructure (2026-05-05).  The waterfall-trace meta
 # (``source`` + ``layers``) was dropped — operators didn't find the
 # per-tier presence breadcrumb interesting; the tier-of-origin
-# information now lives in the top-level ``inherited`` map.  ``entity``
-# (the items/assets/collection bucket) was dropped along with the
-# composer's ``_build_meta_entry`` helper.
+# information now lives in the top-level ``inherited`` map.
 #
-# The ``meta`` response field now carries field-level docs OR full JSON
-# Schema per class, hierarchical to mirror the ``configs`` tree shape.
-# Each leaf is a plain dict (``{field_docs: {...}}`` or
-# ``{json_schema: {...}}``), so ``meta: Optional[Dict[str, Any]]`` on
-# the response models suffices — no per-class DTO needed.
+# The top-level ``meta`` response field (a parallel tree mirroring
+# ``configs``) was retired in #517: per-class field docs and JSON
+# Schema now live INLINE as ``_meta`` siblings on each plugin leaf,
+# alongside the new ``_links`` array.  Single source of truth, no
+# cross-walk required when staring at a leaf.
 
 
 # NOTE: ``ConfigPage`` (paginated child resources) was retired in
@@ -175,12 +180,10 @@ class CollectionConfigResponse(BaseModel):
         default_factory=list,
         serialization_alias="_links",
         description=(
-            "JSON Hyper-Schema link descriptors for this resource. Always "
-            "populated. Includes ``self``, ``alternate`` representations "
-            "(other ``?meta=`` modes), and ``edit`` (templated "
-            "PATCH against per-class plugin endpoints). Operators read "
-            "``hrefSchema`` on each link to discover supported query "
-            "parameters with descriptions and examples."
+            "Response-level JSON Hyper-Schema links.  Holds only ``self`` "
+            "(carries ``hrefSchema`` advertising supported query params).  "
+            "Per-plugin edit affordances live inline as ``_links`` on each "
+            "leaf when ``?links=minimal|full`` (see ``configs`` description)."
         ),
     )
     collection_id: str
@@ -206,21 +209,16 @@ class CollectionConfigResponse(BaseModel):
         description=(
             "Effective configs at this collection scope, nested as a "
             "tier-first tree (platform/catalog/collection/items + assets "
-            "forks at each tier).  Each leaf is "
-            "``{class_key: payload}``."
-        ),
-    )
-    meta: Optional[Dict[str, Any]] = Field(
-        None,
-        description=(
-            "Per-class field-level docs OR full JSON Schema, hierarchical "
-            "and mirroring the ``configs`` tree shape — the same path that "
-            "produces the resolved payload in ``configs`` produces a "
-            "``{field_docs: {...}}`` (default ``?meta=field``) or "
-            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
-            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
-            "older waterfall trace (``source`` + ``layers``) was retired in "
-            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
+            "forks at each tier).  Each leaf is the raw plugin payload "
+            "keyed by ``class_key``.  When ``?meta=field|schema`` is set "
+            "(default ``field``), each leaf carries a ``_meta`` sibling "
+            "(``{field_docs: {...}}`` or ``{json_schema: {...}}``).  "
+            "When ``?links=minimal|full`` is set, each leaf also carries "
+            "a ``_links`` sibling — a HATEOAS array with ``self`` (GET), "
+            "``edit`` (PUT — replace), ``edit`` (DELETE — clear override) "
+            "and ``describedby`` (GET registry/{class_key}).  "
+            "``?links=full`` adds contextual ``title`` per link naming "
+            "the class_key and scope."
         ),
     )
 
@@ -250,20 +248,9 @@ class CatalogConfigResponse(BaseModel):
         default_factory=dict,
         description=(
             "Effective configs at this catalog scope, nested as a "
-            "tier-first tree (platform/catalog + assets fork)."
-        ),
-    )
-    meta: Optional[Dict[str, Any]] = Field(
-        None,
-        description=(
-            "Per-class field-level docs OR full JSON Schema, hierarchical "
-            "and mirroring the ``configs`` tree shape — the same path that "
-            "produces the resolved payload in ``configs`` produces a "
-            "``{field_docs: {...}}`` (default ``?meta=field``) or "
-            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
-            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
-            "older waterfall trace (``source`` + ``layers``) was retired in "
-            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
+            "tier-first tree (platform/catalog + assets fork).  See "
+            "``CollectionConfigResponse.configs`` for ``_meta`` / "
+            "``_links`` per-leaf semantics."
         ),
     )
 
@@ -285,7 +272,9 @@ class PlatformConfigResponse(BaseModel):
         description=(
             "Effective platform-level configs, nested as a tier-first "
             "tree (platform tier with the catalog/collection/items "
-            "scaffold rendered when waterfall-resolved)."
+            "scaffold rendered when waterfall-resolved).  See "
+            "``CollectionConfigResponse.configs`` for ``_meta`` / "
+            "``_links`` per-leaf semantics."
         ),
     )
     inherited: Optional[Dict[str, Any]] = Field(
@@ -300,21 +289,6 @@ class PlatformConfigResponse(BaseModel):
             "comes from."
         ),
     )
-    meta: Optional[Dict[str, Any]] = Field(
-        None,
-        description=(
-            "Per-class field-level docs OR full JSON Schema, hierarchical "
-            "and mirroring the ``configs`` tree shape — the same path that "
-            "produces the resolved payload in ``configs`` produces a "
-            "``{field_docs: {...}}`` (default ``?meta=field``) or "
-            "``{json_schema: {...}}`` (when ``?meta=schema``) leaf in "
-            "``meta``.  Set ``?meta=none`` to suppress entirely.  The "
-            "older waterfall trace (``source`` + ``layers``) was retired in "
-            "Cycle B — tier-of-origin breadcrumbs live in ``inherited``."
-        ),
-    )
-
-
 class PatchConfigBody(RootModel[Dict[str, Optional[Dict[str, Any]]]]):
     """Partial composed configuration.
 

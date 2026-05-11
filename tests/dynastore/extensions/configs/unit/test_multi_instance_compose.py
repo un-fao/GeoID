@@ -39,7 +39,7 @@ def test_compose_tree_places_extra_ref_as_sibling_of_canonical_class():
     secondary_payload = TilesConfig(min_zoom=5, max_zoom=15).model_dump()
     extra_refs = {"tiles_secondary": (CANONICAL_KEY, secondary_payload)}
 
-    tree, _, _ = ConfigApiService._compose_tree(
+    tree, _ = ConfigApiService._compose_tree(
         by_class=by_class,
         sources=sources,
         active_scope="platform",
@@ -66,11 +66,11 @@ def test_compose_tree_no_extra_refs_unchanged():
     the canonical-only path is the regression invariant since
     pre-F.4d.1 deployments take this branch unconditionally."""
     by_class, sources = _by_class_with_canonical_tiles()
-    tree_a, _, _ = ConfigApiService._compose_tree(
+    tree_a, _ = ConfigApiService._compose_tree(
         by_class=by_class, sources=sources, active_scope="platform",
         meta_mode="none", include_mode="upstream", strict=False,
     )
-    tree_b, _, _ = ConfigApiService._compose_tree(
+    tree_b, _ = ConfigApiService._compose_tree(
         by_class=by_class, sources=sources, active_scope="platform",
         meta_mode="none", include_mode="upstream", strict=False,
         extra_refs={},
@@ -91,7 +91,7 @@ def test_compose_tree_extra_ref_with_unknown_class_skipped():
     extra_refs = {
         "ghost_ref": ("class_that_was_unregistered", {"some": "payload"}),
     }
-    tree, _, _ = ConfigApiService._compose_tree(
+    tree, _ = ConfigApiService._compose_tree(
         by_class=by_class, sources=sources, active_scope="platform",
         meta_mode="none", include_mode="upstream", strict=False,
         extra_refs=extra_refs,
@@ -100,20 +100,21 @@ def test_compose_tree_extra_ref_with_unknown_class_skipped():
     assert "ghost_ref" not in tiles_node
 
 
-def test_compose_tree_meta_includes_extra_ref_under_field_mode():
-    """Meta tree mirrors the configs tree shape: a multi-instance ref
-    leaf produces a parallel ``meta.platform.modules.tiles.tiles_secondary``
-    docs leaf so dashboards can render the same form for the variant."""
+def test_compose_tree_meta_inlined_on_extra_ref_under_field_mode():
+    """Post-#517: a multi-instance ref leaf carries its ``_meta`` inline
+    alongside the plugin payload — same field_docs as the canonical
+    class (schema is per-class, not per-instance)."""
     by_class, sources = _by_class_with_canonical_tiles()
     extra_refs = {
         "tiles_secondary": (CANONICAL_KEY, TilesConfig().model_dump()),
     }
-    _tree, meta, _ = ConfigApiService._compose_tree(
+    tree, _ = ConfigApiService._compose_tree(
         by_class=by_class, sources=sources, active_scope="platform",
         meta_mode="field", include_mode="upstream", strict=False,
         extra_refs=extra_refs,
     )
-    assert meta is not None
-    tiles_meta = meta.get("platform", {}).get("modules", {}).get("tiles", {})
-    assert "tiles_secondary" in tiles_meta
-    assert "field_docs" in tiles_meta["tiles_secondary"]
+    tiles_node = tree["platform"]["modules"]["tiles"]
+    assert "tiles_secondary" in tiles_node
+    leaf = tiles_node["tiles_secondary"]
+    assert "_meta" in leaf
+    assert "field_docs" in leaf["_meta"]

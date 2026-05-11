@@ -235,13 +235,14 @@ def test_compose_tree_places_classes_by_address():
         # ``include_mode="upstream"`` exercises the verbose path — tests
         # focused on address-based placement should not also be exercising
         # the slim filter (covered by dedicated slim-mode tests below).
-        tree, meta, _ = ConfigApiService._compose_tree(
+        tree, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="catalog",
             include_mode="upstream",
         )
     assert tree["platform"]["web"]["WebConfig"] == {"brand_name": "x"}
     assert "catalog_core_postgresql_driver" in tree["platform"]["catalog"]["drivers"]
-    assert meta is None
+    # Default ``meta_mode="none"`` → no ``_meta`` sibling on any leaf.
+    assert "_meta" not in tree["platform"]["web"]["WebConfig"]
 
 
 def test_compose_tree_filters_collection_only_from_catalog():
@@ -257,7 +258,7 @@ def test_compose_tree_filters_collection_only_from_catalog():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, _ = ConfigApiService._compose_tree(
+        tree, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="catalog",
         )
     assert "storage" not in tree or "policy" not in tree.get("storage", {})
@@ -275,7 +276,7 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, _ = ConfigApiService._compose_tree(
+        tree, _ = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection",
         )
     assert tree["platform"]["catalog"]["collection"]["items"]["policy"]["items_write_policy"] == {"on_conflict": "update"}
@@ -303,7 +304,7 @@ def test_compose_tree_drops_abstract_bases():
         return_value=registry,
     ):
         for scope in ("platform", "catalog", "collection"):
-            tree, _, _ = ConfigApiService._compose_tree(
+            tree, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope,
             )
             assert tree == {}, (
@@ -331,7 +332,7 @@ def test_compose_tree_real_plugin_driver_config_does_not_leak():
         return_value=registry,
     ):
         for scope in ("platform", "catalog", "collection"):
-            tree, _, _ = ConfigApiService._compose_tree(
+            tree, _ = ConfigApiService._compose_tree(
                 by_class, sources={}, active_scope=scope,
             )
             assert tree == {}, f"_PluginDriverConfig leaked at scope={scope!r}: {tree!r}"
@@ -376,8 +377,8 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
         {
             "rel": "driver-config",
             "href": "http://h/configs/plugins/catalog_core_postgresql_driver",
-            "method": "PATCH",
-            "title": "PATCH this driver's config at platform scope",
+            "method": "PUT",
+            "title": "PUT this driver's config at platform scope",
             "templated": False,
             "hrefSchema": None,
         }
@@ -464,7 +465,7 @@ def test_build_routing_refs_link_title_reflects_active_scope():
             )
         ref = local["items_routing_config"]["operations"]["WRITE"][0]
         assert ref["_links"][0]["title"] == (
-            f"PATCH this driver's config at {expected_scope} scope"
+            f"PUT this driver's config at {expected_scope} scope"
         ), f"base_url={base_url} expected scope={expected_scope}"
 
 
@@ -507,21 +508,26 @@ def test_build_routing_refs_unregistered_driver_emits_no_link():
 
 @pytest.mark.asyncio
 async def test_compose_collection_config_meta_none(mock_config_service):
+    """``meta=none`` suppresses ``_meta`` siblings on every leaf and the
+    response model no longer carries the retired top-level ``meta`` field."""
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()):
         response = await svc.compose_collection_config(
             base_url="http://test", catalog_id="c", collection_id="col",
             meta="none",
         )
-    assert response.meta is None
+    assert not hasattr(response, "meta")
 
 
 @pytest.mark.asyncio
-async def test_compose_catalog_meta_field_populates_hierarchical_meta(mock_config_service):
-    """Cycle B: ``meta=field`` produces a hierarchical meta tree mirroring
-    ``configs`` with ``{field_docs}`` leaves per class."""
+async def test_compose_catalog_meta_field_inlines_meta_on_leaf(mock_config_service):
+    """#517: ``meta=field`` injects ``_meta = {field_docs: {...}}`` INLINE
+    on each in-scope plugin leaf — replacing the retired parallel ``meta``
+    tree.  Path through ``configs`` resolves to the leaf, which carries
+    its plugin fields alongside the ``_meta`` sibling."""
     svc = ConfigApiService(config_service=mock_config_service)
 
     class FakeWebConfig:
@@ -535,10 +541,10 @@ async def test_compose_catalog_meta_field_populates_hierarchical_meta(mock_confi
     by_class = {"WebConfig": {"brand_name": "x"}}
     sources = {"WebConfig": "default"}
     registry = {"WebConfig": FakeWebConfig}
-    # Bust the lru_cache so our stub class's schema is re-extracted.
     ConfigApiService._extract_field_docs.cache_clear()
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()), \
          patch(
              "dynastore.extensions.configs.config_api_service.list_registered_configs",
@@ -548,9 +554,185 @@ async def test_compose_catalog_meta_field_populates_hierarchical_meta(mock_confi
             base_url="http://test", catalog_id="c",
             meta="field", include="upstream",
         )
-    assert r.meta is not None
-    # Meta mirrors the configs tree shape.
-    assert r.meta["platform"]["web"]["WebConfig"]["field_docs"] == {"brand_name": "Brand label."}
+    leaf = r.configs["platform"]["web"]["WebConfig"]
+    assert leaf["brand_name"] == "x"
+    assert leaf["_meta"] == {"field_docs": {"brand_name": "Brand label."}}
+    # Top-level ``meta`` field is gone.
+    assert not hasattr(r, "meta")
+
+
+@pytest.mark.asyncio
+async def test_compose_catalog_meta_schema_inlines_full_json_schema(mock_config_service):
+    """``meta=schema`` injects ``_meta = {json_schema: <full schema>}``."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeWebConfig:
+        _address = ("platform", "web")
+        _visibility = None
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"title": "WebConfig", "type": "object",
+                    "properties": {"brand_name": {"type": "string"}}}
+
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    sources = {"WebConfig": "default"}
+    registry = {"WebConfig": FakeWebConfig}
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_catalog_config(
+            base_url="http://test", catalog_id="c",
+            meta="schema", include="upstream",
+        )
+    leaf = r.configs["platform"]["web"]["WebConfig"]
+    assert leaf["_meta"]["json_schema"]["title"] == "WebConfig"
+
+
+# ---------------------------------------------------------------------------
+# compose_* — links= query parameter (inline _links per leaf)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compose_catalog_links_none_default_no_leaf_links(mock_config_service):
+    """Default ``links=none`` keeps response wire-compatible with
+    pre-#517 clients: no leaf carries ``_links``; response-level
+    ``_links`` holds only the ``self`` discovery entry."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeWebConfig:
+        _address = ("platform", "web")
+        _visibility = None
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {}}
+
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    sources = {"WebConfig": "default"}
+    registry = {"WebConfig": FakeWebConfig}
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_catalog_config(
+            base_url="http://test/configs/catalogs/c", catalog_id="c",
+            meta="none", include="upstream",
+        )
+    leaf = r.configs["platform"]["web"]["WebConfig"]
+    assert "_links" not in leaf
+    # Response-level _links: just ``self`` (with hrefSchema advertising
+    # the ``links`` query param so the surface is discoverable).
+    assert len(r.links) == 1
+    assert r.links[0].rel == "self"
+    assert r.links[0].hrefSchema is not None
+    assert "links" in r.links[0].hrefSchema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_compose_catalog_links_minimal_emits_four_rels_no_titles(mock_config_service):
+    """``links=minimal`` emits the 4-rel set per in-scope leaf with no
+    ``title`` keys.  URLs reflect the active scope."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeWebConfig:
+        _address = ("platform", "web")
+        _visibility = None
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {}}
+
+    by_class = {"WebConfig": {"brand_name": "x"}}
+    sources = {"WebConfig": "default"}
+    registry = {"WebConfig": FakeWebConfig}
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_catalog_config(
+            base_url="http://test/configs/catalogs/c", catalog_id="c",
+            meta="none", include="upstream", links="minimal",
+        )
+    leaf = r.configs["platform"]["web"]["WebConfig"]
+    rels_methods = {(lk["rel"], lk["method"]) for lk in leaf["_links"]}
+    assert rels_methods == {
+        ("self", "GET"), ("edit", "PUT"), ("edit", "DELETE"),
+        ("describedby", "GET"),
+    }
+    # No titles in minimal mode.
+    assert all("title" not in lk for lk in leaf["_links"])
+    # edit hrefs are scope-correct (catalog scope, not registry root).
+    edit_put = next(lk for lk in leaf["_links"]
+                    if lk["rel"] == "edit" and lk["method"] == "PUT")
+    assert edit_put["href"] == "http://test/configs/catalogs/c/plugins/WebConfig"
+    # describedby drops the scope path — registry is scope-agnostic.
+    describedby = next(lk for lk in leaf["_links"] if lk["rel"] == "describedby")
+    assert describedby["href"] == "http://test/configs/registry/WebConfig"
+
+
+@pytest.mark.asyncio
+async def test_compose_collection_links_full_titles_name_scope(mock_config_service):
+    """``links=full`` adds a contextual ``title`` per link naming the
+    class key and the collection's tier phrase (catalog/collection)."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeRoutingConfig:
+        _address = ("storage", "routing")
+        _visibility = "collection"
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {}}
+
+    by_class = {"items_routing": {"operations": {}}}
+    sources = {"items_routing": "default"}
+    registry = {"items_routing": FakeRoutingConfig}
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_collection_config(
+            base_url="http://test/configs/catalogs/cat/collections/col",
+            catalog_id="cat", collection_id="col",
+            meta="none", include="upstream", links="full",
+        )
+    leaf = r.configs["storage"]["routing"]["items_routing"]
+    assert all("title" in lk for lk in leaf["_links"])
+    edit_put = next(lk for lk in leaf["_links"]
+                    if lk["rel"] == "edit" and lk["method"] == "PUT")
+    # Title names both catalog and collection at collection scope.
+    assert "items_routing" in edit_put["title"]
+    assert "cat" in edit_put["title"]
+    assert "col" in edit_put["title"]
+
+
+def test_configs_root_url_strips_scope_segments():
+    """``_configs_root_url`` strips ``/catalogs/{x}[/collections/{y}]``
+    so per-leaf ``describedby`` links can target the scope-agnostic
+    registry endpoint."""
+    f = ConfigApiService._configs_root_url
+    assert f("http://h/configs/") == "http://h/configs"
+    assert f("http://h/configs/catalogs/c") == "http://h/configs"
+    assert f("http://h/configs/catalogs/c/collections/col") == "http://h/configs"
 
 
 @pytest.mark.asyncio
@@ -558,6 +740,7 @@ async def test_compose_platform_config_sets_platform_scope(mock_config_service):
     svc = ConfigApiService(config_service=mock_config_service)
     with patch.object(svc, "_get_effective_configs",
                       new=AsyncMock(return_value=({}, {}, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
          patch.object(svc, "_build_routing_refs", new=MagicMock()):
         r = await svc.compose_platform_config(base_url="http://test")
     assert r.scope == "platform"
@@ -582,7 +765,7 @@ def test_compose_tree_address_visibility_filters_correctly():
     ):
         # At platform scope under strict=True (default, Cycle F.7d.2):
         # _visibility="catalog" routes to ``inherited`` instead of inlining.
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "platform"}, active_scope="platform",
         )
         assert "platform" not in tree or "CatalogOnly" not in tree.get(
@@ -591,21 +774,21 @@ def test_compose_tree_address_visibility_filters_correctly():
         assert inherited is not None
         assert inherited["platform"]["catalog"]["drivers"]["CatalogOnly"] == {"source": "platform"}
         # Platform scope under strict=False restores inclusive behavior.
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "platform"}, active_scope="platform",
             strict=False,
         )
         assert "CatalogOnly" in tree["platform"]["catalog"]["drivers"]
         assert inherited is None
         # At catalog scope: rendered in body via visibility match.
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "catalog"}, active_scope="catalog",
         )
         assert "CatalogOnly" in tree["platform"]["catalog"]["drivers"]
         assert inherited is None
         # At collection scope: NOT inlined in body; surfaces in the hierarchical
         # inherited tree at the same natural address with {source} leaf.
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"CatalogOnly": "catalog"}, active_scope="collection",
         )
         assert "storage" not in tree
@@ -642,7 +825,7 @@ def test_compose_tree_strict_at_platform_routes_catalog_visibility_to_inherited(
         return_value=registry,
     ):
         # Default strict=True
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="platform",
         )
         # platform_intrinsic stays in body
@@ -678,7 +861,7 @@ def test_compose_tree_strict_keeps_platform_visibility_in_body():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="platform",
         )
         # Engine stays in body under strict=True default.
@@ -702,7 +885,7 @@ def test_compose_tree_strict_false_restores_inclusive_platform_behavior():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="platform", strict=False,
         )
         assert "catalog_template" in tree["platform"]["catalog"]["drivers"]
@@ -727,7 +910,7 @@ def test_compose_tree_strict_no_op_at_catalog_and_collection_scope():
         return_value=registry,
     ):
         for strict in (True, False):
-            tree, _, inherited = ConfigApiService._compose_tree(
+            tree, inherited = ConfigApiService._compose_tree(
                 by_class, sources=sources, active_scope="catalog", strict=strict,
             )
             assert "catalog_template" in tree["platform"]["catalog"]["drivers"]
@@ -779,7 +962,7 @@ def test_compose_tree_surfaces_catalog_configs_in_inherited_at_collection_scope(
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="collection",
         )
 
@@ -827,7 +1010,7 @@ def test_compose_tree_inherited_at_catalog_scope_carries_platform_breadcrumbs():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="catalog",
         )
     # Catalog-tier configs stay inlined.
@@ -859,7 +1042,7 @@ def test_compose_tree_inherited_meta_skips_inherited_classes():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, meta, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="collection", meta_mode="field",
         )
     # Catalog-tier config NOT in main tree at collection scope (slim) — the
@@ -867,10 +1050,11 @@ def test_compose_tree_inherited_meta_skips_inherited_classes():
     assert "elasticsearch" not in tree.get("platform", {}).get("catalog", {})
     # Surfaces in the hierarchical inherited tree.
     assert inherited is not None
-    assert inherited["platform"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"] == {"source": "catalog"}
-    # Meta is empty for inherited classes (breadcrumb only, not a docs surface).
-    assert meta is not None
-    assert "catalog" not in meta
+    breadcrumb = inherited["platform"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"]
+    assert breadcrumb == {"source": "catalog"}
+    # Inherited breadcrumbs carry NO _meta key (not actionable, not a docs surface).
+    assert "_meta" not in breadcrumb
+    assert "_links" not in breadcrumb
 
 
 # ---------------------------------------------------------------------------
@@ -899,7 +1083,7 @@ def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"web_config": "platform"},
             active_scope="collection",
             # default include_mode="scope"
@@ -923,7 +1107,7 @@ def test_compose_tree_slim_keeps_collection_overrides_in_body():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={"web_config": "collection"},
             active_scope="collection",
         )
@@ -951,7 +1135,7 @@ def test_compose_tree_upstream_mode_renders_everything_in_body():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="collection",
             include_mode="upstream",
         )
@@ -980,7 +1164,7 @@ def test_compose_tree_slim_at_platform_scope_is_a_noop():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
-        tree, _, inherited = ConfigApiService._compose_tree(
+        tree, inherited = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="platform",
         )
     assert tree["platform"]["web"]["web_config"] == {"brand_name": "X"}
