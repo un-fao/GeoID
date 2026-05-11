@@ -371,157 +371,271 @@ class BucketService:
 
         Args:
             catalog_id: The catalog ID
-            conn: Optional database connection
+            conn: Optional database connection. When None (the typical call path,
+                including `GcpProvisionCatalogTask`), the DB connection is NOT held
+                across GCS API calls: phase 1 (read/persist config) and phase 3
+                (link bucket → catalog) each open their own short transaction;
+                phase 2 (bucket create + settings + placeholders) runs with no
+                pooled connection checked out. See #486 for why.
             context: Optional lifecycle context to avoid querying non-existent catalog
             auto_create: If True, create the bucket if it doesn't exist.
             config_override: Optional configuration to use for creation (overrides DB/context).
         """
 
-        # This inner function contains the core logic and expects a connection.
-        async def _execute(conn):
-            bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
-                conn, catalog_id=catalog_id
+        # ── Caller-managed transaction: legacy single-tx behavior. ──
+        # No production caller currently passes `conn`, but the protocol
+        # signature reserves it for nested-in-tx use; honor it without the
+        # phase split.
+        if conn is not None:
+            return await self._ensure_storage_single_tx(
+                conn,
+                catalog_id=catalog_id,
+                context=context,
+                auto_create=auto_create,
+                config_override=config_override,
             )
-            if bucket_name:
-                return bucket_name
 
-            # Bucket does not exist, check if we should create it.
+        # ── conn=None: three-phase to avoid holding a pooled conn across GCS I/O ──
+
+        # Phase 1 (short tx): bucket-exists short-circuit + effective config resolution.
+        async with managed_transaction(self.engine) as p1_conn:
+            existing_bucket = await gcp_db.get_bucket_for_catalog_query.execute(
+                p1_conn, catalog_id=catalog_id
+            )
+            if existing_bucket:
+                return existing_bucket
+
             if not auto_create:
-                logger.info(f"Bucket for catalog '{catalog_id}' does not exist and auto_create=False. Skipping creation.")
+                logger.info(
+                    f"Bucket for catalog '{catalog_id}' does not exist and "
+                    "auto_create=False. Skipping creation."
+                )
                 return None
 
-            # Determine the bucket configuration to use.
-            # Priority: 1. Parameter 2. Context Snapshot 3. Database
-            effective_config = config_override
-            if effective_config is None:
-                if context is not None:
-                    # If a context is provided (e.g. from init hook), prioritize it.
-                    # crucially: do NOT query the DB here, as the catalog might not be visible yet.
-                    if GcpCatalogBucketConfig.class_key() in context.config:
-                        from dynastore.modules.db_config.platform_config_service import (
-                            require_config_class,
-                        )
+            effective_config = await self._resolve_effective_config(
+                p1_conn,
+                catalog_id=catalog_id,
+                context=context,
+                config_override=config_override,
+                persist_default=True,
+            )
 
-                        effective_config = require_config_class(
-                            GcpCatalogBucketConfig.class_key()
-                        ).model_validate(
-                            context.config[GcpCatalogBucketConfig.class_key()]
-                        )
-                    else:
-                        # Snaphot present but key missing -> explicit default
-                        effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
-                else:
-                    effective_config = await self.config_service.get_config(
-                        GcpCatalogBucketConfig, catalog_id, ctx=DriverContext(db_resource=conn
-                    ))
+        # Phase 2 (NO DB connection held): GCS bucket create + settings + placeholders.
+        if not self.project_id:
+            raise RuntimeError("GCP Project ID could not be determined.")
 
-            if not isinstance(effective_config, GcpCatalogBucketConfig):
-                # If no config is set, create a default one.
-                logger.debug(
-                    f"No GcpCatalogBucketConfig found for catalog '{catalog_id}'. Using default settings."
+        new_bucket_name = self.generate_bucket_name(
+            catalog_id, physical_schema=context.physical_schema if context else None
+        )
+
+        try:
+            await self._gcs_create_and_configure_bucket(
+                new_bucket_name, effective_config, catalog_id
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to create or configure bucket for catalog '{catalog_id}': {e}",
+                exc_info=True,
+            )
+            return None
+
+        # Phase 3 (short tx): link bucket → catalog. On failure, clean up the
+        # bucket we just created — otherwise we leak a GCS bucket the DB doesn't
+        # know about.
+        try:
+            async with managed_transaction(self.engine) as p3_conn:
+                result = await gcp_db.link_bucket_to_catalog_query.execute(
+                    p3_conn, catalog_id=catalog_id, bucket_name=new_bucket_name
                 )
-                effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
-                # Persist the default configuration (idempotent setup)
+        except Exception as e:
+            logger.error(
+                f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}': {e}",
+                exc_info=True,
+            )
+            await self._cleanup_orphan_bucket(new_bucket_name)
+            return None
+
+        if result:
+            logger.info(
+                f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
+            )
+            return result
+
+        logger.error(
+            f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
+            "and no result returned."
+        )
+        await self._cleanup_orphan_bucket(new_bucket_name)
+        return None
+
+    async def _ensure_storage_single_tx(
+        self,
+        conn: DbResource,
+        *,
+        catalog_id: str,
+        context: Optional[LifecycleContext],
+        auto_create: bool,
+        config_override: Optional[GcpCatalogBucketConfig],
+    ) -> Optional[str]:
+        """Legacy single-tx path for callers that pass an explicit `conn`."""
+        bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
+            conn, catalog_id=catalog_id
+        )
+        if bucket_name:
+            return bucket_name
+
+        if not auto_create:
+            logger.info(
+                f"Bucket for catalog '{catalog_id}' does not exist and "
+                "auto_create=False. Skipping creation."
+            )
+            return None
+
+        effective_config = await self._resolve_effective_config(
+            conn,
+            catalog_id=catalog_id,
+            context=context,
+            config_override=config_override,
+            persist_default=True,
+        )
+
+        if not self.project_id:
+            raise RuntimeError("GCP Project ID could not be determined.")
+
+        new_bucket_name = self.generate_bucket_name(
+            catalog_id, physical_schema=context.physical_schema if context else None
+        )
+
+        try:
+            await self._gcs_create_and_configure_bucket(
+                new_bucket_name, effective_config, catalog_id
+            )
+            result = await gcp_db.link_bucket_to_catalog_query.execute(
+                conn, catalog_id=catalog_id, bucket_name=new_bucket_name
+            )
+            if result:
+                logger.info(
+                    f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
+                )
+                return result
+            logger.error(
+                f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
+                "and no result returned."
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"Failed to create or link bucket for catalog '{catalog_id}': {e}",
+                exc_info=True,
+            )
+            await self._cleanup_orphan_bucket(new_bucket_name)
+            return None
+
+    async def _resolve_effective_config(
+        self,
+        conn: DbResource,
+        *,
+        catalog_id: str,
+        context: Optional[LifecycleContext],
+        config_override: Optional[GcpCatalogBucketConfig],
+        persist_default: bool,
+    ) -> GcpCatalogBucketConfig:
+        """Resolve the bucket config. Priority: override → context snapshot → DB.
+
+        When the resolution falls back to a default and ``persist_default`` is
+        True, the default is written through `config_service.set_config` on the
+        provided connection (idempotent setup).
+        """
+        effective_config: Any = config_override
+        if effective_config is None:
+            if context is not None:
+                # Prefer the lifecycle snapshot — DO NOT query the DB here
+                # because the catalog row may not be visible yet.
+                if GcpCatalogBucketConfig.class_key() in context.config:
+                    from dynastore.modules.db_config.platform_config_service import (
+                        require_config_class,
+                    )
+
+                    effective_config = require_config_class(
+                        GcpCatalogBucketConfig.class_key()
+                    ).model_validate(
+                        context.config[GcpCatalogBucketConfig.class_key()]
+                    )
+                else:
+                    effective_config = GcpCatalogBucketConfig(
+                        location=GcpLocation(self.region)
+                    )
+            else:
+                effective_config = await self.config_service.get_config(
+                    GcpCatalogBucketConfig,
+                    catalog_id,
+                    ctx=DriverContext(db_resource=conn),
+                )
+
+        if not isinstance(effective_config, GcpCatalogBucketConfig):
+            logger.debug(
+                f"No GcpCatalogBucketConfig found for catalog '{catalog_id}'. "
+                "Using default settings."
+            )
+            effective_config = GcpCatalogBucketConfig(location=GcpLocation(self.region))
+            if persist_default:
                 await self.config_service.set_config(
                     GcpCatalogBucketConfig,
                     effective_config,
                     catalog_id=catalog_id,
                     ctx=DriverContext(db_resource=conn),
                 )
-            
-            # Use effective_config for the rest of the creation logic
+        return effective_config
 
-            if not self.project_id:
-                raise RuntimeError("GCP Project ID could not be determined.")
+    async def _gcs_create_and_configure_bucket(
+        self,
+        new_bucket_name: str,
+        effective_config: GcpCatalogBucketConfig,
+        catalog_id: str,
+    ) -> None:
+        """Pure GCS-side work. Must NOT hold a pooled DB connection (see #486)."""
+        await bucket_tool.create_bucket(
+            new_bucket_name,
+            effective_config,
+            self.project_id,
+            client=self.storage_client,
+        )
 
-            # Generate a globally unique bucket name
-            new_bucket_name = self.generate_bucket_name(
-                catalog_id, physical_schema=context.physical_schema if context else None
+        try:
+            from dynastore.modules.catalog.log_manager import log_info
+
+            await log_info(
+                catalog_id,
+                event_type="gcp_bucket_created",
+                message=f"GCS bucket '{new_bucket_name}' created successfully.",
+                details={
+                    "bucket_name": new_bucket_name,
+                    "location": effective_config.location,
+                },
+                immediate=False,
             )
+        except Exception as log_e:
+            logger.warning(f"Failed to log bucket creation event: {log_e}")
 
-            try:
-                # Use bucket_tool to create bucket (ASYNC, using our injected client)
-                bucket = await bucket_tool.create_bucket(
-                    new_bucket_name,
-                    effective_config,
-                    self.project_id,
-                    client=self.storage_client,
-                )
+        await self._apply_bucket_settings(new_bucket_name, effective_config)
 
-                # Log bucket creation event (catalog-level event)
-                try:
-                    from dynastore.modules.catalog.log_manager import log_info
+        def _setup_placeholders():
+            bucket = self.storage_client.bucket(new_bucket_name)
+            bucket.blob(f"{bucket_tool.CATALOG_FOLDER}/").upload_from_string("")
+            bucket.blob(f"{bucket_tool.COLLECTIONS_FOLDER}/").upload_from_string("")
 
-                    await log_info(
-                        catalog_id,
-                        event_type="gcp_bucket_created",
-                        message=f"GCS bucket '{new_bucket_name}' created successfully.",
-                        details={
-                            "bucket_name": new_bucket_name,
-                            "location": effective_config.location,
-                        },
-                        immediate=False,  # Buffer for batch write
-                    )
-                except Exception as log_e:
-                    logger.warning(f"Failed to log bucket creation event: {log_e}")
+        await run_in_thread(_setup_placeholders)
 
-                # Apply the bucket settings (CORS, etc.).
-                # Callers that require strict readiness (e.g. init-upload) can
-                # explicitly invoke wait_for_bucket_ready after this method.
-                await self._apply_bucket_settings(new_bucket_name, effective_config)
-
-                # Create placeholder folders (we can assume bucket object is valid).
-                # These are blocking HTTP calls, so we execute them via the shared
-                # concurrency backend instead of directly using asyncio.to_thread.
-                def _setup_placeholders():
-                    bucket = self.storage_client.bucket(new_bucket_name)
-                    bucket.blob(f"{bucket_tool.CATALOG_FOLDER}/").upload_from_string("")
-                    bucket.blob(
-                        f"{bucket_tool.COLLECTIONS_FOLDER}/"
-                    ).upload_from_string("")
-
-                await run_in_thread(_setup_placeholders)
-
-                # Link bucket to catalog in the database
-                # ON CONFLICT DO UPDATE will return the bucket_name
-                result = await gcp_db.link_bucket_to_catalog_query.execute(
-                    conn, catalog_id=catalog_id, bucket_name=new_bucket_name
-                )
-
-                if result:
-                    logger.info(
-                        f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
-                    )
-                    return result
-                else:
-                    logger.error(
-                        f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' and no result returned."
-                    )
-                    return None
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to create or link bucket for catalog '{catalog_id}': {e}",
-                    exc_info=True,
-                )
-                # Attempt to clean up if bucket was created but DB link failed
-                try:
-                    await bucket_tool.delete_bucket(
-                        new_bucket_name, force=True, client=self.storage_client
-                    )
-                except Exception as cleanup_e:
-                    logger.error(
-                        f"Failed to cleanup partially created bucket '{new_bucket_name}': {cleanup_e}"
-                    )
-                return None
-
-        # If a connection is provided, run the logic on it directly.
-        if conn:
-            return await _execute(conn)
-
-        # If no connection is provided, create and manage a new transaction.
-        async with managed_transaction(self.engine) as new_conn:
-            return await _execute(new_conn)
+    async def _cleanup_orphan_bucket(self, bucket_name: str) -> None:
+        """Best-effort delete of a GCS bucket whose DB link could not be established."""
+        try:
+            await bucket_tool.delete_bucket(
+                bucket_name, force=True, client=self.storage_client
+            )
+        except Exception as cleanup_e:
+            logger.error(
+                f"Failed to cleanup partially created bucket '{bucket_name}': {cleanup_e}"
+            )
 
     async def _apply_bucket_settings(
         self, bucket_name: str, config: GcpCatalogBucketConfig
