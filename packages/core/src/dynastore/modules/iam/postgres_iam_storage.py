@@ -245,6 +245,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 id=principal.id,
                 identifier=getattr(principal, "identifier", principal.display_name),
                 display_name=principal.display_name,
+                is_active=principal.is_active,
                 metadata=json.dumps(getattr(principal, "metadata", {})),
                 policy=None,
                 custom_policies=json.dumps(

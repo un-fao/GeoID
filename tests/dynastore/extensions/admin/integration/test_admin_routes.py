@@ -57,6 +57,29 @@ async def test_list_users_pagination(sysadmin_in_process_client: AsyncClient):
 
 @MARKER
 @pytest.mark.asyncio
+async def test_update_user_deactivation_persists(
+    sysadmin_in_process_client: AsyncClient, created_principal: "CreatedPrincipal"
+):
+    """PUT /admin/users/{id} with {is_active: false} persists deactivation (issue #494).
+
+    Prior bug: ``UPDATE_PRINCIPAL`` SQL omitted ``is_active`` from the
+    SET clause, so the response echoed ``is_active: true`` and the user
+    remained active in DB.
+    """
+    pid = created_principal.principal_id
+    r = await sysadmin_in_process_client.put(
+        f"/admin/users/{pid}", json={"is_active": False}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["is_active"] is False
+    # Verify persistence: a fresh GET reflects the new state.
+    r2 = await sysadmin_in_process_client.get(f"/admin/users/{pid}")
+    assert r2.status_code == 200
+    assert r2.json()["is_active"] is False
+
+
+@MARKER
+@pytest.mark.asyncio
 async def test_get_unknown_user_404(sysadmin_in_process_client: AsyncClient):
     """GET /admin/users/{id} — nonexistent user returns 404.
 
