@@ -317,7 +317,11 @@ class TestCollectionMetadataRouting:
             "items_elasticsearch_driver", "items_postgresql_driver",
         ]
         assert read[0].hints == {"geometry_simplified"}
-        assert read[1].hints == {"geometry_exact"}
+        # PG's READ entry also pins Hint.TILES (added by #456 so tile
+        # rendering routes through PG, which alone exposes schema/table
+        # identifiers).
+        from dynastore.modules.storage.hints import Hint
+        assert read[1].hints == {Hint.GEOMETRY_EXACT, Hint.TILES}
 
 
 class TestOperationEnum:
