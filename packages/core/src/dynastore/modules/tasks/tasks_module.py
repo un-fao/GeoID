@@ -722,7 +722,7 @@ async def _warn_stuck_pending_tasks(
     sleeps and retries. Stops cleanly when ``shutdown_event`` is set.
     """
     sql = (
-        f'SELECT task_id, task_type, schema_name, '  # nosec - schema is validated upstream
+        f'SELECT task_id, task_type, schema_name, inputs, '  # nosec - schema is validated upstream
         f'  EXTRACT(EPOCH FROM NOW() - timestamp) AS age_s '
         f'FROM "{schema}".tasks '
         f"WHERE status = 'PENDING' "
@@ -745,16 +745,87 @@ async def _warn_stuck_pending_tasks(
                     conn, min_age_s=min_age_s, sample_limit=sample_limit,
                 )
             for row in rows or []:
+                cap_id, cap_live = await _resolve_capability_liveness(row)
                 logger.warning(
                     "stuck-pending: task '%s' (%s, schema=%s) has been "
-                    "PENDING for %.0fs with retry_count=0 — check "
-                    "TaskRoutingConfig.routing[%r] for typos or for a "
-                    "service that should claim it but isn't deployed.",
+                    "PENDING for %.0fs with retry_count=0 — %s",
                     row["task_id"], row["task_type"], row.get("schema_name"),
-                    row["age_s"], row["task_type"],
+                    row["age_s"],
+                    _stuck_pending_hint(row["task_type"], cap_id, cap_live),
                 )
         except Exception as exc:  # noqa: BLE001 — never crash on diagnostic
             logger.warning("stuck-pending warner: scan failed: %s", exc)
+
+
+async def _resolve_capability_liveness(
+    row: Dict[str, Any],
+) -> tuple[Optional[str], Optional[bool]]:
+    """Return ``(capability_id, is_live)`` for a stuck PENDING row.
+
+    ``capability_id`` is ``None`` when the task type does not declare a
+    ``required_capability`` (e.g. capability-agnostic tasks). ``is_live``
+    is ``None`` in that case, otherwise ``True``/``False`` reflecting
+    :func:`is_capability_live`.
+
+    Defensive: never raises. On any failure returns ``(None, None)`` so
+    the warner falls back to its generic hint.
+    """
+    try:
+        from dynastore.tasks import get_task_instance
+        from dynastore.modules.tasks.capability_oracle import is_capability_live
+
+        task_instance = get_task_instance(row["task_type"])
+        if task_instance is None:
+            return (None, None)
+        required_cap_fn = getattr(
+            type(task_instance), "required_capability", None,
+        )
+        if not callable(required_cap_fn):
+            return (None, None)
+        inputs_raw = row.get("inputs")
+        if isinstance(inputs_raw, str):
+            try:
+                inputs_raw = json.loads(inputs_raw)
+            except Exception:  # noqa: BLE001
+                inputs_raw = None
+        payload = {"inputs": inputs_raw} if inputs_raw is not None else {}
+        cap_id = required_cap_fn(payload)
+        if not isinstance(cap_id, str) or not cap_id:
+            return (None, None)
+        live = await is_capability_live(cap_id)
+        return (cap_id, bool(live))
+    except Exception:  # noqa: BLE001 — diagnostic must never crash
+        return (None, None)
+
+
+def _stuck_pending_hint(
+    task_type: str, capability_id: Optional[str], cap_live: Optional[bool],
+) -> str:
+    """Produce the actionable tail of the stuck-pending log message.
+
+    When the task declares a required capability and the liveness oracle
+    answers ``False``, surface that the reactive reaper (#502) will DLQ
+    the row on the next dispatcher pass — the operator should fix SCOPE
+    drift, not the routing config. When the oracle says ``True`` the row
+    is genuinely starved (transient pool issue), and when no capability
+    is declared we fall back to the original generic hint.
+    """
+    if capability_id and cap_live is False:
+        return (
+            f"capability={capability_id!r} live=false "
+            f"→ reactive reaper will DLQ on next dispatcher pass "
+            f"(SCOPE/B6 drift — module not loaded in any reachable pool)"
+        )
+    if capability_id and cap_live is True:
+        return (
+            f"capability={capability_id!r} live=true "
+            f"→ transient pool starvation; capable workers are advertised "
+            f"but none has claimed yet."
+        )
+    return (
+        f"check TaskRoutingConfig.routing[{task_type!r}] for typos or for "
+        f"a service that should claim it but isn't deployed."
+    )
 
 
 async def _assert_current_partition_ready(conn: DbResource, schema: str) -> None:
