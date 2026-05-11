@@ -10,6 +10,8 @@ services is an architecture violation. Use Capability constants instead.
 
 import re
 
+import pytest
+
 from tests._repo_paths import CORE_SRC, EXTENSIONS_ROOTS, REPO_ROOT
 
 # Directories where driver isinstance leakage is forbidden:

@@ -16,7 +16,7 @@ from contextlib import AsyncExitStack  # noqa: F401 — reserved for future nest
 from types import SimpleNamespace
 
 import dynastore.extensions  # noqa: F401 — import side-effects register plugins
-import dynastore.modules  # noqa: F401 — import side-effects register plugins
+from dynastore import modules
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
