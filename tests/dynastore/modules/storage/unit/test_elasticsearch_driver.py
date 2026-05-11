@@ -14,10 +14,6 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 
 
 class TestElasticsearchBase:
-    def test_sfeos_available_returns_bool(self):
-        result = _ElasticsearchBase._sfeos_available()
-        assert isinstance(result, bool)
-
     def test_normalize_entities_single_feature(self):
         feature = MagicMock(spec=Feature)
         result = _ElasticsearchBase._normalize_entities(feature)

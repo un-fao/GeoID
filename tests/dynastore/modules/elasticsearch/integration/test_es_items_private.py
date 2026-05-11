@@ -79,7 +79,6 @@ async def _public_index(catalog_id: str) -> str:
 # Tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_private_index_receives_item(app_lifespan):
     """index() sends item to the per-catalog private index."""
@@ -104,7 +103,6 @@ async def test_private_index_receives_item(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_public_index_does_not_receive_private_item(app_lifespan):
     """Items indexed via the private driver must NOT appear in the public index."""
@@ -129,7 +127,6 @@ async def test_public_index_does_not_receive_private_item(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_private_read_entities_returns_item(app_lifespan):
     """read_entities() on the private driver returns the indexed item."""
@@ -155,7 +152,6 @@ async def test_private_read_entities_returns_item(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_public_driver_cannot_see_private_item(app_lifespan):
     """Public driver's read_entities() must not return a private-indexed item."""
@@ -181,7 +177,6 @@ async def test_public_driver_cannot_see_private_item(app_lifespan):
     await priv.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_private_index_bulk_roundtrip(app_lifespan):
     """index_bulk() indexes multiple items; all land in the private index."""
@@ -207,7 +202,6 @@ async def test_private_index_bulk_roundtrip(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — exercises legacy SFEOS DatabaseLogic path which is no longer a geoid dependency. Will be deleted/rewritten once the SFEOS shim in elasticsearch.py is removed in favour of the internal Indexer Protocol.", strict=False)
 @pytest.mark.asyncio
 async def test_private_drop_removes_index(app_lifespan):
     """drop_storage() deletes the per-tenant private index."""

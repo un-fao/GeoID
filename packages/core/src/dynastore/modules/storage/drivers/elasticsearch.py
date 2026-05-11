@@ -28,9 +28,9 @@ Two drivers in this module:
   of one catalog while keeping shard locality per collection.  The index
   is enrolled in the platform alias ``{prefix}-items-public`` so OGC
   discovery search routes can target one alias regardless of tenant.
-  Catalog and collection documents are still routed via SFEOS until the
-  dedicated ``catalog_es_driver`` / ``collection_es_driver`` modules
-  fully take over (separate, scheduled migration).
+  Catalog and collection documents are owned by the dedicated
+  ``catalog_es_driver`` / ``collection_es_driver`` modules (see
+  :mod:`dynastore.modules.elasticsearch`).
 
 * ``AssetElasticsearchDriver``  (driver_ref ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}``
@@ -137,30 +137,6 @@ async def _ensure_in_public_alias_once(catalog_id: str, index_name: str) -> None
 class _ElasticsearchBase:
     """Shared helpers for ES storage drivers."""
 
-    _db_logic = None
-
-    @classmethod
-    def _get_db_logic(cls):
-        """Lazily instantiate SFEOS DatabaseLogic (singleton)."""
-        if cls._db_logic is None:
-            try:
-                from stac_fastapi.elasticsearch.database_logic import DatabaseLogic  # type: ignore[import-not-found]
-                cls._db_logic = DatabaseLogic()
-            except ImportError:
-                raise RuntimeError(
-                    "stac-fastapi-elasticsearch not installed. "
-                    "Install with: pip install stac-fastapi-elasticsearch"
-                )
-        return cls._db_logic
-
-    @staticmethod
-    def _sfeos_available() -> bool:
-        try:
-            from stac_fastapi.elasticsearch.database_logic import DatabaseLogic  # type: ignore[import-not-found]  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
     async def get_driver_config(
         self,
         catalog_id: str,
@@ -264,7 +240,7 @@ class _ElasticsearchBase:
     def _feature_to_stac_item(
         feature: Any, catalog_id: str, collection_id: str,
     ) -> dict:
-        """Serialize a Feature to a STAC item dict for SFEOS."""
+        """Serialize a Feature to a STAC item dict."""
         if hasattr(feature, "model_dump"):
             doc = feature.model_dump(by_alias=True, exclude_none=True)
         elif isinstance(feature, dict):
@@ -295,7 +271,7 @@ class _ElasticsearchBase:
 
 
 # ---------------------------------------------------------------------------
-# ItemsElasticsearchDriver — SFEOS-backed full STAC
+# ItemsElasticsearchDriver — public STAC items index
 # ---------------------------------------------------------------------------
 
 class ItemsElasticsearchDriver(
@@ -310,10 +286,10 @@ class ItemsElasticsearchDriver(
     ``{prefix}-items-public`` on first ``ensure_storage`` so OGC
     discovery search routes can target that alias regardless of tenant.
 
-    Catalog and collection serialization on this class still flows
-    through SFEOS ``DatabaseLogic`` until the dedicated
-    ``catalog_es_driver`` / ``collection_es_driver`` modules supersede
-    those paths.
+    Catalog and collection documents are owned by the dedicated
+    :class:`CatalogElasticsearchDriver` and
+    :class:`CollectionElasticsearchDriver` (see
+    :mod:`dynastore.modules.elasticsearch`).
 
     Registered as ``storage_elasticsearch`` via entry points.
 
@@ -348,14 +324,7 @@ class ItemsElasticsearchDriver(
     })
 
     def is_available(self) -> bool:
-        # The driver is "available" whenever the standalone opensearch-py
-        # client is wired up — that's all we need for the read path
-        # (search/count/extents/aggregate/introspect/ensure_storage), which
-        # is the surface most deployments exercise. SFEOS is only required
-        # for the full STAC write_entities / read_entities path; those
-        # methods raise a RuntimeError at call time if SFEOS is missing,
-        # which is the right granularity to fail at — not a top-level
-        # discovery skip that would also hide the read path.
+        # Available whenever the shared ES client is wired up.
         try:
             from dynastore.modules.elasticsearch.client import get_client
         except (ImportError, ModuleNotFoundError):
@@ -364,37 +333,16 @@ class ItemsElasticsearchDriver(
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        """Register event listeners for catalog/collection-tier propagation only.
+        """No-op lifecycle.
 
-        ITEM_* propagation moved to the IndexDispatcher (called directly
-        from item_service.upsert and item_query.delete) — see Phase 2d
-        of the indexer-protocol harmonisation.  Catalog/collection-tier
-        propagation will follow in a separate phase; for now those keep
-        the event-driven path.
+        Item-tier propagation runs through the :class:`IndexDispatcher`
+        (Phase 2d) — invoked directly from ``item_service.upsert`` and
+        ``item_query.delete``. Catalog and collection documents are
+        owned by :class:`CatalogElasticsearchDriver` and
+        :class:`CollectionElasticsearchDriver` (in
+        :mod:`dynastore.modules.elasticsearch`), so this driver does
+        not subscribe to any catalog/collection events.
         """
-        from dynastore.models.protocols.events import EventsProtocol
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.modules.catalog.event_service import CatalogEventType
-
-        events = get_protocol(EventsProtocol)
-        if events:
-            for etype, handler in [
-                (CatalogEventType.CATALOG_CREATION, self._on_catalog_upsert),
-                (CatalogEventType.CATALOG_UPDATE, self._on_catalog_upsert),
-                (CatalogEventType.CATALOG_DELETION, self._on_catalog_delete),
-                (CatalogEventType.CATALOG_HARD_DELETION, self._on_catalog_delete),
-                (CatalogEventType.COLLECTION_CREATION, self._on_collection_upsert),
-                (CatalogEventType.COLLECTION_UPDATE, self._on_collection_upsert),
-                (CatalogEventType.COLLECTION_DELETION, self._on_collection_delete),
-                (CatalogEventType.COLLECTION_HARD_DELETION, self._on_collection_delete),
-            ]:
-                decorator = events.async_event_listener(etype)
-                if decorator:
-                    decorator(handler)
-            logger.info(
-                "ItemsElasticsearchDriver: catalog/collection event listeners "
-                "registered (item propagation now dispatched via IndexDispatcher).",
-            )
         yield
 
     # ------------------------------------------------------------------
@@ -931,114 +879,6 @@ class ItemsElasticsearchDriver(
         )
 
     # ------------------------------------------------------------------
-    # Catalog & Collection support (via SFEOS DatabaseLogic)
-    # ------------------------------------------------------------------
-
-    async def write_catalog(self, catalog_id: str, catalog_doc: dict) -> None:
-        """Index a catalog document via SFEOS."""
-        db = self._get_db_logic()
-        catalog_doc.setdefault("id", catalog_id)
-        catalog_doc.setdefault("type", "Catalog")
-        await db.create_catalog(catalog_doc, refresh=False)
-
-    async def delete_catalog(self, catalog_id: str) -> None:
-        """Delete a catalog from ES via SFEOS."""
-        db = self._get_db_logic()
-        await db.delete_catalog(catalog_id, refresh=False)
-
-    async def write_collection(
-        self, catalog_id: str, collection_id: str, collection_doc: dict,
-    ) -> None:
-        """Index a collection document via SFEOS."""
-        db = self._get_db_logic()
-        collection_doc.setdefault("id", collection_id)
-        collection_doc.setdefault("type", "Collection")
-        try:
-            await db.create_collection(collection_doc, refresh=False)
-        except Exception:
-            # Already exists — update
-            await db.find_collection(collection_id)
-            from stac_fastapi.sfeos_helpers.database import (  # type: ignore[import-not-found]
-                update_catalog_in_index_shared,
-            )
-            await update_catalog_in_index_shared(
-                db.client, collection_id, collection_doc,
-            )
-
-    async def delete_collection_doc(
-        self, catalog_id: str, collection_id: str,
-    ) -> None:
-        """Delete a collection document from ES via SFEOS."""
-        db = self._get_db_logic()
-        try:
-            await db.delete_collection(collection_id, refresh=False)
-        except Exception as e:
-            logger.debug("delete_collection_doc: %s", e)
-
-    # ------------------------------------------------------------------
-    # Event handlers
-    # ------------------------------------------------------------------
-
-    async def _on_catalog_upsert(
-        self, catalog_id: Optional[str] = None, payload=None, **kwargs,
-    ):
-        if not catalog_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, None):
-            return
-        try:
-            doc = await self._serialize_catalog(catalog_id)
-            if doc is None:
-                doc = payload if isinstance(payload, dict) else {"id": catalog_id}
-            await self.write_catalog(catalog_id, doc)
-        except Exception as e:
-            logger.error("ES driver: catalog upsert failed for '%s': %s", catalog_id, e)
-
-    async def _on_catalog_delete(self, catalog_id: Optional[str] = None, **kwargs):
-        if not catalog_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, None):
-            return
-        try:
-            await self.delete_catalog(catalog_id)
-        except Exception as e:
-            logger.error("ES driver: catalog delete failed for '%s': %s", catalog_id, e)
-
-    async def _on_collection_upsert(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None,
-        payload=None, **kwargs,
-    ):
-        if not catalog_id or not collection_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            doc = await self._serialize_collection(catalog_id, collection_id)
-            if doc is None:
-                doc = payload if isinstance(payload, dict) else {}
-            await self.write_collection(catalog_id, collection_id, doc)
-        except Exception as e:
-            logger.error(
-                "ES driver: collection upsert failed for '%s/%s': %s",
-                catalog_id, collection_id, e,
-            )
-
-    async def _on_collection_delete(
-        self, catalog_id: Optional[str] = None, collection_id: Optional[str] = None, **kwargs,
-    ):
-        if not catalog_id or not collection_id:
-            return
-        if not await self._is_secondary_for(type(self).__name__, catalog_id, collection_id):
-            return
-        try:
-            await self.delete_collection_doc(catalog_id, collection_id)
-        except Exception as e:
-            logger.error(
-                "ES driver: collection delete failed for '%s/%s': %s",
-                catalog_id, collection_id, e,
-            )
-
-    # ------------------------------------------------------------------
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
 
@@ -1206,49 +1046,6 @@ class ItemsElasticsearchDriver(
             return None
 
     @staticmethod
-    async def _serialize_catalog(catalog_id: str) -> Optional[dict]:
-        try:
-            from dynastore.models.protocols import CatalogsProtocol
-            from dynastore.tools.discovery import get_protocol
-
-            catalogs = get_protocol(CatalogsProtocol)
-            if not catalogs:
-                return None
-            model = await catalogs.get_catalog_model(catalog_id)
-            if model is None:
-                return None
-            doc = model.model_dump(by_alias=True, exclude_none=True) if hasattr(model, "model_dump") else {}
-            doc.setdefault("id", catalog_id)
-            doc.setdefault("type", "Catalog")
-            return doc
-        except Exception as e:
-            logger.warning("Failed to serialize catalog %s: %s", catalog_id, e)
-            return None
-
-    @staticmethod
-    async def _serialize_collection(
-        catalog_id: str, collection_id: str,
-    ) -> Optional[dict]:
-        try:
-            from dynastore.models.protocols import CatalogsProtocol
-            from dynastore.tools.discovery import get_protocol
-
-            catalogs = get_protocol(CatalogsProtocol)
-            if not catalogs:
-                return None
-            model = await catalogs.get_collection_model(catalog_id, collection_id)  # type: ignore[attr-defined]
-            if model is None:
-                return None
-            doc = model.model_dump(by_alias=True, exclude_none=True) if hasattr(model, "model_dump") else {}
-            doc.setdefault("id", collection_id)
-            doc.setdefault("type", "Collection")
-            return doc
-        except Exception as e:
-            logger.warning("Failed to serialize collection %s/%s: %s",
-                           catalog_id, collection_id, e)
-            return None
-
-    @staticmethod
     def _query_request_to_es(request: QueryRequest) -> dict:
         """Convert a QueryRequest to an ES query body."""
         must: list = []
@@ -1302,10 +1099,10 @@ class ItemsElasticsearchDriver(
     # CollectionItemsStore Protocol — data-side ops
     # ------------------------------------------------------------------
     # All four delegate to the shared ``items_es_ops`` helpers (which
-    # use the standalone opensearch-py client, not SFEOS DatabaseLogic)
-    # so they remain available on services without stac-fastapi-elasticsearch.
-    # The per-tenant index is shared across all collections of a catalog;
-    # the routing key is the collection_id.
+    # use the shared async ES client from
+    # :mod:`dynastore.modules.elasticsearch.client`). The per-tenant
+    # index is shared across all collections of a catalog; the routing
+    # key is the collection_id.
 
     async def count_entities(
         self,
@@ -1501,11 +1298,15 @@ class AssetElasticsearchDriver(
     supported_hints: FrozenSet[Hint] = frozenset({Hint.SEARCH, Hint.ASSETS, Hint.FULLTEXT})
 
     def is_available(self) -> bool:
-        return self._sfeos_available()
+        try:
+            from dynastore.modules.elasticsearch.client import get_client
+        except (ImportError, ModuleNotFoundError):
+            return False
+        return get_client() is not None
 
     def _get_client(self):
-        """Get the async ES client from SFEOS DatabaseLogic."""
-        return self._get_db_logic().client
+        """Return the shared async ES client."""
+        return _es_client_required()
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
