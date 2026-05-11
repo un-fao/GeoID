@@ -68,6 +68,11 @@ a `**Gap A/B/C**` markdown cell at the relevant step:
   full sequence: `POST .../assets/{id}/processes/gdal/execution`
   (OGC API - Processes) → local OGR→Postgres type map →
   `GET`/`PUT /configs/.../plugins/items_postgresql_driver` (PluginConfig API).
+  The PluginConfig PUT works at either **collection scope**
+  (`/configs/catalogs/{cat}/collections/{col}/plugins/{plugin_id}`, used in
+  the notebook) or **catalog scope**
+  (`/configs/catalogs/{cat}/plugins/{plugin_id}`, sysadmin) when the same
+  schema should apply by default to every collection in the catalog.
   The cell is gated by `BOOTSTRAP_FROM = None` and is documentary; users
   copy-paste the snippet to bootstrap from a real asset.
 - **Gap B** — OTF as **WRITE-primary** is not live-tested in review env;
