@@ -160,6 +160,9 @@ class ItemsElasticsearchPrivateDriver(
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_private_items_index_settings,
+        )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
         index_name = get_private_index_name(_get_index_prefix(), catalog_id)
@@ -169,7 +172,10 @@ class ItemsElasticsearchPrivateDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
+                body={
+                    "settings": await get_private_items_index_settings(),
+                    "mappings": TENANT_FEATURE_MAPPING,
+                },
                 ignore=400,
             )
 
@@ -285,6 +291,9 @@ class ItemsElasticsearchPrivateDriver(
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_private_items_index_settings,
+        )
 
         index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
@@ -292,7 +301,10 @@ class ItemsElasticsearchPrivateDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
+                body={
+                    "settings": await get_private_items_index_settings(),
+                    "mappings": TENANT_FEATURE_MAPPING,
+                },
                 ignore=400,
             )
 
@@ -374,6 +386,9 @@ class ItemsElasticsearchPrivateDriver(
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_private_items_index_settings,
+        )
 
         index_name = get_private_index_name(_get_index_prefix(), ctx.catalog)
         es = self._get_client()
@@ -394,7 +409,10 @@ class ItemsElasticsearchPrivateDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
+                body={
+                    "settings": await get_private_items_index_settings(),
+                    "mappings": TENANT_FEATURE_MAPPING,
+                },
                 ignore=400,
             )
 
@@ -421,6 +439,9 @@ class ItemsElasticsearchPrivateDriver(
             TENANT_FEATURE_MAPPING,
             get_private_index_name,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_private_items_index_settings,
+        )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
         if not ops:
@@ -436,7 +457,10 @@ class ItemsElasticsearchPrivateDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": TENANT_FEATURE_MAPPING},
+                body={
+                    "settings": await get_private_items_index_settings(),
+                    "mappings": TENANT_FEATURE_MAPPING,
+                },
                 ignore=400,
             )
 

@@ -253,6 +253,14 @@ COLLECTION_MAPPING: Dict[str, Any] = {
     },
 }
 
+# Index-level settings (`index.mapping.total_fields.limit` etc.) are
+# carried by :class:`ElasticsearchIndexConfig` in :mod:`.index_config` and
+# fetched per create-call via :func:`get_items_index_settings` /
+# :func:`get_assets_index_settings` there. Kept out of this file so the
+# mapping data stays declarative and the runtime-tunable knobs live in the
+# PluginConfig waterfall (`/configs/plugins/elasticsearch_index_config`).
+
+
 ITEM_MAPPING: Dict[str, Any] = {
     "dynamic": True,
     "dynamic_templates": DYNAMIC_TEMPLATES,

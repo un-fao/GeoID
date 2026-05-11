@@ -843,6 +843,9 @@ class ItemsElasticsearchDriver(
             add_index_to_public_alias,
         )
         from dynastore.modules.elasticsearch.mappings import ITEM_MAPPING
+        from dynastore.modules.elasticsearch.index_config import (
+            get_items_index_settings,
+        )
 
         es = _es_client_required()
         index_name = _tenant_items_index(catalog_id)
@@ -860,7 +863,10 @@ class ItemsElasticsearchDriver(
             try:
                 await es.indices.create(
                     index=index_name,
-                    body={"mappings": ITEM_MAPPING},
+                    body={
+                        "settings": await get_items_index_settings(),
+                        "mappings": ITEM_MAPPING,
+                    },
                 )
                 logger.info(
                     "ItemsElasticsearchDriver: created tenant items index '%s'.",
@@ -1523,6 +1529,9 @@ class AssetElasticsearchDriver(
         from dynastore.modules.elasticsearch.mappings import (
             get_assets_index_name, ASSET_MAPPING,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
+        )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
         index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
@@ -1531,7 +1540,10 @@ class AssetElasticsearchDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": ASSET_MAPPING},
+                body={
+                    "settings": await get_assets_index_settings(),
+                    "mappings": ASSET_MAPPING,
+                },
                 ignore=400,
             )
 
@@ -1628,6 +1640,9 @@ class AssetElasticsearchDriver(
         from dynastore.modules.elasticsearch.mappings import (
             get_assets_index_name, ASSET_MAPPING,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
+        )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
         index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
@@ -1637,7 +1652,10 @@ class AssetElasticsearchDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": ASSET_MAPPING},
+                body={
+                    "settings": await get_assets_index_settings(),
+                    "mappings": ASSET_MAPPING,
+                },
                 ignore=400,
             )
 
@@ -1731,6 +1749,9 @@ class AssetElasticsearchDriver(
         from dynastore.modules.elasticsearch.mappings import (
             get_assets_index_name, ASSET_MAPPING,
         )
+        from dynastore.modules.elasticsearch.index_config import (
+            get_assets_index_settings,
+        )
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
 
         index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
@@ -1738,7 +1759,10 @@ class AssetElasticsearchDriver(
         if not await es.indices.exists(index=index_name):
             await es.indices.create(
                 index=index_name,
-                body={"mappings": ASSET_MAPPING},
+                body={
+                    "settings": await get_assets_index_settings(),
+                    "mappings": ASSET_MAPPING,
+                },
                 ignore=400,
             )
 

@@ -31,6 +31,13 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+# Index-level settings (`index.mapping.total_fields.limit`) live on
+# :class:`ElasticsearchIndexConfig` and are fetched via
+# :func:`get_private_items_index_settings` in
+# :mod:`dynastore.modules.elasticsearch.index_config`. Routed through the
+# PluginConfig waterfall (`/configs/plugins/elasticsearch_index_config`).
+
+
 TENANT_FEATURE_MAPPING: Dict[str, Any] = {
     "dynamic": False,  # reject unknown top-level fields (typos, smuggling)
     "properties": {
