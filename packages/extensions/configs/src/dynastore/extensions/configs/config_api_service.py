@@ -730,7 +730,7 @@ class ConfigApiService:
                         write_mode=entry.get("write_mode", "sync"),
                         source=entry.get("source"),
                         links=links,
-                    ).model_dump(by_alias=True))
+                    ).model_dump(by_alias=True, exclude_none=True))
                 rewritten[op] = refs
             routing["operations"] = rewritten
 
