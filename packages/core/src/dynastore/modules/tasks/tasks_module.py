@@ -555,6 +555,8 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
 
                 poll_interval = 30.0
                 hard_cap = get_hard_retry_cap()
+                cap_ttl = 60.0
+                cap_refresh = 30.0
                 config_mgr = get_protocol(PlatformConfigsProtocol)
                 if config_mgr:
                     try:
@@ -563,6 +565,8 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                             poll_interval = tasks_config.queue_poll_interval
                             hard_cap = tasks_config.hard_retry_cap
                             set_hard_retry_cap(hard_cap)
+                            cap_ttl = tasks_config.capability_publisher_ttl_seconds
+                            cap_refresh = tasks_config.capability_publisher_refresh_seconds
                     except Exception as e:
                         logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s / hard_cap={hard_cap}: {e}")
 
@@ -639,6 +643,22 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 executor.submit(
                     _warn_stuck_pending_tasks(engine, schema, shutdown_event),
                     task_name="service:stuck_pending_warner",
+                )
+                # Capability publisher (#502) — refreshes shared-cache liveness
+                # sentinels so the dispatcher's reactive reaper can DLQ task
+                # rows whose required capability has no live worker anywhere
+                # in the deployment. Runs in every pod; the primitive is
+                # naturally idempotent (all pods write the same key).
+                from dynastore.modules.tasks.capability_publisher import (
+                    run_capability_publisher,
+                )
+                executor.submit(
+                    run_capability_publisher(
+                        shutdown_event,
+                        ttl_seconds=cap_ttl,
+                        refresh_seconds=cap_refresh,
+                    ),
+                    task_name="service:capability_publisher",
                 )
                 logger.info(f"TasksModule: QueueListener (poll_interval={poll_interval}s) and Multi-Tenant Dispatcher launched.")
             else:
