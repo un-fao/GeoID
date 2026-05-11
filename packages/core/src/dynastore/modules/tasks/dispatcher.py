@@ -336,6 +336,15 @@ async def _maybe_dlq_unclaimable(
                     "live worker in the deployment",
                     task_id, row.get("task_type"), capability_id,
                 )
+                # Observability (#528): structured key=value INFO line —
+                # log-based counter ready. A spike of >0 over a rolling
+                # window means SCOPE drift; alerts can match this shape
+                # directly without grepping the WARN above.
+                logger.info(
+                    "dispatcher_reactive_dlq_total task_type=%s capability=%s "
+                    "reason=no_live_worker task_id=%s",
+                    row.get("task_type") or "-", capability_id, task_id,
+                )
                 return True
             return False
     except Exception as exc:  # noqa: BLE001

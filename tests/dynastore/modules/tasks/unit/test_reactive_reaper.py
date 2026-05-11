@@ -95,20 +95,30 @@ async def test_returns_false_when_capability_live():
 
 
 @pytest.mark.asyncio
-async def test_dlqs_when_oracle_says_no_and_lock_acquired():
+async def test_dlqs_when_oracle_says_no_and_lock_acquired(caplog):
     # advisory_lock acquired → got=True; UPDATE returns one row.
+    import logging, re
     patches = _patches(
         oracle_live=False,
         results=[{"got": True}, {"task_id": "t-1"}],
     )
     for p in patches: p.start()
     try:
+        caplog.set_level(logging.INFO, logger="dynastore.modules.tasks.dispatcher")
         result = await _maybe_dlq_unclaimable(
             engine=MagicMock(), row=_row(), capability_id="dead_driver",
         )
     finally:
         for p in patches: p.stop()
     assert result is True
+    # #528: structured key=value log-based counter line on DLQ success.
+    pattern = re.compile(
+        r"dispatcher_reactive_dlq_total task_type=\S+ "
+        r"capability=dead_driver reason=no_live_worker task_id=\S+"
+    )
+    assert any(pattern.search(r.message) for r in caplog.records), (
+        f"missing dispatcher_reactive_dlq_total line in: {[r.message for r in caplog.records]}"
+    )
 
 
 @pytest.mark.asyncio
