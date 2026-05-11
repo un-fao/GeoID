@@ -10,6 +10,7 @@ Design philosophy:
   - Items, collections, and catalogs can freely add STAC extension fields; they
     will be indexed by the catch-all dynamic templates automatically.
 """
+import os
 from typing import Any, Dict, List
 
 
@@ -252,6 +253,47 @@ COLLECTION_MAPPING: Dict[str, Any] = {
         },
     },
 }
+
+# Index-level settings. Default `index.mapping.total_fields.limit` of 1000
+# is reached when STAC extensions + multilingual metadata + per-catalog
+# tenant attributes combine — re-ingestion fails 400 on the first item that
+# crosses the boundary. The ceiling is operator-tunable via env vars so a
+# deployment with heavy extension fan-out can raise it without a code
+# change; the limit is checked at mapping update time, not per-doc, so the
+# cost of a larger ceiling is negligible.
+#
+# Env vars:
+#   ES_ITEMS_TOTAL_FIELDS_LIMIT   public items index   (default 2000)
+#   ES_ASSETS_TOTAL_FIELDS_LIMIT  per-catalog assets   (default 1500)
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def get_items_index_settings() -> Dict[str, Any]:
+    """Settings dict for the public items index (read once per create call)."""
+    return {
+        "index.mapping.total_fields.limit": _int_env(
+            "ES_ITEMS_TOTAL_FIELDS_LIMIT", 2000,
+        ),
+    }
+
+
+def get_assets_index_settings() -> Dict[str, Any]:
+    """Settings dict for the per-catalog assets index."""
+    return {
+        "index.mapping.total_fields.limit": _int_env(
+            "ES_ASSETS_TOTAL_FIELDS_LIMIT", 1500,
+        ),
+    }
+
 
 ITEM_MAPPING: Dict[str, Any] = {
     "dynamic": True,

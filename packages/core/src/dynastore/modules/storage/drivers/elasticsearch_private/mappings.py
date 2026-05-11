@@ -28,7 +28,34 @@ per-doc limit are shrunk by ``simplify_to_fit``
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
+
+
+# Private items index uses `dynamic: false` at the top level, so only the
+# `properties` subtree grows dynamically. The default 1500 is tighter than
+# the public items ceiling (2000) but still absorbs the realistic
+# tenant-attribute fan-out without hitting the ES default of 1000 on
+# re-ingestion. Operator-tunable via `ES_PRIVATE_ITEMS_TOTAL_FIELDS_LIMIT`.
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def get_private_items_index_settings() -> Dict[str, Any]:
+    """Settings dict for the per-catalog private items index."""
+    return {
+        "index.mapping.total_fields.limit": _int_env(
+            "ES_PRIVATE_ITEMS_TOTAL_FIELDS_LIMIT", 1500,
+        ),
+    }
 
 
 TENANT_FEATURE_MAPPING: Dict[str, Any] = {
