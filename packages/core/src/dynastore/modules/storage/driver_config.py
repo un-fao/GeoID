@@ -773,11 +773,10 @@ def _default_partitioning() -> Any:
 class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     """Elasticsearch collection driver config.
 
-    Uses the stac-fastapi-elasticsearch-opensearch (SFEOS) library by
-    convention.  The default ``index_prefix`` matches SFEOS's
-    ``STAC_ITEMS_INDEX_PREFIX`` (``items_``), producing per-collection
-    indexes like ``items_{collection_id}`` that are natively readable by
-    an external SFEOS app running in read-only mode.
+    Items land in the per-tenant index ``{index_prefix}-items-{catalog_id}``
+    (default prefix ``items_``) keyed by ``_routing=collection_id`` so a
+    single index hosts every collection of one catalog with shard locality
+    per collection.
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -793,14 +792,13 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
     index_prefix: str = Field(
         default="items_",
         description=(
-            "Item index name prefix.  Default ``items_`` matches SFEOS convention "
-            "(env: STAC_ITEMS_INDEX_PREFIX), producing per-collection indexes "
-            "``items_{collection_id}``."
+            "Item index name prefix (default ``items_``), producing the "
+            "per-tenant index ``items_-items-{catalog_id}``."
         ),
     )
     mapping: Dict[str, Any] = Field(
         default_factory=dict,
-        description="ES index mapping overrides merged with SFEOS defaults.",
+        description="ES index mapping overrides merged with the platform defaults.",
     )
 
 

@@ -23,10 +23,8 @@ differ in the index name and the routing key — the ES query shape is
 identical. This module hosts the four data-side operations as pure
 functions so each driver can delegate without duplicating the query DSL.
 
-These helpers use the standalone ``opensearch-py`` async client (not
-SFEOS DatabaseLogic) so they remain available on services where SFEOS is
-not installed but ``module_storage_elasticsearch`` is — which is the
-default for the catalog Cloud Run service.
+These helpers use the shared async ES client from
+:mod:`dynastore.modules.elasticsearch.client`.
 """
 from __future__ import annotations
 

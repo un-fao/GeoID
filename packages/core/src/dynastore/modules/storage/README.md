@@ -121,6 +121,6 @@ Full step-by-step in [`docs/components/storage_drivers.md`](../../../../docs/com
 
 - Core: `pydantic`, `cachetools` (always available)
 - PostgreSQL driver: `dynastore[module_catalog]` (wraps existing services)
-- Elasticsearch drivers: `stac-fastapi-elasticsearch` (optional)
+- Elasticsearch drivers: `elasticsearch[async]` via `dynastore[module_elasticsearch]`
 - Iceberg driver: `pyiceberg[sql-postgres]>=0.9.0`, `pyarrow>=14.0.0`
 - DuckDB driver: `duckdb>=1.0.0`

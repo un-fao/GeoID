@@ -67,8 +67,8 @@ class ESBulkIndexer:
     and the per-tenant items index name (via
     :func:`dynastore.modules.storage.drivers.elasticsearch._tenant_items_index`).
     The adapter does not touch the driver's higher-level
-    ``write_entities`` / SFEOS path — outbox drain operates on
-    pre-serialised STAC item payloads emitted by the dispatcher.
+    ``write_entities`` path — outbox drain operates on pre-serialised
+    STAC item payloads emitted by the dispatcher.
     """
 
     preferred_chunk_size: int = 1500

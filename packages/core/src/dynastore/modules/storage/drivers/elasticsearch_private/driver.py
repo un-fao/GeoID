@@ -20,9 +20,8 @@ per-tenant index whose name is owned by this subpackage
 (``{prefix}-{catalog_id}-private-items``). Driver-private mapping
 (``TENANT_FEATURE_MAPPING``) lives in :mod:`.mappings`.
 
-Manages DENY access policies in its own lifecycle. Reuses the shared
-SFEOS-backed helpers from :class:`_ElasticsearchBase` (parent class
-imported from the sibling regular driver module).
+Manages DENY access policies in its own lifecycle. Shares the
+:class:`_ElasticsearchBase` helpers with the public items driver.
 
 Registered as ``storage_elasticsearch_private`` via entry points.
 """
@@ -76,8 +75,9 @@ class ItemsElasticsearchPrivateDriver(
 
     Manages DENY access policies in its own lifecycle.
 
-    Uses the raw ES client from SFEOS settings (not DatabaseLogic) since
-    the index has a custom mapping not managed by SFEOS.
+    Uses the shared async ES client from
+    :mod:`dynastore.modules.elasticsearch.client`; the per-tenant index
+    has a custom mapping owned by this subpackage.
 
     Registered as ``storage_elasticsearch_private`` via entry points.
     """
@@ -115,10 +115,8 @@ class ItemsElasticsearchPrivateDriver(
     })
 
     def is_available(self) -> bool:
-        # See ItemsElasticsearchDriver.is_available — the driver is
-        # available whenever the standalone opensearch-py client is wired
-        # up. SFEOS is only needed for write/read full-STAC paths and
-        # those raise at call time if it's missing.
+        # Driver is available whenever the shared ES client is wired up
+        # (ElasticsearchModule.lifespan has started).
         try:
             from dynastore.modules.elasticsearch.client import get_client
         except (ImportError, ModuleNotFoundError):
@@ -126,8 +124,16 @@ class ItemsElasticsearchPrivateDriver(
         return get_client() is not None
 
     def _get_client(self):
-        """Get the async ES client from SFEOS DatabaseLogic."""
-        return self._get_db_logic().client
+        """Return the shared async ES client."""
+        from dynastore.modules.elasticsearch.client import get_client
+
+        es = get_client()
+        if es is None:
+            raise RuntimeError(
+                "ES client not initialised — ElasticsearchModule.lifespan "
+                "must have started before private items operations are invoked."
+            )
+        return es
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):

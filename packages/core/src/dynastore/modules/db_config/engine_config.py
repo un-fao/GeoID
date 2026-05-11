@@ -280,8 +280,8 @@ class ElasticsearchEngineConfig(EngineConfig):
         default=None,
         description=(
             "Optional override for the ES cluster URL.  When None, the "
-            "engine inherits the existing SFEOS-derived client (env-"
-            "driven via ``ELASTICSEARCH_HOSTS`` etc.)."
+            "engine inherits the platform-wide client (env-driven via "
+            "``ELASTICSEARCH_HOSTS`` etc.)."
         ),
     )
 
@@ -308,8 +308,8 @@ class ElasticsearchEngineConfig(EngineConfig):
         """Build a dedicated ``AsyncOpenSearch`` client for this engine.
 
         Honours ``cluster_url`` + ``api_key`` overrides; falls back to the
-        env-driven SFEOS client (``ELASTICSEARCH_HOSTS`` etc.) when both
-        are unset — the same source the existing ``module_elasticsearch``
+        env-driven client (``ELASTICSEARCH_HOSTS`` etc.) when both are
+        unset — the same source the existing ``module_elasticsearch``
         boot path uses, so default deployments behave identically.
         """
         if self.cluster_url is None and self.api_key is None:

@@ -24,7 +24,7 @@ Driver-agnostic STAC validation at write time.
 Uses pystac's ``JsonSchemaSTACValidator`` for core + extension schema validation.
 Falls back to stac-pydantic's ``validate_extensions()`` when available.
 This module is called from the service layer before persisting to any storage driver
-(PostgreSQL sidecar pipeline or Elasticsearch/SFEOS).
+(PostgreSQL sidecar pipeline or Elasticsearch).
 """
 
 import json

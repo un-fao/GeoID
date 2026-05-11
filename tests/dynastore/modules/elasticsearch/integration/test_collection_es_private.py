@@ -197,7 +197,7 @@ async def test_search_metadata_returns_by_q(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — bbox spatial query no longer returns the intersecting private collection; ES query construction may need updating against the post-SFEOS shape.", strict=False)
+@pytest.mark.xfail(reason="#514 — bbox spatial query no longer returns the intersecting private collection; ES query construction may need updating.", strict=False)
 @pytest.mark.asyncio
 async def test_search_metadata_spatial_filter(app_lifespan):
     """search_metadata(bbox=...) returns collections whose extent intersects the bbox."""

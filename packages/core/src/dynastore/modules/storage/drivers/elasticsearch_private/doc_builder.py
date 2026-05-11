@@ -39,7 +39,7 @@ def build_tenant_feature_doc(
     Feature dict. Pulls ``geoid`` from the item's ``id``, ``geometry`` and
     ``bbox`` from the GeoJSON shape, and copies any non-internal
     ``properties`` (keys starting with ``_`` are skipped — those are
-    SFEOS-internal tracking fields like ``_external_id``).
+    internal tracking fields like ``_external_id``).
     """
     if hasattr(item, "model_dump"):
         src = item.model_dump(by_alias=True, exclude_none=True)
