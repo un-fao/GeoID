@@ -410,10 +410,11 @@ class _DualOutbox:
     async def enqueue_bulk(
         self, conn: Any = None, *, catalog_id: str, rows: Sequence[Any],
     ) -> None:
-        # Observability (#504): one structured log per bulk-enqueue call —
-        # captures chunk size for `index_chunk_size_bucket` and per-indexer
-        # emission rate via `index_chunks_emitted_total`. Source label is
-        # "bulk" to distinguish from the legacy per-op path.
+        await self._bulk.enqueue_bulk(conn, catalog_id=catalog_id, rows=rows)
+        # Observability (#504): one structured log per *successful* bulk
+        # enqueue — captures chunk size and per-indexer emission rate.
+        # Emitted after the delegate returns so a raise does not leave a
+        # log line describing a chunk that was never durably persisted.
         chunk_size = len(rows)
         if chunk_size:
             indexer_ids = sorted({getattr(r, "indexer_id", "?") for r in rows})
@@ -422,7 +423,6 @@ class _DualOutbox:
                 "chunk_size=%d",
                 ",".join(indexer_ids), catalog_id, chunk_size,
             )
-        await self._bulk.enqueue_bulk(conn, catalog_id=catalog_id, rows=rows)
 
     async def claim_batch(
         self, *, driver_id: str, catalog_id: str,

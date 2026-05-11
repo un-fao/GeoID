@@ -42,21 +42,43 @@ async def test_outbox_enqueue_emits_chunk_emitted_log(caplog):
     assert "chunk_size=1" in msg
 
 
-def test_task_drained_log_shape():
-    timestamp = datetime.now(timezone.utc) - timedelta(seconds=1.5)
-    drain_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
-    line = (
-        f"task_drained task_type=index_propagation task_id=t-1 "
-        f"enqueue_to_drain_seconds={drain_seconds:.4f}"
-    )
-    m = re.match(
-        r"^task_drained task_type=(?P<task_type>\S+) task_id=(?P<task_id>\S+) "
-        r"enqueue_to_drain_seconds=(?P<seconds>\d+\.\d+)$",
-        line,
-    )
-    assert m is not None
-    assert m["task_type"] == "index_propagation"
-    assert 0.9 < float(m["seconds"]) < 2.5
+def test_task_drained_success_emission(caplog):
+    from dynastore.modules.tasks.dispatcher import _log_task_terminal
+
+    ts = datetime.now(timezone.utc) - timedelta(seconds=0.5)
+    with caplog.at_level(logging.INFO, logger="dynastore.modules.tasks.dispatcher"):
+        _log_task_terminal(
+            "index_propagation", "t-1", ts, outcome="success", error=None,
+        )
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("task_drained ") for m in msgs)
+    m = next(m for m in msgs if m.startswith("task_drained "))
+    assert "task_type=index_propagation" in m
+    assert "outcome=success" in m
+    assert re.search(r"enqueue_to_drain_seconds=\d+\.\d+", m)
+
+
+def test_task_failed_emission_per_outcome(caplog):
+    """All three failure paths emit `task_failed` with distinct outcomes."""
+    from dynastore.modules.tasks.dispatcher import _log_task_terminal
+
+    ts = datetime.now(timezone.utc) - timedelta(seconds=0.1)
+    outcomes = ("cancelled", "permanent_failure", "transient_failure")
+    with caplog.at_level(logging.INFO, logger="dynastore.modules.tasks.dispatcher"):
+        for outcome in outcomes:
+            _log_task_terminal(
+                "index_propagation", "t-X", ts, outcome=outcome, error="boom",
+            )
+
+    failed_msgs = [
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith("task_failed ")
+    ]
+    assert len(failed_msgs) == 3
+    for outcome, msg in zip(outcomes, failed_msgs):
+        assert f"outcome={outcome}" in msg
+        assert "error='boom'" in msg
+        assert re.search(r"enqueue_to_drain_seconds=\d+\.\d+", msg)
 
 
 def test_task_claim_rejected_log_shape():

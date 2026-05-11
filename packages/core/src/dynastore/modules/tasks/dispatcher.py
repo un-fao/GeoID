@@ -220,6 +220,40 @@ class BatchedHeartbeat:
 
 
 # ---------------------------------------------------------------------------
+# Observability — structured task-terminal-state log (#504). Single emission
+# site so a log-based metric pivots on `outcome` to compute success rate +
+# latency percentiles per task_type without juggling multiple log shapes.
+# Wrapped in try/except — telemetry must never break the drain.
+# ---------------------------------------------------------------------------
+
+
+def _log_task_terminal(
+    task_type: str,
+    task_id: Any,
+    timestamp: datetime,
+    *,
+    outcome: str,
+    error: Optional[str],
+) -> None:
+    try:
+        drain_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
+        if outcome == "success":
+            logger.info(
+                "task_drained task_type=%s task_id=%s "
+                "enqueue_to_drain_seconds=%.4f outcome=%s",
+                task_type, task_id, drain_seconds, outcome,
+            )
+        else:
+            logger.info(
+                "task_failed task_type=%s task_id=%s "
+                "enqueue_to_drain_seconds=%.4f outcome=%s error=%r",
+                task_type, task_id, drain_seconds, outcome, error or "-",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("task_terminal log failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Reactive reaper — DLQ unclaimable rows when no live worker advertises the
 # required capability (issue #502). Companion to ``TaskProtocol.can_claim``
 # and ``TaskProtocol.required_capability``.
@@ -534,22 +568,13 @@ async def run_dispatcher(
                 return
 
             await complete_task(engine, task_id, timestamp, outputs=result)
-            # Observability (#504): enqueue→drain latency. Per-task_type so
-            # the metric works for every TaskProtocol implementation; the
-            # index_propagation case (the #504 driver) is just one tenant.
-            try:
-                from datetime import datetime, timezone
-                drain_seconds = (
-                    datetime.now(timezone.utc) - timestamp
-                ).total_seconds()
-                logger.info(
-                    "task_drained task_type=%s task_id=%s "
-                    "enqueue_to_drain_seconds=%.4f",
-                    row["task_type"], task_id, drain_seconds,
-                )
-            except Exception:  # noqa: BLE001 — telemetry must never break drain
-                logger.debug("task_drained latency log failed", exc_info=True)
-            logger.info(f"Dispatcher: Task {task_id} completed successfully.")
+            # Observability (#504): single structured terminal-state line
+            # (replaces the prior "completed successfully" INFO). Per-task_type
+            # so the metric works for every TaskProtocol implementation.
+            _log_task_terminal(
+                row["task_type"], task_id, timestamp,
+                outcome="success", error=None,
+            )
 
         except asyncio.CancelledError:
             logger.warning(
@@ -560,6 +585,10 @@ async def run_dispatcher(
                 engine, task_id, timestamp,
                 "Runner interrupted (SIGTERM)",
                 retry=True,
+            )
+            _log_task_terminal(
+                row["task_type"], task_id, timestamp,
+                outcome="cancelled", error="SIGTERM",
             )
             raise
 
@@ -573,6 +602,10 @@ async def run_dispatcher(
                 str(e),
                 retry=False,
             )
+            _log_task_terminal(
+                row["task_type"], task_id, timestamp,
+                outcome="permanent_failure", error=str(e),
+            )
 
         except Exception as e:
             import traceback
@@ -584,6 +617,10 @@ async def run_dispatcher(
                 engine, task_id, timestamp,
                 str(e),
                 retry=True,
+            )
+            _log_task_terminal(
+                row["task_type"], task_id, timestamp,
+                outcome="transient_failure", error=str(e),
             )
 
         finally:
