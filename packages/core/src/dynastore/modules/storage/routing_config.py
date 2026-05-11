@@ -1012,6 +1012,54 @@ async def _on_apply_items_routing_config(
     except Exception:
         pass
 
+    # Auto-fire catalog-wide DENY when this routing pins (or removes) the
+    # private items driver. Idempotent — `_apply_deny_policy` re-registers
+    # the same `private_deny_{cat}` policy. Skips when no catalog scope.
+    if catalog_id:
+        await _sync_deny_policy_for_catalog(config, catalog_id)
+
+
+async def _sync_deny_policy_for_catalog(
+    new_routing: "ItemsRoutingConfig", catalog_id: str,
+) -> None:
+    """Apply or revoke the catalog-wide DENY policy after an items
+    routing-config write, depending on whether the catalog still has any
+    private collection.
+
+    Issue #480 — covers the missing trigger between provisioning
+    (``ensure_storage``) and cold-boot scan (``_restore_deny_policies``):
+    flipping an existing public catalog's items routing to pin the private
+    driver did not previously install the DENY.
+    """
+    from dynastore.modules.storage.drivers.elasticsearch_private.driver import (
+        ItemsElasticsearchPrivateDriver,
+    )
+
+    try:
+        if _items_routing_has_private_driver(new_routing):
+            await ItemsElasticsearchPrivateDriver._apply_deny_policy(catalog_id)
+            return
+
+        from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.catalog.catalog_config import CollectionPrivacy
+        from dynastore.tools.discovery import get_protocol
+
+        catalogs_proto = get_protocol(CatalogsProtocol)
+        configs_proto = get_protocol(ConfigsProtocol)
+        if catalogs_proto is None or configs_proto is None:
+            return
+        if not await ItemsElasticsearchPrivateDriver._catalog_has_private_collection(
+            catalogs_proto, configs_proto, catalog_id, CollectionPrivacy,
+        ):
+            await ItemsElasticsearchPrivateDriver._revoke_deny_policy(catalog_id)
+    except Exception as exc:
+        logger.warning(
+            "routing_config: DENY sync failed for catalog %r after items "
+            "routing write: %s (recoverable on next ensure_storage / cold boot)",
+            catalog_id, exc,
+        )
+
 
 async def _on_apply_collection_routing_config(
     config: CollectionRoutingConfig,
