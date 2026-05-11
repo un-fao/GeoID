@@ -240,6 +240,7 @@ UPDATE_PRINCIPAL = DQLQuery(
     UPDATE {schema}.principals
     SET identifier = :identifier,
         display_name = :display_name,
+        is_active = :is_active,
         metadata = :metadata,
         policy = :policy,
         custom_policies = :custom_policies,
