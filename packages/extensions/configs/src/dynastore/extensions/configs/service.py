@@ -432,15 +432,14 @@ class ConfigsService(ExtensionProtocol):
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode for the hierarchical ``meta`` tree.  "
-                "``field`` (default): each class in the response gets a "
-                "lightweight ``{field_docs: {field_name: description}}`` "
-                "leaf in ``meta`` at the same path that produces its "
-                "payload in ``configs``. "
-                "``schema``: leaf is ``{json_schema: <full Pydantic "
-                "schema>}`` (title/description/type/default/examples/"
-                "constraints — everything a form-builder needs; heavier). "
-                "``none``: ``meta`` returned as null."
+                "Per-class documentation mode injected INLINE on each "
+                "in-scope plugin leaf as a ``_meta`` sibling.  "
+                "``field`` (default): leaf carries ``_meta = {field_docs: "
+                "{field_name: description}}``.  ``schema``: leaf carries "
+                "``_meta = {json_schema: <full Pydantic schema>}`` "
+                "(title/description/type/default/examples/constraints — "
+                "everything a form-builder needs; heavier).  ``none``: "
+                "no ``_meta`` key on any leaf."
             ),
         ),
         include: str = Query(
@@ -473,6 +472,20 @@ class ConfigsService(ExtensionProtocol):
                 "runs there)."
             ),
         ),
+        links: str = Query(
+            "none",
+            pattern="^(none|minimal|full)$",
+            description=(
+                "Per-plugin HATEOAS edit affordances injected INLINE on "
+                "each in-scope leaf as a ``_links`` sibling — ``self`` "
+                "(GET), ``edit`` (PUT — replace), ``edit`` (DELETE — clear "
+                "override), ``describedby`` (GET registry/{class_key}).  "
+                "``none`` (default): no ``_links`` on any leaf, "
+                "wire-compatible with pre-#517 clients.  ``minimal``: "
+                "rel/href/method only.  ``full``: adds a contextual "
+                "``title`` per link naming the class key and tier."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_platform_config(
@@ -481,6 +494,7 @@ class ConfigsService(ExtensionProtocol):
             meta=meta,
             include=include,
             strict=strict,
+            links=links,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -499,11 +513,11 @@ class ConfigsService(ExtensionProtocol):
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode for the hierarchical ``meta`` tree.  "
-                "``field`` (default) embeds ``{field_docs: {field_name: "
-                "description}}`` per class. ``schema`` embeds the full "
-                "JSON Schema. ``none`` returns ``meta`` as null. See "
-                "platform endpoint for full notes."
+                "Per-class documentation mode injected INLINE on each "
+                "in-scope leaf as ``_meta``. ``field`` (default): "
+                "``{field_docs: {...}}``. ``schema``: ``{json_schema: "
+                "{...}}``. ``none``: no ``_meta`` key. See platform "
+                "endpoint for full notes."
             ),
         ),
         include: str = Query(
@@ -526,6 +540,15 @@ class ConfigsService(ExtensionProtocol):
                 "same query-string template works at every tier."
             ),
         ),
+        links: str = Query(
+            "none",
+            pattern="^(none|minimal|full)$",
+            description=(
+                "Per-plugin HATEOAS affordances injected INLINE on each "
+                "leaf as ``_links``. ``none`` (default) / ``minimal`` / "
+                "``full``. See platform endpoint for full notes."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_catalog_config(
@@ -535,6 +558,7 @@ class ConfigsService(ExtensionProtocol):
             meta=meta,
             include=include,
             strict=strict,
+            links=links,
         )
         return JSONResponse(content=response.model_dump())
 
@@ -554,11 +578,11 @@ class ConfigsService(ExtensionProtocol):
             "field",
             pattern="^(none|field|schema)$",
             description=(
-                "Documentation mode for the hierarchical ``meta`` tree.  "
-                "``field`` (default) embeds ``{field_docs: {field_name: "
-                "description}}`` per class. ``schema`` embeds the full "
-                "JSON Schema. ``none`` returns ``meta`` as null. See "
-                "platform endpoint for full notes."
+                "Per-class documentation mode injected INLINE on each "
+                "in-scope leaf as ``_meta``. ``field`` (default): "
+                "``{field_docs: {...}}``. ``schema``: ``{json_schema: "
+                "{...}}``. ``none``: no ``_meta`` key. See platform "
+                "endpoint for full notes."
             ),
         ),
         include: str = Query(
@@ -585,6 +609,15 @@ class ConfigsService(ExtensionProtocol):
                 "or collection scope; accepted for API symmetry."
             ),
         ),
+        links: str = Query(
+            "none",
+            pattern="^(none|minimal|full)$",
+            description=(
+                "Per-plugin HATEOAS affordances injected INLINE on each "
+                "leaf as ``_links``. ``none`` (default) / ``minimal`` / "
+                "``full``. See platform endpoint for full notes."
+            ),
+        ),
     ) -> Any:
         base_url = str(request.url).split("?")[0]
         response = await self._config_api.compose_collection_config(
@@ -595,6 +628,7 @@ class ConfigsService(ExtensionProtocol):
             meta=meta,
             include=include,
             strict=strict,
+            links=links,
         )
         return JSONResponse(content=response.model_dump())
 

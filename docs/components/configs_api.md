@@ -34,9 +34,10 @@ All three GET endpoints accept the same query params:
 | Param      | Type        | Default | Effect |
 |------------|-------------|---------|--------|
 | `resolved` | bool        | `true`  | `true`: return waterfall-resolved values for every visible config; `false`: return only configs explicitly stored at this scope (delta-only — safe for read-modify-write flows). |
-| `meta`     | enum        | `field` | `none`: omit `meta` tree entirely; `field` (default): per-class `{field_docs}` payload at the same path as `configs`; `schema`: full Pydantic JSON Schema per class (heavier, form-builder ready). |
+| `meta`     | enum        | `field` | Per-class documentation injected INLINE on each in-scope plugin leaf as a `_meta` sibling.  `none`: no `_meta` key on any leaf.  `field` (default): leaf carries `_meta = {field_docs: {field_name: description}}`.  `schema`: leaf carries `_meta = {json_schema: <full Pydantic schema>}` (heavier, form-builder ready). |
 | `include`  | enum        | `scope` | `scope` (default): body lists configs owned by the active scope; upstream-tier configs go to the hierarchical `inherited` tree.  `upstream`: every visible class rendered with its waterfall-resolved value (verbose; no `inherited` tree). |
 | `strict`   | bool        | `true`  | Cycle F.7d.2 — at platform scope, `true` keeps body to platform-intrinsic configs (`modules`, `engines`, `tasks`, `extensions`).  Catalog-/collection-tier templates route to `inherited` (or are dropped under `include=upstream`).  `false` restores the previous always-true platform-scope inclusion.  No effect at catalog or collection scope. |
+| `links`    | enum        | `none`  | #517 — per-plugin HATEOAS edit affordances injected INLINE on each in-scope leaf as a `_links` sibling.  `none` (default): no `_links` on any leaf, wire-compatible with pre-#517 clients.  `minimal`: `rel`/`href`/`method` only.  `full`: adds a contextual `title` per link naming the class key and tier. |
 
 The `self` link on every response carries `hrefSchema` (a JSON Schema
 2020-12 document) describing every supported query parameter — useful
@@ -46,15 +47,25 @@ for clients that want to discover the surface programmatically.
 
 ```jsonc
 {
-  "_links":  [ /* HATEOAS link catalog — see below */ ],
+  "_links":  [ /* response-level HATEOAS — just `self` with hrefSchema */ ],
   "scope":   "platform",                 // platform response only
-  "configs": { /* nested config tree */ },
+  "configs": {
+    /* tier-first tree.  Each plugin leaf carries the resolved config
+       fields PLUS optional siblings:
+         "_meta":  {"field_docs": {...}} | {"json_schema": {...}}  (when ?meta != "none")
+         "_links": [self, edit(PUT), edit(DELETE), describedby]    (when ?links != "none") */
+  },
   "inherited": { /* mirror tree for upstream-tier configs */ }, // null at platform under strict=false
-  "meta":      { /* nested per-class field_docs / json_schema */ }, // null when meta=none
   "catalog_id":   "demo",                // catalog response only
   "collection_id": "sample"              // collection response only
 }
 ```
+
+Post #517, **field documentation and per-plugin edit affordances live
+INLINE on each leaf** (as `_meta` / `_links` siblings of the plugin's
+own fields), not on a parallel top-level tree.  Inherited-tree
+placeholders carry neither `_meta` nor `_links` — they are not
+actionable at the active scope.
 
 ### `configs` tree shape
 
@@ -130,31 +141,44 @@ Populated under three conditions:
 `null` under `include=upstream` (everything inlined) and at platform
 scope under `strict=false` (where the body is already inclusive).
 
-### `meta` tree
+### Per-leaf `_meta` (inline; replaces the retired parallel `meta` tree)
 
-Same shape as `configs`.  Each leaf carries either `{"field_docs":
-{field_name: description, ...}}` (default `meta=field`) or
-`{"json_schema": <full Pydantic schema>}` (under `meta=schema`).  Use
-the schema mode for form builders that need title/description/type/
-default/examples per field.  Suppress entirely with `meta=none`.
+When `?meta=field|schema` (default `field`), every in-scope plugin leaf
+carries a `_meta` sibling next to the plugin's own fields:
+
+- `{"field_docs": {field_name: description, ...}}` under `meta=field`.
+- `{"json_schema": <full Pydantic schema 2020-12>}` under `meta=schema`.
+
+Use the schema mode for form builders that need title / description /
+type / default / examples per field.  Suppress with `meta=none`.
+
+Inherited-tree placeholders carry no `_meta`.
 
 ## HATEOAS link catalog
 
-Every response carries a top-level `_links` array.  Routing-entry DTOs
-also carry their own `_links` (Cycle F.7d.3 replaces the old
-`config_ref: null` scalar).
+Every response carries a slim top-level `_links` array (just `self`).
+Each in-scope plugin leaf may carry its own `_links` array (when
+`?links != "none"`).  Routing-entry DTOs also carry their own `_links`
+(Cycle F.7d.3 driver-config affordance).
 
 ### Top-level `_links` rels
 
-| `rel`       | Method | Templated | Purpose |
-|-------------|--------|-----------|---------|
-| `self`      | GET    | no        | Current view URL.  Carries `hrefSchema` describing every supported query parameter. |
-| `alternate` | GET    | no        | `?meta=schema` — full JSON Schema per class (form-builder mode). |
-| `alternate` | GET    | no        | `?meta=none` — no field documentation (lean mode). |
-| `alternate` | GET    | no        | `?resolved=false` — delta-only; configs explicitly stored at this scope (safe for read-modify-write). |
-| `alternate` | GET    | no        | `?include=upstream` — full waterfall; every visible class rendered with its resolved value (verbose; pre-slim default). |
-| `alternate` | GET    | no        | `?strict=false` (Cycle F.7d.2) — inclusive view; platform scope keeps catalog-/collection-tier templates inline rather than routing them to `inherited`. |
-| `edit`      | PATCH  | yes       | `<base>/plugins/{class_key}` — modify a single config class at this scope. |
+| `rel`  | Method | Purpose |
+|--------|--------|---------|
+| `self` | GET    | Current view URL.  Carries `hrefSchema` (JSON Schema 2020-12) describing every supported query parameter (`resolved`, `meta`, `include`, `strict`, `links`). |
+
+### Per-leaf `_links` rels (when `?links=minimal|full`)
+
+| `rel`          | Method | Purpose |
+|----------------|--------|---------|
+| `self`         | GET    | Read this plugin at the active scope: `<base>/plugins/{class_key}` (or `/{ref_key}` for multi-instance refs). |
+| `edit`         | PUT    | Replace this plugin at the active scope (full body). |
+| `edit`         | DELETE | Clear the scope-tier override; falls back to the upstream waterfall. |
+| `describedby`  | GET    | JSON Schema entry: `<configs_root>/registry/{class_key}` (scope-agnostic — registry is global; multi-instance refs use the canonical `class_key`, not `ref_key`). |
+
+`links=full` adds a contextual `title` per link naming the class_key
+and tier phrase (e.g. `"Replace items_routing at catalog 'demo'"`).
+`links=minimal` omits titles.
 
 ### Routing-entry `_links` rels
 
@@ -229,7 +253,7 @@ GET /configs/?resolved=true
       "modules":  { "gcp": { /* gcp_catalog_bucket_config, gcp_collection_bucket_config — non-default visibility */ } }
     }
   },
-  "_links": [ /* self + 5 alternates + edit */ ]
+  "_links": [ /* self only (hrefSchema advertises params incl. links) */ ]
 }
 ```
 
@@ -256,7 +280,7 @@ GET /configs/catalogs/demo?resolved=true
       "tasks":      { /* source=platform */ }
     }
   },
-  "_links": [ /* self + alternates */ ]
+  "_links": [ /* self only */ ]
 }
 ```
 
@@ -296,8 +320,8 @@ GET /configs/catalogs/demo/collections/sample?resolved=true
                     "_links": [{
                       "rel": "driver-config",
                       "href": "http://localhost:8080/configs/catalogs/demo/collections/sample/plugins/items_postgresql_driver",
-                      "method": "PATCH",
-                      "title": "PATCH this driver's registered config"
+                      "method": "PUT",
+                      "title": "PUT this driver's config at collection scope"
                     }]
                   }],
                   "SEARCH": [/* … */]
@@ -320,7 +344,7 @@ GET /configs/catalogs/demo/collections/sample?resolved=true
       "tasks":      { /* source=platform */ }
     }
   },
-  "_links": [ /* self + alternates */ ]
+  "_links": [ /* self only */ ]
 }
 ```
 
@@ -373,8 +397,12 @@ response with `tiles_secondary` registered next to the canonical
 }
 ```
 
-The `meta` tree mirrors the same shape — `meta.platform.modules.tiles.tiles_secondary.field_docs`
-matches the canonical leaf so dashboards render the same form for the variant.
+Multi-instance ref leaves carry their own inline `_meta` (when
+`?meta=field|schema`) — same `field_docs` as the canonical class (the
+schema is per-class, not per-instance) so dashboards render the same
+form for the variant.  Inline `_links` use the `ref_key` for `self`/
+`edit` (per-instance CRUD URL) and the canonical `class_key` for
+`describedby` (schema lookup).
 
 `list_refs_at_scope()` on `ConfigsProtocol` enumerates `{ref_key: class_key}`
 without paying the JSON-deserialise cost — useful for quick "what
