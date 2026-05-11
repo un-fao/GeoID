@@ -75,6 +75,12 @@ a `**Gap A/B/C**` markdown cell at the relevant step:
   schema should apply by default to every collection in the catalog.
   The cell is gated by `BOOTSTRAP_FROM = None` and is documentary; users
   copy-paste the snippet to bootstrap from a real asset.
+  **Regression-risk:** because the cell is gated off, the notebook test
+  pass never drives the Process→PluginConfig sequence — changes to the
+  `gdal` Process payload, the OGR→PG type map, the PluginConfig PUT
+  shape, or the sync/async response contract will not be caught by CI
+  from this notebook. Cover with a `TestClient` integration test if you
+  depend on this bootstrap path.
 - **Gap B** — OTF as **WRITE-primary** is not live-tested in review env;
   the notebook keeps PG as primary and notes how to swap.
 - **Gap C** — GCS tile-cache config + observability lives in
