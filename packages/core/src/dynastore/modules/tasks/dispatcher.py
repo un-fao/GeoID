@@ -502,10 +502,14 @@ async def run_dispatcher(
                         )
                         if dlqed:
                             return
+                    # Observability (#504): claim-rejection rate per
+                    # (task_type, capability) is the early-warning signal
+                    # for SCOPE drift and module-deployment gaps. Structured
+                    # key=value INFO line — log-based metric ready.
                     logger.info(
-                        "Dispatcher: task %s (%s) released — can_claim returned "
-                        "False on this worker.",
-                        task_id, row["task_type"],
+                        "task_claim_rejected task_type=%s capability=%s "
+                        "task_id=%s — can_claim returned False on this worker",
+                        row["task_type"], cap_id or "-", task_id,
                     )
                     await reset_task_to_pending(
                         engine, task_id, backoff=_CLAIM_REJECT_BACKOFF,
@@ -530,6 +534,21 @@ async def run_dispatcher(
                 return
 
             await complete_task(engine, task_id, timestamp, outputs=result)
+            # Observability (#504): enqueue→drain latency. Per-task_type so
+            # the metric works for every TaskProtocol implementation; the
+            # index_propagation case (the #504 driver) is just one tenant.
+            try:
+                from datetime import datetime, timezone
+                drain_seconds = (
+                    datetime.now(timezone.utc) - timestamp
+                ).total_seconds()
+                logger.info(
+                    "task_drained task_type=%s task_id=%s "
+                    "enqueue_to_drain_seconds=%.4f",
+                    row["task_type"], task_id, drain_seconds,
+                )
+            except Exception:  # noqa: BLE001 — telemetry must never break drain
+                logger.debug("task_drained latency log failed", exc_info=True)
             logger.info(f"Dispatcher: Task {task_id} completed successfully.")
 
         except asyncio.CancelledError:

@@ -224,6 +224,15 @@ class TaskTableOutboxWriter:
         from dynastore.tools.json import CustomJSONEncoder
 
         task_id = generate_uuidv7()
+        # Observability (#504): structured log line for GCP log-based metric
+        # `index_chunks_emitted_total{indexer,source,op_type}`. One row per
+        # enqueue call. `chunk_size=1` here — the legacy scalar writer is
+        # per-op; bulk enqueue (PgOutboxStore.enqueue_bulk) logs its own line.
+        logger.info(
+            "index_chunk_emitted indexer=%s source=legacy op_type=%s "
+            "catalog=%s collection=%s chunk_size=1",
+            indexer_id, op.op_type, ctx.catalog, ctx.collection,
+        )
         await self._exec_insert(
             ctx.pg_conn,
             sql=f"""
@@ -401,6 +410,18 @@ class _DualOutbox:
     async def enqueue_bulk(
         self, conn: Any = None, *, catalog_id: str, rows: Sequence[Any],
     ) -> None:
+        # Observability (#504): one structured log per bulk-enqueue call —
+        # captures chunk size for `index_chunk_size_bucket` and per-indexer
+        # emission rate via `index_chunks_emitted_total`. Source label is
+        # "bulk" to distinguish from the legacy per-op path.
+        chunk_size = len(rows)
+        if chunk_size:
+            indexer_ids = sorted({getattr(r, "indexer_id", "?") for r in rows})
+            logger.info(
+                "index_chunk_emitted indexer=%s source=bulk catalog=%s "
+                "chunk_size=%d",
+                ",".join(indexer_ids), catalog_id, chunk_size,
+            )
         await self._bulk.enqueue_bulk(conn, catalog_id=catalog_id, rows=rows)
 
     async def claim_batch(
