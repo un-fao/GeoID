@@ -763,7 +763,7 @@ async def _emit_stuck_pending_logs(rows: List[Dict[str, Any]]) -> None:
     for row in rows:
         cap_per_row.append(_resolve_row_capability(row, task_instance_cache))
 
-    live_cache: Dict[str, bool] = {}
+    live_cache: Dict[str, Optional[bool]] = {}
     for cap_id in {c for c in cap_per_row if c}:
         live_cache[cap_id] = await _safe_is_live(cap_id)
 
