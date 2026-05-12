@@ -9,6 +9,8 @@
 import logging
 from typing import Any, Dict, Optional
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from dynastore.modules.processes.models import Process, StatusInfo
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.maintenance import requeue_dead_letter_tasks_by_type
@@ -49,9 +51,10 @@ class RequeueDeadLetterTasksTask(
         if isinstance(request, dict):
             request = RequeueDeadLetterTasksRequest(**request)
 
-        if self.engine is None:
+        if not isinstance(self.engine, AsyncEngine):
             raise RuntimeError(
-                "requeue_dead_letter_tasks: no database engine available.",
+                "requeue_dead_letter_tasks: requires an AsyncEngine "
+                f"(got {type(self.engine).__name__}).",
             )
 
         inputs_match = _build_inputs_match(

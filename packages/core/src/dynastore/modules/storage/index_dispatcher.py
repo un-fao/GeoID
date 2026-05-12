@@ -385,7 +385,7 @@ def _log_dispatch_path(
     mode: str,
     indexer_id: str,
     catalog: str,
-    collection: str,
+    collection: Optional[str],
     chunk_size: int,
 ) -> None:
     # Observability (#504): structured log line for GCP log-based metrics
@@ -1281,7 +1281,7 @@ def _op_payload(op: "DispatchableOp") -> Any:
 
 def _op_entity_id(op: "DispatchableOp") -> str:
     if isinstance(op, IndexableOp):
-        return op.item_id
+        return op.item_id or ""
     return op.entity_id
 
 
