@@ -430,9 +430,12 @@ def test_build_routing_refs_forwards_hints_and_source():
         )
     [es, pg] = by_class["items_routing_config"]["operations"]["SEARCH"]
     assert es["hints"] == ["geometry_simplified"]
-    assert es["source"] == "auto"
+    assert es["_meta"]["source"] == "auto"
+    assert es["_meta"]["tier"] == "platform"
+    assert "source" not in es
     assert pg["hints"] == ["geometry_exact"]
-    assert pg["source"] == "operator"
+    assert pg["_meta"]["source"] == "operator"
+    assert pg["_meta"]["tier"] == "platform"
 
 
 def test_build_routing_refs_link_title_reflects_active_scope():
@@ -470,6 +473,56 @@ def test_build_routing_refs_link_title_reflects_active_scope():
         assert ref["_links"][0]["title"] == (
             f"PUT this driver's config at {expected_scope} scope"
         ), f"base_url={base_url} expected scope={expected_scope}"
+
+
+def test_build_routing_refs_meta_tier_reflects_active_scope():
+    """#585 — `_meta.tier` mirrors the active composed scope (platform |
+    catalog | collection) inferred from ``base_url``.  Lets operators
+    distinguish "this entry surfaced at collection scope" from "this
+    entry surfaced at platform scope" without a second request."""
+    registry = _stub_registry(items_postgresql_driver={"__module__": "m"})
+    cases = [
+        ("http://h/configs", "platform"),
+        ("http://h/configs/catalogs/cat1", "catalog"),
+        ("http://h/configs/catalogs/cat1/collections/coll1", "collection"),
+    ]
+    for base_url, expected_tier in cases:
+        local = {"items_routing_config": {"operations": {
+            "WRITE": [{"driver_ref": "items_postgresql_driver",
+                       "on_failure": "fatal", "write_mode": "sync",
+                       "source": "auto"}]
+        }}}
+        with patch(
+            "dynastore.extensions.configs.config_api_service.list_registered_configs",
+            return_value=registry,
+        ):
+            ConfigApiService(config_service=MagicMock())._build_routing_refs(
+                local, base_url=base_url,
+            )
+        ref = local["items_routing_config"]["operations"]["WRITE"][0]
+        assert ref["_meta"]["tier"] == expected_tier, (
+            f"base_url={base_url} expected tier={expected_tier}"
+        )
+        assert ref["_meta"]["source"] == "auto"
+
+
+def test_build_routing_refs_meta_omits_source_when_missing():
+    """#585 — legacy / test-fixture entries without ``source`` get a
+    ``_meta`` block with only ``tier`` (no ``source`` key)."""
+    local = {"items_routing_config": {"operations": {
+        "WRITE": [{"driver_ref": "items_postgresql_driver",
+                   "on_failure": "fatal", "write_mode": "sync"}]
+    }}}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(items_postgresql_driver={"__module__": "m"}),
+    ):
+        ConfigApiService(config_service=MagicMock())._build_routing_refs(
+            local, base_url="http://h/configs",
+        )
+    ref = local["items_routing_config"]["operations"]["WRITE"][0]
+    assert ref["_meta"] == {"tier": "platform"}
+    assert "source" not in ref
 
 
 def test_build_routing_refs_unregistered_driver_emits_no_link():

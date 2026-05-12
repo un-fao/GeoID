@@ -74,13 +74,15 @@ class DriverRef(BaseModel):
         ),
     )
     write_mode: str = Field("sync", description="Write mode: sync | async.")
-    source: Optional[str] = Field(
-        default=None,
+    meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        serialization_alias="_meta",
         description=(
-            "Origin of the entry: ``operator`` (operator-authored) or "
-            "``auto`` (self-registered by the apply handler).  ``None`` "
-            "when the routing config did not record a source (legacy "
-            "or test-fixture entries)."
+            "Response-only provenance block, mirroring the post-#518 inline "
+            "``_meta`` pattern used on plugin leaves.  Carries ``source`` "
+            "(``operator`` | ``auto``) and ``tier`` (``platform`` | "
+            "``catalog`` | ``collection``) of the active composed scope.  "
+            "Not accepted on PUT/PATCH request bodies — strip before round-tripping."
         ),
     )
     links: List["Link"] = Field(
