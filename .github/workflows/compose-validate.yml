@@ -123,6 +123,12 @@ jobs:
       # is what the prod compose actually does.
       - name: Bake catalog from compose (tester stage, gha cache)
         working-directory: packages/core/src/dynastore/docker
+        env:
+          # Bake's `context: ../../../../..` climbs outside the compose file
+          # dir; buildx requires explicit fs.read entitlement for that. The
+          # repo root is the build context test.yml already uses, so granting
+          # read is identical in scope, just made explicit here.
+          BUILDX_BAKE_ENTITLEMENTS_FS: "0"
         run: |
           set -euo pipefail
           docker buildx bake \
