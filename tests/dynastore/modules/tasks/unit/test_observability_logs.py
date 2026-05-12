@@ -30,7 +30,7 @@ async def test_outbox_enqueue_emits_chunk_emitted_log(caplog):
     writer._exec_insert = _noop_exec  # type: ignore[assignment]
 
     with caplog.at_level(logging.INFO, logger="dynastore.modules.storage.index_dispatcher"):
-        await writer.enqueue(indexer_id="ix1", ctx=ctx, op=op)
+        await writer.enqueue(indexer_id="ix1", ctx=ctx, ops=[op])
 
     matches = [r for r in caplog.records if r.getMessage().startswith("index_chunk_emitted ")]
     assert len(matches) == 1
