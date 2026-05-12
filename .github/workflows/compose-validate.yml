@@ -116,11 +116,17 @@ jobs:
       # which the `docker/build-push-action` populates automatically but a
       # plain `docker buildx` invocation needs forwarded via env. The
       # docker/setup-buildx-action sets these in the workflow env on its own.
+      # Must `cd` into the docker dir: the compose file uses
+      # `extends: { file: ./compose.es.yml, ... }` which buildx resolves
+      # relative to the *current working directory*, not the --file path.
+      # `context: ../../../../..` then climbs back to the repo root, which
+      # is what the prod compose actually does.
       - name: Bake catalog from compose (tester stage, gha cache)
+        working-directory: packages/core/src/dynastore/docker
         run: |
           set -euo pipefail
           docker buildx bake \
-            --file packages/core/src/dynastore/docker/docker-compose.yml \
+            --file docker-compose.yml \
             --set '*.target=tester' \
             --set '*.args.SCOPE=all' \
             --set '*.args.BUILD_JUPYTERLITE=false' \
