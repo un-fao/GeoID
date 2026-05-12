@@ -229,6 +229,20 @@ services:
     networks:
       - dynastore_net
 
+  # Valkey is referenced via depends_on on every app service (catalog/geoid/
+  # worker/tools/maps) so it must be declared in this file even though the
+  # base compose owns the same definition. Compose `extends` pulls a single
+  # service, not its transitive depends_on graph — VS Code's right-click
+  # "Compose Up" runs `docker compose -f docker-compose.dev.yml up` against
+  # this file alone, so dev.yml has to stand on its own.
+  valkey:
+    extends:
+      file: ./compose.valkey.yml
+      service: valkey
+    container_name: geoid_valkey
+    networks:
+      - dynastore_net
+
 volumes:
   postgres_data:
   elasticsearch_data:
