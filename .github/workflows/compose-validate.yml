@@ -105,22 +105,25 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # `set:` injects buildx cache hooks without modifying the tracked
+      # `--set` injects buildx cache hooks without modifying the tracked
       # compose file. Cache scope matches test.yml's `tester` so we ride its
       # warm layers; `target=tester` overrides the default runtime stage
       # (full prod image is ~3 GB heavier and unnecessary for COPY validation).
       # SCOPE=all matches test.yml so the pip-install layer is shared too.
+      #
+      # GitHub Actions populates the GHA cache via the buildx GitHub Actions
+      # cache backend; this requires ACTIONS_CACHE_URL + ACTIONS_RUNTIME_TOKEN
+      # which the `docker/build-push-action` populates automatically but a
+      # plain `docker buildx` invocation needs forwarded via env. The
+      # docker/setup-buildx-action sets these in the workflow env on its own.
       - name: Bake catalog from compose (tester stage, gha cache)
-        uses: docker/bake-action@v6
-        with:
-          workdir: packages/core/src/dynastore/docker
-          files: docker-compose.yml
-          targets: catalog
-          load: false
-          push: false
-          set: |
-            *.target=tester
-            *.args.SCOPE=all
-            *.args.BUILD_JUPYTERLITE=false
-            *.cache-from=type=gha,scope=tester
-            *.cache-to=type=gha,mode=max,scope=tester
+        run: |
+          set -euo pipefail
+          docker buildx bake \
+            --file packages/core/src/dynastore/docker/docker-compose.yml \
+            --set '*.target=tester' \
+            --set '*.args.SCOPE=all' \
+            --set '*.args.BUILD_JUPYTERLITE=false' \
+            --set '*.cache-from=type=gha,scope=tester' \
+            --set '*.cache-to=type=gha,mode=max,scope=tester' \
+            catalog
