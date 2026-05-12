@@ -155,7 +155,6 @@ async def test_private_not_in_shared_index(app_lifespan):
     await driver.drop_storage(cat)
 
 
-@pytest.mark.xfail(reason="#514 — missing import of refresh_private_collection_index helper; fixture audit needed.", strict=False)
 @pytest.mark.asyncio
 async def test_public_driver_does_not_see_private_collection(app_lifespan):
     """Public CollectionElasticsearchDriver.get_metadata() must return None for private docs."""
@@ -167,8 +166,11 @@ async def test_public_driver_does_not_see_private_collection(app_lifespan):
     pub = _public_driver()
 
     await priv.ensure_storage(cat)
+    # upsert_metadata refreshes the per-tenant private index with
+    # ``refresh=wait_for`` (same pattern the sibling
+    # ``test_search_metadata_returns_by_q`` relies on); no extra
+    # index-refresh helper needed for read-after-write visibility.
     await priv.upsert_metadata(cat, col, metadata)
-    await refresh_private_collection_index(cat)
 
     result = await pub.get_metadata(cat, col)
     assert result is None, "private collection leaked to public get_metadata"
