@@ -177,14 +177,17 @@ class ItemsElasticsearchPrivateDriver(
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_private_items_index_settings(),
-                    "mappings": TENANT_FEATURE_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_private_items_index_settings(),
+                        "mappings": TENANT_FEATURE_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         bulk_body: list = []
         for item in items:
@@ -201,7 +204,7 @@ class ItemsElasticsearchPrivateDriver(
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body, request_timeout=60)
+            await es.bulk(body=bulk_body, params={"timeout": "60s"})
 
         return items if isinstance(items, list) else list(items)
 
@@ -306,14 +309,17 @@ class ItemsElasticsearchPrivateDriver(
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_private_items_index_settings(),
-                    "mappings": TENANT_FEATURE_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_private_items_index_settings(),
+                        "mappings": TENANT_FEATURE_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         await self._apply_deny_policy(catalog_id)
 
@@ -335,7 +341,9 @@ class ItemsElasticsearchPrivateDriver(
 
         index_name = get_private_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
-        await es.indices.delete(index=index_name, ignore_unavailable=True)
+        await es.indices.delete(
+            index=index_name, params={"ignore_unavailable": "true"},
+        )
         await self._revoke_deny_policy(catalog_id)
 
     async def export_entities(
@@ -414,14 +422,17 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_private_items_index_settings(),
-                    "mappings": TENANT_FEATURE_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_private_items_index_settings(),
+                        "mappings": TENANT_FEATURE_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         src = op.payload or {"id": op.entity_id}
         src.setdefault("id", op.entity_id)
@@ -431,7 +442,7 @@ class ItemsElasticsearchPrivateDriver(
         doc, factor, mode = simplify_to_fit(doc)
         doc["simplification_factor"] = factor
         doc["simplification_mode"] = mode
-        await es.index(index=index_name, id=op.entity_id, document=doc)
+        await es.index(index=index_name, id=op.entity_id, body=doc)
 
     async def index_bulk(self, ctx, ops):
         """Bulk-apply a batch of item ops via the ES ``_bulk`` API."""
@@ -462,14 +473,17 @@ class ItemsElasticsearchPrivateDriver(
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_private_items_index_settings(),
-                    "mappings": TENANT_FEATURE_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_private_items_index_settings(),
+                        "mappings": TENANT_FEATURE_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         body: List[dict] = []
         for op in ops:
@@ -492,7 +506,7 @@ class ItemsElasticsearchPrivateDriver(
         if not body:
             return BulkResult(total=len(ops))
 
-        resp = await es.bulk(body=body, request_timeout=60)
+        resp = await es.bulk(body=body, params={"timeout": "60s"})
         items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
         succeeded = 0
         failures: List[Dict[str, Any]] = []
