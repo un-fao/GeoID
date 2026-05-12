@@ -723,39 +723,39 @@ class EventsModule(ModuleProtocol):
         """Log per-shard backlog warnings when PENDING count exceeds threshold.
 
         Runs on the leader only (non-blocking advisory lock); non-leaders poll
-        for leadership on the same cadence. On cancellation or connection drop
-        the lock releases and another instance can take over.
+        for leadership on the same cadence. On cancellation or any inner-loop
+        exception the lock is released (via ``run_leader_loop``) and another
+        instance can take over — this is the guard against GH #588's pool
+        cascade where a leader-held connection stays associated with a
+        poisoned pool slot.
         """
-        try:
+        from dynastore.tools.async_utils import run_leader_loop
+        from dynastore.tools.protocol_helpers import get_engine
+
+        async def _scan_while_leader() -> None:
+            engine = self._engine or get_engine()
             while True:
-                async with self.acquire_consumer_lock(
-                    "events_backlog_monitor"
-                ) as is_leader:
-                    if not is_leader:
-                        await asyncio.sleep(cadence_seconds)
-                        continue
-                    from dynastore.tools.protocol_helpers import get_engine
-                    engine = self._engine or get_engine()
-                    while True:
-                        try:
-                            async with managed_transaction(engine) as conn:
-                                rows = await _backlog_query.execute(
-                                    conn, warn_threshold=warn_threshold
-                                )
-                            for row in rows or []:
-                                logger.warning(
-                                    "events.backlog shard=%s pending=%s oldest_age_sec=%s",
-                                    row["shard"],
-                                    row["pending"],
-                                    row["oldest_age_sec"],
-                                )
-                        except Exception:
-                            logger.exception("events.backlog monitor query failed")
-                        await asyncio.sleep(cadence_seconds)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("events.backlog monitor task exiting")
+                async with managed_transaction(engine) as conn:
+                    rows = await _backlog_query.execute(
+                        conn, warn_threshold=warn_threshold
+                    )
+                for row in rows or []:
+                    logger.warning(
+                        "events.backlog shard=%s pending=%s oldest_age_sec=%s",
+                        row["shard"],
+                        row["pending"],
+                        row["oldest_age_sec"],
+                    )
+                await asyncio.sleep(cadence_seconds)
+
+        await run_leader_loop(
+            acquire_leadership=lambda: self.acquire_consumer_lock(
+                "events_backlog_monitor"
+            ),
+            on_leader=_scan_while_leader,
+            name="events.backlog_monitor",
+            cadence_seconds=float(cadence_seconds),
+        )
 
     # ------------------------------------------------------------------
     # EventDriverProtocol — produce
