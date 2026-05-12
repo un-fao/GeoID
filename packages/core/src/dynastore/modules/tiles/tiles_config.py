@@ -57,6 +57,48 @@ class TilesConfig(ExposableConfigMixin, PluginConfig):
     )
 
 
+class TilesCachingConfig(ExposableConfigMixin, PluginConfig):
+    """Operator-tunable knobs for the bucket-backed tile cache.
+
+    Bucket selection is intentionally NOT exposed here — buckets are
+    provisioned per-catalog by ``StorageProtocol.ensure_storage_for_catalog``
+    and surfacing an override would break the per-catalog isolation
+    invariants enforced by the catalog lifecycle. The bucket in use can
+    be discovered at runtime via ``GET /admin/catalogs/{cat}`` (the
+    storage block surfaces the resolved bucket name).
+
+    Live edits via ``PUT /configs/plugins/tiles_caching_config`` apply on
+    the next tile save / fetch — no rewrite of already-cached objects.
+    Changing ``key_prefix`` orphans existing cached tiles (they remain
+    under the old prefix until the bucket TTL evicts them).
+    """
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "tiles")
+
+    key_prefix: str = Field(
+        default="tiles/collections",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_\-/]*[a-zA-Z0-9]$",
+        description=(
+            "Object-key prefix under the catalog bucket. The full key is "
+            "``{key_prefix}/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}``. "
+            "Changing this orphans existing cached tiles."
+        ),
+    )
+
+    ttl_seconds: int = Field(
+        default=31536000,
+        ge=0,
+        le=31536000,
+        description=(
+            "``Cache-Control: public, max-age=<ttl_seconds>`` set on every "
+            "tile object written to the bucket. 0 disables browser/CDN "
+            "caching (objects still persist server-side). Default is one "
+            "year (the GCS max-age ceiling)."
+        ),
+    )
+
+
 class TilesPreseedConfig(ExposableConfigMixin, PluginConfig):
     """
     Configuration for the Tiles Pre-seeding Process.
