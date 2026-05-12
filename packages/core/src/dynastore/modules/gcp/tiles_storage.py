@@ -221,8 +221,9 @@ class TileBucketPreseedStorage(TileStorageProtocol):
         bucket_name = await storage_provider.get_storage_identifier(catalog_id)
         if not bucket_name:
             return
-            
-        prefix = "tiles/"
+
+        cfg = await _load_caching_config()
+        prefix = f"{cfg.key_prefix}/"
         client_provider = self._get_client_provider()
         storage_client = client_provider.get_storage_client()
         bucket = storage_client.bucket(bucket_name)

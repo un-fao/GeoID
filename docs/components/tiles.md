@@ -95,6 +95,45 @@ Configured via `TilesPreseedConfig.storage_priority` (default `["bucket",
 
 Cache is populated asynchronously via `background_tasks.add_task(provider.save_tile, ...)` after every L2 miss.
 
+### L2 bucket layout — `TilesCachingConfig`
+
+The bucket-backed cache's object-key prefix and per-object `Cache-Control`
+TTL are surfaced through the standard PluginConfig waterfall
+(`PUT /configs/plugins/tiles_caching_config`):
+
+| Field | Default | Effect |
+|---|---|---|
+| `key_prefix` | `tiles/collections` | Object key is `{key_prefix}/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}` |
+| `ttl_seconds` | `31536000` (1 year) | `Cache-Control: public, max-age=<ttl_seconds>` on every tile object |
+
+Bucket selection is auto-derived per-catalog from
+`StorageProtocol.ensure_storage_for_catalog(catalog_id)` and is not
+operator-tunable here — exposing an override would break the
+per-catalog isolation invariants enforced by the catalog lifecycle.
+Changing `key_prefix` orphans existing cached tiles (they stay under
+the old prefix until the bucket TTL evicts them).
+
+### Cache observability — response headers + structured logs
+
+Every tile response advertises whether it was served from cache:
+
+| Response | `X-Tile-Cache` | `X-Tile-Source` |
+|---|---|---|
+| Bucket signed-URL redirect (307) | `hit` | `bucket_redirect` |
+| Bucket proxy bytes (200) | `hit` | `bucket_proxy` |
+| PMTiles archive fallback (200) | `hit` | `pmtiles_archive` |
+| PostGIS generation (200, bytes) | `miss` | `postgis` |
+| PostGIS generation (204, empty) | `miss` | `postgis` |
+
+INFO-level structured logs are emitted on the same logger
+(`dynastore.extensions.tiles.tiles_service`) in the project-standard
+`event=… key=value …` shape:
+
+```
+tile_cache event=hit  source=bucket_proxy     catalog=… collection=… z=… x=… y=… duration_ms=… bytes=…
+tile_cache event=miss source=postgis          catalog=… collection=… z=… x=… y=… duration_ms=… bytes=…
+```
+
 ### Cache invalidation
 
 ```
