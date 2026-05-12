@@ -100,13 +100,15 @@ class IndexerFatal(Exception):
     def __init__(
         self,
         indexer_id: str,
-        op: "DispatchableOp",
+        op: "Optional[DispatchableOp]",
         original: BaseException,
     ) -> None:
         # Format depending on which op shape was passed — both fan_out
         # callers (legacy IndexOp and new IndexableOp) use this same
         # exception type.
-        if isinstance(op, IndexableOp):
+        if op is None:
+            descriptor = "<empty batch>"
+        elif isinstance(op, IndexableOp):
             descriptor = f"{op.op}/{op.collection_id}/{op.item_id}"
         else:
             descriptor = f"{op.op_type}/{op.entity_type}/{op.entity_id}"
