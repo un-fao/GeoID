@@ -387,3 +387,31 @@ class TestCircuitBreaker:
         # Default is 3
         assert _VALKEY_CIRCUIT_BREAKER_THRESHOLD >= 1
         assert isinstance(_VALKEY_CIRCUIT_BREAKER_THRESHOLD, int)
+
+    async def test_set_failure_logs_at_warning_with_exc_info(self, caplog):
+        """#590: per-op failures emit at WARNING with exc_info so the
+        per-shard ConnectionError/TimeoutError actually lands in Cloud Run."""
+        import logging
+        import sys
+
+        sys.modules["valkey.asyncio"] = MagicMock()
+        sys.modules["valkey"] = MagicMock()
+
+        try:
+            from dynastore.tools.cache_valkey import ValkeyCacheBackend
+
+            backend = ValkeyCacheBackend("redis://localhost:6379")
+            backend._client = MagicMock()
+            backend._client.set = AsyncMock(side_effect=RuntimeError("boom-from-shard"))
+
+            with caplog.at_level(logging.WARNING, logger="dynastore.tools.cache_valkey"):
+                result = await backend.set("k", b"v")
+
+            assert result is False
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert any("ValkeyCacheBackend.set failed" in r.getMessage() for r in warnings)
+            # exc_info populated → traceback survives the INFO floor in Cloud Run.
+            assert any(r.exc_info is not None and "boom-from-shard" in str(r.exc_info[1]) for r in warnings)
+        finally:
+            sys.modules.pop("valkey.asyncio", None)
+            sys.modules.pop("valkey", None)

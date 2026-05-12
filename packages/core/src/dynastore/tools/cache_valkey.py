@@ -367,7 +367,7 @@ class ValkeyCacheBackend:
             return _deserialize(raw)
         except Exception:
             self._record_failure()
-            logger.debug("ValkeyCacheBackend.get failed", exc_info=True)
+            logger.warning("ValkeyCacheBackend.get failed (key=%s)", self._key(key), exc_info=True)
             return None
 
     async def set(
@@ -393,7 +393,7 @@ class ValkeyCacheBackend:
             return bool(result)
         except Exception:
             self._record_failure()
-            logger.debug("ValkeyCacheBackend.set failed", exc_info=True)
+            logger.warning("ValkeyCacheBackend.set failed (key=%s)", self._key(key), exc_info=True)
             return False
 
     async def clear(
@@ -426,7 +426,12 @@ class ValkeyCacheBackend:
             return False
         except Exception:
             self._record_failure()
-            logger.debug("ValkeyCacheBackend.clear failed", exc_info=True)
+            logger.warning(
+                "ValkeyCacheBackend.clear failed (key=%s namespace=%s)",
+                self._key(key) if key is not None else None,
+                namespace,
+                exc_info=True,
+            )
             return False
 
     async def exists(self, key: str) -> bool:
@@ -436,7 +441,7 @@ class ValkeyCacheBackend:
             return result
         except Exception:
             self._record_failure()
-            logger.debug("ValkeyCacheBackend.exists failed", exc_info=True)
+            logger.warning("ValkeyCacheBackend.exists failed (key=%s)", self._key(key), exc_info=True)
             return False
 
     async def get_lock(self, key: str) -> asyncio.Lock:
@@ -457,7 +462,7 @@ class ValkeyCacheBackend:
             return result
         except Exception:
             self._record_failure()
-            logger.debug("ValkeyCacheBackend.ping failed", exc_info=True)
+            logger.warning("ValkeyCacheBackend.ping failed", exc_info=True)
             return False
 
     async def info(self) -> dict:
