@@ -74,6 +74,24 @@ class DriverRef(BaseModel):
         ),
     )
     write_mode: str = Field("sync", description="Write mode: sync | async.")
+    input_transformers: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered transformer ``driver_ref``s applied to entities going "
+            "INTO this driver call. Wired hops in this release: ``INDEX``. "
+            "Declaring this on other operations emits a one-time WARN at "
+            "load time. Mirrors ``OperationDriverEntry.input_transformers`` "
+            "(#501); accepted on PUT/PATCH request bodies."
+        ),
+    )
+    output_transformers: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered transformer ``driver_ref``s applied to entities coming "
+            "OUT of this driver call. Wired hops in this release: ``SEARCH``. "
+            "Mirrors ``OperationDriverEntry.output_transformers`` (#501)."
+        ),
+    )
     meta: Dict[str, Any] = Field(
         default_factory=dict,
         serialization_alias="_meta",

@@ -525,6 +525,69 @@ def test_build_routing_refs_meta_omits_source_when_missing():
     assert "source" not in ref
 
 
+def test_build_routing_refs_surfaces_transformer_attachments():
+    """#501 followup — ``input_transformers`` and ``output_transformers``
+    on each ``OperationDriverEntry`` flow through to the slim
+    ``DriverRef``.  Without this, operators reading the configs API
+    can't see which transformer chain attaches to which (operation,
+    driver) pair — the attachment is invisible until something blows up
+    at runtime."""
+    by_class = {
+        "items_routing_config": {
+            "operations": {
+                "INDEX": [{
+                    "driver_ref": "items_elasticsearch_private_driver",
+                    "input_transformers": ("private_entity_transformer",),
+                    "output_transformers": (),
+                    "on_failure": "outbox", "write_mode": "sync",
+                    "source": "auto",
+                }],
+                "SEARCH": [{
+                    "driver_ref": "items_elasticsearch_private_driver",
+                    "input_transformers": (),
+                    "output_transformers": ("private_entity_transformer",),
+                    "on_failure": "fatal", "write_mode": "sync",
+                    "source": "auto",
+                }],
+            },
+        },
+    }
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(
+            items_elasticsearch_private_driver={"__module__": "m"},
+        ),
+    ):
+        ConfigApiService(config_service=MagicMock())._build_routing_refs(
+            by_class, base_url="http://h/configs",
+        )
+    [idx] = by_class["items_routing_config"]["operations"]["INDEX"]
+    [srch] = by_class["items_routing_config"]["operations"]["SEARCH"]
+    assert idx["input_transformers"] == ["private_entity_transformer"]
+    assert idx["output_transformers"] == []
+    assert srch["input_transformers"] == []
+    assert srch["output_transformers"] == ["private_entity_transformer"]
+
+
+def test_build_routing_refs_transformer_lists_default_empty():
+    """Entries without transformer attachment surface empty lists, not
+    missing keys — keeps the response shape stable across migrations."""
+    local = {"items_routing_config": {"operations": {
+        "WRITE": [{"driver_ref": "items_postgresql_driver",
+                   "on_failure": "fatal", "write_mode": "sync"}]
+    }}}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(items_postgresql_driver={"__module__": "m"}),
+    ):
+        ConfigApiService(config_service=MagicMock())._build_routing_refs(
+            local, base_url="http://h/configs",
+        )
+    ref = local["items_routing_config"]["operations"]["WRITE"][0]
+    assert ref["input_transformers"] == []
+    assert ref["output_transformers"] == []
+
+
 def test_build_routing_refs_unregistered_driver_emits_no_link():
     """Cycle F.7d.3 — composition sub-drivers with no registered config
     emit zero links.  Drops the old confusing ``config_ref: null`` shape."""
