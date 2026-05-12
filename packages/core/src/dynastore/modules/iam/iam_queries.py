@@ -289,7 +289,9 @@ INSERT_IDENTITY_LINK = DQLQuery(
     (provider, subject_id, principal_id, email)
     VALUES
     (:provider, :subject_id, :principal_id, :email)
-    ON CONFLICT (provider, subject_id) DO NOTHING;
+    ON CONFLICT (provider, subject_id) DO UPDATE
+        SET principal_id = EXCLUDED.principal_id,
+            email = COALESCE(EXCLUDED.email, identity_links.email);
     """,
     result_handler=ResultHandler.ROWCOUNT,
 )
