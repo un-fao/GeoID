@@ -87,15 +87,22 @@ class TileBucketPreseedStorage(TileStorageProtocol):
     async def save_tile(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, data: bytes, format: str) -> Optional[str]:
         tile_identifier = f"{catalog_id}/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}"
         try:
+            cfg = await _load_caching_config()
+            if not cfg.enabled:
+                logger.debug(
+                    "tile_cache event=skip reason=disabled action=save tile=%s",
+                    tile_identifier,
+                )
+                return None
+
             logger.debug(f"Background save task started for tile: {tile_identifier}")
             storage_provider = self._get_storage_provider()
             client_provider = self._get_client_provider()
-            
+
             bucket_name = await storage_provider.ensure_storage_for_catalog(catalog_id)
             if not bucket_name:
                 raise RuntimeError(f"Could not resolve bucket for catalog {catalog_id}")
 
-            cfg = await _load_caching_config()
             blob_path = _build_blob_path(cfg.key_prefix, collection_id, tms_id, z, x, y, format)
 
             storage_client = client_provider.get_storage_client()
@@ -121,6 +128,10 @@ class TileBucketPreseedStorage(TileStorageProtocol):
             # Do not re-raise; cache failures should not crash the host application or tests.
 
     async def get_tile(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, format: str) -> Optional[bytes]:
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            return None
+
         storage_provider = self._get_storage_provider()
         client_provider = self._get_client_provider()
 
@@ -128,7 +139,6 @@ class TileBucketPreseedStorage(TileStorageProtocol):
         if not bucket_name:
             return None # Bucket doesn't exist, tile doesn't exist
 
-        cfg = await _load_caching_config()
         blob_path = _build_blob_path(cfg.key_prefix, collection_id, tms_id, z, x, y, format)
 
         storage_client = client_provider.get_storage_client()
@@ -146,6 +156,10 @@ class TileBucketPreseedStorage(TileStorageProtocol):
 
     @cached(maxsize=2048, namespace="gcp_tile_exists")
     async def check_tile_exists(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, format: str) -> bool:
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            return False
+
         storage_provider = self._get_storage_provider()
         client_provider = self._get_client_provider()
 
@@ -153,7 +167,6 @@ class TileBucketPreseedStorage(TileStorageProtocol):
         if not bucket_name:
             return False
 
-        cfg = await _load_caching_config()
         blob_path = _build_blob_path(cfg.key_prefix, collection_id, tms_id, z, x, y, format)
         storage_client = client_provider.get_storage_client()
         bucket = storage_client.bucket(bucket_name)
@@ -163,6 +176,10 @@ class TileBucketPreseedStorage(TileStorageProtocol):
         return await run_in_thread(blob.exists)
 
     async def get_tile_url(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int, format: str) -> Optional[str]:
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            return None
+
         storage_provider = self._get_storage_provider()
         client_provider = self._get_client_provider()
         identity_provider = self._get_identity_provider()
@@ -171,7 +188,6 @@ class TileBucketPreseedStorage(TileStorageProtocol):
         if not bucket_name:
             return None
 
-        cfg = await _load_caching_config()
         blob_path = _build_blob_path(cfg.key_prefix, collection_id, tms_id, z, x, y, format)
         return await generate_gcs_signed_url(
             f"gs://{bucket_name}/{blob_path}",

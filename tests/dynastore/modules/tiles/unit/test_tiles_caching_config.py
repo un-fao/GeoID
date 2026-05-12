@@ -149,3 +149,81 @@ def test_build_blob_path_honors_custom_prefix():
 
     path = _build_blob_path("cache/v2", "admin0", "WebMercatorQuad", 5, 17, 11, "mvt")
     assert path == "cache/v2/admin0/WebMercatorQuad/5/17/11.mvt"
+
+
+# -----------------------------------------------------------------
+# `enabled` short-circuit on TileBucketPreseedStorage I/O methods
+# -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_paths_short_circuit_when_disabled(install_stub):
+    """`enabled=False` makes every read path return as a miss
+    WITHOUT touching the bucket — no StorageProtocol lookup, no GCS I/O."""
+    from unittest.mock import MagicMock
+    from dynastore.modules.gcp.tiles_storage import TileBucketPreseedStorage
+
+    install_stub(TilesCachingConfig(enabled=False))
+
+    storage = TileBucketPreseedStorage()
+    # Spy on the storage-provider hook to assert it is NEVER consulted.
+    storage._get_storage_provider = MagicMock(side_effect=AssertionError(
+        "L2 cache disabled — get_storage_provider must not be reached"
+    ))
+
+    assert await storage.get_tile("cat", "coll", "WebMercatorQuad", 5, 17, 11, "mvt") is None
+    assert await storage.get_tile_url("cat", "coll", "WebMercatorQuad", 5, 17, 11, "mvt") is None
+    # check_tile_exists is @cached — use a fresh tile-coordinate per call to
+    # bypass the in-process LRU.
+    assert await storage.check_tile_exists.__wrapped__(  # type: ignore[attr-defined]
+        storage, "cat", "coll", "WebMercatorQuad", 5, 17, 11, "mvt"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_save_tile_is_noop_when_disabled(install_stub, caplog):
+    """`enabled=False` makes save_tile a no-op that emits a `skip` debug log."""
+    import logging
+    from unittest.mock import MagicMock
+    from dynastore.modules.gcp.tiles_storage import TileBucketPreseedStorage
+
+    install_stub(TilesCachingConfig(enabled=False))
+
+    storage = TileBucketPreseedStorage()
+    storage._get_storage_provider = MagicMock(side_effect=AssertionError(
+        "L2 cache disabled — save_tile must not reach storage provider"
+    ))
+
+    with caplog.at_level(logging.DEBUG, logger="dynastore.modules.gcp.tiles_storage"):
+        result = await storage.save_tile(
+            "cat", "coll", "WebMercatorQuad", 5, 17, 11, b"data", "mvt",
+        )
+
+    assert result is None
+    skip_lines = [
+        r.getMessage() for r in caplog.records
+        if "tile_cache event=skip" in r.getMessage()
+    ]
+    assert len(skip_lines) == 1
+    assert "reason=disabled" in skip_lines[0]
+    assert "action=save" in skip_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_enabled_default_preserves_pre_f3_behavior(install_stub):
+    """`enabled=True` (default) keeps the bucket I/O path live."""
+    from unittest.mock import MagicMock, AsyncMock
+    from dynastore.modules.gcp.tiles_storage import TileBucketPreseedStorage
+
+    install_stub(TilesCachingConfig())  # defaults: enabled=True
+
+    storage = TileBucketPreseedStorage()
+    storage_provider = MagicMock()
+    storage_provider.get_storage_identifier = AsyncMock(return_value=None)  # no bucket
+    storage._get_storage_provider = MagicMock(return_value=storage_provider)
+    storage._get_client_provider = MagicMock()
+
+    # No bucket => returns None, but the storage_provider WAS consulted
+    # (proves the short-circuit did NOT fire).
+    assert await storage.get_tile("cat", "coll", "WebMercatorQuad", 5, 17, 11, "mvt") is None
+    storage_provider.get_storage_identifier.assert_awaited_once()
