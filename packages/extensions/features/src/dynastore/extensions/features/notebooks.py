@@ -12,6 +12,7 @@ include the notebooks module.
 from pathlib import Path
 
 _HERE = Path(__file__).parent / "notebooks"
+_REG = "dynastore.extensions.features"
 
 
 def build_contributions():
@@ -31,5 +32,6 @@ def build_contributions():
             },
             tags=["features", "ingestion", "ogc", "demo"],
             notebook_path=_HERE / "ingestion_and_diagnostics.ipynb",
+            registered_by=_REG,
         ),
     ]
