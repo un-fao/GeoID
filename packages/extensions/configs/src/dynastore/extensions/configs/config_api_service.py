@@ -723,12 +723,16 @@ class ConfigApiService:
                             method="PUT",
                             title=f"PUT this driver's config at {scope_label} scope",
                         ))
+                    entry_meta: Dict[str, Any] = {"tier": scope_label}
+                    src = entry.get("source")
+                    if src is not None:
+                        entry_meta["source"] = src
                     refs.append(DriverRef(
                         driver_ref=driver_ref,
                         hints=[str(h) for h in (entry.get("hints") or [])],
                         on_failure=entry.get("on_failure", "fatal"),
                         write_mode=entry.get("write_mode", "sync"),
-                        source=entry.get("source"),
+                        meta=entry_meta,
                         links=links,
                     ).model_dump(by_alias=True, exclude_none=True))
                 rewritten[op] = refs
