@@ -732,6 +732,12 @@ class ConfigApiService:
                         hints=[str(h) for h in (entry.get("hints") or [])],
                         on_failure=entry.get("on_failure", "fatal"),
                         write_mode=entry.get("write_mode", "sync"),
+                        input_transformers=[
+                            str(t) for t in (entry.get("input_transformers") or ())
+                        ],
+                        output_transformers=[
+                            str(t) for t in (entry.get("output_transformers") or ())
+                        ],
                         meta=entry_meta,
                         links=links,
                     ).model_dump(by_alias=True, exclude_none=True))
