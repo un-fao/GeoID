@@ -87,11 +87,13 @@ class BulkCatalogReindexTask(TaskProtocol):
 
     Re-evaluate Option A (route through ``fan_out_bulk``) only when all
     of the following hold: (1) #501 post-commit inline-bulk has shipped
-    and produced measured per-chunk overhead; (2) the
-    ``index_chunk_emitted`` / ``task_drained`` counters from #504 have
-    ≥ 1 week of production data showing reindex would not regress; and
-    (3) the observability gap (reindex emissions invisible in
-    ``index_chunks_emitted_total``) becomes a felt need.
+    (done — PR #589) and produced measured per-chunk overhead in
+    production; (2) the #504 counter set (``index_chunk_emitted``,
+    ``task_drained``, ``task_claim_rejected``, ``index_dispatch_path``
+    with mode label, ``index_chunk_size``) has ≥ 1 week of production
+    data showing reindex would not regress; and (3) reindex emissions
+    being invisible in ``index_chunks_emitted_total`` becomes a felt
+    operational need (alert misfire, capacity planning blind spot).
     """
 
     task_type = "elasticsearch_bulk_reindex_catalog"
