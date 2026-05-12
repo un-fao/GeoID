@@ -615,7 +615,9 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
                             return res
 
             logger.info(
-                f"Tile cache MISS: {dataset}/{collections}/{z}/{x}/{y} (cache_enabled={effective_cache_enabled})"
+                "tile_cache event=miss catalog=%s collection=%s z=%s x=%s y=%s "
+                "cache_enabled=%s",
+                dataset, collections, z, x, y, effective_cache_enabled,
             )
 
             # 4. TMS & Coordinate Validation
@@ -670,11 +672,20 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
                             dataset, single_col, tileMatrixSetId, z, x, y
                         )
                         if tile_bytes is not None:
+                            duration_ms = (time.perf_counter() - start_time) * 1000
+                            logger.info(
+                                "tile_cache event=hit source=pmtiles_archive catalog=%s "
+                                "collection=%s z=%s x=%s y=%s duration_ms=%.2f bytes=%d",
+                                dataset, single_col, z, x, y, duration_ms, len(tile_bytes),
+                            )
                             from fastapi.responses import Response as FResponse
                             return FResponse(
                                 content=tile_bytes,
                                 media_type="application/vnd.mapbox-vector-tile",
-                                headers={"X-Tile-Source": "pmtiles-archive"},
+                                headers={
+                                    "X-Tile-Cache": "hit",
+                                    "X-Tile-Source": "pmtiles_archive",
+                                },
                             )
 
             # Retrieve MVT content — PostGIS generation
@@ -719,16 +730,28 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
                     )
 
             if not mvt_content:
+                duration_ms = (time.perf_counter() - start_time) * 1000
                 logger.info(
-                    f"Tile generated (empty): {dataset}/{collections}/{z}/{x}/{y} in {(time.perf_counter() - start_time) * 1000:.2f}ms"
+                    "tile_cache event=miss source=postgis catalog=%s collection=%s "
+                    "z=%s x=%s y=%s duration_ms=%.2f bytes=0",
+                    dataset, collections, z, x, y, duration_ms,
                 )
-                return Response(status_code=204)
+                return Response(
+                    status_code=204,
+                    headers={"X-Tile-Cache": "miss", "X-Tile-Source": "postgis"},
+                )
 
+            duration_ms = (time.perf_counter() - start_time) * 1000
             logger.info(
-                f"Tile generated: {dataset}/{collections}/{z}/{x}/{y} in {(time.perf_counter() - start_time) * 1000:.2f}ms. Size: {len(mvt_content)}"
+                "tile_cache event=miss source=postgis catalog=%s collection=%s "
+                "z=%s x=%s y=%s duration_ms=%.2f bytes=%d",
+                dataset, collections, z, x, y, duration_ms, len(mvt_content),
             )
 
-            return self._finalize_response(request, mvt_content)
+            response = self._finalize_response(request, mvt_content)
+            response.headers["X-Tile-Cache"] = "miss"
+            response.headers["X-Tile-Source"] = "postgis"
+            return response
 
         except HTTPException:
             raise
@@ -833,15 +856,36 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
                 dataset, cache_id, tms_id, z, x, y, format
             )
             if url:
-                return RedirectResponse(url=url, status_code=307)
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                logger.info(
+                    "tile_cache event=hit source=bucket_redirect catalog=%s collection=%s "
+                    "z=%s x=%s y=%s duration_ms=%.2f",
+                    dataset, cache_id, z, x, y, duration_ms,
+                )
+                return RedirectResponse(
+                    url=url,
+                    status_code=307,
+                    headers={
+                        "X-Tile-Cache": "hit",
+                        "X-Tile-Source": "bucket_redirect",
+                    },
+                )
 
             tile = await provider.get_tile(dataset, cache_id, tms_id, z, x, y, format)
             if tile:
+                duration_ms = (time.perf_counter() - start_time) * 1000
                 logger.info(
-                    f"Tile cache HIT (Proxy): {dataset}/{cache_id}/{z}/{x}/{y} in {(time.perf_counter() - start_time) * 1000:.2f}ms"
+                    "tile_cache event=hit source=bucket_proxy catalog=%s collection=%s "
+                    "z=%s x=%s y=%s duration_ms=%.2f bytes=%d",
+                    dataset, cache_id, z, x, y, duration_ms, len(tile),
                 )
                 return Response(
-                    content=tile, media_type="application/vnd.mapbox-vector-tile"
+                    content=tile,
+                    media_type="application/vnd.mapbox-vector-tile",
+                    headers={
+                        "X-Tile-Cache": "hit",
+                        "X-Tile-Source": "bucket_proxy",
+                    },
                 )
         except Exception as e:
             logger.warning(f"Cache lookup failed: {e}")
