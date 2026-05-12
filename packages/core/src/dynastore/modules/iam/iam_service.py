@@ -568,9 +568,10 @@ class IamService:
 
         # Principal + identity link are platform-global (D12); the
         # storage layer hardcodes `iam` internally, no `schema=`.
-        await self.storage.create_principal(new_principal)
+        saved = await self.storage.create_principal(new_principal)
+        actual_id = saved.id if saved else new_principal_id
         await self.storage.create_identity_link(
-            principal_id=new_principal_id,
+            principal_id=actual_id,
             provider=provider,
             subject_id=subject_id,
         )
@@ -579,16 +580,25 @@ class IamService:
         # a real catalog, platform-scoped for `_system_` / no catalog.
         catalog_schema = await self._resolve_schema(catalog_id)
         await self._apply_role_grants(
-            principal_id=new_principal_id,
+            principal_id=actual_id,
             roles=assigned_roles,
             catalog_schema=catalog_schema,
         )
 
         logger.info(
-            f"Auto-registered principal {new_principal.id} for {provider}:{subject_id}"
+            f"Auto-registered principal {actual_id} for {provider}:{subject_id}"
         )
 
-        return new_principal
+        return Principal(
+            id=actual_id,
+            provider=provider,
+            subject_id=subject_id,
+            display_name=email,
+            roles=assigned_roles,
+            is_active=True,
+            custom_policies=[],
+            attributes=attributes,
+        )
 
     async def _apply_role_grants(
         self,
