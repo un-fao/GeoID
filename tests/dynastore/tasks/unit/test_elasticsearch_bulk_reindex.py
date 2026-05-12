@@ -354,6 +354,132 @@ async def test_is_es_active_for_returns_false_for_private_only_routing():
 
 
 @pytest.mark.asyncio
+async def test_bypass_matches_dispatcher_bulk_contract():
+    """Regression guard for issue #507 (Option B).
+
+    The reindex tasks bypass :class:`IndexDispatcher` and call
+    ``es.bulk`` directly via :func:`reindex_collection_into_index`.
+    The dispatcher path goes through
+    :meth:`ItemsElasticsearchDriver.index_bulk`. Both must produce
+    the same ``es.bulk`` body contract so a future refactor cannot
+    silently drift the two paths apart:
+
+      * action header is ``{"index": {...}}``
+      * action carries ``_index``, ``_id``, ``routing`` keys
+      * ``_index`` equals ``{prefix}-{catalog}-items``
+      * ``routing`` equals the collection_id
+      * doc carries ``collection`` set to the collection_id
+
+    The ``_id`` *value* shape differs intentionally (bypass uses
+    ``"{cat}:{col}:{item}"``; dispatcher uses ``op.entity_id``) — both
+    are stable per (catalog, collection, item) but the dispatcher path
+    relies on the scope already being pinned by routing. This test
+    pins the *contract*, not the byte-for-byte body.
+    """
+    from dynastore.modules.elasticsearch.bulk_reindex import (
+        reindex_collection_into_index,
+    )
+    from dynastore.modules.storage.drivers.elasticsearch import (
+        ItemsElasticsearchDriver,
+    )
+    from dynastore.models.protocols.indexer import IndexContext, IndexOp
+
+    # --- shared fake ES capturing bulk calls ---
+    es_bypass = _FakeEs()
+    es_dispatch = _FakeEs()
+
+    # Single feature drives both paths.
+    feature = {
+        "id": "item-1",
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+        "properties": {},
+    }
+
+    # --- bypass path ---
+    catalogs = _FakeCatalogs({"col1": [feature]})
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _routing_with_es()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        if "CatalogsProtocol" in name:
+            return catalogs
+        return None
+
+    async def _add_alias(_index):
+        return None
+
+    with patch(
+        "dynastore.modules.elasticsearch.aliases.add_index_to_public_alias",
+        side_effect=_add_alias,
+    ), patch(
+        "dynastore.tools.discovery.get_protocol", side_effect=_get_protocol,
+    ):
+        await reindex_collection_into_index(
+            es_bypass, catalogs, "cat1", "col1",
+            "dynastore-cat1-items",
+        )
+
+    assert es_bypass.bulk_calls, "bypass path did not invoke es.bulk"
+    bypass_body = es_bypass.bulk_calls[0]["body"]
+
+    # --- dispatcher path ---
+    driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+    ctx = IndexContext(catalog="cat1", collection="col1")
+    op = IndexOp(
+        op_type="upsert",
+        entity_type="item",
+        entity_id="item-1",
+        payload={
+            "id": "item-1",
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {},
+        },
+    )
+
+    async def _noop_alias(_cat, _idx):
+        return None
+
+    with patch(
+        "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+        return_value=es_dispatch,
+    ), patch(
+        "dynastore.modules.storage.drivers.elasticsearch._tenant_items_index",
+        return_value="dynastore-cat1-items",
+    ), patch(
+        "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+        side_effect=_noop_alias,
+    ):
+        await driver.index_bulk(ctx, [op])
+
+    assert es_dispatch.bulk_calls, "dispatcher path did not invoke es.bulk"
+    dispatch_body = es_dispatch.bulk_calls[0]["body"]
+
+    # --- contract assertions ---
+    for body, label in ((bypass_body, "bypass"), (dispatch_body, "dispatcher")):
+        assert len(body) == 2, f"{label} body must be (action, doc) pair"
+        action = body[0]
+        assert "index" in action, f"{label} action header missing 'index' key"
+        action_inner = action["index"]
+        assert action_inner["_index"] == "dynastore-cat1-items", (
+            f"{label} _index mismatch"
+        )
+        assert action_inner["routing"] == "col1", f"{label} routing mismatch"
+        assert "_id" in action_inner, f"{label} action missing _id"
+        doc = body[1]
+        assert doc.get("collection") == "col1", (
+            f"{label} doc.collection mismatch (post-projection contract)"
+        )
+
+
+@pytest.mark.asyncio
 async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned():
     """A collection that pins BOTH the public and private items
     drivers (e.g. an operator transitioning OUT of private mode by

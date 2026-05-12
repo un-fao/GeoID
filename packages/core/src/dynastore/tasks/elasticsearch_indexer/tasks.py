@@ -72,6 +72,26 @@ class BulkCatalogReindexTask(TaskProtocol):
     via the SoR into ``{prefix}-items-{catalog_id}`` with
     ``_routing=collection_id``. Stale items for the catalog are removed
     via ``delete_by_query`` before reindex begins.
+
+    Intentional dispatcher bypass (issue #507, Option B): this task
+    calls ``es.bulk`` directly via :func:`reindex_collection_into_index`
+    rather than routing through :class:`IndexDispatcher.fan_out_bulk`.
+    The bypass avoids per-chunk dispatcher overhead (transformer chain
+    resolution + routing-config lookup + per-entry fan-out loop) that
+    is deadweight on a long-running full-catalog reindex already inside
+    the right indexer process. The contract that both paths produce the
+    same ``es.bulk`` body shape (action keys ``_index``/``_id``/
+    ``routing``, doc with ``catalog_id``/``collection``) is pinned by
+    ``test_bypass_matches_dispatcher_bulk_contract`` in
+    ``tests/dynastore/tasks/unit/test_elasticsearch_bulk_reindex.py``.
+
+    Re-evaluate Option A (route through ``fan_out_bulk``) only when all
+    of the following hold: (1) #501 post-commit inline-bulk has shipped
+    and produced measured per-chunk overhead; (2) the
+    ``index_chunk_emitted`` / ``task_drained`` counters from #504 have
+    ≥ 1 week of production data showing reindex would not regress; and
+    (3) the observability gap (reindex emissions invisible in
+    ``index_chunks_emitted_total``) becomes a felt need.
     """
 
     task_type = "elasticsearch_bulk_reindex_catalog"
@@ -146,6 +166,11 @@ class BulkCollectionReindexTask(TaskProtocol):
 
     Triggered by the admin reindex endpoint at
     ``POST /search/reindex/catalogs/{id}/collections/{cid}``.
+
+    Intentional dispatcher bypass: see :class:`BulkCatalogReindexTask`
+    for the full rationale (issue #507, Option B). The two paths must
+    produce identical ``es.bulk`` body shape — pinned by
+    ``test_bypass_matches_dispatcher_bulk_contract``.
     """
 
     task_type = "elasticsearch_bulk_reindex_collection"
