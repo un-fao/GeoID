@@ -589,3 +589,76 @@ async def test_fan_out_bulk_failure_with_warn_returns_failure_summary():
     results = await dispatcher.fan_out_bulk(_ctx(), ops)
     assert results["a"].failed == 2
     assert results["a"].failures
+
+
+# ---------------------------------------------------------------------------
+# #504 — index_dispatch_path structured log lines (mode + chunk_size)
+# ---------------------------------------------------------------------------
+
+
+def _extract_dispatch_path_records(caplog) -> List[dict]:
+    """Parse the structured `index_dispatch_path mode=... ...` log lines."""
+    rows: List[dict] = []
+    for rec in caplog.records:
+        msg = rec.getMessage()
+        if not msg.startswith("index_dispatch_path "):
+            continue
+        fields: dict = {}
+        for token in msg.split(" ")[1:]:
+            if "=" not in token:
+                continue
+            k, v = token.split("=", 1)
+            fields[k] = v
+        rows.append(fields)
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_dispatch_path_logged_post_commit_inline(caplog):
+    import logging as _logging
+    a = _StubIndexer("a")
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    ops = [_op(entity_id="i1"), _op(entity_id="i2"), _op(entity_id="i3")]
+    with caplog.at_level(_logging.INFO):
+        await dispatcher.fan_out_bulk(_ctx(), ops)
+    rows = _extract_dispatch_path_records(caplog)
+    assert any(
+        r.get("mode") == "post_commit_inline"
+        and r.get("indexer") == "a"
+        and r.get("chunk_size") == "3"
+        for r in rows
+    ), rows
+
+
+@pytest.mark.asyncio
+async def test_dispatch_path_logged_in_tx(caplog):
+    import logging as _logging
+    a = _StubIndexer("a")
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    with caplog.at_level(_logging.INFO):
+        await dispatcher.fan_out(_ctx(), _op(entity_id="solo"))
+    rows = _extract_dispatch_path_records(caplog)
+    assert any(
+        r.get("mode") == "in_tx" and r.get("chunk_size") == "1"
+        for r in rows
+    ), rows
+
+
+@pytest.mark.asyncio
+async def test_dispatch_path_not_logged_on_failure(caplog):
+    import logging as _logging
+    a = _StubIndexer("a", raise_on="upsert")
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    with caplog.at_level(_logging.INFO):
+        await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i1")])
+    rows = _extract_dispatch_path_records(caplog)
+    assert not any(r.get("mode") == "post_commit_inline" for r in rows), rows
