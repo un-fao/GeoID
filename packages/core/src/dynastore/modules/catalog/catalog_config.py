@@ -357,6 +357,33 @@ async def apply_catalog_default_privacy_seed(
             Operation.READ: [
                 OperationDriverEntry(driver_ref="items_postgresql_driver"),
             ],
+            # Per-tenant reshape lives at the INDEX hop (write-side) and at
+            # the SEARCH hop (read-side, restoring the Feature shape clients
+            # expect). The TRANSFORM entry declares the available instance —
+            # _self_register_transformers_into would auto-add it, but listing
+            # it explicitly keeps the routing config self-contained.
+            Operation.INDEX: [
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_private_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    input_transformers=("private_entity_transformer",),
+                    source="auto",
+                ),
+            ],
+            Operation.SEARCH: [
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_private_driver",
+                    output_transformers=("private_entity_transformer",),
+                    source="auto",
+                ),
+            ],
+            Operation.TRANSFORM: [
+                OperationDriverEntry(
+                    driver_ref="private_entity_transformer",
+                    source="auto",
+                ),
+            ],
         },
     )
     await configs.set_config(
