@@ -403,3 +403,126 @@ def test_every_dynastore_extensions_entry_point_loads_or_misses_optional_dep() -
     designed to catch earlier).
     """
     _assert_entry_point_group_loads("dynastore.extensions")
+
+
+# ---------------------------------------------------------------------------
+# #506: every SCOPE that discovers `index_propagation` must pin at least one
+# Indexer-providing module — otherwise the dispatcher loads the task entry
+# point but no class with ``is_<tier>_indexer = True`` is registered, and
+# first dispatch dead-letters at runtime (the claim predicate from #491
+# catches it post-deploy, but CI should catch it pre-deploy).
+# ---------------------------------------------------------------------------
+
+
+def _all_extras_definitions() -> dict[str, str]:
+    """Return ``{extras_key: definition_line}`` for every single-line
+    ``<name> = [...]`` extras key in the root pyproject.toml.
+
+    Multi-line extras (e.g. ``geospatial_core``) don't carry
+    ``dynastore[...]`` cross-refs in practice, so the single-line scan is
+    sufficient for closure resolution.
+    """
+    out: dict[str, str] = {}
+    for line in _PYPROJECT.read_text().splitlines():
+        if " = [" not in line:
+            continue
+        key = line.split(" = ", 1)[0].strip()
+        if not key or not key.replace("_", "").isalnum():
+            continue
+        out[key] = line
+    return out
+
+
+def _resolve_extras_closure(scope: str, defs: dict[str, str]) -> set[str]:
+    """Return the transitive set of extras keys reachable from ``scope`` by
+    following ``dynastore[a,b,c]`` references."""
+    seen: set[str] = set()
+    stack: list[str] = [scope]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        line = defs.get(name)
+        if not line:
+            continue  # leaf / external dep / undefined key
+        for ref in _extract_dynastore_extras(line):
+            if ref not in seen:
+                stack.append(ref)
+    return seen
+
+
+# Extras whose presence in a SCOPE's transitive closure makes an Indexer
+# driver class (with ``is_<tier>_indexer = True``) load-able. Every entry
+# either is, or transitively pulls, ``module_elasticsearch`` — the gate
+# that lets the source-tree driver modules (``dynastore.modules.elasticsearch.*``
+# and ``dynastore.modules.storage.drivers.elasticsearch*``) import cleanly.
+_INDEXER_GATING_EXTRAS: frozenset[str] = frozenset({
+    "module_elasticsearch",
+    "elasticsearch",
+    "index_grp",
+    "drivers_grp",
+    "module_collection_elasticsearch",
+    "module_catalog_elasticsearch",
+    "module_storage_elasticsearch",
+    "module_storage_elasticsearch_private",
+    "module_storage_elasticsearch_assets",
+    "task_elasticsearch_deps",
+    "task_elasticsearch_indexer_deps",
+})
+
+
+def test_every_scope_discovering_index_propagation_pins_an_indexer_module() -> None:
+    """B6 #506: any deployable SCOPE whose closure contains ``core`` must
+    also contain at least one Indexer-providing extras key.
+
+    Rationale: ``core`` is the marker for services that boot the full
+    dispatcher (db_async + web + configs + storage + cache). Such a
+    service will discover the ``index_propagation`` ``dynastore.tasks``
+    entry-point at startup. If no Indexer driver class is in the import
+    closure, the very first dispatch finds zero implementors of
+    ``is_<tier>_indexer = True`` and dead-letters — exactly the regression
+    class #491's claim predicate guards against at *runtime*. This test
+    enforces the same property at *build* time so a mis-deployed SCOPE
+    breaks CI, not production.
+
+    Filter: SCOPEs whose closure contains BOTH ``core`` and ``tasks``.
+    ``core`` marks a service that boots the full dispatcher; ``tasks``
+    is the canonical extras key that pulls in ``module_tasks`` +
+    ``extension_tasks`` — the actual task-dispatch surface. A service
+    with ``core`` but no ``tasks`` (e.g. ``scope_tools``, which forwards
+    ``index_propagation`` to the catalog service per
+    ``docker/config/tools/defaults/task-routing.json``) is a router, not
+    a dispatcher, and is out of scope for this invariant. Likewise
+    ``worker_task_*`` images intentionally drop ``core`` and use
+    ``task_base`` instead — a dedicated job image only runs the one
+    task its SCOPE pins.
+    """
+    defs = _all_extras_definitions()
+    deployable_scopes = [
+        k for k in defs
+        if k.startswith(("scope_", "worker_service", "worker_task_"))
+    ]
+    bad: list[tuple[str, set[str]]] = []
+    for scope in deployable_scopes:
+        closure = _resolve_extras_closure(scope, defs)
+        if "core" not in closure or "tasks" not in closure:
+            continue
+        if not (_INDEXER_GATING_EXTRAS & closure):
+            # Trim closure for the failure message to the module_*/grp keys
+            # — that's the actionable subset.
+            trimmed = {
+                c for c in closure
+                if c.startswith("module_") or c.endswith("_grp")
+            }
+            bad.append((scope, trimmed))
+
+    assert not bad, (
+        "SCOPE(s) that discover `index_propagation` (via `core`) but do not "
+        "pin any Indexer-providing extras — first dispatch will dead-letter:\n  "
+        + "\n  ".join(
+            f"{scope}: module/grp closure = {sorted(extras)}"
+            for scope, extras in bad
+        )
+        + f"\nAdd one of: {sorted(_INDEXER_GATING_EXTRAS)} (canonical: `index_grp`)."
+    )
