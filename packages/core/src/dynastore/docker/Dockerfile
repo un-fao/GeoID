@@ -144,7 +144,7 @@ ARG BUILD_JUPYTERLITE=false
 # has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
 # → driverShortName='Parquet').  Force fiona to rebuild from sdist against
 # the system libgdal so it inherits every driver the base image ships.
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 \
     ${VENV_PATH}/bin/pip install --upgrade pip setuptools setuptools-scm wheel uv && \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 \
@@ -168,7 +168,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # `dynastore.extensions` resolves correctly across all wheels.
 COPY packages ./packages
 COPY tests ./tests
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     ${VENV_PATH}/bin/pip uninstall -y dynastore-core DynaStore 2>/dev/null || true && \
     ${VENV_PATH}/bin/pip uninstall -y dynastore-core DynaStore 2>/dev/null || true && \
     rm -f ${VENV_PATH}/lib/python*/site-packages/__editable__.dynastore_core-*.pth && \
@@ -235,7 +235,7 @@ WORKDIR ${APP_DIR}
 
 ARG SCOPE=test,all
 ARG APP_VERSION=
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     SETUPTOOLS_SCM_PRETEND_VERSION="${APP_VERSION:-0.0.0+unknown}" \
     ${VENV_PATH}/bin/uv pip install ".[${SCOPE},dev]"
 
