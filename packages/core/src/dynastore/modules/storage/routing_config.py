@@ -1637,49 +1637,6 @@ async def get_search_driver(
     return entries[0].driver_ref
 
 
-async def get_active_transformers(
-    catalog_id: str,
-    *,
-    entity: EntityKindLiteral,
-    collection_id: Optional[str] = None,
-) -> List[Any]:
-    """Ordered list of EntityTransformProtocol instances active for this entity.
-
-    Resolves driver_ids in operations[TRANSFORM] (in order) against the
-    discovered EntityTransformProtocol implementers. Drivers listed in
-    routing but not currently registered are skipped with a debug log.
-
-    Empty list when no TRANSFORM entries exist; the transform runtime treats
-    an empty chain as identity.
-    """
-    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
-    from dynastore.tools.discovery import get_protocols
-
-    ops = await _resolve_entity_operations(
-        catalog_id, entity=entity, collection_id=collection_id,
-    )
-    entries = ops.get(Operation.TRANSFORM, [])
-    if not entries:
-        return []
-
-    by_driver_id = {_to_snake(type(t).__name__): t for t in get_protocols(EntityTransformProtocol)}
-    chain: List[Any] = []
-    for entry in entries:
-        transformer = by_driver_id.get(entry.driver_ref)
-        if transformer is None:
-            logger.debug(
-                "get_active_transformers: routing lists '%s' for entity=%s "
-                "catalog=%s collection=%s but no EntityTransformProtocol "
-                "implementer registered with that class name; skipping. "
-                "Available: %s",
-                entry.driver_ref, entity, catalog_id, collection_id,
-                sorted(by_driver_id),
-            )
-            continue
-        chain.append(transformer)
-    return chain
-
-
 async def get_output_transformers_for_search(
     catalog_id: str,
     *,
