@@ -58,7 +58,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Union, cast
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Union, cast
 
 from dynastore.models.protocols.indexer import (
     BulkResult,
@@ -136,8 +136,9 @@ class OutboxWriterProtocol(Protocol):
         *,
         indexer_id: str,
         ctx: IndexContext,
-        op: IndexOp,
+        ops: Sequence[IndexOp],
         last_error: Optional[str] = None,
+        chunk_size: Optional[int] = None,
     ) -> None:
         ...
 
@@ -183,42 +184,89 @@ class TaskTableOutboxWriter:
         self._schema_resolver = schema_resolver or (lambda c: c)
         self._task_schema_resolver = task_schema_resolver
 
+    DEFAULT_CHUNK_SIZE = 500
+
     async def enqueue(
         self,
         *,
         indexer_id: str,
         ctx: IndexContext,
-        op: IndexOp,
+        ops: Sequence[IndexOp],
         last_error: Optional[str] = None,
+        chunk_size: Optional[int] = None,
     ) -> None:
+        if not ops:
+            return
         if ctx.pg_conn is None:
             # Without a caller TX we can't honour the atomicity guarantee.
             # Emit a single warning and bail; the dispatcher's degrade
             # path already logged the original failure.
+            sample = ops[0]
             logger.warning(
                 "TaskTableOutboxWriter: ctx.pg_conn is None — skipping "
-                "outbox enqueue for indexer '%s' on %s/%s/%s.  Caller "
-                "must pass an open PG connection on IndexContext for "
-                "the OUTBOX policy to be durable.",
-                indexer_id, op.op_type, op.entity_type, op.entity_id,
+                "outbox enqueue for indexer '%s' on %s/%s/%s (+%d more). "
+                "Caller must pass an open PG connection on IndexContext "
+                "for the OUTBOX policy to be durable.",
+                indexer_id, sample.op_type, sample.entity_type,
+                sample.entity_id, max(len(ops) - 1, 0),
             )
             return
 
+        size = chunk_size if chunk_size and chunk_size > 0 else self.DEFAULT_CHUNK_SIZE
+        # Chunk per (op_type, entity_type) so dedup_key stays meaningful.
+        # Mixed op_types in one task row would either need a composite key
+        # (over-coalesces) or no key (loses dedup) — split is cleaner.
+        grouped: Dict[Tuple[str, str], List[IndexOp]] = {}
+        for op in ops:
+            grouped.setdefault((op.op_type, op.entity_type), []).append(op)
+
+        for (op_type, entity_type), bucket in grouped.items():
+            for start in range(0, len(bucket), size):
+                chunk = bucket[start:start + size]
+                await self._enqueue_chunk(
+                    indexer_id=indexer_id,
+                    ctx=ctx,
+                    op_type=op_type,
+                    entity_type=entity_type,
+                    chunk=chunk,
+                    last_error=last_error,
+                )
+
+    async def _enqueue_chunk(
+        self,
+        *,
+        indexer_id: str,
+        ctx: IndexContext,
+        op_type: str,
+        entity_type: str,
+        chunk: Sequence[IndexOp],
+        last_error: Optional[str],
+    ) -> None:
         task_schema = self._resolve_task_schema()
         schema_name = self._schema_resolver(ctx.catalog)
 
+        op_records = [
+            {
+                "entity_id": o.entity_id,
+                "op_type": o.op_type,
+                "payload": o.payload,
+            }
+            for o in chunk
+        ]
         inputs = {
             "indexer_id": indexer_id,
-            "op_type": op.op_type,
-            "entity_type": op.entity_type,
-            "entity_id": op.entity_id,
+            "op_type": op_type,
+            "entity_type": entity_type,
             "catalog": ctx.catalog,
             "collection": ctx.collection,
-            "payload": op.payload,
+            "ops": op_records,
             "correlation_id": ctx.correlation_id,
             "last_error": last_error,
         }
-        dedup_key = self._dedup_key(indexer_id, op)
+        dedup_key = self._dedup_key(
+            indexer_id, op_type, entity_type,
+            [o.entity_id for o in chunk],
+        )
 
         from dynastore.tools.identifiers import generate_uuidv7
         from dynastore.tools.json import CustomJSONEncoder
@@ -226,12 +274,11 @@ class TaskTableOutboxWriter:
         task_id = generate_uuidv7()
         # Observability (#504): structured log line for GCP log-based metric
         # `index_chunks_emitted_total{indexer,source,op_type}`. One row per
-        # enqueue call. `chunk_size=1` here — the legacy scalar writer is
-        # per-op; bulk enqueue (PgOutboxStore.enqueue_bulk) logs its own line.
+        # task — chunk_size reflects how many ops the row coalesces.
         logger.info(
             "index_chunk_emitted indexer=%s source=legacy op_type=%s "
-            "catalog=%s collection=%s chunk_size=1",
-            indexer_id, op.op_type, ctx.catalog, ctx.collection,
+            "catalog=%s collection=%s chunk_size=%d",
+            indexer_id, op_type, ctx.catalog, ctx.collection, len(chunk),
         )
         await self._exec_insert(
             ctx.pg_conn,
@@ -268,11 +315,19 @@ class TaskTableOutboxWriter:
         return get_task_schema()
 
     @staticmethod
-    def _dedup_key(indexer_id: str, op: IndexOp) -> str:
-        """Stable hash so repeated failures coalesce into one row."""
-        material = "|".join((
-            indexer_id, op.op_type, op.entity_type, op.entity_id,
-        )).encode("utf-8")
+    def _dedup_key(
+        indexer_id: str, op_type: str, entity_type: str,
+        entity_ids: Sequence[str],
+    ) -> str:
+        """Stable hash over the sorted entity-id set of a chunk.
+
+        Same chunk retried → same key (so retries coalesce). Different
+        chunks of the same batch get distinct keys.
+        """
+        sorted_ids = sorted(entity_ids)
+        material = "|".join(
+            (indexer_id, op_type, entity_type, *sorted_ids),
+        ).encode("utf-8")
         return hashlib.sha256(material).hexdigest()[:64]
 
     async def _exec_insert(
@@ -460,11 +515,14 @@ class _DualOutbox:
     # OutboxWriterProtocol surface — delegate to the legacy task-table
     # writer so the older IndexOp callers keep their durable retry path.
     async def enqueue(
-        self, *, indexer_id: str, ctx: IndexContext, op: IndexOp,
+        self, *, indexer_id: str, ctx: IndexContext,
+        ops: Sequence[IndexOp],
         last_error: Optional[str] = None,
+        chunk_size: Optional[int] = None,
     ) -> None:
         await self._legacy.enqueue(
-            indexer_id=indexer_id, ctx=ctx, op=op, last_error=last_error,
+            indexer_id=indexer_id, ctx=ctx, ops=ops,
+            last_error=last_error, chunk_size=chunk_size,
         )
 
 
@@ -702,13 +760,13 @@ class IndexDispatcher:
 
         # OUTBOX_ONLY shortcut: never attempt sync, always enqueue.
         if entry.write_mode == WriteMode.ASYNC and entry.on_failure == FailurePolicy.OUTBOX:
-            await self._enqueue_or_warn(entry, ctx, op)
+            await self._enqueue_or_warn(entry, ctx, [op])
             return
 
         # Circuit breaker check (Phase 3 — no-op when self._breaker is None).
         if self._breaker is not None and self._breaker.is_open(entry.driver_ref):
             if entry.on_failure == FailurePolicy.OUTBOX:
-                await self._enqueue_or_warn(entry, ctx, op)
+                await self._enqueue_or_warn(entry, ctx, [op])
             elif entry.on_failure == FailurePolicy.FATAL:
                 raise IndexerFatal(
                     entry.driver_ref, op,
@@ -774,7 +832,7 @@ class IndexDispatcher:
                 # Legacy IndexOp path — degrade through the existing
                 # enqueue-or-warn helper so behaviour is unchanged for
                 # callers still on the older value type.
-                await self._enqueue_or_warn(entry, ctx, op)
+                await self._enqueue_or_warn(entry, ctx, [op])
             return
         if policy == FailurePolicy.WARN:
             key = (entry.driver_ref, ctx.catalog, ctx.collection)
@@ -844,7 +902,7 @@ class IndexDispatcher:
         # the IndexOp shape internally.  This shouldn't fire in practice
         # for IndexableOp callers (they wire OutboxStore), but keeps the
         # dispatcher resilient mid-migration.
-        await self._enqueue_or_warn(entry, ctx, op)
+        await self._enqueue_or_warn(entry, ctx, [op])
 
     async def _ensure_or_handle(
         self,
@@ -909,9 +967,8 @@ class IndexDispatcher:
         except Exception as exc:
             if self._breaker is not None:
                 self._breaker.record_failure(entry.driver_ref)
-            # Bulk failure: apply policy to the whole batch.
-            for op in ops:
-                await self._handle_failure(entry, ctx, op, exc, bulk=True)
+            # Bulk failure: apply policy to the whole batch in one call.
+            await self._handle_failure_bulk(entry, ctx, ops, exc)
             return BulkResult(
                 total=len(ops),
                 failed=len(ops),
@@ -931,7 +988,7 @@ class IndexDispatcher:
         if policy == FailurePolicy.FATAL:
             raise IndexerFatal(entry.driver_ref, op, exc) from exc
         if policy == FailurePolicy.OUTBOX:
-            await self._enqueue_or_warn(entry, ctx, op, original=exc)
+            await self._enqueue_or_warn(entry, ctx, [op], original=exc)
             return
         if policy == FailurePolicy.WARN:
             descriptor = _describe_op(op)
@@ -945,6 +1002,39 @@ class IndexDispatcher:
         # IGNORE — silent skip
         logger.debug(
             "IndexDispatcher: indexer '%s' failed (policy=ignore): %s",
+            entry.driver_ref, exc,
+        )
+
+    async def _handle_failure_bulk(
+        self,
+        entry: OperationDriverEntry,
+        ctx: IndexContext,
+        ops: Sequence[DispatchableOp],
+        exc: BaseException,
+    ) -> None:
+        """Apply ``entry.on_failure`` to a whole bulk batch in one call.
+
+        FATAL still raises (preserves per-op semantics — the first op is
+        used as the IndexerFatal target). OUTBOX enqueues the batch as
+        chunked task rows. WARN/IGNORE log once at batch granularity
+        rather than per op so 500-item batches don't fan out logs.
+        """
+        policy = entry.on_failure
+        if policy == FailurePolicy.FATAL:
+            target = ops[0] if ops else None
+            raise IndexerFatal(entry.driver_ref, target, exc) from exc
+        if policy == FailurePolicy.OUTBOX:
+            await self._enqueue_or_warn(entry, ctx, ops, original=exc)
+            return
+        if policy == FailurePolicy.WARN:
+            logger.warning(
+                "IndexDispatcher: indexer '%s' failed for bulk batch of %d "
+                "(policy=warn): %s",
+                entry.driver_ref, len(ops), exc,
+            )
+            return
+        logger.debug(
+            "IndexDispatcher: indexer '%s' failed bulk (policy=ignore): %s",
             entry.driver_ref, exc,
         )
 
@@ -972,16 +1062,18 @@ class IndexDispatcher:
         self,
         entry: OperationDriverEntry,
         ctx: IndexContext,
-        op: DispatchableOp,
+        ops: Sequence[DispatchableOp],
         *,
         original: Optional[BaseException] = None,
     ) -> None:
-        """Enqueue an outbox row when configured; otherwise degrade to WARN.
+        """Enqueue a batch of ops as chunked outbox rows when configured;
+        otherwise degrade to WARN.
 
-        Phase 1 ships without an outbox writer — this method emits a
-        one-time warning per indexer and falls through to WARN-level
-        log of the original exception.  Phase 2 wires the real writer.
+        Accepts a list so a 500-item bulk failure becomes one chunked
+        ``enqueue`` call rather than 500 per-row writes (see #500).
         """
+        if not ops:
+            return
         if self._outbox is None:
             if entry.driver_ref not in self._outbox_warning_emitted:
                 self._outbox_warning_emitted.add(entry.driver_ref)
@@ -993,36 +1085,40 @@ class IndexDispatcher:
                 )
             if original is not None:
                 logger.warning(
-                    "IndexDispatcher: indexer '%s' failed for %s "
+                    "IndexDispatcher: indexer '%s' failed for %d ops "
                     "(policy=outbox, degraded): %s",
-                    entry.driver_ref, _describe_op(op), original,
+                    entry.driver_ref, len(ops), original,
                 )
             return
 
-        # The legacy singular-``enqueue`` writer expects an IndexOp; if
-        # this code path is entered with an IndexableOp the writer would
-        # see attribute errors.  Skip with a single warning rather than
-        # hard-failing — the caller's failure policy already chose
+        # The legacy ``enqueue`` writer expects IndexOp shape; an
+        # IndexableOp-only batch is skipped with a single warning rather
+        # than hard-failing — the caller's failure policy already chose
         # tolerance.
-        # NOTE: ``OutboxWriterProtocol`` (defined above) pre-dates the
-        # project's runtime_checkable typing baseline and is *not*
-        # decorated with ``@runtime_checkable``; ``isinstance`` against
-        # it would raise ``TypeError``.  The bulk path above already
-        # narrowed via ``OutboxStore``; here we fall back to a ``getattr``
-        # probe for the legacy singular surface only.
         enqueue = getattr(self._outbox, "enqueue", None)
         if enqueue is None:
             logger.warning(
                 "IndexDispatcher: outbox writer for indexer '%s' has no "
-                "singular ``enqueue`` method; cannot enqueue %s.",
-                entry.driver_ref, _describe_op(op),
+                "``enqueue`` method; cannot enqueue %d ops.",
+                entry.driver_ref, len(ops),
+            )
+            return
+        index_ops: List[IndexOp] = [
+            cast(IndexOp, o) for o in ops if not isinstance(o, IndexableOp)
+        ]
+        if not index_ops:
+            logger.warning(
+                "IndexDispatcher: %d IndexableOp(s) routed to legacy "
+                "task-table outbox for indexer '%s' — dropping; wire an "
+                "OutboxStore for the bulk path.",
+                len(ops), entry.driver_ref,
             )
             return
         try:
             await enqueue(
                 indexer_id=entry.driver_ref,
                 ctx=ctx,
-                op=op,
+                ops=index_ops,
                 last_error=str(original) if original else None,
             )
         except Exception as enqueue_exc:
@@ -1032,8 +1128,8 @@ class IndexDispatcher:
             # surprise them.
             logger.error(
                 "IndexDispatcher: outbox enqueue failed for indexer '%s' "
-                "on %s — original error: %s, enqueue error: %s",
-                entry.driver_ref, _describe_op(op), original, enqueue_exc,
+                "on %d ops — original error: %s, enqueue error: %s",
+                entry.driver_ref, len(ops), original, enqueue_exc,
             )
 
 

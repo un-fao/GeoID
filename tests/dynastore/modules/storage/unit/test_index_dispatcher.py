@@ -350,12 +350,25 @@ async def test_outbox_writer_skips_when_no_pg_conn(caplog):
     import logging as _logging
     with caplog.at_level(_logging.WARNING):
         await writer.enqueue(
-            indexer_id="x", ctx=_ctx(), op=_op(), last_error="boom",
+            indexer_id="x", ctx=_ctx(), ops=[_op()], last_error="boom",
         )
     assert any("ctx.pg_conn is None" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.xfail(reason="#514 — outbox writer signature drift; fixture call shape stale.", strict=False)
+class _RecordingWriter(TaskTableOutboxWriter):
+    """Bypass DQLQuery so chunk emission can be asserted in isolation
+    from the SA dialect resolution layer (which the legacy ``_FakePgConn``
+    fixture no longer satisfies)."""
+
+    def __init__(self) -> None:
+        super().__init__(task_schema_resolver=lambda: "tasks")
+        self.rows: list[dict] = []
+
+    async def _exec_insert(self, conn, sql, params):  # type: ignore[override]
+        self.rows.append({"sql": sql, "params": dict(params)})
+
+
+
 @pytest.mark.asyncio
 async def test_outbox_writer_inserts_task_row_on_caller_conn():
     """Happy path: writer issues INSERT INTO {task_schema}.tasks on the
@@ -363,21 +376,21 @@ async def test_outbox_writer_inserts_task_row_on_caller_conn():
     bearing assertion — this is the contract that gives the atomicity
     guarantee.
     """
-    conn = _FakePgConn()
     ctx = IndexContext(
         catalog="cat-x", collection="col-y", correlation_id="cid-1",
-        pg_conn=conn,
+        pg_conn=object(),
     )
-    writer = TaskTableOutboxWriter(task_schema_resolver=lambda: "tasks")
+    writer = _RecordingWriter()
 
     await writer.enqueue(
         indexer_id="items_elasticsearch_driver",
         ctx=ctx,
-        op=_op(),
+        ops=[_op()],
         last_error="ES timeout",
     )
-    assert len(conn.calls) == 1
-    sql, params = conn.calls[0]
+    assert len(writer.rows) == 1
+    sql = writer.rows[0]["sql"]
+    params = writer.rows[0]["params"]
 
     # SQL must INSERT into the tasks table with task_type='index_propagation'.
     assert "INSERT INTO tasks.tasks" in sql
@@ -387,7 +400,7 @@ async def test_outbox_writer_inserts_task_row_on_caller_conn():
     import json as _json
     inputs = _json.loads(params["inputs"])
     assert inputs["indexer_id"] == "items_elasticsearch_driver"
-    assert inputs["entity_id"] == "item-1"
+    assert inputs["ops"][0]["entity_id"] == "item-1"
     assert inputs["op_type"] == "upsert"
     assert inputs["catalog"] == "cat-x"
     assert inputs["last_error"] == "ES timeout"
@@ -395,18 +408,103 @@ async def test_outbox_writer_inserts_task_row_on_caller_conn():
 
 @pytest.mark.asyncio
 async def test_outbox_dedup_key_is_stable_across_calls():
-    """Same (indexer_id, entity_id, op_type) → same dedup_key.  Different
-    op_type → different key.  Coalesces concurrent failures of the same
-    item into one row, but keeps upsert/delete distinct.
+    """Same chunk identity → same dedup_key.  Different op_type → distinct
+    key.  Different chunk membership → distinct key.
     """
-    op_a = _op("upsert", "abc")
-    op_b = _op("delete", "abc")
-    op_c = _op("upsert", "abc")
-    k_a = TaskTableOutboxWriter._dedup_key("ix", op_a)
-    k_b = TaskTableOutboxWriter._dedup_key("ix", op_b)
-    k_c = TaskTableOutboxWriter._dedup_key("ix", op_c)
-    assert k_a == k_c, "same op identity must coalesce"
+    k_a = TaskTableOutboxWriter._dedup_key("ix", "upsert", "item", ["abc"])
+    k_b = TaskTableOutboxWriter._dedup_key("ix", "delete", "item", ["abc"])
+    k_c = TaskTableOutboxWriter._dedup_key("ix", "upsert", "item", ["abc"])
+    k_d = TaskTableOutboxWriter._dedup_key("ix", "upsert", "item", ["abc", "def"])
+    # Same chunk content, different ordering → same key (sorted).
+    k_d2 = TaskTableOutboxWriter._dedup_key("ix", "upsert", "item", ["def", "abc"])
+    assert k_a == k_c, "same chunk identity must coalesce"
     assert k_a != k_b, "upsert and delete must stay distinct"
+    assert k_a != k_d, "different chunk membership must produce distinct keys"
+    assert k_d == k_d2, "order-independent: sort entity_ids before hashing"
+
+
+@pytest.mark.asyncio
+async def test_outbox_chunks_large_batch_into_one_row_per_chunk():
+    """A 1500-op batch with chunk_size=500 → 3 task rows, each carrying
+    500 ops under inputs.ops.
+    """
+    ctx = IndexContext(
+        catalog="cat-x", collection="col-y", correlation_id="cid-1",
+        pg_conn=object(),  # truthy; bypassed by _RecordingWriter._exec_insert
+    )
+    writer = _RecordingWriter()
+    ops = [_op(entity_id=f"i{i}") for i in range(1500)]
+
+    await writer.enqueue(
+        indexer_id="items_elasticsearch_driver",
+        ctx=ctx, ops=ops, chunk_size=500,
+    )
+    assert len(writer.rows) == 3
+    import json as _json
+    sizes = [
+        len(_json.loads(r["params"]["inputs"])["ops"]) for r in writer.rows
+    ]
+    assert sizes == [500, 500, 500]
+    keys = {r["params"]["dedup_key"] for r in writer.rows}
+    assert len(keys) == 3, "distinct chunks must produce distinct dedup_keys"
+
+
+@pytest.mark.asyncio
+async def test_outbox_one_op_call_writes_single_row_of_one_op():
+    ctx = IndexContext(
+        catalog="cat-x", collection="col-y", correlation_id="cid-1",
+        pg_conn=object(),
+    )
+    writer = _RecordingWriter()
+
+    await writer.enqueue(
+        indexer_id="items_elasticsearch_driver",
+        ctx=ctx, ops=[_op()],
+    )
+    assert len(writer.rows) == 1
+    import json as _json
+    inputs = _json.loads(writer.rows[0]["params"]["inputs"])
+    assert len(inputs["ops"]) == 1
+    assert inputs["ops"][0]["entity_id"] == "item-1"
+
+
+@pytest.mark.asyncio
+async def test_outbox_mixed_op_types_chunk_separately():
+    """Mixing upsert + delete in one enqueue call splits per op_type so
+    each chunk's dedup_key stays meaningful (upsert/delete don't share
+    a coalescing identity).
+    """
+    ctx = IndexContext(
+        catalog="cat-x", collection="col-y", correlation_id="cid-1",
+        pg_conn=object(),
+    )
+    writer = _RecordingWriter()
+    ops = [
+        _op("upsert", entity_id="a"),
+        _op("delete", entity_id="b"),
+        _op("upsert", entity_id="c"),
+    ]
+    await writer.enqueue(
+        indexer_id="items_elasticsearch_driver",
+        ctx=ctx, ops=ops,
+    )
+    assert len(writer.rows) == 2
+    import json as _json
+    op_types = sorted(
+        _json.loads(r["params"]["inputs"])["op_type"] for r in writer.rows
+    )
+    assert op_types == ["delete", "upsert"]
+
+
+@pytest.mark.asyncio
+async def test_outbox_empty_ops_is_noop():
+    ctx = IndexContext(
+        catalog="cat", collection="col", correlation_id="cid",
+        pg_conn=object(),
+    )
+    writer = _RecordingWriter()
+    await writer.enqueue(indexer_id="x", ctx=ctx, ops=[])
+    assert writer.rows == []
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +543,6 @@ async def test_default_dispatcher_describe_with_no_routing_returns_empty_indexer
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="#514 — same module as above; same drift.", strict=False)
 @pytest.mark.asyncio
 async def test_outbox_policy_with_writer_enqueues_on_failure():
     """OUTBOX policy + a real OutboxWriter should write the task row when
@@ -453,12 +550,11 @@ async def test_outbox_policy_with_writer_enqueues_on_failure():
     end-to-end against the dispatcher.
     """
     a = _StubIndexer("a", raise_on="upsert")
-    conn = _FakePgConn()
     ctx_with_conn = IndexContext(
         catalog="cat-x", collection="col-y",
-        correlation_id="cid-1", pg_conn=conn,
+        correlation_id="cid-1", pg_conn=object(),
     )
-    writer = TaskTableOutboxWriter(task_schema_resolver=lambda: "tasks")
+    writer = _RecordingWriter()
 
     routing = _StubRouting([_entry("a", on_failure=FailurePolicy.OUTBOX)])
 
@@ -478,9 +574,8 @@ async def test_outbox_policy_with_writer_enqueues_on_failure():
     # Indexer was attempted once (and raised).
     assert len(a.calls) == 1
     # Outbox row was written on the caller's connection.
-    assert len(conn.calls) == 1
-    sql, _ = conn.calls[0]
-    assert "INSERT INTO tasks.tasks" in sql
+    assert len(writer.rows) == 1
+    assert "INSERT INTO tasks.tasks" in writer.rows[0]["sql"]
 
 
 @pytest.mark.asyncio
