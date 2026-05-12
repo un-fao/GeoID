@@ -634,40 +634,46 @@ class EventService(EventBusProtocol):
         self._consumer_running = True
         self._consumer_task = None
 
+        from contextlib import asynccontextmanager
+        from dynastore.tools.async_utils import run_leader_loop
+
+        retry_s = 5.0
+
+        @asynccontextmanager
+        async def _acquire_leadership():
+            driver = get_protocol(EventDriverProtocol)
+            if not driver:
+                logger.warning(
+                    "EventService: EventDriverProtocol not available; retrying in 5s."
+                )
+                yield False
+                return
+            async with driver.acquire_consumer_lock(leader_key) as is_leader:
+                yield is_leader
+
+        async def _on_leader():
+            await self._run_consume_loop(
+                shutdown_event,
+                scope=scope,
+                channels=channels or ["dynastore_events_channel"],
+            )
+
         async def _leader_loop():
-            retry_s = 5.0
-            while not getattr(shutdown_event, "is_set", lambda: False)():
-                try:
-                    driver = get_protocol(EventDriverProtocol)
-                    if not driver:
-                        logger.warning(
-                            "EventService: EventDriverProtocol not available; retrying in 5s."
-                        )
-                        await asyncio.sleep(retry_s)
-                        continue
-
-                    async with driver.acquire_consumer_lock(leader_key) as is_leader:
-                        if not is_leader:
-                            await asyncio.sleep(retry_s)
-                            continue
-                        logger.info(
-                            "EventService: leadership acquired (key=%s).", leader_key
-                        )
-                        await self._run_consume_loop(
-                            shutdown_event,
-                            scope=scope,
-                            channels=channels or ["dynastore_events_channel"],
-                        )
-                except asyncio.CancelledError:
-                    break
-                except Exception:
-                    logger.exception(
-                        "EventService leader loop error; reconnecting in 5s."
-                    )
-                    await asyncio.sleep(retry_s)
-
-            self._consumer_running = False
-            logger.info("EventService: leader loop stopped (key=%s).", leader_key)
+            try:
+                await run_leader_loop(
+                    acquire_leadership=_acquire_leadership,
+                    on_leader=_on_leader,
+                    name=f"EventService[{leader_key}]",
+                    cadence_seconds=retry_s,
+                    is_shutdown=lambda: getattr(
+                        shutdown_event, "is_set", lambda: False
+                    )(),
+                )
+            finally:
+                self._consumer_running = False
+                logger.info(
+                    "EventService: leader loop stopped (key=%s).", leader_key
+                )
 
         executor = get_background_executor()
         try:

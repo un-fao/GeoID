@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from contextlib import AbstractAsyncContextManager
 from typing import Optional, Any, Iterator, Callable, List, Awaitable, Dict, Tuple
 from dynastore.modules.db_config.query_executor import run_in_event_loop as _real_run
 
@@ -406,3 +407,53 @@ class PgListenBridge:
     async def stop(self) -> None:
         """Signal the bridge to stop."""
         self._running = False
+
+
+# --- Leader-elected periodic loops ---
+
+async def run_leader_loop(
+    *,
+    acquire_leadership: Callable[[], AbstractAsyncContextManager[bool]],
+    on_leader: Callable[[], Awaitable[None]],
+    name: str,
+    cadence_seconds: float = 5.0,
+    is_shutdown: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Run a leader-elected loop that resigns on any exception.
+
+    Runner-agnostic: ``run_leader_loop`` is a plain async coroutine. The caller
+    chooses the runner — ``asyncio.create_task``, ``BackgroundExecutor.submit``,
+    a FastAPI background task, etc. The helper itself imports nothing
+    runner-specific.
+
+    Each outer iteration:
+      1. Calls ``acquire_leadership()`` and enters its context manager
+         (typically a non-blocking advisory-lock acquire).
+      2. If the context yields ``True``, awaits ``on_leader()`` exactly once.
+      3. Exits the context (releasing the lock) and sleeps ``cadence_seconds``.
+      4. On any exception inside the leadership context, the context is exited
+         (releasing the lock) before sleeping — preventing leader-held resources
+         (e.g. AUTOCOMMIT advisory-lock connections) from staying associated
+         with a poisoned pool slot across retries.
+
+    ``on_leader`` may run its own inner periodic loop, but MUST let exceptions
+    propagate. Swallowing exceptions inside ``on_leader`` keeps the lock held
+    and is the anti-pattern this helper exists to prevent (see GH #588).
+    """
+    is_shutdown = is_shutdown or (lambda: False)
+    while not is_shutdown():
+        try:
+            async with acquire_leadership() as is_leader:
+                if not is_leader:
+                    await asyncio.sleep(cadence_seconds)
+                    continue
+                logger.info("%s: leadership acquired", name)
+                await on_leader()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "%s: leader loop error; resigning and retrying in %ss",
+                name, cadence_seconds,
+            )
+            await asyncio.sleep(cadence_seconds)
