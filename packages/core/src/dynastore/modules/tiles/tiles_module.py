@@ -302,7 +302,17 @@ class TilePGPreseedStorage(TileStorageProtocol):
         y: int,
         data: bytes,
         format: str,
-    ) -> str:
+    ) -> Optional[str]:
+        from dynastore.modules.gcp.tiles_storage import _load_caching_config
+
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            logger.debug(
+                "tile_cache event=skip reason=disabled action=save provider=pg "
+                "tile=%s/%s/%s/%s/%s/%s.%s",
+                catalog_id, collection_id, tms_id, z, x, y, format,
+            )
+            return None
 
         async with managed_transaction(self.engine) as conn:
             schema = await self._get_schema(catalog_id)
@@ -339,6 +349,12 @@ class TilePGPreseedStorage(TileStorageProtocol):
         y: int,
         format: str,
     ) -> Optional[bytes]:
+        from dynastore.modules.gcp.tiles_storage import _load_caching_config
+
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            return None
+
         # We assume storage exists if we are reading. If table missing -> error or None?
         # Better to return None implies "not found". SQL error means "system error".
         # But for "table not found", it effectively means no tiles.
@@ -411,6 +427,12 @@ class TilePGPreseedStorage(TileStorageProtocol):
         format: str,
     ) -> bool:
         """Checks for tile existence using a lightweight SELECT EXISTS query."""
+        from dynastore.modules.gcp.tiles_storage import _load_caching_config
+
+        cfg = await _load_caching_config()
+        if not cfg.enabled:
+            return False
+
         schema = await self._get_schema(catalog_id)
         query_str = f"""
             SELECT EXISTS (
