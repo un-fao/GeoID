@@ -53,12 +53,15 @@ services:
       DB_POOL_MIN_SIZE: "20"
       DB_CONNECT_TIMEOUT: "30"
       ERROR_LOG: /dynastore/logs/error.log
+      VALKEY_URL: valkey://valkey:6379
     ports:
       - "${HOST_PORT_CATALOG:-80}:80"
     volumes:
       - ../../../logs/catalog:/dynastore/logs
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     networks:
       - dynastore_net
@@ -90,12 +93,15 @@ services:
       KIBANA_UPSTREAM_URL: ${KIBANA_UPSTREAM_URL:-http://kibana:5601/dashboards}
       KIBANA_UPSTREAM_API_KEY: ${KIBANA_UPSTREAM_API_KEY:-}
       KIBANA_PUBLIC_PATH: ${KIBANA_PUBLIC_PATH:-/dashboards}
+      VALKEY_URL: valkey://valkey:6379
     ports:
       - "8080:80"
     volumes:
       - ../../../logs/geoid:/dynastore/logs
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     networks:
       - dynastore_net
@@ -121,12 +127,15 @@ services:
       TCP_PORT: 81
       UVICORN_WORKERS: 2
       ERROR_LOG: /dynastore/logs/error.log
+      VALKEY_URL: valkey://valkey:6379
     ports:
       - "${HOST_PORT_WORKER:-81}:81"
     volumes:
       - ../../../logs/worker:/dynastore/logs
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     networks:
       - dynastore_net
@@ -151,12 +160,15 @@ services:
       TCP_PORT: 8082
       UVICORN_WORKERS: 2
       ERROR_LOG: /dynastore/logs/error.log
+      VALKEY_URL: valkey://valkey:6379
     ports:
       - "${HOST_PORT_TOOLS:-8082}:8082"
     volumes:
       - ../../../logs/tools:/dynastore/logs
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     networks:
       - dynastore_net
@@ -181,12 +193,15 @@ services:
       TCP_PORT: 8083
       UVICORN_WORKERS: 2
       ERROR_LOG: /dynastore/logs/error.log
+      VALKEY_URL: valkey://valkey:6379
     ports:
       - "${HOST_PORT_MAPS:-8083}:8083"
     volumes:
       - ../../../logs/maps:/dynastore/logs
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     networks:
       - dynastore_net
@@ -198,6 +213,13 @@ services:
     container_name: geoid_elasticsearch
     ports:
       - "9200:9200"
+    networks:
+      - dynastore_net
+
+  valkey:
+    extends:
+      file: ./compose.valkey.yml
+      service: valkey
     networks:
       - dynastore_net
 

@@ -41,6 +41,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
       DB_POOL_MIN_SIZE: "20"
@@ -51,7 +53,6 @@ services:
       ES_HOST: elasticsearch
       ES_PORT: "9200"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
-      VALKEY_URL: valkey://valkey:6379
     ports:
       - "5678:5678" # Debug port
     command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
@@ -76,12 +77,13 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
       ES_HOST: elasticsearch
       ES_PORT: "9200"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
-      VALKEY_URL: valkey://valkey:6379
 
   worker:
     extends:
@@ -103,6 +105,8 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     volumes:
       - ../../../src:/dynastore/src
       - ./config/worker:/dynastore/config:ro
@@ -114,7 +118,6 @@ services:
       ES_HOST: elasticsearch
       ES_PORT: "9200"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
-      VALKEY_URL: valkey://valkey:6379
     ports:
       - "5679:5679" # Debug port for worker
     command: python -m debugpy --listen 0.0.0.0:5679 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 81 --reload --reload-dir src
@@ -140,13 +143,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
       ERROR_LOG: "-"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
-      VALKEY_URL: valkey://valkey:6379
     ports:
       - "5680:5680" # Debug port for tools
     command: python -m debugpy --listen 0.0.0.0:5680 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8082 --reload --reload-dir src
@@ -174,6 +178,8 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
       LOG_LEVEL: DEBUG
@@ -182,7 +188,6 @@ services:
       ES_HOST: elasticsearch
       ES_PORT: "9200"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
-      VALKEY_URL: valkey://valkey:6379
     ports:
       - "5681:5681" # Debug port for maps
     command: python -m debugpy --listen 0.0.0.0:5681 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 8083 --reload --reload-dir src
@@ -196,25 +201,6 @@ services:
       - "9200:9200"
     networks:
       - dynastore_net
-
-  # Lightweight Valkey for shared-cache parity between on-prem and
-  # review/prod. Backs the capability liveness oracle that powers the
-  # reactive task reaper (#502); without a distributed cache the oracle
-  # only sees the local pod, so multi-pod or restart scenarios would
-  # produce false-positive DEAD_LETTER transitions.
-  valkey:
-    image: valkey/valkey:8-alpine
-    container_name: geoid_valkey
-    command: ["valkey-server", "--save", "", "--appendonly", "no"]
-    ports:
-      - "${HOST_PORT_VALKEY:-6379}:6379"
-    networks:
-      - dynastore_net
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   kibana:
     extends:
