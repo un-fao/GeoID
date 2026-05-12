@@ -316,6 +316,114 @@ class OperationDriverEntry(BaseModel):
             "(self-register is set-default, never overwrite)."
         ),
     )
+    input_transformers: Tuple[str, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Ordered transformer ``driver_ref``s applied to entities going "
+            "INTO this driver call. The chain runs left-to-right: each "
+            "transformer receives the previous transformer's output. Every "
+            "ref must also appear in ``operations[TRANSFORM]`` of the same "
+            "routing config — the validator rejects dangling references at "
+            "config-build time. Wired hops in this release: ``INDEX``. "
+            "Declaring this on other operations emits a one-time WARN "
+            "because the hop is not yet active."
+        ),
+    )
+    output_transformers: Tuple[str, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Ordered transformer ``driver_ref``s applied to entities coming "
+            "OUT of this driver call. The inverse chain runs right-to-left "
+            "so the output shape matches the client expectation. Same "
+            "validation rule as ``input_transformers``. Wired hops in this "
+            "release: ``SEARCH``. Declaring this on other operations emits "
+            "a one-time WARN."
+        ),
+    )
+
+    @field_validator("input_transformers", "output_transformers", mode="before")
+    @classmethod
+    def _normalize_transformer_refs(cls, v: Any) -> Any:
+        if v is None:
+            return ()
+        if isinstance(v, str):
+            return (_to_snake(v),)
+        if isinstance(v, (list, tuple)):
+            return tuple(_to_snake(item) if isinstance(item, str) and item else item for item in v)
+        return v
+
+
+# Operations whose transformer hop is wired in this release. Declaring
+# input_transformers / output_transformers on any other (operation, side)
+# pair logs a one-time WARN so operators see the silent-no-op early.
+_WIRED_INPUT_HOPS: FrozenSet[str] = frozenset({Operation.INDEX})
+_WIRED_OUTPUT_HOPS: FrozenSet[str] = frozenset({Operation.SEARCH})
+_DEFERRED_HOP_WARNED: Set[Tuple[str, str, str]] = set()
+
+
+def _warn_deferred_transformer_hops(
+    operations: Dict[str, List["OperationDriverEntry"]],
+    config_label: str,
+) -> None:
+    for op_name, entries in operations.items():
+        for entry in entries:
+            if entry.input_transformers and op_name not in _WIRED_INPUT_HOPS:
+                key = (op_name, entry.driver_ref, "input")
+                if key not in _DEFERRED_HOP_WARNED:
+                    _DEFERRED_HOP_WARNED.add(key)
+                    logger.warning(
+                        "%s: input_transformers declared on operation '%s' "
+                        "for driver '%s' but the %s input-transformer hop "
+                        "is not yet wired in this release — declaration is "
+                        "a no-op. Wired input hops: %s.",
+                        config_label, op_name, entry.driver_ref, op_name,
+                        sorted(_WIRED_INPUT_HOPS),
+                    )
+            if entry.output_transformers and op_name not in _WIRED_OUTPUT_HOPS:
+                key = (op_name, entry.driver_ref, "output")
+                if key not in _DEFERRED_HOP_WARNED:
+                    _DEFERRED_HOP_WARNED.add(key)
+                    logger.warning(
+                        "%s: output_transformers declared on operation '%s' "
+                        "for driver '%s' but the %s output-transformer hop "
+                        "is not yet wired in this release — declaration is "
+                        "a no-op. Wired output hops: %s.",
+                        config_label, op_name, entry.driver_ref, op_name,
+                        sorted(_WIRED_OUTPUT_HOPS),
+                    )
+
+
+def _validate_transformer_attachment(
+    operations: Dict[str, List["OperationDriverEntry"]],
+    config_label: str,
+) -> None:
+    """Every ref under ``input_transformers`` / ``output_transformers``
+    must also appear as a ``driver_ref`` in ``operations[TRANSFORM]``.
+    Raises ``ValueError`` listing the dangling refs.
+    """
+    transform_refs = {
+        entry.driver_ref for entry in operations.get(Operation.TRANSFORM, [])
+    }
+    dangling: List[str] = []
+    for op_name, entries in operations.items():
+        for entry in entries:
+            for ref in entry.input_transformers:
+                if ref not in transform_refs:
+                    dangling.append(
+                        f"{op_name}/{entry.driver_ref}/input_transformers:{ref}"
+                    )
+            for ref in entry.output_transformers:
+                if ref not in transform_refs:
+                    dangling.append(
+                        f"{op_name}/{entry.driver_ref}/output_transformers:{ref}"
+                    )
+    if dangling:
+        raise ValueError(
+            f"{config_label}: transformer driver_ref(s) {dangling} listed in "
+            f"input_transformers/output_transformers do not appear in "
+            f"operations[TRANSFORM]. Register them as TRANSFORM entries "
+            f"(or remove the attachment)."
+        )
 
 
 class ItemsRoutingConfig(PluginConfig):
@@ -434,6 +542,8 @@ class ItemsRoutingConfig(PluginConfig):
                 "register skipped (%s); apply-handler will populate on "
                 "next write.", exc,
             )
+        _validate_transformer_attachment(self.operations, "ItemsRoutingConfig")
+        _warn_deferred_transformer_hops(self.operations, "ItemsRoutingConfig")
         return self
 
 
@@ -523,6 +633,8 @@ class CollectionRoutingConfig(PluginConfig):
                 "skipped (%s); apply-handler will populate on next write.",
                 exc,
             )
+        _validate_transformer_attachment(self.operations, "CollectionRoutingConfig")
+        _warn_deferred_transformer_hops(self.operations, "CollectionRoutingConfig")
         return self
 
 
@@ -591,6 +703,8 @@ class AssetRoutingConfig(PluginConfig):
                 "AssetRoutingConfig: read-time self-register skipped "
                 "(%s); apply-handler will populate on next write.", exc,
             )
+        _validate_transformer_attachment(self.operations, "AssetRoutingConfig")
+        _warn_deferred_transformer_hops(self.operations, "AssetRoutingConfig")
         return self
 
 
@@ -677,6 +791,8 @@ class CatalogRoutingConfig(PluginConfig):
                 "CatalogRoutingConfig: read-time self-register skipped "
                 "(%s); apply-handler will populate on next write.", exc,
             )
+        _validate_transformer_attachment(self.operations, "CatalogRoutingConfig")
+        _warn_deferred_transformer_hops(self.operations, "CatalogRoutingConfig")
         return self
 
 
@@ -1558,6 +1674,56 @@ async def get_active_transformers(
                 "Available: %s",
                 entry.driver_ref, entity, catalog_id, collection_id,
                 sorted(by_driver_id),
+            )
+            continue
+        chain.append(transformer)
+    return chain
+
+
+async def get_output_transformers_for_search(
+    catalog_id: str,
+    *,
+    entity: EntityKindLiteral,
+    collection_id: Optional[str] = None,
+    driver_ref: str,
+) -> List[Any]:
+    """Resolve the ``output_transformers`` declared on the SEARCH entry for
+    ``driver_ref`` into live :class:`EntityTransformProtocol` instances.
+
+    Used by SEARCH-side drivers to wrap each hit through
+    :func:`restore_transform_chain` so the client-facing shape is the
+    inverse of what the indexer wrote. Returns an empty list when no
+    matching SEARCH entry exists or when none of its
+    ``output_transformers`` resolve to registered instances.
+    """
+    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
+    from dynastore.tools.discovery import get_protocols
+
+    ops = await _resolve_entity_operations(
+        catalog_id, entity=entity, collection_id=collection_id,
+    )
+    search_entries = ops.get(Operation.SEARCH, [])
+    target_refs: Tuple[str, ...] = ()
+    for entry in search_entries:
+        if entry.driver_ref == driver_ref:
+            target_refs = entry.output_transformers
+            break
+    if not target_refs:
+        return []
+    by_driver_id = {
+        _to_snake(type(t).__name__): t
+        for t in get_protocols(EntityTransformProtocol)
+    }
+    chain: List[Any] = []
+    for ref in target_refs:
+        transformer = by_driver_id.get(ref)
+        if transformer is None:
+            logger.debug(
+                "get_output_transformers_for_search: routing lists '%s' "
+                "for entity=%s catalog=%s collection=%s but no "
+                "EntityTransformProtocol implementer registered with that "
+                "class name; skipping.",
+                ref, entity, catalog_id, collection_id,
             )
             continue
         chain.append(transformer)

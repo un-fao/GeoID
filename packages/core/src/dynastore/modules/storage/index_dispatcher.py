@@ -724,10 +724,103 @@ class IndexDispatcher:
                 for op in ops:
                     await self._handle_missing(entry, ctx, op)
                 continue
-            results[entry.driver_ref] = await self._dispatch_bulk(
-                entry, indexer, ctx, ops,
-            )
+            entry_ops, rejected = await self._apply_input_transformers(entry, ctx, ops)
+            if not entry_ops:
+                results[entry.driver_ref] = BulkResult(
+                    total=len(ops),
+                    failed=len(rejected),
+                    failures=rejected,
+                )
+                continue
+            result = await self._dispatch_bulk(entry, indexer, ctx, entry_ops)
+            if rejected:
+                result = BulkResult(
+                    total=result.total + len(rejected),
+                    succeeded=result.succeeded,
+                    failed=result.failed + len(rejected),
+                    failures=[*result.failures, *rejected],
+                )
+            results[entry.driver_ref] = result
         return results
+
+    async def _apply_input_transformers(
+        self,
+        entry: OperationDriverEntry,
+        ctx: IndexContext,
+        ops: Sequence[DispatchableOp],
+    ) -> Tuple[List[DispatchableOp], List[Dict[str, Any]]]:
+        """Resolve ``entry.input_transformers`` to instances and walk each
+        op's payload through the chain. A failure on one op rejects only
+        that op; the rest continue to the indexer. Empty chain ⇒ ops
+        passed through unchanged.
+        """
+        if not entry.input_transformers:
+            return list(ops), []
+        transformers = await self._resolve_input_chain(
+            entry.input_transformers, ctx,
+        )
+        if not transformers:
+            return list(ops), []
+        from dynastore.modules.storage.transform_runtime import apply_transform_chain
+
+        kept: List[DispatchableOp] = []
+        rejected: List[Dict[str, Any]] = []
+        for op in ops:
+            payload = _op_payload(op)
+            if payload is None:
+                kept.append(op)
+                continue
+            try:
+                transformed = await apply_transform_chain(
+                    payload,
+                    transformers,
+                    catalog_id=ctx.catalog,
+                    collection_id=ctx.collection,
+                    entity_kind=_op_entity_kind(op),
+                )
+            except Exception as exc:
+                rejected.append({
+                    "reason": f"input_transformer_failed: {exc}",
+                    "indexer": entry.driver_ref,
+                    "entity_id": _op_entity_id(op),
+                })
+                logger.warning(
+                    "IndexDispatcher: input_transformer chain failed for "
+                    "indexer '%s' on entity '%s' — rejecting this item, "
+                    "continuing with the rest of the bulk: %s",
+                    entry.driver_ref, _op_entity_id(op), exc,
+                )
+                continue
+            kept.append(_with_payload(op, transformed))
+        return kept, rejected
+
+    async def _resolve_input_chain(
+        self,
+        refs: Sequence[str],
+        ctx: IndexContext,
+    ) -> List[Any]:
+        from dynastore.models.protocols.entity_transform import (
+            EntityTransformProtocol,
+        )
+        from dynastore.tools.discovery import get_protocols
+        from dynastore.tools.typed_store.base import _to_snake
+
+        by_ref = {
+            _to_snake(type(t).__name__): t
+            for t in get_protocols(EntityTransformProtocol)
+        }
+        chain: List[Any] = []
+        for ref in refs:
+            transformer = by_ref.get(ref)
+            if transformer is None:
+                logger.warning(
+                    "IndexDispatcher: input transformer '%s' not registered "
+                    "(catalog=%s, collection=%s); skipping in chain.",
+                    ref, ctx.catalog, ctx.collection,
+                )
+                continue
+            chain.append(transformer)
+        return chain
 
     # ------------------------------------------------------------------
     # Internals
@@ -1131,6 +1224,35 @@ class IndexDispatcher:
                 "on %d ops — original error: %s, enqueue error: %s",
                 entry.driver_ref, len(ops), original, enqueue_exc,
             )
+
+
+def _op_payload(op: "DispatchableOp") -> Any:
+    return op.payload if hasattr(op, "payload") else None
+
+
+def _op_entity_id(op: "DispatchableOp") -> str:
+    if isinstance(op, IndexableOp):
+        return op.item_id
+    return op.entity_id
+
+
+def _op_entity_kind(op: "DispatchableOp") -> Any:
+    if isinstance(op, IndexableOp):
+        # IndexableOp models the bulk-reindex path which is item-centric.
+        return "item"
+    return op.entity_type
+
+
+def _with_payload(op: "DispatchableOp", payload: Any) -> "DispatchableOp":
+    """Return a copy of ``op`` carrying the transformed payload.
+
+    Both shapes are frozen — IndexOp uses pydantic ``model_copy``;
+    IndexableOp is a frozen dataclass and we fall back to ``dataclasses.replace``.
+    """
+    if isinstance(op, IndexableOp):
+        from dataclasses import replace
+        return replace(op, payload=payload)
+    return op.model_copy(update={"payload": payload})
 
 
 def _describe_op(op: "DispatchableOp") -> str:

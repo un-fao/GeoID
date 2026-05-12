@@ -1697,7 +1697,35 @@ class AssetElasticsearchDriver(
                 size=limit,
                 from_=offset,
             )
-            return [hit["_source"] for hit in resp["hits"]["hits"]]
+            hits = [hit["_source"] for hit in resp["hits"]["hits"]]
+            from dynastore.modules.storage.routing_config import (
+                get_output_transformers_for_search,
+            )
+            from dynastore.modules.storage.transform_runtime import (
+                restore_transform_chain,
+            )
+            from dynastore.tools.typed_store.base import _to_snake
+
+            chain = await get_output_transformers_for_search(
+                catalog_id,
+                entity="asset",
+                collection_id=collection_id,
+                driver_ref=_to_snake(type(self).__name__),
+            )
+            if not chain:
+                return hits
+            restored: List[Dict[str, Any]] = []
+            for hit in hits:
+                restored.append(
+                    await restore_transform_chain(
+                        hit,
+                        chain,
+                        catalog_id=catalog_id,
+                        collection_id=collection_id,
+                        entity_kind="asset",
+                    )
+                )
+            return restored
         except Exception as e:
             logger.error("AssetElasticsearchDriver.search_assets failed: %s", e)
             return []

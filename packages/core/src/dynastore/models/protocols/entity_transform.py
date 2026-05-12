@@ -18,17 +18,29 @@ storage.
 
 A transformer is a driver whose role is to reshape an entity payload before
 it lands in an indexer's storage, and to reverse that reshape on the way
-back out for clients. Active transformers per entity are resolved from
-``operations[TRANSFORM]`` in the relevant routing config (see
-``modules/storage/routing_config.py``).
+back out for clients.
+
+``operations[TRANSFORM]`` is the **registry** of available transformer
+instances (populated by ``_self_register_transformers_into`` or by operators).
+*Where* a transformer runs is decided by the per-driver attachment fields
+on each :class:`OperationDriverEntry`:
+
+- ``input_transformers``  — transformer ``driver_ref``s applied to entities
+  going INTO this driver call (e.g. the INDEX entry for an items indexer).
+  Composition is left-to-right.
+- ``output_transformers`` — transformer ``driver_ref``s applied to entities
+  coming OUT of this driver call (e.g. the SEARCH entry for the same driver).
+  Composition is right-to-left so the inverse chain matches the original
+  shape.
+
+Routing config is the SSOT for which (operation, driver) pair owns which
+chain — a transformer doesn't choose where it runs.
 
 The protocol itself is the structural marker — discovery uses
 ``get_protocols(EntityTransformProtocol)``. There is no parallel capability
 flag; implementing the protocol is the contract.
 
-Composition: multiple transformers may be chained per entity. The chain
-runs left-to-right at index time and right-to-left at read time. Empty
-chain ⇒ identity (no-op).
+Empty attachment ⇒ identity (no-op).
 """
 
 from __future__ import annotations
@@ -47,8 +59,8 @@ class EntityTransformProtocol(Protocol):
     ``_self_register_indexers_into`` / ``_self_register_searchers_into``.
     ``_self_register_transformers_into`` writes
     ``type(transformer).__name__`` into ``OperationDriverEntry.driver_ref``;
-    ``get_active_transformers`` resolves entries back to instances by
-    class name.
+    routing entries reference these names from ``input_transformers`` /
+    ``output_transformers`` to choose which chain runs where.
 
     The transform should be a pure function — no I/O side effects, no
     mutation of inputs in place. The chain runtime composes transformers,
@@ -65,9 +77,11 @@ class EntityTransformProtocol(Protocol):
     ) -> Any:
         """Mutate the entity for indexing.
 
-        Returns the doc to be written to the indexer's store. Composes
-        left-to-right with other transformers in the chain — i.e. the
-        next transformer receives this transformer's output as input.
+        Returns the doc to be written to the indexer's store. Invoked when
+        this transformer's ``driver_ref`` appears in an
+        :attr:`OperationDriverEntry.input_transformers` tuple — typically
+        the INDEX entry of the target driver. Composes left-to-right with
+        other transformers in the same tuple.
         """
         ...
 
@@ -81,9 +95,12 @@ class EntityTransformProtocol(Protocol):
     ) -> Any:
         """Inverse of :meth:`transform_for_index`.
 
-        Returns the entity shape clients expect. Composes right-to-left
-        with other transformers — the chain runtime applies inverses in
-        reverse order so the output shape matches the original entity.
+        Returns the entity shape clients expect. Invoked when this
+        transformer's ``driver_ref`` appears in an
+        :attr:`OperationDriverEntry.output_transformers` tuple — typically
+        the SEARCH entry of the target driver. The chain runtime applies
+        inverses right-to-left so the output shape matches the original
+        entity.
 
         May be a no-op when the indexed shape is already what clients
         want (rare — most transformers either fully invert or accept some
