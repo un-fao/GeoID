@@ -10,6 +10,7 @@ module — imports are lazy.
 from pathlib import Path
 
 _HERE = Path(__file__).parent / "notebooks"
+_REG = "dynastore.extensions.stac"
 
 
 def build_contributions():
@@ -35,6 +36,7 @@ def build_contributions():
             },
             tags=["stac", "catalog", "collection", "lifecycle", "demo"],
             notebook_path=_HERE / "catalog_collection_lifecycle.ipynb",
+            registered_by=_REG,
         ),
         NotebookContribution(
             notebook_id="stac_virtual_asset_collections",
@@ -49,6 +51,7 @@ def build_contributions():
             },
             tags=["stac", "virtual", "assets", "demo"],
             notebook_path=_HERE / "virtual_asset_collections.ipynb",
+            registered_by=_REG,
         ),
     ]
     explicit_paths = {c.notebook_path for c in explicit}
