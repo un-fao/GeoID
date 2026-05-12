@@ -71,6 +71,20 @@ class TilesCachingConfig(ExposableConfigMixin, PluginConfig):
     the next tile save / fetch — no rewrite of already-cached objects.
     Changing ``key_prefix`` orphans existing cached tiles (they remain
     under the old prefix until the bucket TTL evicts them).
+
+    ``enabled`` (inherited from ``ExposableConfigMixin``, default ``True``)
+    gates the *bucket-backed L2 cache only*.  When ``False``:
+
+    - ``get_tile`` / ``get_tile_url`` / ``check_tile_exists`` return as a
+      miss without touching the bucket (every request falls through to
+      PostGIS generation).
+    - ``save_tile`` is a no-op (already-generated tiles are not persisted
+      to the bucket).
+    - Deletes still execute (cleanup paths must work even after disabling
+      the cache so operators can drop stale blobs).
+
+    Disabling the L2 cache does NOT disable tile generation — for that
+    use ``TilesConfig.enabled`` (master switch on the tiles extension).
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "tiles")
 

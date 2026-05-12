@@ -103,6 +103,7 @@ TTL are surfaced through the standard PluginConfig waterfall
 
 | Field | Default | Effect |
 |---|---|---|
+| `enabled` | `true` | Master switch for the L2 bucket cache. When `false`: every read returns as a miss, `save_tile` is a no-op (tiles still serve from PostGIS; deletes still execute). For "disable tile serving entirely" use `TilesConfig.enabled`. |
 | `key_prefix` | `tiles/collections` | Object key is `{key_prefix}/{collection_id}/{tms_id}/{z}/{x}/{y}.{format}` |
 | `ttl_seconds` | `31536000` (1 year) | `Cache-Control: public, max-age=<ttl_seconds>` on every tile object |
 
