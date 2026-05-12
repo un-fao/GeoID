@@ -280,6 +280,13 @@ class TaskTableOutboxWriter:
             "catalog=%s collection=%s chunk_size=%d",
             indexer_id, op_type, ctx.catalog, ctx.collection, len(chunk),
         )
+        _log_dispatch_path(
+            mode="outbox_handoff",
+            indexer_id=indexer_id,
+            catalog=ctx.catalog,
+            collection=ctx.collection,
+            chunk_size=len(chunk),
+        )
         await self._exec_insert(
             ctx.pg_conn,
             sql=f"""
@@ -371,6 +378,25 @@ _DEFAULT_DISPATCHER: Optional["IndexDispatcher"] = None
 # rather than the request rate.
 _OUTBOX_POOL: Any = None
 _OUTBOX_POOL_LOCK = asyncio.Lock()
+
+
+def _log_dispatch_path(
+    *,
+    mode: str,
+    indexer_id: str,
+    catalog: str,
+    collection: str,
+    chunk_size: int,
+) -> None:
+    # Observability (#504): structured log line for GCP log-based metrics
+    # `index_dispatch_path_total{mode}` (counter on mode label) and
+    # `index_chunk_size_bucket` (distribution on the chunk_size field).
+    # `mode` is one of: in_tx | post_commit_inline | outbox_handoff.
+    logger.info(
+        "index_dispatch_path mode=%s indexer=%s catalog=%s collection=%s "
+        "chunk_size=%d",
+        mode, indexer_id, catalog, collection, chunk_size,
+    )
 
 
 async def _get_outbox_pool() -> Any:
@@ -473,10 +499,18 @@ class _DualOutbox:
         chunk_size = len(rows)
         if chunk_size:
             indexer_ids = sorted({getattr(r, "indexer_id", "?") for r in rows})
+            indexer_label = ",".join(indexer_ids)
             logger.info(
                 "index_chunk_emitted indexer=%s source=bulk catalog=%s "
                 "chunk_size=%d",
-                ",".join(indexer_ids), catalog_id, chunk_size,
+                indexer_label, catalog_id, chunk_size,
+            )
+            _log_dispatch_path(
+                mode="outbox_handoff",
+                indexer_id=indexer_label,
+                catalog=catalog_id,
+                collection="",
+                chunk_size=chunk_size,
             )
 
     async def claim_batch(
@@ -733,6 +767,14 @@ class IndexDispatcher:
                 )
                 continue
             result = await self._dispatch_bulk(entry, indexer, ctx, entry_ops)
+            if result.failed == 0:
+                _log_dispatch_path(
+                    mode="post_commit_inline",
+                    indexer_id=entry.driver_ref,
+                    catalog=ctx.catalog,
+                    collection=ctx.collection,
+                    chunk_size=len(entry_ops),
+                )
             if rejected:
                 result = BulkResult(
                     total=result.total + len(rejected),
@@ -885,6 +927,13 @@ class IndexDispatcher:
             await indexer.index(ctx, cast(IndexOp, op))
             if self._breaker is not None:
                 self._breaker.record_success(entry.driver_ref)
+            _log_dispatch_path(
+                mode="in_tx",
+                indexer_id=entry.driver_ref,
+                catalog=ctx.catalog,
+                collection=ctx.collection,
+                chunk_size=1,
+            )
         except Exception as exc:
             if self._breaker is not None:
                 self._breaker.record_failure(entry.driver_ref)
