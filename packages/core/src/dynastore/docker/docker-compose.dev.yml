@@ -18,8 +18,8 @@ services:
       file: docker-compose.yml
       service: catalog
     build:
-      context: ../../..
-      dockerfile: src/dynastore/docker/Dockerfile
+      context: ../../../../..
+      dockerfile: packages/core/src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${CATALOG_SCOPE:-scope_catalog}
@@ -62,8 +62,8 @@ services:
       file: docker-compose.yml
       service: geoid
     build:
-      context: ../../..
-      dockerfile: src/dynastore/docker/Dockerfile
+      context: ../../../../..
+      dockerfile: packages/core/src/dynastore/docker/Dockerfile
       target: development
       args:
         BUILD_JUPYTERLITE: "true"
@@ -90,8 +90,8 @@ services:
       file: docker-compose.yml
       service: worker
     build:
-      context: ../../..
-      dockerfile: src/dynastore/docker/Dockerfile
+      context: ../../../../..
+      dockerfile: packages/core/src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${WORKER_SCOPE:-scope_worker}
@@ -127,8 +127,8 @@ services:
       file: docker-compose.yml
       service: tools
     build:
-      context: ../../..
-      dockerfile: src/dynastore/docker/Dockerfile
+      context: ../../../../..
+      dockerfile: packages/core/src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${TOOLS_SCOPE:-scope_tools}
@@ -160,8 +160,8 @@ services:
       file: docker-compose.yml
       service: maps
     build:
-      context: ../../..
-      dockerfile: src/dynastore/docker/Dockerfile
+      context: ../../../../..
+      dockerfile: packages/core/src/dynastore/docker/Dockerfile
       target: development
       args:
         SCOPE: ${MAPS_SCOPE:-scope_maps}
