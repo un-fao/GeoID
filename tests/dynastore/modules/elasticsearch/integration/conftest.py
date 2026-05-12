@@ -67,21 +67,6 @@ async def refresh_private_items_index(catalog_id: str) -> None:
         pass
 
 
-async def refresh_private_collection_index(catalog_id: str) -> None:
-    """Force ES refresh on the per-tenant private collection index."""
-    from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
-    from dynastore.modules.elasticsearch.mappings import (
-        get_tenant_collections_private_index,
-    )
-
-    es = get_client()
-    index = get_tenant_collections_private_index(get_index_prefix(), catalog_id)
-    try:
-        await es.indices.refresh(index=index)
-    except Exception:
-        pass
-
-
 async def doc_exists(index: str, doc_id: str) -> bool:
     """Return True if a document with the given id exists in the index."""
     from dynastore.modules.elasticsearch.client import get_client
