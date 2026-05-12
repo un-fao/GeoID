@@ -23,6 +23,13 @@ async def db_reset_session():
     """
     Drops database schemas at the start of the test session to ensure a clean state.
     Schema recreation is handled by module lifespans in app_lifespan / task_app_state.
+
+    Under pytest-xdist, each worker has its OWN database
+    (``gis_dev_<worker_id>``) cloned from the master TEMPLATE at
+    ``pytest_sessionstart`` (see ``tests/conftest.py::_ensure_worker_db``).
+    The clone is already clean, so the worker-side reset is a no-op — we skip
+    it here. The master gis_dev DB is reset by the controller (master mode)
+    or by the boot-tier ``db_reset.sh`` before the test stack reports healthy.
     """
     try:
         from tests.dynastore.test_utils.cleanup_db import cleanup_db as cleanup
@@ -32,7 +39,7 @@ async def db_reset_session():
 
     if os.environ.get("PYTEST_XDIST_WORKER"):
         print(
-            f"[DB RESET] Worker {os.environ.get('PYTEST_XDIST_WORKER')} detected. Skipping global schema reset to prevent conflict."
+            f"[DB RESET] Worker {os.environ.get('PYTEST_XDIST_WORKER')}: per-worker DB is freshly cloned, skipping reset."
         )
         return
 
