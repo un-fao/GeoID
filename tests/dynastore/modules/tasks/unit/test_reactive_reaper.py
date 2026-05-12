@@ -37,12 +37,19 @@ def _row(task_id: str = "t-1", task_type: str = "index_propagation"):
 
 class _FakeQuery:
     """Stand-in for DQLQuery — its ``execute`` is awaited and returns
-    canned values pulled from the stack-managed deque below."""
+    canned values pulled from the stack-managed deque below.
+
+    Also records every SQL string passed to the constructor (in
+    ``_sql_log``) so #566 regression tests can assert no stray
+    bulk-UPDATE is constructed for unmapped task_types.
+    """
 
     _q: list = []
+    _sql_log: list = []
 
     def __init__(self, sql, *, result_handler=None):
         self._sql = sql
+        _FakeQuery._sql_log.append(sql)
 
     async def execute(self, _conn, **_params):
         if not _FakeQuery._q:
@@ -61,6 +68,7 @@ class _FakeTxCtx:
 def _patches(oracle_live: bool, results: list):
     """Build the unittest.mock.patch context managers shared by tests."""
     _FakeQuery._q = list(results)
+    _FakeQuery._sql_log = []
     return [
         patch(
             "dynastore.modules.tasks.capability_oracle.is_capability_live",
@@ -249,6 +257,19 @@ async def test_bulk_dlq_skipped_for_unmapped_task_type():
     assert not any(
         "dispatcher_reactive_dlq_bulk_total" in m for m in captured
     ), f"bulk line should not fire for unmapped task_type: {captured}"
+    # #566: belt-and-braces — assert no bulk-UPDATE SQL was even
+    # constructed. The bulk path interpolates ``inputs->>'<key>'`` into
+    # the SQL string; its absence guarantees the gate held even if the
+    # log line were silently dropped or renamed in a future refactor.
+    bulk_sqls = [s for s in _FakeQuery._sql_log if "inputs->>" in (s or "")]
+    assert not bulk_sqls, (
+        f"unmapped task_type must not construct bulk-UPDATE SQL; got: {bulk_sqls}"
+    )
+    # Only the per-row path runs: advisory lock + per-row UPDATE = 2.
+    assert len(_FakeQuery._sql_log) <= 2, (
+        f"unmapped path should issue at most 2 SQL statements; got "
+        f"{len(_FakeQuery._sql_log)}: {_FakeQuery._sql_log}"
+    )
 
 
 def test_task_type_capability_inputs_key_mapping_exposes_index_propagation():
