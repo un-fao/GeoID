@@ -204,7 +204,7 @@ class ItemsElasticsearchPrivateDriver(
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body, params={"timeout": "60s"})
+            await es.bulk(body=bulk_body)
 
         return items if isinstance(items, list) else list(items)
 
@@ -506,7 +506,7 @@ class ItemsElasticsearchPrivateDriver(
         if not body:
             return BulkResult(total=len(ops))
 
-        resp = await es.bulk(body=body, params={"timeout": "60s"})
+        resp = await es.bulk(body=body)
         items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
         succeeded = 0
         failures: List[Dict[str, Any]] = []

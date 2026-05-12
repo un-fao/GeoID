@@ -1479,7 +1479,7 @@ class AssetElasticsearchDriver(
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body, params={"timeout": "60s"})
+            await es.bulk(body=bulk_body)
 
         return items if isinstance(items, list) else list(items)
 
