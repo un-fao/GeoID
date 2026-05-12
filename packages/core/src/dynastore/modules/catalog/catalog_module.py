@@ -221,12 +221,6 @@ class CatalogModule(ModuleProtocol):
         from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
         self.pg_storage_driver = ItemsPostgresqlDriver()  # type: ignore[abstract]
 
-        # Transformer chain runtime: see modules/storage/transform_runtime.py
-        # (apply_transform_chain / restore_transform_chain).  Walks
-        # operations[TRANSFORM] of the active routing config and applies
-        # registered EntityTransformProtocol implementers.  Discovery is via
-        # get_protocols(EntityTransformProtocol); no module-level registration.
-
         from contextlib import AsyncExitStack
         async with AsyncExitStack() as stack:
             for svc in (
