@@ -20,7 +20,7 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Annotated, Any, Callable, ClassVar, Dict, List, Literal, Optional, TYPE_CHECKING, Tuple, Union
 from datetime import date
-from dynastore.modules.db_config.platform_config_service import PluginConfig, Immutable
+from dynastore.modules.db_config.platform_config_service import Immutable, Mutable, PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 import os
 if TYPE_CHECKING:
@@ -157,10 +157,10 @@ class GcpCatalogBucketConfig(ExposableConfigMixin, PluginConfig):
     # When False, GCPModule.provision_storage_for_catalog skips bucket
     # creation and the catalog is marked ready immediately — useful when
     # a catalog reuses an externally-managed bucket.
-    cdn_enabled: bool = Field(default=False, description="Whether Cloud CDN is enabled for this bucket.")
-    lifecycle_rules: List[LifecycleRule] = Field(default_factory=list, description="Lifecycle rules for the bucket.")
-    listen_catalog_events: bool = Field(default=True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
-    cors: List[GcpCorsRule] = Field(
+    cdn_enabled: Mutable[bool] = Field(default=False, description="Whether Cloud CDN is enabled for this bucket.")
+    lifecycle_rules: Mutable[List[LifecycleRule]] = Field(default_factory=list, description="Lifecycle rules for the bucket.")
+    listen_catalog_events: Mutable[bool] = Field(default=True, description="If true, the bucket and pub/sub resources are synchronized with catalog/collection deletions.")
+    cors: Mutable[List[GcpCorsRule]] = Field(
         default_factory=lambda: [GcpCorsRule(origin=["*"], method=["GET", "OPTIONS", "HEAD", "POST", "PUT", "DELETE"], response_header=["*"], max_age_seconds=3600)],  # type: ignore[call-arg]
         description="CORS rules for the bucket."
     )
@@ -172,15 +172,15 @@ class GcpModuleConfig(ExposableConfigMixin, PluginConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "gcp")
 
-    project_id: str = Field(default=os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
-    region: str = Field(default=os.getenv("REGION", "europe-west1"), description="The default GCP region.")
-    
+    project_id: Mutable[str] = Field(default=os.getenv("PROJECT_ID", "local-project"), description="The GCP Project ID.")
+    region: Mutable[str] = Field(default=os.getenv("REGION", "europe-west1"), description="The default GCP region.")
+
     # Visibility and Propagation Tuning (Critical for tests)
-    catalog_visibility_max_retries: int = Field(
+    catalog_visibility_max_retries: Mutable[int] = Field(
         default=int(os.environ.get("GCP_CATALOG_VISIBILITY_MAX_RETRIES", "20")),
         description="Max retries when checking for catalog visibility."
     )
-    catalog_visibility_retry_interval: float = Field(
+    catalog_visibility_retry_interval: Mutable[float] = Field(
         default=float(os.environ.get("GCP_CATALOG_VISIBILITY_RETRY_INTERVAL", "0.2")),
         description="Interval between visibility checks, in seconds."
     )
@@ -199,15 +199,15 @@ class GcpCollectionBucketConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "gcp")
     _visibility: ClassVar[Optional[str]] = "collection"
 
-    custom_metadata_defaults: Optional[Dict[str, str]] = Field(default=None, description="Default metadata to apply to all objects uploaded to this collection.")
-    
+    custom_metadata_defaults: Mutable[Optional[Dict[str, str]]] = Field(default=None, description="Default metadata to apply to all objects uploaded to this collection.")
+
     # Updated to allow strings (IDs of templates) or full objects
-    event_actions: Optional[Dict[GcsNotificationEventType, List[Union[str, TriggeredAction]]]] = Field(
-        default=None, 
+    event_actions: Mutable[Optional[Dict[GcsNotificationEventType, List[Union[str, TriggeredAction]]]]] = Field(
+        default=None,
         description="A list of actions to trigger on GCS events. Can be a reference to a template (GcpEventingConfig.action_templates) or an asset task (GcpCollectionBucketConfig.asset_tasks)."
     )
-    
-    asset_tasks: Dict[str, TriggeredAction] = Field(
+
+    asset_tasks: Mutable[Dict[str, TriggeredAction]] = Field(
         default_factory=dict, 
         description="A registry of collection-specific asset tasks. Keys are IDs that can be referenced in event_actions or executed manually."
     )
@@ -254,11 +254,11 @@ class GcpEventingConfig(ExposableConfigMixin, PluginConfig):
     # Apply handler is registered imperatively at module-import time
     # (see ``GcpEventingConfig.register_apply_handler(...)`` below).
 
-    managed_eventing: Optional[ManagedBucketEventing] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
-    custom_subscriptions: List[ExternalTopicSubscription] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
-    
+    managed_eventing: Mutable[Optional[ManagedBucketEventing]] = Field(default=ManagedBucketEventing(), description="Configuration for the default, system-managed eventing pipeline for the catalog's bucket.")
+    custom_subscriptions: Mutable[List[ExternalTopicSubscription]] = Field(default=[], description="A list of additional, custom subscriptions to external (non-managed) Pub/Sub topics.")
+
     # New registry for reusable action templates
-    action_templates: Dict[str, TriggeredAction] = Field(
+    action_templates: Mutable[Dict[str, TriggeredAction]] = Field(
         default_factory=dict, 
         description="A registry of reusable action templates. Keys are IDs (e.g., 'ingestion') that can be referenced in collection configs."
     )

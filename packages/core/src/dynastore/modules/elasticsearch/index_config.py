@@ -21,7 +21,7 @@ from typing import Any, ClassVar, Dict, Tuple
 from pydantic import Field
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class ElasticsearchIndexConfig(ExposableConfigMixin, PluginConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "elasticsearch", "indexes")
 
-    items_total_fields_limit: int = Field(
+    items_total_fields_limit: Mutable[int] = Field(
         default=2000,
         ge=1000,
         le=100000,
@@ -58,7 +58,7 @@ class ElasticsearchIndexConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    assets_total_fields_limit: int = Field(
+    assets_total_fields_limit: Mutable[int] = Field(
         default=1500,
         ge=1000,
         le=100000,
@@ -70,7 +70,7 @@ class ElasticsearchIndexConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    private_items_total_fields_limit: int = Field(
+    private_items_total_fields_limit: Mutable[int] = Field(
         default=1500,
         ge=1000,
         le=100000,

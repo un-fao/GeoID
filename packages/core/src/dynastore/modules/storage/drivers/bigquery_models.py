@@ -25,6 +25,7 @@ from typing import ClassVar, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from dynastore.modules.db_config.platform_config_service import Mutable
 from dynastore.modules.storage.driver_config import CollectionDriverConfig
 from dynastore.tools.secrets import Secret
 
@@ -98,17 +99,17 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
-    target: BigQueryTarget = Field(default_factory=BigQueryTarget)
-    credentials: BigQueryCredentials = Field(default_factory=BigQueryCredentials)
-    location: str = "EU"
-    page_size: int = Field(default=1000, ge=1, le=50000)
-    query_timeout_s: int = Field(default=60, ge=1, le=600)
+    target: Mutable[BigQueryTarget] = Field(default_factory=BigQueryTarget)
+    credentials: Mutable[BigQueryCredentials] = Field(default_factory=BigQueryCredentials)
+    location: Mutable[str] = "EU"
+    page_size: Mutable[int] = Field(default=1000, ge=1, le=50000)
+    query_timeout_s: Mutable[int] = Field(default=60, ge=1, le=600)
 
     # ---- Reporter-mode WRITE path (Phase 3) ------------------------------
     # All four fields are inert when ``reporter_mode == "off"`` so the
     # default-fast invariant holds: a bare ``ItemsBigQueryDriverConfig()``
     # has an empty ``model_dump(exclude_unset=True)`` and WRITE is a no-op.
-    reporter_mode: Literal["off", "flat", "batch_summary"] = Field(
+    reporter_mode: Mutable[Literal["off", "flat", "batch_summary"]] = Field(
         default="off",
         description=(
             "BigQuery WRITE-path behaviour: 'off' disables WRITE, 'flat' "
@@ -116,7 +117,7 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
             "per write_entities call."
         ),
     )
-    report_target: Optional[BigQueryTarget] = Field(
+    report_target: Mutable[Optional[BigQueryTarget]] = Field(
         default=None,
         description=(
             "Destination table for reporter rows.  When None, falls back "
@@ -126,7 +127,7 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
             "implies)."
         ),
     )
-    include_payload: bool = Field(
+    include_payload: Mutable[bool] = Field(
         default=False,
         description=(
             "In ``flat`` mode, include the full feature.properties JSON "
@@ -134,7 +135,7 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
             "collections where only counts / IDs should leave the tenant."
         ),
     )
-    exclude_fields: List[str] = Field(
+    exclude_fields: Mutable[List[str]] = Field(
         default_factory=list,
         description=(
             "Property names stripped from each feature before streaming to "

@@ -19,7 +19,7 @@
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
 from pydantic import BaseModel, Field, model_validator
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.modules.storage.driver_config import WriteConflictPolicy
 
 # --- Main Ingestion Config ---
@@ -32,7 +32,7 @@ class IngestionPluginConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks", "ingestion")
 
     # 1. Behavior Rules
-    on_conflict: WriteConflictPolicy = Field(
+    on_conflict: Mutable[WriteConflictPolicy] = Field(
         default=WriteConflictPolicy.NEW_VERSION,
         description="Determines how new entities with an existing external_id are handled."
     )

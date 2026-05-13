@@ -23,7 +23,7 @@ Storage is fully pluggable — any PlatformConfigsProtocol implementation works.
 from typing import ClassVar, List, Optional, Tuple
 from pydantic import Field
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 class SecurityPluginConfig(ExposableConfigMixin, PluginConfig):
     """Platform-level security configuration — changeable at runtime."""
@@ -31,7 +31,7 @@ class SecurityPluginConfig(ExposableConfigMixin, PluginConfig):
 
 
     # -- CORS --
-    cors_allowed_origins: List[str] = Field(
+    cors_allowed_origins: Mutable[List[str]] = Field(
         default_factory=lambda: ["*"],
         description=(
             "List of allowed CORS origins. "
@@ -39,49 +39,49 @@ class SecurityPluginConfig(ExposableConfigMixin, PluginConfig):
             "When explicit origins are set, credentials are automatically allowed."
         ),
     )
-    cors_allow_methods: List[str] = Field(
+    cors_allow_methods: Mutable[List[str]] = Field(
         default_factory=lambda: ["*"],
         description="HTTP methods permitted in CORS preflight.",
     )
-    cors_allow_headers: List[str] = Field(
+    cors_allow_headers: Mutable[List[str]] = Field(
         default_factory=lambda: ["*"],
         description="HTTP headers permitted in CORS preflight.",
     )
-    cors_max_age: int = Field(
+    cors_max_age: Mutable[int] = Field(
         default=600,
         description="Seconds browsers may cache CORS preflight responses.",
     )
 
     # -- Rate limiting --
-    login_max_attempts: int = Field(
+    login_max_attempts: Mutable[int] = Field(
         default=5,
         description="Max failed login attempts before lockout.",
     )
-    login_lockout_seconds: int = Field(
+    login_lockout_seconds: Mutable[int] = Field(
         default=300,
         description="Lockout duration in seconds after max failed attempts.",
     )
 
     # -- JWT --
-    jwt_access_ttl_seconds: int = Field(
+    jwt_access_ttl_seconds: Mutable[int] = Field(
         default=3600,
         description="Access token TTL in seconds.",
     )
-    jwt_refresh_ttl_seconds: int = Field(
+    jwt_refresh_ttl_seconds: Mutable[int] = Field(
         default=604800,
         description="Refresh token TTL in seconds (default 7 days).",
     )
-    jwt_rotate_refresh: bool = Field(
+    jwt_rotate_refresh: Mutable[bool] = Field(
         default=True,
         description="Issue a new refresh token on each refresh (rotation).",
     )
 
     # -- Audit --
-    audit_auth_events: bool = Field(
+    audit_auth_events: Mutable[bool] = Field(
         default=True,
         description="Log authentication events to the audit table.",
     )
-    audit_authz_decisions: bool = Field(
+    audit_authz_decisions: Mutable[bool] = Field(
         default=False,
         description="Log every authorization decision (verbose).",
     )

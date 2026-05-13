@@ -8,7 +8,7 @@ from typing import ClassVar, Optional, Tuple
 
 from pydantic import Field
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
 class CatalogLookupAudience(PluginConfig):
@@ -27,7 +27,7 @@ class CatalogLookupAudience(PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "lookup_audience")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    is_public: bool = Field(
+    is_public: Mutable[bool] = Field(
         default=False,
         description=(
             "When True, the catalog's /search/catalogs/{cat}/geoid lookup "
@@ -53,7 +53,7 @@ class CollectionWriteAudience(PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "write_audience")
     _visibility: ClassVar[Optional[str]] = "collection"
 
-    allow_anonymous_create: bool = Field(
+    allow_anonymous_create: Mutable[bool] = Field(
         default=False,
         description=(
             "When True, POST /stac/catalogs/{cat}/collections/{col}/items "
