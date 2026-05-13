@@ -31,8 +31,9 @@ Design
   table is handled directly at ``configs.platform_configs``.
 * Each DELETE runs in its own ``managed_transaction`` so a single
   schema failure does not block the rest.
-* Self-idempotent: subsequent invocations re-run the same DELETEs but
-  find zero matching rows.
+* Self-idempotent: subsequent invocations issue the same DELETEs but
+  the rowcount is zero. The per-table DELETE only logs when it actually
+  removed rows, so warm-boot noise is one DEBUG line, not N INFO lines.
 """
 
 from __future__ import annotations
@@ -41,7 +42,6 @@ import logging
 from typing import Any
 
 from dynastore.modules.db_config.query_executor import (
-    DDLQuery,
     DQLQuery,
     ResultHandler,
     managed_transaction,
@@ -69,8 +69,8 @@ _find_tenant_config_tables_query = DQLQuery(
 async def purge_asset_routing_config_rows(engine: Any) -> int:
     """Delete every stored ``AssetRoutingConfig`` row across the database.
 
-    Returns the number of tables successfully purged (``0`` if engine is
-    None). Safe to call on every startup.
+    Returns the total number of rows deleted (``0`` if engine is None or
+    the tree is already clean). Safe to call on every startup.
     """
     if engine is None:
         return 0
@@ -82,25 +82,32 @@ async def purge_asset_routing_config_rows(engine: Any) -> int:
         (row["schema_name"], row["table_name"]) for row in tenant_tables
     ]
 
-    purged = 0
+    deleted_total = 0
     for schema, table in targets:
-        sql = (
-            f'DELETE FROM "{schema}"."{table}" '
-            f"WHERE class_key = '{_ASSET_ROUTING_CLASS_KEY}';"
+        delete_query = DQLQuery(
+            f'DELETE FROM "{schema}"."{table}" WHERE class_key = :class_key;',
+            result_handler=ResultHandler.ROWCOUNT,
         )
         try:
             async with managed_transaction(engine) as conn:
-                await DDLQuery(sql).execute(conn)
-            purged += 1
-            logger.info(
-                "AssetRoutingConfig purge: cleared %s.%s", schema, table,
-            )
+                rowcount = await delete_query.execute(
+                    conn, class_key=_ASSET_ROUTING_CLASS_KEY,
+                )
+            n = int(rowcount or 0)
+            if n > 0:
+                logger.info(
+                    "AssetRoutingConfig purge: deleted %d row(s) from %s.%s",
+                    n, schema, table,
+                )
+            deleted_total += n
         except Exception as exc:  # noqa: BLE001 — never block startup
             logger.error(
                 "AssetRoutingConfig purge: failed on %s.%s: %s",
                 schema, table, exc,
             )
-    return purged
+    if deleted_total == 0:
+        logger.debug("AssetRoutingConfig purge: nothing to delete.")
+    return deleted_total
 
 
 __all__ = ["purge_asset_routing_config_rows"]
