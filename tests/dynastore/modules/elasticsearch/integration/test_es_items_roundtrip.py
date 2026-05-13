@@ -9,8 +9,6 @@ All tests require a live ES instance and are skipped otherwise.
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from httpx import AsyncClient
 
@@ -60,7 +58,9 @@ async def _yield_to_async_writer(catalog_id: str) -> None:
     ``outbox_drain``, so we step into the drain pathway directly here
     before flushing the index (#614).
     """
-    await asyncio.sleep(0)
+    # No need for an explicit ``asyncio.sleep(0)`` — ``drain_es_items_outbox``
+    # opens an asyncpg connection and runs SQL, so it yields the loop on
+    # real I/O before any writer state is read back.
     await drain_es_items_outbox(catalog_id)
     await refresh_items_index(catalog_id)
 

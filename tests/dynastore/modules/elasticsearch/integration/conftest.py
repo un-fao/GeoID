@@ -6,7 +6,6 @@ All tests in this directory require:
 """
 from __future__ import annotations
 
-import asyncio
 import os
 
 import pytest
@@ -73,12 +72,24 @@ async def drain_es_items_outbox(catalog_id: str) -> int:
         task = await build_es_drain_task(conn=conn, catalog_id=catalog_id)
         total = 0
         # Bounded loop: a healthy claim batch is finite; the cap guards
-        # against an indexer that keeps marking rows transient.
-        for _ in range(50):
+        # against an indexer that keeps marking rows transient. If we hit
+        # the cap with the queue still non-empty, fail loudly — silently
+        # returning would let a test green up with a partially-indexed ES
+        # state, which is exactly the failure mode #614 was filed to fix.
+        cap = 50
+        drained = False
+        for _ in range(cap):
             n = await task.drain_once()
             total += n
             if n == 0:
+                drained = True
                 break
+        if not drained:
+            raise AssertionError(
+                f"OUTBOX drain for catalog={catalog_id!r} did not empty after {cap} iterations "
+                f"({total} rows drained); a downstream indexer is likely marking rows transient. "
+                "Inspect storage_outbox for this schema before retrying."
+            )
         return total
     finally:
         await conn.close()
