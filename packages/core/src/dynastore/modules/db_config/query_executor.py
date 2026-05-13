@@ -81,11 +81,17 @@ from .exceptions import (
     DatabaseConnectionError,
 )
 
-# Re-map asyncpg ConnectionDoesNotExistError if possible
+# Re-map asyncpg ConnectionDoesNotExistError + InternalClientError if possible.
+# InternalClientError carries "cannot switch to state N" — asyncpg's signature
+# for a wire returned to the pool while still mid-operation (issue #588). Both
+# must be retryable at pool-checkout time so the decorator can invalidate the
+# poisoned wire and acquire a fresh one.
 try:
     from asyncpg.exceptions import ConnectionDoesNotExistError as AsyncpgConnectionDoesNotExistError
+    from asyncpg.exceptions._base import InternalClientError as AsyncpgInternalClientError
 except ImportError:
     AsyncpgConnectionDoesNotExistError = type("AsyncpgConnectionDoesNotExistError", (Exception,), {})
+    AsyncpgInternalClientError = type("AsyncpgInternalClientError", (Exception,), {})
 
 
 # Class names of asyncpg client-side errors that indicate transient connection
@@ -1016,6 +1022,13 @@ _TRANSIENT_CONNECT_EXCEPTIONS: tuple = (
     OSError,
     OperationalError,
     InterfaceError,
+    # Issue #588: asyncpg wire-state errors must trigger the same retry path so
+    # `_acquire_async_engine_connection` can invalidate the poisoned wire and
+    # acquire a fresh one. Without these, a `state 15 / operation (2)` raised
+    # during pool-hygiene rollback poisons the pool and cascades to dispatcher
+    # + warner on subsequent checkouts.
+    AsyncpgConnectionDoesNotExistError,
+    AsyncpgInternalClientError,
 )
 
 
@@ -1152,6 +1165,13 @@ async def _acquire_async_engine_connection(engine: AsyncEngine) -> AsyncConnecti
             await conn.rollback()
         return conn
     except BaseException:
+        # Issue #588: invalidate before close so a wire that raised an asyncpg
+        # state-machine error (state 15 / mid-operation) is detached from pool
+        # bookkeeping and not handed to the next consumer in a poisoned state.
+        try:
+            await conn.invalidate()
+        except Exception:
+            pass
         try:
             await conn.close()
         except Exception:
