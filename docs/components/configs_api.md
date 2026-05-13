@@ -34,38 +34,40 @@ All three GET endpoints accept the same query params:
 | Param      | Type        | Default | Effect |
 |------------|-------------|---------|--------|
 | `resolved` | bool        | `true`  | `true`: return waterfall-resolved values for every visible config; `false`: return only configs explicitly stored at this scope (delta-only — safe for read-modify-write flows). |
-| `meta`     | enum        | `field` | Per-class documentation injected INLINE on each in-scope plugin leaf as a `_meta` sibling.  `none`: no `_meta` key on any leaf.  `field` (default): leaf carries `_meta = {field_docs: {field_name: description}}`.  `schema`: leaf carries `_meta = {json_schema: <full Pydantic schema>}` (heavier, form-builder ready). |
-| `include`  | enum        | `scope` | `scope` (default): body lists configs owned by the active scope; upstream-tier configs go to the hierarchical `inherited` tree.  `upstream`: every visible class rendered with its waterfall-resolved value (verbose; no `inherited` tree). |
-| `strict`   | bool        | `true`  | Cycle F.7d.2 — at platform scope, `true` keeps body to platform-intrinsic configs (`modules`, `engines`, `tasks`, `extensions`).  Catalog-/collection-tier templates route to `inherited` (or are dropped under `include=upstream`).  `false` restores the previous always-true platform-scope inclusion.  No effect at catalog or collection scope. |
-| `links`    | enum        | `none`  | #517 — per-plugin HATEOAS edit affordances injected INLINE on each in-scope leaf as a `_links` sibling.  `none` (default): no `_links` on any leaf, wire-compatible with pre-#517 clients.  `minimal`: `rel`/`href`/`method` only.  `full`: adds a contextual `title` per link naming the class key and tier. |
+| `meta`     | enum        | `field` | Per-class documentation injected INLINE on each in-scope plugin leaf.  Every in-scope leaf always carries `_meta = {tier, source}` (provenance is structural — `tier` is the active scope, `source` is the tier that supplied the resolved value).  `meta` controls the OPTIONAL extras merged into `_meta`: `none` — only `{tier, source}`; `field` (default) — adds `docs = {field_name: description}`; `schema` — adds `json_schema = <full Pydantic schema>` (heavier, form-builder ready). |
+| `include`  | enum        | `scope` | `scope` (default): body lists only configs owned by the active scope; upstream-tier configs are filtered out (their provenance is recoverable from any leaf's `_meta.source`).  `upstream`: every visible class rendered with its waterfall-resolved value (verbose; `_meta.source` on each leaf identifies the tier of origin). |
+| `strict`   | bool        | `true`  | Cycle F.7d.2 — at platform scope, `true` keeps body to platform-intrinsic configs (`modules`, `engines`, `tasks`, `extensions`); catalog-/collection-tier templates are filtered out.  `false` restores the previous always-true platform-scope inclusion (catalog-tier templates appear inline in the body).  No effect at catalog or collection scope. |
+| `links`    | enum        | `minimal` | #665 slice 1 — per-plugin HATEOAS edit affordances injected INLINE on each in-scope leaf as a `_links` sibling.  `none`: no `_links` on any leaf.  `minimal` (default): `rel`/`href`/`method`.  `full`: adds a contextual `title` per link naming the class key and tier, plus `rel="schema"` and (for bound drivers) `rel="engine"`. |
 
-The `self` link on every response carries `hrefSchema` (a JSON Schema
-2020-12 document) describing every supported query parameter — useful
-for clients that want to discover the surface programmatically.
+Query parameters are advertised through OpenAPI (`/openapi.json`); the
+response no longer carries a runtime `_links` array at the root (#665
+slice 3 — query-param self-description lives in OpenAPI as the single
+source of truth).
 
 ## Response shape
 
 ```jsonc
 {
-  "_links":  [ /* response-level HATEOAS — just `self` with hrefSchema */ ],
   "scope":   "platform",                 // platform response only
   "configs": {
-    /* tier-first tree.  Each plugin leaf carries the resolved config
-       fields PLUS optional siblings:
-         "_meta":  {"field_docs": {...}} | {"json_schema": {...}}  (when ?meta != "none")
-         "_links": [self, edit(PUT), edit(DELETE), describedby]    (when ?links != "none") */
+    /* tier-first tree.  Each in-scope plugin leaf carries the resolved
+       config fields PLUS siblings:
+         "_meta":  {"tier": "<scope>", "source": "<tier>", ...optional docs|json_schema}
+         "_links": [self, edit(PUT), edit(DELETE), describedby, ?schema, ?engine]
+                                                                (when ?links != "none") */
   },
-  "inherited": { /* mirror tree for upstream-tier configs */ }, // null at platform under strict=false
   "catalog_id":   "demo",                // catalog response only
   "collection_id": "sample"              // collection response only
 }
 ```
 
-Post #517, **field documentation and per-plugin edit affordances live
-INLINE on each leaf** (as `_meta` / `_links` siblings of the plugin's
-own fields), not on a parallel top-level tree.  Inherited-tree
-placeholders carry neither `_meta` nor `_links` — they are not
-actionable at the active scope.
+Per #665 slice 3, **provenance is structural per-leaf** — every
+rendered config carries `_meta.tier` (active scope) and `_meta.source`
+(originating tier).  The former parallel `inherited` top-level tree is
+retired; operators discover upstream provenance from any leaf's
+`_meta.source` without cross-walking a second tree.  Per #517 field
+documentation and per-plugin edit affordances live INLINE on each leaf
+(as `_meta` / `_links` siblings of the plugin's own fields).
 
 ### `configs` tree shape
 
@@ -120,52 +122,48 @@ see the truth for the service they queried; cross-service composition
 is by-convention (the modules each service has installed) rather than
 enforced at the configs-API level.
 
-### `inherited` tree
+### Per-leaf provenance (`_meta.tier` / `_meta.source`)
 
-A hierarchical breadcrumb tree mirroring the `configs` shape exactly.
-Each leaf carries `{"source": "platform" | "catalog" | "default"}`,
-telling operators where the resolved value originated at the SAME path
-the value would land at if it were rendered in `configs`.
+Every in-scope plugin leaf always carries `_meta = {tier, source}`
+regardless of the `meta` query param value:
 
-Populated under three conditions:
+- `tier` — the active scope of the request (`platform`, `catalog`,
+  `collection`).
+- `source` — the tier whose stored row supplied the resolved value
+  (`platform` / `catalog` / `collection` / `default` if no row exists
+  at any tier and the class's Pydantic defaults are returned).
 
-1. **Catalog scope, `include=scope`** (default) — platform-tier configs
-   that have no catalog override route to `inherited`.
-2. **Collection scope, `include=scope`** (default) — both catalog-tier
-   and platform-tier configs that have no collection override route
-   to `inherited`.
-3. **Platform scope, `strict=true`** (default; Cycle F.7d.2) —
-   catalog-tier templates (`_visibility="catalog"`) route to
-   `inherited`; platform-intrinsic configs stay in body.
+This replaces the retired parallel `inherited` tree (#665 slice 3):
+upstream provenance is now recoverable from any leaf's `_meta.source`
+without crawling a second tree.
 
-`null` under `include=upstream` (everything inlined) and at platform
-scope under `strict=false` (where the body is already inclusive).
+Under the default `?include=scope`, upstream-tier configs that have no
+override at the active scope are simply filtered out of the body —
+they are not rendered as placeholders.  Set `?include=upstream` to
+inline every visible class with its waterfall-resolved value; each
+leaf's `_meta.source` identifies the tier of origin.
 
-### Per-leaf `_meta` (inline; replaces the retired parallel `meta` tree)
+### Per-leaf `_meta` extras (controlled by `?meta`)
 
-When `?meta=field|schema` (default `field`), every in-scope plugin leaf
-carries a `_meta` sibling next to the plugin's own fields:
+`meta` controls the OPTIONAL extras merged into the always-present
+`{tier, source}` block:
 
-- `{"field_docs": {field_name: description, ...}}` under `meta=field`.
-- `{"json_schema": <full Pydantic schema 2020-12>}` under `meta=schema`.
-
-Use the schema mode for form builders that need title / description /
-type / default / examples per field.  Suppress with `meta=none`.
-
-Inherited-tree placeholders carry no `_meta`.
+- `meta=none` — leaf carries only `{tier, source}`.
+- `meta=field` (default) — adds `docs = {field_name: description}`,
+  extracted from the class JSON Schema.  Lightweight, suitable for
+  dashboards.
+- `meta=schema` — adds `json_schema = <full Pydantic schema 2020-12>`.
+  Heavier; suitable for form builders that need title / description /
+  type / default / examples per field.
 
 ## HATEOAS link catalog
 
-Every response carries a slim top-level `_links` array (just `self`).
-Each in-scope plugin leaf may carry its own `_links` array (when
-`?links != "none"`).  Routing-entry DTOs also carry their own `_links`
-(Cycle F.7d.3 driver-config affordance).
-
-### Top-level `_links` rels
-
-| `rel`  | Method | Purpose |
-|--------|--------|---------|
-| `self` | GET    | Current view URL.  Carries `hrefSchema` (JSON Schema 2020-12) describing every supported query parameter (`resolved`, `meta`, `include`, `strict`, `links`). |
+Per #665 slice 3, the response carries **no top-level `_links` array**
+— query-parameter self-description lives in OpenAPI
+(`/openapi.json`) as the single source of truth.  Each in-scope plugin
+leaf carries its own `_links` array (when `?links != "none"`).
+Routing-entry DTOs also carry their own `_links` (Cycle F.7d.3
+driver-config affordance).
 
 ### Per-leaf `_links` rels (when `?links=minimal|full`)
 
@@ -175,6 +173,8 @@ Each in-scope plugin leaf may carry its own `_links` array (when
 | `edit`         | PUT    | Replace this plugin at the active scope (full body). |
 | `edit`         | DELETE | Clear the scope-tier override; falls back to the upstream waterfall. |
 | `describedby`  | GET    | JSON Schema entry: `<configs_root>/registry/{class_key}` (scope-agnostic — registry is global; multi-instance refs use the canonical `class_key`, not `ref_key`). |
+| `schema`       | GET    | (`links=full` only) `<configs_root>/registry/{class_key}?meta=schema` — full Pydantic schema. |
+| `engine`       | GET    | (`links=full` only, driver leaves with resolved `engine_ref`) `/api/platform/configs/engines/{engine_ref}` — the bound engine's config. |
 
 `links=full` adds a contextual `title` per link naming the class_key
 and tier phrase (e.g. `"Replace items_routing at catalog 'demo'"`).
@@ -204,13 +204,14 @@ Future link rels (placeholder; not yet emitted):
 
 ## Scope strictness rules
 
-The four parameters interact as follows:
+The four parameters interact as follows (each leaf in the body carries
+`_meta.source` identifying its tier of origin):
 
 ```
-strict=true  + include=scope    →   body=owned-only,    inherited=upstream-summary  (default)
-strict=true  + include=upstream →   body=inclusive,     inherited=null              (verbose)
-strict=false + include=scope    →   body=catalog-tier-included-at-platform, inherited=summary
-strict=false + include=upstream →   body=fully-inclusive,                   inherited=null
+strict=true  + include=scope    →   body=owned-only at active scope                    (default)
+strict=true  + include=upstream →   body=inclusive (every visible class, _meta.source) (verbose)
+strict=false + include=scope    →   body=catalog-tier-included-at-platform
+strict=false + include=upstream →   body=fully-inclusive
 ```
 
 `strict` only affects platform scope (catalog/collection scopes already
@@ -218,7 +219,7 @@ honour the per-tier `_visibility` filter).
 
 `resolved=false` is orthogonal: it switches what _data_ gets fetched
 (only this scope's deltas vs. waterfall-resolved values) without
-changing the _shape_ of the response or what's filtered to `inherited`.
+changing the _shape_ of the response or what's filtered from the body.
 
 ## Live examples
 
@@ -236,24 +237,19 @@ GET /configs/?resolved=true
   "scope": "platform",
   "configs": {
     "platform": {
-      "modules": { "gcp": {…}, "security": {…}, "stats": {…}, "tiles": {…}, "web": {…} },
+      "modules": { "gcp": {…, "_meta": {"tier": "platform", "source": "platform"}}, … },
       "engines": {
-        "postgresql_engine_config":    { "enabled": true, "lifecycle": {…}, "pool_size": 10, … },
-        "elasticsearch_engine_config": { "enabled": true, "lifecycle": {…}, "request_timeout_sec": 30, … },
-        "duckdb_engine_config":        { "enabled": true, "lifecycle": {…}, "pool_size": 4, … },
-        "iceberg_engine_config":       { "enabled": true, "lifecycle": {…}, "catalog_properties": {} }
+        "postgresql_engine_config":    { "enabled": true, "pool_size": 10, …, "_meta": {"tier": "platform", "source": "platform"} },
+        "elasticsearch_engine_config": { "enabled": true, "request_timeout_sec": 30, …, "_meta": {…} },
+        "duckdb_engine_config":        { "enabled": true, "pool_size": 4, …, "_meta": {…} },
+        "iceberg_engine_config":       { "enabled": true, "catalog_properties": {}, "_meta": {…} }
       },
-      "tasks":      { "task_routing_config": {…}, "tasks_plugin_config": {…} },
-      "extensions": { /* ~21 entries: stac, features, edr, coverages, dggs, … */ }
+      "tasks":      { "task_routing_config": {…, "_meta": {…}}, "tasks_plugin_config": {…, "_meta": {…}} },
+      "extensions": { /* ~21 entries: stac, features, edr, coverages, dggs, … — each with _meta */ }
     }
-  },
-  "inherited": {
-    "platform": {
-      "catalog":  { /* drivers, routing, privacy, collection — visibility=catalog templates */ },
-      "modules":  { "gcp": { /* gcp_catalog_bucket_config, gcp_collection_bucket_config — non-default visibility */ } }
-    }
-  },
-  "_links": [ /* self only (hrefSchema advertises params incl. links) */ ]
+  }
+  /* Under strict=true (default): catalog-tier templates are filtered from the body.
+     Set ?strict=false or ?include=upstream to see them inline. */
 }
 ```
 
@@ -269,18 +265,13 @@ GET /configs/catalogs/demo?resolved=true
   "configs": {
     "platform": {
       "catalog":  { "drivers": {…}, "routing": {…}, "privacy": {…}, "collection": { "drivers": {…} } },
-      "modules":  { "gcp": { /* visibility=catalog */ } }
+      "modules":  { "gcp": { /* visibility=catalog, _meta.tier="catalog", _meta.source="catalog"|"platform" */ } }
     }
-  },
-  "inherited": {
-    "platform": {
-      "engines":    { /* 4 engines, source=platform */ },
-      "extensions": { /* 21 extensions, source=platform */ },
-      "modules":    { /* visibility=null modules, source=platform */ },
-      "tasks":      { /* source=platform */ }
-    }
-  },
-  "_links": [ /* self only */ ]
+  }
+  /* Under default ?include=scope, platform-tier engines/extensions/tasks/visibility=null modules
+     are filtered out — their values are still reachable at /configs/?resolved=true (platform scope),
+     and each leaf's _meta.source identifies its tier of origin.
+     Set ?include=upstream to inline them here with _meta.source="platform". */
 }
 ```
 
@@ -328,23 +319,17 @@ GET /configs/catalogs/demo/collections/sample?resolved=true
                 }
               }
             },
-            "schema":  { "items_schema": {…} }
+            "schema":  { "items_schema": {…, "_meta": {"tier": "collection", "source": "collection"}} }
           }
         }
       },
-      "modules": { "gcp": { /* visibility=collection */ } }
+      "modules": { "gcp": { /* visibility=collection, _meta.tier="collection", _meta.source=<resolved tier> */ } }
     }
-  },
-  "inherited": {
-    "platform": {
-      "catalog":    { /* catalog-tier templates, source=catalog or platform */ },
-      "engines":    { /* source=platform */ },
-      "extensions": { /* source=platform */ },
-      "modules":    { /* source=platform */ },
-      "tasks":      { /* source=platform */ }
-    }
-  },
-  "_links": [ /* self only */ ]
+  }
+  /* Under default ?include=scope, upstream tiers (catalog-tier templates, platform engines,
+     extensions, tasks, visibility=null modules) are filtered out — their values resolve at
+     their own scope endpoints, and each rendered leaf's _meta.source identifies origin.
+     Set ?include=upstream to inline every visible class here with _meta.source flagged. */
 }
 ```
 
@@ -362,7 +347,7 @@ curl -X PATCH https://api/configs/catalogs/demo/collections/sample/plugins/items
     ]
   }'
 
-# Revert: delete the per-collection row, fall back to inherited
+# Revert: delete the per-collection row, fall back to the upstream waterfall
 curl -X PATCH https://api/configs/catalogs/demo/collections/sample/plugins/items_postgresql_driver \
   -H 'Authorization: Bearer <sysadmin-token>' \
   -d 'null'
@@ -397,10 +382,10 @@ response with `tiles_secondary` registered next to the canonical
 }
 ```
 
-Multi-instance ref leaves carry their own inline `_meta` (when
-`?meta=field|schema`) — same `field_docs` as the canonical class (the
-schema is per-class, not per-instance) so dashboards render the same
-form for the variant.  Inline `_links` use the `ref_key` for `self`/
+Multi-instance ref leaves carry their own inline `_meta` (with the
+always-present `{tier, source}` plus the same `docs` or `json_schema`
+extras as the canonical class — schema is per-class, not per-instance)
+so dashboards render the same form for the variant.  Inline `_links` use the `ref_key` for `self`/
 `edit` (per-instance CRUD URL) and the canonical `class_key` for
 `describedby` (schema lookup).
 
