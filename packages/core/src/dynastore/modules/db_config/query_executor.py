@@ -1248,6 +1248,23 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                     # invalidate-recover path added by PR #619. ``shield``
                     # keeps the rollback awaitable alive across a re-fired
                     # cancellation on this task. See #628.
+                    # Observability hook (#640): one structured WARN per
+                    # shielded drain. Cancellation cascades from leader-
+                    # loop / task-timeout / external cancel are the main
+                    # operational reason this path fires; SQLAlchemy may
+                    # also wrap the original CancelledError into a
+                    # ``DBAPIError`` before it reaches here, so we log
+                    # the actual exc class regardless. Key=value format
+                    # matches project standard (#504/#528).
+                    try:
+                        _wire_id = id(_get_wire_identity(conn))
+                    except Exception:
+                        _wire_id = -1
+                    logger.warning(
+                        "managed_transaction_cancel_drain "
+                        "wire_id=%s exc=%s",
+                        _wire_id, exc.__class__.__name__,
+                    )
                     drain_fut = asyncio.ensure_future(
                         _drain_rollback_exit(txn_cm, exc),
                     )
@@ -1258,6 +1275,15 @@ async def managed_transaction(db_resource: Optional[DbResource]):
                         # rollback task continue; ``conn.close()`` below
                         # will block on the same wire lock so the protocol
                         # finishes draining before the pool sees it.
+                        #
+                        # Edge case (#640): if a *third* cancellation
+                        # arrives while the shield itself is awaiting,
+                        # this except-block exits before the rollback
+                        # finishes. ``drain_fut`` then races against
+                        # ``conn.close()`` below; the connection-level
+                        # lock serialises them but the rollback may be
+                        # abandoned. Acceptable: pool-hygiene at next
+                        # acquire (#619) catches the orphaned wire.
                         pass
                     raise
                 else:
