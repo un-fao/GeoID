@@ -19,7 +19,7 @@
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field, field_validator
 from dynastore.models.localization import LocalizedText
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
 class WebPageConfig(BaseModel):
@@ -60,7 +60,7 @@ class WebPageSettingsConfig(PluginConfig):
     """Persistent configuration for web pages (overrides)."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "web")
 
-    pages: Dict[str, WebPageConfig] = Field(default_factory=dict)
+    pages: Mutable[Dict[str, WebPageConfig]] = Field(default_factory=dict)
 
 
 class StaticProviderConfig(BaseModel):

@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from typing import ClassVar, Optional, Tuple
 
 
@@ -23,6 +23,6 @@ class EDRConfig(ExposableConfigMixin, PluginConfig):
 
 
     # `enabled` inherited from ExposableConfigMixin.
-    max_items_per_query: int = 100
-    request_deadline_soft_s: int = 60
-    request_deadline_hard_s: int = 120
+    max_items_per_query: Mutable[int] = 100
+    request_deadline_soft_s: Mutable[int] = 60
+    request_deadline_hard_s: Mutable[int] = 120

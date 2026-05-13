@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from typing import ClassVar, Optional, Tuple
 
@@ -23,6 +23,6 @@ class DGGSConfig(ExposableConfigMixin, PluginConfig):
 
 
     # `enabled` inherited from ExposableConfigMixin.
-    default_resolution: int = 5
-    max_resolution: int = 10
-    max_features_per_request: int = 10_000
+    default_resolution: Mutable[int] = 5
+    max_resolution: Mutable[int] = 10
+    max_features_per_request: Mutable[int] = 10_000

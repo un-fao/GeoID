@@ -279,7 +279,7 @@ WEB_CONFORMANCE_URIS = [
 from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.routing import Match, Router
@@ -341,12 +341,12 @@ class WebConfig(ExposableConfigMixin, PluginConfig):
     """Configuration for the Web Platform interface."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "web")
 
-    brand_name: str = "Agro-Informatics Platform"
-    brand_subtitle: str = "Catalog Services"
-    token_key: str = "ds_token"
-    default_language: str = "en"
-    enterprise_tier: bool = True
-    root_path: str = Field(default_factory=lambda: os.getenv("API_ROOT_PATH", "").rstrip("/"))
+    brand_name: Mutable[str] = "Agro-Informatics Platform"
+    brand_subtitle: Mutable[str] = "Catalog Services"
+    token_key: Mutable[str] = "ds_token"
+    default_language: Mutable[str] = "en"
+    enterprise_tier: Mutable[bool] = True
+    root_path: Mutable[str] = Field(default_factory=lambda: os.getenv("API_ROOT_PATH", "").rstrip("/"))
 
 
 

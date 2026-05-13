@@ -14,7 +14,7 @@
 
 from typing import ClassVar, List, Optional, Tuple
 from pydantic import Field
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
 class WFSPluginConfig(ExposableConfigMixin, PluginConfig):
@@ -25,12 +25,12 @@ class WFSPluginConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "extensions", "wfs")
 
     # Caching
-    cache_on_demand: bool = Field(
+    cache_on_demand: Mutable[bool] = Field(
         False, # Default to False for WFS as it might handle large geometries
         description="If True, generated WFS responses are saved to the bucket storage for future reuse."
     )
-    
-    storage_priority: List[str] = Field(
-        default=["bucket"], 
+
+    storage_priority: Mutable[List[str]] = Field(
+        default=["bucket"],
         description="Priority list of storage providers to use for saving cached responses."
     )

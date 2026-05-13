@@ -3,20 +3,20 @@ import os
 from typing import ClassVar, Dict, List, Optional, Tuple
 from pydantic import Field, model_validator
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
     """Configuration for the Background Tasks module."""
     _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
 
 
-    queue_poll_interval: float = Field(
+    queue_poll_interval: Mutable[float] = Field(
         default_factory=lambda: float(os.environ.get("DYNASTORE_QUEUE_POLL_INTERVAL", "30.0")),
         description="Fallback polling interval (in seconds) for the task queue listener when real-time push notifications are unavailable.",
         ge=0.1
     )
 
-    hard_retry_cap: int = Field(
+    hard_retry_cap: Mutable[int] = Field(
         default=5,
         ge=1,
         description=(
@@ -31,7 +31,7 @@ class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    capability_publisher_ttl_seconds: float = Field(
+    capability_publisher_ttl_seconds: Mutable[float] = Field(
         default=60.0,
         ge=10.0,
         le=600.0,
@@ -47,7 +47,7 @@ class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    capability_publisher_refresh_seconds: float = Field(
+    capability_publisher_refresh_seconds: Mutable[float] = Field(
         default=30.0,
         ge=5.0,
         description=(
@@ -91,7 +91,7 @@ class TaskRoutingConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
 
 
-    routing: Dict[str, List[str]] = Field(
+    routing: Mutable[Dict[str, List[str]]] = Field(
         default_factory=dict,
         description=(
             "task_type → list of logical service names. Missing key or empty "
@@ -100,7 +100,7 @@ class TaskRoutingConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    routing_disabled: bool = Field(
+    routing_disabled: Mutable[bool] = Field(
         default=False,
         description=(
             "Operator kill-switch — when true, the routing filter is a no-op "
@@ -109,7 +109,7 @@ class TaskRoutingConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    event_consumer_services: List[str] = Field(
+    event_consumer_services: Mutable[List[str]] = Field(
         default_factory=list,
         description=(
             "Logical service names that run the catalog event consumer "
