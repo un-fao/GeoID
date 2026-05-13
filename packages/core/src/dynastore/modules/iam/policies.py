@@ -437,7 +437,7 @@ class PolicyService:
                             )
 
                 # Seed default role hierarchy:
-                #   sysadmin > admin > user > anonymous
+                #   sysadmin > admin > editor > user > viewer > anonymous
                 # Direction: parent inherits child's policies (see
                 # `get_role_hierarchy` in postgres_iam_storage.py — it returns
                 # `role_names + children`). With this seed an authenticated
@@ -474,7 +474,7 @@ class PolicyService:
                         # observable — silent failures here put the platform
                         # into a "no inheritance" state where authenticated
                         # users see narrower access than anonymous browsers
-                        # (the seed wires sysadmin → admin → user → anonymous,
+                        # (the seed wires sysadmin → admin → editor → user → viewer → anonymous,
                         # so users *inherit* every public policy bound to
                         # anonymous; without the chain, registering for an
                         # account silently *removes* access).
