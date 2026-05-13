@@ -86,4 +86,8 @@ a `**Gap A/B/C**` markdown cell at the relevant step:
 - **Gap C** — GCS tile-cache config + observability lives in
   `fao-maps-titiler` and is not surfaced through geoid's config API.
 
-Track these as separate issues if/when they are approved as features.
+Tracker issues: Gap A → [#671](https://github.com/un-fao/GeoID/issues/671)
+(TestClient integration for bootstrap-schema composition), Gap B →
+[#474](https://github.com/un-fao/GeoID/issues/474) (OTF write-primary live
+test), Gap C → [#475](https://github.com/un-fao/GeoID/issues/475)
+(TilesCachingConfig surface + observability).
