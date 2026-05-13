@@ -561,18 +561,19 @@ class DriverPluginConfig(_PluginDriverConfig):
     * Validator that defaults ``engine_ref`` to ``required_engine_class``
       and rejects incompatible refs.
 
-    Fields shared across all storage drivers (NOT on the universal base):
+    Class-level traits (NOT Pydantic fields — surface via the driver registry):
 
-    * ``capabilities`` — frozenset of :class:`DriverCapability` strings
-      describing how the driver performs operations.
+    * ``capabilities`` — ``ClassVar`` frozenset of :class:`DriverCapability`
+      strings describing how the driver performs operations. Structural to
+      the driver class; operators inspect via
+      ``GET /configs/registry/{class_key}`` (the ``describedby`` link),
+      never via the composed-config payload. See plan #6 of umbrella #665
+      and issue #678.
     """
 
     is_abstract_base: ClassVar[bool] = True
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default_factory=frozenset,
-        description="How the driver operates: SYNC, ASYNC, TRANSACTIONAL, etc.",
-    )
+    capabilities: ClassVar[FrozenSet[str]] = frozenset()
 
 
 class CollectionDriverConfig(DriverPluginConfig):
@@ -623,8 +624,8 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
+    capabilities: ClassVar[FrozenSet[str]] = frozenset(
+        {DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}
     )
 
     # From PostgresStorageLocationConfig — WriteOnce: None → value allowed (set by
@@ -787,9 +788,7 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.ASYNC}),
-    )
+    capabilities: ClassVar[FrozenSet[str]] = frozenset({DriverCapability.ASYNC})
     index_prefix: Mutable[str] = Field(
         default="items_",
         description=(
@@ -843,8 +842,8 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     required_engine_class: ClassVar[str] = "duckdb_engine"
 
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
+    capabilities: ClassVar[FrozenSet[str]] = frozenset(
+        {DriverCapability.ASYNC, DriverCapability.BATCH}
     )
     path: Mutable[Optional[str]] = Field(default=None, description="Read path (file or glob)")
     format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, etc.")
@@ -888,8 +887,8 @@ class ItemsIcebergDriverConfig(CollectionDriverConfig):
             )
         return values
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
+    capabilities: ClassVar[FrozenSet[str]] = frozenset(
+        {DriverCapability.ASYNC, DriverCapability.BATCH}
     )
 
     # Table location (per-collection identifiers)
@@ -1006,8 +1005,8 @@ class AssetPostgresqlDriverConfig(AssetDriverConfig):
     required_engine_class: ClassVar[str] = "postgresql_engine"
 
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
+    capabilities: ClassVar[FrozenSet[str]] = frozenset(
+        {DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}
     )
 
 
@@ -1021,9 +1020,7 @@ class AssetElasticsearchDriverConfig(AssetDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: Mutable[FrozenSet[str]] = Field(
-        default=frozenset({DriverCapability.ASYNC}),
-    )
+    capabilities: ClassVar[FrozenSet[str]] = frozenset({DriverCapability.ASYNC})
     index_prefix: Mutable[str] = Field("assets_", description="Asset index name prefix.")
 
 
