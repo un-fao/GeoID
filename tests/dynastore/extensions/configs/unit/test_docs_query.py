@@ -271,3 +271,76 @@ def test_compose_tree_meta_schema_carries_x_mutability_on_properties():
     assert props["engine_ref"]["readOnly"] is True
     assert props["physical_table"]["x-mutability"] == "immutable"
     assert props["physical_table"]["readOnly"] is True
+
+
+def test_write_once_setter_guard_rejects_post_construction_assignment():
+    """#665 slice 4: ``WriteOnce[T]`` is enforced at runtime by
+    ``PluginConfig.__setattr__`` — initial construction sets the value,
+    subsequent assignment raises ``AttributeError``.  ``Mutable[T]``
+    fields stay freely reassignable on the same instance.  The framework
+    guard is intentionally stricter than the legacy
+    ``enforce_config_immutability`` (which allowed ``None → value``
+    transitions on a diff): once Pydantic init has placed the field in
+    ``__dict__``, no further write is accepted.
+    """
+    from typing import ClassVar, Optional, Tuple
+    import pytest
+    from pydantic import Field
+    from dynastore.modules.db_config.platform_config_service import (
+        Mutable, WriteOnce, PluginConfig,
+    )
+
+    class _WriteOnceFixture(PluginConfig):
+        _address: ClassVar[Tuple[str, ...]] = ("platform", "_writeonce_fixture")
+        engine_ref: WriteOnce[Optional[str]] = Field(None, description="Engine binding.")
+        brand_name: Mutable[str] = Field("X", description="Brand label.")
+
+    inst = _WriteOnceFixture(engine_ref="postgresql_engine", brand_name="Y")
+    assert inst.engine_ref == "postgresql_engine"
+    assert inst.brand_name == "Y"
+
+    # Mutable field stays reassignable.
+    inst.brand_name = "Z"
+    assert inst.brand_name == "Z"
+
+    # WriteOnce field rejects any post-construction write — including a
+    # no-op assignment to the same value.
+    with pytest.raises(AttributeError, match="WriteOnce"):
+        inst.engine_ref = "another_engine"
+    with pytest.raises(AttributeError, match="WriteOnce"):
+        inst.engine_ref = "postgresql_engine"
+    with pytest.raises(AttributeError, match="WriteOnce"):
+        inst.engine_ref = None
+
+    assert inst.engine_ref == "postgresql_engine"
+
+    # Setter-guard registration: classes with WriteOnce fields carry
+    # ``_write_once_fields`` (frozenset); classes without don't need it.
+    assert _WriteOnceFixture._write_once_fields == frozenset({"engine_ref"})
+
+
+def test_write_once_setter_guard_absent_when_no_write_once_fields():
+    """A PluginConfig with only ``Mutable`` fields has no
+    ``_write_once_fields`` attribute installed — the enforcer skips the
+    bookkeeping when there's nothing to guard.
+    """
+    from typing import ClassVar, Tuple
+    from pydantic import Field
+    from dynastore.modules.db_config.platform_config_service import (
+        Mutable, PluginConfig,
+    )
+
+    class _AllMutableFixture(PluginConfig):
+        _address: ClassVar[Tuple[str, ...]] = ("platform", "_all_mutable_fixture")
+        brand_name: Mutable[str] = Field("X", description="Brand label.")
+
+    # Class-level: no inherited fallback attribute on the bare class.
+    # (Inheritance from PluginConfig may surface the parent's frozenset
+    # default, so check it's at least empty when present.)
+    assert getattr(_AllMutableFixture, "_write_once_fields", frozenset()) == frozenset()
+
+    # Instance: free reassignment works without any guard tripping.
+    inst = _AllMutableFixture(brand_name="A")
+    inst.brand_name = "B"
+    inst.brand_name = "C"
+    assert inst.brand_name == "C"
