@@ -247,6 +247,17 @@ async def test_fatal_policy_raises_indexer_fatal():
     assert exc_info.value.op.op_type == "upsert"
 
 
+def test_indexer_fatal_renders_descriptor_for_empty_batch():
+    # _handle_failure_bulk passes ops[0] if ops else None — when an upstream
+    # filter rejects every op in a FATAL batch, IndexerFatal is constructed
+    # with op=None. PR #610 widened the type; this asserts the descriptor.
+    err = IndexerFatal("ix1", None, RuntimeError("boom"))
+    msg = str(err)
+    assert "<empty batch>" in msg
+    assert "ix1" in msg
+    assert err.op is None
+
+
 @pytest.mark.asyncio
 async def test_warn_policy_swallows_failure_and_continues_to_next():
     a = _StubIndexer("a", raise_on="upsert")
