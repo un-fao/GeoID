@@ -14,7 +14,6 @@ from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 from dynastore.models.driver_context import DriverContext
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="serial")
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stac", "tiles", "tasks", "crs", "collection_postgresql", "catalog_postgresql")
 @pytest.mark.enable_extensions("tiles", "assets", "features")
 # @pytest.mark.skip(reason="WIP")

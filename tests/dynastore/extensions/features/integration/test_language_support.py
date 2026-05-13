@@ -29,7 +29,6 @@ from tests.dynastore.test_utils import generate_test_id
 @pytest.mark.enable_modules("db_config", "db", "catalog", "stats", "iam")
 @pytest.mark.enable_extensions("stac", "assets", "features", "logs")
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="serial")
 async def test_landing_page_respects_language_param(sysadmin_in_process_client):
     """Test that the landing page respects language parameter."""
     # Use authenticated client — the default public_access policy doesn't

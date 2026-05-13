@@ -25,7 +25,6 @@ from dynastore.models.driver_context import DriverContext
     strict=False,
 )
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="serial")
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "stac", "tiles", "tasks", "crs",
     "collection_postgresql", "catalog_postgresql",
