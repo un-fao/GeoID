@@ -67,18 +67,20 @@ IDP_AUDIENCE=geoid-api
 
 ### 2. Realm roles
 
-GeoID maps Keycloak roles to its internal `DefaultRole` enum (`models/protocols/authorization.py:34`). Create at least these realm-level roles:
+GeoID maps Keycloak realm roles to entries in the `IamRolesConfig` PluginConfig at `("platform", "iam", "roles")` (defined in `models/protocols/authorization.py`). The default seed lists the following platform-tier roles — create at least the ones below:
 
-| Realm role | GeoID `DefaultRole` | Notes |
-|---|---|---|
-| `sysadmin` | `SYSADMIN` | Full access. Use for break-glass admins only. |
-| `admin` | `ADMIN` | Operational admin. |
-| `user` | `USER` | Authenticated end user. |
-| `viewer` | `VIEWER` | Read-only; assigned to newly auto-registered principals. |
+| Realm role | Notes |
+|---|---|
+| `sysadmin` | Full access. Use for break-glass admins only. |
+| `admin` | Operational admin. |
+| `editor` | Self-service authoring (can manage their own catalogs/collections). |
+| `user` | Authenticated end user. |
 
-> The names above are the convention shipped in the local realm export. They are case-sensitive. GeoID's middleware (`extensions/iam/middleware.py:169`) explicitly checks `DefaultRole.SYSADMIN.value in principal_role`, so the literal string `sysadmin` matters.
+> The names above are the convention shipped in the local realm export. They are case-sensitive. GeoID's middleware (`extensions/iam/middleware.py:169`) reads the active `IamRolesConfig.sysadmin_role_name` (default `"sysadmin"`) and checks for that value in the principal's roles — keep the literal string aligned if you rename it via PATCH.
 
-Anonymous (unauthenticated) requests are mapped to `DefaultRole.ANONYMOUS` automatically — do not create a `anonymous` role in Keycloak.
+Anonymous (unauthenticated) requests are mapped to the `IamRolesConfig.anonymous_role_name` slot (default `"anonymous"`) automatically — do not create an explicit `anonymous` realm role in Keycloak.
+
+> Operators can add, rename, or drop roles at runtime by PATCH-ing `/api/catalog/v2/configs` at the `platform.iam.roles` address. Renames take effect on the next request without redeploying — but coordinate with the Keycloak realm so the realm-role names still match the PluginConfig.
 
 ### 3. Client roles (per client)
 
@@ -120,7 +122,7 @@ For finer-grained authorization, GeoID also reads **client roles** out of `resou
 
 Production users are provisioned however your IdP normally provisions them (federation, manual, JIT). For every user assign:
 
-- the appropriate **realm role** (`sysadmin` / `admin` / `user`) so GeoID's middleware maps them to a `DefaultRole`;
+- the appropriate **realm role** (`sysadmin` / `admin` / `editor` / `user`) — the name must match an entry in the active `IamRolesConfig.roles` list;
 - any **client roles** under `geoid-api` your deployment uses (e.g. `catalog_admin`).
 
 For smoke-testing parity with the local stack, the convention is:
@@ -129,7 +131,6 @@ For smoke-testing parity with the local stack, the convention is:
 |---|---|---|
 | `testadmin` | `admin` | `catalog_admin` |
 | `testuser` | `user` | (none) |
-| `testviewer` | `viewer` | (none) |
 
 Set passwords as you see fit; communicate them to the GeoID admin out-of-band only.
 

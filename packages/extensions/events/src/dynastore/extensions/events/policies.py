@@ -19,7 +19,7 @@ Two policies cover the surface:
   path under ``/events/catalogs/{cat}/...``. Gated by the existing
   ``catalog_membership_required`` condition handler (which has its own
   sysadmin bypass; we pass an empty config and let the handler resolve
-  ``sysadmin_role`` from ``IamRoleConfig`` internally).
+  ``sysadmin_role`` from ``IamRolesConfig`` internally).
 """
 
 from typing import List, Optional
