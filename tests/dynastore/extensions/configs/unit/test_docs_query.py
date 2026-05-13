@@ -202,3 +202,72 @@ def test_compose_tree_meta_tier_source_always_present_across_modes():
             assert k in meta, f"mode={mode}: missing extra {k}"
         for k in must_not_have:
             assert k not in meta, f"mode={mode}: leaked extra {k}"
+
+
+def test_compose_tree_meta_mutability_map_rendered_on_leaf():
+    """#665 slice 4: ``?meta=field`` adds ``_meta.mutability =
+    {field_name: kind}`` covering every marked field, alongside ``docs``.
+    Field-level marker contracts (Mutable / WriteOnce / Immutable /
+    Computed) flow from class definition → leaf rendering with no
+    duplication.
+    """
+    from typing import ClassVar, Optional, Tuple
+    from pydantic import Field
+    from dynastore.modules.db_config.platform_config_service import (
+        Mutable, WriteOnce, Immutable, PluginConfig,
+    )
+
+    class _MutabilityFixture(PluginConfig):
+        _address: ClassVar[Tuple[str, ...]] = ("platform", "_fixture")
+        brand_name: Mutable[str] = Field("X", description="Brand label.")
+        engine_ref: WriteOnce[Optional[str]] = Field(None, description="Engine binding.")
+        physical_table: Immutable[str] = Field("fixture_tbl", description="Backing table.")
+
+    ConfigApiService._extract_docs.cache_clear()
+    ConfigApiService._extract_mutability.cache_clear()
+    by_class = {"_mutability_fixture": {
+        "brand_name": "X",
+        "engine_ref": None,
+        "physical_table": "fixture_tbl",
+    }}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value={"_mutability_fixture": _MutabilityFixture},
+    ):
+        tree = ConfigApiService._compose_tree(
+            by_class, sources={"_mutability_fixture": "platform"},
+            active_scope="platform", meta_mode="field",
+        )
+    leaf = tree["platform"]["_fixture"]["_mutability_fixture"]
+    assert leaf["_meta"]["mutability"] == {
+        "brand_name":     "mutable",
+        "engine_ref":     "write_once",
+        "physical_table": "immutable",
+    }
+
+
+def test_compose_tree_meta_schema_carries_x_mutability_on_properties():
+    """#665 slice 4: ``?meta=schema`` carries ``x-mutability`` (plus
+    ``readOnly`` for everything except ``Mutable``) on every property —
+    via the markers' own ``__get_pydantic_json_schema__`` hook.  Schema-
+    driven form-builders see the contract natively.
+    """
+    from typing import ClassVar, Optional, Tuple
+    from pydantic import Field
+    from dynastore.modules.db_config.platform_config_service import (
+        Mutable, WriteOnce, Immutable, PluginConfig,
+    )
+
+    class _SchemaMutabilityFixture(PluginConfig):
+        _address: ClassVar[Tuple[str, ...]] = ("platform", "_schema_fixture")
+        brand_name: Mutable[str] = Field("X", description="Brand label.")
+        engine_ref: WriteOnce[Optional[str]] = Field(None, description="Engine binding.")
+        physical_table: Immutable[str] = Field("fixture_tbl", description="Backing table.")
+
+    props = _SchemaMutabilityFixture.model_json_schema()["properties"]
+    assert props["brand_name"]["x-mutability"] == "mutable"
+    assert props["brand_name"].get("readOnly") is not True
+    assert props["engine_ref"]["x-mutability"] == "write_once"
+    assert props["engine_ref"]["readOnly"] is True
+    assert props["physical_table"]["x-mutability"] == "immutable"
+    assert props["physical_table"]["readOnly"] is True
