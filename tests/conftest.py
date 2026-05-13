@@ -216,6 +216,38 @@ def pytest_collection_modifyitems(items):
             item.__class__.__name__ = "Function"
 
 
+def pytest_runtest_logstart(nodeid, location):
+    """Atomically write the current nodeid to ``$DYNASTORE_TEST_SENTINEL``.
+
+    When CI cancels the integration-tests job at the 30-min ceiling (#541),
+    pytest's stdout buffer is dropped and ``junitxml`` is never finalised,
+    so the cancelled run leaves no record of which test was last running.
+    A filesystem sentinel survives cancellation: the workflow uploads the
+    file as an artifact, and the last-written nodeid identifies the
+    offending test.
+
+    No-op when the env var is unset (dev runs).  Atomic write via
+    ``os.replace`` so a SIGTERM mid-flush leaves the previous nodeid
+    intact rather than a half-written line.
+    """
+    path = os.environ.get("DYNASTORE_TEST_SENTINEL")
+    if not path:
+        return
+    try:
+        from datetime import datetime, timezone
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        line = f"{datetime.now(timezone.utc).isoformat()} {worker} {nodeid}\n"
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        # Sentinel writing must never break a test.
+        pass
+
+
 def pytest_runtest_setup(item):
     """
     Called before each test is executed.
