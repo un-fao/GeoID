@@ -1,4 +1,4 @@
-"""run_leader_loop — leadership released on exception (GH #588 guard)."""
+"""run_leader_loop — leadership released on exception."""
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +35,7 @@ class _LeadershipTracker:
 @pytest.mark.asyncio
 async def test_resigns_on_exception_inside_on_leader():
     """Body raising must NOT keep leadership — the lock must be released
-    before the outer loop retries. This is the GH #588 guard."""
+    before the outer loop retries."""
     tracker = _LeadershipTracker(is_leader_sequence=[True, True])
     held_during_exception = False
 

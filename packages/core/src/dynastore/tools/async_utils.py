@@ -438,7 +438,7 @@ async def run_leader_loop(
 
     ``on_leader`` may run its own inner periodic loop, but MUST let exceptions
     propagate. Swallowing exceptions inside ``on_leader`` keeps the lock held
-    and is the anti-pattern this helper exists to prevent (see GH #588).
+    and is the anti-pattern this helper exists to prevent.
     """
     is_shutdown = is_shutdown or (lambda: False)
     while not is_shutdown():

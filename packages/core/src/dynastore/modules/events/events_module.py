@@ -725,9 +725,8 @@ class EventsModule(ModuleProtocol):
         Runs on the leader only (non-blocking advisory lock); non-leaders poll
         for leadership on the same cadence. On cancellation or any inner-loop
         exception the lock is released (via ``run_leader_loop``) and another
-        instance can take over — this is the guard against GH #588's pool
-        cascade where a leader-held connection stays associated with a
-        poisoned pool slot.
+        instance can take over — preventing a leader-held connection from
+        staying associated with a poisoned pool slot across retries.
         """
         from dynastore.tools.async_utils import run_leader_loop
         from dynastore.tools.protocol_helpers import get_engine
