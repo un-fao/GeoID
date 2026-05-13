@@ -81,11 +81,16 @@ from .exceptions import (
     DatabaseConnectionError,
 )
 
-# Re-map asyncpg ConnectionDoesNotExistError if possible
+# InternalClientError carries asyncpg's "cannot switch to state N" — a wire
+# returned to the pool while still mid-operation. Both this and
+# ConnectionDoesNotExistError must be retryable at pool-checkout so the
+# decorator can invalidate the poisoned wire and acquire a fresh one.
 try:
     from asyncpg.exceptions import ConnectionDoesNotExistError as AsyncpgConnectionDoesNotExistError
+    from asyncpg.exceptions._base import InternalClientError as AsyncpgInternalClientError
 except ImportError:
     AsyncpgConnectionDoesNotExistError = type("AsyncpgConnectionDoesNotExistError", (Exception,), {})
+    AsyncpgInternalClientError = type("AsyncpgInternalClientError", (Exception,), {})
 
 
 # Class names of asyncpg client-side errors that indicate transient connection
@@ -1016,6 +1021,10 @@ _TRANSIENT_CONNECT_EXCEPTIONS: tuple = (
     OSError,
     OperationalError,
     InterfaceError,
+    # asyncpg wire-state errors raised during pool-hygiene rollback poison the
+    # pool unless the checkout decorator can retry and invalidate the wire.
+    AsyncpgConnectionDoesNotExistError,
+    AsyncpgInternalClientError,
 )
 
 
@@ -1152,6 +1161,13 @@ async def _acquire_async_engine_connection(engine: AsyncEngine) -> AsyncConnecti
             await conn.rollback()
         return conn
     except BaseException:
+        # Invalidate before close so a wire that raised an asyncpg state-machine
+        # error is detached from pool bookkeeping and not handed to the next
+        # consumer in a poisoned state.
+        try:
+            await conn.invalidate()
+        except Exception:
+            pass
         try:
             await conn.close()
         except Exception:

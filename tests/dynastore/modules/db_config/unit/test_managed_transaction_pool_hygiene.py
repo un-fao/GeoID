@@ -311,3 +311,165 @@ async def test_executor_workflow_uses_connect_retry(monkeypatch, caplog):
     assert captured["conn"] is clean
     assert engine.connect_calls == 2
     assert any("retry_on_transient_connect" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# asyncpg state-15 / wire-closed on pool-hygiene rollback
+# ---------------------------------------------------------------------------
+#
+# A pooled wire whose asyncpg protocol FSM is non-IDLE (state 15 = mid-op)
+# raises ``InternalClientError`` from the hygiene rollback in
+# ``_acquire_async_engine_connection``. asyncpg client errors are not
+# subclasses of SQLAlchemy ``InterfaceError``, so without explicit listing in
+# ``_TRANSIENT_CONNECT_EXCEPTIONS`` the error fell through
+# ``retry_on_transient_connect`` and the poisoned slot cascaded to dispatcher
+# + warner as ``ConnectionDoesNotExistError`` on the next checkout.
+#
+# Contract: both asyncpg classes are listed in ``_TRANSIENT_CONNECT_EXCEPTIONS``
+# and the outer ``except BaseException`` of ``_acquire_async_engine_connection``
+# invalidates before close.
+
+
+class _StateMachineFakeConn:
+    """Minimal AsyncConnection stand-in whose ``rollback()`` can raise any
+    pre-seeded exception sequence. Used to drive the state-15 path."""
+
+    def __init__(self, *, rollback_errors: Sequence[Optional[BaseException]], log: List[str], tag: str):
+        self._rollback_errors = list(rollback_errors)
+        self._log = log
+        self.tag = tag
+        self.invalidated_count = 0
+        self.closed = False
+        self.rollback_count = 0
+        self.begin_count = 0
+        self.sync_connection = SimpleNamespace()
+
+    async def rollback(self):
+        self.rollback_count += 1
+        self._log.append(f"rollback:{self.tag}")
+        if self._rollback_errors:
+            exc = self._rollback_errors.pop(0)
+            if exc is not None:
+                raise exc
+
+    async def invalidate(self):
+        self.invalidated_count += 1
+        self._log.append(f"invalidate:{self.tag}")
+
+    async def close(self):
+        self.closed = True
+        self._log.append(f"close:{self.tag}")
+
+    def begin(self):
+        self.begin_count += 1
+        self._log.append(f"begin:{self.tag}")
+        return _FakeTx()
+
+    def in_transaction(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_state15_on_hygiene_rollback_invalidates_and_retries(monkeypatch):
+    """asyncpg ``InternalClientError("cannot switch to state 15 …")`` raised
+    from the pool-checkout rollback must invalidate the poisoned wire and
+    retry with a fresh one — not propagate and poison the pool."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    monkeypatch.setattr(qe, "_get_wire_identity", lambda c: c, raising=True)
+    monkeypatch.setattr(qe, "AsyncEngine", _FakeEngine, raising=True)
+    monkeypatch.setattr(qe, "is_async_resource", lambda r: True, raising=True)
+    # Decorator backoff would slow the test; collapse it.
+    async def _fast_sleep(_seconds):
+        return None
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    log: List[str] = []
+    state15 = qe.AsyncpgInternalClientError(
+        "cannot switch to state 15; another operation (2) is in progress"
+    )
+    poisoned = _StateMachineFakeConn(rollback_errors=[state15], log=log, tag="poisoned")
+    clean = _StateMachineFakeConn(rollback_errors=[None], log=log, tag="clean")
+    engine = _FakeEngine([poisoned, clean])
+
+    async with qe.managed_transaction(engine) as conn:
+        assert conn is clean
+
+    # Decorator retried once; the poisoned wire was invalidated AND closed
+    # before the second acquire.
+    assert engine.connect_calls == 2, log
+    assert poisoned.invalidated_count == 1, log
+    assert poisoned.closed is True, log
+    assert clean.invalidated_count == 0, log
+    assert clean.rollback_count == 1, log
+    assert clean.begin_count == 1, log
+    # The poisoned wire must be invalidated BEFORE close — otherwise the pool
+    # bookkeeping returns the wire in non-IDLE state to the next consumer.
+    poisoned_invalidate_idx = log.index("invalidate:poisoned")
+    poisoned_close_idx = log.index("close:poisoned")
+    assert poisoned_invalidate_idx < poisoned_close_idx, log
+
+
+@pytest.mark.asyncio
+async def test_connection_does_not_exist_on_hygiene_rollback_retries(monkeypatch):
+    """asyncpg ``ConnectionDoesNotExistError`` (wire closed mid-op) gets the
+    same invalidate + retry treatment as state-15."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    monkeypatch.setattr(qe, "_get_wire_identity", lambda c: c, raising=True)
+    monkeypatch.setattr(qe, "AsyncEngine", _FakeEngine, raising=True)
+    monkeypatch.setattr(qe, "is_async_resource", lambda r: True, raising=True)
+    async def _fast_sleep(_seconds):
+        return None
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    log: List[str] = []
+    closed_mid_op = qe.AsyncpgConnectionDoesNotExistError(
+        "connection was closed in the middle of operation"
+    )
+    poisoned = _StateMachineFakeConn(rollback_errors=[closed_mid_op], log=log, tag="poisoned")
+    clean = _StateMachineFakeConn(rollback_errors=[None], log=log, tag="clean")
+    engine = _FakeEngine([poisoned, clean])
+
+    async with qe.managed_transaction(engine) as conn:
+        assert conn is clean
+
+    assert engine.connect_calls == 2, log
+    assert poisoned.invalidated_count == 1, log
+    assert poisoned.closed is True, log
+
+
+@pytest.mark.asyncio
+async def test_state15_exhausts_retry_budget_and_raises(monkeypatch):
+    """If every pool slot is poisoned, the retry budget exhausts and the
+    InternalClientError propagates as WARNING (callers handle it via the
+    transient back-off in dispatcher/warner)."""
+    from dynastore.modules.db_config import query_executor as qe
+
+    monkeypatch.setattr(qe, "_get_wire_identity", lambda c: c, raising=True)
+    monkeypatch.setattr(qe, "AsyncEngine", _FakeEngine, raising=True)
+    monkeypatch.setattr(qe, "is_async_resource", lambda r: True, raising=True)
+    async def _fast_sleep(_seconds):
+        return None
+    monkeypatch.setattr(qe.asyncio, "sleep", _fast_sleep, raising=True)
+
+    log: List[str] = []
+    poisoned_conns = [
+        _StateMachineFakeConn(
+            rollback_errors=[qe.AsyncpgInternalClientError("state 15")],
+            log=log,
+            tag=f"poisoned{i}",
+        )
+        for i in range(5)
+    ]
+    engine = _FakeEngine(poisoned_conns)
+
+    with pytest.raises(qe.AsyncpgInternalClientError):
+        async with qe.managed_transaction(engine):
+            pass
+
+    # All 5 retry slots exercised; each one invalidated.
+    assert engine.connect_calls == 5
+    for c in poisoned_conns:
+        assert c.invalidated_count == 1
+        assert c.closed is True
