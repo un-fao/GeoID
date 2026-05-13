@@ -40,7 +40,7 @@ from typing import Any, ClassVar, Dict, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.tools.secrets import Secret
 
 
@@ -63,7 +63,7 @@ class EngineLifecycleConfig(BaseModel):
     platform resource policy.
     """
 
-    policy: Literal["global", "ttl_lru"] = Field(
+    policy: Mutable[Literal["global", "ttl_lru"]] = Field(
         default="global",
         description=(
             "``global``: lazy-instantiated singleton, never evicted. "
@@ -76,7 +76,7 @@ class EngineLifecycleConfig(BaseModel):
         ),
     )
 
-    ttl_seconds: Optional[int] = Field(
+    ttl_seconds: Mutable[Optional[int]] = Field(
         default=None,
         ge=1,
         description=(
@@ -85,7 +85,7 @@ class EngineLifecycleConfig(BaseModel):
         ),
     )
 
-    max_parallel: Optional[int] = Field(
+    max_parallel: Mutable[Optional[int]] = Field(
         default=None,
         ge=1,
         description=(
@@ -96,7 +96,7 @@ class EngineLifecycleConfig(BaseModel):
         ),
     )
 
-    immutable: bool = Field(
+    immutable: Mutable[bool] = Field(
         default=True,
         description=(
             "When True (default), the engine cannot be reconfigured or "
@@ -163,7 +163,7 @@ class EngineConfig(PluginConfig):
                     f"can match this engine."
                 )
 
-    enabled: bool = Field(
+    enabled: Mutable[bool] = Field(
         default=True,
         description=(
             "When False, drivers referencing this engine return 503 "
@@ -173,7 +173,7 @@ class EngineConfig(PluginConfig):
         ),
     )
 
-    lifecycle: EngineLifecycleConfig = Field(
+    lifecycle: Mutable[EngineLifecycleConfig] = Field(
         default_factory=EngineLifecycleConfig,
         description=(
             "Lifecycle policy for instances of this engine.  See "
@@ -194,7 +194,7 @@ class PostgresqlEngineConfig(EngineConfig):
     engine_class: ClassVar[str] = "postgresql_engine"
     _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
 
-    connection_url: Optional[Secret] = Field(
+    connection_url: Mutable[Optional[Secret]] = Field(
         default=None,
         description=(
             "Optional override for the PG connection URL.  When None, "
@@ -204,7 +204,7 @@ class PostgresqlEngineConfig(EngineConfig):
         ),
     )
 
-    pool_size: int = Field(
+    pool_size: Mutable[int] = Field(
         default=10,
         ge=1,
         le=200,
@@ -214,7 +214,7 @@ class PostgresqlEngineConfig(EngineConfig):
         ),
     )
 
-    pool_timeout_sec: int = Field(
+    pool_timeout_sec: Mutable[int] = Field(
         default=30,
         ge=1,
         description=(
@@ -276,7 +276,7 @@ class ElasticsearchEngineConfig(EngineConfig):
     engine_class: ClassVar[str] = "elasticsearch_engine"
     _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
 
-    cluster_url: Optional[Secret] = Field(
+    cluster_url: Mutable[Optional[Secret]] = Field(
         default=None,
         description=(
             "Optional override for the ES cluster URL.  When None, the "
@@ -285,7 +285,7 @@ class ElasticsearchEngineConfig(EngineConfig):
         ),
     )
 
-    api_key: Optional[Secret] = Field(
+    api_key: Mutable[Optional[Secret]] = Field(
         default=None,
         description=(
             "Optional API key for authenticated clusters.  Stored as a "
@@ -294,7 +294,7 @@ class ElasticsearchEngineConfig(EngineConfig):
         ),
     )
 
-    request_timeout_sec: int = Field(
+    request_timeout_sec: Mutable[int] = Field(
         default=30,
         ge=1,
         description=(
@@ -370,7 +370,7 @@ class DuckdbEngineConfig(EngineConfig):
     engine_class: ClassVar[str] = "duckdb_engine"
     _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
 
-    pool_size: int = Field(
+    pool_size: Mutable[int] = Field(
         default=4,
         ge=1,
         le=64,
@@ -380,13 +380,13 @@ class DuckdbEngineConfig(EngineConfig):
         ),
     )
 
-    max_memory_gb: int = Field(
+    max_memory_gb: Mutable[int] = Field(
         default=4,
         ge=1,
         description="Per-process memory budget (PRAGMA memory_limit).",
     )
 
-    threads: int = Field(
+    threads: Mutable[int] = Field(
         default=4,
         ge=1,
         le=64,
@@ -440,7 +440,7 @@ class IcebergEngineConfig(EngineConfig):
     engine_class: ClassVar[str] = "iceberg_engine"
     _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
 
-    catalog_uri: Optional[Secret] = Field(
+    catalog_uri: Mutable[Optional[Secret]] = Field(
         default=None,
         description=(
             "Iceberg catalog URI (REST or SQL).  Stored as a Secret so "
@@ -448,7 +448,7 @@ class IcebergEngineConfig(EngineConfig):
         ),
     )
 
-    warehouse_uri: Optional[Secret] = Field(
+    warehouse_uri: Mutable[Optional[Secret]] = Field(
         default=None,
         description=(
             "Optional warehouse location override (e.g. an S3/GCS "
@@ -456,7 +456,7 @@ class IcebergEngineConfig(EngineConfig):
         ),
     )
 
-    catalog_properties: Dict[str, Secret] = Field(
+    catalog_properties: Mutable[Dict[str, Secret]] = Field(
         default_factory=dict,
         description=(
             "Free-form catalog properties forwarded to PyIceberg's "

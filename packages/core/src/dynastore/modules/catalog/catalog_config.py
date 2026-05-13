@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 from dynastore.modules.db_config.platform_config_service import (
+    Mutable,
     Immutable,
     PluginConfig,
 )
@@ -54,7 +55,7 @@ class CollectionInfo(PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "info")
     _visibility: ClassVar[Optional[str]] = "collection"
 
-    kind: CollectionKind = Field(
+    kind: Mutable[CollectionKind] = Field(
         default=CollectionKind.VECTOR,
         description=(
             "VECTOR (default — features with geometry), RECORDS "
@@ -78,8 +79,8 @@ class CompositePartitionConfig(BaseModel):
     These keys must be provided by the enabled sidecars (or the Hub).
     """
 
-    enabled: bool = Field(default=False, description="Enable partitioning for this collection.")
-    partition_keys: List[str] = Field(
+    enabled: Mutable[bool] = Field(default=False, description="Enable partitioning for this collection.")
+    partition_keys: Mutable[List[str]] = Field(
         default_factory=list,
         description="Ordered list of column names to partition by (e.g. ['asset_id', 'h3_res12']).",
     )
@@ -119,12 +120,12 @@ class CollectionPluginConfig(PluginConfig):
 
     model_config = {"extra": "allow"}
 
-    max_bulk_features: int = Field(
+    max_bulk_features: Mutable[int] = Field(
         default=10000,
         description="Maximum number of features allowed in a single bulk insert.",
     )
 
-    ingest_chunk_size: int = Field(
+    ingest_chunk_size: Mutable[int] = Field(
         default=50,
         ge=1,
         le=10000,
@@ -231,7 +232,7 @@ class CollectionPrivacyDefaults(BaseModel):
     ``CollectionPrivacy``.
     """
 
-    is_private: bool = Field(
+    is_private: Mutable[bool] = Field(
         default=False,
         description=(
             "Default ``is_private`` value for newly-created collections "
@@ -260,7 +261,7 @@ class CatalogPrivacy(PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "privacy")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
-    collection_defaults: CollectionPrivacyDefaults = Field(
+    collection_defaults: Mutable[CollectionPrivacyDefaults] = Field(
         default_factory=CollectionPrivacyDefaults,
         description=(
             "Default privacy state seeded onto newly-created collections "

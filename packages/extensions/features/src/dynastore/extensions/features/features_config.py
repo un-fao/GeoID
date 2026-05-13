@@ -14,7 +14,7 @@
 
 from typing import ClassVar, List, Optional, Tuple
 from pydantic import Field
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 
 class FeaturesPluginConfig(ExposableConfigMixin, PluginConfig):
@@ -25,12 +25,12 @@ class FeaturesPluginConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "extensions", "features")
 
     # Caching
-    cache_on_demand: bool = Field(
+    cache_on_demand: Mutable[bool] = Field(
         False,
         description="If True, generated Features responses are saved to the bucket storage."
     )
     
-    storage_priority: List[str] = Field(
+    storage_priority: Mutable[List[str]] = Field(
         default=["bucket"], 
         description="Priority list of storage providers to use for saving cached responses."
     )
