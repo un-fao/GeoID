@@ -225,3 +225,73 @@ async def test_concurrent_schema_table_creation_no_race(null_pool_engine):
     # Cleanup
     async with managed_transaction(null_pool_engine) as conn:
         await DDLQuery(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE').execute(conn)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_mid_query_leaves_pool_clean(shared_engine, caplog):
+    """#640: a CancelledError fired mid-fetch must drain ROLLBACK on the
+    wire before the connection returns to the pool. StaticPool reuses the
+    same physical asyncpg wire, so the next acquire would trip the
+    invalidate-recover path (#619) if state 15 (IN_QUERY) leaked.
+
+    Asserts:
+      1. Cancelling a long-running query inside ``managed_transaction``
+         propagates ``CancelledError`` to the caller.
+      2. A subsequent acquire on the same engine runs a trivial query
+         to completion — no state-15 trip, no pool-hygiene WARN.
+      3. The ``managed_transaction_cancel_drain`` WARN fires exactly
+         once with the cancelled wire_id.
+    """
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    # Ensure the query_executor logger propagates to caplog under xdist.
+    qe_logger = logging.getLogger("dynastore.modules.db_config.query_executor")
+    _prev_propagate = qe_logger.propagate
+    qe_logger.propagate = True
+    qe_logger.setLevel(logging.WARNING)
+
+    async def _long_query_body():
+        async with managed_transaction(shared_engine) as conn:
+            await DQLQuery(
+                "SELECT pg_sleep(10)", result_handler=ResultHandler.SCALAR,
+            ).execute(conn)
+
+    try:
+        task = asyncio.create_task(_long_query_body())
+        await asyncio.sleep(0.2)  # let pg_sleep start on the wire
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        qe_logger.propagate = _prev_propagate
+
+    drain_warnings = [
+        r for r in caplog.records
+        if "managed_transaction_cancel_drain" in r.getMessage()
+    ]
+    assert len(drain_warnings) == 1, (
+        f"expected exactly one cancel-drain WARN, got {len(drain_warnings)}: "
+        f"{[r.getMessage() for r in drain_warnings]}"
+    )
+    assert "wire_id=" in drain_warnings[0].getMessage()
+    assert "exc=" in drain_warnings[0].getMessage()
+
+    pool_hygiene_before = sum(
+        1 for r in caplog.records
+        if "pool-hygiene" in r.getMessage()
+    )
+
+    async with managed_transaction(shared_engine) as conn:
+        result = await DQLQuery(
+            "SELECT 1", result_handler=ResultHandler.SCALAR,
+        ).execute(conn)
+    assert result == 1
+
+    pool_hygiene_after = sum(
+        1 for r in caplog.records
+        if "pool-hygiene" in r.getMessage()
+    )
+    assert pool_hygiene_after == pool_hygiene_before, (
+        "next acquire tripped pool-hygiene invalidate-recover — drain failed to clean the wire"
+    )
