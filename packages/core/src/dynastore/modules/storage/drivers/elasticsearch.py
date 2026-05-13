@@ -1339,17 +1339,20 @@ class AssetElasticsearchDriver(
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_assets_index_settings(),
-                    "mappings": ASSET_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_assets_index_settings(),
+                        "mappings": ASSET_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         asset_id = asset_doc.get("asset_id", asset_doc.get("id"))
-        await es.index(index=index_name, id=asset_id, document=asset_doc)
+        await es.index(index=index_name, id=asset_id, body=asset_doc)
 
     async def delete_asset(
         self, catalog_id: str, asset_id: str,
@@ -1451,14 +1454,17 @@ class AssetElasticsearchDriver(
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_assets_index_settings(),
-                    "mappings": ASSET_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_assets_index_settings(),
+                        "mappings": ASSET_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
         bulk_body: list = []
         for item in items:
@@ -1473,7 +1479,7 @@ class AssetElasticsearchDriver(
             bulk_body.append(doc)
 
         if bulk_body:
-            await es.bulk(body=bulk_body, request_timeout=60)
+            await es.bulk(body=bulk_body)
 
         return items if isinstance(items, list) else list(items)
 
@@ -1558,14 +1564,17 @@ class AssetElasticsearchDriver(
         index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
         if not await es.indices.exists(index=index_name):
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await get_assets_index_settings(),
-                    "mappings": ASSET_MAPPING,
-                },
-                ignore=400,
-            )
+            try:
+                await es.indices.create(
+                    index=index_name,
+                    body={
+                        "settings": await get_assets_index_settings(),
+                        "mappings": ASSET_MAPPING,
+                    },
+                )
+            except Exception as exc:
+                if "resource_already_exists" not in str(exc):
+                    raise
 
     async def drop_storage(
         self,
@@ -1583,7 +1592,9 @@ class AssetElasticsearchDriver(
 
         index_name = get_assets_index_name(_get_index_prefix(), catalog_id)
         es = self._get_client()
-        await es.indices.delete(index=index_name, ignore_unavailable=True)
+        await es.indices.delete(
+            index=index_name, params={"ignore_unavailable": "true"},
+        )
 
     async def export_entities(
         self,
