@@ -360,6 +360,11 @@ class PolicyService:
                 policies=["public_access"],
             ),
             Role(
+                name=cfg.editor,
+                description="Content editor with write access below admin.",
+                policies=["self_service_access"],
+            ),
+            Role(
                 name=cfg.user,
                 description="Default role for any authenticated user.",
                 policies=["self_service_access"],
@@ -449,7 +454,8 @@ class PolicyService:
                 cfg = self._role_config
                 _DEFAULT_HIERARCHY = [
                     (cfg.sysadmin, cfg.admin),
-                    (cfg.admin,    cfg.user),
+                    (cfg.admin,    cfg.editor),
+                    (cfg.editor,   cfg.user),
                     (cfg.user,     cfg.viewer),
                     (cfg.viewer,   cfg.anonymous),
                 ]

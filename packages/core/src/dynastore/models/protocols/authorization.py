@@ -48,6 +48,7 @@ class DefaultRole(str, Enum):
 
     SYSADMIN = "sysadmin"
     ADMIN = "admin"
+    EDITOR = "editor"
     USER = "user"
     VIEWER = "viewer"
     ANONYMOUS = "anonymous"
@@ -84,6 +85,12 @@ class IamRoleConfig(BaseModel):
             "IAM_ROLE_ADMIN", DefaultRole.ADMIN.value
         ),
         description="Platform-tier admin role name.",
+    )
+    editor: str = Field(
+        default_factory=lambda: os.environ.get(
+            "IAM_ROLE_EDITOR", DefaultRole.EDITOR.value
+        ),
+        description="Platform-tier editor role name.",
     )
     user: str = Field(
         default_factory=lambda: os.environ.get(

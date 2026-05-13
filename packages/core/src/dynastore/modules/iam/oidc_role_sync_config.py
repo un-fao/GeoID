@@ -38,7 +38,10 @@ class OidcRoleSyncConfig(ExposableConfigMixin, PluginConfig):
         description="If False the reconciler is a no-op (default).",
     )
     role_mapping: Dict[str, str] = Field(
-        default_factory=lambda: {"geoid.sysadmin": "sysadmin"},
+        default_factory=lambda: {
+            "geoid.sysadmin": "sysadmin",
+            "geoid.editor": "editor",
+        },
         description=(
             "Map OIDC role names (as they appear in the normalized "
             "identity['roles'] field) to internal role names."

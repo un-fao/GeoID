@@ -53,11 +53,21 @@ def test_diff_noop_when_both_sides_match():
 
 def test_diff_ignores_unmapped_oidc_roles():
     actions = diff(
-        oidc_roles=["geoid.editor", "some.other.role"],
+        oidc_roles=["some.other.role", "geoid.unknown"],
         current_internal_roles=[],
         role_mapping=MAPPING,
     )
     assert actions == []
+
+
+def test_diff_grants_editor_when_oidc_has_editor_role():
+    mapping = {"geoid.sysadmin": "sysadmin", "geoid.editor": "editor"}
+    actions = diff(
+        oidc_roles=["geoid.editor"],
+        current_internal_roles=[],
+        role_mapping=mapping,
+    )
+    assert actions == [RoleAction(role_name="editor", action="grant")]
 
 
 def test_diff_ignores_unmapped_internal_roles():
@@ -133,6 +143,20 @@ def test_initial_overlay_replaces_existing_mapped_internal_role():
     assert out == ["user"]
 
 
+def test_initial_overlay_grants_editor_when_enabled():
+    cfg = OidcRoleSyncConfig(
+        enabled=True,
+        role_mapping={"geoid.sysadmin": "sysadmin", "geoid.editor": "editor"},
+    )
+    out = initial_role_overlay(
+        oidc_roles=["geoid.editor"],
+        base_roles=["user"],
+        config=cfg,
+        issuer="https://kc/realms/r",
+    )
+    assert out == ["user", "editor"]
+
+
 def test_initial_overlay_blocked_by_issuer_whitelist():
     cfg = OidcRoleSyncConfig(
         enabled=True, issuer_whitelist=["https://trusted/realms/x"]
@@ -149,7 +173,10 @@ def test_initial_overlay_blocked_by_issuer_whitelist():
 def test_config_defaults_off():
     cfg = OidcRoleSyncConfig()
     assert cfg.enabled is False
-    assert cfg.role_mapping == {"geoid.sysadmin": "sysadmin"}
+    assert cfg.role_mapping == {
+        "geoid.sysadmin": "sysadmin",
+        "geoid.editor": "editor",
+    }
     assert cfg.ttl_seconds == 60
     assert cfg.issuer_whitelist is None
 
