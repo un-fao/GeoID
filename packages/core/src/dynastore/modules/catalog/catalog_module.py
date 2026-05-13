@@ -312,6 +312,21 @@ class CatalogModule(ModuleProtocol):
                     "scan until next boot.", exc,
                 )
 
+            # #641: purge stored AssetRoutingConfig rows so already-provisioned
+            # tenants drop their old ES-first shape and fall back to the new
+            # PG-first defaults from AssetRoutingConfig.operations.
+            from dynastore.modules.db_config.asset_routing_config_purge_migration import (
+                purge_asset_routing_config_rows,
+            )
+            try:
+                await purge_asset_routing_config_rows(engine)
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "AssetRoutingConfig purge aborted: %s. Stored overrides "
+                    "may keep the old ES-first asset routing until next boot.",
+                    exc,
+                )
+
             # 5. Register Internal Observers
             # Observers will use get_protocol() to access services
             register_event_listener(
