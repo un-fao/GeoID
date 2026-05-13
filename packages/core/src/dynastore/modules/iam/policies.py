@@ -68,10 +68,10 @@ class PolicyService:
         self._engine = db.engine if db else None
         self.storage = storage or PostgresPolicyStorage(app_state=app_state)
         self.iam_storage = iam_storage
-        # Role names used by the seed + runtime checks. Defaults read from
-        # IAM_ROLE_* env vars (with seeded ``DefaultRole`` values as the
-        # ultimate fallback), so deployments configure custom names without
-        # subclassing.
+        # Role names + hierarchy + named slots are sourced from the
+        # ``IamRolesConfig`` PluginConfig (``("platform","iam","roles")``).
+        # Defaults seed sysadmin/admin/editor/user/anonymous; operators
+        # rename, add, or drop roles via PATCH at runtime — no subclassing.
         self._role_config = role_config or IamRolesConfig()
 
     async def _resolve_schema(
