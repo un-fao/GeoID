@@ -45,7 +45,8 @@ services:
         condition: service_healthy
     environment:
       UVICORN_WORKERS: 1
-      DB_POOL_MIN_SIZE: "20"
+      DB_POOL_MIN_SIZE: "5"
+      DB_POOL_MAX_SIZE: "30"
       DB_CONNECT_TIMEOUT: "30"
       LOG_LEVEL: DEBUG
       ACCESS_LOG: "-"
