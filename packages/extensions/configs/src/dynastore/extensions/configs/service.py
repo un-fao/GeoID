@@ -392,26 +392,34 @@ class ConfigsService(ExtensionProtocol):
             }
         return schemas
 
-    async def get_config_schema(self, plugin_id: str) -> Dict[str, Any]:
-        """Return full JSON Schema, description, and example for a single config class (M9).
+    async def get_config_schema(
+        self,
+        plugin_id: str,
+        meta: MetaQuery = "none",
+    ) -> Dict[str, Any]:
+        """Return JSON Schema, description, and scope for a single config class.
 
         ``plugin_id`` is the snake_case ``cls.class_key()`` of a registered
         :class:`PluginConfig` subclass (e.g. ``"collection_routing_config"``).
 
-        Response shape::
+        ``meta`` selects the response projection so form-builders can fetch
+        the raw shape without unwrapping:
 
-            {
-                "plugin_id": "collection_routing_config",
-                "json_schema": {...},
-                "description": "...",
-                "scope": "platform_waterfall",
-            }
+        * ``meta="none"`` (default) — wrapper response
+          ``{plugin_id, json_schema, description, scope}``.
+        * ``meta="schema"`` — raw JSON Schema 2020-12 dict only (the same
+          payload the wrapper carries under ``json_schema``).  This is the
+          surface the per-leaf ``rel="schema"`` link points at.
+        * ``meta="field"`` — terse field-name → description map only.
         """
-        from dynastore.modules.storage.schema_types import ConfigScopeMixin
-
         config_class = resolve_config_class(plugin_id)
         if config_class is None:
             raise problem_details.plugin_not_registered(plugin_id)
+
+        if meta == "schema":
+            return config_class.model_json_schema()
+        if meta == "field":
+            return ConfigApiService._extract_docs(config_class)
 
         scope = getattr(config_class, "config_scope", "platform_waterfall")
         return {
