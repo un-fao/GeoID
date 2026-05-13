@@ -9,7 +9,6 @@ from dynastore.tools.discovery import get_protocol
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group("catalog_lifespan"),
 ]
 
 

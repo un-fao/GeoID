@@ -21,7 +21,6 @@ from dynastore.modules.catalog.models import Catalog, Collection
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group("catalog_lifespan"),
 ]
 
 

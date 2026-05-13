@@ -61,7 +61,6 @@ def _ingestion_inputs(catalog_id: str, collection_id: str, asset_id: str, genera
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="serial")
 @pytest.mark.timeout(600)
 @pytest.mark.enable_modules(
     "db_config", "db", "catalog", "tasks", "collection_postgresql", "catalog_postgresql"
@@ -187,7 +186,6 @@ async def test_object_finalize_redelivery_collapses_to_single_ingestion_task(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="serial")
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize("terminal_status", ["FAILED", "DEAD_LETTER", "COMPLETED"])
 @pytest.mark.enable_modules(

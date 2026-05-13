@@ -18,7 +18,6 @@ from tests.dynastore.test_utils import generate_test_id
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_modules(
         "db_config", "db", "catalog", "stac", "collection_postgresql", "catalog_postgresql"
     ),

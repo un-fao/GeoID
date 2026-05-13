@@ -6,7 +6,6 @@ from dynastore.tools.protocol_helpers import get_engine
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_modules("db_config", "db", "catalog", "stats"),
 ]
 

@@ -31,7 +31,6 @@ from tests.dynastore.test_utils import generate_test_id
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.xdist_group("catalog_lifespan"),
     pytest.mark.enable_extensions("logs", "events", "features", "stac"),
     # 'stac' MODULE (not extension) registers CollectionStacPostgresqlDriver +
     # creates the collection_stac sidecar table at lifespan DDL time;
