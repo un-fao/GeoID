@@ -67,6 +67,7 @@ from dynastore.models.protocols.cache import CacheStats
 
 logger = logging.getLogger(__name__)
 
+# Legacy env var support (deprecated, use PluginConfig instead)
 _VALKEY_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("VALKEY_CIRCUIT_BREAKER_THRESHOLD", "3"))
 
 # ---------------------------------------------------------------------------
@@ -268,7 +269,13 @@ class ValkeyCacheBackend:
     - Implements ``CacheBackend`` + ``LockableCacheBackend`` protocols
     """
 
-    def __init__(self, url: str, key_prefix: str = "ds:") -> None:
+    def __init__(
+        self,
+        url: str,
+        key_prefix: str = "ds:",
+        socket_connect_timeout: Optional[float] = None,
+        circuit_breaker_threshold: Optional[int] = None,
+    ) -> None:
         if not _CACHE_DEPS_OK:
             raise ImportError(
                 "ValkeyCacheBackend requires the 'module_cache' extra "
@@ -285,6 +292,10 @@ class ValkeyCacheBackend:
             ) from e
 
         pool_kwargs: Dict[str, Any] = {"decode_responses": False}
+
+        # Socket connect timeout (passed from CacheModule config)
+        if socket_connect_timeout is not None:
+            pool_kwargs["socket_connect_timeout"] = socket_connect_timeout
 
         # TLS: VALKEY_TLS=true forces TLS regardless of URL scheme.
         # On Memorystore private VPC, traffic stays in Google's network so
@@ -327,6 +338,7 @@ class ValkeyCacheBackend:
         self._stats = CacheStats(maxsize=0)
         self._locks: Dict[str, asyncio.Lock] = {}
         self._consecutive_failures: int = 0
+        self._circuit_breaker_threshold = circuit_breaker_threshold or _VALKEY_CIRCUIT_BREAKER_THRESHOLD
 
     @property
     def name(self) -> str:
@@ -343,7 +355,7 @@ class ValkeyCacheBackend:
     def _record_failure(self) -> None:
         """Increment failure counter and trip circuit breaker if threshold exceeded."""
         self._consecutive_failures += 1
-        if self._consecutive_failures >= _VALKEY_CIRCUIT_BREAKER_THRESHOLD:
+        if self._consecutive_failures >= self._circuit_breaker_threshold:
             logger.error(
                 "ValkeyCacheBackend: circuit breaker tripped after %d consecutive failures — degrading to L1-only.",
                 self._consecutive_failures,
