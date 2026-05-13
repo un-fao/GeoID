@@ -64,7 +64,7 @@ from typing import Any, ClassVar, Dict, Generic, Optional, Type, TypeVar, get_ar
 
 from pydantic import Field, model_validator
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import PluginConfig, WriteOnce
 
 ConfigT = TypeVar("ConfigT", bound="_PluginDriverConfig")
 
@@ -210,7 +210,7 @@ class _PluginDriverConfig(PluginConfig):
     # can still instantiate without an engine binding.
     required_engine_class: ClassVar[str] = ""
 
-    engine_ref: Optional[str] = Field(
+    engine_ref: WriteOnce[Optional[str]] = Field(
         default=None,
         description=(
             "Name of the platform engine this driver instance binds to. "
@@ -222,7 +222,9 @@ class _PluginDriverConfig(PluginConfig):
             "registry to an incompatible ``engine_class``.  Refs "
             "unknown to the registry are deferred to runtime "
             "(EngineInstanceCache.get + PATCH-handler ref-existence "
-            "check at platform.engines.{ref})."
+            "check at platform.engines.{ref}).  ``WriteOnce`` (#665 "
+            "slice 4): rebinding an active driver to a different pool "
+            "is not a supported operation."
         ),
     )
 

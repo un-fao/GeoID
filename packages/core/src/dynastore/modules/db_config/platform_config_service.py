@@ -86,74 +86,101 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class ImmutableMarker:
-    """Internal marker for immutability.
+class _MutabilityKindMixin:
+    """Shared ``__get_pydantic_json_schema__`` hook for all four markers.
 
-    When present in ``Annotated[T, ImmutableMarker]``, Pydantic v2 walks the
-    metadata during schema generation and invokes ``__get_pydantic_json_schema__``
-    on the class — we use that hook to advertise the field as read-only to
-    the schema-driven admin UI via the shared ``x-ui`` convention.
+    Each subclass declares ``kind: ClassVar[str]`` — one of ``"mutable"``,
+    ``"write_once"``, ``"immutable"``, ``"computed"``.  The hook injects
+    ``x-mutability: <kind>`` into the field's JSON Schema (#665 slice 4)
+    and, for everything except ``Mutable``, ``readOnly: true`` (JSON
+    Schema 2020-12 standard form-builders honour natively) + the legacy
+    ``x-ui.readonly`` advisory the existing admin UI consumes.
     """
+
+    kind: ClassVar[str] = ""
 
     @classmethod
     def __get_pydantic_json_schema__(cls, schema, handler):
-        from dynastore.tools.ui_hints import merge_ui
-
         out = handler(schema)
-        return merge_ui(out, readonly=True)
+        out["x-mutability"] = cls.kind
+        if cls.kind != "mutable":
+            out["readOnly"] = True
+            from dynastore.tools.ui_hints import merge_ui
+            out = merge_ui(out, readonly=True)
+        return out
+
+
+class MutableMarker(_MutabilityKindMixin):
+    """Freely editable across the config's lifetime (the default kind)."""
+    kind: ClassVar[str] = "mutable"
+
+
+class ImmutableMarker(_MutabilityKindMixin):
+    """Fixed at class definition; ``enforce_config_immutability`` rejects diffs."""
+    kind: ClassVar[str] = "immutable"
+
+
+class WriteOnceMarker(_MutabilityKindMixin):
+    """Settable once from ``None`` → value, locked thereafter."""
+    kind: ClassVar[str] = "write_once"
+
+
+class ComputedMarker(_MutabilityKindMixin):
+    """Derived value with no stored override.  Prefer ``@computed_field`` when no value is stored."""
+    kind: ClassVar[str] = "computed"
 
 
 if TYPE_CHECKING:
-    type Immutable[T] = T  # pyright-transparent alias
+    type Mutable[T] = T  # pyright-transparent alias
+    type WriteOnce[T] = T
+    type Immutable[T] = T
+    type Computed[T] = T
 else:
-    class Immutable:
-        """
-        A marker class that supports elegant declaration of immutable fields.
-        Usage:
-            field: Immutable[int] = Field(...)
+    class Mutable:
+        """Marker for freely-editable fields.
 
-        This is equivalent to:
-            field: Annotated[int, ImmutableMarker] = Field(...)
+        Usage::
+
+            field: Mutable[int] = Field(default=0, description="...")
+
+        Equivalent to ``field: Annotated[int, MutableMarker] = Field(...)``.
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, MutableMarker]
+
+    class Immutable:
+        """Marker for class-definition-fixed fields.
+
+        Usage::
+
+            field: Immutable[int] = Field(...)
         """
 
         def __class_getitem__(cls, item: Any) -> Any:
             return Annotated[item, ImmutableMarker]
 
-
-class WriteOnceMarker:
-    """Internal marker for write-once fields (None → value allowed, value → anything rejected).
-
-    The schema-driven admin UI treats WriteOnce fields as read-only too:
-    the server rejects mutations once the value is set, so an editable
-    input would only create failing requests. The ``x-ui.readonly`` hint
-    is advisory — the real enforcement is in ``enforce_config_immutability``.
-    """
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, schema, handler):
-        from dynastore.tools.ui_hints import merge_ui
-
-        out = handler(schema)
-        return merge_ui(out, readonly=True)
-
-
-if TYPE_CHECKING:
-    type WriteOnce[T] = T  # pyright-transparent alias
-else:
     class WriteOnce:
-        """A marker for write-once fields.
-
-        The field may be set once from ``None`` to a non-``None`` value (e.g. by
-        ``ensure_storage()``), but once set to a non-``None`` value it cannot be
-        changed.  Attempts to mutate a non-``None`` value raise ``ImmutableConfigError``.
+        """Marker for write-once fields (``None`` → value transition allowed,
+        non-``None`` → anything rejected).
 
         Usage::
 
-            field: WriteOnce[Optional[str]] = Field(default=None, description="Set once on storage creation.")
+            field: WriteOnce[Optional[str]] = Field(default=None, ...)
         """
 
-        def __class_getitem__(cls, item):
+        def __class_getitem__(cls, item: Any) -> Any:
             return Annotated[item, WriteOnceMarker]
+
+    class Computed:
+        """Marker for derived fields with no stored override.
+
+        Prefer ``@computed_field`` when no stored value is needed; this
+        marker is for fields that ARE stored but recomputed externally.
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, ComputedMarker]
 
 
 def is_immutable_field(field_info: "FieldInfo") -> bool:
@@ -388,6 +415,87 @@ class PluginConfig(PersistentModel):
                     f"call at module-import time (Phase 1.5 standardisation — "
                     f"single registration path, multi-handler support)."
                 )
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Enforce per-field mutability markers (#665 slice 4).
+
+        Pydantic invokes this hook AFTER ``model_fields`` is populated —
+        the right moment to walk fields and verify each one carries one
+        of the four mutability markers.  Abstract intermediate bases
+        (``is_abstract_base = True``) are skipped: they don't render via
+        the composed-config endpoint and may declare fields that
+        subclasses re-annotate or override.
+
+        Enforcement gating: ``DYNASTORE_MUTABILITY_STRICT=1`` (default
+        for new deployments) raises ``TypeError`` immediately on any
+        unmarked field.  Unset (during the slice-4.x migration window)
+        emits a one-time per-class warning so partially-migrated trees
+        still boot — the gate flips to default-strict in slice 4.z once
+        every subclass is annotated.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        if cls.__dict__.get("is_abstract_base", False):
+            return
+        import os
+        from dynastore.models.mutability import missing_markers
+        missing = list(missing_markers(cls))
+        if missing:
+            msg = (
+                f"{cls.__module__}.{cls.__qualname__}: every Pydantic field must "
+                f"carry exactly one mutability marker — "
+                f"``Mutable[T]`` / ``WriteOnce[T]`` / ``Immutable[T]`` / "
+                f"``Computed[T]`` from ``dynastore.models.mutability``.  "
+                f"Fields missing a marker: {missing}.  See #665 slice 4."
+            )
+            if os.environ.get("DYNASTORE_MUTABILITY_STRICT", "").lower() in (
+                "1", "true", "yes", "on",
+            ):
+                raise TypeError(msg)
+            import warnings
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        # Install the WriteOnce setter guard: every field annotated
+        # ``WriteOnce[T]`` rejects post-construction mutation.  The guard
+        # is installed once at class creation; runtime construction sets
+        # the initial value via Pydantic's normal init path (which does
+        # not go through ``__setattr__``).
+        from dynastore.models.mutability import mutability_map
+        write_once_fields = frozenset(
+            name for name, kind in mutability_map(cls).items()
+            if kind == "write_once"
+        )
+        if write_once_fields:
+            cls._write_once_fields = write_once_fields  # type: ignore[attr-defined]
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Reject writes to ``WriteOnce`` fields after construction.
+
+        ``__init_private_attributes__``-style internal writes happen via
+        Pydantic's ``BaseModel.__init__`` path and never come through
+        here; user-driven ``inst.field = value`` does.  The framework
+        relies on Pydantic's existing field-validation + immutability
+        machinery for ``Immutable`` (which it spells ``frozen=True`` on
+        the field — set in the marker's ``__get_pydantic_json_schema__``
+        is not enough; subclasses requiring runtime immutability declare
+        ``model_config = ConfigDict(frozen=True)``).
+        """
+        write_once = getattr(type(self), "_write_once_fields", frozenset())
+        if name in write_once and name in self.__dict__:
+            raise AttributeError(
+                f"{type(self).__qualname__}.{name} is WriteOnce — "
+                f"locked after construction."
+            )
+        super().__setattr__(name, value)
+
+    @classmethod
+    def mutability_map(cls) -> Dict[str, str]:
+        """Return ``{field_name: 'mutable'|'write_once'|'immutable'|'computed'}``.
+
+        Implements ``MutabilityIntrospectionProtocol``; the composed-config
+        renderer depends on the Protocol, not on this concrete method.
+        """
+        from dynastore.models.mutability import mutability_map as _mm
+        return _mm(cls)
 
     @classmethod
     def register_apply_handler(

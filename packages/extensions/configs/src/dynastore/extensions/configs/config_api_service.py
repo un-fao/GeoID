@@ -329,6 +329,35 @@ class ConfigApiService:
         return out
 
     @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _extract_mutability(model_cls: Type[PluginConfig]) -> Dict[str, str]:
+        """Return ``{field_name: kind}`` for a PluginConfig class.
+
+        Delegates to the Protocol-based introspection API
+        (``MutabilityIntrospectionProtocol.mutability_map``) so the
+        renderer stays decoupled from the concrete ``PluginConfig`` —
+        any class that implements the Protocol surface works.
+        """
+        from dynastore.models.mutability import (
+            MutabilityIntrospectionProtocol,
+            mutability_map,
+        )
+        if isinstance(model_cls, type) and issubclass(
+            model_cls, MutabilityIntrospectionProtocol  # type: ignore[arg-type]
+        ):
+            try:
+                return dict(model_cls.mutability_map())
+            except Exception:
+                pass
+        # Fallback: the standalone helper handles any class with
+        # Pydantic ``model_fields`` even if it doesn't formally implement
+        # the Protocol.
+        try:
+            return mutability_map(model_cls)
+        except Exception:
+            return {}
+
+    @staticmethod
     def _compose_tree(
         by_class: Dict[str, Dict[str, Any]],
         sources: Dict[str, str],
@@ -448,9 +477,19 @@ class ConfigApiService:
             ``meta_mode == "none"``.
             """
             if meta_mode == "schema":
+                # Markers contribute ``readOnly`` + ``x-mutability`` to
+                # each property's JSON Schema via their
+                # ``__get_pydantic_json_schema__`` hook — no
+                # post-processing here.
                 return {"json_schema": cls.model_json_schema()}
             if meta_mode == "field":
-                return {"docs": ConfigApiService._extract_docs(cls)}
+                out: Dict[str, Any] = {"docs": ConfigApiService._extract_docs(cls)}
+                # Per #665 slice 4: ``mutability`` is a sibling of
+                # ``docs`` covering every field of the class.
+                mutability = ConfigApiService._extract_mutability(cls)
+                if mutability:
+                    out["mutability"] = mutability
+                return out
             return {}
 
         def _place_at(
