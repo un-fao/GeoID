@@ -39,7 +39,10 @@ pip install dynastore[elasticsearch]
 | `ES_USERNAME` | — | Basic auth username |
 | `ES_PASSWORD` | — | Basic auth password |
 | `ES_INDEX_PREFIX` | `dynastore` | Prefix applied to all index names |
-| `ES_CONNECTIONS_PER_NODE` | `10` | Connection pool size per node |
+
+Transport tuning (timeout, pool size, retries) lives in PluginConfig
+`platform/elasticsearch/client` (`ElasticsearchClientConfig`) — edit via
+`PUT /configs/plugins/elasticsearch_client_config` (effective at next module lifespan).
 
 #### On-Premise / OpenSearch Example
 

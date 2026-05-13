@@ -5,9 +5,12 @@ Uses ``opensearch-py`` (Apache 2.0) which is wire-compatible with both
 OpenSearch and Elasticsearch servers.  No product-check header is sent,
 so it works against ES 9.x in production and OpenSearch in dev/on-premise.
 
-All ES_* connection parameters are read directly from environment variables.
-No Pydantic model; no per-request client creation. The single async client
-instance manages its own connection pool.
+Connection-target ES_* env vars (host, port, credentials, SSL) are read
+directly from the environment — those are deployment-shape secrets.
+Operator-tunable transport knobs (request timeout, pool size, retries)
+come from ``ElasticsearchClientConfig`` (PluginConfig) and are read once
+at lifespan startup. The single async client instance manages its own
+connection pool.
 
 Usage
 -----
@@ -29,6 +32,10 @@ from typing import Optional
 from opensearchpy import AsyncOpenSearch
 
 from dynastore.modules.elasticsearch._serializer import CustomOpenSearchSerializer
+from dynastore.modules.elasticsearch.client_config import (
+    ElasticsearchClientConfig,
+    load as load_client_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +52,11 @@ def get_index_prefix() -> str:
     return _index_prefix
 
 
-def _build_client() -> AsyncOpenSearch:
+def _build_client(cfg: ElasticsearchClientConfig) -> AsyncOpenSearch:
     """
-    Build an AsyncOpenSearch client from ES_* environment variables.
+    Build an AsyncOpenSearch client.
 
-    Supported variables:
+    Connection target comes from env (deployment-shape secrets):
         ES_HOST           host name or IP   (default: localhost)
         ES_PORT           port              (default: 9200)
         ES_USE_SSL        true/false        (default: false)
@@ -57,6 +64,8 @@ def _build_client() -> AsyncOpenSearch:
         ES_API_KEY        API key string    (preferred auth)
         ES_USERNAME       basic-auth user
         ES_PASSWORD       basic-auth password
+
+    Transport tuning comes from ElasticsearchClientConfig.
     """
     host = os.environ.get("ES_HOST", "localhost")
     port = int(os.environ.get("ES_PORT", "9200"))
@@ -70,10 +79,10 @@ def _build_client() -> AsyncOpenSearch:
     kwargs = {
         "hosts": [f"{scheme}://{host}:{port}"],
         "verify_certs": verify_certs,
-        "maxsize": int(os.environ.get("ES_CONNECTIONS_PER_NODE", "10")),
-        "timeout": int(os.environ.get("ES_REQUEST_TIMEOUT", "30")),
+        "maxsize": cfg.connections_per_node,
+        "timeout": cfg.request_timeout_seconds,
         "retry_on_timeout": True,
-        "max_retries": 3,
+        "max_retries": cfg.max_retries,
         # Custom serializer tolerates pydantic models, pydantic v2 Url
         # types (HttpUrl/AnyUrl/…), __geo_interface__ objects, sets and
         # bytes — the stock JSONSerializer only handles datetime/UUID/Decimal
@@ -101,9 +110,16 @@ async def init(index_prefix: Optional[str] = None) -> None:
     """
     global _client, _index_prefix
     _index_prefix = index_prefix or os.environ.get("ES_INDEX_PREFIX", "dynastore")
-    _client = _build_client()
+    cfg = await load_client_config()
+    _client = _build_client(cfg)
     host = os.environ.get("ES_HOST", "localhost")
     port = os.environ.get("ES_PORT", "9200")
+    logger.info(
+        "Client built: timeout=%ds maxsize=%d max_retries=%d",
+        cfg.request_timeout_seconds,
+        cfg.connections_per_node,
+        cfg.max_retries,
+    )
     try:
         info = await _client.info()
         cluster = info.get("cluster_name", "unknown")
