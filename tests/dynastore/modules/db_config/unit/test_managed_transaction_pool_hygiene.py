@@ -314,20 +314,20 @@ async def test_executor_workflow_uses_connect_retry(monkeypatch, caplog):
 
 
 # ---------------------------------------------------------------------------
-# Issue #588 — asyncpg state-15 / wire-closed on pool-hygiene rollback
+# asyncpg state-15 / wire-closed on pool-hygiene rollback
 # ---------------------------------------------------------------------------
 #
 # A pooled wire whose asyncpg protocol FSM is non-IDLE (state 15 = mid-op)
 # raises ``InternalClientError`` from the hygiene rollback in
-# ``_acquire_async_engine_connection``. Before #588 the error fell through
-# ``retry_on_transient_connect`` (asyncpg client errors are not subclasses of
-# SQLAlchemy ``InterfaceError``), poisoning the pool slot for the next
-# consumer — dispatcher + warner then cascade with ``ConnectionDoesNotExistError``.
+# ``_acquire_async_engine_connection``. asyncpg client errors are not
+# subclasses of SQLAlchemy ``InterfaceError``, so without explicit listing in
+# ``_TRANSIENT_CONNECT_EXCEPTIONS`` the error fell through
+# ``retry_on_transient_connect`` and the poisoned slot cascaded to dispatcher
+# + warner as ``ConnectionDoesNotExistError`` on the next checkout.
 #
-# The fix: list both asyncpg classes in ``_TRANSIENT_CONNECT_EXCEPTIONS`` and
-# invalidate the wire in the outer ``except BaseException`` of
-# ``_acquire_async_engine_connection`` before close, so the decorator retries
-# with a fresh wire and the poisoned wire is detached from pool bookkeeping.
+# Contract: both asyncpg classes are listed in ``_TRANSIENT_CONNECT_EXCEPTIONS``
+# and the outer ``except BaseException`` of ``_acquire_async_engine_connection``
+# invalidates before close.
 
 
 class _StateMachineFakeConn:
