@@ -50,7 +50,10 @@ services:
       SCOPE: ${CATALOG_SCOPE:-scope_catalog}
       TCP_PORT: 80
       UVICORN_WORKERS: 4
-      DB_POOL_MIN_SIZE: "20"
+      # On-prem PG budget (default max_connections=100):
+      #   catalog 30 + geoid 10 + worker 15 + tools 10 + maps 10 = 75 < 100
+      DB_POOL_MIN_SIZE: "5"
+      DB_POOL_MAX_SIZE: "30"
       DB_CONNECT_TIMEOUT: "30"
       ERROR_LOG: /dynastore/logs/error.log
       VALKEY_URL: valkey://valkey:6379
@@ -84,6 +87,8 @@ services:
       SCOPE: ${GEOID_SCOPE:-scope_geoid}
       TCP_PORT: 80
       UVICORN_WORKERS: 1
+      DB_POOL_MIN_SIZE: "2"
+      DB_POOL_MAX_SIZE: "10"
       # Embedded logs dashboard: upstream URL includes the Dashboards base
       # path so both the provisioner and the reverse proxy can forward
       # requests unchanged. Keep in sync with the kibana service
@@ -126,6 +131,8 @@ services:
       SCOPE: ${WORKER_SCOPE:-scope_worker}
       TCP_PORT: 81
       UVICORN_WORKERS: 2
+      DB_POOL_MIN_SIZE: "2"
+      DB_POOL_MAX_SIZE: "15"
       ERROR_LOG: /dynastore/logs/error.log
       VALKEY_URL: valkey://valkey:6379
     ports:
@@ -159,6 +166,8 @@ services:
       SCOPE: ${TOOLS_SCOPE:-scope_tools}
       TCP_PORT: 8082
       UVICORN_WORKERS: 2
+      DB_POOL_MIN_SIZE: "2"
+      DB_POOL_MAX_SIZE: "10"
       ERROR_LOG: /dynastore/logs/error.log
       VALKEY_URL: valkey://valkey:6379
     ports:
@@ -192,6 +201,8 @@ services:
       SCOPE: ${MAPS_SCOPE:-scope_maps}
       TCP_PORT: 8083
       UVICORN_WORKERS: 2
+      DB_POOL_MIN_SIZE: "2"
+      DB_POOL_MAX_SIZE: "10"
       ERROR_LOG: /dynastore/logs/error.log
       VALKEY_URL: valkey://valkey:6379
     ports:
