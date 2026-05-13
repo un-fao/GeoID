@@ -93,10 +93,13 @@ async def _load_oracle_inner_timeout() -> float:
         from dynastore.frameworks.plugin import get_protocol
         configs_proto = get_protocol(ConfigsProtocol)
         cfg = await configs_proto.get_config(CachePluginConfig)
-        if cfg:
+        if cfg is not None:
             return cfg.oracle_inner_timeout_seconds
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(
+            "dispatcher: oracle_inner_timeout config load failed (%s), using default",
+            e,
+        )
     return 0.5
 
 
@@ -332,14 +335,16 @@ async def _maybe_dlq_unclaimable(
             # may have appeared between the unlocked oracle call above and
             # the lock acquisition. Conservative double-check.
             #
-            # Bounded: this call holds the DB connection + advisory xact
-            # lock for its full duration. Under cache slowness (Valkey
-            # cluster-mode timeout, network blip) an unbounded ``exists``
-            # convoys every other dispatcher behind the same connection,
-            # cascading into ``db_pool_acquire`` stalls (#629). The oracle
-            # is already fail-open on error (returns True), so an
-            # ``asyncio.TimeoutError`` here maps to the same "treat as
-            # live, leave PENDING + WARN" outcome — never a false DLQ.
+            # Bounded by CachePluginConfig.oracle_inner_timeout_seconds
+            # (default 0.5 s, operator-tunable, #639): the call holds the
+            # DB connection + advisory xact lock for its full duration.
+            # Under cache slowness (Valkey cluster-mode timeout, network
+            # blip) an unbounded ``exists`` convoys every other dispatcher
+            # behind the same connection, cascading into ``db_pool_acquire``
+            # stalls (#629). The oracle is already fail-open on error
+            # (returns True), so an ``asyncio.TimeoutError`` here maps to
+            # the same "treat as live, leave PENDING + WARN" outcome —
+            # never a false DLQ.
             try:
                 live = await asyncio.wait_for(
                     is_capability_live(capability_id),
@@ -348,8 +353,8 @@ async def _maybe_dlq_unclaimable(
             except asyncio.TimeoutError:
                 live = True
                 logger.info(
-                    "dispatcher: inner oracle timeout capability=%s "
-                    "timeout_s=%.2f treating_as=live",
+                    "dispatcher_inner_oracle_timeout "
+                    "capability=%s timeout_s=%.2f result=live",
                     capability_id, timeout_s,
                 )
             if live:

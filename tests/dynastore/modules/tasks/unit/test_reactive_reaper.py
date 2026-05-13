@@ -178,8 +178,10 @@ async def test_infra_failure_fails_safe():
 @pytest.mark.asyncio
 async def test_inner_oracle_timeout_treated_as_live(caplog):
     """#629: inside the locked transaction, the ``is_capability_live``
-    re-check is bounded by ``_INNER_CAPABILITY_LIVE_TIMEOUT_S``. A cache
-    that hangs longer than the bound must not convoy peer dispatchers
+    re-check is bounded by the value returned from
+    ``_load_oracle_inner_timeout`` (sourced from
+    ``CachePluginConfig.oracle_inner_timeout_seconds``, default 0.5 s). A
+    cache that hangs longer than the bound must not convoy peer dispatchers
     behind the held DB connection + advisory xact lock; the bound expires
     and we fail-open (treat as live → return False, no DLQ).
 
