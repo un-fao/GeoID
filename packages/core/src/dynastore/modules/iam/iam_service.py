@@ -531,7 +531,10 @@ class IamService:
         # operator-renamed deployments still recognise their own seeded
         # role names from incoming JWT claims.
         cfg = self._role_config
-        known_roles = {cfg.sysadmin, cfg.admin, cfg.user, cfg.anonymous}
+        known_roles = {
+            cfg.sysadmin, cfg.admin, cfg.editor,
+            cfg.user, cfg.viewer, cfg.anonymous,
+        }
         realm_roles = [
             r for r in identity.get("realm_roles", [])
             if r in known_roles

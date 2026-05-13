@@ -360,6 +360,11 @@ class PolicyService:
                 policies=["public_access"],
             ),
             Role(
+                name=cfg.editor,
+                description="Content editor with write access below admin.",
+                policies=["self_service_access"],
+            ),
+            Role(
                 name=cfg.user,
                 description="Default role for any authenticated user.",
                 policies=["self_service_access"],
@@ -432,7 +437,7 @@ class PolicyService:
                             )
 
                 # Seed default role hierarchy:
-                #   sysadmin > admin > user > anonymous
+                #   sysadmin > admin > editor > user > viewer > anonymous
                 # Direction: parent inherits child's policies (see
                 # `get_role_hierarchy` in postgres_iam_storage.py — it returns
                 # `role_names + children`). With this seed an authenticated
@@ -449,7 +454,8 @@ class PolicyService:
                 cfg = self._role_config
                 _DEFAULT_HIERARCHY = [
                     (cfg.sysadmin, cfg.admin),
-                    (cfg.admin,    cfg.user),
+                    (cfg.admin,    cfg.editor),
+                    (cfg.editor,   cfg.user),
                     (cfg.user,     cfg.viewer),
                     (cfg.viewer,   cfg.anonymous),
                 ]
@@ -468,7 +474,7 @@ class PolicyService:
                         # observable — silent failures here put the platform
                         # into a "no inheritance" state where authenticated
                         # users see narrower access than anonymous browsers
-                        # (the seed wires sysadmin → admin → user → anonymous,
+                        # (the seed wires sysadmin → admin → editor → user → viewer → anonymous,
                         # so users *inherit* every public policy bound to
                         # anonymous; without the chain, registering for an
                         # account silently *removes* access).
