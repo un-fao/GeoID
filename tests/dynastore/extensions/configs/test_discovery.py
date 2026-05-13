@@ -130,6 +130,36 @@ class TestGetConfigSchema:
         # ItemsRoutingConfig defaults to platform_waterfall
         assert result["scope"] == "platform_waterfall"
 
+    @pytest.mark.asyncio
+    async def test_meta_schema_returns_raw_json_schema(self, service):
+        """``?meta=schema`` returns the raw JSON Schema dict only (no wrapper).
+
+        The ``rel="schema"`` link emitted in ``links=full`` mode points
+        at this projection — form-builders should not need to unwrap.
+        """
+        result = await service.get_config_schema("items_routing_config", meta="schema")
+        # Raw JSON Schema 2020-12 shape — has ``properties`` (the schema
+        # itself may carry ``description``/``title`` from the class
+        # docstring; those are standard JSON Schema keys, not wrapper
+        # keys).  The wrapper-only keys ``plugin_id`` / ``scope`` are
+        # absent.
+        assert isinstance(result, dict)
+        assert "properties" in result
+        assert "plugin_id" not in result
+        assert "scope" not in result
+
+    @pytest.mark.asyncio
+    async def test_meta_field_returns_docs_map(self, service):
+        """``?meta=field`` returns the terse ``{field_name: description}``
+        map only (the same shape ``_meta.docs`` carries on composed leaves)."""
+        result = await service.get_config_schema("write_policy_defaults", meta="field")
+        # Pure dict[str, str] — no wrapper, no nested schema.
+        assert isinstance(result, dict)
+        if result:  # only fields with non-empty descriptions appear
+            for k, v in result.items():
+                assert isinstance(k, str)
+                assert isinstance(v, str) and v
+
 
 # ``/configs/graph`` was retired in the Phase 0 cutover (hardcoded
 # PascalCase edges, no live consumer); see commit 47fcc5d.

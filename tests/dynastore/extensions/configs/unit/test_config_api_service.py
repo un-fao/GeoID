@@ -844,6 +844,106 @@ async def test_compose_collection_links_full_titles_name_scope(mock_config_servi
     assert "col" in edit_put["title"]
 
 
+@pytest.mark.asyncio
+async def test_compose_collection_links_full_adds_schema_and_engine_rels(mock_config_service):
+    """``links=full`` adds two cross-link affordances per leaf:
+    ``rel="schema"`` (raw JSON Schema via ``?meta=schema``) always, and
+    ``rel="engine"`` only when the leaf payload carries a non-null
+    ``engine_ref``.  ``links=minimal`` does NOT emit either."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeDriverConfig:
+        _address = ("platform", "catalog", "collection", "drivers")
+        _visibility = "collection"
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {}}
+
+    by_class = {
+        "collection_postgresql_driver": {"engine_ref": "postgresql_engine"},
+        "items_routing": {"operations": {}},
+    }
+    sources = {"collection_postgresql_driver": "default", "items_routing": "default"}
+    registry = {
+        "collection_postgresql_driver": FakeDriverConfig,
+        "items_routing": FakeDriverConfig,
+    }
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_collection_config(
+            base_url="http://test/configs/catalogs/cat/collections/col",
+            catalog_id="cat", collection_id="col",
+            meta="none", include="upstream", links="full",
+        )
+    driver_leaf = r.configs["platform"]["catalog"]["collection"]["drivers"]["collection_postgresql_driver"]
+    rels = {(lk["rel"], lk["method"]) for lk in driver_leaf["_links"]}
+    # The 4 always-on affordances + schema + engine.
+    assert ("self", "GET") in rels
+    assert ("edit", "PUT") in rels
+    assert ("edit", "DELETE") in rels
+    assert ("describedby", "GET") in rels
+    assert ("schema", "GET") in rels
+    assert ("engine", "GET") in rels
+
+    schema_link = next(lk for lk in driver_leaf["_links"] if lk["rel"] == "schema")
+    assert schema_link["href"].endswith("/registry/collection_postgresql_driver?meta=schema")
+
+    engine_link = next(lk for lk in driver_leaf["_links"] if lk["rel"] == "engine")
+    # Engine link targets the platform-root configs (no /catalogs/.../ segment).
+    assert engine_link["href"] == "http://test/configs/plugins/postgresql_engine"
+
+    # Non-driver leaf has no engine_ref → no rel="engine".
+    routing_leaf = r.configs["platform"]["catalog"]["collection"]["drivers"]["items_routing"]
+    routing_rels = {lk["rel"] for lk in routing_leaf["_links"]}
+    assert "engine" not in routing_rels
+    # But rel="schema" is always present in full mode.
+    assert "schema" in routing_rels
+
+
+@pytest.mark.asyncio
+async def test_compose_collection_links_minimal_skips_schema_and_engine(mock_config_service):
+    """``links=minimal`` keeps the 4 always-on affordances and does NOT
+    emit ``rel="schema"`` / ``rel="engine"`` — those are full-mode only."""
+    svc = ConfigApiService(config_service=mock_config_service)
+
+    class FakeDriverConfig:
+        _address = ("platform", "catalog", "collection", "drivers")
+        _visibility = "collection"
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"properties": {}}
+
+    by_class = {"collection_postgresql_driver": {"engine_ref": "postgresql_engine"}}
+    sources = {"collection_postgresql_driver": "default"}
+    registry = {"collection_postgresql_driver": FakeDriverConfig}
+    with patch.object(svc, "_get_effective_configs",
+                      new=AsyncMock(return_value=(by_class, sources, {"platform":{},"catalog":{},"collection":{}}))), \
+         patch.object(svc, "_get_extra_refs", new=AsyncMock(return_value={})), \
+         patch.object(svc, "_build_routing_refs", new=MagicMock()), \
+         patch(
+             "dynastore.extensions.configs.config_api_service.list_registered_configs",
+             return_value=registry,
+         ):
+        r = await svc.compose_collection_config(
+            base_url="http://test/configs/catalogs/cat/collections/col",
+            catalog_id="cat", collection_id="col",
+            meta="none", include="upstream", links="minimal",
+        )
+    leaf = r.configs["platform"]["catalog"]["collection"]["drivers"]["collection_postgresql_driver"]
+    rels = {lk["rel"] for lk in leaf["_links"]}
+    assert {"self", "edit", "describedby"}.issubset(rels)
+    assert "schema" not in rels
+    assert "engine" not in rels
+
+
 def test_configs_root_url_strips_scope_segments():
     """``_configs_root_url`` strips ``/catalogs/{x}[/collections/{y}]``
     so per-leaf ``describedby`` links can target the scope-agnostic
