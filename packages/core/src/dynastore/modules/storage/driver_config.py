@@ -830,6 +830,8 @@ class ItemsElasticsearchPrivateDriverConfig(CollectionDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
+    capabilities: ClassVar[FrozenSet[str]] = frozenset({DriverCapability.ASYNC})
+
 
 class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
