@@ -503,6 +503,9 @@ class ConfigApiService:
                 assert "_links" not in payload, (
                     f"{class_key}: leaf already has _links — field name collides"
                 )
+                engine_ref = payload.get("engine_ref") if isinstance(payload, dict) else None
+                if not isinstance(engine_ref, str) or not engine_ref:
+                    engine_ref = None
                 payload["_links"] = ConfigApiService._leaf_links(
                     class_key=class_key,
                     ref_key=ref_key,
@@ -512,6 +515,7 @@ class ConfigApiService:
                     catalog_id=catalog_id,
                     collection_id=collection_id,
                     mode=links_mode,
+                    engine_ref=engine_ref,
                 )
             return payload
 
@@ -612,10 +616,11 @@ class ConfigApiService:
         catalog_id: Optional[str],
         collection_id: Optional[str],
         mode: str,
+        engine_ref: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build the per-leaf HATEOAS ``_links`` array.
 
-        Four affordances per leaf:
+        Always emits four affordances:
 
         - ``rel="self"`` ``GET {base_url}/plugins/{ref_key}`` — read the
           effective plugin config at the active scope.
@@ -624,17 +629,32 @@ class ConfigApiService:
         - ``rel="edit"`` ``DELETE {base_url}/plugins/{ref_key}`` — clear
           the scope-tier override; falls back to the upstream waterfall.
         - ``rel="describedby"`` ``GET {configs_root_url}/registry/{class_key}``
-          — JSON Schema entry.  Registry is scope-agnostic; uses the
-          canonical ``class_key`` (not ``ref_key``) because multi-instance
-          refs share the canonical class's schema.
+          — Registry wrapper response carrying JSON Schema + description +
+          scope.  Scope-agnostic; uses the canonical ``class_key`` (not
+          ``ref_key``) because multi-instance refs share the canonical
+          class's schema.
 
-        ``mode == "minimal"`` emits rel/href/method only; ``mode == "full"``
-        adds a contextual ``title`` per link naming the class key and tier
-        (including catalog/collection ids when present).
+        ``mode == "full"`` adds two cross-link affordances:
+
+        - ``rel="schema"`` ``GET {configs_root_url}/registry/{class_key}?meta=schema``
+          — raw JSON Schema 2020-12 (no wrapper) — feed straight to a
+          form-builder.
+        - ``rel="engine"`` ``GET {platform_configs_root}/plugins/{engine_ref}``
+          — only emitted when the leaf carries a non-null ``engine_ref``.
+          Points at the platform-tier ``PluginConfig`` instance backing
+          this driver's pool binding.  Same target whether ``engine_ref``
+          is the engine's class_key (single-instance) or an operator-
+          chosen ref name (multi-instance).
+
+        ``mode == "full"`` also adds a contextual ``title`` per link
+        naming the class key and tier (including catalog/collection ids
+        when present).  ``mode == "minimal"`` emits rel/href/method only
+        and skips the two cross-link affordances above.
         """
         base = base_url.rstrip("/")
+        platform_root = configs_root_url.rstrip("/")
         plugin_href = f"{base}/plugins/{ref_key}"
-        schema_href = f"{configs_root_url.rstrip('/')}/registry/{class_key}"
+        registry_href = f"{platform_root}/registry/{class_key}"
 
         if scope_label == "collection" and catalog_id and collection_id:
             tier_phrase = f"collection '{catalog_id}/{collection_id}'"
@@ -672,11 +692,25 @@ class ConfigApiService:
             ),
             Link(
                 rel="describedby",
-                href=schema_href,
+                href=registry_href,
                 method="GET",
-                title=_title(f"JSON Schema for {class_key}"),
+                title=_title(f"Registry entry for {class_key}"),
             ),
         ]
+        if mode == "full":
+            links.append(Link(
+                rel="schema",
+                href=f"{registry_href}?meta=schema",
+                method="GET",
+                title=f"Raw JSON Schema 2020-12 for {class_key}",
+            ))
+            if engine_ref:
+                links.append(Link(
+                    rel="engine",
+                    href=f"{platform_root}/plugins/{engine_ref}",
+                    method="GET",
+                    title=f"Platform engine binding for {ref_key}: {engine_ref}",
+                ))
         return [lk.model_dump(by_alias=True, exclude_none=True) for lk in links]
 
     @staticmethod
