@@ -573,10 +573,14 @@ class IamExtension(ExtensionProtocol):
         priority=20,
     )
     async def provide_admin_panel(self, request: Request):
+        from importlib.resources import files
         from dynastore._version import VERSION
-        file_path = os.path.join(os.path.dirname(__file__), "..", "admin", "admin_panel.html")
-        with open(os.path.normpath(file_path), "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read().replace("{{VERSION}}", VERSION))
+        # `admin_panel.html` ships with the sibling `dynastore.extensions.admin`
+        # distribution. Resolve via importlib.resources rather than a relative
+        # filesystem path so it works whether the two packages share a source
+        # tree (editable install) or live in separate site-packages directories.
+        html = files("dynastore.extensions.admin").joinpath("admin_panel.html").read_text(encoding="utf-8")
+        return HTMLResponse(content=html.replace("{{VERSION}}", VERSION))
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
