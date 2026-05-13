@@ -21,7 +21,7 @@
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.localization import LocalizedText, Language
 
@@ -86,20 +86,20 @@ class DatacubeDimension(BaseModel):
     dynamic_source: Optional[DynamicSource] = None
 
     # OGC Dimensions pagination properties
-    size: Optional[int] = Field(default=None,
+    size: Mutable[Optional[int]] = Field(default=None,
         description=(
             "Total number of discrete members in the dimension. "
             "Allows clients to assess cardinality without downloading values."
         ),
     )
-    href: Optional[str] = Field(default=None,
+    href: Mutable[Optional[str]] = Field(default=None,
         description=(
             "Link to a paginated endpoint returning dimension members "
             "following OGC API - Common Part 2 pagination conventions "
             "(limit/offset query params, rel:next/prev links)."
         ),
     )
-    generator: Optional[Dict[str, Any]] = Field(default=None,
+    generator: Mutable[Optional[Dict[str, Any]]] = Field(default=None,
         description=(
             "Generator object describing algorithmic rules for producing "
             "dimension members. Contains type (e.g. 'daily-period'), config, "
@@ -110,42 +110,42 @@ class DatacubeDimension(BaseModel):
 
 class HierarchyRule(BaseModel):
     """Defines a specific hierarchy level rule based on row content."""
-    strategy: HierarchyStrategy = Field(HierarchyStrategy.FIXED, description="The strategy used for this rule.")
+    strategy: Mutable[HierarchyStrategy] = Field(HierarchyStrategy.FIXED, description="The strategy used for this rule.")
     
     # Identification
-    hierarchy_id: str = Field(..., description="Unique identifier for this hierarchy rule (e.g., 'admin_level_0', 'region').")
-    parent_hierarchy_id: Optional[str] = Field(default=None, description="The hierarchy_id of the parent level (e.g., 'admin_level_0' for a region level). Used to generate parent/child links between hierarchy levels.")
+    hierarchy_id: Mutable[str] = Field(..., description="Unique identifier for this hierarchy rule (e.g., 'admin_level_0', 'region').")
+    parent_hierarchy_id: Mutable[Optional[str]] = Field(default=None, description="The hierarchy_id of the parent level (e.g., 'admin_level_0' for a region level). Used to generate parent/child links between hierarchy levels.")
     
     # Common Fields
-    item_code_field: str = Field(..., description="The feature attribute used as the ID (e.g., iso_code, l4).")
-    parent_code_field: Optional[str] = Field(default=None, description="The attribute for the parent ID within items (e.g., continent_code). Links items to their parent in the same collection.")
+    item_code_field: Mutable[str] = Field(..., description="The feature attribute used as the ID (e.g., iso_code, l4).")
+    parent_code_field: Mutable[Optional[str]] = Field(default=None, description="The attribute for the parent ID within items (e.g., continent_code). Links items to their parent in the same collection.")
     
     # Fixed Strategy Fields
-    level_name: Optional[str] = Field(default=None, description="Name of this level (e.g. 'Region', 'Level 4').")
-    condition: Optional[str] = Field(default=None, description="A SQL-like filter string (e.g., type='admin_0', l4 IS NOT NULL).")
+    level_name: Mutable[Optional[str]] = Field(default=None, description="Name of this level (e.g. 'Region', 'Level 4').")
+    condition: Mutable[Optional[str]] = Field(default=None, description="A SQL-like filter string (e.g., type='admin_0', l4 IS NOT NULL).")
     
     # Recursive Strategy Fields
-    root_condition: Optional[str] = Field(default=None, description="(For Recursive Strategy) A filter to identify root nodes (e.g., parent_code IS NULL).")
+    root_condition: Mutable[Optional[str]] = Field(default=None, description="(For Recursive Strategy) A filter to identify root nodes (e.g., parent_code IS NULL).")
     
     # Virtual Collection Metadata
-    collection_title_template: Optional[str] = Field(default=None, description="Template for virtual collection title (e.g., '{level_name}: {value}').")
-    collection_description_template: Optional[str] = Field(default=None, description="Template for virtual collection description.")
+    collection_title_template: Mutable[Optional[str]] = Field(default=None, description="Template for virtual collection title (e.g., '{level_name}: {value}').")
+    collection_description_template: Mutable[Optional[str]] = Field(default=None, description="Template for virtual collection description.")
     
     # Filtering and Links
-    link_properties: Optional[List[str]] = Field(default=None, description="Properties to expose in hierarchy links.")
-    item_filter_properties: Optional[List[str]] = Field(default=None, description="Additional properties for item filtering.")
+    link_properties: Mutable[Optional[List[str]]] = Field(default=None, description="Properties to expose in hierarchy links.")
+    item_filter_properties: Mutable[Optional[List[str]]] = Field(default=None, description="Additional properties for item filtering.")
     
     # Metadata
-    datacube_dim: Optional[DatacubeDimension] = Field(default=None, description="Metadata for OGC Cube dimensions associated with this level.")
+    datacube_dim: Mutable[Optional[DatacubeDimension]] = Field(default=None, description="Metadata for OGC Cube dimensions associated with this level.")
     
     # Virtual View Mapping (deprecated in favor of hierarchy_id)
-    id_alias: Optional[str] = Field(default=None, description="An alias for the generated collection ID to be used in virtual hierarchy endpoints.")
+    id_alias: Mutable[Optional[str]] = Field(default=None, description="An alias for the generated collection ID to be used in virtual hierarchy endpoints.")
 
 class HierarchyConfig(BaseModel):
     """Defines how to dynamically extract parent/child relationships."""
-    enabled: bool = Field(True, description="Enable or disable hierarchical link generation.")
-    rules: Dict[str, HierarchyRule] = Field(default_factory=dict, description="Dictionary of SQL-based rules keyed by hierarchy_id. Legacy data-derived path.")
-    providers: Dict[str, Any] = Field(
+    enabled: Mutable[bool] = Field(True, description="Enable or disable hierarchical link generation.")
+    rules: Mutable[Dict[str, HierarchyRule]] = Field(default_factory=dict, description="Dictionary of SQL-based rules keyed by hierarchy_id. Legacy data-derived path.")
+    providers: Mutable[Dict[str, Any]] = Field(
         default_factory=dict,
         description=(
             "Pluggable hierarchy providers keyed by hierarchy_id. "
@@ -170,7 +170,7 @@ class DatacubeVariable(BaseModel):
     type: str = "data"
     description: Optional[str] = None
     unit: Optional[str] = None
-    dimensions: List[str] = Field(default_factory=list)
+    dimensions: Mutable[List[str]] = Field(default_factory=list)
 
 # --- Aggregation Configuration (OGC STAC Aggregation Extension) ---
 
@@ -186,18 +186,18 @@ class AggregationType(str, Enum):
 
 class AggregationRule(BaseModel):
     """Defines a single aggregation rule."""
-    name: str = Field(..., description="Unique name for this aggregation")
-    type: AggregationType = Field(..., description="Type of aggregation to perform")
-    property: str = Field(..., description="Property to aggregate (e.g., 'properties.asset_code', 'properties.country')")
-    limit: int = Field(10, ge=1, le=1000, description="Maximum number of buckets to return")
-    precision: Optional[int] = Field(default=None, description="Precision for geohash/geotile aggregations (1-12 for geohash)")
-    interval: Optional[str] = Field(default=None, description="Interval for datetime histograms (e.g., '1d', '1M', '1y')")
+    name: Mutable[str] = Field(..., description="Unique name for this aggregation")
+    type: Mutable[AggregationType] = Field(..., description="Type of aggregation to perform")
+    property: Mutable[str] = Field(..., description="Property to aggregate (e.g., 'properties.asset_code', 'properties.country')")
+    limit: Mutable[int] = Field(10, ge=1, le=1000, description="Maximum number of buckets to return")
+    precision: Mutable[Optional[int]] = Field(default=None, description="Precision for geohash/geotile aggregations (1-12 for geohash)")
+    interval: Mutable[Optional[str]] = Field(default=None, description="Interval for datetime histograms (e.g., '1d', '1M', '1y')")
 
 class AggregationConfig(BaseModel):
     """Configuration for STAC aggregations following OGC extension."""
-    default_rules: List[AggregationRule] = Field(default_factory=list, description="Pre-configured aggregations available by default")
-    allow_custom: bool = Field(True, description="Allow ad-hoc aggregations via API requests")
-    max_aggregations_per_request: int = Field(5, ge=1, le=10, description="Maximum number of aggregations per request")
+    default_rules: Mutable[List[AggregationRule]] = Field(default_factory=list, description="Pre-configured aggregations available by default")
+    allow_custom: Mutable[bool] = Field(True, description="Allow ad-hoc aggregations via API requests")
+    max_aggregations_per_request: Mutable[int] = Field(5, ge=1, le=10, description="Maximum number of aggregations per request")
 
 # --- Simplification (Replaces env vars) ---
 
@@ -205,7 +205,7 @@ class SimplificationConfig(BaseModel):
     """
     Dynamic geometry simplification rules applied at query time.
     """
-    vertex_thresholds: Dict[int, float] = Field(
+    vertex_thresholds: Mutable[Dict[int, float]] = Field(
         default_factory=lambda: {50000: 0.1, 10000: 0.01, 1000: 0.001}
     )
     default_tolerance: float = 0.0001
@@ -217,8 +217,8 @@ class AssetAccessMode(str, Enum):
 
 class AssetTrackingConfig(BaseModel):
     """Configuration for dynamic asset tracking."""
-    enabled: bool = Field(True, description="Enable or disable dynamic tracking for ingestion sources.")
-    access_mode: AssetAccessMode = Field(AssetAccessMode.DIRECT, description="Method to expose the source file.")
+    enabled: Mutable[bool] = Field(True, description="Enable or disable dynamic tracking for ingestion sources.")
+    access_mode: Mutable[AssetAccessMode] = Field(AssetAccessMode.DIRECT, description="Method to expose the source file.")
 
 # --- STAC Summaries ---
 
@@ -251,9 +251,9 @@ class StacAssetDefinition(BaseModel):
     href: Optional[str] = None
     title: Optional[LocalizedText] = None
     description: Optional[LocalizedText] = None
-    type: Optional[str] = Field(default=None, description="IANA media type (e.g. image/tiff; application=geotiff)")
-    roles: Optional[List[str]] = Field(default=None, description="Semantic roles: data, overview, thumbnail, metadata, source, …")
-    hreflang: Optional[str] = Field(default=None, description="RFC 5646 language tag for the href target (STAC Language Extension)")
+    type: Mutable[Optional[str]] = Field(default=None, description="IANA media type (e.g. image/tiff; application=geotiff)")
+    roles: Mutable[Optional[List[str]]] = Field(default=None, description="Semantic roles: data, overview, thumbnail, metadata, source, …")
+    hreflang: Mutable[Optional[str]] = Field(default=None, description="RFC 5646 language tag for the href target (STAC Language Extension)")
 
     @field_validator("title", "description", mode="before")
     @classmethod
@@ -274,7 +274,7 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     # ``stac_extensions`` array.  Independent of ``auto_render_extensions``
     # below: this list is *what we say we use*, the next list is *what we
     # auto-generate at item-render time*.
-    enabled_extensions: List[str] = Field(default_factory=list)
+    enabled_extensions: Mutable[List[str]] = Field(default_factory=list)
 
     # Item-render gate.  Controls which auto-generators contribute content
     # at render time (proj/raster/vector blocks from ``StacExtensionProtocol``
@@ -286,7 +286,7 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     # / ``external_assets`` / ``extra_fields`` from the ``stac_metadata``
     # sidecar) flows verbatim, no auto-generation; navigation / hierarchy
     # links still get added.
-    auto_render_extensions: List[Literal["proj", "raster", "vector"]] = Field(
+    auto_render_extensions: Mutable[List[Literal["proj", "raster", "vector"]]] = Field(
         default_factory=lambda: ["proj", "raster", "vector"],
         description=(
             "Which extension auto-renderers run at item-render time.  Empty "
@@ -302,39 +302,39 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     )
     
     # Metadata summaries (Range Object, enum array, or JSON Schema dict)
-    summaries: Dict[str, StacSummaryValue] = Field(default_factory=dict)
+    summaries: Mutable[Dict[str, StacSummaryValue]] = Field(default_factory=dict)
 
     # STAC Providers (spec §providers)
-    providers: List[Dict[str, Any]] = Field(
+    providers: Mutable[List[Dict[str, Any]]] = Field(
         default_factory=list,
         description="List of provider objects (name, description, roles, url + extras).",
     )
 
     # Collection-level assets (spec §assets) — keyed by asset ID
-    assets: Dict[str, StacAssetDefinition] = Field(
+    assets: Mutable[Dict[str, StacAssetDefinition]] = Field(
         default_factory=dict,
         description="Static collection-level assets (href required).",
     )
 
     # Item asset templates (item_assets extension) — keyed by asset ID
-    item_assets: Dict[str, StacAssetDefinition] = Field(
+    item_assets: Mutable[Dict[str, StacAssetDefinition]] = Field(
         default_factory=dict,
         description="Item asset templates (no href, ≥2 fields each).",
     )
     
     # Datacube definitions
-    cube_dimensions: Dict[str, DatacubeDimension] = Field(default_factory=dict)
-    cube_variables: Dict[str, DatacubeVariable] = Field(default_factory=dict)
+    cube_dimensions: Mutable[Dict[str, DatacubeDimension]] = Field(default_factory=dict)
+    cube_variables: Mutable[Dict[str, DatacubeVariable]] = Field(default_factory=dict)
     
     # Navigation & Hierarchy
-    navigation_links: List[StacLink] = Field(default_factory=list)
-    hierarchy: Optional[HierarchyConfig] = None
+    navigation_links: Mutable[List[StacLink]] = Field(default_factory=list)
+    hierarchy: Mutable[Optional[HierarchyConfig]] = None
 
     # --- Asset Tracking (Runtime only) ---
-    asset_tracking: AssetTrackingConfig = Field(default_factory=AssetTrackingConfig)  # type: ignore[arg-type]
+    asset_tracking: Mutable[AssetTrackingConfig] = Field(default_factory=AssetTrackingConfig)  # type: ignore[arg-type]
 
     # --- Aggregations (OGC STAC Extension) ---
-    aggregations: Optional[AggregationConfig] = None
+    aggregations: Mutable[Optional[AggregationConfig]] = None
 
     # Geometry Simplification (Query time)
-    simplification: SimplificationConfig = Field(default_factory=SimplificationConfig)
+    simplification: Mutable[SimplificationConfig] = Field(default_factory=SimplificationConfig)

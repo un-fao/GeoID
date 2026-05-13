@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.protocols.authorization_context import SecurityContext
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
 class Permission(str, Enum):
@@ -44,9 +44,9 @@ class RoleSeed(BaseModel):
     seeded per-catalog instead of in the platform-global ``iam`` schema.
     """
 
-    name: str = Field(min_length=1)
+    name: Mutable[str] = Field(min_length=1)
     description: str = ""
-    policies: List[str] = Field(default_factory=list)
+    policies: Mutable[List[str]] = Field(default_factory=list)
     is_platform_tier: bool = True
 
 
@@ -108,7 +108,7 @@ class IamRolesConfig(ExposableConfigMixin, PluginConfig):
 
     _address: ClassVar[Tuple[str, ...]] = ("platform", "iam", "roles")
 
-    sysadmin_role_name: str = Field(
+    sysadmin_role_name: Mutable[str] = Field(
         default="sysadmin",
         description=(
             "Role name granting unrestricted platform access. "
@@ -116,23 +116,23 @@ class IamRolesConfig(ExposableConfigMixin, PluginConfig):
             "``geoid.sysadmin`` → this name."
         ),
     )
-    admin_role_name: str = Field(
+    admin_role_name: Mutable[str] = Field(
         default="admin",
         description="Platform-tier admin role name (used by extension policy bindings).",
     )
-    editor_role_name: str = Field(
+    editor_role_name: Mutable[str] = Field(
         default="editor",
         description="Content-editor role name (used by extension policy bindings).",
     )
-    default_user_role_name: str = Field(
+    default_user_role_name: Mutable[str] = Field(
         default="user",
         description="Role assigned to any signed-in principal with no realm roles.",
     )
-    anonymous_role_name: str = Field(
+    anonymous_role_name: Mutable[str] = Field(
         default="anonymous",
         description="Role attached to requests that arrive without a token.",
     )
-    admin_tier_role_names: List[str] = Field(
+    admin_tier_role_names: Mutable[List[str]] = Field(
         default_factory=lambda: ["admin", "sysadmin"],
         description=(
             "Role names that satisfy a ``Permission.ADMIN`` check. "
@@ -140,14 +140,14 @@ class IamRolesConfig(ExposableConfigMixin, PluginConfig):
             "admin-tier authority without renaming."
         ),
     )
-    roles: List[RoleSeed] = Field(
+    roles: Mutable[List[RoleSeed]] = Field(
         default_factory=lambda: list(_DEFAULT_ROLES),
         description=(
             "Roles seeded at startup. The seed is idempotent — existing "
             "rows are not removed if dropped from this list."
         ),
     )
-    hierarchy: List[Tuple[str, str]] = Field(
+    hierarchy: Mutable[List[Tuple[str, str]]] = Field(
         default_factory=lambda: list(_DEFAULT_HIERARCHY),
         description=(
             "Role-inheritance edges (parent, child). Parent inherits every "

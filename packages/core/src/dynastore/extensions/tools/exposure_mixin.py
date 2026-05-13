@@ -2,11 +2,13 @@
 
 from pydantic import BaseModel, Field
 
+from dynastore.modules.db_config.platform_config_service import Mutable
+
 
 class ExposableConfigMixin(BaseModel):
     """Adds a per-scope `enabled` toggle to any PluginConfig."""
 
-    enabled: bool = Field(
+    enabled: Mutable[bool] = Field(
         default=True,
         description=(
             "When False, the extension is unavailable at this scope and returns "

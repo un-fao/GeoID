@@ -52,6 +52,7 @@ from dynastore.tools.ui_hints import ui
 from dynastore.models.protocols.typed_driver import _PluginDriverConfig
 from dynastore.modules.db_config.platform_config_service import (
     Immutable,
+    Mutable,
     PluginConfig,
     WriteOnce,
 )
@@ -313,7 +314,7 @@ class ItemsWritePolicy(PluginConfig):
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
-    on_conflict: WriteConflictPolicy = Field(
+    on_conflict: Mutable[WriteConflictPolicy] = Field(
         default=WriteConflictPolicy.UPDATE,
         examples=["update", "new_version", "refuse_return", "refuse_fail"],
         description=(
@@ -328,7 +329,7 @@ class ItemsWritePolicy(PluginConfig):
             "strict-mode pipelines)."
         ),
     )
-    on_asset_conflict: Optional[AssetConflictPolicy] = Field(
+    on_asset_conflict: Mutable[Optional[AssetConflictPolicy]] = Field(
         default=None,
         examples=[None, "refuse_asset"],
         description=(
@@ -339,7 +340,7 @@ class ItemsWritePolicy(PluginConfig):
             "overlap should fail the whole asset."
         ),
     )
-    identity_matchers: List[IdentityMatcher] = Field(
+    identity_matchers: Mutable[List[IdentityMatcher]] = Field(
         default_factory=lambda: [IdentityMatcher.EXTERNAL_ID],
         examples=[
             ["external_id"],
@@ -360,7 +361,7 @@ class ItemsWritePolicy(PluginConfig):
             "next matcher in the chain takes over."
         ),
     )
-    geohash_precision: int = Field(
+    geohash_precision: Mutable[int] = Field(
         default=9,
         ge=1,
         le=12,
@@ -373,7 +374,7 @@ class ItemsWritePolicy(PluginConfig):
             "of interest."
         ),
     )
-    skip_if_unchanged_geometry_hash: bool = Field(
+    skip_if_unchanged_geometry_hash: Mutable[bool] = Field(
         default=False,
         examples=[False, True],
         description=(
@@ -384,7 +385,7 @@ class ItemsWritePolicy(PluginConfig):
             "to be enabled (it computes geometry_hash on write)."
         ),
     )
-    matcher_actions: Optional[Dict[IdentityMatcher, WriteConflictPolicy]] = Field(
+    matcher_actions: Mutable[Optional[Dict[IdentityMatcher, WriteConflictPolicy]]] = Field(
         default=None,
         description=(
             "Per-matcher conflict-action override. When set, the entry for the "
@@ -393,7 +394,7 @@ class ItemsWritePolicy(PluginConfig):
             "as ``{external_id: refuse_fail, geometry_hash: refuse_return}``."
         ),
     )
-    track_asset_id: bool = Field(
+    track_asset_id: Mutable[bool] = Field(
         default=True,
         examples=[True, False],
         description=(
@@ -403,7 +404,7 @@ class ItemsWritePolicy(PluginConfig):
             "produced from a join)."
         ),
     )
-    external_id_field: Optional[str] = Field(
+    external_id_field: Mutable[Optional[str]] = Field(
         default=None,
         examples=[None, "id", "properties.code", "properties.src_id"],
         description=(
@@ -416,7 +417,7 @@ class ItemsWritePolicy(PluginConfig):
             "natural key."
         ),
     )
-    require_external_id: bool = Field(
+    require_external_id: Mutable[bool] = Field(
         default=False,
         examples=[False, True],
         description=(
@@ -425,7 +426,7 @@ class ItemsWritePolicy(PluginConfig):
             "to enforce that every row carries a domain key."
         ),
     )
-    enable_validity: bool = Field(
+    enable_validity: Mutable[bool] = Field(
         default=False,
         examples=[False, True],
         description=(
@@ -434,7 +435,7 @@ class ItemsWritePolicy(PluginConfig):
             "``on_conflict=NEW_VERSION`` falls back to ``UPDATE``."
         ),
     )
-    validity_field: str = Field(
+    validity_field: Mutable[str] = Field(
         default="valid_from",
         examples=["valid_from", "properties.start_date", "valid_time.start"],
         description=(
@@ -505,7 +506,7 @@ class WritePolicyDefaults(PluginConfig):
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
-    on_conflict: WriteConflictPolicy = Field(
+    on_conflict: Mutable[WriteConflictPolicy] = Field(
         default=WriteConflictPolicy.UPDATE,
         examples=["update", "new_version", "refuse_return", "refuse_fail"],
         description=(
@@ -516,7 +517,7 @@ class WritePolicyDefaults(PluginConfig):
             "every duplicate as a 409."
         ),
     )
-    on_asset_conflict: Optional[AssetConflictPolicy] = Field(
+    on_asset_conflict: Mutable[Optional[AssetConflictPolicy]] = Field(
         default=None,
         examples=[None, "refuse_asset"],
         description=(
@@ -526,7 +527,7 @@ class WritePolicyDefaults(PluginConfig):
             "``on_conflict``."
         ),
     )
-    require_identity_key: bool = Field(
+    require_identity_key: Mutable[bool] = Field(
         default=False,
         examples=[False, True],
         description=(
@@ -568,7 +569,7 @@ class DriverPluginConfig(_PluginDriverConfig):
 
     is_abstract_base: ClassVar[bool] = True
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default_factory=frozenset,
         description="How the driver operates: SYNC, ASYNC, TRANSACTIONAL, etc.",
     )
@@ -622,7 +623,7 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
     )
 
@@ -786,17 +787,17 @@ class ItemsElasticsearchDriverConfig(CollectionDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.ASYNC}),
     )
-    index_prefix: str = Field(
+    index_prefix: Mutable[str] = Field(
         default="items_",
         description=(
             "Item index name prefix (default ``items_``), producing the "
             "per-tenant index ``items_-items-{catalog_id}``."
         ),
     )
-    mapping: Dict[str, Any] = Field(
+    mapping: Mutable[Dict[str, Any]] = Field(
         default_factory=dict,
         description="ES index mapping overrides merged with the platform defaults.",
     )
@@ -842,14 +843,14 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     required_engine_class: ClassVar[str] = "duckdb_engine"
 
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
-    path: Optional[str] = Field(default=None, description="Read path (file or glob)")
-    format: str = Field(default="parquet", description="File format: parquet, csv, json, etc.")
-    write_path: Optional[str] = Field(default=None, description="Separate write path (e.g., SQLite file)"
+    path: Mutable[Optional[str]] = Field(default=None, description="Read path (file or glob)")
+    format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, etc.")
+    write_path: Mutable[Optional[str]] = Field(default=None, description="Separate write path (e.g., SQLite file)"
     )
-    write_format: Optional[str] = Field(default=None, description="Write format if different from read"
+    write_format: Mutable[Optional[str]] = Field(default=None, description="Write format if different from read"
     )
 
 
@@ -887,66 +888,66 @@ class ItemsIcebergDriverConfig(CollectionDriverConfig):
             )
         return values
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.ASYNC, DriverCapability.BATCH}),
     )
 
     # Table location (per-collection identifiers)
-    namespace: Optional[str] = Field(default=None, description="OTF namespace/database")
-    table_name: Optional[str] = Field(default=None, description="OTF table name")
-    uri: Optional[str] = Field(
+    namespace: Mutable[Optional[str]] = Field(default=None, description="OTF namespace/database")
+    table_name: Mutable[Optional[str]] = Field(default=None, description="OTF table name")
+    uri: Mutable[Optional[str]] = Field(
         default=None, description="Primary URI (s3://, gs://, file://, etc.)"
     )
 
     # Connection-level overrides. Defaults to IcebergConfig env vars at resolve time.
-    catalog_name: Optional[str] = Field(
+    catalog_name: Mutable[Optional[str]] = Field(
         default=None,
         description="PyIceberg catalog identifier (overrides ICEBERG_CATALOG_NAME).",
     )
-    catalog_type: Optional[str] = Field(
+    catalog_type: Mutable[Optional[str]] = Field(
         default=None,
         description="Catalog type: sql | rest | hive | glue | dynamodb | nessie "
                     "(overrides ICEBERG_CATALOG_TYPE).",
     )
-    catalog_uri: Optional[Secret] = Field(
+    catalog_uri: Mutable[Optional[Secret]] = Field(
         default=None,
         description="Catalog URI — JDBC URL for sql, HTTP endpoint for rest/nessie, "
                     "etc. (overrides ICEBERG_CATALOG_URI). **Treated as a Secret** "
                     "because JDBC URLs commonly embed credentials "
                     "(postgresql+psycopg2://user:pass@host/db).",
     )
-    catalog_properties: Optional[Dict[str, Secret]] = Field(
+    catalog_properties: Mutable[Optional[Dict[str, Secret]]] = Field(
         default=None,
         description="Extra catalog-specific properties merged into PyIceberg's "
                     "load_catalog kwargs (overrides ICEBERG_CATALOG_PROPERTIES). "
                     "Every value is treated as a Secret — these commonly carry "
                     "auth tokens, service-account JSON, or provider API keys.",
     )
-    warehouse_uri: Optional[Secret] = Field(
+    warehouse_uri: Mutable[Optional[Secret]] = Field(
         default=None,
         description="Warehouse location for tables managed by this catalog "
                     "(gs://, s3://, file://, etc.; overrides ICEBERG_WAREHOUSE_URI). "
                     "**Treated as a Secret** because signed / pre-authorized URLs "
                     "carry embedded tokens.",
     )
-    warehouse_scheme: Optional[str] = Field(
+    warehouse_scheme: Mutable[Optional[str]] = Field(
         default=None,
         description="Scheme hint used when auto-deriving the warehouse from the "
                     "catalog's StorageProtocol (overrides ICEBERG_WAREHOUSE_SCHEME).",
     )
 
     # Table-level DDL hints (per-collection)
-    partition_spec: Optional[List[Dict[str, Any]]] = Field(
+    partition_spec: Mutable[Optional[List[Dict[str, Any]]]] = Field(
         default=None,
         description="Iceberg partition spec as a list of field transforms, e.g. "
                     "[{'name': 'year', 'transform': 'year', 'source': 'event_date'}].",
     )
-    sort_order: Optional[List[Dict[str, Any]]] = Field(
+    sort_order: Mutable[Optional[List[Dict[str, Any]]]] = Field(
         default=None,
         description="Iceberg sort order as a list of sort fields, e.g. "
                     "[{'name': 'id', 'direction': 'asc', 'null_order': 'nulls-last'}].",
     )
-    table_properties: Optional[Dict[str, str]] = Field(
+    table_properties: Mutable[Optional[Dict[str, str]]] = Field(
         default=None,
         description="Iceberg table properties set on create/update "
                     "(e.g. {'write.format.default': 'parquet'}).",
@@ -1005,7 +1006,7 @@ class AssetPostgresqlDriverConfig(AssetDriverConfig):
     required_engine_class: ClassVar[str] = "postgresql_engine"
 
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}),
     )
 
@@ -1020,10 +1021,10 @@ class AssetElasticsearchDriverConfig(AssetDriverConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    capabilities: FrozenSet[str] = Field(
+    capabilities: Mutable[FrozenSet[str]] = Field(
         default=frozenset({DriverCapability.ASYNC}),
     )
-    index_prefix: str = Field("assets_", description="Asset index name prefix.")
+    index_prefix: Mutable[str] = Field("assets_", description="Asset index name prefix.")
 
 
 # ---------------------------------------------------------------------------
@@ -1064,11 +1065,11 @@ class ItemsSchema(PluginConfig):
     _visibility: ClassVar[Optional[str]] = "collection"
 
 
-    level: _EntityLevel = _EntityLevel.ITEM
-    fields: Dict[str, _FieldDefinition] = Field(default_factory=dict)
-    exclude_fields: Optional[List[str]] = None
-    metadata_fields: Optional[Dict[str, Any]] = None
-    allow_app_level_enforcement: bool = Field(
+    level: Mutable[_EntityLevel] = _EntityLevel.ITEM
+    fields: Mutable[Dict[str, _FieldDefinition]] = Field(default_factory=dict)
+    exclude_fields: Mutable[Optional[List[str]]] = None
+    metadata_fields: Mutable[Optional[Dict[str, Any]]] = None
+    allow_app_level_enforcement: Mutable[bool] = Field(
         default=False,
         description=(
             "If True, fall back to service-layer enforcement of required/unique "
@@ -1077,7 +1078,7 @@ class ItemsSchema(PluginConfig):
             "config admission is rejected for unsupported constraints."
         ),
     )
-    strict_unknown_fields: bool = Field(
+    strict_unknown_fields: Mutable[bool] = Field(
         default=False,
         description=(
             "When True, refuse writes whose features carry properties not "
@@ -1090,7 +1091,7 @@ class ItemsSchema(PluginConfig):
             "current open-schema behavior."
         ),
     )
-    materialize_fields_as_columns: bool = Field(
+    materialize_fields_as_columns: Mutable[bool] = Field(
         default=False,
         description=(
             "When True, every field declared in ``fields`` is lifted into a "
@@ -1103,7 +1104,7 @@ class ItemsSchema(PluginConfig):
             "table and increases write IO for sparse schemas."
         ),
     )
-    constraints: List[Any] = Field(
+    constraints: Mutable[List[Any]] = Field(
         default_factory=list,
         description=(
             "Declarative field constraints (FieldConstraint subclass instances). "
