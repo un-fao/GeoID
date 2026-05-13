@@ -168,6 +168,11 @@ async function refreshPolicies() {
     setStatus("#policy-status", `Load failed: ${e.message}`, "err");
     return;
   }
+  renderPolicies();
+}
+
+function renderPolicies() {
+  const tbody = $("#policies-table tbody");
   clearNode(tbody);
 
   if (!state.policies.length) {
@@ -181,8 +186,28 @@ async function refreshPolicies() {
     return;
   }
 
+  const queryInput = $("#policies-query");
+  const q = queryInput ? queryInput.value.trim().toLowerCase() : "";
+  const rows = q
+    ? state.policies.filter((p) =>
+        (p.id || "").toLowerCase().includes(q) ||
+        (p.description || "").toLowerCase().includes(q),
+      )
+    : state.policies;
+
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.textContent = `No policies match "${q}".`;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
   const canWrite = canWriteAtScope();
-  for (const p of state.policies) {
+  for (const p of rows) {
     const tr = document.createElement("tr");
     const id = document.createElement("td");
     id.textContent = p.id;
@@ -448,6 +473,9 @@ async function boot() {
   $("#roles-refresh").addEventListener("click", refreshRoles);
   $("#policy-create").addEventListener("submit", onCreatePolicy);
   $("#policies-refresh").addEventListener("click", refreshPolicies);
+  $("#policies-query").addEventListener("input", () => {
+    if (state.policies.length) renderPolicies();
+  });
   $("#principals-refresh").addEventListener("click", refreshPrincipals);
   $("#principals-query").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
