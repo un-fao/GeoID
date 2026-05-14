@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from dynastore.modules.db_config.platform_config_service import Mutable
+from dynastore.models.mutability import Mutable
 
 
 class ExposableConfigMixin(BaseModel):

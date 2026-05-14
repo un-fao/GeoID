@@ -26,7 +26,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.protocols.authorization_context import SecurityContext
-from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
+from dynastore.models.mutability import Mutable
+from dynastore.modules.db_config.plugin_config import PluginConfig
 
 
 class Permission(str, Enum):

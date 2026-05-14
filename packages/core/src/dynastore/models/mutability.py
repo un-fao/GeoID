@@ -1,28 +1,28 @@
-"""Per-field mutability — Protocol layer for ``PluginConfig`` (#665 slice 4).
+"""Per-field mutability framework for ``PluginConfig`` (#665 slice 4).
 
-The actual marker types (``Mutable[T]`` / ``WriteOnce[T]`` /
-``Immutable[T]`` / ``Computed[T]``) live in
-``dynastore.modules.db_config.platform_config_service`` next to
-``PluginConfig`` itself — that module already shipped ``Immutable`` and
-``WriteOnce`` and this slice rounds out the set with ``Mutable`` and
-``Computed``.
+This module is the single home for every mutability concept:
 
-This module exposes:
-
+- The four marker types — ``Mutable[T]`` / ``WriteOnce[T]`` /
+  ``Immutable[T]`` / ``Computed[T]`` — and their underlying
+  ``*Marker`` metadata classes.
+- ``is_immutable_field`` / ``is_write_once_field`` — per-field marker
+  predicates used by the immutability enforcer.
+- ``mutability_map(cls)`` / ``missing_markers(cls)`` — introspection
+  helpers used by ``PluginConfig``'s enforcer and the composed-config
+  renderer.
 - ``MutabilityIntrospectionProtocol`` — the contract the
-  composed-config renderer depends on (per
-  ``feedback_prefer_protocols``).
-- ``mutability_map(cls)`` — standalone helper for non-``PluginConfig``
-  classes that follow the marker convention but don't formally
-  implement the Protocol.
-- ``missing_markers(cls)`` — used by ``PluginConfig``'s enforcer to
-  identify fields that need annotation.
+  composed-config renderer depends on (per ``feedback_prefer_protocols``).
+
+It is intentionally dependency-free (stdlib + pydantic only): the
+markers used to live in ``platform_config_service`` next to
+``PluginConfig``, which pulled that heavy module into a load-order
+cycle whenever a Protocol-contracts file (e.g. ``models/protocols/
+authorization.py``) needed a marker.  Keeping the markers in this leaf
+module breaks the cycle structurally — see #686.
 
 Authors annotate every Pydantic field with exactly one marker::
 
-    from dynastore.modules.db_config.platform_config_service import (
-        Mutable, WriteOnce, Immutable, Computed, PluginConfig,
-    )
+    from dynastore.models.mutability import Mutable, WriteOnce, Immutable, Computed
 
     class CollectionPostgresqlDriverConfig(CollectionDriverConfig):
         engine_ref:     WriteOnce[Optional[str]] = Field(default=None, ...)
@@ -39,7 +39,10 @@ under ``?meta=field``.
 from __future__ import annotations
 
 from typing import (
+    TYPE_CHECKING,
+    Annotated,
     Any,
+    ClassVar,
     Dict,
     Iterable,
     Protocol,
@@ -50,6 +53,156 @@ from typing import (
     runtime_checkable,
 )
 
+if TYPE_CHECKING:
+    from pydantic.fields import FieldInfo
+
+
+# ---------------------------------------------------------------------------
+#  Marker metadata classes
+# ---------------------------------------------------------------------------
+
+
+class _MutabilityKindMixin:
+    """Shared ``__get_pydantic_json_schema__`` hook for all four markers.
+
+    Each subclass declares ``kind: ClassVar[str]`` — one of ``"mutable"``,
+    ``"write_once"``, ``"immutable"``, ``"computed"``.  The hook injects
+    ``x-mutability: <kind>`` into the field's JSON Schema (#665 slice 4)
+    and, for everything except ``Mutable``, ``readOnly: true`` (JSON
+    Schema 2020-12 standard form-builders honour natively) + the legacy
+    ``x-ui.readonly`` advisory the existing admin UI consumes.
+    """
+
+    kind: ClassVar[str] = ""
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, schema, handler):
+        out = handler(schema)
+        out["x-mutability"] = cls.kind
+        if cls.kind != "mutable":
+            out["readOnly"] = True
+            from dynastore.tools.ui_hints import merge_ui
+            out = merge_ui(out, readonly=True)
+        return out
+
+
+class MutableMarker(_MutabilityKindMixin):
+    """Freely editable across the config's lifetime (the default kind)."""
+    kind: ClassVar[str] = "mutable"
+
+
+class ImmutableMarker(_MutabilityKindMixin):
+    """Fixed at class definition; ``enforce_config_immutability`` rejects diffs."""
+    kind: ClassVar[str] = "immutable"
+
+
+class WriteOnceMarker(_MutabilityKindMixin):
+    """Settable once from ``None`` → value, locked thereafter."""
+    kind: ClassVar[str] = "write_once"
+
+
+class ComputedMarker(_MutabilityKindMixin):
+    """Derived value with no stored override.  Prefer ``@computed_field`` when no value is stored."""
+    kind: ClassVar[str] = "computed"
+
+
+# ---------------------------------------------------------------------------
+#  Marker types — ``Field: Mutable[int]`` etc.
+# ---------------------------------------------------------------------------
+
+
+if TYPE_CHECKING:
+    type Mutable[T] = T  # pyright-transparent alias
+    type WriteOnce[T] = T
+    type Immutable[T] = T
+    type Computed[T] = T
+else:
+    class Mutable:
+        """Marker for freely-editable fields.
+
+        Usage::
+
+            field: Mutable[int] = Field(default=0, description="...")
+
+        Equivalent to ``field: Annotated[int, MutableMarker] = Field(...)``.
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, MutableMarker]
+
+    class Immutable:
+        """Marker for class-definition-fixed fields.
+
+        Usage::
+
+            field: Immutable[int] = Field(...)
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, ImmutableMarker]
+
+    class WriteOnce:
+        """Marker for write-once fields (``None`` → value transition allowed,
+        non-``None`` → anything rejected).
+
+        Usage::
+
+            field: WriteOnce[Optional[str]] = Field(default=None, ...)
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, WriteOnceMarker]
+
+    class Computed:
+        """Marker for derived fields with no stored override.
+
+        Prefer ``@computed_field`` when no stored value is needed; this
+        marker is for fields that ARE stored but recomputed externally.
+        """
+
+        def __class_getitem__(cls, item: Any) -> Any:
+            return Annotated[item, ComputedMarker]
+
+
+# ---------------------------------------------------------------------------
+#  Per-field marker predicates
+# ---------------------------------------------------------------------------
+
+
+def is_immutable_field(field_info: "FieldInfo") -> bool:
+    if get_origin(field_info.annotation) is Annotated:
+        args = get_args(field_info.annotation)
+        if ImmutableMarker in args or Immutable in args:
+            return True
+    if any(
+        item is ImmutableMarker
+        or item is Immutable
+        or (isinstance(item, type) and issubclass(item, ImmutableMarker))
+        for item in field_info.metadata
+    ):
+        return True
+    return False
+
+
+def is_write_once_field(field_info: "FieldInfo") -> bool:
+    if get_origin(field_info.annotation) is Annotated:
+        args = get_args(field_info.annotation)
+        if WriteOnceMarker in args or WriteOnce in args:
+            return True
+    if any(
+        item is WriteOnceMarker
+        or item is WriteOnce
+        or (isinstance(item, type) and issubclass(item, WriteOnceMarker))
+        for item in field_info.metadata
+    ):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+#  Introspection helpers
+# ---------------------------------------------------------------------------
+
 
 def _extract_kind(annotation: Any) -> str | None:
     """Return ``"mutable"`` / ``"write_once"`` / ``"immutable"`` / ``"computed"``
@@ -59,16 +212,6 @@ def _extract_kind(annotation: Any) -> str | None:
     expanding to ``Annotated[T, ImmutableMarker]`` — the existing
     pattern) and the bare instance form (``Annotated[T, MarkerInstance]``).
     """
-    # Import lazily to avoid a load-order cycle with platform_config_service
-    # (PluginConfig imports this module's Protocol; this helper imports
-    # PluginConfig's markers).
-    from dynastore.modules.db_config.platform_config_service import (
-        ComputedMarker,
-        ImmutableMarker,
-        MutableMarker,
-        WriteOnceMarker,
-    )
-
     if get_origin(annotation) is None:
         return None
     metadata = tuple(get_args(annotation))[1:]
