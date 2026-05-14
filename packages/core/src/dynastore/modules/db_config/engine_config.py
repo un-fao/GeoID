@@ -158,7 +158,7 @@ class EngineConfig(PluginConfig):
                     f"{cls.__module__}.{cls.__qualname__} is a concrete "
                     f"EngineConfig but does not declare ``engine_class`` "
                     f"(or declares it empty).  Add e.g. "
-                    f"``engine_class: ClassVar[str] = \"my_engine\"`` so "
+                    f'``engine_class: ClassVar[str] = "my_engine"`` so '
                     f"driver-side ``required_engine_class`` checks (F.2) "
                     f"can match this engine."
                 )
@@ -353,8 +353,7 @@ class ElasticsearchEngineConfig(EngineConfig):
         except Exception:
             logger = _logger()
             logger.exception(
-                "ElasticsearchEngineConfig: client close raised; "
-                "instance dropped."
+                "ElasticsearchEngineConfig: client close raised; " "instance dropped."
             )
 
 
@@ -423,8 +422,7 @@ class DuckdbEngineConfig(EngineConfig):
         except Exception:
             logger = _logger()
             logger.exception(
-                "DuckdbEngineConfig: connection close raised; "
-                "instance dropped."
+                "DuckdbEngineConfig: connection close raised; " "instance dropped."
             )
 
 
@@ -475,7 +473,9 @@ class IcebergEngineConfig(EngineConfig):
         ``pyiceberg.catalog.load_catalog``.  PyIceberg's catalog object
         owns its own connection pooling.
         """
-        from pyiceberg.catalog import load_catalog  # optional extra: module_storage_iceberg
+        from pyiceberg.catalog import (
+            load_catalog,
+        )  # optional extra: module_storage_iceberg
 
         properties: Dict[str, str] = {}
         if self.catalog_uri is not None:
@@ -497,6 +497,279 @@ class IcebergEngineConfig(EngineConfig):
         return None
 
 
+class ValkeyEngineConfig(EngineConfig):
+    """Valkey (Redis-compatible) cache client engine.
+
+    Backs the shared ``ValkeyCacheBackend`` consumed by the
+    ``CacheModule``.  Operators reconfigure connection params
+    (URL/host/TLS/IAM/cluster) live via the configs API; the cache
+    module's apply handler tears down the old client + registers a
+    new one without restart.
+
+    Default lifecycle: ``global`` — the client is cheap to keep
+    warm.  ``immutable=False`` so the engine itself is reconfigurable
+    (default base engines lock at ``immutable=True``).
+    """
+
+    engine_class: ClassVar[str] = "valkey_engine"
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+
+    # Override default to allow live reconfig.
+    lifecycle: Mutable[EngineLifecycleConfig] = Field(
+        default_factory=lambda: EngineLifecycleConfig(immutable=False),
+        description=(
+            "Lifecycle policy for this engine.  Defaults to "
+            "``policy='global'`` with ``immutable=False`` so the cache "
+            "module's apply handler can rebuild the client on config "
+            "changes without a restart."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Connection (Mutable Secret — live reconnect on change)
+    # ------------------------------------------------------------------
+    connection_url: Mutable[Optional[Secret]] = Field(
+        default=None,
+        description=(
+            "Optional Valkey connection URL (e.g. ``valkey://10.0.0.1:6379``). "
+            "When None, falls back to the ``VALKEY_URL`` environment variable "
+            "for boot-time bootstrap.  In ``cluster_mode=True`` deployments, "
+            "``discovery_host`` + ``discovery_port`` take precedence over a URL."
+        ),
+    )
+
+    discovery_host: Mutable[Optional[Secret]] = Field(
+        default=None,
+        description=(
+            "GCP Memorystore for Valkey CLUSTER discovery endpoint host.  "
+            "When set with ``cluster_mode=True``, the client connects to "
+            "the discovery endpoint only (with ``dynamic_startup_nodes=False`` "
+            "preventing topology refresh from CLUSTER SLOTS)."
+        ),
+    )
+
+    discovery_port: Mutable[int] = Field(
+        default=6379,
+        ge=1,
+        le=65535,
+        description="Port paired with ``discovery_host`` for cluster discovery.",
+    )
+
+    # ------------------------------------------------------------------
+    # Cluster (Mutable bool — Memorystore Valkey CLUSTER pattern)
+    # ------------------------------------------------------------------
+    cluster_mode: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "Use ``valkey.asyncio.cluster.ValkeyCluster`` instead of the "
+            "standalone client.  Required for GCP Memorystore for Valkey "
+            "CLUSTER instances; standalone clients misroute commands and "
+            "surface NOAUTH-shaped errors against a cluster endpoint."
+        ),
+    )
+
+    require_full_coverage: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "ValkeyCluster ``require_full_coverage`` flag.  False means "
+            "the client tolerates partial slot coverage during topology "
+            "transitions — the right default for Memorystore CLUSTER "
+            "where the discovery endpoint always answers but per-node "
+            "visibility may lag during failover."
+        ),
+    )
+
+    dynamic_startup_nodes: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "ValkeyCluster ``dynamic_startup_nodes`` flag.  False means "
+            "the client does NOT refresh topology from CLUSTER SLOTS — "
+            "essential for Memorystore Valkey CLUSTER discovery-only "
+            "mode where direct backend connections are blocked."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # TLS (Mutable)
+    # ------------------------------------------------------------------
+    tls: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "Wrap the connection in TLS regardless of URL scheme.  "
+            "Required for GCP Memorystore IAM mode."
+        ),
+    )
+
+    tls_ca_path: Mutable[Optional[str]] = Field(
+        default=None,
+        description=(
+            "Optional path to a server CA bundle for verification.  "
+            "When None and ``tls=True``, cert/hostname checks default "
+            "to disabled (acceptable on private VPC)."
+        ),
+    )
+
+    tls_cert_reqs: Mutable[Literal["none", "optional", "required"]] = Field(
+        default="none",
+        description=(
+            "TLS certificate verification mode.  ``none`` is the "
+            "Memorystore VPC-internal default; set to ``required`` "
+            "when ``tls_ca_path`` is provided."
+        ),
+    )
+
+    tls_check_hostname: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "Whether to validate the server certificate hostname.  "
+            "Defaults to False on private VPC; enable when using "
+            "publicly-rooted CAs."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # IAM (Mutable)
+    # ------------------------------------------------------------------
+    iam_auth: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "Authenticate via a Google OAuth2 access token minted from "
+            "ADC (GCP Memorystore for Valkey IAM AUTH mode).  Requires "
+            "``google-auth`` (provided by the ``module_gcp`` extra)."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Timeouts / keepalives (Mutable)
+    # ------------------------------------------------------------------
+    socket_connect_timeout_seconds: Mutable[float] = Field(
+        default=3.0,
+        ge=0.1,
+        le=60,
+        description=(
+            "Timeout for individual Valkey socket connection attempts.  "
+            "Applies to each node in cluster mode.  Keep low for fast "
+            "failover; the discovery endpoint should answer in <1s on a "
+            "healthy network."
+        ),
+    )
+
+    socket_timeout_seconds: Mutable[float] = Field(
+        default=5.0,
+        ge=0.5,
+        le=120,
+        description=(
+            "Read timeout for individual Valkey operations.  Cache "
+            "callers wrap each op so a timeout falls through to the "
+            "source; three consecutive timeouts trip the circuit "
+            "breaker that drops Valkey from rotation entirely."
+        ),
+    )
+
+    tcp_keepalive_idle_seconds: Mutable[int] = Field(
+        default=300,
+        ge=10,
+        le=1200,
+        description=(
+            "Idle time before the first TCP keepalive probe on a Valkey "
+            "connection.  Sits well under Cloud NAT's ~1200s established-"
+            "connection timeout so idle Cloud Run↔Memorystore sockets are "
+            "kept alive instead of being silently dropped."
+        ),
+    )
+
+    tcp_keepalive_interval_seconds: Mutable[int] = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Interval between TCP keepalive probes once a Valkey connection is idle.",
+    )
+
+    tcp_keepalive_count: Mutable[int] = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description=(
+            "Number of unacknowledged TCP keepalive probes before a "
+            "Valkey connection is considered dead."
+        ),
+    )
+
+    async def engine_init(self) -> Any:
+        """Build a Valkey async client from the current config snapshot.
+
+        Connection precedence:
+          1. ``cluster_mode=True`` + ``discovery_host`` set → cluster
+             discovery endpoint (Memorystore Valkey CLUSTER pattern).
+          2. ``connection_url`` (Secret) → either standalone or cluster
+             based on ``cluster_mode``.
+          3. ``VALKEY_URL`` env var → bootstrap fallback.
+        """
+        import os as _os
+        from dynastore.tools.cache_valkey import build_valkey_client
+
+        url: Optional[str] = None
+        if self.connection_url is not None:
+            url = self.connection_url.reveal()
+        elif _os.getenv("VALKEY_URL"):
+            url = _os.getenv("VALKEY_URL")
+
+        host = self.discovery_host.reveal() if self.discovery_host is not None else None
+
+        client, _pool = build_valkey_client(
+            url=url,
+            discovery_host=host,
+            discovery_port=self.discovery_port,
+            cluster_mode=self.cluster_mode,
+            require_full_coverage=self.require_full_coverage,
+            dynamic_startup_nodes=self.dynamic_startup_nodes,
+            tls=self.tls,
+            tls_ca_path=self.tls_ca_path,
+            tls_cert_reqs=self.tls_cert_reqs,
+            tls_check_hostname=self.tls_check_hostname,
+            iam_auth=self.iam_auth,
+            socket_connect_timeout=self.socket_connect_timeout_seconds,
+            socket_timeout=self.socket_timeout_seconds,
+            tcp_keepalive_idle=self.tcp_keepalive_idle_seconds,
+            tcp_keepalive_interval=self.tcp_keepalive_interval_seconds,
+            tcp_keepalive_count=self.tcp_keepalive_count,
+        )
+        # Stash the pool on the client so engine_release can close both.
+        # ValkeyCluster owns its pools internally so _pool is None there.
+        try:
+            setattr(client, "_ds_engine_pool", _pool)
+        except Exception:  # noqa: BLE001 — defensive; pool reference is best-effort
+            pass
+        return client
+
+    async def engine_release(self, instance: Any) -> None:
+        """Close the Valkey client (and its connection pool, if any).
+
+        Idempotent and best-effort — failures are logged, not raised,
+        because the cache surrounding this engine has its own circuit
+        breaker.
+        """
+        logger = _logger()
+        pool = getattr(instance, "_ds_engine_pool", None)
+        aclose = getattr(instance, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                logger.exception(
+                    "ValkeyEngineConfig: client aclose raised; instance dropped."
+                )
+        if pool is not None:
+            pool_aclose = getattr(pool, "aclose", None)
+            if pool_aclose is not None:
+                try:
+                    await pool_aclose()
+                except Exception:
+                    logger.exception(
+                        "ValkeyEngineConfig: pool aclose raised; pool dropped."
+                    )
+
+
 __all__ = [
     "EngineLifecycleConfig",
     "EngineConfig",
@@ -504,4 +777,5 @@ __all__ = [
     "ElasticsearchEngineConfig",
     "DuckdbEngineConfig",
     "IcebergEngineConfig",
+    "ValkeyEngineConfig",
 ]

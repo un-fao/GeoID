@@ -54,10 +54,13 @@ from uuid import UUID
 # don't ship the extra; ``ValkeyCacheBackend.__init__`` raises a friendly
 # ImportError if the deps are actually needed.
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     import msgpack
+
 try:
     import msgpack  # noqa: F811
+
     _CACHE_DEPS_OK = True
     _CACHE_DEPS_ERR: Optional[ImportError] = None
 except ImportError as _e:
@@ -69,7 +72,9 @@ from dynastore.models.protocols.cache import CacheStats
 logger = logging.getLogger(__name__)
 
 # Legacy env var support (deprecated, use PluginConfig instead)
-_VALKEY_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("VALKEY_CIRCUIT_BREAKER_THRESHOLD", "3"))
+_VALKEY_CIRCUIT_BREAKER_THRESHOLD = int(
+    os.getenv("VALKEY_CIRCUIT_BREAKER_THRESHOLD", "3")
+)
 
 # ---------------------------------------------------------------------------
 #  Valkey INFO section → field mapping (used by ValkeyCacheBackend.info())
@@ -78,45 +83,85 @@ _VALKEY_CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("VALKEY_CIRCUIT_BREAKER_THRESH
 # info["server"]["redis_version"], info["memory"]["used_memory_human"], etc.
 _INFO_FIELD_SECTION: dict = {
     # server section
-    "redis_version": "server", "redis_git_sha1": "server", "redis_git_dirty": "server",
-    "redis_build_id": "server", "redis_mode": "server", "os": "server",
-    "arch_bits": "server", "monotonic_clock": "server", "multiplexing_api": "server",
-    "atomicvar_api": "server", "gcc_version": "server", "process_id": "server",
-    "server_time_usec": "server", "uptime_in_seconds": "server",
-    "uptime_in_days": "server", "hz": "server", "configured_hz": "server",
-    "aof_rewrites": "server", "executable": "server", "config_file": "server",
+    "redis_version": "server",
+    "redis_git_sha1": "server",
+    "redis_git_dirty": "server",
+    "redis_build_id": "server",
+    "redis_mode": "server",
+    "os": "server",
+    "arch_bits": "server",
+    "monotonic_clock": "server",
+    "multiplexing_api": "server",
+    "atomicvar_api": "server",
+    "gcc_version": "server",
+    "process_id": "server",
+    "server_time_usec": "server",
+    "uptime_in_seconds": "server",
+    "uptime_in_days": "server",
+    "hz": "server",
+    "configured_hz": "server",
+    "aof_rewrites": "server",
+    "executable": "server",
+    "config_file": "server",
     # clients section
-    "connected_clients": "clients", "cluster_connections": "clients",
-    "maxclients": "clients", "client_recent_max_input_buffer": "clients",
+    "connected_clients": "clients",
+    "cluster_connections": "clients",
+    "maxclients": "clients",
+    "client_recent_max_input_buffer": "clients",
     "client_recent_max_output_buffer": "clients",
     # memory section
-    "used_memory": "memory", "used_memory_human": "memory",
-    "used_memory_rss": "memory", "used_memory_rss_human": "memory",
-    "used_memory_peak": "memory", "used_memory_peak_human": "memory",
-    "used_memory_peak_perc": "memory", "used_memory_overhead": "memory",
-    "used_memory_startup": "memory", "used_memory_dataset": "memory",
-    "used_memory_dataset_perc": "memory", "allocator_allocated": "memory",
-    "allocator_active": "memory", "allocator_resident": "memory",
-    "total_system_memory": "memory", "total_system_memory_human": "memory",
-    "used_memory_lua": "memory", "used_memory_vm_eval": "memory",
-    "used_memory_lua_human": "memory", "used_memory_scripts_eval": "memory",
-    "number_of_cached_scripts": "memory", "number_of_functions": "memory",
-    "number_of_libraries": "memory", "used_memory_vm_functions": "memory",
-    "used_memory_vm_total": "memory", "used_memory_vm_total_human": "memory",
-    "used_memory_functions": "memory", "used_memory_scripts": "memory",
-    "used_memory_scripts_human": "memory", "maxmemory": "memory",
-    "maxmemory_human": "memory", "maxmemory_policy": "memory",
+    "used_memory": "memory",
+    "used_memory_human": "memory",
+    "used_memory_rss": "memory",
+    "used_memory_rss_human": "memory",
+    "used_memory_peak": "memory",
+    "used_memory_peak_human": "memory",
+    "used_memory_peak_perc": "memory",
+    "used_memory_overhead": "memory",
+    "used_memory_startup": "memory",
+    "used_memory_dataset": "memory",
+    "used_memory_dataset_perc": "memory",
+    "allocator_allocated": "memory",
+    "allocator_active": "memory",
+    "allocator_resident": "memory",
+    "total_system_memory": "memory",
+    "total_system_memory_human": "memory",
+    "used_memory_lua": "memory",
+    "used_memory_vm_eval": "memory",
+    "used_memory_lua_human": "memory",
+    "used_memory_scripts_eval": "memory",
+    "number_of_cached_scripts": "memory",
+    "number_of_functions": "memory",
+    "number_of_libraries": "memory",
+    "used_memory_vm_functions": "memory",
+    "used_memory_vm_total": "memory",
+    "used_memory_vm_total_human": "memory",
+    "used_memory_functions": "memory",
+    "used_memory_scripts": "memory",
+    "used_memory_scripts_human": "memory",
+    "maxmemory": "memory",
+    "maxmemory_human": "memory",
+    "maxmemory_policy": "memory",
     # stats section
-    "total_connections_received": "stats", "total_commands_processed": "stats",
-    "instantaneous_ops_per_sec": "stats", "total_net_input_bytes": "stats",
-    "total_net_output_bytes": "stats", "total_net_repl_input_bytes": "stats",
-    "total_net_repl_output_bytes": "stats", "rejected_connections": "stats",
-    "expired_keys": "stats", "evicted_keys": "stats", "keyspace_hits": "stats",
+    "total_connections_received": "stats",
+    "total_commands_processed": "stats",
+    "instantaneous_ops_per_sec": "stats",
+    "total_net_input_bytes": "stats",
+    "total_net_output_bytes": "stats",
+    "total_net_repl_input_bytes": "stats",
+    "total_net_repl_output_bytes": "stats",
+    "rejected_connections": "stats",
+    "expired_keys": "stats",
+    "evicted_keys": "stats",
+    "keyspace_hits": "stats",
     "keyspace_misses": "stats",
     # replication section
-    "role": "replication", "connected_slaves": "replication",
-    "master_failover_state": "replication", "master_replid": "replication",
-    "master_repl_offset": "replication", "repl_backlog_active": "replication",
+    "role": "replication",
+    "connected_slaves": "replication",
+    "master_failover_state": "replication",
+    "master_replid": "replication",
+    "master_repl_offset": "replication",
+    "repl_backlog_active": "replication",
     "repl_backlog_size": "replication",
 }
 
@@ -160,7 +205,7 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
     if code == _EXT_PYDANTIC:
         sep = data.index(b"\x00")
         fqn = data[:sep].decode("utf-8")
-        json_bytes = data[sep + 1:]
+        json_bytes = data[sep + 1 :]
         module_path, _, class_name = fqn.rpartition(".")
         mod = importlib.import_module(module_path)
         cls = getattr(mod, class_name)
@@ -201,6 +246,120 @@ def _build_keepalive_options(
     return opts
 
 
+def build_valkey_client(
+    *,
+    url: Optional[str] = None,
+    discovery_host: Optional[str] = None,
+    discovery_port: int = 6379,
+    cluster_mode: bool = False,
+    require_full_coverage: bool = False,
+    dynamic_startup_nodes: bool = False,
+    tls: bool = False,
+    tls_ca_path: Optional[str] = None,
+    tls_cert_reqs: str = "none",
+    tls_check_hostname: bool = False,
+    iam_auth: bool = False,
+    socket_connect_timeout: Optional[float] = None,
+    socket_timeout: Optional[float] = None,
+    tcp_keepalive_idle: Optional[int] = None,
+    tcp_keepalive_interval: Optional[int] = None,
+    tcp_keepalive_count: Optional[int] = None,
+) -> "tuple[Any, Any]":
+    """Build a Valkey async client (standalone or cluster) from connection params.
+
+    Returns ``(client, pool)`` where ``pool`` is ``None`` for cluster mode
+    (cluster client owns its own per-node pools).
+
+    Cluster precedence: when ``cluster_mode=True`` and ``discovery_host`` is
+    set, uses the host+port discovery endpoint with ``dynamic_startup_nodes``
+    + ``require_full_coverage`` knobs (Memorystore Valkey CLUSTER pattern).
+    Otherwise falls back to ``ValkeyCluster.from_url(url, ...)``.
+    """
+    if not _CACHE_DEPS_OK:
+        raise ModuleNotFoundError(
+            "build_valkey_client requires the 'module_cache' extra "
+            "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
+            f"Original error: {_CACHE_DEPS_ERR}"
+        )
+    try:
+        import valkey.asyncio as avalkey
+    except ImportError as e:
+        raise ModuleNotFoundError(
+            "build_valkey_client requires the 'module_cache' extra "
+            "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
+            f"Original error: {e}"
+        ) from e
+
+    pool_kwargs: Dict[str, Any] = {"decode_responses": False}
+
+    if socket_connect_timeout is not None:
+        pool_kwargs["socket_connect_timeout"] = socket_connect_timeout
+    if socket_timeout is not None:
+        pool_kwargs["socket_timeout"] = socket_timeout
+
+    # TCP keepalives — Cloud NAT silently drops idle established connections
+    # after ~1200s. Without probes the next op gets a dead socket and
+    # ValkeyCluster pays a full re-init.
+    if any(
+        v is not None
+        for v in (tcp_keepalive_idle, tcp_keepalive_interval, tcp_keepalive_count)
+    ):
+        pool_kwargs["socket_keepalive"] = True
+        keepalive_options = _build_keepalive_options(
+            tcp_keepalive_idle, tcp_keepalive_interval, tcp_keepalive_count
+        )
+        if keepalive_options:
+            pool_kwargs["socket_keepalive_options"] = keepalive_options
+
+    # TLS
+    if tls:
+        pool_kwargs["connection_class"] = avalkey.SSLConnection
+        if tls_ca_path:
+            pool_kwargs["ssl_ca_certs"] = tls_ca_path
+        pool_kwargs["ssl_cert_reqs"] = tls_cert_reqs
+        pool_kwargs["ssl_check_hostname"] = tls_check_hostname
+
+    # IAM AUTH (GCP Memorystore for Valkey)
+    if iam_auth:
+        pool_kwargs["credential_provider"] = _GoogleIamCredentialProvider()
+
+    # Cluster mode
+    if cluster_mode:
+        from valkey.asyncio.cluster import ValkeyCluster
+
+        # cluster handles per-node pools internally; drop connection_class
+        # (cluster picks SSLConnection itself when ssl=True).
+        cluster_kwargs = {
+            k: v for k, v in pool_kwargs.items() if k != "connection_class"
+        }
+        cluster_kwargs["ssl"] = tls
+        cluster_kwargs["require_full_coverage"] = require_full_coverage
+        cluster_kwargs["dynamic_startup_nodes"] = dynamic_startup_nodes
+
+        # Discovery endpoint preferred (Memorystore Valkey CLUSTER pattern)
+        if discovery_host:
+            client = ValkeyCluster(
+                host=discovery_host,
+                port=discovery_port,
+                **cluster_kwargs,
+            )
+        elif url:
+            client = ValkeyCluster.from_url(url, **cluster_kwargs)
+        else:
+            raise ValueError(
+                "build_valkey_client(cluster_mode=True): one of "
+                "`discovery_host` or `url` must be provided."
+            )
+        return client, None
+
+    # Standalone
+    if not url:
+        raise ValueError("build_valkey_client(cluster_mode=False): `url` is required.")
+    pool = avalkey.ConnectionPool.from_url(url, **pool_kwargs)
+    client = avalkey.Valkey(connection_pool=pool)
+    return client, pool
+
+
 # ---------------------------------------------------------------------------
 #  Google IAM credential provider for Memorystore for Valkey
 # ---------------------------------------------------------------------------
@@ -236,11 +395,12 @@ class _GoogleIamCredentialProvider:
         if provider is None:
             return None
         # GCPModule._refresh_credentials is sync; get_fresh_token offloads it.
-        # Called from sync get_credentials() path → use the underlying creds
+        # Called from sync get_credentials() path -> use the underlying creds
         # object directly to stay sync-friendly here.
         creds = provider.get_credentials_object()
         if not creds.valid or creds.expired:
             import google.auth.transport.requests as _gart
+
             creds.refresh(_gart.Request())
         username = (
             provider.get_account_email()
@@ -269,6 +429,7 @@ class _GoogleIamCredentialProvider:
         creds = self._fallback_creds
         if not creds.valid or creds.expired:
             import google.auth.transport.requests as _gart
+
             creds.refresh(_gart.Request())
         return (self._username or "default", creds.token)
 
@@ -295,7 +456,7 @@ class ValkeyCacheBackend:
 
     def __init__(
         self,
-        url: str,
+        url: Optional[str] = None,
         key_prefix: str = "ds:",
         socket_connect_timeout: Optional[float] = None,
         socket_timeout: Optional[float] = None,
@@ -303,7 +464,27 @@ class ValkeyCacheBackend:
         tcp_keepalive_interval: Optional[int] = None,
         tcp_keepalive_count: Optional[int] = None,
         circuit_breaker_threshold: Optional[int] = None,
+        *,
+        client: Optional[Any] = None,
+        pool: Optional[Any] = None,
+        owns_client: bool = True,
     ) -> None:
+        """Construct a Valkey cache backend.
+
+        Two construction modes:
+
+        1. **Engine-driven (preferred)** — pass a pre-built ``client``
+           (and optional ``pool``). The engine (``ValkeyEngineConfig``)
+           owns lifecycle; set ``owns_client=False`` so ``close()`` does
+           not double-release a resource the engine cache will release.
+
+        2. **Legacy env-driven** — pass ``url`` (and optional timeout /
+           keepalive kwargs). The backend builds its own client via
+           ``build_valkey_client(...)`` consuming the legacy
+           ``VALKEY_TLS`` / ``VALKEY_IAM_AUTH`` / ``VALKEY_CLUSTER`` env
+           vars for back-compat. Used as the bootstrap fallback when
+           the engine is unavailable.
+        """
         # ModuleNotFoundError (a subclass of ImportError) so existing
         # `except ImportError` handlers still catch it AND the module
         # loader's wrong-SCOPE soft-skip (`isinstance(e, ModuleNotFoundError)`
@@ -315,84 +496,52 @@ class ValkeyCacheBackend:
                 "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
                 f"Original error: {_CACHE_DEPS_ERR}"
             )
-        try:
-            import valkey.asyncio as avalkey
-        except ImportError as e:
-            raise ModuleNotFoundError(
-                "ValkeyCacheBackend requires the 'module_cache' extra "
-                "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
-                f"Original error: {e}"
-            ) from e
 
-        pool_kwargs: Dict[str, Any] = {"decode_responses": False}
-
-        # Socket connect timeout (passed from CacheModule config)
-        if socket_connect_timeout is not None:
-            pool_kwargs["socket_connect_timeout"] = socket_connect_timeout
-
-        # Per-operation read/write timeout. valkey-py hard-defaults this to 5s;
-        # an explicit, larger value gives a cold cluster-topology fetch room to
-        # complete instead of surfacing a spurious read TimeoutError.
-        if socket_timeout is not None:
-            pool_kwargs["socket_timeout"] = socket_timeout
-
-        # TCP keepalives — stop Cloud NAT from silently dropping idle
-        # Cloud Run↔Memorystore sockets (parity with the DB-pool keepalive
-        # hygiene). Inherited by the cluster client's per-node pools too.
-        keepalive_options = _build_keepalive_options(
-            tcp_keepalive_idle, tcp_keepalive_interval, tcp_keepalive_count
-        )
-        if (
-            tcp_keepalive_idle is not None
-            or tcp_keepalive_interval is not None
-            or tcp_keepalive_count is not None
-        ):
-            pool_kwargs["socket_keepalive"] = True
-            if keepalive_options:
-                pool_kwargs["socket_keepalive_options"] = keepalive_options
-
-        # TLS: VALKEY_TLS=true forces TLS regardless of URL scheme.
-        # On Memorystore private VPC, traffic stays in Google's network so
-        # cert-verify and hostname checks are commonly disabled when no CA
-        # bundle is provided (VALKEY_TLS_CA_PATH overrides).
-        if os.getenv("VALKEY_TLS", "").lower() in ("1", "true", "yes"):
-            pool_kwargs["connection_class"] = avalkey.SSLConnection
-            ca_path = os.getenv("VALKEY_TLS_CA_PATH")
-            if ca_path:
-                pool_kwargs["ssl_ca_certs"] = ca_path
-            else:
-                pool_kwargs["ssl_cert_reqs"] = "none"
-                pool_kwargs["ssl_check_hostname"] = False
-
-        # IAM auth: mint a Google OAuth2 access token per-connection and
-        # pass it as the Valkey AUTH password. Tokens auto-refresh because
-        # ``GoogleIamCredentialProvider.get_credentials`` is invoked by the
-        # pool on every new connection / reauth.
-        if os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes"):
-            pool_kwargs["credential_provider"] = _GoogleIamCredentialProvider()
-
-        # Cluster mode: GCP Memorystore for Valkey CLUSTER instances expose a
-        # cluster discovery endpoint. A standalone client misroutes commands
-        # and surfaces NOAUTH-shaped errors. ValkeyCluster handles MOVED/ASK
-        # redirects and per-node connection pools.
-        if os.getenv("VALKEY_CLUSTER", "").lower() in ("1", "true", "yes"):
-            from valkey.asyncio.cluster import ValkeyCluster
-            # ConnectionPool kwargs flow through; cluster takes the URL directly.
-            # `decode_responses=False` is the default; pass remaining kwargs
-            # except `connection_class` (cluster picks its own per-node).
-            cluster_kwargs = {k: v for k, v in pool_kwargs.items()
-                              if k != "connection_class"}
-            cluster_kwargs["ssl"] = "connection_class" in pool_kwargs
-            self._pool = None  # cluster owns its pools internally
-            self._client = ValkeyCluster.from_url(url, **cluster_kwargs)
+        if client is not None:
+            # Mode 1: engine-driven — caller owns lifecycle.
+            self._client = client
+            self._pool = pool
+            self._owns_client = owns_client
         else:
-            self._pool = avalkey.ConnectionPool.from_url(url, **pool_kwargs)
-            self._client = avalkey.Valkey(connection_pool=self._pool)
+            # Mode 2: legacy env-driven path — preserved for tests and the
+            # bootstrap fallback when no engine_cache is wired.
+            if not url:
+                raise ValueError(
+                    "ValkeyCacheBackend: either `client` or `url` must be provided."
+                )
+            tls = os.getenv("VALKEY_TLS", "").lower() in ("1", "true", "yes")
+            tls_ca_path = os.getenv("VALKEY_TLS_CA_PATH")
+            iam_auth = os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes")
+            cluster_mode = os.getenv("VALKEY_CLUSTER", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            built_client, built_pool = build_valkey_client(
+                url=url,
+                cluster_mode=cluster_mode,
+                tls=tls,
+                tls_ca_path=tls_ca_path,
+                tls_cert_reqs="required" if tls_ca_path else "none",
+                tls_check_hostname=bool(tls_ca_path),
+                iam_auth=iam_auth,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_timeout=socket_timeout,
+                tcp_keepalive_idle=tcp_keepalive_idle,
+                tcp_keepalive_interval=tcp_keepalive_interval,
+                tcp_keepalive_count=tcp_keepalive_count,
+            )
+            self._client = built_client
+            self._pool = built_pool
+            self._owns_client = True
+
         self._prefix = key_prefix
         self._stats = CacheStats(maxsize=0)
         self._locks: Dict[str, asyncio.Lock] = {}
         self._consecutive_failures: int = 0
-        self._circuit_breaker_threshold = circuit_breaker_threshold or _VALKEY_CIRCUIT_BREAKER_THRESHOLD
+        self._circuit_breaker_threshold = (
+            circuit_breaker_threshold or _VALKEY_CIRCUIT_BREAKER_THRESHOLD
+        )
 
     @property
     def name(self) -> str:
@@ -416,9 +565,12 @@ class ValkeyCacheBackend:
             )
             try:
                 from dynastore.tools.cache import get_cache_manager
+
                 get_cache_manager().unregister_backend(self)
             except Exception:
-                logger.exception("ValkeyCacheBackend: failed to unregister backend on circuit trip")
+                logger.exception(
+                    "ValkeyCacheBackend: failed to unregister backend on circuit trip"
+                )
 
     def _record_success(self) -> None:
         """Reset failure counter on successful operation."""
@@ -433,7 +585,9 @@ class ValkeyCacheBackend:
             return _deserialize(raw)
         except Exception:
             self._record_failure()
-            logger.warning("ValkeyCacheBackend.get failed (key=%s)", self._key(key), exc_info=True)
+            logger.warning(
+                "ValkeyCacheBackend.get failed (key=%s)", self._key(key), exc_info=True
+            )
             return None
 
     async def set(
@@ -459,7 +613,9 @@ class ValkeyCacheBackend:
             return bool(result)
         except Exception:
             self._record_failure()
-            logger.warning("ValkeyCacheBackend.set failed (key=%s)", self._key(key), exc_info=True)
+            logger.warning(
+                "ValkeyCacheBackend.set failed (key=%s)", self._key(key), exc_info=True
+            )
             return False
 
     async def clear(
@@ -507,7 +663,11 @@ class ValkeyCacheBackend:
             return result
         except Exception:
             self._record_failure()
-            logger.warning("ValkeyCacheBackend.exists failed (key=%s)", self._key(key), exc_info=True)
+            logger.warning(
+                "ValkeyCacheBackend.exists failed (key=%s)",
+                self._key(key),
+                exc_info=True,
+            )
             return False
 
     async def get_lock(self, key: str) -> asyncio.Lock:
@@ -554,7 +714,14 @@ class ValkeyCacheBackend:
         return sections
 
     async def close(self) -> None:
-        """Shut down connection pool cleanly."""
+        """Shut down connection pool cleanly.
+
+        Skips the actual ``aclose()`` calls when ``owns_client=False`` —
+        the engine cache is responsible for releasing engine-built
+        clients via ``ValkeyEngineConfig.engine_release``.
+        """
+        if not self._owns_client:
+            return
         await self._client.aclose()
         if self._pool is not None:
             await self._pool.aclose()

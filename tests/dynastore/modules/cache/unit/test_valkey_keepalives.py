@@ -17,7 +17,7 @@
 Regression cover for the review-env cluster read-timeout incident: valkey-py
 hard-defaults socket_timeout to 5s and socket_keepalive to False, so an idle
 Cloud Run -> Memorystore socket is dropped by Cloud NAT and a cold topology
-fetch can exceed 5s. The ValkeyCachePluginConfig tunables must reach the
+fetch can exceed 5s. The ValkeyEngineConfig tunables must reach the
 connection pool kwargs.
 """
 
@@ -25,36 +25,33 @@ from __future__ import annotations
 
 import socket
 
-from dynastore.modules.cache.cache_config import (
-    CachePluginConfig,
-    ValkeyCachePluginConfig,
+import pytest
+
+from dynastore.modules.db_config.engine_config import ValkeyEngineConfig
+from dynastore.tools.cache_valkey import (
+    ValkeyCacheBackend,
+    _build_keepalive_options,
+    build_valkey_client,
 )
-from dynastore.tools.cache_valkey import ValkeyCacheBackend, _build_keepalive_options
 
 
-def test_valkey_specific_params_off_standard_config() -> None:
-    """Standard CachePluginConfig must not carry Valkey-specific knobs."""
-    standard_fields = set(CachePluginConfig.model_fields)
-    for impl_field in (
-        "socket_timeout_seconds",
-        "tcp_keepalive_idle_seconds",
-        "tcp_keepalive_interval_seconds",
-        "tcp_keepalive_count",
-    ):
-        assert impl_field not in standard_fields
-        assert impl_field in ValkeyCachePluginConfig.model_fields
+# --------------------------------------------------------------------------
+# ValkeyEngineConfig — connection tunables (moved from CachePluginConfig)
+# --------------------------------------------------------------------------
 
 
-def test_valkey_config_keepalive_defaults() -> None:
-    """ValkeyCachePluginConfig ships explicit socket_timeout + keepalive defaults."""
-    cfg = ValkeyCachePluginConfig()
-    assert cfg.socket_timeout_seconds == 15.0
+def test_valkey_engine_config_exposes_socket_timeout_and_keepalive_defaults():
+    cfg = ValkeyEngineConfig()
+    # Read timeout is short by design — a cache fails fast to the source
+    # rather than blocking the hot path on an unhealthy backend. 5s is
+    # generous headroom for a healthy same-VPC op.
+    assert cfg.socket_timeout_seconds == 5.0
+    assert cfg.socket_connect_timeout_seconds == 3.0
+    # Idle window sits well under Cloud NAT's ~1200s established-conn timeout,
+    # matching the DB pool keepalive parity (#655).
     assert cfg.tcp_keepalive_idle_seconds == 300
     assert cfg.tcp_keepalive_interval_seconds == 30
     assert cfg.tcp_keepalive_count == 5
-    # Inherits the standard cache fields.
-    assert cfg.probe_timeout_seconds == 5.0
-    assert cfg.circuit_breaker_threshold == 3
 
 
 def test_build_keepalive_options_maps_available_constants() -> None:
@@ -70,27 +67,28 @@ def test_build_keepalive_options_maps_available_constants() -> None:
     assert _build_keepalive_options(None, None, None) == {}
 
 
-def test_backend_wires_socket_timeout_and_keepalives_into_pool() -> None:
-    """ValkeyCacheBackend forwards the tunables to the connection pool kwargs."""
-    cfg = ValkeyCachePluginConfig()
-    backend = ValkeyCacheBackend(
+def test_build_valkey_client_wires_socket_timeout_and_keepalives() -> None:
+    """build_valkey_client forwards the tunables to the connection pool kwargs."""
+    client, pool = build_valkey_client(
         url="valkey://localhost:6379",
-        socket_connect_timeout=cfg.socket_connect_timeout_seconds,
-        socket_timeout=cfg.socket_timeout_seconds,
-        tcp_keepalive_idle=cfg.tcp_keepalive_idle_seconds,
-        tcp_keepalive_interval=cfg.tcp_keepalive_interval_seconds,
-        tcp_keepalive_count=cfg.tcp_keepalive_count,
+        socket_connect_timeout=3.0,
+        socket_timeout=5.0,
+        tcp_keepalive_idle=300,
+        tcp_keepalive_interval=30,
+        tcp_keepalive_count=5,
     )
-    pool_kwargs = backend._pool.connection_kwargs  # type: ignore[union-attr]
-    assert pool_kwargs["socket_timeout"] == 15.0
+    pool_kwargs = pool.connection_kwargs  # type: ignore[union-attr]
+    assert pool_kwargs["socket_timeout"] == 5.0
+    assert pool_kwargs["socket_connect_timeout"] == 3.0
     assert pool_kwargs["socket_keepalive"] is True
     assert pool_kwargs["socket_keepalive_options"]  # non-empty on Linux/macOS
 
 
-def test_backend_omits_keepalives_when_no_tunables_supplied() -> None:
+def test_build_valkey_client_omits_keepalives_when_no_tunables_supplied() -> None:
     """Backwards-compat: no keepalive kwargs leak in when nothing is passed."""
-    backend = ValkeyCacheBackend(url="valkey://localhost:6379")
-    pool_kwargs = backend._pool.connection_kwargs  # type: ignore[union-attr]
+    client, pool = build_valkey_client(url="valkey://localhost:6379")
+    pool_kwargs = pool.connection_kwargs  # type: ignore[union-attr]
     assert "socket_timeout" not in pool_kwargs
+    assert "socket_connect_timeout" not in pool_kwargs
     assert "socket_keepalive" not in pool_kwargs
     assert "socket_keepalive_options" not in pool_kwargs
