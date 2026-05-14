@@ -1,0 +1,142 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Issue #655 — DB engine pool hygiene + TCP keepalives.
+
+The async engine (``db_service.py``) and the sync engine
+(``datastore_service.py``) must both:
+
+* keep the pool hygienic so a NAT/AlloyDB-dropped idle connection is
+  recycled rather than handed out dead-at-the-wire (``pool_pre_ping`` +
+  ``pool_recycle``), and
+* send TCP keepalive probes so Cloud NAT never silently drops the idle
+  mapping in the first place.
+
+Tests drive the real module lifespans with the SQLAlchemy engine
+factories mocked, then assert the kwargs that reach the factory.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# Warm ``models.protocols`` before importing the service modules: importing
+# ``datastore_service`` directly otherwise triggers a latent circular import
+# (see #686). Full-suite collection warms it implicitly; an isolated run of
+# this file does not, so we do it explicitly.
+import dynastore.models.protocols  # noqa: F401
+
+from dynastore.modules.datastore.datastore_service import DatastoreModule
+from dynastore.modules.db.db_service import DBService
+from dynastore.modules.db_config.db_config import DBConfig
+
+
+def _async_engine_mock() -> MagicMock:
+    """A create_async_engine return value whose ``dispose`` is awaitable."""
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    return engine
+
+
+# --------------------------------------------------------------------------
+# DBConfig — new keepalive tunables
+# --------------------------------------------------------------------------
+
+
+def test_db_config_exposes_tcp_keepalive_defaults():
+    cfg = DBConfig()
+    # Idle window must sit well under Cloud NAT's ~1200s established-conn
+    # timeout so the mapping is refreshed before NAT drops it.
+    assert cfg.tcp_keepalives_idle == 300
+    assert cfg.tcp_keepalives_interval == 30
+    assert cfg.tcp_keepalives_count == 5
+
+
+# --------------------------------------------------------------------------
+# Async engine (asyncpg) — server-side keepalive GUCs
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_engine_sets_tcp_keepalive_server_settings():
+    app_state = SimpleNamespace(db_config=DBConfig())
+
+    with patch(
+        "dynastore.modules.db.db_service.create_async_engine",
+        return_value=_async_engine_mock(),
+    ) as mk:
+        async with DBService(app_state).lifespan(app_state):
+            pass
+
+    kwargs = mk.call_args.kwargs
+    server_settings = kwargs["connect_args"]["server_settings"]
+    # asyncpg has no libpq client keepalive params; the server-side GUCs
+    # must be passed as strings via server_settings.
+    assert server_settings["tcp_keepalives_idle"] == "300"
+    assert server_settings["tcp_keepalives_interval"] == "30"
+    assert server_settings["tcp_keepalives_count"] == "5"
+    # The #702 application_name tag must survive alongside the new keys.
+    assert "application_name" in server_settings
+
+
+# --------------------------------------------------------------------------
+# Sync engine (psycopg2) — pool hygiene parity + libpq client keepalives
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_engine_has_pool_pre_ping_and_recycle():
+    app_state = SimpleNamespace(db_config=DBConfig())
+
+    with patch(
+        "dynastore.modules.datastore.datastore_service.create_engine",
+        return_value=MagicMock(),
+    ) as mk, patch(
+        "dynastore.modules.datastore.datastore_service.ensure_init_db",
+        new=AsyncMock(),
+    ):
+        async with DatastoreModule(app_state).lifespan(app_state):
+            pass
+
+    kwargs = mk.call_args.kwargs
+    # Parity with the async engine in db_service.py.
+    assert kwargs["pool_pre_ping"] is True
+    assert kwargs["pool_recycle"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_sync_engine_sets_libpq_tcp_keepalives():
+    app_state = SimpleNamespace(db_config=DBConfig())
+
+    with patch(
+        "dynastore.modules.datastore.datastore_service.create_engine",
+        return_value=MagicMock(),
+    ) as mk, patch(
+        "dynastore.modules.datastore.datastore_service.ensure_init_db",
+        new=AsyncMock(),
+    ):
+        async with DatastoreModule(app_state).lifespan(app_state):
+            pass
+
+    connect_args = mk.call_args.kwargs["connect_args"]
+    # psycopg2 speaks libpq, so client-side keepalive params apply directly.
+    assert connect_args["keepalives"] == 1
+    assert connect_args["keepalives_idle"] == 300
+    assert connect_args["keepalives_interval"] == 30
+    assert connect_args["keepalives_count"] == 5
+    # The #702 application_name tag must survive alongside the new keys.
+    assert "application_name" in connect_args

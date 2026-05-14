@@ -126,7 +126,22 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                     pool_size=db_config.pool_min_size,
                     max_overflow=db_config.pool_max_size - db_config.pool_min_size,
                     pool_timeout=db_config.pool_command_timeout,
-                    connect_args={"application_name": app_name},
+                    # Pool hygiene parity with the async engine
+                    # (db_service.py): recycle stale slots and pre-ping so a
+                    # NAT/AlloyDB-dropped idle connection is replaced rather
+                    # than handed out dead-at-the-wire. See #655.
+                    pool_pre_ping=True,
+                    pool_recycle=1800,
+                    connect_args={
+                        "application_name": app_name,
+                        # psycopg2 speaks libpq, so client-side TCP keepalive
+                        # params apply directly — probes keep Cloud NAT from
+                        # silently dropping the idle mapping. See #655.
+                        "keepalives": 1,
+                        "keepalives_idle": db_config.tcp_keepalives_idle,
+                        "keepalives_interval": db_config.tcp_keepalives_interval,
+                        "keepalives_count": db_config.tcp_keepalives_count,
+                    },
                 )
                 logger.info("SQLAlchemy SyncEngine established successfully.")
 

@@ -157,7 +157,22 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     pool_recycle=1800,
                     connect_args={
                         "timeout": db_config.connect_timeout,
-                        "server_settings": {"application_name": app_name},
+                        # asyncpg has no libpq client-side keepalive params;
+                        # the equivalent server-side GUCs must be passed as
+                        # strings via server_settings so Cloud NAT never
+                        # silently drops the idle mapping. See #655.
+                        "server_settings": {
+                            "application_name": app_name,
+                            "tcp_keepalives_idle": str(
+                                db_config.tcp_keepalives_idle
+                            ),
+                            "tcp_keepalives_interval": str(
+                                db_config.tcp_keepalives_interval
+                            ),
+                            "tcp_keepalives_count": str(
+                                db_config.tcp_keepalives_count
+                            ),
+                        },
                     },
                 )
                 engine_created_by_service = True
