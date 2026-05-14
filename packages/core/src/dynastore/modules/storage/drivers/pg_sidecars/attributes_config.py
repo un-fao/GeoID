@@ -25,8 +25,9 @@ Provides enhanced configuration for attribute storage, including storage modes
 
 from typing import List, Optional, Dict, Any, Union, Literal
 from enum import Enum
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
+from dynastore.tools.db import validate_column_identifier
 
 
 class AttributePartitionStrategyPreset(str, Enum):
@@ -100,6 +101,19 @@ class AttributeSchemaEntry(BaseModel):
 
     # Metadata
     description: Optional[str] = Field(default=None, description="Human-readable description")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Reject column names that are not plain SQL identifiers.
+
+        Names flow (quoted) into CREATE TABLE / INSERT and are reused as
+        bind-parameter names, so anything beyond ``[A-Za-z_][A-Za-z0-9_]*`` —
+        spaces, dots, symbols, reserved words — is rejected at config-parse
+        time rather than failing later at ingest. Case is preserved: the
+        physical column is created quoted, so ``Area`` stays ``Area``.
+        """
+        return validate_column_identifier(v)
 
     @model_validator(mode="after")
     def validate_default_type(self) -> "AttributeSchemaEntry":

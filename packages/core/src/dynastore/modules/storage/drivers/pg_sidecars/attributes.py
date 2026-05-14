@@ -311,8 +311,12 @@ class FeatureAttributeSidecar(SidecarProtocol):
                     default_clause = f" DEFAULT {sql_default}" if sql_default else ""
 
                     unique_constraint = " UNIQUE" if attr.unique else ""
+                    # Quote the column name so its case is preserved: DML
+                    # (item_distributed._upsert_sidecar_table_raw) and SELECT
+                    # both quote it, so an unquoted DDL here would fold e.g.
+                    # "Area" to "area" and break the round-trip (geoid #719).
                     columns.append(
-                        f"{attr.name} {attr.type.value}{null_constraint}{default_clause}{unique_constraint}"
+                        f'"{attr.name}" {attr.type.value}{null_constraint}{default_clause}{unique_constraint}'
                     )
                     known_columns.add(attr.name)
 
@@ -322,7 +326,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
                         idx_clause = f"USING {idx_type}" if idx_type != "BTREE" else ""
                         indexes.append(
                             f'CREATE INDEX IF NOT EXISTS "idx_{table_name}_{attr.name}" ON {{schema}}."{table_name}" '
-                            f"{idx_clause} ({attr.name})"
+                            f'{idx_clause} ("{attr.name}")'
                         )
         else:
             # Mode B: JSONB column
@@ -519,7 +523,9 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
                     if attr.name == attr_name:
-                        return (f"{alias}.{attr_name}", alias)
+                        # Quoted: the column is created quoted (case-preserved),
+                        # so filter/sort references must quote it too (#719).
+                        return (f'{alias}."{attr_name}"', alias)
         # JSONB Mode
         else:
             if attr_name == self.config.jsonb_column_name:
