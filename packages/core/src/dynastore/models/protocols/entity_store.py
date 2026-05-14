@@ -375,16 +375,16 @@ class TransformOnlyCollectionStoreMixin:
 class CatalogStore(Protocol):
     """Pluggable storage abstraction for catalog-level metadata.
 
-    **Status**: vocabulary introduced by M1a, no concrete implementer yet.
-    First consumers land in M2 (``CatalogMetadataCorePostgresDriver``,
-    ``CatalogMetadataStacPostgresDriver``) — see plan §M2.  Introduced
-    early so ``CatalogRoutingConfig`` can reference it at its apply
-    handler without a forward declaration.
+    **Status**: vocabulary only — no concrete implementer yet. The first
+    consumers will be ``CatalogMetadataCorePostgresDriver`` and
+    ``CatalogMetadataStacPostgresDriver``. Introduced early so
+    ``CatalogRoutingConfig`` can reference it at its apply handler without a
+    forward declaration.
 
     Mirrors :class:`CollectionStore` but scoped to the catalog tier.
     Drivers own a ``domain`` (CORE / STAC / future) and stamp ``updated_at``
     on writes so that INDEX / BACKUP drivers can use it as their freshness
-    token (see role-based driver plan §Freshness contract — tentative).
+    token (the freshness contract is still tentative).
 
     Catalog-level metadata includes the Records-minimum envelope fields
     (title, description, keywords, license, extra_metadata) and any

@@ -567,8 +567,7 @@ class DriverPluginConfig(_PluginDriverConfig):
       strings describing how the driver performs operations. Structural to
       the driver class; operators inspect via
       ``GET /configs/registry/{class_key}`` (the ``describedby`` link),
-      never via the composed-config payload. See plan #6 of umbrella #665
-      and issue #678.
+      never via the composed-config payload. See umbrella #665 and #678.
     """
 
     is_abstract_base: ClassVar[bool] = True
