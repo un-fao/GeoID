@@ -22,12 +22,14 @@ import logging
 import asyncio
 from typing import Any, Optional
 from concurrent.futures import ProcessPoolExecutor
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Response, Query, Request, Path
+from fastapi import FastAPI, APIRouter, HTTPException, Response, Query, Request, Path
 from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
 from pyproj import CRS
 
-from dynastore.extensions.tools.db import get_async_connection
+from dynastore.extensions.tools.db import get_async_engine
+from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.models.driver_context import DriverContext
 from dynastore.extensions.maps.format_convert import (
     FORMAT_MEDIA_TYPES as _FORMAT_MEDIA_TYPES,
     SUPPORTED_MAP_FORMATS as _SUPPORTED_MAP_FORMATS,
@@ -310,7 +312,6 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
     @router.get("/{dataset}/map/tiles/{tileMatrixSetId}/{z}/{x}/{y}", summary="Get Rendered Map Tile")
     async def get_map_tile(
         request: Request, dataset: str, tileMatrixSetId: str, z: str, x: int, y: int,  # type: ignore[reportGeneralTypeIssues]
-        conn: AsyncConnection = Depends(get_async_connection),
         collections: str = Query(..., description="Comma-separated list of collection IDs."),
         datetime: Optional[str] = Query(None, description="Temporal filter."),
         subset: Optional[str] = Query(None, description="Custom dimension filter."),
@@ -337,67 +338,75 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
         if not (0 <= x < matrix_def.matrixWidth and 0 <= y < matrix_def.matrixHeight):
             raise HTTPException(status_code=400, detail="Tile coordinates out of bounds.")
 
-        # 4. Resolve CRS and SRID
-        try:
-            target_srid = await tms_manager.resolve_srid(conn=conn, crs_str=tms_def.crs, catalog_id=dataset)
-        except Exception as e:
-            logger.error(f"CRS Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Could not process CRS '{tms_def.crs}' in TMS '{tileMatrixSetId}'.")
+        # Steps 4-8 only need the DB. Acquire a connection for that window and
+        # release it before the CPU-bound render (step 9) so a pooled slot is
+        # never held across run_in_executor (GeoID #703).
+        engine = get_async_engine(request)
+        async with managed_transaction(engine) as conn:
+            ctx = DriverContext(db_resource=conn)
 
-        # 5. Calculate Bounding Box for the Tile
-        # OGC Tiles usually assume TopLeft origin for the matrix
-        pixel_span_x = matrix_def.tileWidth * matrix_def.cellSize
-        pixel_span_y = matrix_def.tileHeight * matrix_def.cellSize
-        
-        tile_min_x = matrix_def.pointOfOrigin[0] + (x * pixel_span_x)
-        tile_max_y = matrix_def.pointOfOrigin[1] - (y * pixel_span_y)
-        tile_max_x = tile_min_x + pixel_span_x
-        tile_min_y = tile_max_y - pixel_span_y
-        
-        bbox_list = [tile_min_x, tile_min_y, tile_max_x, tile_max_y]
+            # 4. Resolve CRS and SRID
+            try:
+                target_srid = await tms_manager.resolve_srid(conn=conn, crs_str=tms_def.crs, catalog_id=dataset)
+            except Exception as e:
+                logger.error(f"CRS Error: {e}")
+                raise HTTPException(status_code=500, detail=f"Could not process CRS '{tms_def.crs}' in TMS '{tileMatrixSetId}'.")
 
-        # 6. Validate Collections
-        requested_collections = [c.strip() for c in collections.split(',')]
-        # Reuse validation logic (check metadata + table existence)
-        valid_collections = await _validate_collections_helper(conn, dataset, requested_collections)
-        if not valid_collections:
-             # Return transparent empty tile if no valid data source
-             return _return_empty_tile(matrix_def.tileWidth, matrix_def.tileHeight)
+            # 5. Calculate Bounding Box for the Tile
+            # OGC Tiles usually assume TopLeft origin for the matrix
+            pixel_span_x = matrix_def.tileWidth * matrix_def.cellSize
+            pixel_span_y = matrix_def.tileHeight * matrix_def.cellSize
 
-        subset_params = parse_subset_parameter(subset)
+            tile_min_x = matrix_def.pointOfOrigin[0] + (x * pixel_span_x)
+            tile_max_y = matrix_def.pointOfOrigin[1] - (y * pixel_span_y)
+            tile_max_x = tile_min_x + pixel_span_x
+            tile_min_y = tile_max_y - pixel_span_y
 
-        # 7. Fetch Features (Optimized for Render)
-        # Note: We pass the Tile Width/Height and the TMS SRID (target_srid) as the BBOX SRID
-        try:
-            layer_config, layers_data = await asyncio.gather(
-                catalog_manager.get_collection_config(dataset, valid_collections[0]),
-                maps_db.get_features_for_rendering(
-                    conn=conn, 
-                    schema=dataset, 
-                    collections=valid_collections, 
-                    bbox=bbox_list, 
-                    crs=tms_def.crs,
-                    width=matrix_def.tileWidth, 
-                    height=matrix_def.tileHeight,
-                    bbox_srid=target_srid, # Vital: The computed BBOX is in the TMS CRS
-                    datetime_str=datetime, 
-                    subset_params=subset_params
+            bbox_list = [tile_min_x, tile_min_y, tile_max_x, tile_max_y]
+
+            # 6. Validate Collections
+            requested_collections = [c.strip() for c in collections.split(',')]
+            # Reuse validation logic (check metadata + table existence)
+            valid_collections = await _validate_collections_helper(conn, dataset, requested_collections)
+            if not valid_collections:
+                 # Return transparent empty tile if no valid data source
+                 return _return_empty_tile(matrix_def.tileWidth, matrix_def.tileHeight)
+
+            subset_params = parse_subset_parameter(subset)
+
+            # 7. Fetch Features (Optimized for Render)
+            # Note: We pass the Tile Width/Height and the TMS SRID (target_srid) as the BBOX SRID
+            try:
+                layer_config, layers_data = await asyncio.gather(
+                    catalog_manager.get_collection_config(dataset, valid_collections[0], ctx=ctx),
+                    maps_db.get_features_for_rendering(
+                        conn=conn,
+                        schema=dataset,
+                        collections=valid_collections,
+                        bbox=bbox_list,
+                        crs=tms_def.crs,
+                        width=matrix_def.tileWidth,
+                        height=matrix_def.tileHeight,
+                        bbox_srid=target_srid, # Vital: The computed BBOX is in the TMS CRS
+                        datetime_str=datetime,
+                        subset_params=subset_params
+                    )
                 )
-            )
-        except ValueError as e:
-            logger.error(f"Render Fetch Error: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
-        if layer_config is None or layer_config.geometry_storage is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+            except ValueError as e:
+                logger.error(f"Render Fetch Error: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+            if layer_config is None or layer_config.geometry_storage is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+                )
+
+            # 8. Resolve style
+            style_to_render = await _get_style_to_render(
+                conn, dataset, valid_collections[0] if valid_collections else None, style
             )
 
-        # 8. Render Image
-        style_to_render = await _get_style_to_render(
-            conn, dataset, valid_collections[0] if valid_collections else None, style
-        )
-        
+        # 9. Render Image (CPU-bound, no DB connection held)
         try:
             loop = asyncio.get_running_loop()
             image_bytes = await loop.run_in_executor(
@@ -420,7 +429,6 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
     async def get_map(
         dataset: str,  # type: ignore[reportGeneralTypeIssues]
         request: Request,
-        conn: AsyncConnection = Depends(get_async_connection),
         collections: str = Query(..., description="Comma-separated list of collections to render."),
         bbox: str = Query(..., description="Bounding box in CRS coordinates."),
         bbox_crs: str = Query(None, description="CRS of the BBOX (defaults to OGC:CRS84)."),
@@ -444,10 +452,6 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
         requested_collections = [c.strip() for c in collections.split(',')]
-        valid_collections = await _validate_collections_helper(conn, dataset, requested_collections)
-
-        if not valid_collections:
-            raise HTTPException(status_code=404, detail="One or more collections not found.")
 
         # Handle BBOX CRS (Req 18)
         # If bbox_crs is provided, extract SRID. If NOT provided, standard says default is CRS84 (4326).
@@ -467,38 +471,50 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid BBOX format.")
 
-        # Fetch Data with Updated DB Signature
-        try:
-            layer_config, layers_data = await asyncio.gather(
-                catalog_manager.get_collection_config(dataset, valid_collections[0]),
-                maps_db.get_features_for_rendering(
-                    conn=conn, 
-                    schema=dataset, 
-                    collections=valid_collections, 
-                    bbox=bbox_list, 
-                    crs=crs,
-                    width=width, 
-                    height=height, 
-                    bbox_srid=bbox_srid,
-                    datetime_str=datetime, 
-                    subset_params=parse_subset_parameter(subset)
+        # The DB-dependent steps (collection validation, feature fetch, style
+        # resolution) run under a single connection that is released before the
+        # CPU-bound render below, so a pooled slot is never held across
+        # run_in_executor (GeoID #703).
+        engine = get_async_engine(request)
+        async with managed_transaction(engine) as conn:
+            ctx = DriverContext(db_resource=conn)
+
+            valid_collections = await _validate_collections_helper(conn, dataset, requested_collections)
+            if not valid_collections:
+                raise HTTPException(status_code=404, detail="One or more collections not found.")
+
+            # Fetch Data with Updated DB Signature
+            try:
+                layer_config, layers_data = await asyncio.gather(
+                    catalog_manager.get_collection_config(dataset, valid_collections[0], ctx=ctx),
+                    maps_db.get_features_for_rendering(
+                        conn=conn,
+                        schema=dataset,
+                        collections=valid_collections,
+                        bbox=bbox_list,
+                        crs=crs,
+                        width=width,
+                        height=height,
+                        bbox_srid=bbox_srid,
+                        datetime_str=datetime,
+                        subset_params=parse_subset_parameter(subset)
+                    )
                 )
-            )
-        except ValueError as e:
-            logger.error(f"Data Error: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
-        if layer_config is None or layer_config.geometry_storage is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+            except ValueError as e:
+                logger.error(f"Data Error: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+            if layer_config is None or layer_config.geometry_storage is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Collection '{valid_collections[0]}' has no geometry storage config.",
+                )
+
+            # Fetch style to render
+            style_to_render = await _get_style_to_render(
+                conn, dataset, valid_collections[0] if valid_collections else None, style
             )
 
-        # Fetch style to render
-        style_to_render = await _get_style_to_render(
-            conn, dataset, valid_collections[0] if valid_collections else None, style
-        )
-
-        # Render
+        # Render (CPU-bound, no DB connection held)
         try:
             loop = asyncio.get_running_loop()
             image_bytes = await loop.run_in_executor(
