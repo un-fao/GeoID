@@ -1654,6 +1654,44 @@ async def heartbeat_tasks(
         )
 
 
+async def heartbeat_task_if_active(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    visibility_timeout: timedelta,
+) -> bool:
+    """Conditionally extend ``locked_until`` for a single task.
+
+    Like :func:`heartbeat_tasks` but single-row and signal-returning. The
+    UPDATE is gated on ``status = 'ACTIVE'``; the function returns ``True``
+    when the row matched and was extended, ``False`` when it did not — the
+    most common cause being a competing process having flipped the row out
+    of ``ACTIVE`` between the caller's decision to heartbeat and the UPDATE
+    itself.
+
+    The liveness reconciler uses the ``False`` return as the reaper-race
+    signal: the reconciler ``SELECT``-commit → probe → heartbeat sequence has
+    an accepted gap during which the pg_cron reaper (``reap_stuck_tasks``,
+    every minute) can reclaim the row to PENDING. When that happens the
+    reconciler's heartbeat finds no ACTIVE row to update; the caller logs a
+    WARNING so operators can see how often the race fires in practice and
+    tune the reconciler interval down accordingly. See #741 item 3.
+    """
+    task_schema = get_task_schema()
+    new_locked_until = datetime.now(timezone.utc) + visibility_timeout
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET locked_until = :locked_until,
+            last_heartbeat_at = NOW()
+        WHERE task_id = :task_id
+          AND status = 'ACTIVE';
+    """
+    async with managed_transaction(engine) as conn:
+        rowcount = await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
+            conn, locked_until=new_locked_until, task_id=task_id
+        )
+    return bool(rowcount and rowcount > 0)
+
+
 async def set_runner_ref(
     engine: DbResource,
     task_id: uuid.UUID,
