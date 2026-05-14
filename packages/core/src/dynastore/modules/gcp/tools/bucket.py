@@ -43,6 +43,19 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+class BucketConflictError(RuntimeError):
+    """The deterministic bucket name is already taken by something we must not touch.
+
+    Raised when a bucket name collides with a bucket owned by a *different* GCP
+    project, or (surfaced higher up) a bucket already linked to a *different*
+    catalog. It is a ``RuntimeError`` subclass so existing ``except RuntimeError``
+    handlers still catch it, but provisioning treats it specially: the catalog
+    is marked ``conflict`` and the bucket is **never** deleted — the collision is
+    not ours to resolve and force-deleting it would destroy another owner's data.
+    """
+
+
 class FileSystem(StrEnum):
     gs = "gs"
     https = "https"
@@ -129,7 +142,7 @@ def _create_bucket_sync(
     bucket_config: GcpCatalogBucketConfig,
     project_id: Optional[str] = None,
     client: Optional[storage.Client] = None,
-) -> storage.Bucket:
+) -> Tuple[storage.Bucket, bool]:
     """
     Creates a new GCS bucket using Application Default Credentials.
 
@@ -146,7 +159,14 @@ def _create_bucket_sync(
         client (storage.Client, optional): The GCS client to use.
 
     Returns:
-        storage.Bucket: The created or existing bucket object.
+        Tuple[storage.Bucket, bool]: the bucket object, and ``created`` —
+        ``True`` if this call created the bucket, ``False`` if it already
+        existed (a ``Conflict`` was resolved by fetching it). Callers MUST NOT
+        orphan-delete a bucket they did not create.
+
+    Raises:
+        BucketConflictError: the name is taken by a bucket in another GCP
+        project — not ours to claim or delete.
     """
     try:
         bucket_location = bucket_config.location
@@ -170,7 +190,7 @@ def _create_bucket_sync(
             setattr(bucket, "cache_control", "public, max-age=3600")
             bucket.patch()
 
-        return bucket
+        return bucket, True
     except Conflict:
         logger.warning(f"Bucket {bucket_name} already exists.")
         # GCS eventual consistency: the bucket was just created (by another process/request)
@@ -179,14 +199,15 @@ def _create_bucket_sync(
         import time
         for attempt in range(5):
             try:
-                return client_to_use.get_bucket(bucket_name)
+                # created=False: the bucket pre-existed this call. The caller
+                # must not orphan-delete it on a later failure.
+                return client_to_use.get_bucket(bucket_name), False
             except Forbidden as exc:
-                # The bucket name is globally taken by a different GCP project —
-                # we cannot claim it.  Raise a clear RuntimeError so the task
-                # dispatcher retries (the retry will generate the same
-                # deterministic name, but it may succeed once the conflicting
-                # bucket is deleted or IAM grants propagate).
-                raise RuntimeError(
+                # The bucket name is globally taken by a bucket in a different
+                # GCP project — it is not ours to claim or delete. Surface a
+                # BucketConflictError so provisioning marks the catalog
+                # 'conflict' instead of retrying a name that can never succeed.
+                raise BucketConflictError(
                     f"Bucket '{bucket_name}' exists in another GCP project or "
                     f"service-account lacks storage.buckets.get permission: {exc}"
                 ) from exc
@@ -213,8 +234,8 @@ async def create_bucket(
     bucket_config: GcpCatalogBucketConfig,
     project_id: Optional[str] = None,
     client: Optional[storage.Client] = None,
-) -> storage.Bucket:
-    """Async wrapper for _create_bucket_sync."""
+) -> Tuple[storage.Bucket, bool]:
+    """Async wrapper for _create_bucket_sync. Returns ``(bucket, created)``."""
     return await asyncio.to_thread(_create_bucket_sync, bucket_name, bucket_config, project_id, client=client)
 
 def _delete_bucket_sync(bucket_name: str, force: bool = False, client: Optional[storage.Client] = None):

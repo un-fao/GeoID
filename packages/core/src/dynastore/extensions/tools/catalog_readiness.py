@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 READY = "ready"
 PROVISIONING = "provisioning"
 FAILED = "failed"
+CONFLICT = "conflict"
 
 
 async def require_catalog_ready(
@@ -105,6 +106,17 @@ async def require_catalog_ready(
                 f"backing storage was never created.  Delete the "
                 f"catalog (DELETE /stac/catalogs/{catalog_id}) and "
                 f"recreate it after resolving the underlying cause."
+            ),
+        )
+    if status_value == CONFLICT:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Catalog '{catalog_id}' provisioning hit a storage-name "
+                f"conflict — the deterministic bucket name is already taken "
+                f"by another project or catalog, and was left intact (no "
+                f"data deleted).  Recreate the catalog under a different id "
+                f"or physical schema after resolving the collision."
             ),
         )
 
