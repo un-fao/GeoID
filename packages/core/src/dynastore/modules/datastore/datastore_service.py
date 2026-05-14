@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+import os
 from psycopg2.extras import register_default_jsonb, register_default_json
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -108,11 +109,24 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                 logger.info("Synchronous database engine already exists in app state.")
                 raise Exception("Synchronous database engine already initialized.")
             else:
+                # Tag wire-level connections with the logical service name so
+                # ``pg_stat_activity.application_name`` is populated and
+                # per-service contention is visible from the DB side. See
+                # #699 / #655. psycopg2 honours libpq ``application_name``
+                # in connect_args.
+                from dynastore.modules.db_config.instance import (
+                    get_service_name,
+                )
+                app_name = get_service_name() or os.getenv(
+                    "SERVICE_NAME"
+                ) or "dynastore"
+
                 app_state.sync_engine = create_engine(
                     normalize_db_url(db_config.database_url, is_async=False),
                     pool_size=db_config.pool_min_size,
                     max_overflow=db_config.pool_max_size - db_config.pool_min_size,
                     pool_timeout=db_config.pool_command_timeout,
+                    connect_args={"application_name": app_name},
                 )
                 logger.info("SQLAlchemy SyncEngine established successfully.")
 
