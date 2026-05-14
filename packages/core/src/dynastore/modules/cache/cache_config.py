@@ -30,7 +30,7 @@ from typing import ClassVar, Tuple
 from pydantic import BaseModel, Field
 
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import PluginConfig
+from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
 class CachePluginConfig(ExposableConfigMixin, PluginConfig):
@@ -43,7 +43,7 @@ class CachePluginConfig(ExposableConfigMixin, PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "module_cache", None)
 
     # Re-export CacheConfig fields directly for cleaner API
-    probe_timeout_seconds: float = Field(
+    probe_timeout_seconds: Mutable[float] = Field(
         default=5.0,
         ge=1,
         le=60,
@@ -54,7 +54,7 @@ class CachePluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    socket_connect_timeout_seconds: float = Field(
+    socket_connect_timeout_seconds: Mutable[float] = Field(
         default=10.0,
         ge=1,
         le=60,
@@ -65,7 +65,7 @@ class CachePluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    circuit_breaker_threshold: int = Field(
+    circuit_breaker_threshold: Mutable[int] = Field(
         default=3,
         ge=1,
         le=10,
@@ -75,7 +75,7 @@ class CachePluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
-    oracle_inner_timeout_seconds: float = Field(
+    oracle_inner_timeout_seconds: Mutable[float] = Field(
         default=0.5,
         ge=0.05,
         le=5.0,
