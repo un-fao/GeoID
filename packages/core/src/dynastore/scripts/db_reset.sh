@@ -2,7 +2,7 @@
 #
 # db_reset.sh — inspect or wipe all app-owned schemas in the PostgreSQL DB.
 #
-# Cleanup tiers (see plan synchronous-enchanting-hearth):
+# Cleanup tiers:
 #   * Boot tier (THIS SCRIPT) — Postgres-level; drops user schemas, wipes
 #     orphan cron jobs, preserves/truncates the `keycloak` schema. Invoked by
 #     src/dynastore/scripts/db_entrypoint_dev.sh at dev/test container start,

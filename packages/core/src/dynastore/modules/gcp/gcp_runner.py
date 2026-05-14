@@ -133,8 +133,8 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
     Path 2 used to call ``create_task`` unconditionally, producing one new row
     + one Cloud Run Job execution per dispatcher claim. Combined with the
     pg_cron reaper resetting ACTIVE rows back to PENDING when ``locked_until``
-    lapsed, this caused an unbounded re-enqueue loop. See plan
-    ``geoid-when-a-job-giggly-diffie`` for the full diagnosis.
+    lapsed, this caused an unbounded re-enqueue loop. See #726 for the full
+    diagnosis and #735 for the liveness-reconciler followup.
     """
 
     mode = TaskExecutionMode.ASYNCHRONOUS
