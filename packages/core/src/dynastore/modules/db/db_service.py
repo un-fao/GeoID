@@ -154,7 +154,7 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     max_overflow=db_config.pool_max_size - db_config.pool_min_size,
                     pool_timeout=db_config.pool_command_timeout,
                     pool_pre_ping=True,
-                    pool_recycle=1800,
+                    pool_recycle=db_config.pool_recycle,
                     connect_args={
                         "timeout": db_config.connect_timeout,
                         # asyncpg has no libpq client-side keepalive params;

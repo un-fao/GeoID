@@ -29,10 +29,20 @@ class DBConfig:
     pool_max_inactive_connection_lifetime: int = int(os.getenv("DB_POOL_MAX_INACTIVE_CONNECTION_LIFETIME", "30"))
     pool_command_timeout: int = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "60"))
     connect_timeout: int = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
-    # TCP keepalive tunables (#655). Cloud NAT silently drops the established-
-    # connection mapping after ~1200s idle; without keepalive probes the pool
-    # hands out a dead-at-the-wire socket whose replacement handshake to
-    # AlloyDB costs 8-22s. The idle window must sit well under that 1200s.
+    # SQLAlchemy retires a pooled connection once it reaches this age (#729).
+    # On serverless deployments the VPC-egress path silently drops a TCP
+    # connection that has been idle past its window; once dropped, the next
+    # checkout's pool_pre_ping fails and the replacement handshake costs 8-22s.
+    # Recycling proactively — while the path is still warm — keeps reconnects
+    # sub-second. Keep this BELOW the deployment's idle-drop window (set a
+    # lower DB_POOL_RECYCLE per-environment where idle periods are common).
+    pool_recycle: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    # TCP keepalive tunables (#655). The egress path silently drops the
+    # established-connection mapping after an idle window; without keepalive
+    # probes the pool hands out a dead-at-the-wire socket whose replacement
+    # handshake costs 8-22s. NOTE (#710): these are server-side GUCs only —
+    # they do not arm SO_KEEPALIVE on the client socket; pool_recycle above
+    # is the load-bearing mitigation until client-side keepalives land.
     tcp_keepalives_idle: int = int(os.getenv("DB_TCP_KEEPALIVES_IDLE", "300"))
     tcp_keepalives_interval: int = int(os.getenv("DB_TCP_KEEPALIVES_INTERVAL", "30"))
     tcp_keepalives_count: int = int(os.getenv("DB_TCP_KEEPALIVES_COUNT", "5"))

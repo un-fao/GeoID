@@ -59,11 +59,17 @@ def _async_engine_mock() -> MagicMock:
 
 def test_db_config_exposes_tcp_keepalive_defaults():
     cfg = DBConfig()
-    # Idle window must sit well under Cloud NAT's ~1200s established-conn
-    # timeout so the mapping is refreshed before NAT drops it.
+    # Idle window must sit well under the egress path's ~1200s established-conn
+    # timeout so the mapping is refreshed before it is dropped.
     assert cfg.tcp_keepalives_idle == 300
     assert cfg.tcp_keepalives_interval == 30
     assert cfg.tcp_keepalives_count == 5
+
+
+def test_db_config_exposes_pool_recycle_default():
+    # #729 — pool_recycle is env-driven so idle-prone environments can retire
+    # connections before the egress path silently drops them.
+    assert DBConfig().pool_recycle == 1800
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +99,24 @@ async def test_async_engine_sets_tcp_keepalive_server_settings():
     assert "application_name" in server_settings
 
 
+@pytest.mark.asyncio
+async def test_async_engine_pool_recycle_tracks_config():
+    # #729 — the async engine recycles by DBConfig.pool_recycle, not a
+    # hardcoded constant, so idle-prone environments can lower it.
+    app_state = SimpleNamespace(db_config=DBConfig())
+
+    with patch(
+        "dynastore.modules.db.db_service.create_async_engine",
+        return_value=_async_engine_mock(),
+    ) as mk:
+        async with DBService(app_state).lifespan(app_state):
+            pass
+
+    kwargs = mk.call_args.kwargs
+    assert kwargs["pool_pre_ping"] is True
+    assert kwargs["pool_recycle"] == app_state.db_config.pool_recycle == 1800
+
+
 # --------------------------------------------------------------------------
 # Sync engine (psycopg2) — pool hygiene parity + libpq client keepalives
 # --------------------------------------------------------------------------
@@ -115,7 +139,8 @@ async def test_sync_engine_has_pool_pre_ping_and_recycle():
     kwargs = mk.call_args.kwargs
     # Parity with the async engine in db_service.py.
     assert kwargs["pool_pre_ping"] is True
-    assert kwargs["pool_recycle"] == 1800
+    # pool_recycle tracks DBConfig (#729) rather than a hardcoded constant.
+    assert kwargs["pool_recycle"] == app_state.db_config.pool_recycle == 1800
 
 
 @pytest.mark.asyncio
