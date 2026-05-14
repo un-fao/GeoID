@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 # Hard-import the async PG driver at module load.  When SCOPE excludes
@@ -134,6 +135,18 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     f"DBService: Using DB configuration: {db_config.database_url}"
                 )
 
+                # Tag every wire-level connection with the logical service
+                # name so DB-side ``pg_stat_activity.application_name`` is
+                # populated. Without this every connection shows as the empty
+                # string and per-service contention cannot be diagnosed from
+                # the DB side. See #699 / #655.
+                from dynastore.modules.db_config.instance import (
+                    get_service_name,
+                )
+                app_name = get_service_name() or os.getenv(
+                    "SERVICE_NAME"
+                ) or "dynastore"
+
                 # 1. Create Engine
                 app_state.engine = create_async_engine(
                     normalize_db_url(db_config.database_url, is_async=True),
@@ -142,7 +155,10 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     pool_timeout=db_config.pool_command_timeout,
                     pool_pre_ping=True,
                     pool_recycle=1800,
-                    connect_args={"timeout": db_config.connect_timeout},
+                    connect_args={
+                        "timeout": db_config.connect_timeout,
+                        "server_settings": {"application_name": app_name},
+                    },
                 )
                 engine_created_by_service = True
                 logger.info(

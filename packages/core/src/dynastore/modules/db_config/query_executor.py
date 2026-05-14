@@ -1105,7 +1105,60 @@ def retry_on_transient_connect(
 # without needing a prometheus_client dep + scrape endpoint. INFO when slow,
 # DEBUG otherwise.
 _SLOW_POOL_ACQUIRE_THRESHOLD_S = 0.5
-_SERVICE_NAME_FOR_METRICS = os.getenv("SERVICE_NAME", "unknown")
+
+
+def _resolve_service_name() -> str:
+    """Same source-of-truth used by dispatcher service-affinity routing
+    (``instance.json``). Falls back to ``SERVICE_NAME`` env var, then to the
+    literal ``"unknown"`` so the log line is never empty.
+    """
+    try:
+        from dynastore.modules.db_config.instance import get_service_name
+        name = get_service_name()
+        if name:
+            return name
+    except Exception:  # noqa: BLE001 — never let metrics setup crash imports
+        pass
+    return os.getenv("SERVICE_NAME") or "unknown"
+
+
+_SERVICE_NAME_FOR_METRICS = _resolve_service_name()
+
+
+# Optional per-acquire workload tag — pushed by callers that have richer
+# context than "this process is service X" (e.g. a task runner pushes
+# ``task_type=…``; a request middleware pushes ``catalog_id=…``). Surfaces in
+# the slow-acquire log line so a 5-min log slice can be partitioned by who
+# actually held the pool. Issue #699.
+_pool_acquire_scope: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "pool_acquire_scope", default=""
+)
+
+
+@contextmanager
+def pool_acquire_scope(**tags: object):
+    """Push key=value tags onto the next ``db_pool_acquire`` log line(s)
+    inside this block. Tags are merged with any outer scope (newer wins on
+    duplicate keys). Empty/None values are skipped so callers can pass
+    optional context unconditionally.
+    """
+    parts = [f"{k}={v}" for k, v in tags.items() if v not in (None, "")]
+    if not parts:
+        yield
+        return
+    suffix = " ".join(parts)
+    prev = _pool_acquire_scope.get()
+    merged = f"{prev} {suffix}".strip() if prev else suffix
+    token = _pool_acquire_scope.set(merged)
+    try:
+        yield
+    finally:
+        _pool_acquire_scope.reset(token)
+
+
+def _acquire_scope_suffix() -> str:
+    s = _pool_acquire_scope.get()
+    return f" {s}" if s else ""
 
 
 async def _drain_rollback_exit(txn_cm: Any, exc: BaseException) -> None:
@@ -1148,20 +1201,21 @@ async def _acquire_async_engine_connection(engine: AsyncEngine) -> AsyncConnecti
     except BaseException:
         wait_s = time.monotonic() - t0
         logger.info(
-            "db_pool_acquire failed service=%s wait_seconds=%.4f",
-            _SERVICE_NAME_FOR_METRICS, wait_s,
+            "db_pool_acquire failed service=%s wait_seconds=%.4f%s",
+            _SERVICE_NAME_FOR_METRICS, wait_s, _acquire_scope_suffix(),
         )
         raise
     wait_s = time.monotonic() - t0
     if wait_s >= _SLOW_POOL_ACQUIRE_THRESHOLD_S:
         logger.info(
-            "db_pool_acquire slow service=%s wait_seconds=%.4f threshold=%.2f",
+            "db_pool_acquire slow service=%s wait_seconds=%.4f threshold=%.2f%s",
             _SERVICE_NAME_FOR_METRICS, wait_s, _SLOW_POOL_ACQUIRE_THRESHOLD_S,
+            _acquire_scope_suffix(),
         )
     else:
         logger.debug(
-            "db_pool_acquire service=%s wait_seconds=%.4f",
-            _SERVICE_NAME_FOR_METRICS, wait_s,
+            "db_pool_acquire service=%s wait_seconds=%.4f%s",
+            _SERVICE_NAME_FOR_METRICS, wait_s, _acquire_scope_suffix(),
         )
     try:
         try:

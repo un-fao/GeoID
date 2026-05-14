@@ -21,6 +21,7 @@ from dynastore.modules.db_config import query_executor
 from dynastore.modules.db_config.query_executor import (
     _SLOW_POOL_ACQUIRE_THRESHOLD_S,
     _acquire_async_engine_connection,
+    pool_acquire_scope,
     retry_on_transient_connect,
 )
 
@@ -159,3 +160,173 @@ class TestPoolWaitMetric:
         assert len(failed) == 1
         assert failed[0].levelno == logging.INFO
         assert "wait_seconds=" in failed[0].getMessage()
+
+
+class TestPoolAcquireScope:
+    """Issue #699: pool_acquire_scope() pushes workload tags onto the
+    next ``db_pool_acquire`` log line so a 5-min log slice can be
+    partitioned by who actually held the pool.
+    """
+
+    def test_scope_tags_appear_on_slow_acquire(self, caplog):
+        engine = _FakeEngine(delay=_SLOW_POOL_ACQUIRE_THRESHOLD_S + 0.05)
+        caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+
+        async def _go():
+            with pool_acquire_scope(
+                task_type="gcp_provision_phase3",
+                catalog_id="adm2_catalog_7",
+            ):
+                await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+
+        asyncio.run(_go())
+
+        slow = [
+            r for r in caplog.records
+            if "db_pool_acquire slow" in r.getMessage()
+        ]
+        assert len(slow) == 1
+        msg = slow[0].getMessage()
+        assert "task_type=gcp_provision_phase3" in msg
+        assert "catalog_id=adm2_catalog_7" in msg
+
+    def test_scope_tags_absent_when_no_scope_pushed(self, caplog):
+        engine = _FakeEngine(delay=_SLOW_POOL_ACQUIRE_THRESHOLD_S + 0.05)
+        caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+        asyncio.run(_acquire_async_engine_connection(engine))  # type: ignore[arg-type]
+
+        slow = [
+            r for r in caplog.records
+            if "db_pool_acquire slow" in r.getMessage()
+        ]
+        assert len(slow) == 1
+        # No trailing kv pairs beyond the existing service= / wait_seconds= /
+        # threshold= triplet — verify by token count not by exact equality so
+        # this stays robust to incidental log format tweaks.
+        msg = slow[0].getMessage()
+        assert "task_type=" not in msg
+        assert "catalog_id=" not in msg
+
+    def test_scope_tags_appear_on_failed_acquire(self, caplog):
+        with patch.object(
+            query_executor, "_TRANSIENT_CONNECT_EXCEPTIONS", (RuntimeError,)
+        ):
+            engine = _FakeEngine(raises=ValueError("boom"))
+            caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+
+            async def _go():
+                with pool_acquire_scope(
+                    task_type="capability_publisher", loop="reactive_reaper",
+                ):
+                    await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+
+            with pytest.raises(ValueError):
+                asyncio.run(_go())
+
+        failed = [
+            r for r in caplog.records
+            if "db_pool_acquire failed" in r.getMessage()
+        ]
+        assert len(failed) == 1
+        msg = failed[0].getMessage()
+        assert "task_type=capability_publisher" in msg
+        assert "loop=reactive_reaper" in msg
+
+    def test_nested_scope_merges_outer_and_inner(self, caplog):
+        engine = _FakeEngine(delay=_SLOW_POOL_ACQUIRE_THRESHOLD_S + 0.05)
+        caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+
+        async def _go():
+            with pool_acquire_scope(catalog_id="cat1"):
+                with pool_acquire_scope(task_type="ingest"):
+                    await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+
+        asyncio.run(_go())
+        slow = [
+            r for r in caplog.records
+            if "db_pool_acquire slow" in r.getMessage()
+        ]
+        assert len(slow) == 1
+        msg = slow[0].getMessage()
+        assert "catalog_id=cat1" in msg
+        assert "task_type=ingest" in msg
+
+    def test_empty_and_none_tags_are_skipped(self, caplog):
+        engine = _FakeEngine(delay=_SLOW_POOL_ACQUIRE_THRESHOLD_S + 0.05)
+        caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+
+        async def _go():
+            # Callers can pass optional context unconditionally; falsy values
+            # must not produce ``key=`` or ``key=None`` noise in the log.
+            with pool_acquire_scope(
+                catalog_id=None, task_type="", collection_id="cset1",
+            ):
+                await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+
+        asyncio.run(_go())
+        slow = [
+            r for r in caplog.records
+            if "db_pool_acquire slow" in r.getMessage()
+        ]
+        msg = slow[0].getMessage()
+        assert "catalog_id=" not in msg
+        assert "task_type=" not in msg
+        assert "collection_id=cset1" in msg
+
+    def test_scope_resets_after_block_exits(self, caplog):
+        engine = _FakeEngine(delay=_SLOW_POOL_ACQUIRE_THRESHOLD_S + 0.05)
+        caplog.set_level(logging.DEBUG, logger=query_executor.__name__)
+
+        async def _go():
+            with pool_acquire_scope(task_type="ingest"):
+                await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+            # Second acquire is OUTSIDE the scope block — must not inherit it.
+            await _acquire_async_engine_connection(engine)  # type: ignore[arg-type]
+
+        asyncio.run(_go())
+        slow = [
+            r for r in caplog.records
+            if "db_pool_acquire slow" in r.getMessage()
+        ]
+        assert len(slow) == 2
+        assert "task_type=ingest" in slow[0].getMessage()
+        assert "task_type=" not in slow[1].getMessage()
+
+
+class TestServiceNameResolution:
+    """Issue #699: service= field must come from instance.json (the same
+    source the dispatcher uses) rather than from an env var that is unset
+    on Cloud Run revisions. Falls back to env, then to ``unknown``.
+    """
+
+    def test_resolve_prefers_instance_json(self, monkeypatch):
+        monkeypatch.delenv("SERVICE_NAME", raising=False)
+        with patch(
+            "dynastore.modules.db_config.instance.get_service_name",
+            return_value="dynastore-catalog",
+        ):
+            assert query_executor._resolve_service_name() == "dynastore-catalog"
+
+    def test_resolve_falls_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("SERVICE_NAME", "fallback-svc")
+        with patch(
+            "dynastore.modules.db_config.instance.get_service_name",
+            return_value=None,
+        ):
+            assert query_executor._resolve_service_name() == "fallback-svc"
+
+    def test_resolve_falls_back_to_unknown(self, monkeypatch):
+        monkeypatch.delenv("SERVICE_NAME", raising=False)
+        with patch(
+            "dynastore.modules.db_config.instance.get_service_name",
+            return_value=None,
+        ):
+            assert query_executor._resolve_service_name() == "unknown"
+
+    def test_resolve_swallows_instance_load_errors(self, monkeypatch):
+        monkeypatch.setenv("SERVICE_NAME", "envname")
+        with patch(
+            "dynastore.modules.db_config.instance.get_service_name",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            assert query_executor._resolve_service_name() == "envname"
