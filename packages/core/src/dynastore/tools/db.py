@@ -80,5 +80,41 @@ def validate_sql_identifier(identifier: str) -> str:
             "Identifier must start with a letter or underscore, and contain only "
             "lowercase letters, numbers, underscores, dots, or JSON operators (->)."
         )
-        
+
     return identifier_lower
+
+
+def validate_column_identifier(identifier: str) -> str:
+    """
+    Validate a user-supplied physical column name, preserving its case.
+
+    Unlike ``validate_sql_identifier`` (which lowercases and permits ``.``/``>``/``-``
+    for JSON/qualified paths), this enforces a plain SQL identifier so the name is
+    safe to interpolate — quoted — into DDL/DML and to reuse verbatim as a
+    SQLAlchemy bind-parameter name.
+
+    Raises:
+        InvalidIdentifierError: If the name is not a plain identifier.
+
+    Returns:
+        str: The validated column name, unchanged.
+    """
+    if not isinstance(identifier, str) or not identifier:
+        raise InvalidIdentifierError("Column name must be a non-empty string.")
+
+    if len(identifier) > 63:
+        raise InvalidIdentifierError("Column name must be 63 characters or less.")
+
+    if identifier.lower() in POSTGRES_RESERVED_WORDS:
+        raise InvalidIdentifierError(
+            f"Column name '{identifier}' is a reserved keyword."
+        )
+
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", identifier):
+        raise InvalidIdentifierError(
+            f"Column name '{identifier}' is invalid: it must start with a letter or "
+            "underscore and contain only letters, digits, and underscores "
+            "(no spaces, dots, or symbols)."
+        )
+
+    return identifier
