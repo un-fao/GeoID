@@ -40,6 +40,7 @@ from dynastore.modules.gcp.gcp_config import (
     GcpLocation,
 )
 from dynastore.modules.gcp.tools import bucket as bucket_tool
+from dynastore.modules.gcp.tools.bucket import BucketConflictError
 from dynastore.modules.concurrency import run_in_thread
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,7 @@ class BucketService:
         context: Optional[LifecycleContext] = None,
         auto_create: bool = True,
         config_override: Optional[GcpCatalogBucketConfig] = None,
+        raise_on_failure: bool = False,
     ) -> Optional[str]:
         """
         Retrieves the bucket name for a catalog, creating it if it doesn't exist.
@@ -380,6 +382,12 @@ class BucketService:
             context: Optional lifecycle context to avoid querying non-existent catalog
             auto_create: If True, create the bucket if it doesn't exist.
             config_override: Optional configuration to use for creation (overrides DB/context).
+            raise_on_failure: If True, propagate the underlying exception instead of
+                swallowing it and returning None. Callers that treat a missing bucket
+                as a hard failure (e.g. ``GcpProvisionCatalogTask`` via
+                ``setup_catalog_gcp_resources``) should set this so the real GCS / DB
+                error reaches the logs and the task layer, rather than a generic
+                "Bucket name returned as None". Graceful callers leave it False.
         """
 
         # ── Caller-managed transaction: legacy single-tx behavior. ──
@@ -393,6 +401,7 @@ class BucketService:
                 context=context,
                 auto_create=auto_create,
                 config_override=config_override,
+                raise_on_failure=raise_on_failure,
             )
 
         # ── conn=None: three-phase to avoid holding a pooled conn across GCS I/O ──
@@ -429,7 +438,7 @@ class BucketService:
         )
 
         try:
-            await self._gcs_create_and_configure_bucket(
+            bucket_created = await self._gcs_create_and_configure_bucket(
                 new_bucket_name, effective_config, catalog_id
             )
         except Exception as e:
@@ -437,11 +446,14 @@ class BucketService:
                 f"Failed to create or configure bucket for catalog '{catalog_id}': {e}",
                 exc_info=True,
             )
+            if raise_on_failure:
+                raise
             return None
 
         # Phase 3 (short tx): link bucket → catalog. On failure, clean up the
-        # bucket we just created — otherwise we leak a GCS bucket the DB doesn't
-        # know about.
+        # bucket ONLY if we created it this call — a pre-existing bucket
+        # (``bucket_created is False``) is owned by someone else and force-
+        # deleting it would destroy their data.
         try:
             async with managed_transaction(self.engine) as p3_conn:
                 result = await gcp_db.link_bucket_to_catalog_query.execute(
@@ -452,7 +464,23 @@ class BucketService:
                 f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}': {e}",
                 exc_info=True,
             )
-            await self._cleanup_orphan_bucket(new_bucket_name)
+            if bucket_created:
+                await self._cleanup_orphan_bucket(new_bucket_name)
+                if raise_on_failure:
+                    raise
+                return None
+            # Pre-existing bucket + link failure → the name is already linked
+            # to another catalog (bucket_name UNIQUE violation). Leave it
+            # intact and surface a conflict so the catalog is marked 'conflict'.
+            logger.warning(
+                f"Bucket '{new_bucket_name}' pre-existed before this attempt; "
+                f"leaving it intact (not ours to delete)."
+            )
+            if raise_on_failure:
+                raise BucketConflictError(
+                    f"Bucket '{new_bucket_name}' is already linked to another "
+                    f"catalog; cannot link it to '{catalog_id}'."
+                ) from e
             return None
 
         if result:
@@ -461,11 +489,15 @@ class BucketService:
             )
             return result
 
-        logger.error(
+        msg = (
             f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
             "and no result returned."
         )
-        await self._cleanup_orphan_bucket(new_bucket_name)
+        logger.error(msg)
+        if bucket_created:
+            await self._cleanup_orphan_bucket(new_bucket_name)
+        if raise_on_failure:
+            raise RuntimeError(msg)
         return None
 
     async def _ensure_storage_single_tx(
@@ -476,6 +508,7 @@ class BucketService:
         context: Optional[LifecycleContext],
         auto_create: bool,
         config_override: Optional[GcpCatalogBucketConfig],
+        raise_on_failure: bool = False,
     ) -> Optional[str]:
         """Legacy single-tx path for callers that pass an explicit `conn`."""
         bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
@@ -507,29 +540,63 @@ class BucketService:
         )
 
         try:
-            await self._gcs_create_and_configure_bucket(
+            bucket_created = await self._gcs_create_and_configure_bucket(
                 new_bucket_name, effective_config, catalog_id
             )
+        except Exception as e:
+            logger.error(
+                f"Failed to create or configure bucket for catalog '{catalog_id}': {e}",
+                exc_info=True,
+            )
+            # Nothing to clean up: creation either failed before the bucket
+            # existed, or it pre-existed and is not ours to delete.
+            if raise_on_failure:
+                raise
+            return None
+
+        # Link bucket → catalog. Clean up ONLY a bucket we created this call;
+        # a pre-existing bucket is owned by someone else.
+        try:
             result = await gcp_db.link_bucket_to_catalog_query.execute(
                 conn, catalog_id=catalog_id, bucket_name=new_bucket_name
             )
-            if result:
-                logger.info(
-                    f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
-                )
-                return result
-            logger.error(
-                f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
-                "and no result returned."
-            )
-            return None
         except Exception as e:
             logger.error(
-                f"Failed to create or link bucket for catalog '{catalog_id}': {e}",
+                f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}': {e}",
                 exc_info=True,
             )
-            await self._cleanup_orphan_bucket(new_bucket_name)
+            if bucket_created:
+                await self._cleanup_orphan_bucket(new_bucket_name)
+                if raise_on_failure:
+                    raise
+                return None
+            logger.warning(
+                f"Bucket '{new_bucket_name}' pre-existed before this attempt; "
+                f"leaving it intact (not ours to delete)."
+            )
+            if raise_on_failure:
+                raise BucketConflictError(
+                    f"Bucket '{new_bucket_name}' is already linked to another "
+                    f"catalog; cannot link it to '{catalog_id}'."
+                ) from e
             return None
+
+        if result:
+            logger.info(
+                f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
+            )
+            return result
+
+        msg = (
+            f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
+            "and no result returned."
+        )
+        logger.error(msg)
+        if bucket_created:
+            await self._cleanup_orphan_bucket(new_bucket_name)
+        if raise_on_failure:
+            raise RuntimeError(msg)
+        return None
 
     async def _resolve_effective_config(
         self,
@@ -592,9 +659,14 @@ class BucketService:
         new_bucket_name: str,
         effective_config: GcpCatalogBucketConfig,
         catalog_id: str,
-    ) -> None:
-        """Pure GCS-side work. Must NOT hold a pooled DB connection (see #486)."""
-        await bucket_tool.create_bucket(
+    ) -> bool:
+        """Pure GCS-side work. Must NOT hold a pooled DB connection (see #486).
+
+        Returns ``created``: True if this call created the bucket, False if it
+        already existed. Callers use this to decide whether a later failure may
+        orphan-delete the bucket — a pre-existing bucket is never ours to delete.
+        """
+        _bucket, created = await bucket_tool.create_bucket(
             new_bucket_name,
             effective_config,
             self.project_id,
@@ -606,8 +678,12 @@ class BucketService:
 
             await log_info(
                 catalog_id,
-                event_type="gcp_bucket_created",
-                message=f"GCS bucket '{new_bucket_name}' created successfully.",
+                event_type="gcp_bucket_created" if created else "gcp_bucket_adopted",
+                message=(
+                    f"GCS bucket '{new_bucket_name}' created successfully."
+                    if created
+                    else f"GCS bucket '{new_bucket_name}' already existed; adopting it."
+                ),
                 details={
                     "bucket_name": new_bucket_name,
                     "location": effective_config.location,
@@ -625,6 +701,7 @@ class BucketService:
             bucket.blob(f"{bucket_tool.COLLECTIONS_FOLDER}/").upload_from_string("")
 
         await run_in_thread(_setup_placeholders)
+        return created
 
     async def _cleanup_orphan_bucket(self, bucket_name: str) -> None:
         """Best-effort delete of a GCS bucket whose DB link could not be established."""

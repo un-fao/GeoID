@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.modules.gcp.bucket_service import BucketService
+from dynastore.modules.gcp.tools.bucket import BucketConflictError
 
 
 def _fake_conn() -> Any:
@@ -99,7 +100,7 @@ async def test_phase_split_when_conn_is_none():
         fake_gcp_db.link_bucket_to_catalog_query.execute = AsyncMock(
             return_value="my-test-project-cat-1"
         )
-        fake_tool.create_bucket = AsyncMock(return_value=MagicMock())
+        fake_tool.create_bucket = AsyncMock(return_value=(MagicMock(), True))
         fake_tool.CATALOG_FOLDER = "catalog"
         fake_tool.COLLECTIONS_FOLDER = "collections"
 
@@ -172,7 +173,7 @@ async def test_link_failure_cleans_up_orphan_bucket():
         fake_gcp_db.link_bucket_to_catalog_query.execute = AsyncMock(
             side_effect=RuntimeError("DB link failed")
         )
-        fake_tool.create_bucket = AsyncMock(return_value=MagicMock())
+        fake_tool.create_bucket = AsyncMock(return_value=(MagicMock(), True))
         fake_tool.delete_bucket = AsyncMock()
         fake_tool.CATALOG_FOLDER = "catalog"
         fake_tool.COLLECTIONS_FOLDER = "collections"
@@ -231,3 +232,177 @@ async def test_caller_provided_conn_keeps_single_tx_path():
     assert result == "existing-bucket"
     # No managed_transaction was opened -- caller's conn was used directly.
     assert events == []
+
+
+# ── raise_on_failure: provisioning callers must see the real cause ──
+#
+# Without this flag, a GCS create / DB link failure is logged with exc_info
+# and swallowed as `return None`. The caller (`setup_catalog_gcp_resources`)
+# then raises a generic "Bucket name returned as None", discarding the
+# original exception. `raise_on_failure=True` propagates the real cause so it
+# reaches the task layer and the top of the log.
+
+
+@pytest.mark.asyncio
+async def test_raise_on_failure_propagates_gcs_create_error():
+    """raise_on_failure=True: a GCS create failure propagates, not None."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_tool.create_bucket = AsyncMock(
+            side_effect=RuntimeError("403 GCS bucket create denied")
+        )
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(RuntimeError, match="GCS bucket create denied"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+
+@pytest.mark.asyncio
+async def test_raise_on_failure_propagates_link_error():
+    """raise_on_failure=True: a P3 link failure propagates after orphan cleanup."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_gcp_db.link_bucket_to_catalog_query.execute = AsyncMock(
+            side_effect=RuntimeError("DB link failed")
+        )
+        fake_tool.create_bucket = AsyncMock(return_value=(MagicMock(), True))
+        fake_tool.delete_bucket = AsyncMock()
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(RuntimeError, match="DB link failed"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+    # Orphan cleanup still runs before the exception propagates.
+    fake_tool.delete_bucket.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failure_still_returns_none_by_default():
+    """Default (raise_on_failure=False) keeps graceful None for non-provisioning callers."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_tool.create_bucket = AsyncMock(
+            side_effect=RuntimeError("403 GCS bucket create denied")
+        )
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        result = await bm.ensure_storage_for_catalog("cat_1")
+
+    assert result is None
+
+
+# ── bucket-name conflict safety: never force-delete a bucket we did not create ──
+#
+# `_create_bucket_sync` returns `(bucket, created)`. When `created is False`
+# (the name pre-existed — a Conflict was resolved by fetching it), a later link
+# failure must NOT orphan-delete the bucket: it belongs to another project or
+# catalog and force-deletion would destroy its data. Instead provisioning
+# surfaces a BucketConflictError so the catalog is marked 'conflict'.
+
+
+@pytest.mark.asyncio
+async def test_preexisting_bucket_link_failure_does_not_delete():
+    """created=False + link failure → bucket is NOT deleted, conflict is raised."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        # bucket_name UNIQUE violation: the name is already linked elsewhere.
+        fake_gcp_db.link_bucket_to_catalog_query.execute = AsyncMock(
+            side_effect=RuntimeError("duplicate key value violates unique constraint")
+        )
+        # created=False → the bucket pre-existed this call.
+        fake_tool.create_bucket = AsyncMock(return_value=(MagicMock(), False))
+        fake_tool.delete_bucket = AsyncMock()
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(BucketConflictError, match="already linked to another"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+    # The pre-existing bucket must be left intact — no delete call at all.
+    fake_tool.delete_bucket.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_conflict_in_other_project_propagates():
+    """A BucketConflictError from create_bucket propagates unchanged (no delete)."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_tool.create_bucket = AsyncMock(
+            side_effect=BucketConflictError("exists in another GCP project")
+        )
+        fake_tool.delete_bucket = AsyncMock()
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(BucketConflictError, match="another GCP project"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+    fake_tool.delete_bucket.assert_not_awaited()

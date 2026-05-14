@@ -220,6 +220,42 @@ async def test_successful_provision_marks_ready():
     mock_catalogs.update_provisioning_status.assert_awaited_once_with("c1", "ready")
 
 
+@pytest.mark.asyncio
+async def test_bucket_conflict_marks_conflict_and_is_permanent():
+    """BucketConflictError → catalog marked 'conflict' + PermanentTaskFailure.
+
+    A deterministic bucket name owned by another project/catalog can never be
+    claimed on retry, so the task must dead-letter (permanent) rather than spin.
+    The catalog goes to 'conflict' (distinct from 'failed') and — critically —
+    no GCS resource is deleted: that is asserted at the bucket-service layer.
+    """
+    from dynastore.modules.gcp.tools.bucket import BucketConflictError
+
+    task = ProvisioningTask()
+    mock_catalogs = AsyncMock()
+    mock_storage = MagicMock()
+    mock_storage.setup_catalog_gcp_resources = AsyncMock(
+        side_effect=BucketConflictError(
+            "Bucket 'proj-c1' is already linked to another catalog"
+        )
+    )
+
+    with (
+        patch(
+            "dynastore.tasks.gcp_provision.task._get_storage_protocol",
+            return_value=mock_storage,
+        ),
+        patch(
+            "dynastore.tasks.gcp_provision.task._get_catalog_protocol",
+            return_value=mock_catalogs,
+        ),
+    ):
+        with pytest.raises(PermanentTaskFailure, match="conflict"):
+            await task.run(_make_payload("c1"))
+
+    mock_catalogs.update_provisioning_status.assert_awaited_once_with("c1", "conflict")
+
+
 # ---------------------------------------------------------------------------
 # Note: the legacy ``@requires(StorageProtocol)`` / ``are_protocols_satisfied``
 # gate was removed in favour of operator-controlled service-affinity routing

@@ -42,6 +42,7 @@ from dynastore.models.protocols import (
     CatalogsProtocol,
     GcpCatalogProvisioning,
 )
+from dynastore.modules.gcp.tools.bucket import BucketConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,20 @@ class ProvisioningTask(TaskProtocol):
         except PermanentTaskFailure:
             await self._mark_failed(catalog_id)
             raise
+        except BucketConflictError as e:
+            # The deterministic bucket name is owned by another GCP project or
+            # already linked to another catalog. Retrying regenerates the SAME
+            # name, so it can never succeed — mark the catalog 'conflict' (not
+            # 'failed') and stop retrying. The bucket is NOT deleted: it is not
+            # ours, and force-deleting it would destroy another owner's data.
+            logger.error(
+                f"GcpProvisionCatalogTask: bucket-name CONFLICT for catalog "
+                f"'{catalog_id}': {e}"
+            )
+            await self._mark_conflict(catalog_id)
+            raise PermanentTaskFailure(
+                f"Bucket-name conflict for catalog '{catalog_id}': {e}"
+            ) from e
         except RuntimeError as e:
             msg = str(e).lower()
             # Only truly unrecoverable credential/client-init failures get
@@ -205,6 +220,30 @@ class ProvisioningTask(TaskProtocol):
             logger.error(
                 f"GcpProvisionCatalogTask: failed to mark catalog '{catalog_id}' "
                 f"provisioning_status='failed': {mark_err}"
+            )
+
+    async def _mark_conflict(self, catalog_id: Optional[str]) -> None:
+        """Flip ``catalog.catalogs.provisioning_status`` → ``'conflict'``.
+
+        Distinct from ``'failed'``: a conflict is a terminal, non-retryable
+        state caused by a bucket-name collision the platform cannot resolve on
+        its own (the name belongs to another project, or another catalog).
+        Like :meth:`_mark_failed` this is best-effort — the task's own
+        PermanentTaskFailure still lands via the runner.
+        """
+        if not catalog_id:
+            return
+        try:
+            catalogs = _get_catalog_protocol()
+            await catalogs.update_provisioning_status(catalog_id, "conflict")
+            logger.info(
+                f"GcpProvisionCatalogTask: catalog '{catalog_id}' marked CONFLICT "
+                f"(bucket name unavailable; not retried, no resources deleted)."
+            )
+        except Exception as mark_err:  # pragma: no cover — diagnostic best-effort
+            logger.error(
+                f"GcpProvisionCatalogTask: failed to mark catalog '{catalog_id}' "
+                f"provisioning_status='conflict': {mark_err}"
             )
 
 class GcpDestroyCatalogTask(TaskProtocol):

@@ -18,6 +18,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
 import asyncio
@@ -58,6 +59,13 @@ class _CorrelationFilter(logging.Filter):
 
 class _JsonFormatter(logging.Formatter):
     """Format log records as JSON."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
+        # logging.Formatter.formatTime delegates to time.strftime, which has no
+        # microsecond directive — a "%f" in datefmt would be emitted literally.
+        # Build the timestamp from datetime instead so sub-second precision works.
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        return dt.strftime(datefmt) if datefmt else dt.isoformat()
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
