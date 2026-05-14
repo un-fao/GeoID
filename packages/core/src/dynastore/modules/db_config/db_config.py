@@ -29,6 +29,13 @@ class DBConfig:
     pool_max_inactive_connection_lifetime: int = int(os.getenv("DB_POOL_MAX_INACTIVE_CONNECTION_LIFETIME", "30"))
     pool_command_timeout: int = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "60"))
     connect_timeout: int = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
-    
+    # TCP keepalive tunables (#655). Cloud NAT silently drops the established-
+    # connection mapping after ~1200s idle; without keepalive probes the pool
+    # hands out a dead-at-the-wire socket whose replacement handshake to
+    # AlloyDB costs 8-22s. The idle window must sit well under that 1200s.
+    tcp_keepalives_idle: int = int(os.getenv("DB_TCP_KEEPALIVES_IDLE", "300"))
+    tcp_keepalives_interval: int = int(os.getenv("DB_TCP_KEEPALIVES_INTERVAL", "30"))
+    tcp_keepalives_count: int = int(os.getenv("DB_TCP_KEEPALIVES_COUNT", "5"))
+
     def __repr__(self) -> str:
         return class_tools.__repr__(self, sensitive_attrs=["database_url"])
