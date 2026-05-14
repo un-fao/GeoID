@@ -364,6 +364,7 @@ class BucketService:
         context: Optional[LifecycleContext] = None,
         auto_create: bool = True,
         config_override: Optional[GcpCatalogBucketConfig] = None,
+        raise_on_failure: bool = False,
     ) -> Optional[str]:
         """
         Retrieves the bucket name for a catalog, creating it if it doesn't exist.
@@ -380,6 +381,12 @@ class BucketService:
             context: Optional lifecycle context to avoid querying non-existent catalog
             auto_create: If True, create the bucket if it doesn't exist.
             config_override: Optional configuration to use for creation (overrides DB/context).
+            raise_on_failure: If True, propagate the underlying exception instead of
+                swallowing it and returning None. Callers that treat a missing bucket
+                as a hard failure (e.g. ``GcpProvisionCatalogTask`` via
+                ``setup_catalog_gcp_resources``) should set this so the real GCS / DB
+                error reaches the logs and the task layer, rather than a generic
+                "Bucket name returned as None". Graceful callers leave it False.
         """
 
         # ── Caller-managed transaction: legacy single-tx behavior. ──
@@ -393,6 +400,7 @@ class BucketService:
                 context=context,
                 auto_create=auto_create,
                 config_override=config_override,
+                raise_on_failure=raise_on_failure,
             )
 
         # ── conn=None: three-phase to avoid holding a pooled conn across GCS I/O ──
@@ -437,6 +445,8 @@ class BucketService:
                 f"Failed to create or configure bucket for catalog '{catalog_id}': {e}",
                 exc_info=True,
             )
+            if raise_on_failure:
+                raise
             return None
 
         # Phase 3 (short tx): link bucket → catalog. On failure, clean up the
@@ -453,6 +463,8 @@ class BucketService:
                 exc_info=True,
             )
             await self._cleanup_orphan_bucket(new_bucket_name)
+            if raise_on_failure:
+                raise
             return None
 
         if result:
@@ -461,11 +473,14 @@ class BucketService:
             )
             return result
 
-        logger.error(
+        msg = (
             f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
             "and no result returned."
         )
+        logger.error(msg)
         await self._cleanup_orphan_bucket(new_bucket_name)
+        if raise_on_failure:
+            raise RuntimeError(msg)
         return None
 
     async def _ensure_storage_single_tx(
@@ -476,6 +491,7 @@ class BucketService:
         context: Optional[LifecycleContext],
         auto_create: bool,
         config_override: Optional[GcpCatalogBucketConfig],
+        raise_on_failure: bool = False,
     ) -> Optional[str]:
         """Legacy single-tx path for callers that pass an explicit `conn`."""
         bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
@@ -518,10 +534,13 @@ class BucketService:
                     f"Successfully linked bucket '{result}' to catalog '{catalog_id}'."
                 )
                 return result
-            logger.error(
+            msg = (
                 f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}' "
                 "and no result returned."
             )
+            logger.error(msg)
+            if raise_on_failure:
+                raise RuntimeError(msg)
             return None
         except Exception as e:
             logger.error(
@@ -529,6 +548,8 @@ class BucketService:
                 exc_info=True,
             )
             await self._cleanup_orphan_bucket(new_bucket_name)
+            if raise_on_failure:
+                raise
             return None
 
     async def _resolve_effective_config(

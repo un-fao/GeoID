@@ -314,9 +314,14 @@ class GcpCatalogOpsMixin:
                 catalog_id,
                 conn=None,  # No connection — manages its own short transaction
                 context=context,
+                # Provisioning treats a missing bucket as a hard failure: propagate
+                # the real GCS / DB exception instead of collapsing it to None and
+                # losing the cause behind a generic "Bucket name returned as None".
+                raise_on_failure=True,
             )
 
-            # CRITICAL CHECK: ensure storage was actually provisioned
+            # Defensive belt-and-suspenders: with raise_on_failure=True a real
+            # failure raises above, so reaching here with None is not expected.
             if bucket_name is None:
                  msg = f"Failed to provision storage for catalog '{catalog_id}': Bucket name returned as None."
                  logger.error(msg)

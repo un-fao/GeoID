@@ -231,3 +231,102 @@ async def test_caller_provided_conn_keeps_single_tx_path():
     assert result == "existing-bucket"
     # No managed_transaction was opened -- caller's conn was used directly.
     assert events == []
+
+
+# ── raise_on_failure: provisioning callers must see the real cause ──
+#
+# Without this flag, a GCS create / DB link failure is logged with exc_info
+# and swallowed as `return None`. The caller (`setup_catalog_gcp_resources`)
+# then raises a generic "Bucket name returned as None", discarding the
+# original exception. `raise_on_failure=True` propagates the real cause so it
+# reaches the task layer and the top of the log.
+
+
+@pytest.mark.asyncio
+async def test_raise_on_failure_propagates_gcs_create_error():
+    """raise_on_failure=True: a GCS create failure propagates, not None."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_tool.create_bucket = AsyncMock(
+            side_effect=RuntimeError("403 GCS bucket create denied")
+        )
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(RuntimeError, match="GCS bucket create denied"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+
+@pytest.mark.asyncio
+async def test_raise_on_failure_propagates_link_error():
+    """raise_on_failure=True: a P3 link failure propagates after orphan cleanup."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_gcp_db.link_bucket_to_catalog_query.execute = AsyncMock(
+            side_effect=RuntimeError("DB link failed")
+        )
+        fake_tool.create_bucket = AsyncMock(return_value=MagicMock())
+        fake_tool.delete_bucket = AsyncMock()
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        with pytest.raises(RuntimeError, match="DB link failed"):
+            await bm.ensure_storage_for_catalog("cat_1", raise_on_failure=True)
+
+    # Orphan cleanup still runs before the exception propagates.
+    fake_tool.delete_bucket.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failure_still_returns_none_by_default():
+    """Default (raise_on_failure=False) keeps graceful None for non-provisioning callers."""
+    events, fake_tx = _make_event_recorder()
+    bm = _make_bm(events)
+
+    with patch(
+        "dynastore.modules.gcp.bucket_service.managed_transaction", fake_tx
+    ), patch(
+        "dynastore.modules.gcp.bucket_service.gcp_db"
+    ) as fake_gcp_db, patch(
+        "dynastore.modules.gcp.bucket_service.bucket_tool"
+    ) as fake_tool, patch(
+        "dynastore.modules.gcp.bucket_service.run_in_thread", new=AsyncMock()
+    ), patch(
+        "dynastore.modules.catalog.log_manager.log_info", new=AsyncMock()
+    ):
+        fake_gcp_db.get_bucket_for_catalog_query.execute = AsyncMock(return_value=None)
+        fake_tool.create_bucket = AsyncMock(
+            side_effect=RuntimeError("403 GCS bucket create denied")
+        )
+        fake_tool.CATALOG_FOLDER = "catalog"
+        fake_tool.COLLECTIONS_FOLDER = "collections"
+
+        result = await bm.ensure_storage_for_catalog("cat_1")
+
+    assert result is None
