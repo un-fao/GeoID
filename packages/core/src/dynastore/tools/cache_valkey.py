@@ -167,6 +167,30 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
     return msgpack.ExtType(code, data)
 
 
+def _build_keepalive_options(
+    idle: Optional[int],
+    interval: Optional[int],
+    count: Optional[int],
+) -> Dict[int, int]:
+    """Map TCP keepalive tunables onto platform socket-option constants.
+
+    ``TCP_KEEPIDLE`` / ``TCP_KEEPINTVL`` / ``TCP_KEEPCNT`` exist on Linux
+    (where Cloud Run runs) but not on macOS, so missing constants are
+    skipped — the connection still gets ``socket_keepalive=True`` with OS
+    defaults, the per-probe tuning is just a Linux refinement.
+    """
+    import socket
+
+    options: Dict[int, int] = {}
+    if idle is not None and hasattr(socket, "TCP_KEEPIDLE"):
+        options[socket.TCP_KEEPIDLE] = idle
+    if interval is not None and hasattr(socket, "TCP_KEEPINTVL"):
+        options[socket.TCP_KEEPINTVL] = interval
+    if count is not None and hasattr(socket, "TCP_KEEPCNT"):
+        options[socket.TCP_KEEPCNT] = count
+    return options
+
+
 def _serialize(value: Any) -> bytes:
     """Serialize a value to msgpack bytes."""
     return msgpack.packb(value, default=_msgpack_default, use_bin_type=True)  # type: ignore[return-value]
@@ -274,10 +298,19 @@ class ValkeyCacheBackend:
         url: str,
         key_prefix: str = "ds:",
         socket_connect_timeout: Optional[float] = None,
+        socket_timeout: Optional[float] = None,
+        tcp_keepalive_idle: Optional[int] = None,
+        tcp_keepalive_interval: Optional[int] = None,
+        tcp_keepalive_count: Optional[int] = None,
         circuit_breaker_threshold: Optional[int] = None,
     ) -> None:
+        # ModuleNotFoundError (a subclass of ImportError) so existing
+        # `except ImportError` handlers still catch it AND the module
+        # loader's wrong-SCOPE soft-skip (`isinstance(e, ModuleNotFoundError)`
+        # in modules/__init__.py) treats it as an expected missing-extra
+        # rather than crashing the worker.
         if not _CACHE_DEPS_OK:
-            raise ImportError(
+            raise ModuleNotFoundError(
                 "ValkeyCacheBackend requires the 'module_cache' extra "
                 "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
                 f"Original error: {_CACHE_DEPS_ERR}"
@@ -285,7 +318,7 @@ class ValkeyCacheBackend:
         try:
             import valkey.asyncio as avalkey
         except ImportError as e:
-            raise ImportError(
+            raise ModuleNotFoundError(
                 "ValkeyCacheBackend requires the 'module_cache' extra "
                 "(`pip install 'dynastore[module_cache]'` — provides msgpack + valkey). "
                 f"Original error: {e}"
@@ -296,6 +329,30 @@ class ValkeyCacheBackend:
         # Socket connect timeout (passed from CacheModule config)
         if socket_connect_timeout is not None:
             pool_kwargs["socket_connect_timeout"] = socket_connect_timeout
+
+        # Read timeout for individual ops — deliberately short. A cache must
+        # fail fast: get()/set()/exists() wrap the call so a timeout returns
+        # a miss and the caller falls through to the source (sub-second),
+        # and three consecutive failures trip the circuit breaker that drops
+        # this backend from rotation. A short timeout makes both happen
+        # quickly; a long one just convoys requests behind an unhealthy
+        # backend. The keepalives below are what actually prevent the
+        # dead-socket / cluster re-init condition in the first place.
+        if socket_timeout is not None:
+            pool_kwargs["socket_timeout"] = socket_timeout
+
+        # TCP keepalives: Cloud NAT silently drops the established-connection
+        # mapping after long idle. Without probes the next op gets a dead
+        # socket and ValkeyCluster pays a full re-initialisation. Mirrors the
+        # DB pool keepalive parity (#655).
+        if any(v is not None for v in
+               (tcp_keepalive_idle, tcp_keepalive_interval, tcp_keepalive_count)):
+            pool_kwargs["socket_keepalive"] = True
+            keepalive_options = _build_keepalive_options(
+                tcp_keepalive_idle, tcp_keepalive_interval, tcp_keepalive_count
+            )
+            if keepalive_options:
+                pool_kwargs["socket_keepalive_options"] = keepalive_options
 
         # TLS: VALKEY_TLS=true forces TLS regardless of URL scheme.
         # On Memorystore private VPC, traffic stays in Google's network so

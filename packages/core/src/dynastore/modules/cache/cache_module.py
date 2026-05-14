@@ -21,6 +21,9 @@ when Valkey is unavailable or VALKEY_URL is not configured.
 Configuration (via PluginConfig framework, not env vars):
   - probe_timeout_seconds: timeout for backend.info() probe (default 5s)
   - socket_connect_timeout_seconds: timeout per socket connection (default 10s)
+  - socket_timeout_seconds: read timeout per op (default 2s — fail fast to source)
+  - tcp_keepalive_idle_seconds / _interval_seconds / _count: TCP keepalive
+    tuning so idle Cloud Run↔Memorystore sockets aren't silently dropped (#655)
   - circuit_breaker_threshold: failures before fallback (default 3)
 
 Access via: /api/catalog/v2/configs?plugin_id=module_cache
@@ -97,6 +100,24 @@ class CacheModule(ModuleProtocol):
             yield
             return
 
+        # Graceful-skip when the ``module_cache`` extra isn't in this
+        # deployment's SCOPE: VALKEY_URL is set but msgpack/valkey aren't
+        # installed (common for sync-only worker SCOPEs like the ingestion
+        # job). Detect it up front instead of letting
+        # ``ValkeyCacheBackend.__init__`` raise — the module loader only
+        # soft-skips ``ModuleNotFoundError``, so a plain ``ImportError``
+        # escaping here would crash the worker on startup.
+        from dynastore.tools.cache_valkey import _CACHE_DEPS_OK
+        if not _CACHE_DEPS_OK:
+            logger.warning(
+                "CACHE BACKEND: LOCAL (in-memory, per-instance) — VALKEY_URL "
+                "is set but the 'module_cache' extra is not in this "
+                "deployment's SCOPE (msgpack/valkey not installed); skipping "
+                "the Valkey backend."
+            )
+            yield
+            return
+
         # Load cache config (timeouts, circuit breaker, etc.)
         cache_cfg = await _load_cache_config()
 
@@ -115,6 +136,10 @@ class CacheModule(ModuleProtocol):
             backend = ValkeyCacheBackend(
                 url=valkey_url,
                 socket_connect_timeout=cache_cfg.socket_connect_timeout_seconds,
+                socket_timeout=cache_cfg.socket_timeout_seconds,
+                tcp_keepalive_idle=cache_cfg.tcp_keepalive_idle_seconds,
+                tcp_keepalive_interval=cache_cfg.tcp_keepalive_interval_seconds,
+                tcp_keepalive_count=cache_cfg.tcp_keepalive_count,
                 circuit_breaker_threshold=cache_cfg.circuit_breaker_threshold,
             )
         except Exception as exc:

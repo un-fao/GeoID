@@ -65,6 +65,54 @@ class CachePluginConfig(ExposableConfigMixin, PluginConfig):
         ),
     )
 
+    socket_timeout_seconds: Mutable[float] = Field(
+        default=2.0,
+        ge=0.5,
+        le=120,
+        description=(
+            "Read timeout for individual Valkey operations. A cache must "
+            "fail fast: every op is wrapped so a timeout falls straight "
+            "through to the source (which is sub-second), and three "
+            "consecutive failures trip the circuit breaker that drops "
+            "Valkey from rotation entirely. A short timeout makes that "
+            "fallback and trip happen quickly; a long one just convoys "
+            "requests behind a backend that's already unhealthy. 2s is "
+            "~hundreds of times a healthy same-VPC op — generous headroom "
+            "without ever blocking the hot path on a slow backend."
+        ),
+    )
+
+    tcp_keepalive_idle_seconds: Mutable[int] = Field(
+        default=300,
+        ge=10,
+        le=1200,
+        description=(
+            "Idle time before the first TCP keepalive probe on a Valkey "
+            "connection. Sits well under Cloud NAT's ~1200s established-"
+            "connection timeout so idle Cloud Run↔Memorystore sockets are "
+            "kept alive instead of being silently dropped — a dropped socket "
+            "forces an expensive ValkeyCluster re-initialisation on the next "
+            "op. Mirrors the DB pool keepalive parity (#655)."
+        ),
+    )
+
+    tcp_keepalive_interval_seconds: Mutable[int] = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Interval between TCP keepalive probes once a Valkey connection is idle.",
+    )
+
+    tcp_keepalive_count: Mutable[int] = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description=(
+            "Number of unacknowledged TCP keepalive probes before a Valkey "
+            "connection is considered dead."
+        ),
+    )
+
     circuit_breaker_threshold: Mutable[int] = Field(
         default=3,
         ge=1,
