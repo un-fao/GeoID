@@ -10,10 +10,7 @@ durable task; the dispatcher's drain semantics (``claim_batch`` →
 ``complete_task`` / ``fail_task``) provide retry-with-DLQ for free.
 
 The inputs always carry a list of ops — a single-row replay is just a
-list of length 1.  Legacy scalar rows still in flight at upgrade time
-are lifted into the list shape by a ``model_validator(mode='before')``
-shim; the shim is removable once the queue has fully drained (see
-follow-up issue #505).
+list of length 1.
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.tools.discovery import get_protocols
@@ -75,28 +72,6 @@ class IndexPropagationInputs(BaseModel):
             "the task row for operator triage."
         ),
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _lift_legacy_scalar_shape(cls, data: Any) -> Any:
-        """Legacy rows wrote ``op_type`` / ``entity_id`` / ``payload`` at the
-        top level.  Lift those into ``ops=[{...}]`` so a single-row replay
-        re-uses the bulk path with a list of length 1.
-        """
-        if not isinstance(data, dict):
-            return data
-        if data.get("ops"):
-            return data
-        op_type = data.pop("op_type", None)
-        entity_id = data.pop("entity_id", None)
-        payload = data.pop("payload", None)
-        if op_type is not None and entity_id is not None:
-            data["ops"] = [{
-                "entity_id": entity_id,
-                "op_type": op_type,
-                "payload": payload,
-            }]
-        return data
 
 
 # ---------------------------------------------------------------------------

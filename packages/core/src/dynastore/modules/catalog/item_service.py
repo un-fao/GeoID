@@ -20,38 +20,30 @@ import asyncio
 import logging
 import json
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Tuple, cast, AsyncIterator
+from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.router import ResolvedDriver
-    from dynastore.models.protocols.storage_driver import CollectionItemsStore
-from sqlalchemy import text
 
 import inspect as _inspect
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules.db_config.query_executor import (
-    DDLQuery,
     DQLQuery,
-    GeoDQLQuery,
     DbResource,
     ResultHandler,
     managed_transaction,
-    is_async_resource,
 )
-from dynastore.modules.catalog.models import ItemDataForDB, Collection, Catalog
 from dynastore.modules.catalog.catalog_config import CollectionPluginConfig
 from dynastore.modules.storage.driver_config import (
     ItemsPostgresqlDriverConfig,
 )
-from dynastore.models.ogc import Feature, FeatureCollection
+from dynastore.models.ogc import Feature
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.models.protocols.items import ItemsProtocol
-from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.db_config import shared_queries
-from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
 # M1b.2: SidecarRegistry is now imported inline, next to each effective-
@@ -891,10 +883,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             pg_conn=pg_conn,
         )
         try:
-            if len(ops) == 1:
-                await dispatcher.fan_out(ctx, ops[0])
-            else:
-                await dispatcher.fan_out_bulk(ctx, ops)
+            await dispatcher.fan_out_bulk(ctx, ops)
         except IndexerFatal:
             # FATAL contract: a routing entry with on_failure=FATAL
             # MUST propagate so the caller's TX rolls back.  Don't
@@ -1125,7 +1114,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         Async drivers fire after the sync phase succeeds (fire-and-forget).
         """
-        from dynastore.modules.storage.driver_config import DriverCapability
         from dynastore.modules.storage.router import get_write_drivers, ResolvedDriver
         from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
 
