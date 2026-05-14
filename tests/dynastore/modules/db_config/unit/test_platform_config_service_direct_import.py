@@ -1,30 +1,30 @@
-"""Pin the circular-import latent failure on direct
-``import dynastore.modules.db_config.platform_config_service`` (#686).
+"""Regression pin: ``platform_config_service`` imports cleanly from a fresh
+interpreter, with no circular-import ImportError (#686).
 
-Pytest collection naturally imports through ``dynastore.models.protocols``
-first, which warms its ``__init__.py`` in an order that masks the cycle.
-External entry points — operator scripts, notebooks, ad-hoc REPL —
-trigger the failure path by importing ``platform_config_service``
-directly.
+History: the mutability marker types and the ``PluginConfig`` base used to
+live inside ``platform_config_service`` itself.  Any Protocol-contracts
+module that subclassed ``PluginConfig`` — notably ``IamRolesConfig`` in
+``models/protocols/authorization.py`` — therefore imported the heavy
+``platform_config_service`` (and the ``models.protocols`` eager hub it
+pulls), forming a load-order cycle.  Pytest collection masked it by
+importing ``dynastore.models.protocols`` to completion first; external
+entry points hit the failure:
 
-The cycle:
+  - ``import dynastore.modules.db_config.platform_config_service``
+    (operator scripts, notebooks, REPL)
+  - ``import dynastore.modules.tasks.models`` via the task runner
+    (``main_task.report_failure``) — observed in production
 
-  platform_config_service line 74
-    -> models.protocols.platform_configs
-    -> models.protocols.__init__ line 105
-    -> authorization.py (which holds the misplaced ``IamRolesConfig``)
-    -> exposure_mixin.py
-    -> back to ``platform_config_service.Mutable`` (not yet defined)
+The fix (#686) extracted the markers into the dependency-light leaf
+``dynastore.models.mutability`` and ``PluginConfig`` into
+``dynastore.modules.db_config.plugin_config``.  ``authorization.py`` /
+``exposure_mixin.py`` / ``tasks_config.py`` now import from those leaves,
+so subclassing ``PluginConfig`` no longer drags the protocols hub into a
+half-initialised config stack.  ``platform_config_service`` re-exports
+both for backward compatibility.
 
-The architectural fix is moving ``IamRolesConfig`` + ``RoleSeed`` out of
-``models/protocols/authorization.py`` into a proper IAM home so the
-Protocol-contracts module stops pulling ``Mutable`` / ``PluginConfig``
-into a load-order-sensitive position.  See #686 for the full plan.
-
-This test runs a subprocess with a fresh interpreter so the in-process
-module cache from pytest collection can't mask the cycle.  Marked
-``xfail(strict=True)``: it stays failing until #686 lands, at which
-point the strict flag flips the result and the marker can be removed.
+Each case runs in a subprocess with a fresh interpreter so the in-process
+module cache from pytest collection cannot mask a regression.
 """
 
 import subprocess
@@ -32,27 +32,26 @@ import sys
 
 import pytest
 
+# Entry points that bypass the pytest-collection import order and would
+# trip the cycle if it ever regressed.
+_FRESH_IMPORT_CASES = [
+    "import dynastore.modules.db_config.platform_config_service",
+    "import dynastore.extensions.tools.exposure_mixin",
+    "import dynastore.models.protocols.authorization",
+    "import dynastore.modules.tasks.models",
+]
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#686: direct `import platform_config_service` triggers circular "
-        "ImportError via IamRolesConfig in models/protocols/authorization.py. "
-        "Remove this xfail once #686 ships."
-    ),
-)
-def test_platform_config_service_imports_cleanly_from_fresh_interpreter():
-    """Spawn ``python -c 'import platform_config_service'`` and assert exit 0."""
+
+@pytest.mark.parametrize("import_stmt", _FRESH_IMPORT_CASES)
+def test_imports_cleanly_from_fresh_interpreter(import_stmt: str):
+    """Spawn ``python -c '<import>'`` and assert exit 0 (no circular import)."""
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import dynastore.modules.db_config.platform_config_service",
-        ],
+        [sys.executable, "-c", import_stmt],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
-        f"Direct import failed (exit {result.returncode}). stderr tail:\n"
-        f"{result.stderr[-2000:]}"
+        f"`{import_stmt}` failed in a fresh interpreter "
+        f"(exit {result.returncode}) — likely a reintroduced circular import. "
+        f"stderr tail:\n{result.stderr[-2000:]}"
     )

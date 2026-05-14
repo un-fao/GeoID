@@ -3,7 +3,8 @@ import os
 from typing import ClassVar, Dict, List, Optional, Tuple
 from pydantic import Field, model_validator
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
-from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
+from dynastore.models.mutability import Mutable
+from dynastore.modules.db_config.plugin_config import PluginConfig
 
 class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
     """Configuration for the Background Tasks module."""
