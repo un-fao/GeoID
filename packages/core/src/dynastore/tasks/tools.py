@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from dynastore.tasks.reporters import ReportingInterface
 from dynastore.tasks.ingestion.reporters_impl import DatabaseStatusReporter
+from dynastore.tools.typed_store._snake import to_snake
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,17 @@ def initialize_reporters(
 
     unresolved: List[str] = []
     for reporter_name, config_dict in reporting_config.items():
-        if reporter_name not in registry:
+        # The registry is keyed snake_case (``to_snake(cls.__name__)``).
+        # Normalise the incoming key the same way so a PascalCase id from a
+        # stored eventing template predating the snake_case convention (e.g.
+        # ``GcsDetailedReporter``) resolves instead of hard-failing. Idempotent
+        # for keys already snake_case; a genuinely wrong key (a real typo, not
+        # a casing mismatch) still lands in ``unresolved`` and fails loud.
+        normalized = to_snake(reporter_name)
+        if normalized not in registry:
             unresolved.append(reporter_name)
             continue
-        reporter_class = registry[reporter_name]
+        reporter_class = registry[normalized]
         config_model_class = _get_config_model_from_reporter(reporter_class)
 
         config_obj = None
