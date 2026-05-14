@@ -44,14 +44,50 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.liveness import LivenessVerdict, resolve_probe
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_service_name() -> str:
+    """The service identity stamped on the structured metric log line.
+
+    Same source-of-truth (``instance.json`` → ``SERVICE_NAME`` env → literal
+    ``"unknown"``) used by ``query_executor``'s ``db_pool_acquire`` metric, so
+    a GCP log-based metric can partition reconciler passes by service exactly
+    as it partitions pool-acquire latency.
+    """
+    try:
+        from dynastore.modules.db_config.instance import get_service_name
+        name = get_service_name()
+        if name:
+            return name
+    except Exception:  # noqa: BLE001 — never let metrics setup crash imports
+        pass
+    return os.getenv("SERVICE_NAME") or "unknown"
+
+
+_SERVICE_NAME_FOR_METRICS = _resolve_service_name()
+
+
+class ReconcileOutcome(NamedTuple):
+    """The result of reconciling one lapsed-lease row.
+
+    ``verdict`` is the probe's verdict verbatim — truthful even when the
+    follow-up action lost a race. ``race_lost`` is ``True`` only on the
+    ALIVE path when the conditional heartbeat matched 0 rows (the pg_cron
+    reaper won the SELECT→probe→act race); it lets ``_reconcile_once`` tally
+    race losses distinctly without re-deriving them.
+    """
+
+    verdict: LivenessVerdict
+    race_lost: bool = False
 
 
 class GcpLivenessReconciler:
@@ -130,14 +166,22 @@ class GcpLivenessReconciler:
         """Scan lapsed-lease Cloud Run rows and reconcile each one.
 
         Accumulates a verdict-distribution :class:`~collections.Counter` over
-        the pass and emits one INFO summary log line at the end (#741 item 3) —
-        operators need that line to confirm the reconciler is actually winning
-        the race against the 60s pg_cron reaper.
+        the pass plus a distinct race-loss tally, and emits one structured
+        INFO summary line at the end (#741 item 3 / #745 items 1-2).
+
+        The summary line follows the house ``<token> service=… key=value``
+        shape used by ``db_pool_acquire`` so a GCP log-based metric can
+        extract fields without a prometheus_client dependency. ``service=``,
+        ``scanned=`` and ``RACE_LOST=`` are always present — even on an idle
+        pass — so the metric filter and the race-loss extractor never lose
+        their data point; the per-verdict counts are emitted only when
+        non-zero to keep the line compact.
         """
         rows = await tasks_module.select_lapsed_gcp_tasks(self._engine)
         verdicts: Counter[str] = Counter()
         unmapped = 0
         errors = 0
+        race_lost = 0
         for row in rows:
             try:
                 outcome = await self._reconcile_row(row)
@@ -153,27 +197,33 @@ class GcpLivenessReconciler:
             if outcome is None:
                 unmapped += 1
             else:
-                verdicts[outcome.name] += 1
+                verdicts[outcome.verdict.name] += 1
+                if outcome.race_lost:
+                    race_lost += 1
 
-        # One summary line per pass: total scanned, per-verdict counts, plus
-        # the unmapped-owner / error tallies. Logged unconditionally so
-        # idle-quiet passes still leave a trace.
+        # One structured summary line per pass. ``RACE_LOST`` is the headline
+        # signal of #745: a row that probed ALIVE but whose conditional
+        # heartbeat matched 0 rows still counts as ALIVE in the verdict
+        # distribution (the probe was truthful) — RACE_LOST is what tells an
+        # operator the reconciler is losing the race to the pg_cron reaper and
+        # ``liveness_reconciler_interval_seconds`` needs tuning down.
         parts = [f"{name}={count}" for name, count in sorted(verdicts.items())]
         if unmapped:
             parts.append(f"UNMAPPED={unmapped}")
         if errors:
             parts.append(f"ERROR={errors}")
+        verdict_suffix = (" " + " ".join(parts)) if parts else ""
         logger.info(
-            "GcpLivenessReconciler: reconcile pass — scanned=%d %s",
-            len(rows),
-            " ".join(parts) if parts else "(no lapsed gcp rows)",
+            "liveness_reconcile_pass service=%s scanned=%d RACE_LOST=%d%s",
+            _SERVICE_NAME_FOR_METRICS, len(rows), race_lost, verdict_suffix,
         )
 
-    async def _reconcile_row(self, row: Dict[str, Any]) -> Optional[LivenessVerdict]:
+    async def _reconcile_row(self, row: Dict[str, Any]) -> Optional[ReconcileOutcome]:
         """Probe the owning runner for ``row`` and act on the verdict.
 
-        Returns the verdict so :meth:`_reconcile_once` can build a per-pass
-        distribution. Returns ``None`` when no probe owns the row (in-process /
+        Returns a :class:`ReconcileOutcome` (verdict + race-loss flag) so
+        :meth:`_reconcile_once` can build a per-pass distribution and tally
+        race losses. Returns ``None`` when no probe owns the row (in-process /
         ephemeral / unrecognized) — those rows are left for the pg_cron reaper.
         """
         from dynastore.models.tasks import Task
@@ -221,7 +271,9 @@ class GcpLivenessReconciler:
                     "Consider tuning liveness_reconciler_interval_seconds down.",
                     task_id, runner_ref,
                 )
-            return verdict
+            # verdict stays ALIVE (the probe was truthful); race_lost carries
+            # the "reaper got there first" signal for the pass summary.
+            return ReconcileOutcome(verdict, race_lost=not extended)
         elif verdict in (LivenessVerdict.DEAD, LivenessVerdict.TERMINAL_FAILED):
             reason = (
                 "Cloud Run execution failed"
@@ -237,7 +289,7 @@ class GcpLivenessReconciler:
                 "GcpLivenessReconciler: task %s %s (execution=%s) — failed (retry).",
                 task_id, verdict.value, runner_ref,
             )
-            return verdict
+            return ReconcileOutcome(verdict)
         elif verdict == LivenessVerdict.TERMINAL_SUCCEEDED:
             # The execution exited 0 but the row is still ACTIVE — reconcile it
             # to COMPLETED from the outputs the container persisted before exit
@@ -253,7 +305,7 @@ class GcpLivenessReconciler:
                 task_id, runner_ref,
                 "" if outputs is not None else " (no outputs on row)",
             )
-            return verdict
+            return ReconcileOutcome(verdict)
         else:  # LivenessVerdict.UNKNOWN
             started_at = row.get("started_at")
             young = (
@@ -280,4 +332,4 @@ class GcpLivenessReconciler:
                     "GcpLivenessReconciler: task %s UNKNOWN — leaving for pg_cron reaper.",
                     task_id,
                 )
-            return verdict
+            return ReconcileOutcome(verdict)
