@@ -80,7 +80,7 @@ def op():
 async def test_missing_fatal_raises(ctx, op):
     entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.FATAL)
     with pytest.raises(IndexerFatal):
-        await _dispatcher([entry]).fan_out(ctx, op)
+        await _dispatcher([entry]).fan_out_bulk(ctx, [op])
 
 
 @pytest.mark.asyncio
@@ -91,8 +91,8 @@ async def test_missing_warn_logs_once(ctx, op, caplog):
         logging.WARNING,
         logger="dynastore.modules.storage.index_dispatcher",
     ):
-        await d.fan_out(ctx, op)
-        await d.fan_out(ctx, op)
+        await d.fan_out_bulk(ctx, [op])
+        await d.fan_out_bulk(ctx, [op])
     warns = [r for r in caplog.records if "indexer 'd'" in r.message]
     assert len(warns) == 1
 
@@ -104,7 +104,7 @@ async def test_missing_ignore_silent(ctx, op, caplog):
         logging.WARNING,
         logger="dynastore.modules.storage.index_dispatcher",
     ):
-        await _dispatcher([entry]).fan_out(ctx, op)
+        await _dispatcher([entry]).fan_out_bulk(ctx, [op])
     assert not [r for r in caplog.records if "indexer 'd'" in r.message]
 
 
@@ -143,7 +143,7 @@ async def test_missing_outbox_enqueues(ctx, op):
         write_mode=WriteMode.ASYNC,
         on_failure=FailurePolicy.OUTBOX,
     )
-    await _dispatcher([entry], outbox=_Stub()).fan_out(ctx, op)
+    await _dispatcher([entry], outbox=_Stub()).fan_out_bulk(ctx, [op])
     assert len(enq) == 1
     assert enq[0].driver_id == "d"
 
@@ -190,7 +190,7 @@ async def test_handle_missing_with_pg_outbox_persists(async_conn, async_schema, 
         routing_resolver=routing, indexer_registry=registry,
         outbox=PgOutboxStore(single_conn=async_conn),
     )
-    await dispatcher.fan_out(ctx, op_for_schema)
+    await dispatcher.fan_out_bulk(ctx, [op_for_schema])
 
     n = await async_conn.fetchval(  # type: ignore[attr-defined]
         "SELECT count(*) FROM storage_outbox WHERE driver_id='missing'"

@@ -71,7 +71,6 @@ from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     Operation,
     OperationDriverEntry,
-    WriteMode,
 )
 
 
@@ -103,9 +102,10 @@ class IndexerFatal(Exception):
         op: "Optional[DispatchableOp]",
         original: BaseException,
     ) -> None:
-        # Format depending on which op shape was passed — both fan_out
-        # callers (legacy IndexOp and new IndexableOp) use this same
-        # exception type.
+        # Format depending on which op shape was passed — bulk dispatch
+        # accepts both legacy IndexOp and IndexableOp; either may be the
+        # FATAL target (or None when an upstream filter rejects the
+        # whole batch).
         if op is None:
             descriptor = "<empty batch>"
         elif isinstance(op, IndexableOp):
@@ -393,7 +393,7 @@ def _log_dispatch_path(
     # Observability (#504): structured log line for GCP log-based metrics
     # `index_dispatch_path_total{mode}` (counter on mode label) and
     # `index_chunk_size_bucket` (distribution on the chunk_size field).
-    # `mode` is one of: in_tx | post_commit_inline | outbox_handoff.
+    # `mode` is one of: post_commit_inline | outbox_handoff.
     logger.info(
         "index_dispatch_path mode=%s indexer=%s catalog=%s collection=%s "
         "chunk_size=%d",
@@ -717,27 +717,8 @@ class IndexDispatcher:
         self._ensured: set = set()
 
     # ------------------------------------------------------------------
-    # Public surface — single-op and bulk
+    # Public surface — bulk dispatch
     # ------------------------------------------------------------------
-
-    async def fan_out(
-        self, ctx: IndexContext, op: DispatchableOp,
-    ) -> None:
-        """Dispatch a single index op across every configured indexer
-        for ``(ctx.catalog, ctx.collection)``.
-
-        Each indexer's outcome is governed by its routing entry's
-        :attr:`OperationDriverEntry.on_failure` policy — the dispatcher
-        does not stop on a single non-FATAL failure.
-
-        Accepts either the legacy :class:`IndexOp` or the durable
-        :class:`IndexableOp` shape; missing-indexer outbox enqueue uses
-        the bulk ``OutboxStore`` interface and therefore requires
-        :class:`IndexableOp`.
-        """
-        entries = await self._index_entries(ctx)
-        for entry in entries:
-            await self._dispatch_one(entry, ctx, op)
 
     async def fan_out_bulk(
         self, ctx: IndexContext, ops: Sequence[DispatchableOp],
@@ -883,63 +864,6 @@ class IndexDispatcher:
             return []
         ops_map = getattr(routing, "operations", {}) or {}
         return list(ops_map.get(Operation.INDEX, []))
-
-    async def _dispatch_one(
-        self,
-        entry: OperationDriverEntry,
-        ctx: IndexContext,
-        op: DispatchableOp,
-    ) -> None:
-        indexer = await self._resolve_indexer(entry.driver_ref)
-        if indexer is None:
-            await self._handle_missing(entry, ctx, op)
-            return
-
-        # OUTBOX_ONLY shortcut: never attempt sync, always enqueue.
-        if entry.write_mode == WriteMode.ASYNC and entry.on_failure == FailurePolicy.OUTBOX:
-            await self._enqueue_or_warn(entry, ctx, [op])
-            return
-
-        # Circuit breaker check (Phase 3 — no-op when self._breaker is None).
-        if self._breaker is not None and self._breaker.is_open(entry.driver_ref):
-            if entry.on_failure == FailurePolicy.OUTBOX:
-                await self._enqueue_or_warn(entry, ctx, [op])
-            elif entry.on_failure == FailurePolicy.FATAL:
-                raise IndexerFatal(
-                    entry.driver_ref, op,
-                    RuntimeError("circuit breaker open"),
-                )
-            else:
-                logger.debug(
-                    "IndexDispatcher: breaker open for '%s' — skipping (%s).",
-                    entry.driver_ref, entry.on_failure,
-                )
-            return
-
-        # Idempotent bootstrap of the indexer's storage (per-process cache).
-        if not await self._ensure_or_handle(entry, indexer, ctx, op):
-            return
-
-        # Synchronous in-process attempt.
-        try:
-            # See note in ``_dispatch_bulk``: in-process indexers still
-            # consume the legacy ``IndexOp`` shape; cast at the boundary
-            # so the Union-typed dispatcher surface stays compatible
-            # without forcing every indexer migration in this phase.
-            await indexer.index(ctx, cast(IndexOp, op))
-            if self._breaker is not None:
-                self._breaker.record_success(entry.driver_ref)
-            _log_dispatch_path(
-                mode="in_tx",
-                indexer_id=entry.driver_ref,
-                catalog=ctx.catalog,
-                collection=ctx.collection,
-                chunk_size=1,
-            )
-        except Exception as exc:
-            if self._breaker is not None:
-                self._breaker.record_failure(entry.driver_ref)
-            await self._handle_failure(entry, ctx, op, exc)
 
     async def _handle_missing(
         self,

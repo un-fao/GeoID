@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence
 import pytest
 
 from dynastore.models.protocols.indexer import (
-    BulkResult, Indexer, IndexContext, IndexOp,
+    BulkResult, IndexContext, IndexOp,
 )
 from dynastore.modules.storage.index_dispatcher import (
     IndexDispatcher, IndexerFatal, TaskTableOutboxWriter,
@@ -130,11 +130,11 @@ async def test_fan_out_calls_ensure_indexer_once_per_collection():
         indexers={"a": a},
     )
     # Three ops on the same (catalog, collection) — only one ensure call.
-    await dispatcher.fan_out(_ctx(), _op(entity_id="i1"))
-    await dispatcher.fan_out(_ctx(), _op(entity_id="i2"))
-    await dispatcher.fan_out(_ctx(), _op(entity_id="i3"))
+    await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i1")])
+    await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i2")])
+    await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i3")])
     assert len(a.ensure_calls) == 1
-    assert len(a.calls) == 3
+    assert len(a.bulk_calls) == 3
 
 
 @pytest.mark.asyncio
@@ -145,8 +145,8 @@ async def test_fan_out_re_runs_ensure_for_new_collection():
         indexers={"a": a},
     )
     ctx_b = IndexContext(catalog="cat-x", collection="col-z", correlation_id="c2")
-    await dispatcher.fan_out(_ctx(), _op())
-    await dispatcher.fan_out(ctx_b, _op())
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
+    await dispatcher.fan_out_bulk(ctx_b, [_op()])
     # Two distinct collections → two ensure calls.
     assert len(a.ensure_calls) == 2
 
@@ -158,10 +158,10 @@ async def test_ensure_indexer_failure_with_warn_skips_index_call():
         entries=[_entry("a", on_failure=FailurePolicy.WARN)],
         indexers={"a": a},
     )
-    await dispatcher.fan_out(_ctx(), _op())
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
     # ensure_indexer attempted once; index() never reached.
     assert len(a.ensure_calls) == 1
-    assert len(a.calls) == 0
+    assert len(a.bulk_calls) == 0
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,7 @@ async def test_ensure_indexer_failure_with_fatal_raises():
         indexers={"a": a},
     )
     with pytest.raises(IndexerFatal):
-        await dispatcher.fan_out(_ctx(), _op())
+        await dispatcher.fan_out_bulk(_ctx(), [_op()])
 
 
 @pytest.mark.asyncio
@@ -184,10 +184,11 @@ async def test_indexer_without_ensure_indexer_method_is_treated_as_ready():
     class _LegacyIndexer:
         indexer_id = "legacy"
         def __init__(self):
-            self.calls: List = []
+            self.bulk_calls: List = []
         async def index(self, ctx, op):
-            self.calls.append(op)
+            raise AssertionError("dispatcher should call index_bulk only")
         async def index_bulk(self, ctx, ops):
+            self.bulk_calls.append(list(ops))
             return BulkResult(total=len(ops), succeeded=len(ops))
 
     a = _LegacyIndexer()
@@ -195,8 +196,9 @@ async def test_indexer_without_ensure_indexer_method_is_treated_as_ready():
         entries=[_entry("legacy", on_failure=FailurePolicy.WARN)],
         indexers={"legacy": a},
     )
-    await dispatcher.fan_out(_ctx(), _op())
-    assert len(a.calls) == 1
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
+    assert len(a.bulk_calls) == 1
+    assert len(a.bulk_calls[0]) == 1
 
 
 @pytest.mark.asyncio
@@ -210,9 +212,9 @@ async def test_fan_out_calls_every_configured_indexer():
         ],
         indexers={"a": a, "b": b},
     )
-    await dispatcher.fan_out(_ctx(), _op())
-    assert len(a.calls) == 1
-    assert len(b.calls) == 1
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
+    assert len(a.bulk_calls) == 1
+    assert len(b.bulk_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -225,8 +227,8 @@ async def test_fan_out_skips_when_indexer_not_registered():
         ],
         indexers={"a": a},  # 'missing' not registered
     )
-    await dispatcher.fan_out(_ctx(), _op())
-    assert len(a.calls) == 1
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
+    assert len(a.bulk_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +244,7 @@ async def test_fatal_policy_raises_indexer_fatal():
         indexers={"a": a},
     )
     with pytest.raises(IndexerFatal) as exc_info:
-        await dispatcher.fan_out(_ctx(), _op())
+        await dispatcher.fan_out_bulk(_ctx(), [_op()])
     assert exc_info.value.indexer_id == "a"
     assert exc_info.value.op.op_type == "upsert"
 
@@ -269,9 +271,9 @@ async def test_warn_policy_swallows_failure_and_continues_to_next():
         ],
         indexers={"a": a, "b": b},
     )
-    await dispatcher.fan_out(_ctx(), _op())  # must not raise
-    assert len(a.calls) == 1
-    assert len(b.calls) == 1
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])  # must not raise
+    assert len(a.bulk_calls) == 1
+    assert len(b.bulk_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -281,7 +283,7 @@ async def test_ignore_policy_silent():
         entries=[_entry("a", on_failure=FailurePolicy.IGNORE)],
         indexers={"a": a},
     )
-    await dispatcher.fan_out(_ctx(), _op())  # must not raise
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])  # must not raise
 
 
 @pytest.mark.asyncio
@@ -298,7 +300,7 @@ async def test_outbox_policy_without_writer_degrades_to_warn(caplog):
     )
     import logging as _logging
     with caplog.at_level(_logging.WARNING):
-        await dispatcher.fan_out(_ctx(), _op())
+        await dispatcher.fan_out_bulk(_ctx(), [_op()])
     # Two warnings expected: one-time degrade-notice + the actual failure.
     msgs = [r.getMessage() for r in caplog.records]
     assert any("on_failure=outbox" in m and "Phase 2" in m for m in msgs)
@@ -580,10 +582,10 @@ async def test_outbox_policy_with_writer_enqueues_on_failure():
         indexer_registry=indexer_registry,
         outbox=writer,
     )
-    await dispatcher.fan_out(ctx_with_conn, _op())
+    await dispatcher.fan_out_bulk(ctx_with_conn, [_op()])
 
     # Indexer was attempted once (and raised).
-    assert len(a.calls) == 1
+    assert len(a.bulk_calls) == 1
     # Outbox row was written on the caller's connection.
     assert len(writer.rows) == 1
     assert "INSERT INTO tasks.tasks" in writer.rows[0]["sql"]
@@ -640,23 +642,6 @@ async def test_dispatch_path_logged_post_commit_inline(caplog):
         r.get("mode") == "post_commit_inline"
         and r.get("indexer") == "a"
         and r.get("chunk_size") == "3"
-        for r in rows
-    ), rows
-
-
-@pytest.mark.asyncio
-async def test_dispatch_path_logged_in_tx(caplog):
-    import logging as _logging
-    a = _StubIndexer("a")
-    dispatcher = _make_dispatcher(
-        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
-        indexers={"a": a},
-    )
-    with caplog.at_level(_logging.INFO):
-        await dispatcher.fan_out(_ctx(), _op(entity_id="solo"))
-    rows = _extract_dispatch_path_records(caplog)
-    assert any(
-        r.get("mode") == "in_tx" and r.get("chunk_size") == "1"
         for r in rows
     ), rows
 

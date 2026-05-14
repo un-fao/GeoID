@@ -19,16 +19,14 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
-from dynastore.modules.catalog.models import Collection
 from dynastore.modules.storage.driver_config import (
     ItemsPostgresqlDriverConfig,
 )
 from dynastore.models.driver_context import DriverContext
-from dynastore.models.ogc import Feature, FeatureCollection
-from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.models.ogc import Feature
+from dynastore.models.protocols import ConfigsProtocol
 from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
-    SidecarProtocol,
     FeaturePipelineContext,
     ConsumerType,
 )
@@ -543,7 +541,6 @@ class ItemQueryMixin:
             rows = 0
             if col_config and driver_sidecars(col_config):
                 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-                from sqlalchemy import text as sa_text
 
                 for sc in driver_sidecars(col_config):
                     if sc.feature_id_field_name:
@@ -595,19 +592,19 @@ class ItemQueryMixin:
                     # the delete TX so any OUTBOX enqueue lands in the
                     # same TX as the soft-delete UPDATE — atomic with
                     # the data change.
-                    await dispatcher.fan_out(
+                    await dispatcher.fan_out_bulk(
                         IndexContext(
                             catalog=catalog_id,
                             collection=collection_id,
                             correlation_id=get_correlation_id() or "",
                             pg_conn=conn,
                         ),
-                        IndexOp(
+                        [IndexOp(
                             op_type="delete",
                             entity_type="item",
                             entity_id=item_id,
                             payload=None,
-                        ),
+                        )],
                     )
                 except Exception as e:
                     logger.warning(
