@@ -73,16 +73,31 @@ class _Probe:
 
 
 def _patch_actions(monkeypatch):
-    """Replace the terminal/heartbeat helpers with AsyncMocks."""
+    """Replace the terminal/heartbeat helpers with AsyncMocks.
+
+    * ``heartbeat_tasks``         — the batched unconditional helper, used by
+                                    the UNKNOWN-young grace extension.
+    * ``heartbeat_task_if_active`` — the single-row conditional helper (#741),
+                                    used by the ALIVE path so the rowcount
+                                    can surface a reaper-won-race signal.
+    * ``fail_task`` / ``complete_task`` — the terminal-verdict actions.
+    """
     from dynastore.modules.tasks import tasks_module
 
     hb = AsyncMock()
+    hb_if_active = AsyncMock(return_value=True)
     fail = AsyncMock()
     complete = AsyncMock()
     monkeypatch.setattr(tasks_module, "heartbeat_tasks", hb)
+    monkeypatch.setattr(tasks_module, "heartbeat_task_if_active", hb_if_active)
     monkeypatch.setattr(tasks_module, "fail_task", fail)
     monkeypatch.setattr(tasks_module, "complete_task", complete)
-    return SimpleNamespace(heartbeat=hb, fail=fail, complete=complete)
+    return SimpleNamespace(
+        heartbeat=hb,
+        heartbeat_if_active=hb_if_active,
+        fail=fail,
+        complete=complete,
+    )
 
 
 def _patch_probe(monkeypatch, verdict):
@@ -104,8 +119,11 @@ async def test_alive_extends_lease(monkeypatch):
 
     await rec._reconcile_row(row)
 
-    actions.heartbeat.assert_awaited_once()
-    assert actions.heartbeat.await_args.args[1] == [row["task_id"]]
+    # ALIVE uses the *conditional* heartbeat so the rowcount surfaces the
+    # reaper-race signal (#741 observability).
+    actions.heartbeat_if_active.assert_awaited_once()
+    assert actions.heartbeat_if_active.await_args.args[1] == row["task_id"]
+    actions.heartbeat.assert_not_awaited()
     actions.fail.assert_not_awaited()
     actions.complete.assert_not_awaited()
 
@@ -239,7 +257,7 @@ async def test_reconcile_once_one_bad_row_does_not_stop_the_rest(monkeypatch):
     await rec._reconcile_once()
 
     # Two good rows still extended despite the middle one raising.
-    assert actions.heartbeat.await_count == 2
+    assert actions.heartbeat_if_active.await_count == 2
 
 
 # --- lifecycle -------------------------------------------------------------
@@ -278,3 +296,90 @@ def test_lifespan_gates_reconciler_on_job_runner_host():
     src = inspect.getsource(gcp_module.GCPModule.lifespan)
     assert "GcpLivenessReconciler" in src
     assert "_should_register_gcp_job_runner" in src
+
+
+# --- #741 item 3: observability + reaper-race detection --------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_once_logs_verdict_distribution_summary(monkeypatch, caplog):
+    """Per-pass observability — one summary log line carries the verdict
+    distribution. Operators need it to confirm the reconciler is actually
+    winning the race against the 60s pg_cron reaper; without it the
+    reconciler is a silent background loop."""
+    from dynastore.modules.tasks import tasks_module
+    from dynastore.modules.tasks.liveness import LivenessVerdict
+
+    _patch_actions(monkeypatch)
+    rows = [_row(), _row(), _row(), _row()]
+    monkeypatch.setattr(
+        tasks_module, "select_lapsed_gcp_tasks", AsyncMock(return_value=rows)
+    )
+
+    verdicts = iter([
+        LivenessVerdict.ALIVE,
+        LivenessVerdict.ALIVE,
+        LivenessVerdict.DEAD,
+        LivenessVerdict.UNKNOWN,
+    ])
+
+    class _RotatingProbe:
+        runner_type = "gcp_cloud_run"
+
+        def owns(self, owner_id):
+            return True
+
+        async def probe_liveness(self, task):
+            return next(verdicts)
+
+    monkeypatch.setattr(_reconciler_mod(), "resolve_probe", lambda owner_id: _RotatingProbe())
+    rec = _make_reconciler(unknown_grace_seconds=0)  # UNKNOWN row takes the no-op branch
+
+    with caplog.at_level("INFO", logger="dynastore.modules.gcp.liveness_reconciler"):
+        await rec._reconcile_once()
+
+    summary_lines = [
+        r for r in caplog.records
+        if "reconcile pass" in r.getMessage().lower()
+    ]
+    assert summary_lines, "missing per-pass verdict-distribution summary log"
+    msg = summary_lines[-1].getMessage()
+    # Counts in the summary must reflect what was probed this pass.
+    assert "ALIVE=2" in msg
+    assert "DEAD=1" in msg
+    assert "UNKNOWN=1" in msg
+
+
+@pytest.mark.asyncio
+async def test_alive_logs_warning_when_reaper_won_race(monkeypatch, caplog):
+    """``heartbeat_task_if_active`` returns ``False`` when no row was updated —
+    i.e. the row was no longer ACTIVE at UPDATE time. That is the accepted
+    SELECT→probe→act race window from the #735 design: the pg_cron reaper
+    flipped the row to PENDING between the reconciler's SELECT and its
+    heartbeat. Surface it so operators can see when it happens and tune the
+    reconciler interval down."""
+    from dynastore.modules.tasks import tasks_module
+    from dynastore.modules.tasks.liveness import LivenessVerdict
+
+    _patch_actions(monkeypatch)
+    monkeypatch.setattr(
+        tasks_module,
+        "heartbeat_task_if_active",
+        AsyncMock(return_value=False),
+    )
+    _patch_probe(monkeypatch, LivenessVerdict.ALIVE)
+    rec = _make_reconciler()
+
+    with caplog.at_level("WARNING", logger="dynastore.modules.gcp.liveness_reconciler"):
+        await rec._reconcile_row(_row())
+
+    race_warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING"
+        and "reaper" in r.getMessage().lower()
+        and "race" in r.getMessage().lower()
+    ]
+    assert race_warnings, (
+        "reaper-race loss must log a WARNING — without it the race window "
+        "is operationally invisible."
+    )

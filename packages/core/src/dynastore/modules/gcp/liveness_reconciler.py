@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -126,33 +127,67 @@ class GcpLivenessReconciler:
                 pass
 
     async def _reconcile_once(self) -> None:
-        """Scan lapsed-lease Cloud Run rows and reconcile each one."""
+        """Scan lapsed-lease Cloud Run rows and reconcile each one.
+
+        Accumulates a verdict-distribution :class:`~collections.Counter` over
+        the pass and emits one INFO summary log line at the end (#741 item 3) —
+        operators need that line to confirm the reconciler is actually winning
+        the race against the 60s pg_cron reaper.
+        """
         rows = await tasks_module.select_lapsed_gcp_tasks(self._engine)
+        verdicts: Counter[str] = Counter()
+        unmapped = 0
+        errors = 0
         for row in rows:
             try:
-                await self._reconcile_row(row)
+                outcome = await self._reconcile_row(row)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — one bad row must not stop the rest
+                errors += 1
                 logger.warning(
                     "GcpLivenessReconciler: failed to reconcile task %s: %s",
                     row.get("task_id"), e,
                 )
+                continue
+            if outcome is None:
+                unmapped += 1
+            else:
+                verdicts[outcome.name] += 1
 
-    async def _reconcile_row(self, row: Dict[str, Any]) -> None:
-        """Probe the owning runner for ``row`` and act on the verdict."""
+        # One summary line per pass: total scanned, per-verdict counts, plus
+        # the unmapped-owner / error tallies. Logged unconditionally so
+        # idle-quiet passes still leave a trace.
+        parts = [f"{name}={count}" for name, count in sorted(verdicts.items())]
+        if unmapped:
+            parts.append(f"UNMAPPED={unmapped}")
+        if errors:
+            parts.append(f"ERROR={errors}")
+        logger.info(
+            "GcpLivenessReconciler: reconcile pass — scanned=%d %s",
+            len(rows),
+            " ".join(parts) if parts else "(no lapsed gcp rows)",
+        )
+
+    async def _reconcile_row(self, row: Dict[str, Any]) -> Optional[LivenessVerdict]:
+        """Probe the owning runner for ``row`` and act on the verdict.
+
+        Returns the verdict so :meth:`_reconcile_once` can build a per-pass
+        distribution. Returns ``None`` when no probe owns the row (in-process /
+        ephemeral / unrecognized) — those rows are left for the pg_cron reaper.
+        """
         from dynastore.models.tasks import Task
 
         owner_id = row.get("owner_id")
         task_id = row.get("task_id")
         if task_id is None:
-            return  # malformed row — nothing to reconcile
+            return None  # malformed row — nothing to reconcile
 
         probe = resolve_probe(owner_id)
         if probe is None:
             # In-process / ephemeral / unrecognized owner — no probe maps it.
             # The pg_cron reaper handles this row exactly as today.
-            return
+            return None
 
         task = Task.model_validate(row)
         verdict = await probe.probe_liveness(task)
@@ -160,17 +195,33 @@ class GcpLivenessReconciler:
         runner_ref = row.get("runner_ref")
 
         if verdict == LivenessVerdict.ALIVE:
-            # The execution is genuinely running (or cold-starting) — extend the
-            # lease so the reaper's next pass skips the row. This IS the
+            # The execution is genuinely running (or cold-starting) — extend
+            # the lease so the reaper's next pass skips the row. This IS the
             # liveness signal that replaces the fixed spawn-lease timer.
-            await tasks_module.heartbeat_tasks(
-                self._engine, [task_id],
+            #
+            # Conditional heartbeat: the helper updates only when the row is
+            # still ``ACTIVE`` and returns whether it matched. A ``False``
+            # return means the row was reclaimed by the pg_cron reaper between
+            # this reconciler's SELECT-commit and its UPDATE — the accepted
+            # race window. Surface it so operators can see how often it fires
+            # in practice and tune the reconciler interval down (#741 item 3).
+            extended = await tasks_module.heartbeat_task_if_active(
+                self._engine, task_id,
                 timedelta(seconds=self._extend_visibility_seconds),
             )
-            logger.info(
-                "GcpLivenessReconciler: task %s ALIVE (execution=%s) — lease extended %ds.",
-                task_id, runner_ref, self._extend_visibility_seconds,
-            )
+            if extended:
+                logger.info(
+                    "GcpLivenessReconciler: task %s ALIVE (execution=%s) — lease extended %ds.",
+                    task_id, runner_ref, self._extend_visibility_seconds,
+                )
+            else:
+                logger.warning(
+                    "GcpLivenessReconciler: task %s ALIVE (execution=%s) but heartbeat "
+                    "matched 0 rows — the pg_cron reaper won the SELECT→probe→act race. "
+                    "Consider tuning liveness_reconciler_interval_seconds down.",
+                    task_id, runner_ref,
+                )
+            return verdict
         elif verdict in (LivenessVerdict.DEAD, LivenessVerdict.TERMINAL_FAILED):
             reason = (
                 "Cloud Run execution failed"
@@ -186,6 +237,7 @@ class GcpLivenessReconciler:
                 "GcpLivenessReconciler: task %s %s (execution=%s) — failed (retry).",
                 task_id, verdict.value, runner_ref,
             )
+            return verdict
         elif verdict == LivenessVerdict.TERMINAL_SUCCEEDED:
             # The execution exited 0 but the row is still ACTIVE — reconcile it
             # to COMPLETED from the outputs the container persisted before exit
@@ -201,6 +253,7 @@ class GcpLivenessReconciler:
                 task_id, runner_ref,
                 "" if outputs is not None else " (no outputs on row)",
             )
+            return verdict
         else:  # LivenessVerdict.UNKNOWN
             started_at = row.get("started_at")
             young = (
@@ -227,3 +280,4 @@ class GcpLivenessReconciler:
                     "GcpLivenessReconciler: task %s UNKNOWN — leaving for pg_cron reaper.",
                     task_id,
                 )
+            return verdict

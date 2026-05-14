@@ -90,3 +90,44 @@ def test_persist_outputs_does_not_flip_status():
     normalised = " ".join(src.split()).upper()
     assert "SET OUTPUTS = :OUTPUTS" in normalised
     assert "STATUS = 'COMPLETED'" not in normalised
+
+
+# --- heartbeat_task_if_active (#741: reaper-race detection) ----------------
+
+
+def test_heartbeat_task_if_active_exists_and_is_async():
+    """A single-task conditional heartbeat that reports whether the row was
+    still ``ACTIVE`` at UPDATE time — the reconciler uses the return value to
+    spot the accepted SELECT→probe→act race window the pg_cron reaper can win."""
+    fn = _tasks_module().heartbeat_task_if_active
+    assert inspect.iscoroutinefunction(fn)
+    sig = inspect.signature(fn)
+    for param in ("engine", "task_id", "visibility_timeout"):
+        assert param in sig.parameters, f"missing parameter: {param}"
+
+
+def test_heartbeat_task_if_active_returns_bool_from_rowcount():
+    """The function MUST return ``bool`` — the reconciler conditions a
+    reaper-race warning on it. Source-pin: ``ResultHandler.ROWCOUNT`` is used
+    and the function annotates a ``bool`` return."""
+    import typing
+
+    fn = _tasks_module().heartbeat_task_if_active
+    hints = typing.get_type_hints(fn)
+    assert hints.get("return") is bool, (
+        "heartbeat_task_if_active must return bool — the reaper-race signal "
+        "depends on the truthiness of UPDATE rowcount."
+    )
+    src = inspect.getsource(fn)
+    assert "ResultHandler.ROWCOUNT" in src
+
+
+def test_heartbeat_task_if_active_sql_shape():
+    """SQL pins: single-row by task_id, conditional on ``status = 'ACTIVE'``.
+    Without the status guard the rowcount signal is meaningless (an UPDATE on
+    a no-longer-ACTIVE row would still update one row)."""
+    src = inspect.getsource(_tasks_module().heartbeat_task_if_active)
+    normalised = " ".join(src.split()).upper()
+    assert "SET LOCKED_UNTIL = :LOCKED_UNTIL" in normalised
+    assert "WHERE TASK_ID = :TASK_ID" in normalised
+    assert "STATUS = 'ACTIVE'" in normalised
