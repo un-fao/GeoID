@@ -301,6 +301,14 @@ def test_lifespan_gates_reconciler_on_job_runner_host():
 # --- #741 item 3: observability + reaper-race detection --------------------
 
 
+def _summary_lines(caplog):
+    """The per-pass structured summary lines emitted by ``_reconcile_once``."""
+    return [
+        r for r in caplog.records
+        if r.getMessage().startswith("liveness_reconcile_pass")
+    ]
+
+
 @pytest.mark.asyncio
 async def test_reconcile_once_logs_verdict_distribution_summary(monkeypatch, caplog):
     """Per-pass observability — one summary log line carries the verdict
@@ -338,16 +346,116 @@ async def test_reconcile_once_logs_verdict_distribution_summary(monkeypatch, cap
     with caplog.at_level("INFO", logger="dynastore.modules.gcp.liveness_reconciler"):
         await rec._reconcile_once()
 
-    summary_lines = [
-        r for r in caplog.records
-        if "reconcile pass" in r.getMessage().lower()
-    ]
+    summary_lines = _summary_lines(caplog)
     assert summary_lines, "missing per-pass verdict-distribution summary log"
     msg = summary_lines[-1].getMessage()
     # Counts in the summary must reflect what was probed this pass.
     assert "ALIVE=2" in msg
     assert "DEAD=1" in msg
     assert "UNKNOWN=1" in msg
+
+
+@pytest.mark.asyncio
+async def test_reconcile_pass_summary_is_structured_keyvalue(monkeypatch, caplog):
+    """#745 item 2 — the summary line follows the house ``<token> service=…
+    key=value`` shape (same as ``db_pool_acquire``) so a GCP log-based metric
+    can extract fields without a prometheus_client dep. The stable anchor
+    fields ``service=``, ``scanned=`` and ``RACE_LOST=`` are ALWAYS present —
+    even on an idle pass — so the metric filter and the race-loss extractor
+    never silently lose their data point."""
+    from dynastore.modules.tasks import tasks_module
+
+    _patch_actions(monkeypatch)
+    monkeypatch.setattr(
+        tasks_module, "select_lapsed_gcp_tasks", AsyncMock(return_value=[])
+    )
+    rec = _make_reconciler()
+
+    with caplog.at_level("INFO", logger="dynastore.modules.gcp.liveness_reconciler"):
+        await rec._reconcile_once()
+
+    summary_lines = _summary_lines(caplog)
+    assert summary_lines, "idle pass must still emit a summary line"
+    msg = summary_lines[-1].getMessage()
+    assert msg.startswith("liveness_reconcile_pass ")
+    assert "service=" in msg
+    assert "scanned=0" in msg
+    assert "RACE_LOST=0" in msg  # anchored even when zero
+
+
+@pytest.mark.asyncio
+async def test_reconcile_once_summary_counts_race_losses_separately(monkeypatch, caplog):
+    """#745 item 1 — a row that probed ALIVE but whose conditional heartbeat
+    matched 0 rows (the pg_cron reaper won the race) is still a truthful
+    ``ALIVE`` verdict, but the summary must tally it under a DISTINCT
+    ``RACE_LOST`` count. Otherwise ``ALIVE=3`` hides that 1 of those 3 never
+    actually got its lease extended — and the race-loss rate is the signal
+    for whether the reconciler interval needs tuning down."""
+    from dynastore.modules.tasks import tasks_module
+    from dynastore.modules.tasks.liveness import LivenessVerdict
+
+    _patch_actions(monkeypatch)
+    rows = [_row(), _row(), _row()]
+    monkeypatch.setattr(
+        tasks_module, "select_lapsed_gcp_tasks", AsyncMock(return_value=rows)
+    )
+    # All three probe ALIVE; the conditional heartbeat succeeds for the first
+    # two and loses the race on the third.
+    monkeypatch.setattr(
+        tasks_module,
+        "heartbeat_task_if_active",
+        AsyncMock(side_effect=[True, True, False]),
+    )
+    _patch_probe(monkeypatch, LivenessVerdict.ALIVE)
+    rec = _make_reconciler()
+
+    with caplog.at_level("INFO", logger="dynastore.modules.gcp.liveness_reconciler"):
+        await rec._reconcile_once()
+
+    msg = _summary_lines(caplog)[-1].getMessage()
+    assert "ALIVE=3" in msg, "the probe verdict count stays truthful"
+    assert "RACE_LOST=1" in msg, "race losses must be tallied distinctly"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_row_returns_outcome_with_race_lost_flag(monkeypatch):
+    """``_reconcile_row`` returns a ``ReconcileOutcome(verdict, race_lost)`` so
+    ``_reconcile_once`` can tally race losses without re-deriving them. An
+    ALIVE row whose heartbeat matched carries ``race_lost=False``; one whose
+    heartbeat lost the race carries ``race_lost=True`` — with the verdict
+    still ALIVE either way."""
+    from dynastore.modules.tasks import tasks_module
+    from dynastore.modules.tasks.liveness import LivenessVerdict
+
+    _patch_actions(monkeypatch)
+    _patch_probe(monkeypatch, LivenessVerdict.ALIVE)
+    rec = _make_reconciler()
+
+    # Heartbeat succeeds → race not lost.
+    monkeypatch.setattr(
+        tasks_module, "heartbeat_task_if_active", AsyncMock(return_value=True)
+    )
+    won = await rec._reconcile_row(_row())
+    assert won.verdict == LivenessVerdict.ALIVE
+    assert won.race_lost is False
+
+    # Heartbeat matched 0 rows → race lost, verdict still ALIVE.
+    monkeypatch.setattr(
+        tasks_module, "heartbeat_task_if_active", AsyncMock(return_value=False)
+    )
+    lost = await rec._reconcile_row(_row())
+    assert lost.verdict == LivenessVerdict.ALIVE
+    assert lost.race_lost is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_row_unmapped_owner_returns_none(monkeypatch):
+    """An unmapped owner still returns ``None`` (not a ReconcileOutcome) so
+    ``_reconcile_once`` tallies it as UNMAPPED, not as a verdict."""
+    _patch_actions(monkeypatch)
+    monkeypatch.setattr(_reconciler_mod(), "resolve_probe", lambda owner_id: None)
+    rec = _make_reconciler()
+    assert await rec._reconcile_row(_row(owner_id="dispatcher-pod-1")) is None
 
 
 @pytest.mark.asyncio
