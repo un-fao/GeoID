@@ -122,3 +122,64 @@ async def test_search_uses_first_config_resolved_driver(monkeypatch):
     rows, total = await collection_router.search_collection_metadata("cat", q="x")
     assert total == 1 and rows[0]["_src"] == "es"
     assert es.calls == ["search"] and pg.calls == []
+
+
+import pytest  # noqa: E402 — appended after existing non-pytest tests
+
+
+@pytest.mark.asyncio
+async def test_upsert_dispatches_index_hop(monkeypatch):
+    """After a successful WRITE fan-out, upsert_collection_metadata must
+    dispatch the envelope to the INDEX hop so ES gets populated."""
+    from dynastore.modules.catalog import collection_router
+    from dynastore.modules.storage.routing_config import Operation, OperationDriverEntry
+
+    pg = _RecordingDriver("pg")
+    dispatched: list[tuple] = []
+
+    async def _fake_resolve(rpc, operation, catalog_id, collection_id=None, *, db_resource=None):
+        if operation == Operation.WRITE:
+            return [(OperationDriverEntry(driver_ref="collection_postgresql_driver"), pg)]
+        return []
+
+    class _FakeDispatcher:
+        async def fan_out_bulk(self, ctx, ops):
+            dispatched.append((ctx.catalog, ctx.collection, len(ops)))
+
+    monkeypatch.setattr(collection_router, "resolve_routed", _fake_resolve)
+    monkeypatch.setattr(
+        collection_router, "_get_index_dispatcher", lambda: _FakeDispatcher(),
+    )
+    await collection_router.upsert_collection_metadata("cat", "coll", {"id": "coll"})
+    assert pg.calls == ["upsert"]
+    assert dispatched == [("cat", "coll", 1)]
+
+
+@pytest.mark.asyncio
+async def test_index_dispatch_failure_does_not_break_write(monkeypatch, caplog):
+    """A non-FATAL INDEX dispatch failure is logged, not raised — the PG
+    WRITE already succeeded and must stand."""
+    import logging
+
+    from dynastore.modules.catalog import collection_router
+    from dynastore.modules.storage.routing_config import Operation, OperationDriverEntry
+
+    pg = _RecordingDriver("pg")
+
+    async def _fake_resolve(rpc, operation, catalog_id, collection_id=None, *, db_resource=None):
+        if operation == Operation.WRITE:
+            return [(OperationDriverEntry(driver_ref="collection_postgresql_driver"), pg)]
+        return []
+
+    class _BoomDispatcher:
+        async def fan_out_bulk(self, ctx, ops):
+            raise RuntimeError("synthetic ES outage")
+
+    monkeypatch.setattr(collection_router, "resolve_routed", _fake_resolve)
+    monkeypatch.setattr(
+        collection_router, "_get_index_dispatcher", lambda: _BoomDispatcher(),
+    )
+    with caplog.at_level(logging.WARNING, logger=collection_router.__name__):
+        await collection_router.upsert_collection_metadata("cat", "coll", {"id": "coll"})
+    assert pg.calls == ["upsert"]
+    assert any("index" in r.message.lower() for r in caplog.records)

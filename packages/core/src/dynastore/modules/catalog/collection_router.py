@@ -111,6 +111,12 @@ async def _routed_drivers(
     return [driver for _entry, driver in resolved]
 
 
+def _get_index_dispatcher() -> Any:
+    """Indirection seam — lets tests substitute a fake dispatcher."""
+    from dynastore.modules.storage.index_dispatcher import get_index_dispatcher
+    return get_index_dispatcher()
+
+
 async def _dispatch_collection_index(
     catalog_id: str,
     collection_id: str,
@@ -118,8 +124,48 @@ async def _dispatch_collection_index(
     *,
     db_resource: Optional[Any] = None,
 ) -> None:
-    """INDEX-hop dispatch stub — implemented in Task 6."""
-    return None
+    """Fan the collection envelope to every Indexer configured under
+    ``CollectionRoutingConfig.operations[INDEX]``.
+
+    Mirrors :meth:`item_service.ItemService._dispatch_index_upsert` at the
+    collection-envelope tier — the single dispatch call site that replaces
+    per-driver ES event listeners.  Failure handling is governed by each
+    routing entry's ``on_failure`` (OUTBOX enqueues a durable retry row,
+    WARN logs, FATAL raises out so the caller's TX rolls back).
+
+    Non-FATAL failures are absorbed here: the PG WRITE has already
+    committed/queued and must stand.  ``IndexerFatal`` propagates.
+    """
+    from dynastore.models.protocols.indexer import IndexContext, IndexOp
+    from dynastore.modules.storage.index_dispatcher import IndexerFatal
+    from dynastore.tools.correlation import get_correlation_id
+
+    dispatcher = _get_index_dispatcher()
+    ops = [
+        IndexOp(
+            op_type="upsert",
+            entity_type="collection",
+            entity_id=collection_id,
+            payload=metadata,
+        )
+    ]
+    ctx = IndexContext(
+        catalog=catalog_id,
+        collection=collection_id,
+        correlation_id=get_correlation_id() or "",
+        pg_conn=db_resource,
+    )
+    try:
+        await dispatcher.fan_out_bulk(ctx, ops)
+    except IndexerFatal:
+        # FATAL contract — propagate so the caller's TX rolls back.
+        raise
+    except Exception as exc:  # noqa: BLE001 — non-FATAL paths absorb
+        logger.warning(
+            "Collection INDEX-hop dispatch failed for %s/%s: %s — "
+            "PG write stands; ES may be stale until reindex",
+            catalog_id, collection_id, exc,
+        )
 
 
 async def get_collection_metadata(
@@ -236,6 +282,14 @@ async def upsert_collection_metadata(
                 [type(d).__name__ for d in drivers[drivers.index(driver) + 1:]],
             )
             raise
+
+    # INDEX hop — propagate the envelope to ES (and any other configured
+    # Indexer).  Pure post-write propagation; PG above is the system of
+    # record.  db_resource (when a live conn) makes the OUTBOX enqueue
+    # atomic with the caller's transaction.
+    await _dispatch_collection_index(
+        catalog_id, collection_id, metadata, db_resource=db_resource,
+    )
 
 
 async def delete_collection_metadata(
