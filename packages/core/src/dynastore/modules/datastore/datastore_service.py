@@ -131,7 +131,7 @@ class DatastoreModule(ModuleProtocol, DatabaseProtocol):
                     # NAT/AlloyDB-dropped idle connection is replaced rather
                     # than handed out dead-at-the-wire. See #655.
                     pool_pre_ping=True,
-                    pool_recycle=1800,
+                    pool_recycle=db_config.pool_recycle,
                     connect_args={
                         "application_name": app_name,
                         # psycopg2 speaks libpq, so client-side TCP keepalive
