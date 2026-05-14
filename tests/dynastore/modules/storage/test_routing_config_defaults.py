@@ -104,3 +104,31 @@ def test_collection_routing_default_search_carries_geometry_hints():
     pg = next(e for e in search if e.driver_ref == "collection_postgresql_driver")
     assert Hint.GEOMETRY_SIMPLIFIED in es.hints
     assert Hint.GEOMETRY_EXACT in pg.hints
+
+
+def test_catalog_routing_default_refs_are_registered():
+    """The default WRITE/READ entries must reference an actually-registered
+    driver_ref. catalog_core_postgresql_driver / catalog_stac_postgresql_driver
+    were never registered as entry-points — the registered wrapper is
+    catalog_postgresql_driver."""
+    from dynastore.modules.storage.routing_config import (
+        CatalogRoutingConfig, Operation,
+    )
+    cfg = CatalogRoutingConfig()
+    write_refs = [e.driver_ref for e in cfg.operations[Operation.WRITE]]
+    read_refs = [e.driver_ref for e in cfg.operations[Operation.READ]]
+    assert write_refs == ["catalog_postgresql_driver"]
+    assert read_refs == ["catalog_postgresql_driver"]
+    for ref in write_refs + read_refs:
+        assert ref not in (
+            "catalog_core_postgresql_driver",
+            "catalog_stac_postgresql_driver",
+        ), f"{ref} is not a registered entry-point"
+
+
+def test_catalog_routing_default_write_is_fatal():
+    from dynastore.modules.storage.routing_config import (
+        CatalogRoutingConfig, FailurePolicy, Operation,
+    )
+    cfg = CatalogRoutingConfig()
+    assert cfg.operations[Operation.WRITE][0].on_failure == FailurePolicy.FATAL
