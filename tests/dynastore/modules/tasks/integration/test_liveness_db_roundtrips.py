@@ -312,3 +312,139 @@ async def test_heartbeat_task_if_active_returns_false_when_no_longer_active(
         engine, task_id, timedelta(seconds=300)
     )
     assert extended is False
+
+
+# --- fail_task / complete_task owner_id race guard (#750 / #757) -----------
+#
+# #750 added an opt-in keyword-only ``owner_id`` guard to ``fail_task`` and
+# ``complete_task`` so the liveness reconciler can only act on the exact
+# execution attempt it probed. The unit tests pin the SQL *shape*; these pin
+# the live Postgres *behaviour* — that the guard genuinely filters the UPDATE
+# and that a mismatch leaves the row byte-for-byte untouched (the correctness
+# property: the reconciler must never clobber a reaper-reclaimed,
+# dispatcher-re-dispatched fresh attempt).
+
+
+async def _read_row(engine, task_id):
+    """Return ``(status, owner_id, retry_count)`` for a global-tasks row."""
+    task_schema = tasks_module.get_task_schema()
+    async with engine.connect() as conn:
+        return (await conn.execute(
+            text(
+                f'SELECT status, owner_id, retry_count '
+                f'FROM "{task_schema}".tasks WHERE task_id = :tid'
+            ),
+            {"tid": task_id},
+        )).one()
+
+
+async def test_fail_task_owner_guard_match_transitions_row(_gcp_row_factory):
+    """``fail_task`` with the matching ``owner_id`` updates the row and
+    returns ``True`` — the reconciler's DEAD/TERMINAL_FAILED happy path."""
+    create, schema_name, engine = _gcp_row_factory
+    owner_id = f"gcp_cloud_run_{generate_test_id(10)}"
+    task_id = await create(
+        owner_id=owner_id,
+        locked_until=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    acted = await tasks_module.fail_task(
+        engine, task_id, datetime.now(timezone.utc),
+        "liveness: execution gone", retry=True, owner_id=owner_id,
+    )
+    assert acted is True
+
+    status, _, retry_count = await _read_row(engine, task_id)
+    # retry=True under the default cap → requeued PENDING, retry_count bumped.
+    assert status == "PENDING"
+    assert retry_count == 1
+
+
+async def test_fail_task_owner_guard_mismatch_leaves_row_untouched(_gcp_row_factory):
+    """The correctness property: when the probed ``owner_id`` no longer owns
+    the row (pg_cron reaper reclaimed it, dispatcher re-dispatched a fresh
+    attempt under a new owner), ``fail_task`` matches 0 rows, returns
+    ``False``, and the row is left exactly as it was — the fresh attempt is
+    not clobbered."""
+    create, schema_name, engine = _gcp_row_factory
+    owner_id = f"gcp_cloud_run_{generate_test_id(10)}"
+    task_id = await create(
+        owner_id=owner_id,
+        locked_until=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    acted = await tasks_module.fail_task(
+        engine, task_id, datetime.now(timezone.utc),
+        "liveness: stale probe", retry=True,
+        owner_id=f"gcp_cloud_run_{generate_test_id(10)}",  # a different attempt
+    )
+    assert acted is False
+
+    status, row_owner, retry_count = await _read_row(engine, task_id)
+    assert status == "ACTIVE"
+    assert row_owner == owner_id
+    assert retry_count == 0
+
+
+async def test_complete_task_owner_guard_match_transitions_row(_gcp_row_factory):
+    """``complete_task`` with the matching ``owner_id`` flips the row to
+    COMPLETED and returns ``True`` — the reconciler's TERMINAL_SUCCEEDED
+    recovery path."""
+    create, schema_name, engine = _gcp_row_factory
+    owner_id = f"gcp_cloud_run_{generate_test_id(10)}"
+    task_id = await create(
+        owner_id=owner_id,
+        locked_until=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    acted = await tasks_module.complete_task(
+        engine, task_id, datetime.now(timezone.utc),
+        outputs={"reconciled": True}, owner_id=owner_id,
+    )
+    assert acted is True
+
+    status, row_owner, _ = await _read_row(engine, task_id)
+    assert status == "COMPLETED"
+    assert row_owner is None  # complete_task clears the lease owner
+
+
+async def test_complete_task_owner_guard_mismatch_leaves_row_untouched(_gcp_row_factory):
+    """Mismatched ``owner_id`` → ``complete_task`` matches 0 rows, returns
+    ``False``, row untouched — the reconciler must not complete a fresh
+    attempt out from under Cloud Run."""
+    create, schema_name, engine = _gcp_row_factory
+    owner_id = f"gcp_cloud_run_{generate_test_id(10)}"
+    task_id = await create(
+        owner_id=owner_id,
+        locked_until=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    acted = await tasks_module.complete_task(
+        engine, task_id, datetime.now(timezone.utc),
+        outputs={"reconciled": True},
+        owner_id=f"gcp_cloud_run_{generate_test_id(10)}",  # a different attempt
+    )
+    assert acted is False
+
+    status, row_owner, _ = await _read_row(engine, task_id)
+    assert status == "ACTIVE"
+    assert row_owner == owner_id
+
+
+async def test_terminal_helpers_without_owner_id_stay_unconditional(_gcp_row_factory):
+    """Back-compat: with no ``owner_id`` passed, ``complete_task`` is
+    unconditional exactly as before #750 — every existing (non-reconciler)
+    caller keeps today's behaviour and still gets ``True``."""
+    create, schema_name, engine = _gcp_row_factory
+    task_id = await create(
+        owner_id=f"gcp_cloud_run_{generate_test_id(10)}",
+        locked_until=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    acted = await tasks_module.complete_task(
+        engine, task_id, datetime.now(timezone.utc),
+    )
+    assert acted is True
+
+    status, _, _ = await _read_row(engine, task_id)
+    assert status == "COMPLETED"
