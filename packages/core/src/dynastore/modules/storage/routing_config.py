@@ -597,13 +597,57 @@ class CollectionRoutingConfig(PluginConfig):
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
-        default_factory=lambda: {},
+        default_factory=lambda: {
+            # Collection-envelope routing. The PG collection driver
+            # (collection_postgresql_driver — internally fans CRUD across
+            # the collection_core + collection_stac sidecars) is the
+            # system of record: primary for both WRITE and READ.
+            # Elasticsearch is the *index* — populated asynchronously via
+            # the INDEX hop (OUTBOX-durable) and fronting SEARCH. PG is
+            # the SEARCH fallback so a deploy without ES still answers
+            # collection search from the authoritative store.
+            Operation.WRITE: [
+                OperationDriverEntry(
+                    driver_ref="collection_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(
+                    driver_ref="collection_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+            Operation.INDEX: [
+                OperationDriverEntry(
+                    driver_ref="collection_elasticsearch_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    source="auto",
+                ),
+            ],
+            Operation.SEARCH: [
+                # ES is the primary search backend (fast, simplified
+                # geometry). PG is the fallback AND the exact-geometry
+                # path: a consumer needing full-precision geometry passes
+                # hint=Hint.GEOMETRY_EXACT to route SEARCH to PG.
+                OperationDriverEntry(
+                    driver_ref="collection_elasticsearch_driver",
+                    hints={Hint.GEOMETRY_SIMPLIFIED},
+                ),
+                OperationDriverEntry(
+                    driver_ref="collection_postgresql_driver",
+                    hints={Hint.GEOMETRY_EXACT},
+                ),
+            ],
+        },
         description=(
-            "Operation → ordered driver list for collection-tier routing.  "
-            "READ  = first-match ``CollectionStore`` drivers.  "
-            "TRANSFORM = lazy enrichers.  "
-            "INDEX = async search-sink propagation.  "
-            "BACKUP = async export-sink propagation."
+            "Operation -> ordered driver list for collection-tier routing. "
+            "WRITE/READ = collection_postgresql_driver (system of record). "
+            "INDEX = async OUTBOX-durable propagation to Elasticsearch. "
+            "SEARCH = Elasticsearch primary (geometry_simplified), "
+            "PostgreSQL fallback (geometry_exact). "
+            "TRANSFORM/BACKUP entries are auto-augmented at validation time."
         ),
     )
 
