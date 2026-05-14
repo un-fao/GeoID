@@ -19,6 +19,7 @@ from typing import ClassVar, Optional, Tuple
 
 import pytest
 
+from dynastore.models.mutability import Mutable
 from dynastore.models.protocols.typed_driver import (
     TypedDriver,
     _PluginDriverConfig,
@@ -29,7 +30,7 @@ from dynastore.models.protocols.typed_driver import (
 def test_concrete_pair_registers_and_class_key_resolves():
     class _DemoConfigA(_PluginDriverConfig):
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "catalog", "collection", "items", "drivers")
-        nickname: str = "a"
+        nickname: Mutable[str] = "a"
 
     class _DemoDriverA(TypedDriver[_DemoConfigA]):
         pass
@@ -51,7 +52,7 @@ def test_orphan_config_raises_on_assert_bound():
     class _OrphanConfig(_PluginDriverConfig):
         # NO `class XDriver(TypedDriver[_OrphanConfig])` declaration.
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "catalog", "collection", "items", "drivers")
-        nickname: str = "orphan"
+        nickname: Mutable[str] = "orphan"
 
     # class_key() falls back to qualname (non-fatal) — snake-cased.
     assert _OrphanConfig.class_key().endswith("_orphan_config")
@@ -63,7 +64,7 @@ def test_orphan_config_raises_on_assert_bound():
 def test_double_bind_raises_on_second_driver():
     class _DemoConfigB(_PluginDriverConfig):
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "catalog", "collection", "items", "drivers")
-        nickname: str = "b"
+        nickname: Mutable[str] = "b"
 
     class _DemoDriverB1(TypedDriver[_DemoConfigB]):
         pass
@@ -92,7 +93,7 @@ def test_class_key_byte_matches_driver_name():
     """
     class _CollectionPostgresqlDriverConfig(_PluginDriverConfig):
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "catalog", "collection", "drivers")
-        schema: str = "public"
+        schema: Mutable[str] = "public"
 
     class _CollectionPostgresqlDriver(TypedDriver[_CollectionPostgresqlDriverConfig]):
         pass
