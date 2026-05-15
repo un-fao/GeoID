@@ -253,6 +253,34 @@ class CacheModule(ModuleProtocol):
         engine_mode = False
         _safe_url = "<engine>"
 
+        # GeoID #833: DBConfigModule (priority 0) fires the engine-snapshot
+        # population as a fire-and-forget asyncio.Task, so when CacheModule
+        # (priority 9) starts the engine_cache object exists but its
+        # snapshot dict is still empty.  Awaiting the published task handle
+        # bridges that race — without this, engine_cache.get raises KeyError
+        # and we fall into the legacy VALKEY_URL/VALKEY_CLUSTER env fallback
+        # path against whatever topology the deployment env declares
+        # (mis-matched topology = circuit-breaker trip every cold start).
+        # ``getattr`` keeps back-compat with test stubs that pre-date #833.
+        refresh_task = getattr(app_state, "engine_snapshot_refresh_task", None)
+        if refresh_task is not None:
+            # Awaiting a completed task is cheap (immediate return/raise) so
+            # we do NOT gate on ``not done()`` — a TOCTOU race could otherwise
+            # let a task that completed-with-exception slip past unobserved.
+            try:
+                await refresh_task
+            except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+                # Failed/cancelled refresh is non-fatal here — the engine_cache
+                # read below will simply KeyError and the legacy fallback
+                # path (now correctly matching env topology after the
+                # apps.review.yml fix) takes over.  Logged at WARNING so
+                # operators can spot the boot-order regression.
+                logger.warning(
+                    "CacheModule: engine snapshot refresh task did not complete "
+                    "cleanly (%s); proceeding with whatever the snapshot has.",
+                    exc,
+                )
+
         if engine_cache is not None:
             # Graceful-skip when the ``module_cache`` extra isn't installed.
             from dynastore.tools.cache_valkey import _CACHE_DEPS_OK
