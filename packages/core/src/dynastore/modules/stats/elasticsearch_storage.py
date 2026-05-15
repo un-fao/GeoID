@@ -108,6 +108,8 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
         principal_id: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        path_pattern: Optional[str] = None,
+        methods: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> StatsSummary:
         es = self._get_client()
@@ -125,6 +127,10 @@ class ElasticsearchStatsDriver(AbstractStatsDriver):
             must.append({"term": {"catalog_id": catalog_id}})
         if principal_id:
             must.append({"term": {"principal_id": principal_id}})
+        if path_pattern:
+            must.append({"regexp": {"path": path_pattern}})
+        if methods:
+            must.append({"terms": {"method": [m.upper() for m in methods]}})
         if start_date or end_date:
             range_q: dict = {}
             if start_date:
