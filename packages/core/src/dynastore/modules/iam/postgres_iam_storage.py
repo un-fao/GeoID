@@ -117,8 +117,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         # re-run of the (idempotent CREATE TABLE IF NOT EXISTS) batch, so
         # they pick up the new table without requiring `docker compose
         # down -v`. All other steps are no-ops on warm DBs.
+        # Sentinel bumped to CREATE_USAGE_COUNTERS_TABLE: it is the newest
+        # platform table; older dev DBs (created before the counter table
+        # landed) re-run the idempotent CREATE TABLE IF NOT EXISTS batch
+        # to pick it up. Existing tables are no-ops on warm DBs.
         await DDLBatch(
-            sentinel=CREATE_GRANTS_TABLE,
+            sentinel=CREATE_USAGE_COUNTERS_TABLE,
             steps=[
                 CREATE_PRINCIPALS_TABLE,
                 CREATE_IDENTITY_LINKS_TABLE,
@@ -128,6 +132,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 CREATE_REFRESH_TOKENS_TABLE,
                 CREATE_POLICIES_TABLE,
                 CREATE_AUDIT_LOG_TABLE,
+                CREATE_USAGE_COUNTERS_TABLE,
             ],
         ).execute(conn, schema=schema)
 
@@ -145,7 +150,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 from dynastore.modules.db_config.locking_tools import check_cron_job_exists
                 return await check_cron_job_exists(conn, _prune_job_name)
 
-            _prune_ddl = f"""
+            # Function body is refreshed on every boot — ``CREATE OR
+            # REPLACE FUNCTION`` is idempotent and cheap, and gating it
+            # behind the cron-job existence check would freeze warm DBs
+            # on the old body when the prune logic changes (e.g. a new
+            # ``DELETE`` line for a newly-added table).
+            _prune_function_ddl = f"""
             CREATE OR REPLACE FUNCTION "{schema}"."{_prune_func_name}"() RETURNS void AS $$
             BEGIN
                 -- Expired refresh tokens
@@ -162,9 +172,23 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 -- prevents unbounded grants-table growth).
                 DELETE FROM "{schema}".grants
                   WHERE valid_until IS NOT NULL AND valid_until < NOW();
+
+                -- Expired usage counter buckets (rate-limit windows past
+                -- their grace period). Lifetime counters
+                -- (expires_at IS NULL) are kept indefinitely.
+                DELETE FROM "{schema}".usage_counters
+                  WHERE expires_at IS NOT NULL AND expires_at < NOW();
             END;
             $$ LANGUAGE plpgsql;
+            """
 
+            await DDLQuery(_prune_function_ddl).execute(conn)
+
+            # Cron registration is idempotent (unschedule-if-exists
+            # then re-schedule) and the command never changes, so the
+            # job-exists check_query can safely short-circuit warm
+            # boots once the schedule entry is in place.
+            _cron_schedule_ddl = f"""
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{_prune_job_name}') THEN
@@ -178,7 +202,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             """
 
             await DDLQuery(
-                _prune_ddl,
+                _cron_schedule_ddl,
                 check_query=_check_prune_job_exists,
             ).execute(conn)
 
