@@ -202,10 +202,18 @@ class GcpLivenessReconciler:
                     race_lost += 1
 
         # One structured summary line per pass. ``RACE_LOST`` is the headline
-        # signal of #745: a row that probed ALIVE but whose conditional
-        # heartbeat matched 0 rows still counts as ALIVE in the verdict
-        # distribution (the probe was truthful) — RACE_LOST is what tells an
-        # operator the reconciler is losing the race to the pg_cron reaper and
+        # signal of #745 — extended in #750 to span every verdict path. A row
+        # whose follow-up write matched 0 rows still counts under its probed
+        # verdict in the distribution (the probe was truthful):
+        #
+        # * ALIVE  + ``heartbeat_task_if_active`` matched 0 → ALIVE + RACE_LOST
+        # * DEAD / TERMINAL_FAILED + ``fail_task`` matched 0 (owner_id guard)
+        #   → DEAD / TERMINAL_FAILED + RACE_LOST
+        # * TERMINAL_SUCCEEDED + ``complete_task`` matched 0 (owner_id guard)
+        #   → TERMINAL_SUCCEEDED + RACE_LOST
+        #
+        # In every case the same operator signal applies: the reconciler is
+        # losing the SELECT→probe→act race to the pg_cron reaper and
         # ``liveness_reconciler_interval_seconds`` needs tuning down.
         parts = [f"{name}={count}" for name, count in sorted(verdicts.items())]
         if unmapped:
