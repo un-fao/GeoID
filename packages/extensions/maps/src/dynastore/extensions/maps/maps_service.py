@@ -25,7 +25,6 @@ from concurrent.futures import ProcessPoolExecutor
 from fastapi import FastAPI, APIRouter, HTTPException, Response, Query, Request, Path
 from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
-from pyproj import CRS
 
 from dynastore.extensions.tools.db import get_async_engine
 from dynastore.modules.db_config.query_executor import managed_transaction
@@ -44,6 +43,7 @@ from . import maps_db
 from dynastore.models.localization import LocalizedText
 from .maps_models import MapsLandingPage, DatasetMaps, MapContent, Link
 from .maps_config import MapsConfig
+from .policies import maps_policies, maps_role_bindings
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.tools.ogc_common_models import Conformance
@@ -148,7 +148,7 @@ def _return_empty_tile(width, height):
     # return Response(content=buffer.getvalue(), media_type="image/png")
     return Response(content=empty_png, media_type="image/png")
 
-from .policies import maps_policies, maps_role_bindings
+
 class MapsService(ExtensionProtocol, OGCServiceMixin):
     priority: int = 100
     """Provides OGC API - Maps (WMS-like) functionality with filtering and Tiling."""
