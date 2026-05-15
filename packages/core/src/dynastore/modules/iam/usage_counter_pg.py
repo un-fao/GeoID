@@ -167,7 +167,23 @@ class PostgresUsageCounter:
 
     def __init__(self, schema: str = "iam") -> None:
         self._schema = schema
-        self._engine = get_engine()
+
+    @property
+    def _engine(self):
+        """Resolve the active DB engine lazily on every access.
+
+        Capturing the engine in ``__init__`` was a latent ordering trap
+        (gap #7 of #800): the trap doesn't bite today because
+        ``IamModule.lifespan`` fetches ``DatabaseProtocol`` before
+        instantiating the driver, but a future refactor that moves
+        construction earlier — or a test fixture that swaps the engine
+        mid-run — would silently strand the driver on a stale or
+        ``None`` engine reference. Lazy resolution closes that class of
+        regression at the cost of one provider-discovery lookup per
+        operation; the lookup is O(small) and reads from an in-memory
+        registry, so it does not add a DB round-trip.
+        """
+        return get_engine()
 
     async def incr(
         self,
