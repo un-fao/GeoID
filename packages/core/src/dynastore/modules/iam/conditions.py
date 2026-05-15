@@ -33,8 +33,53 @@ from dynastore.models.protocols.usage_counter import UsageCounterProtocol
 from dynastore.modules.iam.iam_storage import AbstractIamStorage
 from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.tools.discovery import get_protocol
+from dynastore.tools.ttl_gate import TTLGate
 
 logger = logging.getLogger(__name__)
+
+# Per-key denial-log throttle. At ≥1000 req/s sustained denials a naive
+# WARNING line per request would flood Cloud Logging; the gate emits at
+# most one line per (condition_type, policy_id, principal_key) per minute.
+# Sized for ~4k distinct (policy, principal) pairs in flight per pod.
+_DENIAL_LOG_GATE: TTLGate = TTLGate(maxsize=4096, ttl_seconds=60.0)
+
+
+async def _log_usage_counter_denied(
+    *,
+    condition_type: str,
+    policy_id: str,
+    principal_key: str,
+    scope: str,
+    count: int,
+    limit: int,
+    window_seconds: Optional[int],
+) -> None:
+    """Emit a structured WARNING on usage-counter denial, throttled per
+    ``(condition_type, policy_id, principal_key)`` so a sustained 429
+    storm does not flood logs. Format mirrors the ``liveness_reconcile_pass
+    service=… RACE_LOST=N`` house style so a single log-based metric can
+    alert on the ``usage_counter_denied`` token."""
+    key = (condition_type, policy_id, principal_key)
+    async with _DENIAL_LOG_GATE.acquire(key) as h:
+        if not h.should_run:
+            return
+        window_part = (
+            f"window_seconds={window_seconds}"
+            if window_seconds is not None
+            else "window_seconds=lifetime"
+        )
+        logger.warning(
+            "usage_counter_denied condition_type=%s policy_id=%s "
+            "principal_key=%s scope=%s count=%d limit=%d %s",
+            condition_type,
+            policy_id,
+            principal_key,
+            scope,
+            count,
+            limit,
+            window_part,
+        )
+        h.mark()
 
 @dataclass
 class EvaluationContext:
@@ -210,10 +255,19 @@ class RateLimitHandler(ConditionHandler):
         if limit <= 0 or window <= 0:
             return True  # misconfigured policy — no enforcement
 
-        _, allowed = await counter.incr_if_below(
+        count, allowed = await counter.incr_if_below(
             policy_id, principal_key, limit, window_seconds=window
         )
         if not allowed:
+            await _log_usage_counter_denied(
+                condition_type="rate_limit",
+                policy_id=policy_id,
+                principal_key=principal_key,
+                scope=scope,
+                count=count,
+                limit=limit,
+                window_seconds=window,
+            )
             raise RateLimitExceededError(
                 f"Rate limit of {limit} requests per {window}s exceeded "
                 f"for {scope}={principal_key}."
@@ -293,10 +347,19 @@ class MaxCountHandler(ConditionHandler):
         if limit <= 0:
             return True
 
-        _, allowed = await counter.incr_if_below(
+        count, allowed = await counter.incr_if_below(
             policy_id, principal_key, limit, window_seconds=None
         )
         if not allowed:
+            await _log_usage_counter_denied(
+                condition_type="max_count",
+                policy_id=policy_id,
+                principal_key=principal_key,
+                scope=scope,
+                count=count,
+                limit=limit,
+                window_seconds=None,
+            )
             raise QuotaExceededError(
                 f"Lifetime quota of {limit} exceeded for {scope}={principal_key}."
             )
