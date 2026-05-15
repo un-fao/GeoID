@@ -42,38 +42,73 @@ async def get_features_for_rendering(
 ) -> List[Dict[str, Any]]:
     """
     Fetches geometries and attributes for rendering, with full filter capabilities.
-    
+
     Optimizations:
     1. Decouples Input BBOX CRS (bbox_srid) from Output Map CRS.
     2. Calculates dynamic simplification tolerance based on request width/height.
     3. Performs simplification in PostGIS to reduce I/O and memory usage.
+
+    Multi-collection (UNION) requests must be **schema-homogeneous**: every
+    collection in `collections` must expose the same column set and resolve to
+    the same source SRID. The single `where_clause` and `source_srid` derived
+    from `collections[0]` are applied to every UNION arm; diverging collections
+    would silently produce wrong tiles (a column referenced in `subset_params`
+    that exists only in collection[0] would explode on the next arm, and a
+    spatial filter against the wrong storage CRS would return empty results).
+    The heterogeneity check below raises ``ValueError`` (mapped to HTTP 400 by
+    the caller) so the failure mode is explicit instead of silent. Refs #737.
     """
-    # Fetch column names and layer config for the first collection to build the query.
     from dynastore.modules.storage.router import get_driver
     from dynastore.modules.storage.routing_config import Operation
-    _driver = await get_driver(Operation.READ, schema, collections[0])
-    table_columns, layer_config = await asyncio.gather(
-        shared_queries.get_table_column_names(conn, schema, collections[0]),
-        _driver.get_driver_config(schema, collections[0]),
-    )
-    
-    where_clause, bind_params = shared_queries.build_filter_clause(table_columns, datetime_str, subset_params)
-    
-    # Identify source SRID from the PG geometries sidecar, if any.
-    # Sidecars are PG-driver-internal — driver_sidecars() returns []
-    # for non-PG resolved layer configs and we fall back to 4326.
     from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
     from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
         GeometriesSidecarConfig,
     )
-    source_srid = next(
-        (
-            sc.target_srid
-            for sc in driver_sidecars(layer_config)
-            if isinstance(sc, GeometriesSidecarConfig)
-        ),
-        4326,
-    )
+
+    def _resolve_source_srid(layer_cfg: Any) -> int:
+        # Sidecars are PG-driver-internal — driver_sidecars() returns []
+        # for non-PG resolved layer configs and we fall back to 4326.
+        return next(
+            (
+                sc.target_srid
+                for sc in driver_sidecars(layer_cfg)
+                if isinstance(sc, GeometriesSidecarConfig)
+            ),
+            4326,
+        )
+
+    async def _resolve_collection_meta(collection: str) -> tuple[List[str], int]:
+        drv = await get_driver(Operation.READ, schema, collection)
+        cols, cfg = await asyncio.gather(
+            shared_queries.get_table_column_names(conn, schema, collection),
+            drv.get_driver_config(schema, collection),
+        )
+        return cols, _resolve_source_srid(cfg)
+
+    # Single-collection (the hot path) keeps its previous one-pass shape; the
+    # multi-collection path resolves metadata for every arm in parallel and
+    # asserts homogeneity before building the UNION.
+    if len(collections) == 1:
+        table_columns, source_srid = await _resolve_collection_meta(collections[0])
+    else:
+        metas = await asyncio.gather(*(_resolve_collection_meta(c) for c in collections))
+        table_columns, source_srid = metas[0]
+        base_cols = set(table_columns)
+        for collection, (cols, srid) in zip(collections[1:], metas[1:]):
+            if set(cols) != base_cols:
+                raise ValueError(
+                    f"Heterogeneous multi-collection map request: column sets differ "
+                    f"between '{collections[0]}' and '{collection}'. UNION rendering "
+                    f"requires schema-homogeneous collections."
+                )
+            if srid != source_srid:
+                raise ValueError(
+                    f"Heterogeneous multi-collection map request: source SRID differs "
+                    f"between '{collections[0]}' ({source_srid}) and '{collection}' ({srid}). "
+                    f"UNION rendering requires a single storage CRS."
+                )
+
+    where_clause, bind_params = shared_queries.build_filter_clause(table_columns, datetime_str, subset_params)
 
     # --- Handle Coordinate System Limits & Input CRS ---
     xmin, ymin, xmax, ymax = bbox
