@@ -51,6 +51,15 @@ class DBConfigAppState(Protocol):
     engine: Any
     sync_engine: Any
     engine_cache: Optional[EngineInstanceCache]
+    # Bridges the priority-0 (DBConfigModule) / priority-9 (CacheModule)
+    # boot-order race: the snapshot is populated by a fire-and-forget retry
+    # task that may finish AFTER CacheModule starts.  Publishing the task
+    # handle here lets downstream priority-9 modules await its completion
+    # before reading engine_cache.get(...) — otherwise CacheModule reads an
+    # empty snapshot, raises KeyError, and falls into the legacy env-var
+    # fallback path with whatever VALKEY_CLUSTER topology the env happens
+    # to declare.  See GeoID #833.
+    engine_snapshot_refresh_task: "Optional[asyncio.Task[bool]]"
 
 
 class DBConfigModule(ModuleProtocol):
@@ -115,6 +124,12 @@ class DBConfigModule(ModuleProtocol):
             pass
 
     @staticmethod
+    async def _clear_refresh_task_ref(app_state: DBConfigAppState) -> None:
+        """Drop the refresh-task reference from app_state on teardown."""
+        if hasattr(app_state, "engine_snapshot_refresh_task"):
+            app_state.engine_snapshot_refresh_task = None
+
+    @staticmethod
     async def _teardown_engine_cache(app_state: DBConfigAppState) -> None:
         """Close the engine cache + drop the reference from app_state."""
         cache = getattr(app_state, "engine_cache", None)
@@ -155,10 +170,16 @@ class DBConfigModule(ModuleProtocol):
             # but admin tooling + tests use it via app_state.engine_cache.
             engine_cache, refresh_task = await self._build_engine_cache(pcfg)
             app_state.engine_cache = engine_cache
+            # Publish the task handle so downstream modules (e.g. CacheModule
+            # at priority 9) can await snapshot completion before consulting
+            # engine_cache.get(...) — #833.  None when the synchronous initial
+            # build already populated the snapshot (no race to bridge).
+            app_state.engine_snapshot_refresh_task = refresh_task
             if refresh_task is not None:
                 stack.push_async_callback(
                     self._cancel_refresh_task, refresh_task
                 )
+            stack.push_async_callback(self._clear_refresh_task_ref, app_state)
             stack.push_async_callback(self._teardown_engine_cache, app_state)
 
             yield
