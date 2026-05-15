@@ -191,30 +191,34 @@ export const deletePolicy = (id, catalogId) =>
     `/admin/policies/${encodeURIComponent(id)}${qs({ catalog_id: catalogId })}`,
   );
 
-export const searchPrincipals = ({ identifier, role, catalogId, limit = 50, offset = 0 } = {}) =>
+export const searchPrincipals = ({ q, role, catalogId, limit = 50, offset = 0 } = {}) =>
   getJSON(
-    `/admin/principals${qs({ identifier, role, catalog_id: catalogId, limit, offset })}`,
+    `/admin/users${qs({ q, role, catalog_id: catalogId, limit, offset })}`,
   );
 
 export const listCatalogUsers = (catalogId) =>
   getJSON(`/admin/catalogs/${encodeURIComponent(catalogId)}/users`);
 
 export const assignGlobalRole = (principalId, role) =>
-  postJSON(`/admin/principals/${encodeURIComponent(principalId)}/roles`, { role });
+  postJSON(
+    `/admin/platform/principals/${encodeURIComponent(principalId)}/roles`,
+    { role },
+  );
 export const removeGlobalRole = (principalId, role) =>
   deleteJSON(
-    `/admin/principals/${encodeURIComponent(principalId)}/roles/${encodeURIComponent(role)}`,
+    `/admin/platform/principals/${encodeURIComponent(principalId)}`
+      + `/roles/${encodeURIComponent(role)}`,
   );
 export const assignCatalogRole = (principalId, catalogId, role) =>
   postJSON(
-    `/admin/principals/${encodeURIComponent(principalId)}`
-      + `/catalogs/${encodeURIComponent(catalogId)}/roles`,
+    `/admin/catalogs/${encodeURIComponent(catalogId)}`
+      + `/principals/${encodeURIComponent(principalId)}/roles`,
     { role },
   );
 export const removeCatalogRole = (principalId, catalogId, role) =>
   deleteJSON(
-    `/admin/principals/${encodeURIComponent(principalId)}`
-      + `/catalogs/${encodeURIComponent(catalogId)}`
+    `/admin/catalogs/${encodeURIComponent(catalogId)}`
+      + `/principals/${encodeURIComponent(principalId)}`
       + `/roles/${encodeURIComponent(role)}`,
   );
 

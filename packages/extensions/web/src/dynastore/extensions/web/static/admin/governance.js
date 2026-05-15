@@ -341,7 +341,7 @@ async function refreshPrincipals() {
   setStatus("#principals-status", "Loading…", "");
   try {
     state.principals = await searchPrincipals({
-      identifier: q || undefined,
+      q: q || undefined,
       catalogId: scopeCatalogId() || undefined,
       limit: 50,
     });
