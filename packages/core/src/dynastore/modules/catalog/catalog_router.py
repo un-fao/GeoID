@@ -124,9 +124,17 @@ def _filter_capable(
     """Keep only drivers declaring ``capability`` — TRANSFORM-only drivers
     (e.g. ``BigQueryMetadataTransformDriver``) must never reach the WRITE
     / DELETE fan-out.  See ``TransformOnlyCatalogStoreMixin`` in
-    ``models/protocols/entity_store.py`` — its raising stubs are a
-    bug-catcher; routers MUST honour the capability contract before
-    invocation.
+    ``models/protocols/entity_store.py``.
+
+    Load-bearing on the **config-resolved** branch: a pinned
+    ``driver_ref`` in ``CatalogRoutingConfig`` may legitimately point at
+    a driver that does not declare the operation's capability (mis-
+    config, evolving driver, READ-only mirror); without this filter the
+    fan-out would raise mid-loop on the first non-capable driver and the
+    surviving drivers would never run.  The matching
+    ``TransformOnlyCatalogStoreMixin`` raising stubs stay in place as a
+    defence-in-depth: anything that slips past this filter still fails
+    loudly instead of silently corrupting state.
     """
     kept: List[CatalogStore] = []
     for d in drivers:
@@ -230,6 +238,11 @@ async def get_catalog_metadata(
         routed = await _routed_catalog_drivers(
             Operation.READ, catalog_id, db_resource=db_resource,
         )
+        # READ deliberately does NOT run drivers through
+        # ``_filter_capable``: ``_safe_get`` below is forgiving — a
+        # driver that doesn't actually answer the READ returns ``None``
+        # and the merge falls through to the next one.  Filtering would
+        # mask partial-coverage drivers that DO answer for some keys.
         drivers = routed if routed is not None else _resolve_catalog_store_drivers()
     if not drivers:
         return None
