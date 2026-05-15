@@ -682,6 +682,18 @@ DELETE_POLICY = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
+# Orphan-counter cleanup: ``iam.usage_counters`` carries no FK to
+# ``iam.policies`` (the comment on CREATE_USAGE_COUNTERS_TABLE flags it),
+# so deleting a policy leaves its rate-limit / lifetime rows behind. The
+# nightly reaper only drops rows whose ``expires_at`` has passed, so
+# lifetime quotas (``expires_at IS NULL``) for a removed policy would
+# linger forever. Run this immediately after DELETE_POLICY in the same
+# transaction.
+DELETE_USAGE_COUNTERS_FOR_POLICY = DQLQuery(
+    "DELETE FROM {schema}.usage_counters WHERE policy_id = :policy_id;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
 # --- Identity Link Queries ---
 
 DELETE_IDENTITY_LINK = DQLQuery(

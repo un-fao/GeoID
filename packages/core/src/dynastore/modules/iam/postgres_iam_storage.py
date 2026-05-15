@@ -609,6 +609,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam"
     ) -> bool:
         async with managed_transaction(conn or self.engine) as db:
+            # Drop orphan usage rows first — no FK from usage_counters to
+            # policies, so the windowed-only nightly reaper would leave
+            # lifetime-quota rows for this policy lingering forever.
+            await DELETE_USAGE_COUNTERS_FOR_POLICY.execute(
+                db, schema=schema, policy_id=policy_id
+            )
             count = await DELETE_POLICY.execute(db, schema=schema, id=policy_id)
             return count > 0
 

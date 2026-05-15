@@ -137,15 +137,22 @@ async def test_delete_policy_passes_partition_key_to_query() -> None:
     storage.engine = MagicMock()
 
     delete_mock = AsyncMock(return_value=1)
+    cleanup_mock = AsyncMock(return_value=0)
     fake_db = MagicMock()
     mt_cm = MagicMock()
     mt_cm.__aenter__ = AsyncMock(return_value=fake_db)
     mt_cm.__aexit__ = AsyncMock(return_value=None)
 
+    from dynastore.modules.iam.postgres_policy_storage import (
+        DELETE_USAGE_COUNTERS_FOR_POLICY,
+    )
+
     with patch(
         "dynastore.modules.iam.postgres_policy_storage.managed_transaction",
         return_value=mt_cm,
-    ), patch.object(DELETE_POLICY, "execute", delete_mock):
+    ), patch.object(DELETE_POLICY, "execute", delete_mock), patch.object(
+        DELETE_USAGE_COUNTERS_FOR_POLICY, "execute", cleanup_mock
+    ):
         result = await storage.delete_policy("public_access", partition_key="_system_")
 
     assert result is True

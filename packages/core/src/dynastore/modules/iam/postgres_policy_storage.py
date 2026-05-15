@@ -100,6 +100,17 @@ DELETE_POLICY = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT
 )
 
+DELETE_USAGE_COUNTERS_FOR_POLICY = DQLQuery(
+    # Cleanup orphan rate-limit / lifetime-quota rows when a policy is
+    # dropped. usage_counters has no FK, the windowed reaper skips
+    # ``expires_at IS NULL`` rows, so without this lifetime-quota rows
+    # would linger indefinitely. ``usage_counters`` is not partitioned
+    # by tenant — policy_id is globally unique across partitions, so
+    # filtering on the policy_id alone is correct.
+    "DELETE FROM {schema}.usage_counters WHERE policy_id = :policy_id;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
 LIST_POLICIES = DQLQuery(
     """
     SELECT * FROM {schema}.policies 
@@ -233,6 +244,9 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
 
     async def delete_policy(self, policy_id: str, conn: Optional[DbResource] = None, schema: str = "iam", partition_key: str = "global") -> bool:
         async with managed_transaction(conn or self.engine) as db:
+            await DELETE_USAGE_COUNTERS_FOR_POLICY.execute(
+                db, schema=schema.strip('"'), policy_id=policy_id
+            )
             count = await DELETE_POLICY.execute(db, schema=schema.strip('"'), id=policy_id, partition_key=partition_key)
             return count > 0
 
