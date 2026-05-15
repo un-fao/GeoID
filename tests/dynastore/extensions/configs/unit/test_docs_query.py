@@ -111,12 +111,12 @@ def test_compose_tree_meta_schema_attaches_full_json_schema():
     assert "docs" not in leaf["_meta"]
 
 
-def test_compose_tree_slim_filters_upstream_tier_configs():
-    """Slim mode (default ``include=scope``): upstream-tier configs are
-    filtered out of the tree entirely.  Provenance for the configs that
-    DO render at the active scope still lives on their own
-    ``_meta.source`` — per #665 slice 3 the parallel ``inherited`` tree
-    is retired.
+def test_compose_tree_default_mode_surfaces_full_config_tree():
+    """Post-#761: the default ``include=scope`` mode at catalog/collection
+    scope surfaces every leaf that ``_place()`` accepts (engines, modules,
+    extensions, tasks).  ``_meta.source`` on each leaf reports where the
+    effective value comes from so operators see what they inherit vs
+    override.
     """
     by_class = {"web_config": {"brand_name": "X"}}
     registry = _stub_registry_with_schema(
@@ -131,8 +131,12 @@ def test_compose_tree_slim_filters_upstream_tier_configs():
             active_scope="collection", meta_mode="field",
             include_mode="scope",
         )
-    # Platform-tier config dropped from collection-scope slim view.
-    assert tree == {}
+    # Platform-tier null-visibility config now surfaces at collection scope
+    # with source="platform" so operators see what they inherit.
+    leaf = tree["platform"]["web"]["web_config"]
+    assert leaf["brand_name"] == "X"
+    assert leaf["_meta"]["source"] == "platform"
+    assert leaf["_meta"]["tier"] == "collection"
 
 
 def test_compose_tree_catalog_tier_under_upstream_mode_gets_meta():

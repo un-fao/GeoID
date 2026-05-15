@@ -1125,11 +1125,11 @@ def test_compose_tree_strict_no_op_at_catalog_and_collection_scope():
             assert "catalog_template" in tree["platform"]["catalog"]["drivers"]
 
 
-def test_compose_tree_surfaces_catalog_configs_in_inherited_at_collection_scope():
-    """At collection scope under slim mode, every upstream-tier config
-    (catalog-vis and platform-vis) surfaces in the hierarchical
-    ``inherited`` tree at its natural address.  Only collection-owned
-    configs stay in the main ``configs`` tree.
+def test_compose_tree_collection_scope_surfaces_full_config_tree():
+    """At collection scope under the default mode the response surfaces every
+    leaf that ``_place()`` accepts — collection-vis, catalog-vis (read-only
+    context), and null-visibility (overrideable).  ``_meta.source`` on each
+    leaf reports the effective tier.  Issue #761.
     """
     by_class = {
         "items_postgresql_driver":      {"sidecars": []},
@@ -1174,25 +1174,28 @@ def test_compose_tree_surfaces_catalog_configs_in_inherited_at_collection_scope(
             by_class, sources=sources, active_scope="collection",
         )
 
-    # Collection-vis stays in main tree.
-    assert {k: v for k, v in tree["platform"]["catalog"]["collection"]["items"]["drivers"]["items_postgresql_driver"].items() if not k.startswith("_")} == {"sidecars": []}
+    # Collection-vis stays in body.
+    coll_node = tree["platform"]["catalog"]["collection"]["items"]["drivers"]
+    assert {k: v for k, v in coll_node["items_postgresql_driver"].items() if not k.startswith("_")} == {"sidecars": []}
     # No sibling ``inherited_from_catalog`` block (Cycle D.3 dropped it).
     assert "inherited_from_catalog" not in tree
-    # Upstream-tier configs are NOT inlined: collection-only configs live at
-    # platform.catalog.collection (and below); web/elasticsearch/catalog-direct
-    # subtrees should be absent.
-    assert "web" not in tree.get("platform", {})
-    assert "elasticsearch" not in tree.get("platform", {}).get("catalog", {})
-    assert "routing" not in tree.get("platform", {}).get("catalog", {})
-    assert "drivers" not in tree.get("platform", {}).get("catalog", {})
-    # All upstream-tier configs land in the hierarchical inherited tree
-    # at their natural address with {source: <tier>} leaves.
+    # Null-visibility (web_config) included; source reports the effective tier.
+    assert {k: v for k, v in tree["platform"]["web"]["web_config"].items() if not k.startswith("_")} == {"brand_name": "X"}
+    assert tree["platform"]["web"]["web_config"]["_meta"]["source"] == "platform"
+    # Catalog-vis configs ARE included at collection scope (#761) — operators
+    # see the full waterfall.  Each leaf's _meta.source reports source="catalog".
+    assert tree["platform"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"]["_meta"]["source"] == "catalog"
+    assert tree["platform"]["catalog"]["routing"]["catalog_routing_config"]["_meta"]["source"] == "catalog"
+    assert tree["platform"]["catalog"]["drivers"]["catalog_postgresql_driver"]["_meta"]["source"] == "catalog"
 
 
-def test_compose_tree_inherited_at_catalog_scope_carries_platform_breadcrumbs():
-    """At catalog scope, platform-tier configs without a catalog override
-    appear in the hierarchical ``inherited`` tree.  Catalog-tier configs
-    stay in the main body.
+def test_compose_tree_catalog_scope_slim_mode_visibility():
+    """At catalog scope under slim mode:
+
+    - ``_visibility="catalog"`` configs stay in body.
+    - ``_visibility=None`` (universal) configs stay in body — null-visibility
+      means "overrideable at any tier"; ``_meta.source`` reports where the
+      effective value comes from.
     """
     by_class = {
         "catalog_routing_config": {"enabled": True},
@@ -1216,16 +1219,17 @@ def test_compose_tree_inherited_at_catalog_scope_carries_platform_breadcrumbs():
         tree = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="catalog",
         )
-    # Catalog-tier configs stay inlined.
+    # Catalog-vis stays in body.
     assert {k: v for k, v in tree["platform"]["catalog"]["routing"]["catalog_routing_config"].items() if not k.startswith("_")} == {"enabled": True}
-    # Platform-tier configs surface in the hierarchical inherited tree (NOT in body).
-    assert "web" not in tree.get("platform", {})
+    # Null-visibility config included at catalog scope; source="platform" (no catalog override).
+    assert {k: v for k, v in tree["platform"]["web"]["web_config"].items() if not k.startswith("_")} == {"brand_name": "X"}
+    assert tree["platform"]["web"]["web_config"]["_meta"]["source"] == "platform"
 
 
-def test_compose_tree_inherited_meta_skips_inherited_classes():
-    """Cycle D.3: the ``meta`` tree mirrors only the main ``configs`` tree.
-    Classes deferred to ``inherited`` are breadcrumbs (no docs surface),
-    so they do NOT receive ``meta`` entries.
+def test_compose_tree_catalog_vis_surfaces_at_collection_scope_with_docs():
+    """Post-#761: catalog-vis configs surface in the collection response with
+    full ``_meta`` (docs/source/tier).  Operators see the catalog-tier
+    config alongside what their collection inherits.
     """
     class FakeESCatConfig:
         _address = ("platform", "catalog", "elasticsearch")
@@ -1246,21 +1250,27 @@ def test_compose_tree_inherited_meta_skips_inherited_classes():
         tree = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="collection", meta_mode="field",
         )
-    # Catalog-tier config filtered out at collection scope (slim).  Per
-    # #665 slice 3 there is no parallel ``inherited`` tree.
-    assert "elasticsearch" not in tree.get("platform", {}).get("catalog", {})
+    leaf = tree["platform"]["catalog"]["elasticsearch"]["elasticsearch_catalog_config"]
+    assert leaf["private"] is True
+    assert leaf["_meta"]["source"] == "catalog"
+    assert leaf["_meta"]["tier"] == "collection"
+    assert leaf["_meta"]["docs"] == {"private": "Private mode."}
 
 
 # ---------------------------------------------------------------------------
-# Slim mode (?include=scope, default) — body shows configs owned by the
-# active scope; upstream-tier ones are summarised in `inherited` instead.
+# Slim mode (?include=scope, default) — body shows configs visible at the
+# active scope: explicitly scoped, null-visibility, or stored at that scope.
 # ---------------------------------------------------------------------------
 
 
-def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
-    """Universal-visibility (_visibility=None) configs at collection scope
-    flow into the hierarchical slim ``inherited`` tree; only collection-owned
-    configs stay in the body.
+def test_compose_tree_slim_null_visibility_included_at_non_platform_scopes():
+    """``_visibility=None`` (null / universal) configs appear in the body at
+    catalog and collection scope under the default ``include="scope"`` mode.
+
+    Null-visibility means "overrideable at any tier."  Module, extension,
+    and task configs carry this default so catalog/collection admins can
+    inspect and override them at their scope.  ``_meta.source`` on each
+    leaf reports the effective tier.
     """
     by_class = {
         "items_postgresql_driver": {"sidecars": []},  # _visibility=collection
@@ -1282,10 +1292,12 @@ def test_compose_tree_slim_default_diverts_universal_visibility_to_inherited():
             active_scope="collection",
             # default include_mode="scope"
         )
-    # Collection-owned config stays in the body
+    # Collection-owned config stays in the body.
     assert {k: v for k, v in tree["platform"]["catalog"]["collection"]["items"]["drivers"]["items_postgresql_driver"].items() if not k.startswith("_")} == {"sidecars": []}
-    # Universal-vis config is diverted to the hierarchical inherited tree, NOT inlined
-    assert "web" not in tree.get("platform", {})
+    # Null-visibility config is now included at collection scope.
+    assert {k: v for k, v in tree["platform"]["web"]["web_config"].items() if not k.startswith("_")} == {"brand_name": "X"}
+    # Source shows where the effective value comes from.
+    assert tree["platform"]["web"]["web_config"]["_meta"]["source"] == "platform"
 
 
 def test_compose_tree_slim_keeps_collection_overrides_in_body():
@@ -1409,6 +1421,78 @@ def test_assets_plugin_config_visible_at_all_scopes():
 
     assert AssetsPluginConfig._address == ("platform", "extensions", "assets")
     assert AssetsPluginConfig._visibility is None  # visible everywhere
+
+
+def test_761_full_config_surface_at_catalog_and_collection_scope():
+    """Regression for #761: the catalog and collection composed response
+    must surface the full configurable surface — modules, extensions,
+    tasks, engines, drivers — not just configs that explicitly carry
+    ``_visibility="catalog"``/``"collection"``.
+
+    Before the fix, ``_is_in_scope()`` at non-platform scopes filtered out
+    every leaf that lacked a stored row at the active scope AND didn't
+    match ``_visibility=active_scope``.  The ``gcp`` config was the only
+    leaf because it happened to declare ``_visibility="catalog"``;
+    engines, modules, extensions, tasks disappeared.
+
+    After the fix, every leaf placed by ``_place()`` appears.  ``_meta.source``
+    on each reports where the effective value comes from; ``_visibility``
+    continues to gate writability via the service layer.
+    """
+    from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+    from dynastore.modules.web.models import WebPageSettingsConfig
+    from dynastore.modules.cache.cache_config import CachePluginConfig
+    from dynastore.modules.db_config.engine_config import (
+        PostgresqlEngineConfig,
+        ElasticsearchEngineConfig,
+    )
+
+    null_vis = (TasksPluginConfig, WebPageSettingsConfig, CachePluginConfig)
+    platform_vis = (PostgresqlEngineConfig, ElasticsearchEngineConfig)
+    for cls in null_vis:
+        assert getattr(cls, "_visibility", None) is None, (
+            f"{cls.__name__} unexpectedly declares _visibility"
+        )
+    for cls in platform_vis:
+        assert getattr(cls, "_visibility", None) == "platform", (
+            f"{cls.__name__} expected _visibility='platform'"
+        )
+
+    from dynastore.extensions.configs.config_api_service import (
+        ConfigApiService,
+        _place,
+    )
+
+    # Build a representative by_class with one of each kind.
+    representative = null_vis + platform_vis
+    by_class = {cls.class_key(): cls().model_dump() for cls in representative}
+    sources = {k: "default" for k in by_class}
+
+    for scope in ("catalog", "collection"):
+        tree = ConfigApiService._compose_tree(
+            by_class, sources=sources, active_scope=scope,
+        )
+        assert len(tree) > 0, f"empty tree at {scope} scope"
+        for cls in representative:
+            address = _place(cls, scope)
+            assert address is not None, (
+                f"{cls.__name__} dropped by _place at scope={scope}"
+            )
+            node = tree
+            for seg in address:
+                if seg is None:
+                    continue
+                assert seg in node, (
+                    f"{cls.__name__} address segment '{seg}' missing at scope={scope}; "
+                    f"keys: {list(node.keys())}"
+                )
+                node = node[seg]
+            assert cls.class_key() in node, (
+                f"{cls.__name__} ({cls.class_key()}) missing from tree at scope={scope}"
+            )
+            leaf = node[cls.class_key()]
+            assert "_meta" in leaf
+            assert leaf["_meta"]["source"] == "default"
 
 
 # ---------------------------------------------------------------------------
