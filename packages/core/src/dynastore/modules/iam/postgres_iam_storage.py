@@ -150,7 +150,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 from dynastore.modules.db_config.locking_tools import check_cron_job_exists
                 return await check_cron_job_exists(conn, _prune_job_name)
 
-            _prune_ddl = f"""
+            # Function body is refreshed on every boot — ``CREATE OR
+            # REPLACE FUNCTION`` is idempotent and cheap, and gating it
+            # behind the cron-job existence check would freeze warm DBs
+            # on the old body when the prune logic changes (e.g. a new
+            # ``DELETE`` line for a newly-added table).
+            _prune_function_ddl = f"""
             CREATE OR REPLACE FUNCTION "{schema}"."{_prune_func_name}"() RETURNS void AS $$
             BEGIN
                 -- Expired refresh tokens
@@ -175,7 +180,15 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                   WHERE expires_at IS NOT NULL AND expires_at < NOW();
             END;
             $$ LANGUAGE plpgsql;
+            """
 
+            await DDLQuery(_prune_function_ddl).execute(conn)
+
+            # Cron registration is idempotent (unschedule-if-exists
+            # then re-schedule) and the command never changes, so the
+            # job-exists check_query can safely short-circuit warm
+            # boots once the schedule entry is in place.
+            _cron_schedule_ddl = f"""
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{_prune_job_name}') THEN
@@ -189,7 +202,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             """
 
             await DDLQuery(
-                _prune_ddl,
+                _cron_schedule_ddl,
                 check_query=_check_prune_job_exists,
             ).execute(conn)
 

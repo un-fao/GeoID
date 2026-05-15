@@ -80,17 +80,26 @@ _INCR_AND_RETURN = DQLQuery(
     result_handler=ResultHandler.SCALAR_ONE,
 )
 
-# Atomic check-and-incr. The ``ON CONFLICT DO UPDATE … WHERE`` clause
-# rejects the increment when the resulting value would exceed ``limit``;
-# the wrapping CTE then falls back to ``SELECT count`` so the caller
-# always sees the current value in one round trip.
+# Atomic check-and-incr. Both branches of the upsert are gated by the
+# cap predicate:
+#   * INSERT path — the ``INSERT … SELECT … WHERE :amount <= :limit``
+#     form rejects the very first hit when the requested amount already
+#     exceeds the cap (a plain ``INSERT … VALUES`` would bypass the cap
+#     because Postgres' ``ON CONFLICT DO UPDATE … WHERE`` predicate only
+#     applies to the update branch, not the insert).
+#   * UPDATE path — ``ON CONFLICT DO UPDATE … WHERE u.count +
+#     EXCLUDED.count <= :limit`` rejects the increment once a row exists
+#     and the sum would exceed the cap.
+# The wrapping CTE falls back to ``SELECT count`` so the caller always
+# sees the current value in one round trip, whether the CAS succeeded,
+# was blocked by the predicate, or never ran (insert blocked).
 _INCR_IF_BELOW = DQLQuery(
     """
     WITH cas AS (
         INSERT INTO {schema}.usage_counters AS u
             (policy_id, principal_key, window_start, count, expires_at, last_seen_at)
-        VALUES
-            (:policy_id, :principal_key, :window_start, :amount, :expires_at, NOW())
+        SELECT :policy_id, :principal_key, :window_start, :amount, :expires_at, NOW()
+         WHERE :amount <= :limit
         ON CONFLICT (policy_id, principal_key, window_start)
         DO UPDATE SET
             count        = u.count + EXCLUDED.count,

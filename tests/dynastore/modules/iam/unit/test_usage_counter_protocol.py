@@ -21,10 +21,9 @@ driver. This module is hermetic: no DB, no Valkey.
 
 from datetime import datetime, timezone
 
-import pytest
-
 from dynastore.models.protocols.usage_counter import UsageCounterProtocol
 from dynastore.modules.iam.usage_counter_pg import (
+    _INCR_IF_BELOW,
     PostgresUsageCounter,
     _LIFETIME_BUCKET,
     _bucket_for,
@@ -91,17 +90,7 @@ class TestProtocolConformance:
         assert getattr(UsageCounterProtocol, "_is_runtime_protocol", False) is True
 
 
-@pytest.mark.parametrize(
-    "window_seconds,amount,limit,expected_allowed",
-    [
-        (60, 1, 10, True),    # first request, well under
-        (60, 1, 1, True),     # exactly at limit on first request
-        (None, 1, 1, True),   # lifetime quota, first hit
-    ],
-)
-def test_incr_if_below_signature_accepts_canonical_args(
-    window_seconds, amount, limit, expected_allowed
-):
+def test_incr_if_below_signature_is_keyword_only():
     # Pure signature shape check — exercises the keyword-only contract
     # the policy condition handlers depend on. Live atomicity is covered
     # by integration tests once handlers wire up in PR-A4.
@@ -114,3 +103,47 @@ def test_incr_if_below_signature_accepts_canonical_args(
     assert "limit" in params
     assert params["window_seconds"].kind == inspect.Parameter.KEYWORD_ONLY
     assert params["amount"].kind == inspect.Parameter.KEYWORD_ONLY
+
+
+class TestIncrIfBelowSqlShape:
+    """Static SQL-shape guards for the CAS query.
+
+    Live atomicity (the actual upsert path against a running Postgres)
+    is covered by the PR-A4 integration tests. The checks here pin the
+    structural properties that are easy to break without noticing:
+    both branches of the upsert (insert and update) must respect the
+    cap predicate.
+    """
+
+    def _sql(self) -> str:
+        # ``BaseQuery.template`` exposes the pre-``{schema}``-substitution
+        # SQL string. Whitespace is collapsed so the shape checks below
+        # are robust to incidental reformatting.
+        return " ".join(_INCR_IF_BELOW.template.split())
+
+    def test_insert_path_gated_by_limit_predicate(self):
+        # The very first hit on a bucket must reject when amount > limit.
+        # A plain ``INSERT … VALUES`` would bypass the cap because
+        # Postgres' ``ON CONFLICT DO UPDATE … WHERE`` predicate only
+        # applies to the update branch. The fix uses ``INSERT … SELECT
+        # … WHERE :amount <= :limit`` so the insert branch is gated too.
+        sql = self._sql().lower()
+        assert ":amount <= :limit" in sql, (
+            "INSERT branch must be gated by :amount <= :limit so the "
+            "first hit cannot bypass the cap"
+        )
+        # Sanity: the form used for the gate is INSERT…SELECT, not
+        # INSERT…VALUES.
+        assert "insert into" in sql
+        assert "select :policy_id" in sql
+
+    def test_update_path_gated_by_running_total_predicate(self):
+        sql = self._sql().lower()
+        # ``u.count + excluded.count <= :limit`` blocks the increment
+        # once a row exists and the sum would exceed the cap.
+        assert "u.count + excluded.count <= :limit" in sql
+
+    def test_returns_count_and_allowed(self):
+        sql = self._sql().lower()
+        assert "as count" in sql
+        assert "as allowed" in sql
