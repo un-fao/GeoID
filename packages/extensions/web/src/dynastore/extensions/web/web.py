@@ -1785,6 +1785,8 @@ async function demoAction(action) {
             principal_id: Optional[str],
             start_date: Optional[datetime],
             end_date: Optional[datetime],
+            path_pattern: Optional[str] = None,
+            methods: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             """Shared stats fan-out used by per-catalog and per-collection routes."""
             from dynastore.modules import get_protocol
@@ -1815,6 +1817,8 @@ async function demoAction(action) {
                     principal_id=principal_id,
                     start_date=start_date,
                     end_date=end_date,
+                    path_pattern=path_pattern,
+                    methods=methods,
                 )
             return (
                 summary.model_dump()
@@ -1829,8 +1833,10 @@ async function demoAction(action) {
             principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
             start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
             end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+            path_pattern: Optional[str] = Query(None, description="Regex on request path (e.g. '^/tiles/')."),
+            methods: Optional[List[str]] = Query(None, description="Restrict to one or more HTTP methods."),
         ):
-            return await _stats_summary("_system_", None, principal_id, start_date, end_date)
+            return await _stats_summary("_system_", None, principal_id, start_date, end_date, path_pattern, methods)
 
         # /dashboard/logs and /dashboard/events deleted: callers now hit
         # the canonical /logs/ and /events/ extension surfaces directly
@@ -1860,8 +1866,10 @@ async function demoAction(action) {
             principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
             start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
             end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+            path_pattern: Optional[str] = Query(None, description="Regex on request path (e.g. '^/tiles/')."),
+            methods: Optional[List[str]] = Query(None, description="Restrict to one or more HTTP methods."),
         ):
-            return await _stats_summary(catalog_id, None, principal_id, start_date, end_date)
+            return await _stats_summary(catalog_id, None, principal_id, start_date, end_date, path_pattern, methods)
 
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/collections/{collection_id}/stats",
@@ -1873,8 +1881,10 @@ async function demoAction(action) {
             principal_id: Optional[str] = Query(None, description="Filter by Principal ID."),
             start_date: Optional[datetime] = Query(None, description="Start date for stats aggregation."),
             end_date: Optional[datetime] = Query(None, description="End date for stats aggregation."),
+            path_pattern: Optional[str] = Query(None, description="Regex on request path (e.g. '^/tiles/')."),
+            methods: Optional[List[str]] = Query(None, description="Restrict to one or more HTTP methods."),
         ):
-            return await _stats_summary(catalog_id, collection_id, principal_id, start_date, end_date)
+            return await _stats_summary(catalog_id, collection_id, principal_id, start_date, end_date, path_pattern, methods)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/tasks", response_class=JSONResponse)
         async def get_dashboard_tasks(catalog_id: str):
