@@ -1,5 +1,18 @@
+import os
+
 import pytest
 from tests.dynastore.test_utils import generate_test_id
+
+# Enables the `gcp` module, which triggers `gcp_provision_catalog` on catalog POST.
+# That task calls `get_self_url()` which reads `K_SERVICE` / `SERVICE_URL` from the
+# environment and raises `RuntimeError` outside Cloud Run, so the catalog POST 409s
+# and every downstream assertion in the test (collection POST, config PUT, ingestion)
+# is unreachable. Skip when neither env var is set so this file stops red-flagging on
+# local and non-Cloud-Run CI runners. Refs #771 (#755 audit fallout).
+pytestmark = pytest.mark.skipif(
+    not (os.getenv("K_SERVICE") or os.getenv("SERVICE_URL")),
+    reason="Requires Cloud Run environment (K_SERVICE / SERVICE_URL) for gcp_provision_catalog",
+)
 
 
 @pytest.mark.asyncio
@@ -19,7 +32,6 @@ async def test_virtual_stac_endpoints(sysadmin_in_process_client, in_process_cli
 
     # Setup Web Extension to serve the test data
     # from tests.dynastore.extensions.tools.web_utils import register_static_data_provider
-    import os
 
     data_dir = "tests/dynastore/extensions/stac/integration/data"
     # Use absolute file path to avoid network requests during in-process testing
