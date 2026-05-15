@@ -178,6 +178,35 @@ CREATE_REFRESH_TOKENS_TABLE = DDLQuery("""
         ON {schema}.refresh_tokens (family_id) WHERE family_id IS NOT NULL;
 """)
 
+# --- Usage Counters Table ---
+#
+# Shared atomic counter store consumed by the IAM `rate_limit` /
+# `max_count` policy conditions. One row per
+# ``(policy_id, principal_key, window_start)`` bucket.
+#
+#   * window_seconds set on the policy → window_start truncated to that
+#     window, expires_at = window_start + 2*window_seconds. Rows reaped
+#     by the nightly prune cron (see _initialize_schema below).
+#   * window_seconds NULL → lifetime quota; window_start fixed at
+#     ``to_timestamp(0)``, expires_at NULL.
+#
+# Designed so a Valkey-backed driver can later short-circuit reads
+# while flushing deltas here for durability (see
+# ``dynastore.models.protocols.usage_counter.UsageCounterProtocol``).
+CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
+    CREATE TABLE IF NOT EXISTS {schema}.usage_counters (
+        policy_id      VARCHAR(128) NOT NULL,
+        principal_key  VARCHAR(256) NOT NULL,
+        window_start   TIMESTAMPTZ NOT NULL,
+        count          BIGINT NOT NULL DEFAULT 0,
+        last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at     TIMESTAMPTZ,
+        PRIMARY KEY (policy_id, principal_key, window_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_counters_expiry
+        ON {schema}.usage_counters (expires_at) WHERE expires_at IS NOT NULL;
+""")
+
 # --- Audit Log Table ---
 
 CREATE_AUDIT_LOG_TABLE = DDLQuery("""

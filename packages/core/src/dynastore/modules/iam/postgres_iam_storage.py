@@ -117,8 +117,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         # re-run of the (idempotent CREATE TABLE IF NOT EXISTS) batch, so
         # they pick up the new table without requiring `docker compose
         # down -v`. All other steps are no-ops on warm DBs.
+        # Sentinel bumped to CREATE_USAGE_COUNTERS_TABLE: it is the newest
+        # platform table; older dev DBs (created before the counter table
+        # landed) re-run the idempotent CREATE TABLE IF NOT EXISTS batch
+        # to pick it up. Existing tables are no-ops on warm DBs.
         await DDLBatch(
-            sentinel=CREATE_GRANTS_TABLE,
+            sentinel=CREATE_USAGE_COUNTERS_TABLE,
             steps=[
                 CREATE_PRINCIPALS_TABLE,
                 CREATE_IDENTITY_LINKS_TABLE,
@@ -128,6 +132,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 CREATE_REFRESH_TOKENS_TABLE,
                 CREATE_POLICIES_TABLE,
                 CREATE_AUDIT_LOG_TABLE,
+                CREATE_USAGE_COUNTERS_TABLE,
             ],
         ).execute(conn, schema=schema)
 
@@ -162,6 +167,12 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 -- prevents unbounded grants-table growth).
                 DELETE FROM "{schema}".grants
                   WHERE valid_until IS NOT NULL AND valid_until < NOW();
+
+                -- Expired usage counter buckets (rate-limit windows past
+                -- their grace period). Lifetime counters
+                -- (expires_at IS NULL) are kept indefinitely.
+                DELETE FROM "{schema}".usage_counters
+                  WHERE expires_at IS NOT NULL AND expires_at < NOW();
             END;
             $$ LANGUAGE plpgsql;
 
