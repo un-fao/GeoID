@@ -524,6 +524,36 @@ class AdminService(ExtensionProtocol):
         await mgr.delete_role(role_name, catalog_id=catalog_id)
 
     # -------------------------------------------------------------------------
+    # Role Hierarchies (/admin/hierarchies)
+    # -------------------------------------------------------------------------
+
+    @router.post("/hierarchies", status_code=204, summary="Add a parent→child role hierarchy edge")
+    async def add_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]
+        parent: str = Query(..., description="Parent role name"),
+        child: str = Query(..., description="Child role name"),
+        catalog_id: Optional[str] = Query(None),
+    ):
+        mgr = _iam()
+        await mgr.add_role_hierarchy(parent, child, catalog_id=catalog_id)
+
+    @router.delete("/hierarchies", status_code=204, summary="Remove a parent→child role hierarchy edge")
+    async def remove_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]
+        parent: str = Query(..., description="Parent role name"),
+        child: str = Query(..., description="Child role name"),
+        catalog_id: Optional[str] = Query(None),
+    ):
+        mgr = _iam()
+        await mgr.remove_role_hierarchy(parent, child, catalog_id=catalog_id)
+
+    @router.get("/hierarchies/{role_name}", summary="Get effective descendants for a role")
+    async def get_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]
+        role_name: str,
+        catalog_id: Optional[str] = Query(None),
+    ) -> list[str]:
+        mgr = _iam()
+        return await mgr.get_role_hierarchy(role_name, catalog_id=catalog_id)
+
+    # -------------------------------------------------------------------------
     # Policy Management (/admin/policies)
     # -------------------------------------------------------------------------
 
