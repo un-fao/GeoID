@@ -159,6 +159,13 @@ async def _dispatch_collection_index(
     the caller's TX rolls back).  Non-FATAL failures are absorbed here:
     the PG mutation has already committed/queued and must stand.
     ``IndexerFatal`` propagates.
+
+    Asymmetry note: there is no ``_dispatch_catalog_index`` analogue in
+    ``catalog_router``.  Catalog INDEX is event-driven —
+    ``catalog_metadata_changed`` is emitted inside the WRITE transaction
+    and ``ReindexWorker`` fans it out to ``CatalogRoutingConfig``'s
+    INDEX entries.  Same OUTBOX durability, different trigger.  See the
+    "Catalog INDEX hop" section in ``catalog_router``'s module docstring.
     """
     from dynastore.models.protocols.indexer import IndexContext, IndexOp
     from dynastore.modules.storage.index_dispatcher import IndexerFatal

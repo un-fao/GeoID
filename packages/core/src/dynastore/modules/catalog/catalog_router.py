@@ -51,6 +51,36 @@ deliberately does NOT honour per-catalog overrides — routing-config
 overrides of the canonical Primary store would split writes across
 drivers with inconsistent schemas, which is explicitly not supported.
 
+Catalog INDEX hop — asymmetric with ``collection_router`` by design
+------------------------------------------------------------------
+
+This module has no ``_dispatch_catalog_index`` analogue to
+:func:`dynastore.modules.catalog.collection_router._dispatch_collection_index`
+— that asymmetry is intentional, not a missing piece.
+
+- **Collection INDEX (#748 / #732)** runs *directly* from the router:
+  every upsert / delete inline-dispatches an ``IndexOp`` via
+  ``get_index_dispatcher().fan_out_bulk()`` with OUTBOX-durable
+  semantics.  The choice was driven by ingestion-rate volume and the
+  "search finds nothing" symptom that fix closed.
+- **Catalog INDEX** runs *event-driven*: the WRITE path emits a
+  ``catalog_metadata_changed`` event (see
+  :func:`_emit_catalog_metadata_changed` below) inside the same
+  transaction as the Primary write; ``ReindexWorker`` consumes that
+  event off the outbox and fans the mutation out to every entry under
+  ``CatalogRoutingConfig.operations[INDEX]`` (today
+  ``catalog_elasticsearch_driver``).  Catalogs mutate at admin rate
+  rather than ingest rate, so the extra hop costs nothing in practice
+  and keeps the worker's batch / SLA / TRANSFORM-chain logic in one
+  place rather than duplicated on the write path.
+
+Both paths reach the same Indexer drivers through OUTBOX-durable
+plumbing — the difference is the *trigger*, not the destination.  Any
+future work that unifies the two should change ``ReindexWorker`` to
+consume the same ``IndexOp`` stream the dispatcher emits (or move the
+collection side onto the event bus); piecemeal symmetry on this module
+alone would just add a second indexing path with no consumer.
+
 Failure policy
 --------------
 

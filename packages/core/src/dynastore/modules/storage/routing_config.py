@@ -786,7 +786,17 @@ class CatalogRoutingConfig(PluginConfig):
 
     ``operations`` supports the same keys as :class:`CollectionRoutingConfig`:
     ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``, ``INDEX``, ``BACKUP``.
-    See that class for per-key semantics.
+    See that class for per-key semantics, with one trigger difference:
+    INDEX entries on this config are consumed by
+    :class:`~dynastore.modules.catalog.reindex_worker.ReindexWorker` off
+    the ``catalog_metadata_changed`` event stream — they are NOT
+    invoked directly from ``catalog_router`` the way
+    ``CollectionRoutingConfig.operations[INDEX]`` is invoked from
+    ``collection_router._dispatch_collection_index``.  Both end at the
+    same Indexer drivers through OUTBOX-durable plumbing; the asymmetry
+    is in *how* the hop is triggered, not in what runs.  See the
+    "Catalog INDEX hop" section in
+    ``modules/catalog/catalog_router.py``'s module docstring.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
