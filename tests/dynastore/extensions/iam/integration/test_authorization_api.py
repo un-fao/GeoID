@@ -121,16 +121,14 @@ async def user_token(
 
     subj_id = f"int_user_{generate_test_id()}"
     principal_payload = {
-        "provider": "local",
+        "username": subj_id,
         "subject_id": subj_id,
+        "provider": "local",
         "roles": [],
-        "attributes": {
-            "description": "Integration test regular user for authorization API"
-        },
     }
 
     resp = await sysadmin_in_process_client.post(
-        "/iam/governance/principals", json=principal_payload
+        "/admin/users", json=principal_payload
     )
     assert resp.status_code in [200, 201, 409]
 
