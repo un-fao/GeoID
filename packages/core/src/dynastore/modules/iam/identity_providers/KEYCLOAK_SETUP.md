@@ -226,21 +226,19 @@ Symptom of the orphan state: every authenticated request returns `403 Deny by De
 
 ### Vault-collection notebook IAM bundle pollution risk
 
-The vault-collection notebook (`src/dynastore/modules/elasticsearch/notebooks/collection_vault_geoid_only.ipynb`, registered via `register_platform_notebook`) creates a `vault-{cat}` Role and binds it as parent of `sysadmin/admin/user/anonymous` via `POST /iam/governance/hierarchies`. If the notebook errors out before the cleanup cell runs, the hierarchy edges remain and the vault role's DENY policies stay attached to the four default roles — **every user gets the vault DENYs applied globally**. Symptom: catalog/collection writes start returning 403 across unrelated catalogs.
+The vault-collection notebook (`src/dynastore/modules/elasticsearch/notebooks/collection_vault_geoid_only.ipynb`, registered via `register_platform_notebook`) creates a `vault-{cat}` Role and binds it to a dedicated test principal `vault-test-{cat}-evaluator` (issue #209.3 fix). The cleanup cell is best-effort and idempotent. Historical risk: earlier revisions bound the role as parent of `sysadmin/admin/user/anonymous` via the hierarchy surface — if a deployment is still carrying those legacy edges, the vault role's DENY policies remain attached to every default role, and every user gets the vault DENYs applied globally. Symptom: catalog/collection writes return 403 across unrelated catalogs.
 
-Manual recovery:
+Manual recovery (legacy edges only):
 
 ```bash
 # List + remove leftover hierarchy edges
 for child in sysadmin admin user anonymous; do
-  curl -s -X DELETE "$BASE/iam/governance/hierarchies?parent=vault-<cat>&child=$child" \
+  curl -s -X DELETE "$BASE/admin/hierarchies?parent=vault-<cat>&child=$child" \
     -H "Authorization: Bearer $TOKEN"
 done
-curl -s -X DELETE "$BASE/iam/governance/roles/vault-<cat>" -H "Authorization: Bearer $TOKEN"
+curl -s -X DELETE "$BASE/admin/roles/vault-<cat>" -H "Authorization: Bearer $TOKEN"
 # Then delete each vault-<cat>-* policy if any remain
 ```
-
-A future hardening of the notebook should bind the vault role to a single test principal instead of the global default-role hierarchy, so kernel death can't pollute global IAM state.
 
 ---
 
