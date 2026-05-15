@@ -16,9 +16,10 @@
 Platform-level Elasticsearch alias helpers.
 
 Owns only the platform-wide regular items alias
-(``{prefix}-items-public``) — the alias spanning every per-tenant regular
-items index. OGC discovery search routes (STAC ``/search``,
-``/collections-search``, etc.) read through this alias.
+(``{prefix}-items``) — the alias spanning every per-tenant regular
+items index. The search extension's unscoped ``/search`` and
+catalog-scoped ``/search/catalogs/{catalog_id}`` (#819) read through
+this alias when no tenant filter is in scope.
 
 Membership is managed by the regular items driver:
 

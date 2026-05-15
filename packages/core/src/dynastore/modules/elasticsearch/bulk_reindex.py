@@ -122,7 +122,7 @@ async def reindex_collection_into_index(
     # the indexer side. The driver-side path only fires when the items ES
     # driver is loaded on the catalog service (gated on stac-fastapi-
     # elasticsearch being importable, which scope-catalog doesn't pull in
-    # today). Without this, /search and /search/catalogs/.../items-search
+    # today). Without this, /search and /search/catalogs/{catalog_id}
     # query the empty public alias and return 0 for every catalog created
     # via the public API even after a successful bulk reindex. Best-effort
     # and idempotent (helper handles repeats).

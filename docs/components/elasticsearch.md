@@ -135,12 +135,12 @@ Order matters: pin the routing first, then set `is_private`. The cascade validat
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/search` | Simple filtering (bbox, datetime, q, ids, collections, sortby, limit) |
-| `POST` | `/search` | Full-featured body-based filtering with cursor pagination |
-| `GET/POST` | `/search/catalogs` | Keyword search over the catalog index |
-| `GET/POST` | `/search/collections` | Keyword search over the collection index |
+| `GET/POST` | `/search` | Unscoped item search over the public alias |
+| `GET/POST` | `/search/catalogs/{catalog_id}` | Item search scoped to a single catalog |
+| `POST` | `/search/catalogs/{catalog_id}/reindex` | Trigger full catalog reindex (admin) |
+| `POST` | `/search/catalogs/{catalog_id}/collections/{collection_id}/reindex` | Trigger single-collection reindex (admin) |
 
-Free-text query (`q`) searches across `id`, `title.*`, `description.*`, `keywords.*`, and all `properties.*` using ES `multi_match` with `fuzziness: AUTO`. Multilingual fields are searched transparently across all language variants.
+Filters: `q`, `bbox`, `intersects`, `datetime`, `ids`, `geoid`, `external_id`, `collections`, `sortby`, `limit`, `token`, `driver`. Free-text query (`q`) searches across `id`, `title.*`, `description.*`, `keywords.*`, and all `properties.*` using ES `multi_match` with `fuzziness: AUTO`. Multilingual fields are searched transparently across all language variants. The extension is **item-only** (#819) — catalog/collection keyword search was retired; collection metadata search lives behind the STAC extension's `/stac/collections-search`.
 
 Pagination uses ES `search_after` cursors exposed via STAC `next` links.
 

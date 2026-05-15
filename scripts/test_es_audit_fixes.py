@@ -193,7 +193,7 @@ class Runner:
     def t1_search_routing(self) -> None:
         print("\n[T1] Items SEARCH routing — ES first")
         r = self._post(
-            f"/search/catalogs/{self.catalog_id}/items-search",
+            f"/search/catalogs/{self.catalog_id}",
             {"limit": 10},
         )
         if not r.ok:

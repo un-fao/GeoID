@@ -68,7 +68,7 @@ def register_geoid_policies():
     #   * /search/catalogs/{cat}/geoid/{geoid}              (geoid lookup)
     #   * POST /search/catalogs/{cat}/geoid                  (batch + ext-id)
     #   * GET .../collections/{coll}/items/{id}              (exact item)
-    # ...and nothing else. Collection/item enumeration and items-search are
+    # ...and nothing else. Collection/item enumeration and item search are
     # blocked.
     _STAC_ENUMERATION_RESOURCES = [
         r"/stac/catalogs/[^/]+",
