@@ -439,17 +439,37 @@ class IamExtension(ExtensionProtocol):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         logger.info("IamExtension: Initializing lifecycle.")
-        
-        # Initialize instance attributes
-        self._iam_manager = await self._get_iam_manager()
-        self._policy_service = get_protocol(PermissionProtocol)
-        if self._policy_service is None:
-            raise RuntimeError("PermissionProtocol implementation not found.")
-        
+
+        # Pass-through mode: if any prerequisite protocol is missing,
+        # the extension wheel is installed in a SCOPE that lacks the
+        # backing module (module_iam) or the database layer. Log a
+        # clear warning and yield without seeding — the middleware
+        # already runs in pass-through mode under the same conditions,
+        # and routes will surface their own 5xx if called. This avoids
+        # taking the whole service down at boot from a single
+        # packaging/SCOPE mismatch.
         from dynastore.models.protocols import DatabaseProtocol
+        self._iam_manager = get_protocol(IamService)
+        self._policy_service = get_protocol(PermissionProtocol)
         db_protocol = get_protocol(DatabaseProtocol)
-        if not db_protocol:
-            raise RuntimeError("DatabaseProtocol implementation not found.")
+        missing = []
+        if self._iam_manager is None:
+            missing.append("IamService")
+        if self._policy_service is None:
+            missing.append("PermissionProtocol")
+        if db_protocol is None:
+            missing.append("DatabaseProtocol")
+        if missing:
+            logger.warning(
+                "IamExtension: prerequisites missing (%s) — running in "
+                "pass-through mode. Likely cause: dynastore-ext-iam is "
+                "installed in a SCOPE that excludes module_iam (or "
+                "module_db). Install the missing module(s) or remove the "
+                "iam extension wheel from this deployment.",
+                ", ".join(missing),
+            )
+            yield
+            return
         self._engine = db_protocol.engine
 
         # Seed default policies (idempotent)
