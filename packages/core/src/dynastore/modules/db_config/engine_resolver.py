@@ -66,6 +66,20 @@ _DEFAULT_RETRY_INITIAL_DELAY = 0.5
 _DEFAULT_RETRY_MAX_DELAY = 5.0
 
 
+# Stable substring of the ``ValueError`` raised by
+# ``query_executor.managed_transaction`` when called before
+# ``DBService`` installs the pool.  See #845 — keeping this match-by-message
+# (rather than importing a narrow exception type) avoids a layering import
+# from ``query_executor`` into the resolver, and the message is part of an
+# internal API only this file consumes.
+_POOL_NOT_READY_MARKER = "db_resource is None"
+
+
+def _is_pool_not_ready(exc: BaseException) -> bool:
+    """Recognise the benign boot-order race from ``managed_transaction``."""
+    return isinstance(exc, ValueError) and _POOL_NOT_READY_MARKER in str(exc)
+
+
 async def build_engine_snapshot(
     pcfg: "PlatformConfigService",
     *,
@@ -92,10 +106,26 @@ async def build_engine_snapshot(
         try:
             config = await pcfg.get_config(cls)
         except Exception as exc:  # noqa: BLE001 — best-effort snapshot
-            logger.warning(
-                "build_engine_snapshot: failed to load %s (%s); skipping.",
-                class_key, exc,
-            )
+            # Distinguish the benign boot-order race (DBConfigModule priority 0
+            # runs before DBService priority 10 installs the pool, so every
+            # first-pass per-engine fetch raises ``db_resource is None``) from
+            # a real config-load failure.  The race is recovered by
+            # ``refresh_snapshot_until_ready`` retrying until the pool is up;
+            # a successful retry then logs ``engine snapshot ready`` at INFO,
+            # and total exhaustion logs ERROR.  Surfacing the race at WARNING
+            # on every cold start makes those operationally-meaningful lines
+            # impossible to find — see #845.
+            if _is_pool_not_ready(exc):
+                logger.debug(
+                    "build_engine_snapshot: %s deferred — DB pool not yet up; "
+                    "refresh task will retry (%s).",
+                    class_key, exc,
+                )
+            else:
+                logger.warning(
+                    "build_engine_snapshot: failed to load %s (%s); skipping.",
+                    class_key, exc,
+                )
             continue
         if not isinstance(config, EngineConfig):
             logger.warning(
