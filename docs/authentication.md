@@ -65,8 +65,8 @@ backward compatibility, but downstream consumers should migrate to `roles`.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/auth/authorize` | GET | OAuth2 authorization redirect to IdP |
-| `/auth/userinfo` | GET | Returns user profile from IdP token |
-| `/auth/me` | GET | Alias for `/auth/userinfo` |
+| `/auth/userinfo` | GET | Returns user profile from IdP token (OIDC spec) |
+| `/iam/me` | GET | Principal + platform roles (app-level "who am I") |
 | `/auth/logout` | GET | Clears session, optional `redirect_uri` |
 | `/auth/debug` | GET | Auth state inspection (requires valid token) |
 

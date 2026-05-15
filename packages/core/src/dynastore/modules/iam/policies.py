@@ -330,8 +330,8 @@ class PolicyService:
                 # `/iam/me` (no trailing path) must be listed explicitly: the
                 # matcher uses re.match (start-anchored), so `/iam/me/.*`
                 # alone does not cover the bare path. `/auth/userinfo` is
-                # the OIDC-spec alias of `/auth/me`.
-                resources=["/iam/me", "/iam/me/.*", "/auth/me", "/auth/userinfo"],
+                # the OIDC-spec endpoint and remains separately allowable.
+                resources=["/iam/me", "/iam/me/.*", "/auth/userinfo"],
                 effect="ALLOW",
                 partition_key=partition_key,
             ),

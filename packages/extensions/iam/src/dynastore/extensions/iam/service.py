@@ -103,7 +103,7 @@ def iam_service_policies():
             # /iam/ prefix because the matcher is start-anchored. The bare
             # /iam/me path needs its own entry — `.*` requires ≥1 trailing
             # char and would not match `/iam/me`.
-            resources=["/iam/me", "/iam/me/.*", "/auth/me", "/auth/userinfo"],
+            resources=["/iam/me", "/iam/me/.*", "/auth/userinfo"],
             effect="ALLOW",
             partition_key="global",
         ),

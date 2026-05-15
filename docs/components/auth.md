@@ -77,7 +77,7 @@ Provisioned on first startup via `PolicyService.provision_default_policies()`:
 | `sysadmin` | `sysadmin_full_access` | Unrestricted `.*` on `.*` |
 | `admin` | `sysadmin_full_access` | Same as sysadmin |
 | `anonymous` | `public_access` | GET/POST/OPTIONS/HEAD on `/`, `/health`, `/docs.*`, `/apikey/auth/*` |
-| `user` | `self_service_access` | GET on `/apikey/me/.*`, `/auth/me` |
+| `user` | `self_service_access` | GET on `/iam/me`, `/iam/me/.*`, `/auth/userinfo` |
 
 Extensions register additional policies during their `lifespan()`. For example:
 - `features_public_access` → `/features/.*` (GET/POST/OPTIONS)

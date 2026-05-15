@@ -833,7 +833,7 @@ async function refreshUserProfile(alreadyRefreshed = false) {
     if (!authToken) return;
 
     try {
-        const response = await fetch(`${apiRoot()}/auth/me`, {
+        const response = await fetch(`${apiRoot()}/auth/userinfo`, {
             headers: { 'Authorization': `Bearer ${authToken}` }
         });
 
@@ -845,14 +845,14 @@ async function refreshUserProfile(alreadyRefreshed = false) {
             await loadSidebar();
             _scheduleTokenRefresh();
         } else if (response.status === 401) {
-            // /me rejected the access token. Try a silent refresh ONCE; if
-            // the refresh succeeds but the new token is also rejected, the
+            // /userinfo rejected the access token. Try a silent refresh ONCE;
+            // if the refresh succeeds but the new token is also rejected, the
             // failure is persistent (disabled account, audience drift, clock
             // skew, …) — sign out so the user gets a clear signal instead of
-            // an invisible /me-401 ↔ /refresh-200 loop (issue #516).
+            // an invisible /userinfo-401 ↔ /refresh-200 loop (issue #516).
             if (alreadyRefreshed) {
                 console.warn(
-                    "/me still 401 after a successful refresh — signing out to break the loop."
+                    "/userinfo still 401 after a successful refresh — signing out to break the loop."
                 );
                 handleLogout();
                 return;
