@@ -18,9 +18,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager, AsyncExitStack
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 from dynastore.modules import ModuleProtocol
 from dynastore.tools.discovery import register_plugin, unregister_plugin
@@ -33,7 +34,11 @@ from dynastore.tools.discovery import register_plugin, unregister_plugin
 from . import engine_config as _engine_config  # noqa: F401
 from .db_config import DBConfig
 from .engine_instance_cache import EngineInstanceCache
-from .engine_resolver import build_engine_snapshot, make_resolver
+from .engine_resolver import (
+    build_engine_snapshot,
+    make_resolver,
+    refresh_snapshot_until_ready,
+)
 from .platform_config_service import PlatformConfigService
 
 logger = logging.getLogger(__name__)
@@ -62,12 +67,48 @@ class DBConfigModule(ModuleProtocol):
 
     async def _build_engine_cache(
         self, pcfg: PlatformConfigService
-    ) -> EngineInstanceCache:
-        """Snapshot platform engines + return a started EngineInstanceCache."""
-        snapshot = await build_engine_snapshot(pcfg)
+    ) -> tuple[EngineInstanceCache, "Optional[asyncio.Task[bool]]"]:
+        """Snapshot platform engines + return (cache, refresh_task).
+
+        The initial ``build_engine_snapshot`` call runs synchronously, but at
+        this point in lifespan ``DBService`` (priority 10) has not yet
+        installed the connection pool, so every per-engine fetch fails with
+        ``Cannot start managed_transaction: db_resource is None.`` and the
+        snapshot returns empty.  Without recovery, ``EngineInstanceCache.get``
+        would then raise ``KeyError`` forever on this process.
+
+        To bridge the boot-order gap we hand the same snapshot dict to a
+        background retry task (``refresh_snapshot_until_ready``); the
+        resolver closure observes the dict by reference, so as soon as
+        ``DBService`` brings the pool up the retry populates entries and
+        every later ``engine_cache.get`` call resolves them.  The task is
+        cancelled on lifespan teardown.
+
+        See GeoID #818 for the regression context.
+        """
+        snapshot: Dict[str, Any] = {}
+        await build_engine_snapshot(pcfg, into=snapshot)
         cache = EngineInstanceCache(engine_resolver=make_resolver(snapshot))
         cache.start_background_sweep()
-        return cache
+
+        refresh_task: "Optional[asyncio.Task[bool]]" = None
+        if not snapshot:
+            refresh_task = asyncio.create_task(
+                refresh_snapshot_until_ready(snapshot, pcfg),
+                name="engine_snapshot_refresh",
+            )
+        return cache, refresh_task
+
+    @staticmethod
+    async def _cancel_refresh_task(task: "asyncio.Task[bool]") -> None:
+        """Cancel a still-running engine snapshot refresh task on teardown."""
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     @staticmethod
     async def _teardown_engine_cache(app_state: DBConfigAppState) -> None:
@@ -108,8 +149,12 @@ class DBConfigModule(ModuleProtocol):
             # engine configs at boot, exposes lazy-instantiating cache.
             # Until F.4c lands, no driver consumes this in production paths,
             # but admin tooling + tests use it via app_state.engine_cache.
-            engine_cache = await self._build_engine_cache(pcfg)
+            engine_cache, refresh_task = await self._build_engine_cache(pcfg)
             app_state.engine_cache = engine_cache
+            if refresh_task is not None:
+                stack.push_async_callback(
+                    self._cancel_refresh_task, refresh_task
+                )
             stack.push_async_callback(self._teardown_engine_cache, app_state)
 
             yield

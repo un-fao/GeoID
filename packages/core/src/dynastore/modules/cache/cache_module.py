@@ -412,33 +412,38 @@ class CacheModule(ModuleProtocol):
             used_mb,
         )
 
-        # Register the apply handler (engine mode only — live reconnect).
-        if engine_mode:
-            try:
-                from dynastore.modules.db_config.engine_config import ValkeyEngineConfig
+        # Register the apply handler unconditionally so a later
+        # PUT /configs/plugins/valkey_engine_config can trigger a live
+        # reconnect even when the boot snapshot fell back to the legacy
+        # env-driven path (DBService not yet up when DBConfigModule built
+        # its snapshot — see #818).  The handler is null-safe wrt the
+        # backend type: it closes whatever ``_current_backend`` is and
+        # then re-gets the engine, which by post-boot wait-and-retry will
+        # have been populated by ``refresh_snapshot_until_ready``.
+        try:
+            from dynastore.modules.db_config.engine_config import ValkeyEngineConfig
 
-                ValkeyEngineConfig.register_apply_handler(
-                    _on_valkey_engine_config_change
-                )
-            except Exception:
-                logger.exception(
-                    "CacheModule: failed to register ValkeyEngineConfig apply handler"
-                )
+            ValkeyEngineConfig.register_apply_handler(
+                _on_valkey_engine_config_change
+            )
+        except Exception:
+            logger.exception(
+                "CacheModule: failed to register ValkeyEngineConfig apply handler"
+            )
 
         try:
             yield
         finally:
-            if engine_mode:
-                try:
-                    from dynastore.modules.db_config.engine_config import (
-                        ValkeyEngineConfig,
-                    )
+            try:
+                from dynastore.modules.db_config.engine_config import (
+                    ValkeyEngineConfig,
+                )
 
-                    ValkeyEngineConfig.unregister_apply_handler(
-                        _on_valkey_engine_config_change
-                    )
-                except Exception:
-                    pass
+                ValkeyEngineConfig.unregister_apply_handler(
+                    _on_valkey_engine_config_change
+                )
+            except Exception:
+                pass
             await backend.close()
             _current_backend = None
             logger.info("CacheModule: Valkey connection closed.")
