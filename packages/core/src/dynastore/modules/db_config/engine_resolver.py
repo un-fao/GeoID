@@ -40,6 +40,7 @@ exercise the contract end-to-end.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Callable, Dict, Optional, TYPE_CHECKING
 
@@ -54,8 +55,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Default retry parameters for ``refresh_snapshot_until_ready``.  Tuned for the
+# typical Cloud Run boot order: DBConfigModule lifespan (priority 0) starts
+# before DBService (priority 10) installs the connection pool, so the very
+# first snapshot attempt is guaranteed to fail with
+# ``db_resource is None``.  The retry loop unblocks once DBService is up,
+# usually within a couple of seconds; the upper bound covers slow cold-starts.
+_DEFAULT_RETRY_MAX_ATTEMPTS = 30
+_DEFAULT_RETRY_INITIAL_DELAY = 0.5
+_DEFAULT_RETRY_MAX_DELAY = 5.0
+
+
 async def build_engine_snapshot(
     pcfg: "PlatformConfigService",
+    *,
+    into: Optional[Dict[str, EngineConfig]] = None,
 ) -> Dict[str, EngineConfig]:
     """Snapshot the platform-tier engine configs into a ``ref → instance`` map.
 
@@ -67,8 +81,13 @@ async def build_engine_snapshot(
     Errors fetching a single engine config are logged + skipped — the cache
     serves what it can; missing entries surface as ``KeyError`` from
     :meth:`EngineInstanceCache.get` at first dispatch.
+
+    When ``into`` is provided, populates that dict in place and returns it;
+    this lets a long-lived resolver closure observe successful entries from a
+    later retry without rebuilding the closure.  See
+    :func:`refresh_snapshot_until_ready`.
     """
-    snapshot: Dict[str, EngineConfig] = {}
+    snapshot: Dict[str, EngineConfig] = into if into is not None else {}
     for class_key, cls in list_registered_engines().items():
         try:
             config = await pcfg.get_config(cls)
@@ -94,6 +113,55 @@ async def build_engine_snapshot(
     return snapshot
 
 
+async def refresh_snapshot_until_ready(
+    snapshot: Dict[str, EngineConfig],
+    pcfg: "PlatformConfigService",
+    *,
+    max_attempts: int = _DEFAULT_RETRY_MAX_ATTEMPTS,
+    initial_delay: float = _DEFAULT_RETRY_INITIAL_DELAY,
+    max_delay: float = _DEFAULT_RETRY_MAX_DELAY,
+) -> bool:
+    """Retry ``build_engine_snapshot`` into ``snapshot`` until at least one
+    entry is populated, with exponential backoff.
+
+    Mutates ``snapshot`` in place so any existing
+    :func:`make_resolver` closure observes the populated state without
+    needing to be rebuilt.
+
+    Returns ``True`` when the snapshot has at least one entry, ``False`` if
+    the retry budget is exhausted with the snapshot still empty.  A failed
+    retry budget is reported as ``ERROR`` so the next regression of the
+    boot-order race is operationally visible — parity with #778's surfacing
+    fix.
+    """
+    expected = len(list_registered_engines())
+    delay = initial_delay
+    for attempt in range(1, max_attempts + 1):
+        await build_engine_snapshot(pcfg, into=snapshot)
+        loaded = sum(
+            1
+            for class_key in list_registered_engines()
+            if class_key in snapshot
+        )
+        if loaded > 0:
+            logger.info(
+                "engine snapshot ready: attempt=%d loaded=%d/%d",
+                attempt, loaded, expected,
+            )
+            return True
+        if attempt < max_attempts:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
+    logger.error(
+        "engine snapshot: retry budget exhausted (attempts=%d, loaded=0/%d) — "
+        "EngineInstanceCache will return KeyError for every ref until the "
+        "next process restart.  Likely root cause: DB pool never became "
+        "available during the retry window.",
+        max_attempts, expected,
+    )
+    return False
+
+
 def make_resolver(
     snapshot: Dict[str, EngineConfig],
 ) -> Callable[[str], Optional[EngineConfig]]:
@@ -104,6 +172,9 @@ def make_resolver(
     contract (``engine_ref → Optional[EngineConfig]``).  Treating unknown
     refs as ``None`` lets the cache surface a clear ``KeyError`` to callers
     rather than papering over typos with a default engine.
+
+    The closure captures ``snapshot`` by reference, so mutations performed
+    by :func:`refresh_snapshot_until_ready` are observed live.
     """
 
     def _resolve(engine_ref: str) -> Optional[EngineConfig]:
@@ -115,4 +186,5 @@ def make_resolver(
 __all__ = [
     "build_engine_snapshot",
     "make_resolver",
+    "refresh_snapshot_until_ready",
 ]
