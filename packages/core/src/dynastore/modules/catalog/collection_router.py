@@ -37,7 +37,7 @@ the driver.  Same pattern as the catalog-tier router.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from dynastore.models.protocols.entity_store import (
     CollectionStore,
@@ -64,10 +64,18 @@ def _filter_capable(
 ) -> List[CollectionStore]:
     """Keep only drivers declaring ``capability`` — TRANSFORM-only drivers
     (e.g. ``BigQueryMetadataTransformDriver``) must never reach the WRITE
-    / DELETE fan-out.  See ``TransformOnlyCollectionStoreMixin``
-    in ``models/protocols/entity_store.py`` — its raising stubs are a
-    bug-catcher; routers MUST honour the capability contract before
-    invocation.
+    / DELETE fan-out.  See ``TransformOnlyCollectionStoreMixin`` in
+    ``models/protocols/entity_store.py``.
+
+    Load-bearing on the **config-resolved** branch: a pinned
+    ``driver_ref`` in ``CollectionRoutingConfig`` may legitimately point
+    at a driver that does not declare the operation's capability (mis-
+    config, evolving driver, READ-only mirror); without this filter the
+    fan-out would raise mid-loop on the first non-capable driver and the
+    surviving drivers would never run.  The matching
+    ``TransformOnlyCollectionStoreMixin`` raising stubs stay in place as
+    a defence-in-depth: anything that slips past this filter still
+    fails loudly instead of silently corrupting state.
     """
     kept: List[CollectionStore] = []
     for d in drivers:
@@ -132,7 +140,7 @@ async def _dispatch_collection_index(
     collection_id: str,
     metadata: Optional[Dict[str, Any]] = None,
     *,
-    op_type: str = "upsert",
+    op_type: Literal["upsert", "delete"] = "upsert",
     db_resource: Optional[Any] = None,
 ) -> None:
     """Fan a collection ``upsert`` / ``delete`` to every Indexer configured
@@ -210,6 +218,12 @@ async def get_collection_metadata(
         routed = await _routed_drivers(
             Operation.READ, catalog_id, collection_id, db_resource=db_resource,
         )
+        # READ deliberately does NOT run drivers through ``_filter_capable``.
+        # A pinned ``driver_ref`` lacking READ is invoked anyway, because
+        # ``_safe_get`` below is forgiving: a driver that doesn't actually
+        # serve a READ returns ``None`` (or raises) and the next driver in
+        # the merge pipeline supplies the envelope.  Filtering would mask
+        # partial-coverage drivers that DO answer for some keys.
         drivers = routed if routed is not None else _resolve_drivers()
     if not drivers:
         return None
@@ -392,6 +406,11 @@ async def search_collection_metadata(
         routed = await _routed_drivers(
             Operation.SEARCH, catalog_id, collection_id=None, db_resource=db_resource,
         )
+        # SEARCH deliberately does NOT pre-filter via ``_filter_capable``:
+        # the per-shape capability match below (``required.issubset(caps)``
+        # → first hit; partial match → fallback; finally ``drivers[0]``) is
+        # richer than a boolean drop and picks the most capable driver for
+        # the query shape rather than dropping any candidate up front.
         drivers = routed if routed is not None else _resolve_drivers()
     if not drivers:
         return [], 0
