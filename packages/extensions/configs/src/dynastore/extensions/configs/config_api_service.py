@@ -403,17 +403,25 @@ class ConfigApiService:
         - ``"full"`` — adds a contextual ``title`` per link naming the
           class key and tier (catalog/collection ids included).
 
-        ``include_mode`` controls scope-vs-waterfall payload rendering:
+        ``include_mode`` controls scope-vs-waterfall payload rendering at
+        PLATFORM scope only.  Post-#761 the catalog/collection responses
+        surface the full configurable surface regardless of include mode —
+        slim-filtering hid module/extension/task/engine leaves and broke
+        the "complete the configuration" contract.
 
-        - ``"scope"`` (default) — body shows configs whose ``_visibility``
-          declares the active scope as their owner OR whose stored row
-          lives at the active scope.  Upstream-tier configs (catalog and
-          platform from collection's POV; platform from catalog's POV)
-          are filtered out — their provenance is recoverable from any
-          rendered leaf's ``_meta.source`` lookup on a peer endpoint.
-        - ``"upstream"`` — every visible class is rendered with its
-          waterfall-resolved value; ``_meta.source`` on each leaf tells
-          operators which tier the resolved value comes from.
+        - ``"scope"`` (default) — at PLATFORM scope under ``strict=True``
+          drops catalog-tier templates (``_visibility="catalog"``) from
+          the body.  At catalog and collection scope this mode is identical
+          to ``"upstream"``: every leaf placed by ``_place()`` lands in
+          the tree with its waterfall-resolved value.
+        - ``"upstream"`` — every class that passes ``_place()`` is rendered
+          with its waterfall-resolved value at every scope.
+
+        Each leaf's ``_meta.source`` reports the effective tier
+        (``"platform"`` / ``"catalog"`` / ``"collection"`` / ``"default"``)
+        so operators see what they inherit vs override.  ``_visibility``
+        still gates writability via the service layer; it no longer hides
+        the leaf from a sub-platform read view.
 
         ``strict`` (default True, Cycle F.7d.2) tightens platform-scope
         visibility: when True, platform-scope view drops configs declared
@@ -440,7 +448,7 @@ class ConfigApiService:
         scope_label = active_scope
 
         def _is_in_scope(cls: Type[PluginConfig], class_key: str) -> bool:
-            """Slim-mode filter: keep only configs owned by ``active_scope``.
+            """Slim-mode filter: keep only configs visible at ``active_scope``.
 
             At platform scope under ``strict=True`` (Cycle F.7d.2), drop
             configs declared with ``_visibility="catalog"`` from the body
@@ -450,6 +458,14 @@ class ConfigApiService:
             ``_visibility="platform"`` (engine configs, etc.) is treated
             as platform-intrinsic — kept in body at platform scope strict
             mode.  Engines ARE platform-tier resources by definition.
+
+            At catalog/collection scope: include every config that passed
+            ``_place()`` — the resolved config response must surface the full
+            configurable surface (modules, extensions, tasks, engines,
+            drivers) per #761.  ``_meta.source`` on each leaf reports the
+            effective tier (``platform`` / ``catalog`` / ``collection`` /
+            ``default``); ``_visibility`` continues to gate writability via
+            the service layer but does not hide the leaf from the read view.
             """
             visibility = getattr(cls, "_visibility", None)
             if active_scope == "platform":
@@ -463,11 +479,13 @@ class ConfigApiService:
                 # templates (``_visibility="catalog"`` / ``"collection"``)
                 # are filtered out.
                 return visibility is None or visibility == "platform"
-            if visibility == active_scope:
-                return True
-            if sources.get(class_key) == active_scope:
-                return True
-            return False
+            # Non-platform scopes (catalog / collection): show everything
+            # that ``_place()`` accepts.  ``_place()`` already drops
+            # collection-vis configs at non-collection scopes; everything
+            # else is informative context at this tier.
+            del class_key  # unused at non-platform scopes
+            del visibility  # unused at non-platform scopes
+            return True
 
         def _doc_extras(cls: Type[PluginConfig]) -> Dict[str, Any]:
             """Optional ``_meta`` extras gated by ``meta_mode``.
