@@ -172,12 +172,11 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        from dynastore.modules.iam.conditions import register_condition_handler
-        from .conditions import CatalogLookupAudienceHandler, CollectionWriteAudienceHandler
         from .policies import register_geoid_policies
 
-        register_condition_handler(CatalogLookupAudienceHandler())
-        register_condition_handler(CollectionWriteAudienceHandler())
+        # Audience ConditionHandlers were migrated to core IAM (#286) and
+        # are auto-registered there; the extension no longer registers
+        # them itself. Geoid-extension policies still register here.
         register_geoid_policies()
         yield
 

@@ -860,6 +860,13 @@ class ConditionRegistry:
         self.register(LogicalNotHandler())
         self.register(CatalogMembershipHandler())
         self.register(CatalogAdminHandler())
+        # Audience handlers (per-catalog / per-collection anonymous opt-ins)
+        from dynastore.modules.iam.audience_handlers import (
+            CatalogLookupAudienceHandler,
+            CollectionWriteAudienceHandler,
+        )
+        self.register(CatalogLookupAudienceHandler())
+        self.register(CollectionWriteAudienceHandler())
         # Filter inspection framework (geospatial, temporal, etc.)
         from dynastore.modules.iam.filter_inspectors import filter_handler
         self.register(filter_handler)
