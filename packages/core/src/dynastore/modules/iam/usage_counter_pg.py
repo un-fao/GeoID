@@ -32,13 +32,12 @@ from dynastore.modules.db_config.query_executor import (
     managed_transaction,
 )
 from dynastore.modules.iam.usage_counter_bucket import (
-    LIFETIME_BUCKET as _LIFETIME_BUCKET,  # re-exported for tests
     bucket_for as _bucket_for,
     expires_for as _expires_for,
 )
 from dynastore.tools.protocol_helpers import get_engine
 
-__all__ = ["PostgresUsageCounter", "_LIFETIME_BUCKET", "_bucket_for", "_expires_for"]
+__all__ = ["PostgresUsageCounter"]
 
 
 # --- Queries --------------------------------------------------------------

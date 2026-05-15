@@ -22,12 +22,14 @@ driver. This module is hermetic: no DB, no Valkey.
 from datetime import datetime, timezone
 
 from dynastore.models.protocols.usage_counter import UsageCounterProtocol
+from dynastore.modules.iam.usage_counter_bucket import (
+    LIFETIME_BUCKET as _LIFETIME_BUCKET,
+    bucket_for as _bucket_for,
+    expires_for as _expires_for,
+)
 from dynastore.modules.iam.usage_counter_pg import (
     _INCR_IF_BELOW,
     PostgresUsageCounter,
-    _LIFETIME_BUCKET,
-    _bucket_for,
-    _expires_for,
 )
 
 
