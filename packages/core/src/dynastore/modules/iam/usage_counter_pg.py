@@ -31,6 +31,7 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
+from dynastore.modules.iam.iam_queries import REAP_EXPIRED_USAGE_COUNTERS_SQL
 from dynastore.modules.iam.usage_counter_bucket import (
     bucket_for as _bucket_for,
     expires_for as _expires_for,
@@ -122,12 +123,10 @@ _RESET = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
+# SQL shared with the pg_cron nightly prune function — see the SSOT
+# block in `iam_queries.REAP_EXPIRED_USAGE_COUNTERS_SQL`.
 _REAP_EXPIRED = DQLQuery(
-    """
-    DELETE FROM {schema}.usage_counters
-     WHERE expires_at IS NOT NULL
-       AND expires_at < NOW();
-    """,
+    REAP_EXPIRED_USAGE_COUNTERS_SQL,
     result_handler=ResultHandler.ROWCOUNT,
 )
 

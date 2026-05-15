@@ -215,6 +215,24 @@ CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
         ON {schema}.usage_counters (expires_at) WHERE expires_at IS NOT NULL;
 """)
 
+
+# SSOT for "what counts as an expired usage-counter row". Consumed by
+# both the in-process `PostgresUsageCounter.reap_expired` driver method
+# AND the plpgsql `prune_expired_rows_iam` function body that pg_cron
+# fires nightly (see `postgres_iam_storage.py`). Keeping the WHERE
+# clause in one place is gap #6 of #800 — without it, a grace-period
+# tweak (e.g. `expires_at < NOW() - INTERVAL '1 hour'`) would have to be
+# applied twice and silently drift if one site is forgotten.
+#
+# The canonical reaper in production is the pg_cron job — it runs even
+# when no Python pod is alive and survives Cloud Run scale-to-zero.
+# `PostgresUsageCounter.reap_expired` exists for local dev / test
+# environments without pg_cron and to satisfy `UsageCounterProtocol`.
+REAP_EXPIRED_USAGE_COUNTERS_SQL = (
+    'DELETE FROM "{schema}".usage_counters '
+    "WHERE expires_at IS NOT NULL AND expires_at < NOW();"
+)
+
 # --- Audit Log Table ---
 
 CREATE_AUDIT_LOG_TABLE = DDLQuery("""

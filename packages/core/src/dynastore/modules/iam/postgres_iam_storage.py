@@ -155,6 +155,14 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             # behind the cron-job existence check would freeze warm DBs
             # on the old body when the prune logic changes (e.g. a new
             # ``DELETE`` line for a newly-added table).
+            #
+            # ``usage_counters`` reaper line is sourced from the SSOT
+            # constant in ``iam_queries`` — the in-process
+            # ``PostgresUsageCounter.reap_expired`` uses the same string
+            # so the two paths cannot drift on grace-period tweaks.
+            _reap_usage_counters_sql = REAP_EXPIRED_USAGE_COUNTERS_SQL.format(
+                schema=schema
+            )
             _prune_function_ddl = f"""
             CREATE OR REPLACE FUNCTION "{schema}"."{_prune_func_name}"() RETURNS void AS $$
             BEGIN
@@ -176,8 +184,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 -- Expired usage counter buckets (rate-limit windows past
                 -- their grace period). Lifetime counters
                 -- (expires_at IS NULL) are kept indefinitely.
-                DELETE FROM "{schema}".usage_counters
-                  WHERE expires_at IS NOT NULL AND expires_at < NOW();
+                {_reap_usage_counters_sql}
             END;
             $$ LANGUAGE plpgsql;
             """
