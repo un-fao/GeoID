@@ -50,8 +50,25 @@ class StatsProtocol(Protocol):
         """
         ...
 
-    async def get_summary(self, **kwargs) -> Any:
-        """Retrieves aggregated access statistics (e.g. total requests, average latency)."""
+    async def get_summary(
+        self,
+        *,
+        schema: Optional[str] = None,
+        catalog_id: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        start_date: Optional[Any] = None,
+        end_date: Optional[Any] = None,
+        path_pattern: Optional[str] = None,
+        methods: Optional[list] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Retrieves aggregated access statistics (e.g. total requests, average latency).
+
+        ``path_pattern`` filters by a regular expression against the request
+        ``path`` field; ``methods`` filters by HTTP method (allowlist). Both
+        are optional and intended to support per-endpoint policy conditions
+        (rate_limit, max_count) that read counts via this protocol.
+        """
         ...
 
     async def get_logs(self, **kwargs) -> Any:

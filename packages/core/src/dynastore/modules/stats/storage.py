@@ -101,6 +101,8 @@ class AbstractStatsDriver(ProtocolPlugin[object]):
         principal_id: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        path_pattern: Optional[str] = None,
+        methods: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> StatsSummary: ...
 
