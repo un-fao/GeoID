@@ -34,10 +34,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Warm ``models.protocols`` before importing the service modules: importing
-# ``datastore_service`` directly otherwise triggers a latent circular import
-# (see #686). Full-suite collection warms it implicitly; an isolated run of
-# this file does not, so we do it explicitly.
+# Warm ``models.protocols`` before importing the service modules.
+#
+# History: this guarded against the #686 circular import (markers + ``PluginConfig``
+# co-located under ``models/protocols/``). PR #707 (2026-05-14) moved ``PluginConfig``
+# out to ``modules/db_config/plugin_config.py`` and the original circular path is gone
+# — but the warm-up is still load-bearing for a different reason: under xdist
+# parallel collection (``pytest.ini`` configures ``-n auto --dist worksteal``), 12
+# worker processes race to import ``datastore_service`` and the chain through
+# ``models.protocols``. Without an explicit warm-up at least one worker errors down
+# with ``INTERNALERROR ... KeyError: <WorkerController gw*>`` and the whole run
+# yields 0 tests. Full-suite collection warms ``models.protocols`` implicitly via
+# earlier imports; an isolated run of this file does not, so we do it explicitly.
+#
+# Verified 2026-05-15 in worktree ``710-item5-drop-protocols-warmup``: removing
+# this line passes serial (``-n0``) but crashes xdist parallel — both with this
+# file alone and with the surrounding ``modules/db/unit`` directory.
 import dynastore.models.protocols  # noqa: F401
 
 from dynastore.modules.datastore.datastore_service import DatastoreModule
