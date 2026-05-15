@@ -389,6 +389,102 @@ class MaxCountHandler(ConditionHandler):
             "remaining": max(limit - used, 0),
         }
 
+class LookupOnlySearchHandler(ConditionHandler):
+    """Pass only when the request looks like a needle-lookup search.
+
+    Used to expose ``/search`` and ``/search/catalogs/{cat}`` to
+    anonymous (or otherwise narrowly-scoped) callers as a retrieve-by-id
+    surface — the caller can find an item they already know the GeoID
+    or external_id of, but cannot enumerate the catalog.
+
+    The request **must** carry at least one lookup field (``geoid`` or
+    ``external_id``) and **must not** carry any broadening field
+    (``bbox`` / ``intersects`` / ``datetime`` / ``filter`` / ``q``).
+    Pagination + scoping fields (``collections``, ``ids``, ``limit``,
+    ``page``, ``next``, ``fields``, ``sortby``, ``filter_lang``) are
+    permitted alongside the lookup.
+
+    For ``GET`` the fields are read from ``ctx.query_params``; for
+    ``POST`` (the canonical /search shape from #819) the JSON body is
+    read via ``await ctx.request.json()`` — Starlette caches the body so
+    the downstream route handler still sees it.
+
+    Config keys (all optional — operator can tighten or relax the
+    defaults without touching code):
+
+    * ``lookup_fields``    (list[str]) — fields that count as a
+        lookup. Default ``["geoid", "external_id"]``. At least one
+        must be truthy.
+    * ``broadening_fields`` (list[str]) — fields that, if truthy,
+        deny the request. Default
+        ``["bbox", "intersects", "datetime", "filter", "q"]``.
+    """
+
+    DEFAULT_LOOKUP_FIELDS = ("geoid", "external_id")
+    DEFAULT_BROADENING_FIELDS = ("bbox", "intersects", "datetime", "filter", "q")
+
+    @property
+    def type(self) -> str:
+        return "lookup_only_search"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        lookup_fields = tuple(
+            config.get("lookup_fields") or self.DEFAULT_LOOKUP_FIELDS
+        )
+        broadening_fields = tuple(
+            config.get("broadening_fields") or self.DEFAULT_BROADENING_FIELDS
+        )
+
+        method = (ctx.method or "").upper()
+        if method == "GET":
+            fields = ctx.query_params or {}
+        elif method == "POST":
+            fields = await self._read_body(ctx)
+            if fields is None:
+                # Body unreadable or not JSON — fail closed; a needle
+                # lookup MUST carry a JSON body with the lookup field.
+                return False
+        else:
+            return False
+
+        has_lookup = any(_field_present(fields, k) for k in lookup_fields)
+        if not has_lookup:
+            return False
+        for bf in broadening_fields:
+            if _field_present(fields, bf):
+                return False
+        return True
+
+    @staticmethod
+    async def _read_body(ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
+        request = ctx.request
+        if request is None:
+            return None
+        try:
+            body = await request.json()
+        except Exception:
+            return None
+        return body if isinstance(body, dict) else None
+
+
+def _field_present(fields: Any, key: str) -> bool:
+    """Return True when ``fields[key]`` is present and meaningful.
+
+    Treat empty string / empty list / None as absent; treat ``0`` and
+    ``False`` as absent too (broadening fields don't have semantic
+    zero values).
+    """
+    if fields is None:
+        return False
+    try:
+        v = fields.get(key)
+    except Exception:
+        return False
+    if v is None or v == "" or v == [] or v == {}:
+        return False
+    return True
+
+
 class QueryParamHandler(ConditionHandler):
     @property
     def type(self) -> str: return "query_match"
@@ -752,6 +848,7 @@ class ConditionRegistry:
         self._handlers: Dict[str, ConditionHandler] = {}
         self.register(RateLimitHandler())
         self.register(MaxCountHandler())
+        self.register(LookupOnlySearchHandler())
         self.register(QueryParamHandler())
         self.register(TimeWindowHandler())
         self.register(TimeExpirationHandler())
@@ -763,6 +860,13 @@ class ConditionRegistry:
         self.register(LogicalNotHandler())
         self.register(CatalogMembershipHandler())
         self.register(CatalogAdminHandler())
+        # Audience handlers (per-catalog / per-collection anonymous opt-ins)
+        from dynastore.modules.iam.audience_handlers import (
+            CatalogLookupAudienceHandler,
+            CollectionWriteAudienceHandler,
+        )
+        self.register(CatalogLookupAudienceHandler())
+        self.register(CollectionWriteAudienceHandler())
         # Filter inspection framework (geospatial, temporal, etc.)
         from dynastore.modules.iam.filter_inspectors import filter_handler
         self.register(filter_handler)
