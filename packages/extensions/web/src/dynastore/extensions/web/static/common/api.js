@@ -106,12 +106,11 @@ export function fetchSchemas() {
 }
 
 // Identity — used to gate admin pages. Returns { principal, roles }.
-// Path is "/auth/me": when the auth service's apiBase already ends in
-// "/auth", the absolute path is "/geospatial/v2/api/auth/auth/me",
-// which is where IamExtension mounts the /me handler.
+// `/iam/me` is the canonical "who am I + roles" surface. The OIDC-spec
+// `/auth/userinfo` returns only the token's claim set (no platform roles).
 export async function fetchMe() {
   try {
-    return await getJSON("/auth/me");
+    return await getJSON("/iam/me");
   } catch (e) {
     if (e.status === 401) return { principal: null, roles: [] };
     throw e;
@@ -254,6 +253,6 @@ export async function postFeatures(catalogId, collectionId, payload) {
   return { status: r.status, body: data };
 }
 
-// /me/catalogs: returns list of {catalog_id, roles, ...} for the signed-in
-// principal. Used to discover "catalog admin" scope.
-export const fetchMyCatalogs = () => getJSON("/auth/me/catalogs");
+// /iam/me/catalogs: returns list of {catalog_id, roles, ...} for the
+// signed-in principal. Used to discover "catalog admin" scope.
+export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");

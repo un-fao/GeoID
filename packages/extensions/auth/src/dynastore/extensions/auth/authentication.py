@@ -198,7 +198,6 @@ class Authentication(ExtensionProtocol):
             )
 
         @self.router.get("/userinfo")
-        @self.router.get("/me")
         async def userinfo(
             bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
         ):

@@ -16,9 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Unit tests verifying ``/auth/userinfo``, ``/auth/me``, and ``/auth/debug``
-declare ``HTTPBearer`` as their security scheme in the generated OpenAPI
-document.
+"""Unit tests verifying ``/auth/userinfo`` and ``/auth/debug`` declare
+``HTTPBearer`` as their security scheme in the generated OpenAPI document.
 
 The previous implementation used ``authorization: str = Header(None)`` to
 read the bearer token. That keeps the runtime check working (the
@@ -78,17 +77,24 @@ def test_userinfo_carries_httpbearer_security(monkeypatch):
     _assert_httpbearer_required(schema, "/auth/userinfo", "get")
 
 
-def test_me_carries_httpbearer_security(monkeypatch):
-    monkeypatch.delenv("IDP_ISSUER_URL", raising=False)
-    monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
-
-    schema = build_iam_openapi_schema(_build_app())
-    _assert_httpbearer_required(schema, "/auth/me", "get")
-
-
 def test_debug_carries_httpbearer_security(monkeypatch):
     monkeypatch.delenv("IDP_ISSUER_URL", raising=False)
     monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
 
     schema = build_iam_openapi_schema(_build_app())
     _assert_httpbearer_required(schema, "/auth/debug", "get")
+
+
+def test_auth_me_alias_is_unregistered(monkeypatch):
+    """`/auth/me` was a redundant alias of `/auth/userinfo` (no roles, no
+    OIDC-spec contract). #751 PR-3 deletes it so callers consolidate on
+    `/iam/me` for app-level identity and `/auth/userinfo` for OIDC.
+    """
+    monkeypatch.delenv("IDP_ISSUER_URL", raising=False)
+    monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
+
+    schema = build_iam_openapi_schema(_build_app())
+    assert "/auth/me" not in schema["paths"], (
+        "/auth/me alias must remain deleted (callers use /iam/me or "
+        "/auth/userinfo)"
+    )

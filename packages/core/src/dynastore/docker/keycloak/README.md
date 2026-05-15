@@ -36,7 +36,7 @@ port set by `HOST_PORT_API`). Open `/docs` in a browser:
 3. Log in as `sysadmin` / `sysadmin`.
 4. Browser redirects to `/docs/oauth2-redirect`, the popup closes,
    Swagger now has a JWT bound to `aud=geoid-api`.
-5. Try `GET /auth/me` — returns 200 with the principal carrying the
+5. Try `GET /iam/me` — returns 200 with the principal carrying the
    `sysadmin` role.
 
 If the popup hangs or errors:
