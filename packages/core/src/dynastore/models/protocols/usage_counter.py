@@ -141,9 +141,24 @@ class UsageCounterProtocol(Protocol):
     async def reap_expired(self) -> int:
         """Remove rows past ``expires_at``; return rows deleted.
 
-        Drivers with native TTL (Valkey) return ``0``. The Postgres
-        driver runs ``DELETE … WHERE expires_at < NOW()`` (the same
-        pattern as the existing ``iam.refresh_tokens`` / ``iam.grants``
-        nightly prune; usage counters join that cron job).
+        **The canonical reaper in production is the pg_cron job**
+        ``prune_expired_${schema}`` (registered by
+        :class:`PostgresIamStorage`). It fires nightly inside Postgres
+        and runs whether or not any Python pod is alive — survives
+        Cloud Run scale-to-zero.
+
+        This method exists for two cases:
+
+        * local-dev / test environments without the pg_cron extension
+          installed, where the protocol's
+          ``test_reap_expired_…`` conformance tests need to call
+          something;
+        * one-off operator triggers via a controller.
+
+        Drivers with native TTL (Valkey) return ``0`` — Redis-family
+        backends handle expiry server-side. The Postgres driver shares
+        its SQL WHERE clause with the pg_cron function body via
+        ``iam_queries.REAP_EXPIRED_USAGE_COUNTERS_SQL`` so the two
+        cannot drift if e.g. a grace period is introduced.
         """
         ...
