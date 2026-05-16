@@ -43,6 +43,25 @@ from .policies import admin_policies, admin_role_bindings
 logger = logging.getLogger(__name__)
 
 
+def _policy_to_response(p: Policy) -> PolicyResponse:
+    """Project a domain :class:`Policy` onto the wire :class:`PolicyResponse`.
+
+    Module-level because the three callers are FastAPI route handlers
+    nested inside :class:`AdminService`; Python's name resolution does
+    not let nested functions see class-body names, so a class-body
+    helper would (and did) raise ``NameError`` at request time.
+    """
+    return PolicyResponse(
+        id=p.id,
+        description=p.description,
+        actions=p.actions,
+        resources=p.resources,
+        effect=p.effect,
+        partition_key=p.partition_key,
+        conditions=getattr(p, "conditions", []) or [],
+    )
+
+
 def _iam() -> IamService:
     mgr = get_protocol(IamService)
     if mgr is None:
@@ -656,17 +675,6 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
     # Policy Management (/admin/policies)
     # -------------------------------------------------------------------------
-
-    def _policy_to_response(p: Policy) -> PolicyResponse:
-        return PolicyResponse(
-            id=p.id,
-            description=p.description,
-            actions=p.actions,
-            resources=p.resources,
-            effect=p.effect,
-            partition_key=p.partition_key,
-            conditions=getattr(p, "conditions", []) or [],
-        )
 
     @router.get("/policies", summary="List all policies")
     async def list_policies(catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
