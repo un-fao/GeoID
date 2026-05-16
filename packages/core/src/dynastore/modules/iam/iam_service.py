@@ -373,8 +373,8 @@ class IamService:
 
     async def _get_oidc_sync_config(self) -> OidcRoleSyncConfig:
         """Fetch OidcRoleSyncConfig via PlatformConfigsProtocol; falls
-        back to defaults (``enabled=False``) when the protocol or row
-        is unavailable so a missing/unwritten config never blocks auth.
+        back to defaults (``reconcile_enabled=False``) when the protocol
+        or row is unavailable so a missing/unwritten config never blocks auth.
         """
         configs = get_protocol(PlatformConfigsProtocol)
         if configs is None:
@@ -409,7 +409,7 @@ class IamService:
         should re-fetch effective permissions in that case.
         """
         cfg = await self._get_oidc_sync_config()
-        if not cfg.enabled or not cfg.role_mapping:
+        if not cfg.reconcile_enabled or not cfg.role_mapping:
             return False
 
         principal_id = principal.id

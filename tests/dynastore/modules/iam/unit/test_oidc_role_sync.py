@@ -8,8 +8,8 @@ that wraps the wider IamService.authenticate flow:
 - only mapped roles drive grant/revoke decisions;
 - unrelated internal roles are never proposed for revocation;
 - the issuer whitelist gates assignment;
-- the ``enabled=False`` default short-circuits the overlay used at
-  first-time auto-registration.
+- the ``reconcile_enabled=False`` default short-circuits the overlay used
+  at first-time auto-registration.
 """
 
 from dynastore.modules.iam.oidc_role_sync import (
@@ -108,7 +108,7 @@ def test_is_issuer_allowed_whitelist_miss():
 
 
 def test_initial_overlay_disabled_returns_base():
-    cfg = OidcRoleSyncConfig(enabled=False)
+    cfg = OidcRoleSyncConfig(reconcile_enabled=False)
     out = initial_role_overlay(
         oidc_roles=["geoid.sysadmin"],
         base_roles=["user"],
@@ -119,7 +119,7 @@ def test_initial_overlay_disabled_returns_base():
 
 
 def test_initial_overlay_grants_mapped_role_when_enabled():
-    cfg = OidcRoleSyncConfig(enabled=True)
+    cfg = OidcRoleSyncConfig(reconcile_enabled=True)
     out = initial_role_overlay(
         oidc_roles=["geoid.sysadmin"],
         base_roles=["user"],
@@ -133,7 +133,7 @@ def test_initial_overlay_replaces_existing_mapped_internal_role():
     # If the base already lists 'sysadmin' but the token doesn't carry
     # the OIDC role, the overlay drops it. Internal-only roles like
     # 'user' survive.
-    cfg = OidcRoleSyncConfig(enabled=True)
+    cfg = OidcRoleSyncConfig(reconcile_enabled=True)
     out = initial_role_overlay(
         oidc_roles=[],
         base_roles=["user", "sysadmin"],
@@ -145,7 +145,7 @@ def test_initial_overlay_replaces_existing_mapped_internal_role():
 
 def test_initial_overlay_grants_editor_when_enabled():
     cfg = OidcRoleSyncConfig(
-        enabled=True,
+        reconcile_enabled=True,
         role_mapping={"geoid.sysadmin": "sysadmin", "geoid.editor": "editor"},
     )
     out = initial_role_overlay(
@@ -159,7 +159,7 @@ def test_initial_overlay_grants_editor_when_enabled():
 
 def test_initial_overlay_blocked_by_issuer_whitelist():
     cfg = OidcRoleSyncConfig(
-        enabled=True, issuer_whitelist=["https://trusted/realms/x"]
+        reconcile_enabled=True, issuer_whitelist=["https://trusted/realms/x"]
     )
     out = initial_role_overlay(
         oidc_roles=["geoid.sysadmin"],
@@ -172,7 +172,7 @@ def test_initial_overlay_blocked_by_issuer_whitelist():
 
 def test_config_defaults_off():
     cfg = OidcRoleSyncConfig()
-    assert cfg.enabled is False
+    assert cfg.reconcile_enabled is False
     assert cfg.role_mapping == {
         "geoid.sysadmin": "sysadmin",
         "geoid.editor": "editor",

@@ -32,9 +32,13 @@ class OidcRoleSyncConfig(PluginConfig):
 
     _address: ClassVar[Tuple[str, ...]] = ("platform", "iam", "oidc_role_sync")
 
-    enabled: Mutable[bool] = Field(
+    reconcile_enabled: Mutable[bool] = Field(
         default=False,
-        description="If False the reconciler is a no-op (default).",
+        description=(
+            "If False the OIDC role-sync reconciler is a no-op (default). "
+            "Distinct from the (now-removed) ExposableConfigMixin.enabled "
+            "exposure toggle; IAM routes are always-on."
+        ),
     )
     # Default values track IamRolesConfig.{sysadmin,editor}_role_name; a
     # unit test (issue #659) pins them so any future rename of the
