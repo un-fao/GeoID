@@ -642,6 +642,7 @@ class AssetService(AssetsProtocol):
             method_name: Driver method to call (e.g. ``"index_asset"``).
         """
         import asyncio
+        from dynastore.modules.concurrency import run_in_background
         from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
 
         secondaries = await self._get_secondary_drivers(catalog_id, collection_id)
@@ -668,10 +669,14 @@ class AssetService(AssetsProtocol):
                             r.driver_ref, method_name, catalog_id, result,
                         )
 
-        # Async phase: fire-and-forget
+        # Async phase: fire-and-forget. ``run_in_background`` holds a strong
+        # reference in a module-level set so the task cannot be GC'd
+        # mid-execution and silently drop the write (asyncio docs warn the
+        # loop only keeps weak refs to bare ``create_task`` returns).
         for r in async_drivers:
-            asyncio.create_task(
-                self._async_asset_write(r, catalog_id, asset_doc, method_name)
+            run_in_background(
+                self._async_asset_write(r, catalog_id, asset_doc, method_name),
+                name=f"asset_secondary_write:{method_name}:{r.driver_ref}",
             )
 
     async def _async_asset_write(
