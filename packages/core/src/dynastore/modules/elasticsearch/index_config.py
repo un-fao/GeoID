@@ -20,13 +20,12 @@ from typing import Any, ClassVar, Dict, Tuple
 
 from pydantic import Field
 
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ElasticsearchIndexConfig(ExposableConfigMixin, PluginConfig):
+class ElasticsearchIndexConfig(PluginConfig):
     """Per-index Elasticsearch settings applied at `indices.create` time.
 
     Each field maps to `index.mapping.total_fields.limit` on the

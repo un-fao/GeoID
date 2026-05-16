@@ -54,7 +54,6 @@ def test_togglable_has_exposable_config(ext_id):
     )
 
 
-@pytest.mark.xfail(reason="#514 — OidcRoleSyncConfig shadows ExposableConfigMixin.enabled; needs removal of local field.", strict=False)
 def test_no_extension_redeclares_enabled_field():
     """Inherited field only — do not shadow the mixin."""
     for cls in list_registered_configs().values():

@@ -18,11 +18,10 @@ from typing import ClassVar, Dict, List, Optional, Tuple
 
 from pydantic import Field
 
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
-class OidcRoleSyncConfig(ExposableConfigMixin, PluginConfig):
+class OidcRoleSyncConfig(PluginConfig):
     """Reconcile selected OIDC roles into platform-scope internal grants.
 
     Keycloak is authoritative for the mapped roles only: any internal grant

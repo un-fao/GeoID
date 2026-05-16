@@ -27,13 +27,12 @@ from typing import ClassVar, Tuple
 
 from pydantic import Field
 
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ElasticsearchClientConfig(ExposableConfigMixin, PluginConfig):
+class ElasticsearchClientConfig(PluginConfig):
     """Per-process transport settings for the shared AsyncOpenSearch client."""
 
     _address: ClassVar[Tuple[str, ...]] = ("platform", "elasticsearch", "client")

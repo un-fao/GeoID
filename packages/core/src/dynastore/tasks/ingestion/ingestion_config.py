@@ -18,13 +18,12 @@
 
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
 from pydantic import BaseModel, Field, model_validator
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 from dynastore.modules.storage.driver_config import WriteConflictPolicy
 
 # --- Main Ingestion Config ---
 
-class IngestionPluginConfig(ExposableConfigMixin, PluginConfig):
+class IngestionPluginConfig(PluginConfig):
     """
     Configuration for the Ingestion Module.
     This can be updated at any time via API.

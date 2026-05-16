@@ -24,7 +24,6 @@ from typing import ClassVar, List, Optional, Protocol, Tuple, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
 
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.protocols.authorization_context import SecurityContext
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
@@ -103,7 +102,7 @@ _DEFAULT_CATALOG_ROLES: List[RoleSeed] = [
 ]
 
 
-class IamRolesConfig(ExposableConfigMixin, PluginConfig):
+class IamRolesConfig(PluginConfig):
     """Runtime-editable role landscape, split by tier.
 
     ``platform_roles`` are seeded once in the global ``iam`` schema and
