@@ -31,6 +31,7 @@
       <button class="tab-btn active" data-tab="roles">Roles</button>
       <button class="tab-btn" data-tab="policies">Policies</button>
       <button class="tab-btn" data-tab="principals">Principals</button>
+      <button class="tab-btn" data-tab="provisioning">Provisioning</button>
     </div>
 
     <!-- Roles --------------------------------------------------------- -->
@@ -165,6 +166,63 @@
           </thead>
           <tbody><tr class="empty-row"><td colspan="4">Press <em>Search</em> for the first fifty principals.</td></tr></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- Provisioning ------------------------------------------------------ -->
+    <section id="tab-provisioning" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Catalog provisioning status</h3>
+          <div class="plate-meta">GET /admin/catalogs/{catalog_id}</div>
+        </div>
+        <div class="row">
+          <input id="prov-catalog-id" type="text" placeholder="Catalog ID" style="max-width:320px">
+          <button class="btn btn-secondary btn-xs" id="prov-check-btn" type="button">Check</button>
+          <span id="prov-status" class="status"></span>
+        </div>
+        <hr class="rule">
+        <div id="prov-result" style="display:none">
+          <table style="width:100%;border-collapse:collapse">
+            <tbody>
+              <tr>
+                <td style="padding:6px 0;font-weight:600;width:160px">Status</td>
+                <td><span id="prov-badge" class="chip"></span></td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;font-weight:600">Physical schema</td>
+                <td><code id="prov-schema" class="muted"></code></td>
+              </tr>
+            </tbody>
+          </table>
+          <div id="prov-task-block" style="display:none;margin-top:12px">
+            <h4 style="margin-bottom:6px">Most recent provision task</h4>
+            <table style="width:100%;border-collapse:collapse">
+              <tbody>
+                <tr>
+                  <td style="padding:4px 0;font-weight:600;width:160px">Task ID</td>
+                  <td><code id="prov-task-id" class="muted"></code></td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;font-weight:600">Task status</td>
+                  <td><span id="prov-task-badge" class="chip"></span></td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;font-weight:600">Retries</td>
+                  <td id="prov-task-retries" class="muted"></td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;font-weight:600">Last updated</td>
+                  <td id="prov-task-updated" class="muted"></td>
+                </tr>
+                <tr id="prov-task-error-row" style="display:none">
+                  <td style="padding:4px 0;font-weight:600;vertical-align:top">Error</td>
+                  <td><code id="prov-task-error" style="color:var(--clr-danger,#b91c1c);word-break:break-all"></code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 

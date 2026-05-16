@@ -9,6 +9,7 @@ import {
   searchPrincipals,
   assignGlobalRole, removeGlobalRole,
   assignCatalogRole, removeCatalogRole,
+  getCatalogProvisioning,
 } from "../common/api.js";
 import { mountContextBar } from "../common/context-bar.js";
 
@@ -482,6 +483,89 @@ async function unassign(principal, role) {
   }
 }
 
+// --- Provisioning -------------------------------------------------------
+
+const PROV_POLLING_STATES = new Set(["pending", "provisioning"]);
+let _provPollTimer = null;
+
+function _provBadgeClass(status) {
+  if (status === "ready") return "chip effect-ALLOW";
+  if (status === "provisioning" || status === "pending") return "chip limit-rate";
+  if (status === "failed" || status === "conflict") return "chip effect-DENY";
+  return "chip";
+}
+
+function _taskBadgeClass(status) {
+  const s = (status || "").toUpperCase();
+  if (s === "COMPLETED") return "chip effect-ALLOW";
+  if (s === "FAILED" || s === "DEAD_LETTER") return "chip effect-DENY";
+  if (s === "ACTIVE" || s === "RUNNING" || s === "PENDING") return "chip limit-rate";
+  return "chip";
+}
+
+function _renderProvisioningResult(data) {
+  const result = $("#prov-result");
+  result.style.display = "";
+
+  const badge = $("#prov-badge");
+  badge.textContent = data.provisioning_status;
+  badge.className = _provBadgeClass(data.provisioning_status);
+
+  $("#prov-schema").textContent = data.physical_schema || "—";
+
+  const taskBlock = $("#prov-task-block");
+  if (data.task) {
+    taskBlock.style.display = "";
+    $("#prov-task-id").textContent = data.task.task_id;
+    const tb = $("#prov-task-badge");
+    tb.textContent = data.task.status;
+    tb.className = _taskBadgeClass(data.task.status);
+    $("#prov-task-retries").textContent =
+      `${data.task.retry_count} / ${data.task.max_retries}`;
+    const updated = data.task.updated_at || data.task.created_at;
+    $("#prov-task-updated").textContent = updated
+      ? new Date(updated).toLocaleString()
+      : "—";
+    const errRow = $("#prov-task-error-row");
+    if (data.task.error_message) {
+      errRow.style.display = "";
+      $("#prov-task-error").textContent = data.task.error_message.slice(0, 500);
+    } else {
+      errRow.style.display = "none";
+    }
+  } else {
+    taskBlock.style.display = "none";
+  }
+}
+
+function _stopProvPoll() {
+  if (_provPollTimer !== null) {
+    clearTimeout(_provPollTimer);
+    _provPollTimer = null;
+  }
+}
+
+async function checkProvisioning() {
+  _stopProvPoll();
+  const catalogId = $("#prov-catalog-id").value.trim();
+  if (!catalogId) {
+    setStatus("#prov-status", "Enter a catalog ID.", "err");
+    return;
+  }
+  setStatus("#prov-status", "Checking…", "");
+  try {
+    const data = await getCatalogProvisioning(catalogId);
+    setStatus("#prov-status", "", "");
+    _renderProvisioningResult(data);
+    if (PROV_POLLING_STATES.has(data.provisioning_status)) {
+      _provPollTimer = setTimeout(checkProvisioning, 5000);
+    }
+  } catch (e) {
+    setStatus("#prov-status", `Error: ${e.message}`, "err");
+    $("#prov-result").style.display = "none";
+  }
+}
+
 // --- Tabs ---------------------------------------------------------------
 
 function switchTab(name) {
@@ -537,6 +621,7 @@ async function boot() {
   document.querySelectorAll(".tab-btn").forEach((b) => {
     b.addEventListener("click", () => {
       const name = b.dataset.tab;
+      if (name !== "provisioning") _stopProvPoll();
       switchTab(name);
       if (name === "principals" && !state.principals.length) refreshPrincipals();
     });
@@ -555,6 +640,14 @@ async function boot() {
     if (e.key === "Enter") {
       e.preventDefault();
       refreshPrincipals();
+    }
+  });
+
+  $("#prov-check-btn").addEventListener("click", checkProvisioning);
+  $("#prov-catalog-id").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      checkProvisioning();
     }
   });
 }
