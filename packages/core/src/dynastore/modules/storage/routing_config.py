@@ -1668,7 +1668,7 @@ ItemsRoutingConfig.register_validate_handler(
 # asset}. Each entity reads from a different config:
 #
 #   item       → ItemsRoutingConfig.operations
-#   collection → ItemsRoutingConfig.metadata.operations
+#   collection → CollectionRoutingConfig.operations
 #   catalog    → CatalogRoutingConfig.operations
 #   asset      → AssetRoutingConfig.operations
 # ---------------------------------------------------------------------------
