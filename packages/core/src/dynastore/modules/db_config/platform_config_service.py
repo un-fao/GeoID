@@ -38,6 +38,9 @@ import json
 import typing
 import inspect
 from contextlib import asynccontextmanager
+
+import asyncpg
+from pydantic import ValidationError
 from typing import (
     Any,
     Dict,
@@ -104,6 +107,29 @@ from dynastore.modules.db_config.plugin_config import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+# Exceptions that legitimately mean "physical layer absent / not yet
+# reachable" — for these the gate correctly fails open to ``False`` so
+# Immutable / WriteOnce enforcement stays out of the way on
+# pre-materialization edits. Anything outside this tuple — most notably
+# ``AttributeError`` / ``TypeError`` / ``ImportError`` / ``NameError``
+# — is a code bug and must propagate to the caller. #792 shipped the
+# canonical bad shape: a typo'd ``catalogs.catalog_manager.…`` raised
+# ``AttributeError``, was swallowed by the broad ``except Exception``
+# that used to wrap this dispatch, and silently disabled
+# ``Immutable[]`` enforcement for ~14h until a reporter noticed the
+# DEBUG traceback. #796 narrows the catch + promotes the legitimate
+# fail-open log to WARNING with a structured payload so the same class
+# of regression cannot hide again.
+_EXPECTED_ABSENT_LAYER: tuple = (
+    OSError,
+    KeyError,
+    ValidationError,
+    asyncpg.UndefinedTableError,
+    asyncpg.UndefinedColumnError,
+    asyncpg.InvalidSchemaNameError,
+)
+
+
 async def is_materialized(
     cls: Type["PluginConfig"],
     catalog_id: Optional[str],
@@ -128,10 +154,13 @@ async def is_materialized(
     ``current_config`` (i.e. on UPDATES, not first writes) — so the cost is
     one cheap ``EXISTS`` query on the slow path, never on creation.
 
-    On any error (missing catalog/schema, lookup failure) the check returns
-    ``False`` — i.e. pre-materialization — so the gate fails *open* to the
-    less-restrictive side.  An apply handler or the underlying physical
-    layer will surface the real error if one exists.
+    On an *expected* absent-layer error (missing catalog, missing schema,
+    missing items table, absent driver config) the check returns ``False``
+    so the gate fails *open* to the less-restrictive side and emits a
+    structured WARNING (``is_materialized_fail_open``) so the skip is
+    visible to log-based metrics. Unexpected exceptions — ``AttributeError``,
+    ``TypeError``, ``ImportError`` and friends — are code bugs and are
+    propagated to the caller (see ``_EXPECTED_ABSENT_LAYER`` above).
     """
     override = getattr(cls, "_materialization_check", None)
     if override is not None:
@@ -140,11 +169,12 @@ async def is_materialized(
             if inspect.isawaitable(res):
                 res = await res
             return bool(res)
-        except Exception:
-            logger.debug(
-                "is_materialized: %s._materialization_check raised; "
-                "treating resource as not materialized.",
-                cls.__qualname__, exc_info=True,
+        except _EXPECTED_ABSENT_LAYER as exc:
+            logger.warning(
+                "is_materialized_fail_open site=override cls=%s catalog_id=%s "
+                "collection_id=%s exception_type=%s",
+                cls.__qualname__, catalog_id, collection_id,
+                type(exc).__name__, exc_info=True,
             )
             return False
 
@@ -156,11 +186,12 @@ async def is_materialized(
             return await _catalog_is_materialized(catalog_id, conn)
         # platform / None → global catalogs count
         return await _platform_is_materialized(conn)
-    except Exception:
-        logger.debug(
-            "is_materialized: default dispatch for %s raised; "
-            "treating resource as not materialized.",
-            cls.__qualname__, exc_info=True,
+    except _EXPECTED_ABSENT_LAYER as exc:
+        logger.warning(
+            "is_materialized_fail_open site=dispatch cls=%s catalog_id=%s "
+            "collection_id=%s visibility=%s exception_type=%s",
+            cls.__qualname__, catalog_id, collection_id, visibility,
+            type(exc).__name__, exc_info=True,
         )
         return False
 

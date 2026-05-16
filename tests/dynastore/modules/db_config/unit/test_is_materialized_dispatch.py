@@ -13,12 +13,23 @@ add.
 The dispatch must therefore be exercised against a strict-spec mock so
 that an ``AttributeError`` would fail the test loudly instead of being
 swallowed by the same except clause that hid the original bug.
+
+#796 follow-up: the broad ``except Exception`` has been narrowed to a
+``_EXPECTED_ABSENT_LAYER`` allow-list (``OSError``, ``KeyError``,
+``ValidationError``, ``asyncpg.UndefinedTableError`` and siblings) and
+the fail-open log promoted to WARNING. The bottom of this file pins
+both halves of the new contract: legitimate absent-layer errors are
+still swallowed and surfaced as a structured WARNING, but unexpected
+exception types (``AttributeError``, ``TypeError``, ``ImportError``,
+``NameError``) now propagate so the next #792-class regression cannot
+hide.
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -90,3 +101,143 @@ async def test_no_catalog_manager_attribute_access():
             f"indirection — call `catalogs.resolve_physical_schema(...)` "
             f"directly instead."
         )
+
+
+# ---------------------------------------------------------------------------
+# #796 — narrowed fail-open contract on is_materialized
+# ---------------------------------------------------------------------------
+
+
+class _BoomDispatchConfig:
+    """Config class whose visibility forces the platform-tier dispatch.
+
+    Pairs with ``patch.object(svc, "_platform_is_materialized", side_effect=…)``
+    to inject any exception class through the real except-clause without
+    needing a live DB.
+    """
+
+    _visibility = "platform"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OSError("disk gone"),
+        KeyError("missing protocol"),
+        asyncpg.UndefinedTableError("relation missing"),
+        asyncpg.UndefinedColumnError("column missing"),
+        asyncpg.InvalidSchemaNameError("schema missing"),
+    ],
+    ids=["OSError", "KeyError", "UndefinedTable", "UndefinedColumn", "InvalidSchema"],
+)
+@pytest.mark.asyncio
+async def test_expected_absent_layer_errors_still_fail_open(exc, caplog):
+    """The narrowed allow-list must still swallow legitimate absent-layer
+    errors so pre-materialization edits keep working — losing fail-open
+    on these would freeze every config-update against a half-provisioned
+    catalog."""
+    import logging
+    caplog.set_level(logging.WARNING, logger=svc.__name__)
+    with patch.object(svc, "_platform_is_materialized", side_effect=exc):
+        result = await svc.is_materialized(
+            _BoomDispatchConfig, None, None, conn=_fake_conn()
+        )
+    assert result is False
+    assert any(
+        "is_materialized_fail_open" in r.message
+        and "site=dispatch" in r.message
+        and r.levelname == "WARNING"
+        for r in caplog.records
+    ), (
+        "Expected a structured WARNING on legitimate absent-layer fail-open; "
+        f"got: {[(r.levelname, r.message) for r in caplog.records]}"
+    )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        AttributeError("typo'd attribute"),
+        TypeError("wrong argument type"),
+        ImportError("module not found"),
+        NameError("undefined name"),
+    ],
+    ids=["AttributeError", "TypeError", "ImportError", "NameError"],
+)
+@pytest.mark.asyncio
+async def test_unexpected_exception_types_propagate(exc):
+    """The #792 / #796 contract: code bugs surfacing as Attribute/Type/
+    Import/Name errors must propagate to the caller — not be silently
+    demoted to ``False`` like the old broad ``except Exception``."""
+    with patch.object(svc, "_platform_is_materialized", side_effect=exc):
+        with pytest.raises(type(exc)):
+            await svc.is_materialized(
+                _BoomDispatchConfig, None, None, conn=_fake_conn()
+            )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        AttributeError("typo'd attribute"),
+        TypeError("wrong argument type"),
+    ],
+    ids=["AttributeError", "TypeError"],
+)
+@pytest.mark.asyncio
+async def test_override_unexpected_exception_propagates(exc):
+    """Same contract on the ``_materialization_check`` override branch:
+    unexpected exceptions from a class-supplied check propagate, only
+    the absent-layer allow-list is swallowed.
+    """
+
+    class _WithOverride:
+        @classmethod
+        def _materialization_check(cls, cat, col, conn):
+            raise exc
+
+    with pytest.raises(type(exc)):
+        await svc.is_materialized(_WithOverride, "c", "x", conn=_fake_conn())
+
+
+@pytest.mark.asyncio
+async def test_override_absent_layer_error_is_warned(caplog):
+    """Override branch fail-open log emits at WARNING level with the
+    ``is_materialized_fail_open`` token + ``site=override`` so SREs can
+    distinguish dispatch vs override skips in log-based metrics."""
+    import logging
+    caplog.set_level(logging.WARNING, logger=svc.__name__)
+
+    class _WithOverride:
+        @classmethod
+        def _materialization_check(cls, cat, col, conn):
+            raise asyncpg.UndefinedTableError("relation missing")
+
+    result = await svc.is_materialized(
+        _WithOverride, "c", "x", conn=_fake_conn()
+    )
+    assert result is False
+    assert any(
+        "is_materialized_fail_open" in r.message
+        and "site=override" in r.message
+        and r.levelname == "WARNING"
+        for r in caplog.records
+    ), (
+        "Expected a structured WARNING on override fail-open; "
+        f"got: {[(r.levelname, r.message) for r in caplog.records]}"
+    )
+
+
+def test_no_bare_except_exception_in_is_materialized():
+    """Belt-and-braces source check: the broad ``except Exception`` that
+    hid #792 must not creep back into ``is_materialized``. Any future
+    refactor that re-broadens the catch trips this assertion before it
+    ships.
+    """
+    import inspect
+
+    source = inspect.getsource(svc.is_materialized)
+    assert "except Exception" not in source, (
+        "is_materialized must not catch bare Exception — narrow the catch "
+        "via _EXPECTED_ABSENT_LAYER so code bugs propagate (see #796)."
+    )
