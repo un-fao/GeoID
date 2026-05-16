@@ -591,10 +591,25 @@ class PolicyService:
             f"EVAL: Total effective policies to check: {len(effective_policies)}"
         )
 
-        # 4. Evaluate
+        # 4. Evaluate — deny-precedence (#731).
+        #
+        # Earlier this loop returned on the first match, which left the
+        # outcome dependent on iteration order over a Python ``set``
+        # (``all_policy_ids``) plus an un-ORDER-BY'd ``list_policies``.
+        # That divergence from :meth:`evaluate_policy_statements` (the
+        # inline-statement path, which already hardcodes DENY-wins) made
+        # "DENY all writes to X except this narrow ALLOW" impossible to
+        # express and any overlapping ALLOW+DENY non-deterministic.
+        #
+        # New behaviour: walk all effective policies, collect the first
+        # matching DENY and the first matching ALLOW (with conditions
+        # met), and apply DENY-wins. Both evaluators now share the same
+        # semantic.
+        denying_policy_id: Optional[str] = None
+        allowing_policy_id: Optional[str] = None
         for p in effective_policies:
-            # Check action (method) and resource (path)
-            # Actions are also regex patterns after transformation
+            # Check action (method) and resource (path).
+            # Actions are also regex patterns after transformation.
             method_match = (
                 not p.actions
                 or ".*" in p.actions
@@ -607,22 +622,41 @@ class PolicyService:
                 f"EVAL: Checking policy '{p.id}': method_match={method_match}, path_match={path_match}"
             )
 
-            if method_match and path_match:
-                # Check conditions
-                conditions_met = True
-                if p.conditions:
-                    for cond in p.conditions:
-                        if not await self._evaluate_condition(cond, request_context):
-                            conditions_met = False
-                            break
+            if not (method_match and path_match):
+                continue
 
-                if conditions_met:
-                    if p.effect == "DENY":
-                        logger.info(f"EVAL: DENIED by {p.id}")
-                        return False, f"Explicit DENY by policy {p.id}"
-                    if p.effect == "ALLOW":
-                        logger.info(f"EVAL: ALLOWED by {p.id}")
-                        return True, f"Allowed by policy {p.id}"
+            # Check conditions
+            conditions_met = True
+            if p.conditions:
+                for cond in p.conditions:
+                    if not await self._evaluate_condition(cond, request_context):
+                        conditions_met = False
+                        break
+
+            if not conditions_met:
+                continue
+
+            if p.effect == "DENY" and denying_policy_id is None:
+                denying_policy_id = p.id
+                # Keep scanning so the warning log can flag any ALLOW
+                # that's being shadowed — operators want visibility into
+                # "this rule was overridden by a deny".
+            elif p.effect == "ALLOW" and allowing_policy_id is None:
+                allowing_policy_id = p.id
+
+        if denying_policy_id is not None:
+            if allowing_policy_id is not None:
+                logger.info(
+                    f"EVAL: DENIED by {denying_policy_id} "
+                    f"(deny-precedence over ALLOW from {allowing_policy_id})"
+                )
+            else:
+                logger.info(f"EVAL: DENIED by {denying_policy_id}")
+            return False, f"Explicit DENY by policy {denying_policy_id}"
+
+        if allowing_policy_id is not None:
+            logger.info(f"EVAL: ALLOWED by {allowing_policy_id}")
+            return True, f"Allowed by policy {allowing_policy_id}"
 
         logger.warning(
             f"EVAL: DENIED (No matching ALLOW policy found) for {principals} on {method} {path}"
