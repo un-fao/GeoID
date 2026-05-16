@@ -33,11 +33,10 @@ from typing import ClassVar, Tuple
 
 from pydantic import Field
 
-from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.modules.db_config.platform_config_service import Mutable, PluginConfig
 
 
-class CachePluginConfig(ExposableConfigMixin, PluginConfig):
+class CachePluginConfig(PluginConfig):
     """PluginConfig entry for cache module (probe timeout, circuit breaker).
 
     Live edits via `PUT /api/catalog/v2/configs?plugin_id=cache_plugin_config`

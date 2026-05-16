@@ -26,6 +26,7 @@ import dynastore.extensions.dggs  # noqa: F401
 import dynastore.extensions.edr  # noqa: F401
 import dynastore.extensions.joins  # noqa: F401
 import dynastore.extensions.moving_features  # noqa: F401
+import dynastore.extensions.connected_systems  # noqa: F401
 
 import pytest
 from dynastore.extensions.tools.exposure_mixin import (
@@ -54,7 +55,6 @@ def test_togglable_has_exposable_config(ext_id):
     )
 
 
-@pytest.mark.xfail(reason="#514 — OidcRoleSyncConfig shadows ExposableConfigMixin.enabled; needs removal of local field.", strict=False)
 def test_no_extension_redeclares_enabled_field():
     """Inherited field only — do not shadow the mixin."""
     for cls in list_registered_configs().values():

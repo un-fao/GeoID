@@ -29,4 +29,5 @@ KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({
     "stac", "features", "wfs", "coverages", "edr", "records", "processes", "dggs",
     "tiles", "maps", "styles", "dimensions", "dwh", "joins", "search", "stats",
     "gcp", "logs", "notebooks", "crs", "gdal", "assets", "moving_features",
+    "connected_systems",
 })
