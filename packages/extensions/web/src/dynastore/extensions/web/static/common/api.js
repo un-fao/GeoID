@@ -256,3 +256,6 @@ export async function postFeatures(catalogId, collectionId, payload) {
 // /iam/me/catalogs: returns list of {catalog_id, roles, ...} for the
 // signed-in principal. Used to discover "catalog admin" scope.
 export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");
+
+export const getCatalogProvisioning = (catalogId) =>
+  getJSON(`/admin/catalogs/${encodeURIComponent(catalogId)}`);

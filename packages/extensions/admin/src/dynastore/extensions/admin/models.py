@@ -1,7 +1,10 @@
 #    Copyright 2026 FAO
 #    Licensed under the Apache License, Version 2.0 (the "License").
 
+from datetime import datetime
 from typing import Literal, Optional, List
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 from dynastore.models.auth import Condition
@@ -125,3 +128,22 @@ class PrincipalResponse(BaseModel):
     display_name: Optional[str] = None
     roles: List[str] = Field(default_factory=list)
     is_active: bool = True
+
+
+# --- Catalog provisioning view models ---
+
+class ProvisioningTaskView(BaseModel):
+    task_id: UUID
+    status: str
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class CatalogProvisioningView(BaseModel):
+    catalog_id: str
+    physical_schema: Optional[str] = None
+    provisioning_status: str
+    task: Optional[ProvisioningTaskView] = None

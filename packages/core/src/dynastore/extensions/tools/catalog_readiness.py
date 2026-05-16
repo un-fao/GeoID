@@ -93,9 +93,9 @@ async def require_catalog_ready(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Catalog '{catalog_id}' is still provisioning — retry "
-                f"in a moment.  Poll GET /stac/catalogs/{catalog_id} "
-                f"until provisioning_status = 'ready'."
+                f"Catalog '{catalog_id}' is still provisioning — typically takes 2-5 minutes. "
+                f"Poll GET /admin/catalogs/{catalog_id} for provisioning_status and task progress "
+                f"(sysadmin) or check the admin panel 'Provisioning' view."
             ),
         )
     if status_value == FAILED:

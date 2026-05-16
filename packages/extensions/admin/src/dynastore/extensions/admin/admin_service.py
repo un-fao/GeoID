@@ -36,6 +36,7 @@ from .models import (
     PolicyCreate, PolicyUpdate, PolicyResponse,
     PrincipalResponse, AssignRoleRequest,
     UsagePage, UsageResetResponse, UsageRow,
+    CatalogProvisioningView, ProvisioningTaskView,
 )
 from .policies import admin_policies, admin_role_bindings
 
@@ -344,6 +345,70 @@ class AdminService(ExtensionProtocol):
                 title = title_raw
             out.append({"id": c.id, "title": title or c.id})
         return out
+
+    @router.get(
+        "/catalogs/{catalog_id}",
+        response_model=CatalogProvisioningView,
+        summary="Sysadmin view of catalog provisioning status and most-recent provision task",
+    )
+    async def get_catalog_provisioning_view(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
+        from dynastore.modules.tasks import tasks_module
+
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise HTTPException(status_code=503, detail="Catalogs service not available.")
+        catalog = await catalogs.get_catalog_model(catalog_id)
+        if catalog is None:
+            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+
+        provisioning_status = getattr(catalog, "provisioning_status", "ready") or "ready"
+
+        try:
+            physical_schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
+        except Exception:
+            physical_schema = None
+
+        task_view: Optional[ProvisioningTaskView] = None
+        if physical_schema:
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.db_config.query_executor import managed_transaction
+
+            db = get_protocol(DatabaseProtocol)
+            if db is not None:
+                try:
+                    async with managed_transaction(db.engine) as conn:
+                        tasks = await tasks_module.list_tasks(
+                            conn, schema=physical_schema, limit=20, offset=0,
+                        )
+                    provision_tasks = [t for t in tasks if t.task_type == "gcp_provision_catalog"]
+                    if provision_tasks:
+                        t = sorted(
+                            provision_tasks,
+                            key=lambda x: x.finished_at or x.timestamp,
+                            reverse=True,
+                        )[0]
+                        task_view = ProvisioningTaskView(
+                            task_id=t.jobID,
+                            status=t.status.value if hasattr(t.status, "value") else str(t.status),
+                            error_message=t.error_message,
+                            retry_count=t.retry_count,
+                            max_retries=t.max_retries,
+                            created_at=t.timestamp,
+                            updated_at=t.finished_at,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to query provision tasks for catalog %s schema %s",
+                        catalog_id, physical_schema,
+                        exc_info=True,
+                    )
+
+        return CatalogProvisioningView(
+            catalog_id=catalog_id,
+            physical_schema=physical_schema,
+            provisioning_status=provisioning_status,
+            task=task_view,
+        )
 
     @router.post(
         "/catalogs/{catalog_id}/principals/{principal_id}/roles",
