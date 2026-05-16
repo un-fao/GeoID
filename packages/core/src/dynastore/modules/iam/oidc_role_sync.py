@@ -87,7 +87,7 @@ def initial_role_overlay(
     existing entries from the same set in ``base_roles`` so the principal
     lands with exactly what the token says for those roles.
     """
-    if not config.enabled or not is_issuer_allowed(issuer, config.issuer_whitelist):
+    if not config.reconcile_enabled or not is_issuer_allowed(issuer, config.issuer_whitelist):
         return list(base_roles)
 
     mapped_internal = set(config.role_mapping.values())
