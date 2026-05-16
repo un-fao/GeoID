@@ -19,7 +19,7 @@
 from typing import Protocol, Optional, Type, Union, Dict, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.db_config.platform_config_service import PluginConfig
+    from dynastore.modules.db_config.plugin_config import PluginConfig
     from dynastore.models.driver_context import DriverContext
 
 

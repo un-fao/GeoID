@@ -64,7 +64,8 @@ from typing import Any, ClassVar, Dict, Generic, Optional, Type, TypeVar, get_ar
 
 from pydantic import Field, model_validator
 
-from dynastore.modules.db_config.platform_config_service import PluginConfig, WriteOnce
+from dynastore.models.mutability import WriteOnce
+from dynastore.modules.db_config.plugin_config import PluginConfig
 
 ConfigT = TypeVar("ConfigT", bound="_PluginDriverConfig")
 
