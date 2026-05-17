@@ -32,14 +32,19 @@ def test_collection_self_registers_missing_store_drivers():
     assert read_ids == {"pg_core_meta", "pg_stac_meta"}
 
 
-def test_collection_preserves_operator_supplied_entry():
-    """Operator-supplied entries (with custom on_failure / write_mode)
-    survive auto-append — only MISSING drivers get appended."""
+def test_collection_operator_managed_list_locks_out_auto_augment():
+    """Option A (#792 / #889): once an operator has touched the list,
+    the self-register helpers do not augment it.  Other discoverable
+    drivers stay out until the operator either lists them explicitly
+    or drops the list back to defaults.
+    """
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
     cfg.operations[Operation.WRITE] = [
         OperationDriverEntry(
             driver_ref="pg_core_meta", on_failure=FailurePolicy.WARN,
+            # Field default is source="operator"; explicit here for clarity.
+            source="operator",
         ),
     ]
 
@@ -49,11 +54,10 @@ def test_collection_preserves_operator_supplied_entry():
     write_entries = {
         e.driver_ref: e for e in cfg.operations[Operation.WRITE]
     }
-    # Operator's PgCoreMeta entry preserved with on_failure=WARN.
     assert write_entries["pg_core_meta"].on_failure == FailurePolicy.WARN
-    # PgStacMeta was missing and got auto-appended with defaults.
-    assert "pg_stac_meta" in write_entries
-    assert write_entries["pg_stac_meta"].on_failure == FailurePolicy.FATAL
+    assert write_entries["pg_core_meta"].source == "operator"
+    # PgStacMeta was missing and stays missing — operator-managed list.
+    assert "pg_stac_meta" not in write_entries
 
 
 def test_collection_no_op_when_all_drivers_already_listed():
@@ -665,11 +669,17 @@ def test_store_driver_helper_marks_entries_as_auto():
         assert entries[0].source == "auto"
 
 
-def test_operator_entry_preserved_alongside_auto_entry():
-    """Operator-supplied entry stays `source="operator"`; the helper only
-    auto-marks NEW entries it appends.  Critical: the API surface must
-    let operators see which entries they added vs which ones were folded
-    in by discovery."""
+def test_operator_managed_list_locks_out_auto_augment():
+    """Option A (#792 / #889): a single operator-source entry locks the
+    whole operation's list.  Discoverable drivers do NOT get auto-appended
+    onto the side of an operator-managed entry — that semantic gave rise
+    to #792 where deleted SEARCH/INDEX drivers came back on every read.
+
+    Inverse shape pin (do not collapse to a single assertion): the test
+    constructs the SAME mixed-discovery surface the old behaviour relied
+    on, then asserts only the operator entry survives — guarding against
+    a future "simplify" patch that drops the operator-managed gate.
+    """
     from typing import ClassVar
     from unittest.mock import patch
 
@@ -696,11 +706,9 @@ def test_operator_entry_preserved_alongside_auto_entry():
         _self_register_indexers_into(target_ops, CollectionIndexer)
 
     by_id = {e.driver_ref: e for e in target_ops[Operation.INDEX]}
-    # _OpDriver entry preserved with source=operator (default).
+    assert set(by_id) == {"_op_driver"}
     assert by_id["_op_driver"].source == "operator"
     assert by_id["_op_driver"].on_failure == FailurePolicy.FATAL
-    # _AutoDriver was missing so the helper appended it with source=auto.
-    assert by_id["_auto_driver"].source == "auto"
 
 
 def test_source_field_serialises_in_model_dump():
@@ -873,3 +881,251 @@ def test_transformer_helper_no_op_when_no_implementers():
                lambda proto: []):
         _self_register_transformers_into(target_ops)
     assert target_ops.get(Operation.TRANSFORM, []) == []
+
+
+# ---------------------------------------------------------------------------
+# Option A regression suite (#792 / #889) — list-level operator override
+# ---------------------------------------------------------------------------
+
+
+def test_option_a_is_operator_managed_predicate_basic():
+    """``_is_operator_managed`` returns True iff any entry in ``operations[op]``
+    has ``source='operator'``.  Foundation for the list-level lock."""
+    from dynastore.modules.storage.routing_config import _is_operator_managed
+
+    op_entry = OperationDriverEntry(driver_ref="x", source="operator")
+    au_entry = OperationDriverEntry(driver_ref="y", source="auto")
+
+    assert _is_operator_managed({Operation.SEARCH: [op_entry]}, Operation.SEARCH)
+    assert not _is_operator_managed({Operation.SEARCH: [au_entry]}, Operation.SEARCH)
+    assert _is_operator_managed({Operation.SEARCH: [au_entry, op_entry]}, Operation.SEARCH)
+    assert not _is_operator_managed({Operation.SEARCH: []}, Operation.SEARCH)
+    assert not _is_operator_managed({}, Operation.SEARCH)
+
+
+def test_option_a_indexer_helper_skips_operator_managed_list():
+    """Indexer self-register helper is a no-op for an operation whose
+    list contains any ``source='operator'`` entry (#792 / #889 — the
+    deletion-comes-back symptom)."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.indexer import CollectionIndexer
+    from dynastore.modules.storage.routing_config import (
+        _self_register_indexers_into,
+    )
+
+    class _NewIndexer:
+        is_collection_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset({Operation.INDEX})
+
+    target_ops: dict = {
+        Operation.INDEX: [
+            OperationDriverEntry(
+                driver_ref="some_other_driver", source="operator",
+            ),
+        ],
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_NewIndexer()]):
+        _self_register_indexers_into(target_ops, CollectionIndexer)
+
+    refs = {e.driver_ref for e in target_ops[Operation.INDEX]}
+    assert refs == {"some_other_driver"}
+
+
+def test_option_a_searcher_helper_skips_operator_managed_list():
+    """Searcher self-register helper: same lock-out shape."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.entity_store import CatalogStore
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    class _NewSearcher:
+        auto_register_for_routing: ClassVar = frozenset({Operation.SEARCH})
+
+    target_ops: dict = {
+        Operation.SEARCH: [
+            OperationDriverEntry(driver_ref="es_cat", source="operator"),
+        ],
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_NewSearcher()]):
+        _self_register_searchers_into(target_ops, CatalogStore)
+
+    refs = {e.driver_ref for e in target_ops[Operation.SEARCH]}
+    assert refs == {"es_cat"}
+
+
+def test_option_a_store_drivers_helper_locks_per_operation():
+    """``_self_register_store_drivers`` iterates op_keys; the operator lock
+    must apply per-operation independently (so an operator-managed WRITE
+    list locks WRITE without blocking auto-augment on READ)."""
+    cfg = CollectionRoutingConfig()
+    cfg.operations.clear()
+    cfg.operations[Operation.WRITE] = [
+        OperationDriverEntry(driver_ref="pg_core_meta", source="operator"),
+    ]
+    cfg.operations[Operation.READ] = []  # empty → auto-augmentable
+
+    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
+    _self_register_store_drivers(cfg, metadata_index)
+
+    write_refs = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
+    read_refs = {e.driver_ref for e in cfg.operations[Operation.READ]}
+    # WRITE locked: pg_stac_meta NOT appended.
+    assert write_refs == {"pg_core_meta"}
+    # READ free: both auto-appended with source=auto.
+    assert read_refs == {"pg_core_meta", "pg_stac_meta"}
+    for entry in cfg.operations[Operation.READ]:
+        assert entry.source == "auto"
+
+
+def test_option_a_upload_helper_skips_operator_managed_list():
+    """Upload self-register helper: same lock-out shape."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.asset_upload import AssetUploadProtocol
+    from dynastore.modules.storage.routing_config import (
+        _self_register_upload_into,
+    )
+
+    class _NewUploader:
+        auto_register_for_routing: ClassVar = frozenset({Operation.UPLOAD})
+
+    target_ops: dict = {
+        Operation.UPLOAD: [
+            OperationDriverEntry(driver_ref="gcs_upload", source="operator"),
+        ],
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_NewUploader()]):
+        _self_register_upload_into(target_ops, AssetUploadProtocol)
+
+    refs = {e.driver_ref for e in target_ops[Operation.UPLOAD]}
+    assert refs == {"gcs_upload"}
+
+
+def test_option_a_transformer_helper_skips_operator_managed_list():
+    """Transformer self-register helper: same lock-out shape."""
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import (
+        _self_register_transformers_into,
+    )
+
+    class _NewTransformer:
+        async def transform_for_index(self, entity, **_): return entity
+        async def restore_from_index(self, doc, **_): return doc
+
+    target_ops: dict = {
+        Operation.TRANSFORM: [
+            OperationDriverEntry(driver_ref="pinned_tf", source="operator"),
+        ],
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_NewTransformer()]):
+        _self_register_transformers_into(target_ops)
+
+    refs = {e.driver_ref for e in target_ops[Operation.TRANSFORM]}
+    assert refs == {"pinned_tf"}
+
+
+def test_option_a_default_factory_entries_are_auto_sourced():
+    """Default-factory operations entries must carry ``source='auto'``
+    so a fresh boot stays augmentable under Option A.  An old default of
+    ``source='operator'`` would lock auto-registration out at first read
+    — the #792 deletion semantic must NOT apply to boot defaults."""
+    from dynastore.modules.storage.routing_config import AssetRoutingConfig
+
+    cfg_items = ItemsRoutingConfig.model_construct(
+        operations=ItemsRoutingConfig.model_fields["operations"].default_factory(),
+    )
+    cfg_coll = CollectionRoutingConfig.model_construct(
+        operations=CollectionRoutingConfig.model_fields["operations"].default_factory(),
+    )
+    cfg_asset = AssetRoutingConfig.model_construct(
+        operations=AssetRoutingConfig.model_fields["operations"].default_factory(),
+    )
+    cfg_cat = CatalogRoutingConfig.model_construct(
+        operations=CatalogRoutingConfig.model_fields["operations"].default_factory(),
+    )
+    for label, cfg in (
+        ("ItemsRoutingConfig", cfg_items),
+        ("CollectionRoutingConfig", cfg_coll),
+        ("AssetRoutingConfig", cfg_asset),
+        ("CatalogRoutingConfig", cfg_cat),
+    ):
+        for op, entries in cfg.operations.items():
+            for entry in entries:
+                assert entry.source == "auto", (
+                    f"{label}.operations[{op}] entry '{entry.driver_ref}' "
+                    f"has source={entry.source!r} — must be 'auto' for "
+                    f"Option A boot-time augmentation to work"
+                )
+
+
+def test_option_a_fresh_construct_still_auto_augments():
+    """End-to-end: constructing a config with no operator overrides
+    still picks up discoverable drivers — boot defaults (source='auto')
+    do not lock the helper."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    class _DiscoverableIndexer:
+        is_collection_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset({Operation.INDEX})
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_DiscoverableIndexer()]):
+        cfg = CollectionRoutingConfig()
+
+    index_refs = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
+    assert "_discoverable_indexer" in index_refs
+
+
+def test_option_a_792_reproducer_search_index_lock():
+    """End-to-end reproducer for #792: operator PUTs an explicit SEARCH
+    list (single entry, source='operator'), then a downstream code path
+    runs the search self-register helper — the missing driver MUST stay
+    missing (the symptom on #792 was the missing driver re-appearing).
+    """
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.storage_driver import (
+        CollectionItemsStore,
+    )
+    from dynastore.modules.storage.routing_config import (
+        _self_register_searchers_into,
+    )
+
+    # Driver pool: ES is operator-pinned; PG offers SEARCH opt-in but is
+    # explicitly omitted from the operator's list.
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = False
+        auto_register_for_routing: ClassVar = frozenset({Operation.SEARCH})
+
+    class _ItemsPG:
+        is_item_indexer: ClassVar[bool] = False
+        auto_register_for_routing: ClassVar = frozenset({Operation.SEARCH})
+
+    target_ops: dict = {
+        Operation.SEARCH: [
+            OperationDriverEntry(
+                driver_ref="items_elasticsearch_driver",
+                source="operator",
+            ),
+        ],
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES(), _ItemsPG()]):
+        _self_register_searchers_into(target_ops, CollectionItemsStore)
+
+    refs = {e.driver_ref for e in target_ops[Operation.SEARCH]}
+    # The exact #792 symptom — missing driver re-appearing — does not occur.
+    assert refs == {"items_elasticsearch_driver"}
