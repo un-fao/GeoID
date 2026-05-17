@@ -32,11 +32,32 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_sort(sortby: Optional[str]) -> List[Dict[str, Any]]:
-    """Parse STAC sortby string into ES sort clause."""
+    """Parse STAC sortby string into ES sort clause.
+
+    Sort paths are resolved through
+    :func:`dynastore.modules.elasticsearch.items_projection.resolve_es_field_path`
+    so a request to sort on an unknown extension field
+    (``properties.foo:bar``) targets the ``properties.extras.foo:bar``
+    bucket where the projection helper actually wrote it. Tier-1 (and
+    Tier-2, in catalogs that declared one) paths pass through unchanged.
+
+    For cross-catalog ``/search`` (against the platform alias) we
+    resolve against the Tier-1 set only — Tier-2 fields are not
+    guaranteed to exist on every member, so a Tier-2 sort gracefully
+    routes through ``extras`` for non-declaring catalogs. The
+    per-catalog ``/search/catalogs/{catalog_id}`` route should resolve
+    against that catalog's full known-fields map; threading the
+    per-catalog map down to this helper is left for the Tier-2 commit.
+    """
     if not sortby:
         return [{"_score": {"order": "desc"}}]
+    from dynastore.modules.elasticsearch.items_projection import (
+        build_known_fields,
+        resolve_es_field_path,
+    )
     direction = "desc" if sortby.startswith("-") else "asc"
     field = sortby.lstrip("+-")
+    field = resolve_es_field_path(field, build_known_fields())
     # Text fields sort on the .keyword sub-field
     text_fields = {"properties.title", "title", "description", "properties.description"}
     if field in text_fields:

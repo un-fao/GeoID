@@ -390,6 +390,10 @@ class ItemsElasticsearchDriver(
         - REFUSE (``refuse_asset``): raise ``ConflictError`` if any external_id already exists.
         """
         from datetime import datetime, timezone
+        from dynastore.modules.elasticsearch.items_projection import (
+            build_known_fields,
+            project_item_for_es,
+        )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
         items = self._normalize_entities(entities)
@@ -397,6 +401,7 @@ class ItemsElasticsearchDriver(
             return []
         es = _es_client_required()
         index_name = _tenant_items_index(catalog_id)
+        known_fields = build_known_fields()
 
         # Service-layer enforcement of FieldDefinition.required / .unique for
         # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
@@ -495,6 +500,7 @@ class ItemsElasticsearchDriver(
                     catalog_id, collection_id,
                 )
                 continue
+            stac_doc = project_item_for_es(stac_doc, known_fields)
             prepped_bulk.append({
                 "action": {"index": {
                     "_index": index_name,
@@ -958,6 +964,11 @@ class ItemsElasticsearchDriver(
             return
         doc.setdefault("id", op.entity_id)
         doc.setdefault("collection", ctx.collection)
+        from dynastore.modules.elasticsearch.items_projection import (
+            build_known_fields,
+            project_item_for_es,
+        )
+        doc = project_item_for_es(doc, build_known_fields())
         await es.index(
             index=index_name, id=op.entity_id, body=doc,
             params={"routing": ctx.collection},
@@ -980,9 +991,15 @@ class ItemsElasticsearchDriver(
                 "ItemsElasticsearchDriver.index_bulk: collection is required for item ops",
             )
 
+        from dynastore.modules.elasticsearch.items_projection import (
+            build_known_fields,
+            project_item_for_es,
+        )
+
         es = _es_client_required()
         index_name = _tenant_items_index(ctx.catalog)
         await _ensure_in_public_alias_once(ctx.catalog, index_name)
+        known_fields = build_known_fields()
 
         body: List[dict] = []
         for op in ops:
@@ -1001,6 +1018,7 @@ class ItemsElasticsearchDriver(
                 continue
             doc.setdefault("id", op.entity_id)
             doc.setdefault("collection", ctx.collection)
+            doc = project_item_for_es(doc, known_fields)
             body.append({"index": {
                 "_index": index_name, "_id": op.entity_id,
                 "routing": ctx.collection,
