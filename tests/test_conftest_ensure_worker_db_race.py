@@ -1,11 +1,15 @@
 """Regression tests for #894 — _ensure_worker_db source-DB race.
 
-The defect was that pg_terminate_backend is one-shot: any external client
-(dev stack, pgAdmin, leftover sessions) reconnecting between the terminate
-and the CREATE DATABASE TEMPLATE call crashed the whole pytest session
-with asyncpg.ObjectInUseError. The fix flips ALLOW_CONNECTIONS=false on
-the source DB for the terminate+create window and adds a bounded retry
-inside that window.
+The defect: pg_terminate_backend is one-shot, so any external client
+(dev stack, pgAdmin, leftover sessions) reconnecting between the
+terminate and the CREATE DATABASE TEMPLATE call crashed the whole pytest
+session with asyncpg.ObjectInUseError. The fix wraps the terminate+create
+in a bounded retry loop and, on exhaustion, raises a RuntimeError that
+points the operator at the existing clear-DB workflows (no source-DB
+mutation in the fixture itself — operator clears state with
+tests/dynastore/test_utils/cleanup_db.py locally or with
+packages/core/src/dynastore/scripts/db_reset.sh in review env, then
+re-runs).
 """
 
 from __future__ import annotations
@@ -32,8 +36,6 @@ async def test_retry_succeeds_after_two_object_in_use_then_creates():
         if query.startswith("CREATE DATABASE"):
             create_attempts["n"] += 1
             if create_attempts["n"] < 3:
-                # Build a minimal ObjectInUseError instance the same way
-                # asyncpg does (subclass of PostgresError).
                 raise asyncpg.exceptions.ObjectInUseError(
                     "source database \"src\" is being accessed by other users"
                 )
@@ -52,9 +54,10 @@ async def test_retry_succeeds_after_two_object_in_use_then_creates():
 
 
 @pytest.mark.asyncio
-async def test_retry_exhausts_and_raises_runtimeerror_with_context():
+async def test_retry_exhausts_and_raises_runtimeerror_with_operator_hints():
     """When every CREATE attempt fails, helper raises RuntimeError that
-    surfaces the underlying ObjectInUseError + actionable guidance."""
+    names both DBs, the attempt count, pg_stat_activity, and points at
+    the local + review-env clear-DB workflows."""
     async def execute(query: str, *args):
         if query.startswith("CREATE DATABASE"):
             raise asyncpg.exceptions.ObjectInUseError(
@@ -69,30 +72,25 @@ async def test_retry_exhausts_and_raises_runtimeerror_with_context():
     msg = str(exc_info.value)
     assert "src" in msg and "src_gw0" in msg
     assert "3 attempts" in msg
-    assert "pg_stat_activity" in msg, (
-        "actionable hint about external clients must be in the message"
-    )
+    assert "pg_stat_activity" in msg
+    # Resolution path must point at the existing clear-DB workflows.
+    assert "cleanup_db" in msg, "must point local operators at cleanup_db.py"
+    assert "db_reset.sh" in msg, "must point review-env operators at db_reset.sh"
 
 
-def test_ensure_worker_db_brackets_create_with_allow_connections_toggle():
-    """Source-level guard: _ensure_worker_db must wrap the retry helper
-    call with ALLOW_CONNECTIONS=false / true. Without that bracket the
-    retry alone cannot win against a busy external client (#894)."""
+def test_ensure_worker_db_does_not_mutate_source_db_settings():
+    """Source-level guard: _ensure_worker_db must NOT issue ALTER DATABASE
+    on the source DB. The fix relies on bounded retry + operator-driven
+    cleanup of external clients, not on toggling source-DB settings (#894
+    direction per maintainer: use the existing clear-DB workflows)."""
     src = inspect.getsource(ensure_mod._ensure_worker_db)
-    assert "ALLOW_CONNECTIONS false" in src, (
-        "must flip ALLOW_CONNECTIONS=false on the source before CREATE"
-    )
-    assert "ALLOW_CONNECTIONS true" in src, (
-        "must restore ALLOW_CONNECTIONS=true after CREATE (in finally)"
-    )
     assert "_create_db_template_with_retry" in src, (
         "must call the bounded retry helper, not a single CREATE"
     )
-    # The restore must be in the finally clause (last occurrence wins).
-    false_idx = src.index("ALLOW_CONNECTIONS false")
-    true_idx = src.index("ALLOW_CONNECTIONS true")
-    create_idx = src.index("_create_db_template_with_retry")
-    assert false_idx < create_idx < true_idx, (
-        "ordering must be: ALLOW_CONNECTIONS false -> retry -> "
-        "ALLOW_CONNECTIONS true (the true call must be in the finally)"
+    assert "ALTER DATABASE" not in src, (
+        "must not ALTER DATABASE on the source — operator clears state via "
+        "cleanup_db.py / db_reset.sh before launching the session"
+    )
+    assert "ALLOW_CONNECTIONS" not in src, (
+        "must not toggle ALLOW_CONNECTIONS on the source DB"
     )
