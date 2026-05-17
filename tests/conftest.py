@@ -62,15 +62,52 @@ import pytest_asyncio
 from typing import Any, Union
 
 
+async def _create_db_template_with_retry(
+    execute, source_db: str, worker_db: str, *, attempts: int = 5, backoff: float = 0.2
+) -> None:
+    """Run pg_terminate_backend + CREATE DATABASE TEMPLATE in a bounded retry.
+
+    pg_terminate_backend is one-shot — any external client (dev stack, pgAdmin,
+    idle sessions) that reconnects between the terminate and the CREATE will
+    surface as asyncpg.ObjectInUseError. Caller is expected to have set
+    ``ALLOW_CONNECTIONS=false`` on the source to bound the reconnect race;
+    retries cover the residual window between flipping that flag and the
+    CREATE landing.
+    """
+    import asyncio
+    import asyncpg
+
+    last_exc: Exception | None = None
+    for _ in range(attempts):
+        await execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            source_db,
+        )
+        try:
+            await execute(f'CREATE DATABASE "{worker_db}" TEMPLATE "{source_db}"')
+            return
+        except asyncpg.exceptions.ObjectInUseError as exc:
+            last_exc = exc
+            await asyncio.sleep(backoff)
+    raise RuntimeError(
+        f"Failed to clone {source_db} -> {worker_db} after {attempts} attempts; "
+        f"last error: {last_exc}. Check pg_stat_activity for external clients "
+        f"on the source DB (idle-in-transaction sessions block CREATE TEMPLATE)."
+    )
+
+
 async def _ensure_worker_db():
     """
     Create the per-xdist-worker DB by cloning the master ``gis_dev`` TEMPLATE.
 
     Serialized across workers via a Postgres advisory lock so that simultaneous
     clones don't fail with "source database is being accessed by other users".
-    Connections to the source are terminated before clone (workers themselves
-    do not connect to the source — only stragglers from a previous interrupted
-    run, the controller's cleanup_db, or pgAdmin sessions).
+    The source DB is flipped to ALLOW_CONNECTIONS=false for the terminate+create
+    window so external clients (dev stack on docker-compose.dev.yml, pgAdmin,
+    leftover sessions from interrupted runs) cannot reconnect between the
+    pg_terminate_backend and the CREATE DATABASE — that race used to crash the
+    whole pytest session with asyncpg.ObjectInUseError (#894).
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
@@ -98,13 +135,16 @@ async def _ensure_worker_db():
                 f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'
             )
             await conn.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = $1 AND pid <> pg_backend_pid()",
-                source_db,
+                f'ALTER DATABASE "{source_db}" WITH ALLOW_CONNECTIONS false'
             )
-            await conn.execute(
-                f'CREATE DATABASE "{worker_db}" TEMPLATE "{source_db}"'
-            )
+            try:
+                await _create_db_template_with_retry(
+                    conn.execute, source_db, worker_db,
+                )
+            finally:
+                await conn.execute(
+                    f'ALTER DATABASE "{source_db}" WITH ALLOW_CONNECTIONS true'
+                )
         finally:
             await conn.execute("SELECT pg_advisory_unlock(8472001)")
     finally:
