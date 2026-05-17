@@ -57,6 +57,76 @@ _current_backend: Optional[Any] = None
 _app_state: Optional[Any] = None
 _apply_lock: asyncio.Lock = asyncio.Lock()
 
+# Bounded LocalAsyncCacheBackend fallback log (#629).
+# The "CACHE BACKEND: LOCAL" fall-back path is hit on every cold start when
+# Valkey is unreachable AND on every reconnect-attempt failure that the
+# circuit breaker trips.  Sustained Valkey unavailability would otherwise
+# spam INFO/WARNING lines once per worker per request cycle.  Mirroring the
+# bounded-log pattern from ``routed_resolver._FALLBACK_WARNED``: log INFO
+# on the first occurrence per process, demote subsequent occurrences to
+# DEBUG.  Reset only on a successful Valkey backend registration so a
+# legitimate re-degrade after a flap re-emits at INFO.
+_LOCAL_FALLBACK_LOGGED: bool = False
+
+# Default for the legacy env-driven fallback path's connect timeout when
+# ``VALKEY_SOCKET_CONNECT_TIMEOUT`` is unset (#629).  Picked at 10s — more
+# generous than the engine-driven default (3s) because the legacy path is
+# the cold-boot fallback when no engine snapshot is wired, which is exactly
+# when discovery latency spikes (cluster topology fetch, IAM token mint,
+# TLS handshake) tend to stack up.  A short timeout there cascades to
+# LocalAsyncCacheBackend fallback → distributed-lock contention → DB pool
+# stall (see #629).
+_VALKEY_SOCKET_CONNECT_TIMEOUT_DEFAULT: float = 10.0
+
+
+def _resolve_socket_connect_timeout(engine_default: float) -> float:
+    """Resolve the legacy-fallback socket-connect timeout.
+
+    Precedence:
+      1. ``VALKEY_SOCKET_CONNECT_TIMEOUT`` env var (operators tune review env).
+      2. ``engine_default`` (``ValkeyEngineConfig().socket_connect_timeout_seconds``)
+         when it differs from the package default of 3.0s — operators may
+         already be using the engine-config knob.
+      3. ``_VALKEY_SOCKET_CONNECT_TIMEOUT_DEFAULT`` (10s) — see #629
+         rationale on why we raise the floor for the legacy fallback path.
+
+    Invalid env-var values fall through to the default and emit a WARNING
+    so the operator can see their tuning was rejected (rare).
+    """
+    raw = os.getenv("VALKEY_SOCKET_CONNECT_TIMEOUT")
+    if raw is not None and raw.strip():
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "VALKEY_SOCKET_CONNECT_TIMEOUT=%r is not a number; "
+                "using default %.1fs",
+                raw, _VALKEY_SOCKET_CONNECT_TIMEOUT_DEFAULT,
+            )
+    # Engine default may have been tuned via ValkeyEngineConfig already
+    # (3.0s on the unmodified field default).  Prefer the larger of (engine
+    # default, 10s floor) so existing engine-config tuning is never silently
+    # tightened by this fallback.
+    return max(engine_default, _VALKEY_SOCKET_CONNECT_TIMEOUT_DEFAULT)
+
+
+def _log_local_fallback(message: str, *args: Any) -> None:
+    """Log a ``CACHE BACKEND: LOCAL`` fallback line with first-time INFO,
+    subsequent DEBUG (#629).
+
+    Bounded so sustained Valkey unavailability does not flood logs while
+    preserving operator visibility of the first transition.  WARNING is
+    deliberately not used here (the cache-degrades-to-L1 path is a
+    designed degraded mode, not a hard error — same rationale as the
+    ``routed_resolver`` fallback log promotion).
+    """
+    global _LOCAL_FALLBACK_LOGGED
+    if not _LOCAL_FALLBACK_LOGGED:
+        _LOCAL_FALLBACK_LOGGED = True
+        logger.info(message + " (further occurrences in this process logged at DEBUG)", *args)
+    else:
+        logger.debug(message, *args)
+
 
 async def _load_cache_config() -> "CachePluginConfig":
     """Load cache config from PluginConfig protocol.
@@ -213,6 +283,10 @@ async def _on_valkey_engine_config_change(
         get_cache_manager().register_backend(new_backend)
         _notify_backend_upgrade()
         _current_backend = new_backend
+        # Re-arm the bounded fallback log so the next degrade-to-LOCAL
+        # cycle (if any) re-emits at INFO. #629
+        global _LOCAL_FALLBACK_LOGGED
+        _LOCAL_FALLBACK_LOGGED = False
         _dur_ms = int((asyncio.get_event_loop().time() - _t0) * 1000)
         logger.info(
             "CACHE BACKEND: VALKEY (reconnected) — version=%s mode=%s", version, mode
@@ -348,7 +422,7 @@ class CacheModule(ModuleProtocol):
             from dynastore.tools.cache_valkey import _CACHE_DEPS_OK
 
             if not _CACHE_DEPS_OK:
-                logger.warning(
+                _log_local_fallback(
                     "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
                     "engine_cache present but 'module_cache' extra not in "
                     "SCOPE (msgpack/valkey not installed); skipping Valkey."
@@ -377,7 +451,7 @@ class CacheModule(ModuleProtocol):
         if not engine_mode:
             valkey_url = os.getenv("VALKEY_URL")
             if not valkey_url:
-                logger.warning(
+                _log_local_fallback(
                     "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
                     "VALKEY_URL not set; cross-instance consistency NOT guaranteed."
                 )
@@ -387,7 +461,7 @@ class CacheModule(ModuleProtocol):
             from dynastore.tools.cache_valkey import _CACHE_DEPS_OK
 
             if not _CACHE_DEPS_OK:
-                logger.warning(
+                _log_local_fallback(
                     "CACHE BACKEND: LOCAL (in-memory, per-instance) — VALKEY_URL "
                     "is set but the 'module_cache' extra is not in this "
                     "deployment's SCOPE (msgpack/valkey not installed); skipping "
@@ -400,29 +474,34 @@ class CacheModule(ModuleProtocol):
             _tls = os.getenv("VALKEY_TLS", "").lower() in ("1", "true", "yes")
             _iam = os.getenv("VALKEY_IAM_AUTH", "").lower() in ("1", "true", "yes")
             _cluster = os.getenv("VALKEY_CLUSTER", "").lower() in ("1", "true", "yes")
+            # Pull the connection-hardening defaults from ValkeyEngineConfig
+            # so the bootstrap-fallback path is NOT a hole that re-opens the
+            # un-hardened-socket regression that #720 / #724 closed for the
+            # engine-driven mode (idle Cloud NAT drops + cold cluster-topology
+            # fetch exceeding valkey-py's 5s hard default).
+            from dynastore.modules.db_config.engine_config import (
+                ValkeyEngineConfig,
+            )
+
+            _engine_defaults = ValkeyEngineConfig()
+            _socket_connect_timeout = _resolve_socket_connect_timeout(
+                _engine_defaults.socket_connect_timeout_seconds
+            )
             logger.info(
-                "CacheModule (legacy): Connecting to Valkey at %s (tls=%s, iam_auth=%s, cluster=%s, probe_timeout=%ss) …",
+                "CacheModule (legacy): Connecting to Valkey at %s (tls=%s, iam_auth=%s, cluster=%s, probe_timeout=%ss, socket_connect_timeout=%ss) …",
                 _safe_url,
                 _tls,
                 _iam,
                 _cluster,
                 cache_cfg.probe_timeout_seconds,
+                _socket_connect_timeout,
             )
             try:
-                # Pull the connection-hardening defaults from ValkeyEngineConfig
-                # so the bootstrap-fallback path is NOT a hole that re-opens the
-                # un-hardened-socket regression that #720 / #724 closed for the
-                # engine-driven mode (idle Cloud NAT drops + cold cluster-topology
-                # fetch exceeding valkey-py's 5s hard default).
-                from dynastore.modules.db_config.engine_config import (
-                    ValkeyEngineConfig,
-                )
                 from dynastore.tools.cache_valkey import ValkeyCacheBackend
 
-                _engine_defaults = ValkeyEngineConfig()
                 backend = ValkeyCacheBackend(
                     url=valkey_url,
-                    socket_connect_timeout=_engine_defaults.socket_connect_timeout_seconds,
+                    socket_connect_timeout=_socket_connect_timeout,
                     socket_timeout=_engine_defaults.socket_timeout_seconds,
                     tcp_keepalive_idle=_engine_defaults.tcp_keepalive_idle_seconds,
                     tcp_keepalive_interval=_engine_defaults.tcp_keepalive_interval_seconds,
@@ -434,7 +513,7 @@ class CacheModule(ModuleProtocol):
                     "CacheModule (legacy): Cannot initialise Valkey backend (%s) — falling back to local cache.",
                     exc,
                 )
-                logger.warning(
+                _log_local_fallback(
                     "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
                     "Valkey unavailable; cross-instance consistency NOT guaranteed."
                 )
@@ -452,7 +531,7 @@ class CacheModule(ModuleProtocol):
             )
 
         if backend is None:
-            logger.warning(
+            _log_local_fallback(
                 "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
                 "no Valkey backend constructed; cross-instance consistency NOT guaranteed."
             )
@@ -483,7 +562,7 @@ class CacheModule(ModuleProtocol):
                 _safe_url,
                 _reason,
             )
-            logger.warning(
+            _log_local_fallback(
                 "CACHE BACKEND: LOCAL (in-memory, per-instance) — "
                 "Valkey connection failed; cross-instance consistency NOT guaranteed."
             )
@@ -496,6 +575,11 @@ class CacheModule(ModuleProtocol):
         get_cache_manager().register_backend(backend)
         _notify_backend_upgrade()
         _current_backend = backend
+        # Re-arm the bounded fallback log so a later re-degrade after a
+        # successful flap re-emits at INFO (instead of staying suppressed
+        # at DEBUG for the rest of the process lifetime). #629
+        global _LOCAL_FALLBACK_LOGGED
+        _LOCAL_FALLBACK_LOGGED = False
         logger.info(
             "CACHE BACKEND: VALKEY (shared, cross-instance, %s) — host=%s version=%s mode=%s used_memory=%s",
             "engine" if engine_mode else "legacy",
