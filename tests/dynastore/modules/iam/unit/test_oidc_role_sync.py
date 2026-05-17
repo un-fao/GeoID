@@ -182,7 +182,7 @@ def test_config_defaults_off():
 
 
 def test_config_address_is_platform_iam_oidc_role_sync():
-    assert OidcRoleSyncConfig._address == ("platform", "iam", "oidc_role_sync")
+    assert OidcRoleSyncConfig._address == ("platform", "modules", "iam", "oidc_role_sync")
 
 
 def test_default_role_mapping_tracks_iam_roles_config_defaults():

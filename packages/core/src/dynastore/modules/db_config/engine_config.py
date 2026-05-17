@@ -125,7 +125,7 @@ class EngineConfig(PluginConfig):
 
     Concrete subclasses (one per engine kind) declare an ``engine_class``
     discriminator + the engine's connection / pool fields.  All engines
-    live at ``_address = ("platform", "engines")`` — the configs API
+    live at ``_address = ("platform", "protocols", "storage")`` — the configs API
     surfaces them keyed by their ``class_key()`` (= snake_case of the
     class name).
 
@@ -193,7 +193,7 @@ class PostgresqlEngineConfig(EngineConfig):
     """
 
     engine_class: ClassVar[str] = "postgresql_engine"
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
     connection_url: Mutable[Optional[Secret]] = Field(
         default=None,
@@ -275,7 +275,7 @@ class ElasticsearchEngineConfig(EngineConfig):
     """
 
     engine_class: ClassVar[str] = "elasticsearch_engine"
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
     cluster_url: Mutable[Optional[Secret]] = Field(
         default=None,
@@ -368,7 +368,7 @@ class DuckdbEngineConfig(EngineConfig):
     """
 
     engine_class: ClassVar[str] = "duckdb_engine"
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
     pool_size: Mutable[int] = Field(
         default=4,
@@ -437,7 +437,7 @@ class IcebergEngineConfig(EngineConfig):
     """
 
     engine_class: ClassVar[str] = "iceberg_engine"
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
     catalog_uri: Mutable[Optional[Secret]] = Field(
         default=None,
@@ -513,7 +513,7 @@ class ValkeyEngineConfig(EngineConfig):
     """
 
     engine_class: ClassVar[str] = "valkey_engine"
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
     # Override default to allow live reconfig.
     lifecycle: Mutable[EngineLifecycleConfig] = Field(

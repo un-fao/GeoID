@@ -22,7 +22,7 @@ Registered via PluginConfig framework so settings are:
 
 **Migration note (operators):** Connection params (socket timeouts, TCP keepalives,
 TLS, IAM, cluster settings) have moved to ``ValkeyEngineConfig`` at
-``("platform", "engines")``. The engine config supports live reconnect on change
+``("platform", "protocols", "storage")``. The engine config supports live reconnect on change
 without process restart. This config only holds cache-layer settings that don't
 control the underlying connection.
 """

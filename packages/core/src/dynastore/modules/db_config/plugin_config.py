@@ -107,105 +107,99 @@ class PluginConfig(PersistentModel):
     # ---------------------------------------------------------------------
     # ``platform.*`` TYPOLOGY RULE (#852)
     # ---------------------------------------------------------------------
-    # The deep-view tree groups configs under ``platform`` into two layers
-    # that answer two different questions.  Pick the bucket by asking the
-    # questions in order — the first ``yes`` wins.
+    # The configuration root is bounded.  Exactly four CLASS buckets plus
+    # one orthogonal AXIS may appear immediately under ``platform``:
     #
-    #   1. Is this config a per-tenant *data-shape* declaration that lives
-    #      on a Catalog or Collection row (collection drivers, asset
-    #      drivers, items policy, routing, schema, info, envelope,
-    #      privacy, write/lookup audience, ...)?
-    #         → ``("platform", "catalog", ...)``.
-    #      The ``catalog`` subtree is the *tier* — its leaves vary per
-    #      catalog/collection.  ``_visibility`` narrows them further to
-    #      ``"collection"`` or ``"catalog"`` scope.
+    #     platform.modules.*      — config for a ``modules/*`` subsystem
+    #     platform.tasks.*        — config for a ``modules/tasks/*`` task
+    #     platform.extensions.*   — config for a ``packages/extensions/*``
+    #                               (OGC / API-surface) extension
+    #     platform.protocols.*    — config that configures a plugin
+    #                               implementing a ``models/protocols/*``
+    #                               interface (e.g. a storage-protocol
+    #                               implementation backed by
+    #                               Elasticsearch, PostgreSQL, etc.)
     #
-    #   2. Otherwise it is a *platform-service* config — singleton at the
-    #      platform tier, identical for every tenant.  Five top-level
-    #      buckets are PROMOTED — they answer the question "which
-    #      subsystem owns this knob?", not "which implementation folder
-    #      ships it?".  Implementation folder ≠ bucket on purpose.
+    #     platform.catalog.*      — per-tenant data tier (collection /
+    #                               catalog-row-bound).  This is the
+    #                               orthogonal AXIS — not a fifth class
+    #                               folder; it carries data-shape
+    #                               declarations whose leaves vary per
+    #                               catalog / collection.
     #
-    #      Promoted buckets (in priority order — see criterion below):
+    # Decision tree — ask in priority order, first ``yes`` wins:
     #
-    #        ``platform.engines``       — DB engine pool / connection
-    #                                     config.  Lives in
-    #                                     ``modules/db_config/`` but the
-    #                                     DB engine is bootstrap-tier
-    #                                     infrastructure consumed by every
-    #                                     other module, not a peer module.
-    #        ``platform.tasks``         — global task queue / dispatcher /
-    #                                     reaper config.  Cross-cutting
-    #                                     concurrency primitive consumed
-    #                                     across modules.
-    #        ``platform.elasticsearch`` — ES client + index config.
-    #                                     Lives in ``modules/elasticsearch/``
-    #                                     but is a platform-shared
-    #                                     connection (one ES cluster, many
-    #                                     drivers), not a self-contained
-    #                                     module.
-    #        ``platform.iam``           — identity-and-access *roles* and
-    #                                     *role-sync* config.  Lives in
-    #                                     ``modules/iam/`` but is policy
-    #                                     data that other subsystems
-    #                                     evaluate (PermissionProtocol),
-    #                                     not a per-tenant runtime
-    #                                     setting.  See exceptions below.
-    #        ``platform.extensions``    — OGC / API surface extensions
-    #                                     (``extensions/<name>/config.py``).
-    #                                     One bucket per pip-installable
-    #                                     extension package.  The bucket
-    #                                     mirrors the package layout 1:1
-    #                                     because each extension is its
-    #                                     own opt-in deployment unit.
+    #     1. Does this config attach to a Catalog or Collection row
+    #        (collection drivers, asset drivers, items policy, routing,
+    #        schema, info, envelope, privacy, write/lookup audience, ...)?
+    #             → ``("platform", "catalog", ...)``.
+    #             ``_visibility`` narrows further to ``"collection"`` or
+    #             ``"catalog"`` scope.
     #
-    #      Promotion criterion (apply to any future top-level candidate):
+    #     2. Is it config for a ``modules/*`` subsystem (the default
+    #        for a self-contained internal module)?
+    #             → ``("platform", "modules", <module>, ...)``.
     #
-    #        Promote a subsystem from ``platform.modules.X`` to
-    #        ``platform.X`` only when ALL three hold:
-    #          (a) it is consumed by ≥2 other subsystems (cross-cutting,
-    #              not self-contained);
-    #          (b) it carries a stable identity that survives module
-    #              reorganisation (e.g. "engines" is a concept, even if
-    #              the implementation moves out of ``db_config/``);
-    #          (c) its config tree is large enough (≥3 sibling classes
-    #              today, or a clear roadmap to that) that nesting under
-    #              ``modules`` would obscure the subsystem boundary.
+    #     3. Is it config for a ``modules/tasks/*`` task definition or
+    #        for the task subsystem itself?
+    #             → ``("platform", "tasks", ...)``.
     #
-    #      Everything else stays under ``platform.modules.X`` (the
-    #      catch-all for self-contained internal modules: cache, web,
-    #      gcp, tiles, stats, security).  Adding a new ``platform.<bucket>``
-    #      top-level requires an explicit decision recorded in the
-    #      subsystem's CLAUDE.md and a one-line entry in this docstring.
+    #     4. Is it config for a ``packages/extensions/*`` extension
+    #        (one bucket per pip-installable extension package)?
+    #             → ``("platform", "extensions", <ext>, ...)``.
     #
-    #   IAM exceptions (intentional, do not "fix"):
-    #     ``IamRolesConfig``         → ``platform.iam.roles``  (policy
-    #                                   data — promoted bucket)
-    #     ``OIDCRoleSyncConfig``     → ``platform.iam.oidc_role_sync``
-    #                                   (policy-sync — promoted bucket)
-    #     ``SecurityConfig``         → ``platform.modules.security``
-    #                                   (runtime CORS/CSRF middleware
-    #                                   knobs — a self-contained module,
-    #                                   not policy data)
-    #     ``*AudienceConfig`` pair   → ``platform.catalog.lookup_audience``
-    #                                   and ``platform.catalog.collection.
-    #                                   write_audience``  (per-catalog/
-    #                                   collection authz wiring — belongs
-    #                                   to the catalog tier, not the iam
-    #                                   bucket)
+    #     5. Does it configure a plugin that *implements* a Protocol
+    #        declared in ``models/protocols/*`` — typically a storage
+    #        backend, but any interface-classified pluggable would
+    #        qualify?
+    #             → ``("platform", "protocols", <protocol>, ...)``.
     #
-    #   Folder ≠ bucket — concrete mappings shipped today:
-    #     ``modules/db_config/engine_config.py``      → ``platform.engines``
-    #     ``modules/elasticsearch/{client,index}*``    → ``platform.elasticsearch.*``
-    #     ``modules/iam/{authorization,oidc_*}``       → ``platform.iam.*``
-    #     ``modules/iam/security_config.py``           → ``platform.modules.security``
-    #     ``modules/iam/audience_configs.py``          → ``platform.catalog.*``
-    #     ``modules/tasks/``                           → ``platform.tasks``
-    #     ``tasks/ingestion/ingestion_config.py``      → ``platform.tasks.ingestion``
-    #     ``modules/{cache,web,gcp,tiles,stats}/``     → ``platform.modules.*``
-    #     ``modules/{catalog,storage,stac}/``          → ``platform.catalog.*``
-    #     ``extensions/*/config.py``                   → ``platform.extensions.*``
+    # Folder ≠ bucket.  Where a config is *declared* (file path) is
+    # independent of where its ``_address`` lives — pick the bucket from
+    # the classifier above, not from the import path.  ``IamRolesConfig``
+    # is the canonical example: declared in
+    # ``models/protocols/authorization.py`` (per #686, the file stays
+    # there because moving it triggers an import cycle) but addressed
+    # under ``platform.modules.iam.*`` because IAM is a module.
     #
+    # Concrete folder → bucket map shipped today (validate placement
+    # without grep):
+    #
+    #     modules/cache/                            → platform.modules.cache.*
+    #     modules/gcp/                              → platform.modules.gcp.*
+    #     modules/tiles/                            → platform.modules.tiles.*
+    #     modules/stats/                            → platform.modules.stats.*
+    #     modules/web/                              → platform.modules.web.*
+    #     modules/iam/security_config.py            → platform.modules.security.*
+    #     modules/iam/oidc_role_sync_config.py      → platform.modules.iam.*
+    #     models/protocols/authorization.py
+    #         (IamRolesConfig — file stays per #686) → platform.modules.iam.*
+    #     modules/iam/audience_configs.py           → platform.catalog.*
+    #         (per-tenant authz wiring — catalog tier, not iam bucket)
+    #
+    #     modules/tasks/                            → platform.tasks.*
+    #     tasks/ingestion/ingestion_config.py       → platform.tasks.ingestion.*
+    #
+    #     extensions/<name>/config.py               → platform.extensions.<name>.*
+    #
+    #     modules/db_config/engine_config.py        → platform.protocols.storage.*
+    #         (DB engine pool/connection — storage-protocol implementation)
+    #     modules/elasticsearch/{client,index}*     → platform.protocols.storage.elasticsearch.*
+    #         (ES client + index config — storage-protocol implementation)
+    #
+    #     modules/catalog/                          → platform.catalog.*
+    #     modules/storage/                          → platform.catalog.*
+    #         (driver / routing / schema / policy — per-tenant data tier)
+    #     modules/stac/                             → platform.catalog.*
+    #         (driver subset) + platform.extensions.stac.* (extension config)
+    #
+    # Adding a new top-level node under ``platform`` is not allowed.  A
+    # new platform-level subsystem MUST be classified into one of the
+    # four classes above (modules / tasks / extensions / protocols) or
+    # the catalog axis.  If the classification is ambiguous, that is a
+    # signal to model the subsystem as a Protocol in
+    # ``models/protocols/*`` and place the implementation under
+    # ``platform.protocols.<protocol>.<impl>``.
     # ---------------------------------------------------------------------
     _address: ClassVar[Tuple[Optional[str], ...]] = ()
 

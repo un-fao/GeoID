@@ -92,7 +92,7 @@ treat the notebooks as **structured-and-buildable** rather than
 - `docs/components/configs_api.md` — full configs API reference (endpoints, query params, HATEOAS link catalog, scope strictness rules)
 - `docs/components/storage_drivers.md` — driver class registry, sidecars, routing, hints
 - `docs/components/sidecar_configs.md` — per-sidecar field reference with defaults
-- `docs/components/platform_engines.md` — engines layer at `platform.engines.*`
+- `docs/components/platform_engines.md` — engines layer at `platform.protocols.storage.*`
 
 ## Related notebooks
 

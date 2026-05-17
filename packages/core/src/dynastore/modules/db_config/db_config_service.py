@@ -29,7 +29,7 @@ from dynastore.tools.discovery import register_plugin, unregister_plugin
 # Side-effect import — ensures the F.1 engine PluginConfig classes
 # (PostgresqlEngineConfig, ElasticsearchEngineConfig, etc.) register in
 # TypedModelRegistry at module-load time so the configs API surfaces
-# them under platform.engines.*.  DBConfigModule loads at priority=0,
+# them under platform.protocols.storage.*.  DBConfigModule loads at priority=0,
 # so this is the earliest reliable trigger.
 from . import engine_config as _engine_config  # noqa: F401
 from .db_config import DBConfig

@@ -172,4 +172,4 @@ def test_role_name_uniqueness_across_tiers() -> None:
 
 
 def test_config_address_is_platform_iam_roles() -> None:
-    assert IamRolesConfig._address == ("platform", "iam", "roles")
+    assert IamRolesConfig._address == ("platform", "modules", "iam", "roles")

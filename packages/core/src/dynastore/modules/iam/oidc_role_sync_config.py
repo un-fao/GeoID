@@ -31,7 +31,7 @@ class OidcRoleSyncConfig(PluginConfig):
     mapping (catalog-scope roles, viewer, etc.) are never touched.
     """
 
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "iam", "oidc_role_sync")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "iam", "oidc_role_sync")
 
     reconcile_enabled: Mutable[bool] = Field(
         default=False,

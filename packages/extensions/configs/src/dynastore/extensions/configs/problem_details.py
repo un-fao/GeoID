@@ -111,7 +111,7 @@ def value_error(
 def engine_write_forbidden_at_tenant_scope(
     plugin_id: str, *, scope: str, instance: Optional[str] = None,
 ) -> ProblemException:
-    """Cycle F.4b — reject tenant-scope writes to ``platform.engines.*``.
+    """Cycle F.4b — reject tenant-scope writes to ``platform.protocols.storage.*``.
 
     Engines are sysadmin-only platform-tier resources (tenant configs
     cannot influence platform resource policy — see decision #15 / #18).

@@ -1059,7 +1059,7 @@ def test_compose_tree_strict_keeps_platform_visibility_in_body():
     by_class = {"engine_a": {"value": 1}}
     registry = _stub_registry(
         engine_a={
-            "_address": ("platform", "engines"),
+            "_address": ("platform", "protocols", "storage"),
             "_visibility": "platform",
         },
     )
@@ -1072,7 +1072,7 @@ def test_compose_tree_strict_keeps_platform_visibility_in_body():
             by_class, sources=sources, active_scope="platform",
         )
         # Engine stays in body under strict=True default.
-        assert "engine_a" in tree["platform"]["engines"]
+        assert "engine_a" in tree["platform"]["protocols"]["storage"]
 
 
 def test_compose_tree_strict_false_restores_inclusive_platform_behavior():

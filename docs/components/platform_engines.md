@@ -18,7 +18,7 @@ Cycle F splits the contract:
 
 | Concern | Owner | Tenant editable? |
 |---|---|---|
-| Connection details (DSN, API keys, pool size, TTL) | `EngineConfig` at `platform.engines.*` | **No** — sysadmin only |
+| Connection details (DSN, API keys, pool size, TTL) | `EngineConfig` at `platform.protocols.storage.*` | **No** — sysadmin only |
 | Driver class + sidecars + index settings | `DriverPluginConfig` at `platform.catalog.[…].drivers.*` | Yes |
 | Routing (which driver_ref serves which operation) | `*RoutingConfig` | Yes (per scope) |
 
@@ -152,7 +152,7 @@ Each shipped engine config implements these against its native runtime:
 
 ### Provision a new engine
 
-Engines live at `configs.platform.engines.{class_key}`.  PATCH the
+Engines live at `configs.platform.protocols.storage.{class_key}`.  PATCH the
 class-keyed slot with the engine's connection details:
 
 ```bash
