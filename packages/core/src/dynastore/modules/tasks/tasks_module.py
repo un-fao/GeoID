@@ -592,6 +592,25 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
 
                 TaskRoutingConfig.register_apply_handler(_on_routing_change)
 
+                async def _on_tasks_config_change(cfg, _catalog_id, _collection_id, _conn):
+                    if not isinstance(cfg, TasksPluginConfig):
+                        return
+                    try:
+                        set_hard_retry_cap(cfg.hard_retry_cap)
+                    except ValueError as exc:
+                        logger.warning(
+                            "TasksPluginConfig: rejected hard_retry_cap=%r (%s); "
+                            "retaining %d.",
+                            cfg.hard_retry_cap, exc, get_hard_retry_cap(),
+                        )
+                        return
+                    logger.info(
+                        "TasksPluginConfig changed — hard_retry_cap reapplied to %d.",
+                        cfg.hard_retry_cap,
+                    )
+
+                TasksPluginConfig.register_apply_handler(_on_tasks_config_change)
+
                 logger.info(f"TasksModule: hard_retry_cap = {hard_cap} (circuit breaker)")
 
                 # Ensure the tasks table + current-month partition exist before
