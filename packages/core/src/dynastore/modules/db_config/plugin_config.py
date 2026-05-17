@@ -103,6 +103,110 @@ class PluginConfig(PersistentModel):
     # incrementally — the base type is intentionally permissive
     # (``Tuple[Optional[str], ...]``) to accept both the current 3-tuple
     # shape (with trailing ``None``) and the post-D variable-length shape.
+    #
+    # ---------------------------------------------------------------------
+    # ``platform.*`` TYPOLOGY RULE (#852)
+    # ---------------------------------------------------------------------
+    # The deep-view tree groups configs under ``platform`` into two layers
+    # that answer two different questions.  Pick the bucket by asking the
+    # questions in order — the first ``yes`` wins.
+    #
+    #   1. Is this config a per-tenant *data-shape* declaration that lives
+    #      on a Catalog or Collection row (collection drivers, asset
+    #      drivers, items policy, routing, schema, info, envelope,
+    #      privacy, write/lookup audience, ...)?
+    #         → ``("platform", "catalog", ...)``.
+    #      The ``catalog`` subtree is the *tier* — its leaves vary per
+    #      catalog/collection.  ``_visibility`` narrows them further to
+    #      ``"collection"`` or ``"catalog"`` scope.
+    #
+    #   2. Otherwise it is a *platform-service* config — singleton at the
+    #      platform tier, identical for every tenant.  Five top-level
+    #      buckets are PROMOTED — they answer the question "which
+    #      subsystem owns this knob?", not "which implementation folder
+    #      ships it?".  Implementation folder ≠ bucket on purpose.
+    #
+    #      Promoted buckets (in priority order — see criterion below):
+    #
+    #        ``platform.engines``       — DB engine pool / connection
+    #                                     config.  Lives in
+    #                                     ``modules/db_config/`` but the
+    #                                     DB engine is bootstrap-tier
+    #                                     infrastructure consumed by every
+    #                                     other module, not a peer module.
+    #        ``platform.tasks``         — global task queue / dispatcher /
+    #                                     reaper config.  Cross-cutting
+    #                                     concurrency primitive consumed
+    #                                     across modules.
+    #        ``platform.elasticsearch`` — ES client + index config.
+    #                                     Lives in ``modules/elasticsearch/``
+    #                                     but is a platform-shared
+    #                                     connection (one ES cluster, many
+    #                                     drivers), not a self-contained
+    #                                     module.
+    #        ``platform.iam``           — identity-and-access *roles* and
+    #                                     *role-sync* config.  Lives in
+    #                                     ``modules/iam/`` but is policy
+    #                                     data that other subsystems
+    #                                     evaluate (PermissionProtocol),
+    #                                     not a per-tenant runtime
+    #                                     setting.  See exceptions below.
+    #        ``platform.extensions``    — OGC / API surface extensions
+    #                                     (``extensions/<name>/config.py``).
+    #                                     One bucket per pip-installable
+    #                                     extension package.  The bucket
+    #                                     mirrors the package layout 1:1
+    #                                     because each extension is its
+    #                                     own opt-in deployment unit.
+    #
+    #      Promotion criterion (apply to any future top-level candidate):
+    #
+    #        Promote a subsystem from ``platform.modules.X`` to
+    #        ``platform.X`` only when ALL three hold:
+    #          (a) it is consumed by ≥2 other subsystems (cross-cutting,
+    #              not self-contained);
+    #          (b) it carries a stable identity that survives module
+    #              reorganisation (e.g. "engines" is a concept, even if
+    #              the implementation moves out of ``db_config/``);
+    #          (c) its config tree is large enough (≥3 sibling classes
+    #              today, or a clear roadmap to that) that nesting under
+    #              ``modules`` would obscure the subsystem boundary.
+    #
+    #      Everything else stays under ``platform.modules.X`` (the
+    #      catch-all for self-contained internal modules: cache, web,
+    #      gcp, tiles, stats, security).  Adding a new ``platform.<bucket>``
+    #      top-level requires an explicit decision recorded in the
+    #      subsystem's CLAUDE.md and a one-line entry in this docstring.
+    #
+    #   IAM exceptions (intentional, do not "fix"):
+    #     ``IamRolesConfig``         → ``platform.iam.roles``  (policy
+    #                                   data — promoted bucket)
+    #     ``OIDCRoleSyncConfig``     → ``platform.iam.oidc_role_sync``
+    #                                   (policy-sync — promoted bucket)
+    #     ``SecurityConfig``         → ``platform.modules.security``
+    #                                   (runtime CORS/CSRF middleware
+    #                                   knobs — a self-contained module,
+    #                                   not policy data)
+    #     ``*AudienceConfig`` pair   → ``platform.catalog.lookup_audience``
+    #                                   and ``platform.catalog.collection.
+    #                                   write_audience``  (per-catalog/
+    #                                   collection authz wiring — belongs
+    #                                   to the catalog tier, not the iam
+    #                                   bucket)
+    #
+    #   Folder ≠ bucket — concrete mappings shipped today:
+    #     ``modules/db_config/engine_config.py``      → ``platform.engines``
+    #     ``modules/elasticsearch/{client,index}*``    → ``platform.elasticsearch.*``
+    #     ``modules/iam/{authorization,oidc_*}``       → ``platform.iam.*``
+    #     ``modules/iam/security_config.py``           → ``platform.modules.security``
+    #     ``modules/iam/audience_configs.py``          → ``platform.catalog.*``
+    #     ``modules/tasks/``                           → ``platform.tasks``
+    #     ``tasks/ingestion/ingestion_config.py``      → ``platform.tasks.ingestion``
+    #     ``modules/{cache,web,gcp,tiles,stats}/``     → ``platform.modules.*``
+    #     ``modules/{catalog,storage,stac}/``          → ``platform.catalog.*``
+    #     ``extensions/*/config.py``                   → ``platform.extensions.*``
+    #
+    # ---------------------------------------------------------------------
     _address: ClassVar[Tuple[Optional[str], ...]] = ()
 
     # Optional scope-visibility filter:
