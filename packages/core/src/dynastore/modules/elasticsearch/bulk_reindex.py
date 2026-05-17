@@ -128,11 +128,11 @@ async def reindex_collection_into_index(
     # and idempotent (helper handles repeats).
     from dynastore.modules.elasticsearch.aliases import add_index_to_public_alias
     from dynastore.modules.elasticsearch.items_projection import (
-        build_known_fields,
         project_item_for_es,
+        resolve_catalog_known_fields,
     )
     await add_index_to_public_alias(index_name)
-    known_fields = build_known_fields()
+    known_fields = await resolve_catalog_known_fields(catalog_id)
 
     total = 0
     offset = 0

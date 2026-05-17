@@ -391,8 +391,8 @@ class ItemsElasticsearchDriver(
         """
         from datetime import datetime, timezone
         from dynastore.modules.elasticsearch.items_projection import (
-            build_known_fields,
             project_item_for_es,
+            resolve_catalog_known_fields,
         )
         from dynastore.tools.geometry_simplify import simplify_to_fit
 
@@ -401,7 +401,7 @@ class ItemsElasticsearchDriver(
             return []
         es = _es_client_required()
         index_name = _tenant_items_index(catalog_id)
-        known_fields = build_known_fields()
+        known_fields = await resolve_catalog_known_fields(catalog_id)
 
         # Service-layer enforcement of FieldDefinition.required / .unique for
         # drivers (like ES) that don't advertise native REQUIRED_ENFORCEMENT /
@@ -814,7 +814,10 @@ class ItemsElasticsearchDriver(
         from dynastore.modules.elasticsearch.aliases import (
             add_index_to_public_alias,
         )
-        from dynastore.modules.elasticsearch.mappings import ITEM_MAPPING
+        from dynastore.modules.elasticsearch.mappings import build_item_mapping
+        from dynastore.modules.elasticsearch.items_projection import (
+            resolve_catalog_known_fields,
+        )
         from dynastore.modules.elasticsearch.index_config import (
             get_items_index_settings,
         )
@@ -832,17 +835,23 @@ class ItemsElasticsearchDriver(
             exists = False
 
         if not exists:
+            # Snapshot the per-catalog Tier-1 ∪ Tier-2 known-fields at
+            # index-create time. Live edits to ``mapping`` do not
+            # retro-patch ES (ES disallows tightening a live mapping);
+            # they take effect on the next index rebuild.
+            known_fields = await resolve_catalog_known_fields(catalog_id)
             try:
                 await es.indices.create(
                     index=index_name,
                     body={
                         "settings": await get_items_index_settings(),
-                        "mappings": ITEM_MAPPING,
+                        "mappings": build_item_mapping(known_fields),
                     },
                 )
                 logger.info(
-                    "ItemsElasticsearchDriver: created tenant items index '%s'.",
-                    index_name,
+                    "ItemsElasticsearchDriver: created tenant items index '%s' "
+                    "with %d known fields (Tier 1 ∪ Tier 2).",
+                    index_name, len(known_fields),
                 )
             except Exception as exc:
                 logger.warning(
@@ -965,10 +974,10 @@ class ItemsElasticsearchDriver(
         doc.setdefault("id", op.entity_id)
         doc.setdefault("collection", ctx.collection)
         from dynastore.modules.elasticsearch.items_projection import (
-            build_known_fields,
             project_item_for_es,
+            resolve_catalog_known_fields,
         )
-        doc = project_item_for_es(doc, build_known_fields())
+        doc = project_item_for_es(doc, await resolve_catalog_known_fields(ctx.catalog))
         await es.index(
             index=index_name, id=op.entity_id, body=doc,
             params={"routing": ctx.collection},
@@ -992,14 +1001,14 @@ class ItemsElasticsearchDriver(
             )
 
         from dynastore.modules.elasticsearch.items_projection import (
-            build_known_fields,
             project_item_for_es,
+            resolve_catalog_known_fields,
         )
 
         es = _es_client_required()
         index_name = _tenant_items_index(ctx.catalog)
         await _ensure_in_public_alias_once(ctx.catalog, index_name)
-        known_fields = build_known_fields()
+        known_fields = await resolve_catalog_known_fields(ctx.catalog)
 
         body: List[dict] = []
         for op in ops:

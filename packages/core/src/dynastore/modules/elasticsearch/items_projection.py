@@ -257,13 +257,112 @@ TIER_1_FIELDS: Dict[str, Dict[str, Any]] = {
 def build_known_fields(catalog_config: Optional[Any] = None) -> Dict[str, Dict[str, Any]]:
     """Resolve the effective known-fields map for a catalog.
 
-    v1 returns a fresh copy of Tier 1 regardless of ``catalog_config`` —
-    the Tier-2 overlay (``additional_known_fields``) is wired in the
-    follow-up commit alongside the ``ItemsElasticsearchDriverConfig``
-    validator. Returning a copy avoids accidental mutation of the
-    module-level invariant.
+    Returns ``Tier 1`` merged with the catalog's Tier-2 overlay
+    (``ItemsElasticsearchDriverConfig.mapping``). Tier-2 is **additive
+    only** — :func:`validate_tier_2` rejects collisions at config-write
+    time, so by the time a config reaches this function the merge is
+    guaranteed safe. The merge order (Tier 2 last) is defensive: if a
+    bypass ever lands a colliding overlay, the operator's value still
+    wins so the index mapping and the projection stay consistent.
+
+    Returning a copy avoids accidental mutation of the module-level
+    invariant. Callers that pass ``None`` get Tier 1 only — used by
+    cross-catalog ``/search`` (against the platform alias) where Tier-2
+    fields are not guaranteed to exist on every member.
     """
-    return dict(TIER_1_FIELDS)
+    out: Dict[str, Dict[str, Any]] = dict(TIER_1_FIELDS)
+    if catalog_config is None:
+        return out
+    overlay = getattr(catalog_config, "mapping", None)
+    if isinstance(overlay, dict) and overlay:
+        out.update(overlay)
+    return out
+
+
+def validate_tier_2(
+    tier_2: Dict[str, Any],
+    tier_1: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> None:
+    """Validate a Tier-2 overlay for additive-only safety.
+
+    Raises :class:`ValueError` when ``tier_2`` carries a key that
+    collides with Tier 1 at a different type — the alias contract
+    requires uniform typing for Tier-1 paths across every member index.
+
+    A collision is defined as ``tier_2[key]["type"] != tier_1[key]["type"]``;
+    same-type re-declarations are tolerated (no-op overlay, useful for
+    operators who want to mirror Tier-1 fields in their catalog config
+    for documentation purposes).
+
+    A Tier-2 value that is not a dict, or omits ``"type"``, is rejected —
+    every entry must declare an explicit ES field type to keep the
+    surface auditable.
+    """
+    if not isinstance(tier_2, dict):
+        raise ValueError(
+            "ItemsElasticsearchDriverConfig.mapping must be a dict of "
+            "{stac_field: {ES field-type definition}}."
+        )
+    if not tier_2:
+        return
+    tier_1 = tier_1 if tier_1 is not None else TIER_1_FIELDS
+
+    for key, value in tier_2.items():
+        if not isinstance(value, dict) or "type" not in value:
+            raise ValueError(
+                f"ItemsElasticsearchDriverConfig.mapping[{key!r}] must be a "
+                "dict with at least a 'type' field; got "
+                f"{type(value).__name__}."
+            )
+        if key in tier_1:
+            t1_type = tier_1[key].get("type")
+            t2_type = value.get("type")
+            if t1_type != t2_type:
+                raise ValueError(
+                    f"ItemsElasticsearchDriverConfig.mapping[{key!r}] type "
+                    f"{t2_type!r} collides with platform Tier-1 type "
+                    f"{t1_type!r}. Tier-2 is additive only — pick a "
+                    "different key or remove the override."
+                )
+
+
+async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """Async helper: fetch the per-catalog ``ItemsElasticsearchDriverConfig``
+    and return the merged Tier-1 ∪ Tier-2 known-fields map.
+
+    Falls back to Tier 1 only when:
+
+    * ``catalog_id`` is ``None`` — caller is in alias/cross-catalog scope;
+    * the configs protocol is not yet registered (cold boot, unit test);
+    * the config fetch raises any exception (degrade-safe, never blocks
+      writes).
+
+    Used by write entry points so the projection helper writes Tier-2
+    fields at their explicit ``properties.<key>`` path instead of routing
+    them through ``extras``.
+    """
+    if not catalog_id:
+        return dict(TIER_1_FIELDS)
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.driver_config import (
+            ItemsElasticsearchDriverConfig,
+        )
+        from dynastore.tools.discovery import get_protocol
+    except Exception:
+        return dict(TIER_1_FIELDS)
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs is None:
+        return dict(TIER_1_FIELDS)
+    try:
+        cfg = await configs.get_config(
+            ItemsElasticsearchDriverConfig,
+            catalog_id=catalog_id,
+        )
+    except Exception:
+        return dict(TIER_1_FIELDS)
+    return build_known_fields(cfg)
 
 
 def project_item_for_es(doc: Dict[str, Any], known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
