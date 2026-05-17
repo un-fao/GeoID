@@ -26,7 +26,6 @@ class DBConfig:
     pool_min_size: int = int(os.getenv("DB_POOL_MIN_SIZE", "5"))
     pool_max_size: int = int(os.getenv("DB_POOL_MAX_SIZE", "100"))
     pool_max_queries: int = int(os.getenv("DB_POOL_MAX_QUERIES", "50000"))
-    pool_max_inactive_connection_lifetime: int = int(os.getenv("DB_POOL_MAX_INACTIVE_CONNECTION_LIFETIME", "30"))
     pool_command_timeout: int = int(os.getenv("DB_POOL_COMMAND_TIMEOUT", "60"))
     connect_timeout: int = int(os.getenv("DB_CONNECT_TIMEOUT", "30"))
     # SQLAlchemy retires a pooled connection once it reaches this age (#729).
