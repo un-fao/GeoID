@@ -113,6 +113,12 @@ def _stub_engine_cache(client: Any) -> Any:
     ec = MagicMock()
     ec.get = AsyncMock(return_value=client)
     ec.evict = AsyncMock(return_value=None)
+    # ``_on_valkey_engine_config_change`` awaits ``update_config`` before
+    # ``evict`` (snapshot push + re-init, #827); without an AsyncMock here
+    # the handler hits a TypeError, swallows it via except Exception, and
+    # then ``evict.assert_awaited_once`` fails downstream with a confusing
+    # "Awaited 0 times" because the handler returned early.
+    ec.update_config = AsyncMock(return_value=None)
     return ec
 
 
@@ -159,8 +165,11 @@ async def test_apply_handler_success_swaps_backend_and_logs_metric(
     manager.unregister_backend.assert_called_once_with(old_backend)
     old_backend.close.assert_awaited_once()
 
-    # 2. Engine evicted + re-fetched.
-    engine_cache.evict.assert_awaited_once_with("valkey_engine")
+    # 2. Snapshot refreshed (#827) + engine re-fetched. ``update_config``
+    # internally calls ``evict`` then writes the new config; mocking
+    # ``update_config`` as an AsyncMock means the inner ``evict`` is not
+    # observed at this layer — assert on the public step instead.
+    engine_cache.update_config.assert_awaited_once_with(None)
     engine_cache.get.assert_awaited_once_with("valkey_engine")
 
     # 3. New backend probed + registered + notified.

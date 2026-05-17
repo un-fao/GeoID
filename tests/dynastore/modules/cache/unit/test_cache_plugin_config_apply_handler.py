@@ -1,0 +1,152 @@
+"""Regression test: ``CachePluginConfig`` apply handler re-applies threshold.
+
+Background: ``ValkeyCacheBackend.__init__`` captures
+``circuit_breaker_threshold`` (``cache_valkey.py:555``) and never re-reads
+it. Before this fix, a ``PUT /configs?plugin_id=cache_plugin_config`` that
+bumped the threshold persisted the new value in the config snapshot but
+the live backend kept the OLD value — exactly the "Read-once, never
+re-applied" failure mode #756 describes. The only path that picked up the
+new value was a Valkey engine config change (which rebuilds the backend).
+
+Fix: register ``_on_cache_plugin_config_change`` as the apply handler for
+``CachePluginConfig``; it pushes ``circuit_breaker_threshold`` onto the
+live ``_current_backend`` in-place. The other two fields on
+``CachePluginConfig`` don't need a live update — ``probe_timeout_seconds``
+is only consumed on (re)connect, and ``oracle_inner_timeout_seconds`` is
+hot-read per dispatch by the tasks dispatcher.
+
+This test pins both halves: source-level guard that the handler exists
+and is wired in lifespan, and empirical pin that calling the handler
+updates ``_circuit_breaker_threshold`` on a fake live backend.
+"""
+from __future__ import annotations
+
+import asyncio
+import inspect
+
+import pytest
+
+
+def test_handler_exists_with_correct_signature():
+    """``_on_cache_plugin_config_change`` must exist and accept the
+    standard apply-handler signature ``(config, catalog_id, collection_id,
+    conn)`` so the platform config service can call it."""
+    from dynastore.modules.cache import cache_module
+
+    assert hasattr(cache_module, "_on_cache_plugin_config_change"), (
+        "expected CachePluginConfig apply handler to be defined at "
+        "module scope (mirrors _on_valkey_engine_config_change)"
+    )
+    handler = cache_module._on_cache_plugin_config_change
+    sig = inspect.signature(handler)
+    assert len(sig.parameters) == 4, (
+        f"apply handler should take 4 args (config, catalog_id, "
+        f"collection_id, conn); got signature {sig!r}"
+    )
+
+
+def test_handler_pushes_threshold_onto_live_backend():
+    """Empirical pin: invoking the handler with a fresh config and a
+    live backend exposing ``_circuit_breaker_threshold`` updates the
+    attribute in-place."""
+    from dynastore.modules.cache import cache_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self._circuit_breaker_threshold = 3  # old default
+
+    fake = _FakeBackend()
+    cache_module._current_backend = fake
+    try:
+        class _FakeCfg:
+            circuit_breaker_threshold = 7
+
+        asyncio.run(
+            cache_module._on_cache_plugin_config_change(
+                _FakeCfg(), None, None, None
+            )
+        )
+        assert fake._circuit_breaker_threshold == 7, (
+            "apply handler must push the new circuit_breaker_threshold "
+            "onto the live backend in-place — got "
+            f"{fake._circuit_breaker_threshold!r}"
+        )
+    finally:
+        cache_module._current_backend = None
+
+
+def test_handler_is_noop_when_no_live_backend():
+    """The handler must tolerate ``_current_backend is None`` (cache
+    degraded to L1-only) without raising — the new value will take
+    effect on the next backend build."""
+    from dynastore.modules.cache import cache_module
+
+    cache_module._current_backend = None
+
+    class _FakeCfg:
+        circuit_breaker_threshold = 9
+
+    # Should not raise.
+    asyncio.run(
+        cache_module._on_cache_plugin_config_change(
+            _FakeCfg(), None, None, None
+        )
+    )
+
+
+def test_lifespan_registers_and_unregisters_handler():
+    """Source-level pin: lifespan must register and unregister the
+    handler so the platform config service routes apply calls through
+    it. Matches the existing ``_on_valkey_engine_config_change``
+    wiring shape — both live next to each other in
+    ``CacheModule.lifespan``."""
+    from dynastore.modules.cache.cache_module import CacheModule
+
+    src = inspect.getsource(CacheModule.lifespan)
+    assert (
+        "CachePluginConfig.register_apply_handler" in src
+        and "_on_cache_plugin_config_change" in src
+    ), (
+        "CacheModule.lifespan must register "
+        "_on_cache_plugin_config_change as the apply handler for "
+        "CachePluginConfig; otherwise PUT /configs?plugin_id=cache_"
+        "plugin_config silently no-ops on circuit_breaker_threshold"
+    )
+    assert "CachePluginConfig.unregister_apply_handler" in src, (
+        "lifespan must unregister the handler on shutdown so test "
+        "isolation + module-disable hot-paths don't leak the binding"
+    )
+
+
+def test_handler_only_touches_threshold_not_other_fields():
+    """Defensive: the handler should not blanket-overwrite arbitrary
+    fields on the backend (e.g. ``_consecutive_failures``) — its job
+    is to live-apply ``circuit_breaker_threshold`` only. A regression
+    that reset failure counters via this handler would silently
+    deplete the circuit breaker."""
+    from dynastore.modules.cache import cache_module
+
+    class _FakeBackend:
+        def __init__(self):
+            self._circuit_breaker_threshold = 3
+            self._consecutive_failures = 2  # accumulated failures
+
+    fake = _FakeBackend()
+    cache_module._current_backend = fake
+    try:
+        class _FakeCfg:
+            circuit_breaker_threshold = 10
+
+        asyncio.run(
+            cache_module._on_cache_plugin_config_change(
+                _FakeCfg(), None, None, None
+            )
+        )
+        assert fake._circuit_breaker_threshold == 10
+        assert fake._consecutive_failures == 2, (
+            "apply handler must NOT reset _consecutive_failures — "
+            "doing so would silently rearm a circuit breaker that "
+            "was about to trip, masking ongoing Valkey degradation"
+        )
+    finally:
+        cache_module._current_backend = None
