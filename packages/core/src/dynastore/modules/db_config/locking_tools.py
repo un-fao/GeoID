@@ -102,6 +102,12 @@ def retry_on_lock_conflict(max_retries: int = 5, base_delay: float = 0.5):
 class _StartupCoordinator:
     _tasks: Dict[str, asyncio.Future] = {}
     _lock = asyncio.Lock()
+    # Strong refs for the fire-and-forget ``_cleanup`` tasks. Without this,
+    # asyncio only keeps weak refs and a GC sweep can collect the cleanup
+    # mid-sleep — the cached future would never be evicted and a later
+    # retry of the same key would see a "still in progress" hit instead of
+    # re-running the coroutine.
+    _cleanup_tasks: Set[asyncio.Task] = set()
 
     @classmethod
     async def run_once(cls, key: str, coro_func: Callable[[], Awaitable[T]]) -> T:
@@ -112,8 +118,6 @@ class _StartupCoordinator:
             future = asyncio.Future()
             cls._tasks[key] = future
 
-        # Try-finally block to ensure we cleanup on failure
-        cleanup_task_ref = None
         try:
             result = await coro_func()
             if not future.done():
@@ -127,7 +131,9 @@ class _StartupCoordinator:
                     if cls._tasks.get(key) is future:
                         cls._tasks.pop(key, None)
 
-            cleanup_task_ref = asyncio.create_task(_cleanup())
+            cleanup_task = asyncio.create_task(_cleanup())
+            cls._cleanup_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(cls._cleanup_tasks.discard)
 
             return result
         except Exception as e:

@@ -85,6 +85,20 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Strong refs for fire-and-forget cache-invalidation tasks scheduled from
+# sync contexts. ``loop.create_task`` returns a weak-ref'd Task; without a
+# strong reference somewhere, a GC pass can collect the task before the
+# invalidation runs — stale data continues to be served from the
+# distributed backend until the TTL expires.
+_pending_invalidations: Set[asyncio.Task] = set()
+
+
+def _track(task: asyncio.Task) -> asyncio.Task:
+    """Hold a strong reference to ``task`` until completion."""
+    _pending_invalidations.add(task)
+    task.add_done_callback(_pending_invalidations.discard)
+    return task
+
 
 # ---------------------------------------------------------------------------
 #  CacheIgnore type annotation
@@ -1095,7 +1109,7 @@ def cached(
                     # Distributed backend: schedule async clear (fire-and-forget)
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(_backend.clear(key=cache_key))
+                        _track(loop.create_task(_backend.clear(key=cache_key)))
                     except RuntimeError:
                         pass
 
@@ -1111,7 +1125,7 @@ def cached(
                     # Distributed backend: schedule async namespace clear
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(_backend.clear(namespace=ns))
+                        _track(loop.create_task(_backend.clear(namespace=ns)))
                     except RuntimeError:
                         pass
 
