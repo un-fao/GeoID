@@ -64,7 +64,7 @@ from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.db_config.maintenance_tools import register_cron_job
 from dynastore.tools.discovery import get_protocol
-from dynastore.modules.concurrency import get_background_executor
+from dynastore.modules.concurrency import get_background_executor, run_in_background
 from dynastore.models.driver_context import DriverContext
 
 logger = logging.getLogger(__name__)
@@ -360,7 +360,13 @@ class EventService(EventBusProtocol):
             )
             for listener in async_listeners:
                 try:
-                    asyncio.create_task(listener(*args, **kwargs))
+                    # Hold a strong ref via ``run_in_background`` so the loop
+                    # cannot GC the task mid-execution and silently drop the
+                    # event delivery (Python asyncio docs §"Important").
+                    run_in_background(
+                        listener(*args, **kwargs),
+                        name=f"event_listener:{e_val}",
+                    )
                 except Exception as e:
                     logger.error(
                         f"Error scheduling async listener for '{e_val}': {e}",
@@ -382,7 +388,10 @@ class EventService(EventBusProtocol):
 
         for listener in listeners:
             try:
-                asyncio.create_task(listener(*args, **kwargs))
+                run_in_background(
+                    listener(*args, **kwargs),
+                    name=f"event_listener_detached:{e_val}",
+                )
             except Exception as e:
                 logger.error(
                     f"Error scheduling detached listener for '{e_val}': {e}",

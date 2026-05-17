@@ -1115,6 +1115,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         Async drivers fire after the sync phase succeeds (fire-and-forget).
         """
+        from dynastore.modules.concurrency import run_in_background
         from dynastore.modules.storage.router import get_write_drivers, ResolvedDriver
         from dynastore.modules.storage.routing_config import FailurePolicy, WriteMode
 
@@ -1166,9 +1167,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 raise first_fatal_exc  # type: ignore[misc]
 
         # ── Async phase: fire-and-forget ──────────────────────────────
+        # ``run_in_background`` holds a strong reference so the loop cannot
+        # GC the task mid-execution and silently drop the secondary write.
         for r in async_drivers:
-            asyncio.create_task(
-                self._async_secondary_write(r, catalog_id, collection_id, features)
+            run_in_background(
+                self._async_secondary_write(r, catalog_id, collection_id, features),
+                name=f"item_secondary_write:{r.driver_ref}:{catalog_id}/{collection_id}",
             )
 
     async def _async_secondary_write(
