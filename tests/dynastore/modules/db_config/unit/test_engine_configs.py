@@ -1,4 +1,4 @@
-"""Cycle F.1 — pin the engines layer at ``platform.engines.*``.
+"""Cycle F.1 — pin the engines layer at ``platform.protocols.storage.*``.
 
 Engines are platform-only connection-and-pool resources, sysadmin-locked
 by default.  Drivers reference them via ``engine_ref`` (Cycle F.2).
@@ -104,7 +104,7 @@ def test_concrete_engine_subclass_must_override_engine_class():
     with pytest.raises(TypeError, match=r"does not declare ``engine_class``"):
         class _BadEngineConfig(EngineConfig):  # noqa: F841
             # Forgot to set engine_class — should fail at __init_subclass__.
-            _address: ClassVar[Tuple[str, ...]] = ("platform", "engines")
+            _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage")
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +136,9 @@ def test_engine_classes_declare_engine_class_discriminator(
     [PostgresqlEngineConfig, ElasticsearchEngineConfig, DuckdbEngineConfig, IcebergEngineConfig],
 )
 def test_engine_classes_share_platform_engines_address(cls):
-    """All four engines live at ``("platform", "engines")``; the
+    """All four engines live at ``("platform", "protocols", "storage")``; the
     composer separates them by ``class_key()``."""
-    assert cls._address == ("platform", "engines")
+    assert cls._address == ("platform", "protocols", "storage")
     assert cls._visibility == "platform"
 
 

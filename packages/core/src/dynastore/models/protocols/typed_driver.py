@@ -223,7 +223,7 @@ class _PluginDriverConfig(PluginConfig):
             "registry to an incompatible ``engine_class``.  Refs "
             "unknown to the registry are deferred to runtime "
             "(EngineInstanceCache.get + PATCH-handler ref-existence "
-            "check at platform.engines.{ref}).  ``WriteOnce`` (#665 "
+            "check at platform.protocols.storage.{ref}).  ``WriteOnce`` (#665 "
             "slice 4): rebinding an active driver to a different pool "
             "is not a supported operation."
         ),

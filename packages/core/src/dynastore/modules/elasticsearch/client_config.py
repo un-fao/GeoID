@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class ElasticsearchClientConfig(PluginConfig):
     """Per-process transport settings for the shared AsyncOpenSearch client."""
 
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "elasticsearch", "client")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage", "elasticsearch", "client")
 
     request_timeout_seconds: Mutable[int] = Field(
         default=60,

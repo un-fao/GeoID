@@ -129,7 +129,7 @@ def test_engine_ref_unknown_string_accepted(cls, expected_engine_class):
     """Cycle F.4c.3 widens the validator: an ``engine_ref`` that is NOT
     in the engine registry (operator-chosen multi-instance name like
     ``pg_main``) is accepted at validate-time after a snake_case format
-    check.  Runtime / PATCH-handler enforces existence at platform.engines.{ref}.
+    check.  Runtime / PATCH-handler enforces existence at platform.protocols.storage.{ref}.
 
     Pre-F.4c.3 this exact case raised ``ValueError(... incompatible with
     required_engine_class)`` even when the ref simply hadn't been

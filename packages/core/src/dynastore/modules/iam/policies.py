@@ -69,7 +69,7 @@ class PolicyService:
         self.storage = storage or PostgresPolicyStorage(app_state=app_state)
         self.iam_storage = iam_storage
         # Role names + tier split + named slots are sourced from the
-        # ``IamRolesConfig`` PluginConfig (``("platform","iam","roles")``).
+        # ``IamRolesConfig`` PluginConfig (``("platform","modules","iam","roles")``).
         # Defaults seed platform-tier [sysadmin] and catalog-tier
         # [admin, editor, user, unauthenticated]. Operators rename, add,
         # or drop roles via PATCH at runtime — no subclassing.

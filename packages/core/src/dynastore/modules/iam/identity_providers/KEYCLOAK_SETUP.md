@@ -67,7 +67,7 @@ IDP_AUDIENCE=geoid-api
 
 ### 2. Realm roles
 
-GeoID maps Keycloak realm roles to entries in the `IamRolesConfig` PluginConfig at `("platform", "iam", "roles")` (defined in `models/protocols/authorization.py`). The default seed lists the following platform-tier roles — create at least the ones below:
+GeoID maps Keycloak realm roles to entries in the `IamRolesConfig` PluginConfig at `("platform", "modules", "iam", "roles")` (defined in `models/protocols/authorization.py`). The default seed lists the following platform-tier roles — create at least the ones below:
 
 | Realm role | Notes |
 |---|---|
@@ -80,7 +80,7 @@ GeoID maps Keycloak realm roles to entries in the `IamRolesConfig` PluginConfig 
 
 Anonymous (unauthenticated) requests are mapped to the `IamRolesConfig.anonymous_role_name` slot (default `"unauthenticated"` post-geoid#643) automatically — do not create an explicit `unauthenticated` realm role in Keycloak.
 
-> Operators can add, rename, or drop roles at runtime by PATCH-ing `/api/catalog/v2/configs` at the `platform.iam.roles` address. Renames take effect on the next request without redeploying — but coordinate with the Keycloak realm so the realm-role names still match the PluginConfig.
+> Operators can add, rename, or drop roles at runtime by PATCH-ing `/api/catalog/v2/configs` at the `platform.modules.iam.roles` address. Renames take effect on the next request without redeploying — but coordinate with the Keycloak realm so the realm-role names still match the PluginConfig.
 
 ### 3. Client roles (per client)
 

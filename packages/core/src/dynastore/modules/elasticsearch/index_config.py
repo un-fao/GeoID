@@ -43,7 +43,7 @@ class ElasticsearchIndexConfig(PluginConfig):
     existing index would need a separate `put_settings` apply-handler
     (not implemented; not required for the #489 scenario).
     """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "elasticsearch", "indexes")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "protocols", "storage", "elasticsearch", "indexes")
 
     items_total_fields_limit: Mutable[int] = Field(
         default=2000,

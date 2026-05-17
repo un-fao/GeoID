@@ -479,7 +479,7 @@ Every driver config inherits two engine-binding attributes from
   single-instance-per-kind deployments (F.1).  F.4 enables operator-
   chosen ref names for multi-instance.
 
-Engines themselves live at `configs.platform.engines.*` and are
+Engines themselves live at `configs.platform.protocols.storage.*` and are
 sysadmin-only via the existing `configs_access` policy — see
 `src/dynastore/modules/db_config/engine_config.py` for the four
 concrete engine classes.

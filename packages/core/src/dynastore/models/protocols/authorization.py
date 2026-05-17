@@ -128,7 +128,7 @@ class IamRolesConfig(PluginConfig):
     from the historical ``"anonymous"``).
     """
 
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "iam", "roles")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "iam", "roles")
 
     sysadmin_role_name: Mutable[str] = Field(
         default="sysadmin",

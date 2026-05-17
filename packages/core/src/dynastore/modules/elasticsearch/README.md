@@ -47,7 +47,7 @@ pip install dynastore[elasticsearch]
 | `ES_INDEX_PREFIX` | `dynastore` | Prefix applied to all index names |
 
 Transport tuning (timeout, pool size, retries) lives in PluginConfig
-`platform/elasticsearch/client` (`ElasticsearchClientConfig`) — edit via
+`platform/protocols/storage/elasticsearch/client` (`ElasticsearchClientConfig`) — edit via
 `PUT /configs/plugins/elasticsearch_client_config` (effective at next module lifespan).
 
 #### On-Premise / OpenSearch Example
