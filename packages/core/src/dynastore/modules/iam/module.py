@@ -563,6 +563,28 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         attempted_p = [p.id for p in policies]
         attempted_r = [r.name for r in roles]
 
+        # Seed-policy lookup keyed by role name. ``provision_default_policies``
+        # only writes ``platform_roles`` into the platform ``iam`` schema
+        # (catalog-tier RoleSeeds are seeded per-catalog by the lifecycle
+        # hook, not here). But ``flush_pending_registrations`` writes ALL
+        # buffered roles to ``schema="iam"`` regardless of tier — so when
+        # contributors register, say, ``Role(name="unauthenticated",
+        # policies=["web_public_access", ...])``, the read-modify-write below
+        # starts from ``existing=None`` (no seed write ever landed for the
+        # catalog-tier role in platform schema) and persists the row with
+        # ONLY contributor policies. The seed-declared ``public_access`` is
+        # silently dropped → ``/health`` 403 (geoid#902). Union the
+        # ``RoleSeed.policies`` for the role name into the merge so the seed
+        # binding survives. Applies to both platform_roles and catalog_roles
+        # since the platform ``iam.roles`` table holds the role rows the
+        # request-scope eval looks up when no catalog context is present
+        # (e.g. /health).
+        seed_policies_by_role: dict[str, list[str]] = {}
+        if policy_service is not None:
+            role_config = policy_service._role_config
+            for seed in list(role_config.platform_roles) + list(role_config.catalog_roles):
+                seed_policies_by_role[seed.name] = list(seed.policies)
+
         async def _flush_once() -> None:
             async with managed_transaction(engine) as conn:
                 # Cross-process / cross-worker serialization (closes #263).
@@ -593,17 +615,29 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 # Roles: same pattern, with the existing read-modify-write
                 # merge so concurrent extensions registering the same role
                 # name (every OGC extension adds to 'anonymous', etc.) end
-                # up with the union of policy ids.
+                # up with the union of policy ids — PLUS the RoleSeed
+                # defaults (see ``seed_policies_by_role`` above for the
+                # geoid#902 motivation).
                 if storage is not None:
                     async with self._role_lock:
                         for r in roles:
                             existing = await storage.get_role(r.name, schema="iam", conn=conn)
+                            seed_policies = seed_policies_by_role.get(r.name, [])
+                            base_policies = list(existing.policies) if existing else []
+                            merged = list(set(base_policies + seed_policies + r.policies))
                             if existing:
-                                merged = list(set(existing.policies + r.policies))
                                 merged_role = r.model_copy(update={"policies": merged})
                                 await storage.update_role(merged_role, schema="iam", conn=conn)
                             else:
-                                await storage.create_role(r, schema="iam", conn=conn)
+                                # First write — start from the seed-augmented
+                                # merge so the row lands with seed + contributor
+                                # policies even when no prior row exists.
+                                # Without this, the catalog-tier
+                                # ``unauthenticated`` seed would be lost on
+                                # cold boot because no platform-tier seed
+                                # write touches it.
+                                seeded_role = r.model_copy(update={"policies": merged})
+                                await storage.create_role(seeded_role, schema="iam", conn=conn)
 
         try:
             # ``reraise=True`` propagates the underlying exception on
