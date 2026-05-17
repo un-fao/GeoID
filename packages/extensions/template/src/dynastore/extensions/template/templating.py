@@ -69,8 +69,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-jinja_env = Environment()
-# {"enable_async":True}
+# Two long-lived environments instead of one, because Jinja2 escaping is
+# baked at compile time (Environment(autoescape=...)) — setting
+# ``template.autoescape`` AFTER ``env.from_string(template)`` has no effect
+# on the already-compiled bytecode. The previous single-env code did exactly
+# that and silently dropped the ``?ae=true`` request flag on the floor →
+# callers asking for HTML escaping got raw output, with text/html content
+# type, which is reflected XSS if the template + model originate from
+# untrusted input. We pick the right env at request time and compile against
+# the env whose escaping bytecode actually matches the caller's intent.
+_jinja_env_plain = Environment()
+_jinja_env_autoescape = Environment(autoescape=True)
+
+
+def _select_jinja_env(autoescape: bool) -> Environment:
+    return _jinja_env_autoescape if autoescape else _jinja_env_plain
 
 def _extract_headers(h_list: Any = None, headers: Any = None) -> dict:
     _headers = {}
@@ -146,19 +159,11 @@ async def _prepare_template_and_model(client: httpx.AsyncClient, model: Optional
 
 
 async def _interpolate_streaming(template, model: dict, escapeTemplate: bool = False, autoEscape: bool = False) -> AsyncGenerator[bytes, None]:
-    
-    # Apply escaping if necessary
+
     if escapeTemplate:
         template = bytes(template, 'utf-8').decode('unicode_escape')
 
-    # Prepare the Jinja2 template
-    # Assuming templates are loaded in-memory
-    # TODO load from params other options
-    jinja_template = jinja_env.from_string(template)
-    # Apply auto-escaping if necessary
-
-    jinja_template.autoescape = autoEscape  # type: ignore[reportAttributeAccessIssue]
-    # jinja_template = Template(source=template, autoescape=autoEscape)
+    jinja_template = _select_jinja_env(autoEscape).from_string(template)
     try:
         for chunk in jinja_template.stream(model):
             yield chunk.encode("utf-8")
@@ -166,20 +171,11 @@ async def _interpolate_streaming(template, model: dict, escapeTemplate: bool = F
         yield f"Interpolation error: {str(e)}".encode("utf-8")
 
 def _interpolate(template: str, model: dict, escapeTemplate: bool = False, autoEscape: bool = False) -> str:
-    
-    # Apply escaping if necessary
+
     if escapeTemplate:
         template = bytes(template, 'utf-8').decode('unicode_escape')
 
-    # Prepare the Jinja2 template
-    # Assuming templates are loaded in-memory
-    # TODO load from params other options
-    jinja_template = jinja_env.from_string(template)
-
-    # Apply auto-escaping if necessary
-    jinja_template.autoescape = autoEscape  # type: ignore[reportAttributeAccessIssue]
-    # jinja_template = Template(source=template, autoescape=autoEscape)
-
+    jinja_template = _select_jinja_env(autoEscape).from_string(template)
     return jinja_template.render(model)
         
 async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: list, resolve_urls_h: list[dict] = []) -> str:
