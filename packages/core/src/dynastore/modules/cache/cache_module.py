@@ -223,6 +223,68 @@ async def _on_valkey_engine_config_change(
         )
 
 
+async def _on_cache_plugin_config_change(
+    config: Any,
+    _catalog_id: Any,
+    _collection_id: Any,
+    _conn: Any,
+) -> None:
+    """Apply handler for ``CachePluginConfig`` — live re-apply circuit
+    breaker threshold on the current Valkey backend.
+
+    ``ValkeyCacheBackend`` captures ``circuit_breaker_threshold`` at
+    construction (``cache_valkey.py:555``) and never re-reads it.
+    Without this handler a ``PUT /configs?plugin_id=cache_plugin_config``
+    that bumps the threshold silently no-ops until the next engine
+    reconnect (which is what would rebuild the backend through
+    ``_on_valkey_engine_config_change``).  That is exactly the
+    "read-once, never re-applied" failure mode #756 describes.
+
+    Other fields on ``CachePluginConfig``:
+
+    * ``probe_timeout_seconds`` — only consumed during (re)connect via
+      ``_load_cache_config()``; the next reconnect already picks up
+      the new value, no live update needed.
+    * ``oracle_inner_timeout_seconds`` — hot-read per dispatch in
+      ``modules/tasks/dispatcher.py`` (calls ``configs_proto.get_config
+      (CachePluginConfig)`` each time), no live update needed.
+
+    So this handler only has to push the threshold onto the live
+    backend.  Safe to no-op when ``_current_backend`` is ``None``
+    (e.g. cache degraded to L1-only) — the next reconnect will pick
+    up the new value via ``_load_cache_config()``.
+    """
+    global _current_backend
+
+    backend = _current_backend
+    if backend is None:
+        logger.debug(
+            "CachePluginConfig apply handler: no live backend; "
+            "new threshold=%s will take effect on next backend build.",
+            getattr(config, "circuit_breaker_threshold", "<unset>"),
+        )
+        return
+
+    new_threshold = getattr(config, "circuit_breaker_threshold", None)
+    if new_threshold is None:
+        return
+
+    # Set the attribute on whatever backend type is live — the test
+    # double + ``ValkeyCacheBackend`` both expose it as ``_circuit_breaker_threshold``.
+    try:
+        setattr(backend, "_circuit_breaker_threshold", int(new_threshold))
+        logger.info(
+            "CachePluginConfig: circuit_breaker_threshold live-applied = %d",
+            int(new_threshold),
+        )
+    except Exception:
+        logger.exception(
+            "CachePluginConfig apply handler: failed to update "
+            "_circuit_breaker_threshold on live backend (%s)",
+            type(backend).__name__,
+        )
+
+
 class CacheModule(ModuleProtocol):
     """SCOPE-controlled module that wires Valkey as the shared cache backend.
 
@@ -463,6 +525,17 @@ class CacheModule(ModuleProtocol):
             )
 
         try:
+            from dynastore.modules.cache.cache_config import CachePluginConfig
+
+            CachePluginConfig.register_apply_handler(
+                _on_cache_plugin_config_change
+            )
+        except Exception:
+            logger.exception(
+                "CacheModule: failed to register CachePluginConfig apply handler"
+            )
+
+        try:
             yield
         finally:
             try:
@@ -472,6 +545,16 @@ class CacheModule(ModuleProtocol):
 
                 ValkeyEngineConfig.unregister_apply_handler(
                     _on_valkey_engine_config_change
+                )
+            except Exception:
+                pass
+            try:
+                from dynastore.modules.cache.cache_config import (
+                    CachePluginConfig,
+                )
+
+                CachePluginConfig.unregister_apply_handler(
+                    _on_cache_plugin_config_change
                 )
             except Exception:
                 pass
