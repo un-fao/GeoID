@@ -480,11 +480,13 @@ class ItemsRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
+                    source="auto",
                 ),
             ],
             Operation.READ: [
@@ -492,21 +494,25 @@ class ItemsRoutingConfig(PluginConfig):
                     driver_ref="items_elasticsearch_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
                     on_failure=FailurePolicy.WARN,
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT, Hint.TILES},
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
             Operation.SEARCH: [
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
         },
@@ -617,12 +623,14 @@ class CollectionRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
             Operation.INDEX: [
@@ -641,10 +649,12 @@ class CollectionRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="collection_elasticsearch_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT},
+                    source="auto",
                 ),
             ],
         },
@@ -726,11 +736,13 @@ class AssetRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="asset_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="asset_elasticsearch_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
+                    source="auto",
                 ),
             ],
             Operation.READ: [
@@ -738,11 +750,13 @@ class AssetRoutingConfig(PluginConfig):
                     driver_ref="asset_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT},
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="asset_elasticsearch_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
                     on_failure=FailurePolicy.WARN,
+                    source="auto",
                 ),
             ],
         },
@@ -825,12 +839,14 @@ class CatalogRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="catalog_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
                     driver_ref="catalog_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
+                    source="auto",
                 ),
             ],
             Operation.INDEX: [
@@ -1003,6 +1019,25 @@ def _validate_routing_entries(
             )
 
 
+def _is_operator_managed(
+    target_ops: Dict[str, List["OperationDriverEntry"]],
+    op: str,
+) -> bool:
+    """Return True when any entry in ``target_ops[op]`` is operator-source.
+
+    Under the list-level operator-override semantic (#889): once an
+    operator has touched an operation's driver list, the self-register
+    helpers must not append further entries. Boot-time defaults are
+    marked ``source="auto"`` so a fresh config still auto-registers
+    discoverable drivers; the moment an operator PUTs an explicit
+    operations dict, the list is treated as operator-managed and the
+    helpers become a no-op for that operation.
+    """
+    return any(
+        entry.source == "operator" for entry in target_ops.get(op, [])
+    )
+
+
 def _self_register_indexers_into(
     target_ops: Dict[str, List["OperationDriverEntry"]],
     marker_proto: type,
@@ -1024,12 +1059,14 @@ def _self_register_indexers_into(
     want a non-durable best-effort sink can override per-entry to
     ``WARN``.
 
-    Idempotent: drivers already listed under ``operations[INDEX]`` are
-    not re-appended (operator-supplied entries with custom ``on_failure``
-    or ``write_mode`` survive).
+    Operator-override: a no-op when ``target_ops[INDEX]`` contains any
+    entry with ``source="operator"`` — operator-managed lists are
+    invariant under auto-augmentation (#792 / #889).
     """
     from dynastore.tools.discovery import get_protocols
 
+    if _is_operator_managed(target_ops, Operation.INDEX):
+        return
     listed = {entry.driver_ref for entry in target_ops.get(Operation.INDEX, [])}
     for driver in get_protocols(marker_proto):
         # Single gate on the per-Operation auto-default set.  Drivers
@@ -1072,11 +1109,14 @@ def _self_register_upload_into(
     local FS) coexist; operator config decides which one is selected for
     each catalog / collection by reordering the entries or pinning one.
 
-    Idempotent: drivers already listed under ``operations[UPLOAD]`` are
-    not re-appended (operator-supplied entries with custom hints survive).
+    Operator-override: a no-op when ``target_ops[UPLOAD]`` contains any
+    entry with ``source="operator"`` — operator-managed lists are
+    invariant under auto-augmentation (#792 / #889).
     """
     from dynastore.tools.discovery import get_protocols
 
+    if _is_operator_managed(target_ops, Operation.UPLOAD):
+        return
     listed = {entry.driver_ref for entry in target_ops.get(Operation.UPLOAD, [])}
     for driver in get_protocols(marker_proto):
         driver_ref = _to_snake(type(driver).__name__)
@@ -1119,12 +1159,14 @@ def _self_register_searchers_into(
     ``CollectionStore`` for collection-tier metadata routing,
     ``CollectionItemsStore`` for items-tier routing).
 
-    Idempotent — drivers already listed under ``operations[SEARCH]``
-    are not re-appended (operator-supplied entries with custom hints
-    survive).
+    Operator-override: a no-op when ``target_ops[SEARCH]`` contains any
+    entry with ``source="operator"`` — operator-managed lists are
+    invariant under auto-augmentation (#792 / #889).
     """
     from dynastore.tools.discovery import get_protocols
 
+    if _is_operator_managed(target_ops, Operation.SEARCH):
+        return
     listed = {entry.driver_ref for entry in target_ops.get(Operation.SEARCH, [])}
     for driver in get_protocols(marker_proto):
         opt_in: FrozenSet[str] = getattr(type(driver), "auto_register_for_routing", frozenset())
@@ -1157,12 +1199,19 @@ def _self_register_store_drivers(
     operator explicitly drops it after the auto-append fires (in which
     case they at least had to see the entry to remove it).
 
+    Operator-override (per-operation): for each ``op`` in ``op_keys``,
+    if ``operations[op]`` contains any entry with ``source="operator"``,
+    that operation is treated as operator-managed and skipped. Other
+    operations in ``op_keys`` are still augmented independently (#889).
+
     Mutates ``config`` in place — `Immutable[Dict[...]]` is enforced at the
     Pydantic field level (you can't reassign the dict), but the contents
     are still appendable.  Called from the apply handlers below.
     """
     target_ops = config.operations
     for op in op_keys:
+        if _is_operator_managed(target_ops, op):
+            continue
         listed = {entry.driver_ref for entry in target_ops.get(op, [])}
         for driver_ref in store_driver_index:
             if driver_ref in listed:
@@ -1882,9 +1931,10 @@ def _self_register_transformers_into(
     to ``target_ops[TRANSFORM]``.
 
     Mirrors :func:`_self_register_indexers_into` and
-    :func:`_self_register_searchers_into`. Idempotent — drivers already
-    listed under ``operations[TRANSFORM]`` are not re-appended (operator
-    overrides survive).
+    :func:`_self_register_searchers_into`. Operator-override: a no-op
+    when ``target_ops[TRANSFORM]`` contains any entry with
+    ``source="operator"`` — operator-managed lists are invariant under
+    auto-augmentation (#792 / #889).
 
     Discovery is purely structural: any driver implementing
     ``EntityTransformProtocol`` is eligible. There is no separate capability
@@ -1893,6 +1943,8 @@ def _self_register_transformers_into(
     from dynastore.models.protocols.entity_transform import EntityTransformProtocol
     from dynastore.tools.discovery import get_protocols
 
+    if _is_operator_managed(target_ops, Operation.TRANSFORM):
+        return
     listed = {entry.driver_ref for entry in target_ops.get(Operation.TRANSFORM, [])}
     for transformer in get_protocols(EntityTransformProtocol):
         driver_ref = _to_snake(type(transformer).__name__)
