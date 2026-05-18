@@ -23,6 +23,7 @@ import pytest
 from dynastore.modules.tasks.dispatcher import (
     _maybe_dlq_unclaimable,
     _stable_advisory_lock_key,
+    sweep_dead_capability_rows,
 )
 from dynastore.tasks.index_propagation.task import IndexPropagationTask
 
@@ -105,7 +106,8 @@ async def test_returns_false_when_capability_live():
 @pytest.mark.asyncio
 async def test_dlqs_when_oracle_says_no_and_lock_acquired(caplog):
     # advisory_lock acquired → got=True; UPDATE returns one row.
-    import logging, re
+    import logging
+    import re
     patches = _patches(
         oracle_live=False,
         results=[{"got": True}, {"task_id": "t-1"}],
@@ -309,9 +311,10 @@ def test_index_propagation_required_capability_missing_returns_none():
 async def test_bulk_dlq_sweeps_siblings_for_known_task_type(caplog):
     """#529: after the per-row CAS DLQ wins, the same locked transaction
     issues a bulk UPDATE that DLQs every sibling row sharing the dead
-    capability. The structured ``dispatcher_reactive_dlq_bulk_total`` line
-    fires with the sibling count."""
-    import logging, re
+    capability. The structured ``dispatcher_dlq_bulk_total`` line fires
+    with ``source=reactive`` and the sibling count."""
+    import logging
+    import re
     patches = _patches(
         oracle_live=False,
         results=[
@@ -331,7 +334,8 @@ async def test_bulk_dlq_sweeps_siblings_for_known_task_type(caplog):
         for p in patches: p.stop()
     assert result is True
     pattern = re.compile(
-        r"dispatcher_reactive_dlq_bulk_total task_type=index_propagation "
+        r"dispatcher_dlq_bulk_total source=reactive "
+        r"task_type=index_propagation "
         r"capability=dead_driver reason=no_live_worker count=3"
     )
     assert any(pattern.search(r.message) for r in caplog.records), (
@@ -371,7 +375,7 @@ async def test_bulk_dlq_skipped_for_unmapped_task_type():
             p.stop()
     assert result is True
     assert not any(
-        "dispatcher_reactive_dlq_bulk_total" in m for m in captured
+        "dispatcher_dlq_bulk_total" in m for m in captured
     ), f"bulk line should not fire for unmapped task_type: {captured}"
     # #566: belt-and-braces — assert no bulk-UPDATE SQL was even
     # constructed. The bulk path interpolates ``inputs->>'<key>'`` into
@@ -396,6 +400,132 @@ def test_task_type_capability_inputs_key_mapping_exposes_index_propagation():
         TASK_TYPE_CAPABILITY_INPUTS_KEY,
     )
     assert TASK_TYPE_CAPABILITY_INPUTS_KEY["index_propagation"] == "indexer_id"
+
+
+# ---------------------------------------------------------------------------
+# sweep_dead_capability_rows — standalone helper used by the proactive
+# sweeper task (#524 PR B). Shares ``_emit_bulk_dlq`` with the reactive
+# reaper above, so the SQL UPDATE shape is pinned by the existing
+# ``test_bulk_dlq_*`` tests; the tests below pin only the standalone
+# control flow (oracle gate, advisory lock, task_type gate, fail-safe).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_returns_zero_when_task_type_missing():
+    """No SQL is constructed when task_type is omitted."""
+    _FakeQuery._sql_log = []
+    with patch(
+        "dynastore.modules.db_config.query_executor.DQLQuery",
+        _FakeQuery,
+    ):
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(), capability_id="x",
+        )
+    assert count == 0
+    assert _FakeQuery._sql_log == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_returns_zero_for_unmapped_task_type():
+    """Unmapped task_type → no SQL, no lock attempt — same guarantee
+    as ``test_bulk_dlq_skipped_for_unmapped_task_type`` for the reactive
+    path. The proactive path must hold the same gate so it can't be used
+    to interpolate an attacker-controlled ``inputs->>`` key."""
+    _FakeQuery._sql_log = []
+    with patch(
+        "dynastore.modules.db_config.query_executor.DQLQuery",
+        _FakeQuery,
+    ):
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(),
+            capability_id="dead_driver",
+            task_type="some_other_task",
+        )
+    assert count == 0
+    assert _FakeQuery._sql_log == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_returns_zero_when_capability_live():
+    patches = _patches(oracle_live=True, results=[])
+    for p in patches: p.start()
+    try:
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(),
+            capability_id="alive_driver",
+            task_type="index_propagation",
+        )
+    finally:
+        for p in patches: p.stop()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_sweep_bulk_dlqs_when_capability_dead(caplog):
+    """Dead capability + locked txn → bulk UPDATE fires and returns the
+    sibling count. Mirrors ``test_bulk_dlq_sweeps_siblings_for_known_task_type``
+    for the reactive path."""
+    import logging
+    import re
+    patches = _patches(
+        oracle_live=False,
+        results=[
+            {"got": True},                                  # advisory lock
+            [{"task_id": "t-a"}, {"task_id": "t-b"}],       # bulk UPDATE
+        ],
+    )
+    for p in patches: p.start()
+    try:
+        caplog.set_level(logging.INFO, logger="dynastore.modules.tasks.dispatcher")
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(),
+            capability_id="dead_driver",
+            task_type="index_propagation",
+        )
+    finally:
+        for p in patches: p.stop()
+    assert count == 2
+    pattern = re.compile(
+        r"dispatcher_dlq_bulk_total source=proactive "
+        r"task_type=index_propagation "
+        r"capability=dead_driver reason=no_live_worker count=2"
+    )
+    assert any(pattern.search(r.message) for r in caplog.records), (
+        f"missing bulk_total line in: {[r.message for r in caplog.records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_when_advisory_lock_contended():
+    patches = _patches(
+        oracle_live=False,
+        results=[{"got": False}],
+    )
+    for p in patches: p.start()
+    try:
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(),
+            capability_id="dead_driver",
+            task_type="index_propagation",
+        )
+    finally:
+        for p in patches: p.stop()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_sweep_fails_safe_on_infra_error():
+    with patch(
+        "dynastore.modules.tasks.capability_oracle.is_capability_live",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        count = await sweep_dead_capability_rows(
+            engine=MagicMock(),
+            capability_id="x",
+            task_type="index_propagation",
+        )
+    assert count == 0
 
 
 def test_stable_advisory_lock_key_is_deterministic():
