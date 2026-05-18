@@ -72,6 +72,50 @@ def _iam() -> IamService:
     return mgr
 
 
+async def _is_catalog_only_admin(request: Request) -> bool:
+    """True iff the caller reaches an admin route via the ``catalog_admin``
+    sentinel binding and not via any platform-scope ALLOW.
+
+    Used by routes that must narrow their response shape (or refuse
+    enumeration) when a catalog admin reaches a platform-scope endpoint —
+    e.g. ``GET /admin/principals`` is opened to catalog admins for target
+    lookup before a catalog-scope role grant (#723 follow-up), but must
+    refuse to enumerate the directory.
+
+    Returns ``False`` for anonymous callers, sysadmin/admin role-holders,
+    principals with any platform-scope grant, and any caller the IAM
+    layer cannot resolve to a stable identity. The membership lookup
+    reuses the per-pod 60s cache, so this is a cheap secondary check on
+    the same critical path that already evaluated the policy.
+    """
+    from dynastore.models.protocols.authorization import IamRolesConfig
+    from dynastore.models.protocols.iam_query import IamQueryProtocol
+    from dynastore.extensions.iam.membership_cache import get_membership_cached
+
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        return False
+
+    cfg = IamRolesConfig()
+    principal_roles = set(getattr(principal, "roles", None) or [])
+    if cfg.sysadmin_role_name in principal_roles or cfg.admin_role_name in principal_roles:
+        return False
+
+    provider = getattr(principal, "provider", None)
+    subject_id = getattr(principal, "subject_id", None)
+    if not provider or not subject_id:
+        return False
+
+    iam_query = get_protocol(IamQueryProtocol)
+    if iam_query is None:
+        return False
+
+    membership = await get_membership_cached(iam_query, provider, subject_id)
+    if membership.get("platform"):
+        return False
+    return True
+
+
 async def _catalog_admin_filter_ids(request: Request) -> Optional[set]:
     """Return the set of catalog ids a non-platform-admin caller may see in
     the admin catalog picker (#723), or ``None`` if no filter applies.
@@ -179,6 +223,7 @@ class AdminService(ExtensionProtocol):
         summary="List or search principals (filterable by provider, identifier, role, catalog)",
     )
     async def list_principals(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
         limit: int = Query(50, ge=1, le=500),  # type: ignore[reportGeneralTypeIssues]
         offset: int = Query(0, ge=0),
         provider: Optional[str] = Query(
@@ -199,6 +244,20 @@ class AdminService(ExtensionProtocol):
         ),
     ):
         mgr = _iam()
+        # Catalog-only admins reach this route via the admin_principal_lookup
+        # policy so they can resolve a target subject_id before granting a
+        # catalog-scope role; they MUST NOT enumerate the platform principal
+        # directory. Require a non-empty q so the response is always scoped
+        # to a search the caller already had a value for (#723 follow-up).
+        if await _is_catalog_only_admin(request) and not (q and q.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Catalog-tier admins must provide a non-empty 'q' query "
+                    "parameter to search principals; directory enumeration "
+                    "is restricted to platform admins."
+                ),
+            )
         if q is not None or role is not None or catalog_id is not None:
             principals = await mgr.search_principals(
                 identifier=q,

@@ -39,6 +39,13 @@ def admin_policies() -> List[Policy]:
       catalog admins can list catalogs they administer.  The handler
       filters the response per caller; sysadmin / platform-admin reach
       this route via ``admin_access`` and get the unfiltered list.
+
+    - ``admin_principal_lookup`` — narrow ALLOW for ``GET /admin/principals``
+      (#723 follow-up). Bound to the ``catalog_admin`` sentinel so the
+      catalog-grant flow can resolve a target principal by subject_id
+      before calling ``POST /admin/catalogs/{cid}/principals/{pid}/roles``.
+      The handler requires a non-empty ``q`` parameter from catalog-only
+      callers so they cannot enumerate the platform principal directory.
     """
     return [
         Policy(
@@ -83,6 +90,19 @@ def admin_policies() -> List[Policy]:
             resources=[r"^/admin/catalogs/?$"],
             effect="ALLOW",
         ),
+        Policy(
+            id="admin_principal_lookup",
+            description=(
+                "Lets catalog-tier admins reach GET /admin/principals to "
+                "resolve a target principal by subject_id before granting a "
+                "catalog-scope role. The handler requires a non-empty q "
+                "parameter from catalog-only callers so they cannot "
+                "enumerate the platform principal directory."
+            ),
+            actions=["GET"],
+            resources=[r"^/admin/principals/?$"],
+            effect="ALLOW",
+        ),
     ]
 
 
@@ -93,8 +113,10 @@ def admin_role_bindings(
     """Pure declaration of the admin extension's role bindings.
 
     - ``admin_access`` is bound to sysadmin + admin (back-compat).
-    - ``admin_catalogs_list`` is bound to the ``catalog_admin`` sentinel
-      role so catalog-tier admins reach the catalog picker (#723).
+    - ``admin_catalogs_list`` + ``admin_principal_lookup`` are bound to the
+      ``catalog_admin`` sentinel role so catalog-tier admins reach the
+      catalog picker (#723) and the target-user lookup that precedes a
+      catalog-scope role grant (#723 follow-up).
     - ``admin_catalog_access`` is intentionally unbound — operators wire
       catalog-admin authority through the same DB-resident flow they
       use for any custom role.
@@ -105,5 +127,8 @@ def admin_role_bindings(
     return [
         Role(name=sysadmin_role_name, policies=["admin_access"]),
         Role(name=admin_role_name, policies=["admin_access"]),
-        Role(name="catalog_admin", policies=["admin_catalogs_list"]),
+        Role(
+            name="catalog_admin",
+            policies=["admin_catalogs_list", "admin_principal_lookup"],
+        ),
     ]
