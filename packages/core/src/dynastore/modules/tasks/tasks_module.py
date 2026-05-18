@@ -541,6 +541,8 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                 hard_cap = get_hard_retry_cap()
                 cap_ttl = 60.0
                 cap_refresh = 30.0
+                sweep_interval = 60.0
+                sweep_min_age = 300.0
                 config_mgr = get_protocol(PlatformConfigsProtocol)
                 if config_mgr:
                     try:
@@ -551,6 +553,8 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                             set_hard_retry_cap(hard_cap)
                             cap_ttl = tasks_config.capability_publisher_ttl_seconds
                             cap_refresh = tasks_config.capability_publisher_refresh_seconds
+                            sweep_interval = tasks_config.proactive_sweep_interval_seconds
+                            sweep_min_age = tasks_config.proactive_sweep_min_age_seconds
                     except Exception as e:
                         logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s / hard_cap={hard_cap}: {e}")
 
@@ -667,6 +671,20 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                     _warn_stuck_pending_tasks(engine, schema, shutdown_event),
                     task_name="service:stuck_pending_warner",
                 )
+                # Proactive capability sweep (#524) — bulk-DLQ rows for
+                # confirmed-dead capabilities without waiting for the
+                # reactive reaper to claim+reject each row. Shares the
+                # same advisory-lock namespace as the reactive path so
+                # cross-pod dedupe holds. Reactive branch stays as a
+                # safety net until PR C deletes it.
+                executor.submit(
+                    _run_proactive_capability_sweep(
+                        engine, schema, shutdown_event,
+                        interval_s=sweep_interval,
+                        min_age_s=sweep_min_age,
+                    ),
+                    task_name="service:proactive_capability_sweep",
+                )
                 # Async refresh loop. Initial publish already ran
                 # synchronously above (before run_dispatcher was submitted)
                 # so dispatcher reactive-reaper checks never see an empty
@@ -750,6 +768,126 @@ async def _warn_stuck_pending_tasks(
             await _emit_stuck_pending_logs(rows or [])
         except Exception as exc:  # noqa: BLE001 — never crash on diagnostic
             logger.warning("stuck-pending warner: scan failed: %s", exc)
+
+
+async def _run_proactive_capability_sweep(
+    engine: DbResource,
+    schema: str,
+    shutdown_event: asyncio.Event,
+    *,
+    interval_s: float = 60.0,
+    min_age_s: float = 300.0,
+    max_caps_per_pass: int = 50,
+) -> None:
+    """Periodically DLQ PENDING/retry=0 rows whose required capability
+    has no live worker (issue #524).
+
+    Complements the reactive reaper in ``dispatcher.py`` — same advisory
+    lock + double-check, but driven by a wall-clock timer instead of
+    waiting for a claim+reject cycle. With this loop running, the
+    worst-case latency between "last pod for a capability dies" and
+    "rows leave PENDING" is bounded by ``interval_s`` regardless of
+    incoming task volume.
+
+    Per-pass: walks ``TASK_TYPE_CAPABILITY_INPUTS_KEY``, queries
+    distinct capability ids referenced by old PENDING rows, calls
+    ``sweep_dead_capability_rows`` per pair. Returns ``0`` when the
+    oracle says the capability is live or the advisory lock is taken
+    by another pod — so multiple pods running this loop in parallel
+    do not multiply work.
+
+    Idempotent and crash-safe: any error is logged and swallowed; the
+    loop sleeps and retries. Stops cleanly when ``shutdown_event`` is
+    set.
+    """
+    from dynastore.modules.tasks.capability_oracle import (
+        TASK_TYPE_CAPABILITY_INPUTS_KEY,
+    )
+    from dynastore.modules.tasks.dispatcher import sweep_dead_capability_rows
+
+    while not shutdown_event.is_set():
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
+            break  # shutdown signalled during sleep
+        except asyncio.TimeoutError:
+            pass  # normal — periodic wakeup
+
+        try:
+            for task_type, inputs_key in TASK_TYPE_CAPABILITY_INPUTS_KEY.items():
+                if shutdown_event.is_set():
+                    return
+                try:
+                    cap_ids = await _distinct_pending_capability_ids(
+                        engine, schema, task_type, inputs_key,
+                        min_age_s, max_caps_per_pass,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "proactive_sweep: distinct query failed (task_type=%s): %s",
+                        task_type, exc,
+                    )
+                    continue
+                for cap_id in cap_ids:
+                    if shutdown_event.is_set():
+                        return
+                    try:
+                        dlqed = await sweep_dead_capability_rows(
+                            engine, cap_id, task_type=task_type,
+                        )
+                        if dlqed > 0:
+                            logger.info(
+                                "proactive_sweep: DLQ'd %d row(s) "
+                                "capability=%s task_type=%s",
+                                dlqed, cap_id, task_type,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "proactive_sweep: sweep failed "
+                            "(capability=%s task_type=%s): %s",
+                            cap_id, task_type, exc,
+                        )
+        except Exception as exc:  # noqa: BLE001 — never crash the loop
+            logger.warning("proactive_sweep: pass failed: %s", exc)
+
+
+async def _distinct_pending_capability_ids(
+    engine: DbResource,
+    schema: str,
+    task_type: str,
+    inputs_key: str,
+    min_age_s: float,
+    sample_limit: int,
+) -> List[str]:
+    """Return distinct capability ids referenced by PENDING/retry=0 rows
+    of ``task_type`` older than ``min_age_s``.
+
+    ``inputs_key`` is interpolated into the JSONB extraction; it must
+    already have been validated by ``TASK_TYPE_CAPABILITY_INPUTS_KEY``
+    membership (SQL identifier safety). The ``sample_limit`` caps a
+    single pass — pathological backlogs from many distinct dead caps
+    still drain over consecutive passes.
+    """
+    # ``inputs_key`` is validated SQL identifier — see comment on
+    # TASK_TYPE_CAPABILITY_INPUTS_KEY in capability_oracle.py.
+    sql = (
+        f'SELECT DISTINCT inputs->>\'{inputs_key}\' AS cap_id '  # nosec — validated key
+        f'FROM "{schema}".tasks '
+        f"WHERE status = 'PENDING' "
+        f"  AND retry_count = 0 "
+        f"  AND task_type = :task_type "
+        f"  AND inputs->>'{inputs_key}' IS NOT NULL "
+        f"  AND timestamp < NOW() - make_interval(secs => :min_age_s) "
+        f"LIMIT :sample_limit;"
+    )
+    query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
+    async with managed_transaction(engine) as conn:
+        rows = await query.execute(
+            conn,
+            task_type=task_type,
+            min_age_s=min_age_s,
+            sample_limit=sample_limit,
+        )
+    return [r["cap_id"] for r in (rows or []) if r.get("cap_id")]
 
 
 async def _emit_stuck_pending_logs(rows: List[Dict[str, Any]]) -> None:
