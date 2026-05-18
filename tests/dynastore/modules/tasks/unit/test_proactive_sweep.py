@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -78,9 +78,7 @@ async def test_sweep_logs_dlq_count_on_nonzero_result(caplog):
             stop_after_first_pass(),
         )
 
-    sweep.assert_awaited_with(
-        ANY := sweep.await_args.args[0], "dead_cap_1", task_type="index_propagation",
-    )
+    sweep.assert_awaited_with(ANY, "dead_cap_1", task_type="index_propagation")
     info_lines = [
         r.message for r in caplog.records if r.levelno == logging.INFO
     ]
