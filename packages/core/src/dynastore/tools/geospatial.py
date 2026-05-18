@@ -561,7 +561,6 @@ def compute_derived_fields(
     from dynastore.modules.storage.computed_fields import (
         ComputedKind,
         SPATIAL_CELL_KINDS,
-        PATH_EXTRACTED_KINDS,
     )
 
     out: Dict[str, Any] = {}
@@ -576,11 +575,38 @@ def compute_derived_fields(
             centroid_lon = float(c.x)
         return centroid_lat, centroid_lon  # type: ignore[return-value]
 
+    def _extract_path(root_props: Dict[str, Any], path: str) -> Any:
+        """Resolve a dotted path against the feature.
+
+        ``"properties.adm2_pcode"`` walks the dict; the leading
+        ``"properties."`` segment is stripped because we are already
+        passing the properties dict. A bare attribute name
+        (e.g. ``"adm2_pcode"``) is read directly.
+        """
+        segments = path.split(".")
+        if segments and segments[0] == "properties":
+            segments = segments[1:]
+        current: Any = root_props
+        for seg in segments:
+            if isinstance(current, dict) and seg in current:
+                current = current[seg]
+            else:
+                return None
+        return current
+
     for f in fields:
         kind = f.kind
-        if kind in PATH_EXTRACTED_KINDS:
-            continue
         key = f.resolved_name
+
+        if kind == ComputedKind.EXTERNAL_ID:
+            # ``name`` is the dotted JSON path into the feature; no name
+            # means "external_id sits at properties.external_id".
+            path = f.name or "properties.external_id"
+            value = _extract_path(properties, path)
+            # ``resolved_name`` for EXTERNAL_ID falls back to ``"external_id"``
+            # so downstream code has a stable key regardless of path.
+            out["external_id"] = value
+            continue
 
         if kind == ComputedKind.GEOMETRY_HASH:
             out[key] = _geometry_hash(geometry)

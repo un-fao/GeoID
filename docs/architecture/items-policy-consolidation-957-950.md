@@ -82,9 +82,6 @@ class ItemsWritePolicy(PluginConfig):
     on_conflict: WriteConflictPolicy = UPDATE
     on_asset_conflict: Optional[AssetConflictPolicy] = None
 
-    external_id_field: Optional[str] = None
-    require_external_id: bool = False
-
     enable_validity: bool = False
     validity_field: str = "valid_from"
 
@@ -92,7 +89,11 @@ class ItemsWritePolicy(PluginConfig):
 
     schema: Optional[Dict[str, Any]] = None  # self-contained JSON Schema (see below); write-time validation
 
-    compute: List[ComputedField] = []        # declared derived values
+    # The external_id source path lives on the ComputedField itself:
+    #   compute=[ComputedField(kind=EXTERNAL_ID, name="properties.adm2_pcode")]
+    # "required external_id" is expressed via the JSON Schema's `required`
+    # list — no separate require_external_id boolean needed.
+    compute: List[ComputedField] = []
     identity: List[IdentityRule] = [
         IdentityRule(match_on=[ComputedField(kind=ComputedKind.EXTERNAL_ID)])
     ]
@@ -157,6 +158,8 @@ The minimal driver contract gains one method: `materialize_computed(self, comput
 | `IdentityMatcher` enum | replaced by `ComputedKind` |
 | `ItemsWritePolicy.identity_matchers: List[IdentityMatcher]` | replaced by `identity: List[IdentityRule]` |
 | `ItemsWritePolicy.matcher_actions: Dict[IdentityMatcher, WriteConflictPolicy]` | per-rule `on_match` |
+| `ItemsWritePolicy.external_id_field: Optional[str]` | inline on `ComputedField(kind=EXTERNAL_ID, name="properties.X")` |
+| `ItemsWritePolicy.require_external_id: bool` | use JSON Schema `required` on the external-id property |
 | `ItemsWritePolicy.geohash_precision: int` | inline on `ComputedField(kind=GEOHASH, resolution=N)` |
 | `WritePolicyDefaults` class (whole) | deleted, dead code |
 | `IdentityKeyConstraint` / `ValidityConstraint` / `GeometryHashConstraint` | deleted, dead code |
@@ -180,14 +183,41 @@ Strictly the DDL/PG-internal surface:
 - `FeatureAttributeSidecarConfig`: `storage_mode`, `storage_only_fields`, `attribute_schema`, `jsonb_column_name`, `jsonb_indexed_paths`, `use_hot_updates`, `enable_external_id`, `index_external_id`, `enable_asset_id`, `asset_id_field`, `index_asset_id`, `expose_geoid`, `partition_strategy`, `partition_attribute`.
 - `GeometriesSidecarConfig`: `target_srid`, `target_dimension`, `geom_column`, `bbox_column`, `partition_strategy`, `partition_resolution`, plus a new minimal `index_hints: Dict[str, IndexHint]` keyed by the `ComputedField.resolved_name()` so an operator can say "BTREE the area_m2 column".
 
+### Minimal example — empty policy
+
+Most collections need nothing. With no policy set, defaults apply: identity falls back to `external_id` keyed at `properties.external_id`, no computed fields, no schema validation, conflict policy = `UPDATE`. Equivalent to the implicit default. JSON: `{}`.
+
+### Minimal example — typical collection
+
+External-id identity at a custom path, schema-validated properties, no derived columns:
+
+```json
+{
+  "items_write_policy": {
+    "schema": {
+      "type": "object",
+      "required": ["code", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "description": "Stable external id." },
+        "name": { "type": "string" }
+      }
+    },
+    "compute": [
+      { "kind": "external_id", "name": "properties.code" }
+    ]
+  }
+}
+```
+
+That's all you need for "external_id at `properties.code`, validated shape, last-write-wins". Five lines of policy, no waterfall, no aliases.
+
 ### Worked example — full feature set
 
 ```json
 {
   "items_write_policy": {
     "on_conflict": "new_version",
-    "external_id_field": "properties.adm2_pcode",
-    "require_external_id": true,
     "enable_validity": true,
     "validity_field": "properties.valid_from",
     "skip_if_unchanged_geometry_hash": true,
@@ -197,24 +227,29 @@ Strictly the DDL/PG-internal surface:
       "required": ["adm2_pcode", "adm2_name", "adm0_iso3", "valid_from"],
       "additionalProperties": false,
       "properties": {
-        "adm2_pcode": { "type": "string", "pattern": "^[A-Z]{3}[0-9A-Z]+$" },
-        "adm2_name":  { "type": "string", "minLength": 1 },
-        "adm1_pcode": { "type": "string" },
-        "adm0_iso3":  { "type": "string", "minLength": 3, "maxLength": 3 },
-        "valid_from": { "type": "string", "format": "date" },
-        "valid_to":   { "type": ["string", "null"], "format": "date" },
-        "source":     { "type": "string" }
+        "adm2_pcode": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}[0-9A-Z]+$",
+          "description": "Stable per-country admin-level-2 code; serves as external_id."
+        },
+        "adm2_name":  { "type": "string", "minLength": 1, "description": "Display name." },
+        "adm1_pcode": { "type": "string", "description": "Parent admin-1 pcode." },
+        "adm0_iso3":  { "type": "string", "minLength": 3, "maxLength": 3, "description": "ISO 3166-1 alpha-3 country code." },
+        "valid_from": { "type": "string", "format": "date", "description": "Lower bound of validity window." },
+        "valid_to":   { "type": ["string", "null"], "format": "date", "default": null, "description": "Upper bound; null = open-ended." },
+        "source":     { "type": "string", "default": "GAUL", "description": "Originating dataset (free-form)." }
       }
     },
     "compute": [
-      { "kind": "area",        "name": "area_m2" },
-      { "kind": "perimeter",   "name": "perimeter_m" },
+      { "kind": "external_id",     "name": "properties.adm2_pcode" },
+      { "kind": "area",            "name": "area_m2" },
+      { "kind": "perimeter",       "name": "perimeter_m" },
       { "kind": "vertex_count" },
       { "kind": "centroid" },
       { "kind": "bbox" },
-      { "kind": "geohash", "resolution": 6 },
-      { "kind": "h3",      "resolution": 7 },
-      { "kind": "s2",      "resolution": 10 },
+      { "kind": "geohash",         "resolution": 6 },
+      { "kind": "h3",              "resolution": 7 },
+      { "kind": "s2",              "resolution": 10 },
       { "kind": "geometry_hash" },
       { "kind": "attributes_hash" }
     ],
@@ -268,6 +303,54 @@ Strictly the DDL/PG-internal surface:
 
 5. **Migration**:
    - Fresh database (per draft-schema invariant). No idempotent ALTERs, no shim code paths. Tests assume a clean schema; the dev-compose `db-reset` entrypoint runs unchanged.
+
+## Critical analysis — surface area, stale code, gaps
+
+### What survives at the top level of `ItemsWritePolicy`
+
+Four concerns, each irreducible to the others:
+
+1. `schema` (self-contained JSON Schema) — *what the data looks like*.
+2. `compute: List[ComputedField]` — *what to derive from each feature*.
+3. `identity: List[IdentityRule]` — *how to decide "is this the same row"*.
+4. `geometries: GeometriesWriteBehavior` — *geometry-only pre-compute transforms* (SRID, fix, simplify, allow-list). Has to be a sub-config because it runs before `compute`.
+
+Plus three small posture flags: `on_conflict`, `enable_validity`/`validity_field`, `skip_if_unchanged_geometry_hash`. That's it.
+
+### Simplifications already applied vs the first draft
+
+- `external_id_field` collapsed into `ComputedField(kind=EXTERNAL_ID, name="properties.X")`. One concept, one place.
+- `require_external_id` deleted — JSON Schema `required` carries this.
+- `geohash_precision` / `h3_resolutions` / `s2_resolutions` collapsed into `ComputedField(kind=GEOHASH|H3|S2, resolution=N)` — same surface for every cell system.
+- `matcher_actions: Dict[IdentityMatcher, WriteConflictPolicy]` collapsed into per-rule `on_match`.
+- `IdentityMatcher` enum collapses into `ComputedKind` (one enum covers identity, derived columns, and statistics).
+
+### Stale / legacy code that this design deletes
+
+Audited 2026-05-19 against `337f9952..e8a2db60`. Every item below has zero load-bearing call-sites today and is scheduled for phase 4:
+
+| Symbol | Location | Status |
+|---|---|---|
+| `WritePolicyDefaults` | `driver_config.py:557` | 25 refs, all docstring/module exports, zero call-sites |
+| `IdentityKeyConstraint` / `ValidityConstraint` / `GeometryHashConstraint` | `schema_types.py:98` | declared on `ItemsSchema.constraints`, never consumed |
+| `IdentityKeyConstraint.geohash_precision: int` | `schema_types.py:98` | third copy of geohash_precision |
+| `IdentityMatcher` enum | `driver_config.py:175` | overlaps `ComputedKind` |
+| `ItemsWritePolicy.identity_matchers / matcher_actions / geohash_precision / external_id_field / require_external_id` | `driver_config.py:298` | replaced by `compute` + `identity` + `schema` |
+| `FeatureAttributeSidecarConfig.enable_validity` | `attributes_config.py:231` | driver-divergent bug (PG reads sidecar, DuckDB/Iceberg read policy) |
+| `FeatureAttributeSidecarConfig.feature_type_schema` | `attributes_config.py:198` | duplicates `policy.schema` |
+| `GeometriesSidecarConfig.feature_type_schema` | `geometries_config.py:296` | duplicates `policy.schema` |
+| `FeatureAttributeSidecarConfig.external_id_as_feature_id` | `attributes_config.py:216` | moves to `ItemsReadPolicy.feature_type` |
+| `GeometriesSidecarConfig.{h3_resolutions, s2_resolutions, geohash_precision}` | `geometries_config.py` | replaced by `policy.compute` |
+| `GeometriesSidecarConfig.statistics: GeometriesStatisticsConfig` | `geometries_config.py` | replaced by `policy.compute` |
+| `tools/geometry_stats.py:compute_geometry_statistics` | sidecar-only consumer | superseded by `compute_derived_fields()` |
+| `SidecarProtocol.get_feature_type_schema()` → `QueryOptimizer.get_feature_type_schema()` → `item_service.py:1557` | aggregation chain | one read of `policy.schema` replaces all three |
+
+### Known gaps still to close
+
+- **JSON-Schema validation has no consumer today**. The ingest path does not call `jsonschema.validate()` against `policy.schema`. Phase 2 must wire this in — it is the load-bearing assumption behind "schema is self-contained".
+- **No `ItemsReadPolicy` exists** (`rg ItemsReadPolicy` → 0). Phase 3.
+- **`output_transformers: List[str]` resolution mechanism** must reuse the existing `EntityTransformProtocol` class-key registry used by `PrivateEntityTransformer`. Confirmed registry exists; integration is phase 3.
+- **`expose` enforcement at strict-mode** needs a clear error path on missing fields — currently designed as 502, may want 422 if it is operator-caused vs driver-caused. Open question.
 
 ## Implementation phasing
 

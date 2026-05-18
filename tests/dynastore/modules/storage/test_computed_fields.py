@@ -136,13 +136,41 @@ class TestComputeDerivedFields:
     def unit_square(self) -> Polygon:
         return Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
-    def test_external_id_is_skipped(self, unit_square: Polygon) -> None:
+    def test_external_id_default_path(self, unit_square: Polygon) -> None:
         out = compute_derived_fields(
             unit_square,
-            {"x": 1},
+            {"external_id": "abc-123"},
             [ComputedField(kind=ComputedKind.EXTERNAL_ID)],
         )
-        assert out == {}
+        assert out == {"external_id": "abc-123"}
+
+    def test_external_id_custom_path(self, unit_square: Polygon) -> None:
+        out = compute_derived_fields(
+            unit_square,
+            {"adm2_pcode": "ITA001"},
+            [
+                ComputedField(
+                    kind=ComputedKind.EXTERNAL_ID,
+                    name="properties.adm2_pcode",
+                )
+            ],
+        )
+        # Key is always "external_id" regardless of source path.
+        assert out == {"external_id": "ITA001"}
+
+    def test_external_id_missing_returns_none(
+        self, unit_square: Polygon
+    ) -> None:
+        out = compute_derived_fields(
+            unit_square,
+            {"other": "x"},
+            [
+                ComputedField(
+                    kind=ComputedKind.EXTERNAL_ID, name="properties.code"
+                )
+            ],
+        )
+        assert out == {"external_id": None}
 
     def test_geometry_metrics(self, unit_square: Polygon) -> None:
         out = compute_derived_fields(

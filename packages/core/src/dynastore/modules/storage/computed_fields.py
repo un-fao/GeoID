@@ -52,8 +52,10 @@ class ComputedKind(StrEnum):
     Each kind partitions into one of three families:
 
     - **path-extracted** (``EXTERNAL_ID``) — read from the feature using
-      ``ItemsWritePolicy.external_id_field``; not "computed" per se,
-      kept here so identity rules compose uniformly.
+      the :class:`ComputedField` ``name`` slot as a dotted JSON path
+      (e.g. ``"properties.adm2_pcode"``). No separate
+      ``ItemsWritePolicy.external_id_field`` is needed; the
+      :class:`ComputedField` is fully self-describing.
     - **content hash** (``GEOMETRY_HASH``, ``ATTRIBUTES_HASH``) —
       deterministic fingerprint of the geometry/properties.
     - **spatial cell** (``GEOHASH``, ``H3``, ``S2``) — discrete index of
@@ -142,7 +144,15 @@ class ComputedField(BaseModel):
 
     @property
     def resolved_name(self) -> str:
-        """Stable identifier used as the dict key in computed-field output."""
+        """Stable identifier used as the dict key in computed-field output.
+
+        For :attr:`ComputedKind.EXTERNAL_ID`, ``name`` carries the dotted
+        JSON path into the feature (e.g. ``"properties.adm2_pcode"``),
+        NOT the output dict key — the key is always ``"external_id"`` so
+        downstream code has a stable handle regardless of the source path.
+        """
+        if self.kind == ComputedKind.EXTERNAL_ID:
+            return "external_id"
         if self.name:
             return self.name
         if self.kind in SPATIAL_CELL_KINDS:
