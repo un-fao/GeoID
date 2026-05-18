@@ -829,6 +829,22 @@ class IndexDispatcher:
                     collection=ctx.collection,
                     chunk_size=len(entry_ops),
                 )
+            # #914 — silent no-op trap: an indexer that returns
+            # ``BulkResult(total=N, succeeded=0, failed=0)`` (e.g. ES bulk
+            # response shape the driver doesn't parse) was previously
+            # indistinguishable from a real success in logs, leaving the
+            # target index empty with no warning.  Surface it loudly so
+            # ops sees the divergence on the next write.
+            if result.total > 0 and result.succeeded == 0 and result.failed == 0:
+                logger.warning(
+                    "IndexDispatcher: indexer '%s' returned a silent no-op "
+                    "(total=%d, succeeded=0, failed=0) for catalog=%s "
+                    "collection=%s — index will be empty despite a "
+                    "'successful' dispatch. Check the driver's bulk-response "
+                    "parser.",
+                    entry.driver_ref, result.total,
+                    ctx.catalog, ctx.collection,
+                )
             if rejected:
                 result = BulkResult(
                     total=result.total + len(rejected),

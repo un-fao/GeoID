@@ -1053,6 +1053,22 @@ class ItemsElasticsearchDriver(
                 })
             else:
                 succeeded += 1
+        # #914 — when the parsed result is a silent no-op (succeeded=0 with
+        # no per-item failures), log the raw response shape so operators
+        # can tell ``items=[]`` (request never hit ES) from a shape we
+        # don't parse.
+        if succeeded == 0 and not failures and len(ops) > 0:
+            logger.warning(
+                "ItemsElasticsearchDriver.index_bulk: ES bulk returned a "
+                "shape that yielded 0 succeeded / 0 failed for %d ops "
+                "(catalog=%s collection=%s index=%s). resp_type=%s "
+                "resp_keys=%s items_len=%d errors=%s",
+                len(ops), ctx.catalog, ctx.collection, index_name,
+                type(resp).__name__,
+                list(resp.keys()) if isinstance(resp, dict) else None,
+                len(items),
+                resp.get("errors") if isinstance(resp, dict) else None,
+            )
         return BulkResult(
             total=len(ops),
             succeeded=succeeded,
