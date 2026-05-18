@@ -159,9 +159,8 @@ platform > code defaults). The class key is the snake_case form (e.g. `items_rou
   }
 }
 
-// Privacy-pinned items routing — collection.is_private=True (Cycle E.2)
-// items_elasticsearch_private_driver substitutes for the public driver in INDEX/SEARCH.
-// PG remains the durable WRITE target.
+// Privacy-pinned items routing — pinning items_elasticsearch_private_driver
+// is itself the privacy switch (#733). PG remains the durable WRITE target.
 {
   "operations": {
     "WRITE": [
@@ -405,14 +404,14 @@ Two classes:
 | `ItemsElasticsearchPrivateDriver` | `items_elasticsearch_private_driver` | `{prefix}-{catalog_id}-private-items` |
 | `CollectionElasticsearchPrivateDriver` | `collection_elasticsearch_private_driver` | `{prefix}-{catalog_id}-collections-private` |
 
-**Privacy contract** (Cycle E.2):
+**Privacy contract**:
 - `auto_register_for_routing: ClassVar[FrozenSet[Operation]] = frozenset()` — opt-in only.
-  Operators pin them in routing OR set `CollectionPrivacy.is_private=True` (plus the
-  catalog policy default) which triggers the seed at collection-create.
+  Operators pin them in `ItemsRoutingConfig` / `CollectionRoutingConfig`; the pin itself
+  is the privacy switch (#733 retired the standalone `CollectionPrivacy.is_private` flag).
 - The items-private driver applies a catalog-wide DENY policy (`private_deny_{cat}`) on
   `ensure_storage` blocking public read access at `/.../catalogs/{cat}/...`. The collection-private
-  driver does NOT manage its own DENY (the cascade rule guarantees items-private whenever
-  collection-private is pinned).
+  driver does NOT manage its own DENY (the cascade rule rejects mixed public+private pins
+  in the same routing config, so the items-private DENY covers the catalog).
 - Write paths shrink oversized geometries via `simplify_to_fit` for the items-private index.
 
 Stores `{geoid, catalog_id, collection_id}` in a custom index with `dynamic: false` mapping.

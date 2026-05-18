@@ -68,51 +68,32 @@ Dynamic templates are applied in order (first match wins) to handle multilingual
 | `ELASTICSEARCH_VERIFY_CERTS` | `true` | TLS certificate verification |
 | `ELASTICSEARCH_INDEX_PREFIX` | `dynastore` | Prefix for all index names |
 
-**Per-catalog config** (runtime-mutable, stored in AlloyDB):
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `collection_defaults.is_private` | `bool` | `false` | Catalog-tier seed default for newly-created collections (Cycle E.1 / F.0d; lives on `CatalogPrivacy.collection_defaults: CollectionPrivacyDefaults` in `modules/catalog/catalog_config.py`) |
-
-Managed via the standard configuration API:
-
-```
-PUT /configs/catalogs/{catalog_id}/plugins/catalog_privacy
-{ "collection_defaults": { "is_private": true } }
-```
-
-Pure data — flipping the default does not retroactively re-flag existing collections.  The full operational pinning recipe is in the **Per-Collection Privacy** section below.
-
 ---
 
-## Per-Collection Privacy (Cycle E)
+## Per-Collection Privacy
 
-Privacy is a per-collection concept, governed by `CollectionPrivacy.is_private` at `(platform, catalog, collection, privacy)` (Cycle E.2.a / F.0d). Two specialized drivers — both opt-in only via explicit routing pin (`auto_register_for_routing = frozenset()`) — write privacy-sensitive data into per-tenant indexes:
+Privacy is expressed by **routing-pin presence** of the private-class drivers in a collection's routing configs (#733 retired the standalone `CollectionPrivacy.is_private` flag). Two specialized drivers — both opt-in only via explicit routing pin (`auto_register_for_routing = frozenset()`) — write privacy-sensitive data into per-tenant indexes:
 
 | Driver | Tier | Per-tenant index | Provided by |
 |---|---|---|---|
 | `items_elasticsearch_private_driver` | items | `{prefix}-{cat}-private-items` (geoid-only docs) | `modules/storage/drivers/elasticsearch_private/driver.py` |
-| `collection_elasticsearch_private_driver` | collection envelopes | `{prefix}-{cat}-collections-private` (full collection envelope) | `modules/storage/drivers/elasticsearch_private/collection_driver.py` (Cycle E.2.b) |
+| `collection_elasticsearch_private_driver` | collection envelopes | `{prefix}-{cat}-collections-private` (full collection envelope) | `modules/storage/drivers/elasticsearch_private/collection_driver.py` |
+
+A collection is "private" iff one of its routing configs pins a private driver. No separate config plugin or flag is consulted.
 
 ### Cascade rule
 
-`CollectionPrivacy.is_private == True` REQUIRES that `ItemsRoutingConfig` pins `items_elasticsearch_private_driver` in some operation (typically `INDEX`). Reverse direction is allowed (items-private + collection-public is a real shape — public envelope, private item geometry). Items-public + collection-private is rejected: it would leak item geometry through `/search` despite the per-collection DENY.
-
-The cascade is enforced by apply handlers on both `CollectionPrivacy` and `ItemsRoutingConfig` (`modules/storage/routing_config.py:_enforce_collection_privacy_cascade` / `_enforce_items_routing_privacy_cascade`).
+Mixing public + private driver pins in the same routing config is rejected: it would leak item geometry through `/search` despite the catalog-wide DENY. Items-private + collection-public is allowed (public envelope, private item geometry). The cascade is enforced by apply handlers on `ItemsRoutingConfig` and `CollectionRoutingConfig` (`modules/storage/routing_config.py:_enforce_items_routing_privacy_cascade`).
 
 ### DENY policy
 
-Catalog-wide DENY (`private_deny_{catalog_id}`) is owned by the items-private driver and blocks all `GET` requests under `/(catalog|stac|features|tiles|wfs|maps)/catalogs/{cat}/...`. The cascade rule guarantees the items-private driver is in scope whenever any collection is private, so the catalog-wide DENY covers the collection-envelope index access paths too. The collection-private driver does NOT manage its own DENY policies.
+Catalog-wide DENY (`private_deny_{catalog_id}`) is owned by the items-private driver and blocks all `GET` requests under `/(catalog|stac|features|tiles|wfs|maps)/catalogs/{cat}/...`. The collection-private driver does NOT manage its own DENY policies.
 
-The items-private driver's `_restore_deny_policies` lifespan hook scans all catalogs at startup and re-registers DENY policies for any catalog with at least one `is_private=True` collection.
-
-### Catalog-level default
-
-`CatalogPrivacy.collection_defaults.is_private: bool` (Cycle E.1 / F.0d) is consulted at collection-create time as a seed for new collections' `is_private` flag. Pure data — flipping the default does not retroactively re-flag existing collections.
+The items-private driver's `_restore_deny_policies` lifespan hook scans all catalogs at startup and re-registers DENY policies for any catalog with at least one collection whose routing configs pin a private driver.
 
 ### Operational pinning
 
-To opt a collection into per-tenant privacy:
+To opt a collection into per-tenant privacy, pin a private driver in the routing config(s) — that is the privacy switch:
 
 ```
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/items_routing_config
@@ -120,12 +101,9 @@ PUT /configs/catalogs/{cat}/collections/{col}/plugins/items_routing_config
 
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_routing_config
 { "operations": { "INDEX": [{ "driver_ref": "collection_elasticsearch_private_driver", ... }] } }
-
-PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_privacy
-{ "is_private": true }
 ```
 
-Order matters: pin the routing first, then set `is_private`. The cascade validator rejects attempts that violate the rule with a clear error message guiding the operator to the missing pin.
+There is no follow-up "set private" step. The cascade validator rejects mixed public/private pins in the same routing config with a clear error message.
 
 ---
 
@@ -173,7 +151,7 @@ Response:
 | `POST` | `/search/reindex/catalogs/{catalog_id}` | 202 | Trigger full catalog reindex |
 | `POST` | `/search/reindex/catalogs/{catalog_id}/collections/{collection_id}` | 202 | Trigger single collection reindex |
 
-Both endpoints accept an optional `driver` query parameter to restrict the reindex to a single secondary driver (e.g. `?driver=elasticsearch`).  Cycle E.1 retired the `mode` parameter — bulk reindex always targets the per-tenant public items index `{prefix}-{catalog_id}-items`.  Private items are dispatched per-item via the `IndexDispatcher` to `{prefix}-{catalog_id}-private-items` by `items_elasticsearch_private_driver` when the cascade rule (`CollectionPrivacy.is_private == True`) pins it.
+Both endpoints accept an optional `driver` query parameter to restrict the reindex to a single secondary driver (e.g. `?driver=elasticsearch`).  Bulk reindex always targets the per-tenant public items index `{prefix}-{catalog_id}-items`.  Private items are dispatched per-item via the `IndexDispatcher` to `{prefix}-{catalog_id}-private-items` by `items_elasticsearch_private_driver` when the collection's `ItemsRoutingConfig` pins it.
 
 Response:
 ```json
