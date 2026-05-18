@@ -60,6 +60,12 @@ class ComputedKind(StrEnum):
     BBOX = "bbox"
     VERTEX_COUNT = "vertex_count"
     HOLE_COUNT = "hole_count"
+    VOLUME = "volume"                # 3D-closed types only
+    # Morphological indices (2D shape descriptors)
+    CIRCULARITY = "circularity"      # (4·π·area) / perimeter²
+    CONVEXITY = "convexity"          # area / convex_hull.area
+    ASPECT_RATIO = "aspect_ratio"    # bbox width / bbox height
+    # SPHERICITY, FLATNESS — 3D mesh metrics, deferred (see geometry_stats.py TODO)
 
 class ComputedField(BaseModel):
     kind: ComputedKind
@@ -84,7 +90,7 @@ class ItemsWritePolicy(PluginConfig):
 
     skip_if_unchanged_geometry_hash: bool = False
 
-    schema: Optional[Dict[str, Any]] = None  # JSON Schema for properties; write-time validation
+    schema: Optional[Dict[str, Any]] = None  # self-contained JSON Schema (see below); write-time validation
 
     compute: List[ComputedField] = []        # declared derived values
     identity: List[IdentityRule] = [
@@ -103,6 +109,19 @@ class ItemsReadPolicy(PluginConfig):
     feature_type: FeatureType = Field(default_factory=FeatureType)
     output_transformers: List[str] = []  # ordered chain of EntityTransformProtocol class keys
 ```
+
+### Schema is self-contained
+
+`ItemsWritePolicy.schema` is the only artefact describing the wire shape. It MUST carry, per property:
+
+- `type` (JSON Schema scalar / object / array, plus `format` where useful — `date-time`, `uri`, etc.),
+- `description` (operator-facing help text, surfaced in the admin UI and OpenAPI),
+- `default` (used when the field is omitted on write; identical value echoed back on read for absent fields),
+- declared membership in the top-level `required` list (or omitted from it).
+
+No second source of truth carries any of these — not the sidecar, not the driver, not the model docstring. The Admin UI form for write-creation, the OpenAPI body schema for `POST /items`, the response shape under `feature_type.schema_ref`, and the JSON-Schema validator step in `compute_derived_fields`-adjacent ingest code all read this one object. Computed fields (`policy.compute` + `feature_type.expose`) are surfaced as **additionalProperties** on the read shape — they don't need to appear in `schema` to be present in responses; they appear in the response under their `resolved_name`.
+
+A collection without `schema` set is permissive (`additionalProperties: true`, no required fields, no defaults) — equivalent to `schema = {"type": "object"}`. Setting `additionalProperties: false` is the operator's lever for strict ingest.
 
 ### Semantics
 

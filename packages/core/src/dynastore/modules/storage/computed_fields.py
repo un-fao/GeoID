@@ -73,14 +73,19 @@ class ComputedKind(StrEnum):
     GEOHASH = "geohash"
     H3 = "h3"
     S2 = "s2"
-    # Statistics
+    # Statistics — scalar/array derivations from the geometry
     AREA = "area"
+    VOLUME = "volume"              # 3D geometries only (Shapely .volume)
     PERIMETER = "perimeter"
     LENGTH = "length"
     CENTROID = "centroid"
     BBOX = "bbox"
     VERTEX_COUNT = "vertex_count"
     HOLE_COUNT = "hole_count"
+    # Morphological indices — dimensionless 2D shape descriptors
+    CIRCULARITY = "circularity"    # (4·π·area) / perimeter²; perfect circle = 1
+    CONVEXITY = "convexity"        # area / convex_hull.area; perfect convex = 1
+    ASPECT_RATIO = "aspect_ratio"  # bbox width / bbox height
 
 
 # Resolution-requiring kinds. Geohash 1..12; H3 0..15; S2 0..30.

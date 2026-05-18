@@ -618,6 +618,35 @@ def compute_derived_fields(
         elif kind == ComputedKind.AREA:
             out[key] = float(geometry.area)
 
+        elif kind == ComputedKind.VOLUME:
+            # Shapely exposes .volume only on 3D closed types (Solid).
+            if hasattr(geometry, "volume"):
+                out[key] = float(geometry.volume)
+            else:
+                out[key] = 0.0
+
+        elif kind == ComputedKind.CIRCULARITY:
+            import math as _math
+            if geometry.length > 0:
+                out[key] = float(
+                    (4 * _math.pi * geometry.area) / (geometry.length ** 2)
+                )
+            else:
+                out[key] = 0.0
+
+        elif kind == ComputedKind.CONVEXITY:
+            hull_area = geometry.convex_hull.area
+            if hull_area > 0:
+                out[key] = float(geometry.area / hull_area)
+            else:
+                out[key] = 0.0
+
+        elif kind == ComputedKind.ASPECT_RATIO:
+            minx, miny, maxx, maxy = geometry.bounds
+            width = maxx - minx
+            height = maxy - miny
+            out[key] = float(width / height) if height > 0 else 0.0
+
         elif kind == ComputedKind.PERIMETER:
             # Perimeter is well-defined for polygons; for line/point we
             # report 0 / 0 rather than raising — matches Shapely's

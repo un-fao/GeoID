@@ -172,6 +172,40 @@ class TestComputeDerivedFields:
         )
         assert out["perimeter"] == 0.0
 
+    def test_morphological_indices_on_unit_square(
+        self, unit_square: Polygon
+    ) -> None:
+        import math
+        out = compute_derived_fields(
+            unit_square,
+            {},
+            [
+                ComputedField(kind=ComputedKind.CIRCULARITY),
+                ComputedField(kind=ComputedKind.CONVEXITY),
+                ComputedField(kind=ComputedKind.ASPECT_RATIO),
+                ComputedField(kind=ComputedKind.VOLUME),
+            ],
+        )
+        # Unit square: perimeter=4, area=1 → circularity = pi/4
+        assert out["circularity"] == pytest.approx(math.pi / 4)
+        # Square == its convex hull → convexity = 1
+        assert out["convexity"] == pytest.approx(1.0)
+        # 1×1 bbox → aspect_ratio = 1
+        assert out["aspect_ratio"] == pytest.approx(1.0)
+        # 2D polygon has no volume
+        assert out["volume"] == 0.0
+
+    def test_convexity_lt_one_for_concave_polygon(self) -> None:
+        # L-shape — concave; convex hull is the bounding 2x2 square minus
+        # nothing, area = 3 (covered) vs hull area = 4 → convexity = 0.75.
+        l_shape = Polygon(
+            [(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)]
+        )
+        out = compute_derived_fields(
+            l_shape, {}, [ComputedField(kind=ComputedKind.CONVEXITY)]
+        )
+        assert 0 < out["convexity"] < 1
+
     def test_hashes_are_deterministic(self, unit_square: Polygon) -> None:
         a = compute_derived_fields(
             unit_square,
