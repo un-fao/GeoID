@@ -38,6 +38,7 @@ CREATE_POLICIES_TABLE = DDLQuery("""
         version VARCHAR(16) DEFAULT '1.0',
         description TEXT,
         effect VARCHAR(16) DEFAULT 'ALLOW',
+        priority INTEGER NOT NULL DEFAULT 0,
         actions JSONB NOT NULL DEFAULT '[]'::jsonb,
         resources JSONB DEFAULT '["*"]'::jsonb,
         conditions JSONB DEFAULT '[]'::jsonb,
@@ -55,8 +56,8 @@ CREATE_PARTITION_DEFAULT = DDLQuery('CREATE TABLE IF NOT EXISTS {schema}.policie
 
 INSERT_POLICY = DQLQuery(
     """
-    INSERT INTO {schema}.policies (id, version, description, effect, actions, resources, conditions, partition_key)
-    VALUES (:id, :version, :description, :effect, :actions, :resources, :conditions, :partition_key)
+    INSERT INTO {schema}.policies (id, version, description, effect, priority, actions, resources, conditions, partition_key)
+    VALUES (:id, :version, :description, :effect, :priority, :actions, :resources, :conditions, :partition_key)
     RETURNING *;
     """,
     result_handler=ResultHandler.ONE_DICT,
@@ -65,12 +66,13 @@ INSERT_POLICY = DQLQuery(
 
 UPSERT_POLICY = DQLQuery(
     """
-    INSERT INTO {schema}.policies (id, version, description, effect, actions, resources, conditions, partition_key)
-    VALUES (:id, :version, :description, :effect, :actions, :resources, :conditions, :partition_key)
+    INSERT INTO {schema}.policies (id, version, description, effect, priority, actions, resources, conditions, partition_key)
+    VALUES (:id, :version, :description, :effect, :priority, :actions, :resources, :conditions, :partition_key)
     ON CONFLICT (id, partition_key) DO UPDATE
     SET version = EXCLUDED.version,
         description = EXCLUDED.description,
         effect = EXCLUDED.effect,
+        priority = EXCLUDED.priority,
         actions = EXCLUDED.actions,
         resources = EXCLUDED.resources,
         conditions = EXCLUDED.conditions
@@ -202,6 +204,7 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
                 version=policy.version,
                 description=policy.description,
                 effect=policy.effect,
+                priority=policy.priority,
                 actions=json.dumps(policy.actions),
                 resources=json.dumps(policy.resources),
                 conditions=json.dumps([c.model_dump() for c in policy.conditions]) if policy.conditions else "[]",
@@ -236,6 +239,7 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
                 version=policy.version,
                 description=policy.description,
                 effect=policy.effect,
+                priority=policy.priority,
                 actions=json.dumps(policy.actions),
                 resources=json.dumps(policy.resources),
                 conditions=json.dumps([c.model_dump() for c in policy.conditions]) if policy.conditions else "[]",

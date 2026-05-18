@@ -151,6 +151,7 @@ CREATE_POLICIES_TABLE = DDLQuery("""
         version VARCHAR(16) DEFAULT '1.0',
         description TEXT,
         effect VARCHAR(16) DEFAULT 'ALLOW',
+        priority INTEGER NOT NULL DEFAULT 0,
         actions JSONB NOT NULL DEFAULT '[]'::jsonb,
         resources JSONB DEFAULT '["*"]'::jsonb,
         conditions JSONB DEFAULT '[]'::jsonb,
@@ -725,8 +726,8 @@ PRUNE_EXPIRED_REFRESH_TOKENS = DQLQuery(
 
 INSERT_POLICY = DQLQuery(
     """
-    INSERT INTO {schema}.policies (id, version, description, effect, actions, resources, conditions, partition_key)
-    VALUES (:id, :version, :description, :effect, :actions, :resources, :conditions, :partition_key)
+    INSERT INTO {schema}.policies (id, version, description, effect, priority, actions, resources, conditions, partition_key)
+    VALUES (:id, :version, :description, :effect, :priority, :actions, :resources, :conditions, :partition_key)
     RETURNING *;
     """,
     result_handler=ResultHandler.ONE_DICT,
@@ -753,6 +754,7 @@ UPDATE_POLICY = DQLQuery(
     SET version = :version,
         description = :description,
         effect = :effect,
+        priority = :priority,
         actions = :actions,
         resources = :resources,
         conditions = :conditions
