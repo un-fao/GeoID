@@ -803,6 +803,20 @@ class IndexDispatcher:
         """
         results: Dict[str, BulkResult] = {}
         entries = await self._index_entries(ctx)
+        if ops and not entries:
+            # #914 — dispatch-level silent no-op: ops were submitted but no
+            # routing entry exists for this (catalog, collection,
+            # entity_type), so no indexer runs and the caller receives an
+            # empty results dict. Surface it so a misconfigured routing
+            # table can't silently swallow writes.
+            logger.warning(
+                "IndexDispatcher: %d op(s) submitted for catalog=%s "
+                "collection=%s entity_type=%s but routing returned NO "
+                "INDEX entries — writes will not reach any indexer. "
+                "Check RoutingConfig.operations[INDEX] for this scope.",
+                len(ops), ctx.catalog, ctx.collection,
+                getattr(ctx, "entity_type", None),
+            )
         for entry in entries:
             indexer = await self._resolve_indexer(entry.driver_ref)
             if indexer is None:

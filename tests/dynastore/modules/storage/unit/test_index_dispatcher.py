@@ -658,3 +658,40 @@ async def test_dispatch_path_not_logged_on_failure(caplog):
         await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i1")])
     rows = _extract_dispatch_path_records(caplog)
     assert not any(r.get("mode") == "post_commit_inline" for r in rows), rows
+
+
+# ---------------------------------------------------------------------------
+# #914 — silent no-op trap (dispatch-level): ops submitted with no routing entry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fan_out_warns_when_ops_submitted_but_routing_returns_no_entries(caplog):
+    """If RoutingConfig.operations[INDEX] is empty, every write silently
+    skips every indexer. Pin a WARN that names the scope so a misconfigured
+    routing table is visible in logs instead of invisibly swallowing writes.
+    """
+    import logging as _logging
+    dispatcher = _make_dispatcher(entries=[], indexers={})
+    with caplog.at_level(_logging.WARNING):
+        results = await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="i1")])
+    assert results == {}
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
+    assert any(
+        "routing returned NO INDEX entries" in m and "cat-x" in m and "col-y" in m
+        for m in msgs
+    ), msgs
+
+
+@pytest.mark.asyncio
+async def test_fan_out_does_not_warn_when_no_ops_and_no_entries(caplog):
+    """Empty-ops dispatch is a legitimate no-op; should not log the
+    #914 WARN (which would be a false positive on routine probes).
+    """
+    import logging as _logging
+    dispatcher = _make_dispatcher(entries=[], indexers={})
+    with caplog.at_level(_logging.WARNING):
+        results = await dispatcher.fan_out_bulk(_ctx(), [])
+    assert results == {}
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
+    assert not any("routing returned NO INDEX entries" in m for m in msgs), msgs
