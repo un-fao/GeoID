@@ -372,20 +372,24 @@ class ConfigApiService:
     ) -> Dict[str, Any]:
         """Bucket visible classes into a tier-first tree.
 
-        Every in-scope leaf carries ``_meta = {"tier": <active_scope>,
-        "source": <originating_tier>}`` regardless of ``meta_mode`` —
-        provenance is structural, not opt-in.  Per #665 slice 3 the
-        former parallel ``inherited`` tree (which used to carry the
-        ``source`` lookup) is gone; the same fact now lives inline on
-        each leaf.  ``meta_mode`` only controls the OPTIONAL field-level
-        extras merged into ``_meta``:
+        ``meta_mode`` controls whether provenance + docs are inlined on
+        each in-scope leaf as a ``_meta`` sibling.  #665 slice 3 had
+        every leaf carry ``_meta = {tier, source}`` unconditionally
+        (the parallel top-level ``inherited`` tree was retired in the
+        same change).  #946 reversed that "always-on" contract: #918's
+        ``extra="forbid"`` on ``PersistentModel`` makes any round-trip
+        of a GET response into a PUT/PATCH body 422 on the envelope
+        keys, so operators were forced to scrub manually.
 
-        - ``"none"`` — leaf carries only ``_meta = {tier, source}``.
-        - ``"field"`` (default) — adds ``_meta.docs = {field_name:
-          description}``, extracted from the class JSON Schema.
+        - ``"none"`` — no ``_meta`` on the leaf.  Payload is a clean
+          delta safe to copy verbatim into a PATCH body.  Provenance
+          is unavailable here; callers that need it pass ``"field"``
+          or ``"schema"``.
+        - ``"field"`` (default) — ``_meta = {tier, source, docs:
+          {field_name: description}}`` from the class JSON Schema.
           Lightweight, suitable for dashboards.
-        - ``"schema"`` — adds ``_meta.json_schema = <full Pydantic
-          schema>``.  Heavier; suitable for form-builders.
+        - ``"schema"`` — ``_meta = {tier, source, json_schema: <full
+          Pydantic schema>}``.  Heavier; suitable for form-builders.
 
         Per #517: the field docs / schema are inlined on the leaf
         (alongside ``_links``) instead of mirroring the tree shape in a
@@ -588,9 +592,12 @@ class ConfigApiService:
 
             # Slim mode (default ``include=scope``): filter out upstream-
             # tier configs.  Provenance for any rendered leaf is on its
-            # own ``_meta.source``; the parallel ``inherited`` tree is
-            # retired (#665 slice 3).  Set ``include=upstream`` to see
-            # upstream tiers inline with their ``_meta.source`` flagged.
+            # own ``_meta.source`` *when* ``meta_mode != "none"`` (#946);
+            # callers that need provenance and pass ``meta=none`` will
+            # find none — that's an intentional trade-off for clean
+            # round-trippable payloads.  The parallel ``inherited`` tree
+            # was retired in #665 slice 3.  Set ``include=upstream`` to
+            # see upstream tiers inline.
             if slim and not _is_in_scope(cls, class_key):
                 continue
 

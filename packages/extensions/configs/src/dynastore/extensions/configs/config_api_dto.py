@@ -22,11 +22,14 @@ driver configs inline under routing entries, no ``class_key`` field
 
 Provenance + HATEOAS edit affordances live INLINE on each plugin leaf:
 
-- ``_meta`` — always carries ``{"tier": <active_scope>, "source":
-  <originating_tier>}``.  ``?meta=field`` (default) adds ``"docs":
-  {field: description}``; ``?meta=schema`` adds ``"json_schema":
-  {...}``; ``?meta=none`` strips the extras but keeps ``tier``+
-  ``source`` (per #665 slice 3 — provenance is structural).
+- ``_meta`` — emitted under ``?meta=field`` (default) /
+  ``?meta=schema``.  ``field`` carries ``{"tier": <active_scope>,
+  "source": <originating_tier>, "docs": {field: description}}``;
+  ``schema`` swaps ``docs`` for ``json_schema``.  ``?meta=none``
+  omits ``_meta`` entirely so the payload is safe to copy verbatim
+  into a PATCH body (#946 reversed the #665-slice-3 always-on
+  contract once #918's ``extra="forbid"`` made round-trips 422 on
+  the envelope keys).
 - ``_links`` — per-leaf HATEOAS edit affordances pointing at the active
   scope's per-plugin CRUD endpoint and at the registry's JSON Schema
   entry.  Emitted by default (``?links=minimal``); opt-out with
