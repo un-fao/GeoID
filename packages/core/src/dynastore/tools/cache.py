@@ -422,13 +422,32 @@ class TieredAsyncBackend:
     Implements get_lock by delegating to the first tier that supports it.
     """
 
-    def __init__(self, backends: List[CacheBackend]) -> None:
-        """Initialize with an ordered list of backends (best to worst)."""
+    # Default L1 TTL cap (seconds). Bounds the per-process staleness window
+    # observable after a cross-process invalidate (#930): process A writes +
+    # invalidates L2, but sibling process B's L1 only converges once its
+    # local entry expires. Correctness-critical caches (config tiers, router)
+    # pass a smaller value via ``cached(l1_ttl=...)``.
+    DEFAULT_L1_TTL_CAP: float = 60.0
+
+    def __init__(
+        self,
+        backends: List[CacheBackend],
+        l1_ttl_cap: Optional[float] = None,
+    ) -> None:
+        """Initialize with an ordered list of backends (best to worst).
+
+        ``l1_ttl_cap`` bounds the TTL written to / populated into the L1
+        (first) tier regardless of the caller-supplied ttl. Defaults to
+        ``DEFAULT_L1_TTL_CAP`` (60s).
+        """
         if not backends:
             raise ValueError("TieredAsyncBackend requires at least one backend")
         self._backends = backends
         self._name = "-".join(b.name for b in backends)
         self._priority = min(b.priority for b in backends)
+        self._l1_ttl_cap = (
+            self.DEFAULT_L1_TTL_CAP if l1_ttl_cap is None else float(l1_ttl_cap)
+        )
         # ``cached()`` increments _stats.{hits,misses,size} unconditionally
         # on every call regardless of the backend type, so the wrapper
         # must expose the same shape as the leaf backends or it AttributeErrors
@@ -449,9 +468,10 @@ class TieredAsyncBackend:
         for i, backend in enumerate(self._backends):
             value = await backend.get(key)
             if value is not None:
-                # Populate all upstream tiers (0..i-1) with miss TTL
+                # Populate all upstream tiers (0..i-1) with the L1 cap so the
+                # populate-back path observes the same staleness bound as set().
                 for j in range(i):
-                    await self._backends[j].set(key, value, ttl=60)  # L1 short TTL
+                    await self._backends[j].set(key, value, ttl=self._l1_ttl_cap)
                 return value
         return None
 
@@ -464,10 +484,15 @@ class TieredAsyncBackend:
         exist: Optional[bool] = None,
     ) -> bool:
         """Write to all tiers (with tier-specific TTLs)."""
-        # L1 gets short TTL, L2+ get full TTL
+        # L1 gets the configured cap; L2+ get the full caller-supplied TTL.
         results = []
         for i, backend in enumerate(self._backends):
-            tier_ttl = min(ttl or 300, 60) if i == 0 else ttl
+            if i == 0:
+                tier_ttl: Optional[float] = (
+                    min(ttl, self._l1_ttl_cap) if ttl is not None else self._l1_ttl_cap
+                )
+            else:
+                tier_ttl = ttl
             result = await backend.set(key, value, ttl=tier_ttl, exist=exist)
             results.append(result)
         return all(results)
@@ -943,6 +968,7 @@ def cached(
     condition: Optional[Callable[[Any], bool]] = None,
     key_builder: Optional[Callable[..., str]] = None,
     distributed: bool = True,
+    l1_ttl: Optional[Union[float, int]] = None,
 ) -> Callable:
     """Centralized caching decorator for sync and async functions.
 
@@ -961,6 +987,12 @@ def cached(
         distributed: If ``False``, always use local in-memory backend regardless
             of registered distributed backends. Use for non-serializable return
             types (driver instances, singletons).
+        l1_ttl: Override the L1 (in-process) TTL cap when a tiered backend is in
+            play. Defaults to ``TieredAsyncBackend.DEFAULT_L1_TTL_CAP`` (60s).
+            Set a small value (e.g. 2s) for correctness-critical caches where
+            post-PUT staleness across sibling Cloud Run processes must converge
+            quickly (#930). Ignored when ``distributed=False`` or when no
+            distributed backend is registered.
 
     The decorated function gets these methods:
         - ``.cache_invalidate(*args, **kwargs)`` -- invalidate specific entry
@@ -1006,7 +1038,12 @@ def cached(
                     distributed_backend = get_cache_manager().get_async_backend()
                     if distributed_backend.priority < 1000:
                         # Tiered: L1 (local) + L2 (distributed)
-                        _backend = TieredAsyncBackend([local, distributed_backend])
+                        _backend = TieredAsyncBackend(
+                            [local, distributed_backend],
+                            l1_ttl_cap=(
+                                float(l1_ttl) if l1_ttl is not None else None
+                            ),
+                        )
                     else:
                         # No distributed backend registered, use local only
                         _backend = local
