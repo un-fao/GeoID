@@ -139,11 +139,11 @@ class TestTieredAsyncBackend:
         assert ("get", "key2") in l1._ops  # L1 queried first
         assert ("get", "key2") in l2._ops  # L2 queried after L1 miss
 
-        # L1 now has the value (populated with short TTL)
+        # L1 now has the value (populated with default cap TTL).
         l1_get = [op for op in l1._ops if op[0] == "get"]
         l1_set = [op for op in l1._ops if op[0] == "set"]
         assert len(l1_set) == 1
-        assert l1_set[0][2] == 60  # Short L1 TTL
+        assert l1_set[0][2] == TieredAsyncBackend.DEFAULT_L1_TTL_CAP
 
     @pytest.mark.asyncio
     async def test_get_miss_returns_none(self):
@@ -171,10 +171,10 @@ class TestTieredAsyncBackend:
         assert await l1.get("key3") == b"value3"
         assert await l2.get("key3") == b"value3"
 
-        # Verify TTLs: L1 gets min(ttl, 60), L2 gets full ttl
+        # Verify TTLs: L1 capped at DEFAULT_L1_TTL_CAP, L2 gets full ttl.
         l1_set = [op for op in l1._ops if op[0] == "set"]
         l2_set = [op for op in l2._ops if op[0] == "set"]
-        assert l1_set[0][2] == 60  # L1 gets 60s TTL (min of 300, 60)
+        assert l1_set[0][2] == TieredAsyncBackend.DEFAULT_L1_TTL_CAP
         assert l2_set[0][2] == 300  # L2 gets full 300s TTL
 
     @pytest.mark.asyncio
@@ -258,6 +258,107 @@ class TestTieredAsyncBackend:
         tiered = TieredAsyncBackend([l1, l2])
 
         assert tiered.priority == 100  # min(1000, 100)
+
+
+class TestTieredAsyncBackendL1TtlCap:
+    """L1 TTL cap configurability (#930).
+
+    Default cap (60s) bounds the per-process staleness window after a
+    cross-process cache invalidate (process A invalidates Valkey L2;
+    process B's L1 only converges once its local entry expires). For
+    correctness-critical caches (config tiers, storage router) the cap
+    is lowered to 2s so post-PUT staleness converges quickly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_l1_cap_is_60s(self):
+        l1 = FakeCacheBackend("l1", 1000)
+        l2 = FakeCacheBackend("l2", 100)
+        tiered = TieredAsyncBackend([l1, l2])
+
+        assert tiered._l1_ttl_cap == 60.0
+        assert tiered._l1_ttl_cap == TieredAsyncBackend.DEFAULT_L1_TTL_CAP
+
+    @pytest.mark.asyncio
+    async def test_custom_l1_cap_used_on_set(self):
+        l1 = FakeCacheBackend("l1", 1000)
+        l2 = FakeCacheBackend("l2", 100)
+        tiered = TieredAsyncBackend([l1, l2], l1_ttl_cap=2.0)
+
+        await tiered.set("k", b"v", ttl=300)
+        l1_set = [op for op in l1._ops if op[0] == "set"]
+        l2_set = [op for op in l2._ops if op[0] == "set"]
+        assert l1_set[0][2] == 2.0
+        assert l2_set[0][2] == 300
+
+    @pytest.mark.asyncio
+    async def test_custom_l1_cap_used_on_l2_populate_back(self):
+        """L2 hit populates L1 with the configured cap, not the legacy 60s."""
+        l1 = FakeCacheBackend("l1", 1000)
+        l2 = FakeCacheBackend("l2", 100)
+        tiered = TieredAsyncBackend([l1, l2], l1_ttl_cap=2.0)
+
+        # Seed L2 directly so L1 stays empty.
+        await l2.set("k", b"v")
+        result = await tiered.get("k")
+        assert result == b"v"
+
+        l1_set = [op for op in l1._ops if op[0] == "set"]
+        assert l1_set, "expected L1 populate-back on L2 hit"
+        assert l1_set[0][2] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_l1_cap_does_not_inflate_smaller_caller_ttl(self):
+        """If caller passes ttl < cap, L1 uses the smaller value (not the cap)."""
+        l1 = FakeCacheBackend("l1", 1000)
+        l2 = FakeCacheBackend("l2", 100)
+        tiered = TieredAsyncBackend([l1, l2], l1_ttl_cap=10.0)
+
+        await tiered.set("k", b"v", ttl=3)
+        l1_set = [op for op in l1._ops if op[0] == "set"]
+        assert l1_set[0][2] == 3  # min(3, 10)
+
+
+class TestConfigCachesUseTightL1Cap:
+    """Static check: correctness-critical config caches pin ``l1_ttl=2`` (#930)."""
+
+    def test_catalog_and_collection_caches_pass_l1_ttl(self):
+        import inspect
+        from dynastore.modules.catalog import config_service
+
+        src = inspect.getsource(config_service)
+        # Catalog-tier
+        assert 'namespace="catalog_config"' in src
+        catalog_decl = src.split("_catalog_config_cache")[0].rsplit("@cached", 1)[1]
+        assert "l1_ttl=2" in catalog_decl, (
+            "_catalog_config_cache must declare l1_ttl=2 to bound the "
+            "post-PUT staleness window across Cloud Run processes (#930)"
+        )
+        # Collection-tier
+        assert 'namespace="collection_config"' in src
+        collection_decl = (
+            src.split("_collection_config_cache")[0].rsplit("@cached", 1)[1]
+        )
+        assert "l1_ttl=2" in collection_decl
+
+    def test_platform_config_cache_passes_l1_ttl(self):
+        import inspect
+        from dynastore.modules.db_config.platform_config_service import (
+            PlatformConfigService,
+        )
+
+        src = inspect.getsource(PlatformConfigService._setup_cache)
+        assert "l1_ttl=2" in src, (
+            "platform_config cache must declare l1_ttl=2 (#930)"
+        )
+
+    def test_storage_router_cache_passes_l1_ttl(self):
+        import inspect
+        from dynastore.modules.storage import router
+
+        src = inspect.getsource(router)
+        router_decl = src.split("_resolve_driver_ids_cached")[0].rsplit("@cached", 1)[1]
+        assert "l1_ttl=2" in router_decl
 
 
 class TestCachedConditionOnRead:

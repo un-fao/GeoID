@@ -518,7 +518,7 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
 
     def _setup_cache(self):
         self.get_platform_config_internal_cached = cached(
-            maxsize=64, ttl=300, namespace="platform_config"
+            maxsize=64, ttl=300, namespace="platform_config", l1_ttl=2,
         )(self._get_platform_config_internal_db)
 
     @asynccontextmanager

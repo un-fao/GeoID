@@ -82,7 +82,7 @@ class ResolvedDriver(Generic[_D]):
 # ---------------------------------------------------------------------------
 
 
-@cached(maxsize=4096, ttl=300, namespace="storage_router", distributed=True)
+@cached(maxsize=4096, ttl=300, namespace="storage_router", distributed=True, l1_ttl=2)
 async def _resolve_driver_ids_cached(
     routing_plugin_cls: "Type[PluginConfig]",
     catalog_id: str,

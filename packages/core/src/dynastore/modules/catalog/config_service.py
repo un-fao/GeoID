@@ -119,7 +119,13 @@ def _resolve(config_cls: "Union[str, Type[PluginConfig]]") -> "tuple[Type[Plugin
 # ==============================================================================
 
 
-@cached(maxsize=8192, ttl=300, namespace="catalog_config", ignore=["engine", "catalog_manager"])
+@cached(
+    maxsize=8192,
+    ttl=300,
+    namespace="catalog_config",
+    ignore=["engine", "catalog_manager"],
+    l1_ttl=2,
+)
 async def _catalog_config_cache(
     engine: DbResource,
     catalog_manager: CatalogsProtocol,
@@ -141,7 +147,13 @@ async def _catalog_config_cache(
         return await _cq.select_catalog_config(phys_schema).execute(conn, ref_key=class_key)
 
 
-@cached(maxsize=16384, ttl=300, namespace="collection_config", ignore=["engine", "catalog_manager"])
+@cached(
+    maxsize=16384,
+    ttl=300,
+    namespace="collection_config",
+    ignore=["engine", "catalog_manager"],
+    l1_ttl=2,
+)
 async def _collection_config_cache(
     engine: DbResource,
     catalog_manager: CatalogsProtocol,
