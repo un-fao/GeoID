@@ -38,6 +38,7 @@ from dynastore.extensions.tools.exception_handlers import handle_exception
 import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
+from dynastore.models.protocols.collections import CollectionsProtocol
 from dynastore.modules.db_config.engine_config import EngineConfig
 from dynastore.modules.db_config.plugin_config import list_registered_configs, require_config_class, resolve_config_class
 from dynastore.modules.db_config.exceptions import (
@@ -654,13 +655,38 @@ class ConfigsService(ExtensionProtocol):
 
 
     async def update_collection_config(
-        self, catalog_id: str, collection_id: str, plugin_id: str, body: Dict[str, Any]
+        self,
+        catalog_id: str,
+        collection_id: str,
+        plugin_id: str,
+        body: Dict[str, Any],
+        create_if_missing: bool = False,
     ):
         """
         Overrides the configuration for a specific plugin at the Collection level.
         This writes to the 'collection_configs' table.
+
+        Default (``create_if_missing=False``): the collection MUST
+        already exist; an absent collection yields a 404 instead of
+        silently materialising a brand-new collection on PUT (issue
+        #918 — a typo such as ``sentinal`` for ``sentinel`` used to
+        slip through unchecked).  Pass ``?create_if_missing=true`` to
+        keep the legacy upfront-configure flow where a thin collection
+        registry row is JIT-created as part of the same request.
         """
         await require_catalog_ready(catalog_id)
+        if not create_if_missing:
+            collections = get_protocol(CollectionsProtocol)
+            assert collections is not None, "CollectionsProtocol not registered"
+            existing = await collections.get_collection(catalog_id, collection_id)
+            if existing is None:
+                raise problem_details.collection_not_found(
+                    catalog_id, collection_id,
+                    instance=(
+                        f"/configs/catalogs/{catalog_id}/collections/"
+                        f"{collection_id}/plugins/{plugin_id}"
+                    ),
+                )
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
@@ -672,6 +698,8 @@ class ConfigsService(ExtensionProtocol):
             await self._invalidate_exposure()
             return validated_config
 
+        except problem_details.ProblemException:
+            raise
         except Exception as e:
             raise handle_exception(
                 e,

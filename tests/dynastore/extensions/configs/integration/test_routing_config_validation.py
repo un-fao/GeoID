@@ -225,3 +225,138 @@ async def test_routing_self_register_entries_persisted(
         f"only the operator-supplied entry persisted; self-register "
         f"did not augment: {persisted!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #918 — wrong-schema body must not land as empty {}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_put_wrong_schema_body_returns_422_not_200_with_empty_dict(
+    shared_catalog: str,
+    shared_collection_factory,
+    sysadmin_in_process_client_module: AsyncClient,
+) -> None:
+    """#918 Bug 1 regression: a body whose keys belong to a different
+    config class (here: an ``items_postgresql_driver`` driver-config
+    shape) used to be accepted as ``200 + {}`` against the
+    ``items_routing_config`` endpoint — the unknown keys were silently
+    dropped by Pydantic's default ``extra="ignore"``, then dumped with
+    ``exclude_unset=True`` → empty row in ``collection_configs``. GET
+    then resolved to defaults, looking like nothing was set.
+
+    Fix: ``PersistentModel`` now sets ``extra="forbid"``, so the wrong
+    payload fails ``model_validate`` and surfaces as 422.
+    """
+    col_id = await shared_collection_factory()
+    url = (
+        f"/configs/catalogs/{shared_catalog}"
+        f"/collections/{col_id}/plugins/items_routing_config"
+    )
+
+    before = await sysadmin_in_process_client_module.get(url)
+    assert before.status_code == 200, before.text
+    before_body = before.json()
+
+    # A body shaped like the items_postgresql_driver config — fields
+    # that ItemsRoutingConfig does NOT declare. Pre-#918 every key
+    # was silently dropped; post-#918 model_validate raises.
+    wrong_body = {
+        "host": "localhost",
+        "port": 5432,
+        "pool_size": 5,
+        "dsn": "postgresql://example/db",
+    }
+
+    resp = await sysadmin_in_process_client_module.put(url, json=wrong_body)
+
+    assert resp.status_code == 422, (
+        f"expected 422 from wrong-shape PUT, got {resp.status_code}: "
+        f"{resp.text}"
+    )
+
+    # Persisted state must not have changed.
+    after = await sysadmin_in_process_client_module.get(url)
+    assert after.status_code == 200, after.text
+    assert after.json() == before_body, (
+        "wrong-shape PUT must not mutate persisted state"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #918 — non-existent collection must not be auto-created
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_put_against_missing_collection_returns_404_by_default(
+    shared_catalog: str,
+    sysadmin_in_process_client_module: AsyncClient,
+) -> None:
+    """#918 Bug 2 regression: a fat-fingered collection id
+    (``sentinal`` for ``sentinel``) used to silently create a new
+    collection row at PUT time. Now the default is 404 — the operator
+    has to opt in with ``?create_if_missing=true``.
+    """
+    typo_collection = "non-existent-collection-918"
+    url = (
+        f"/configs/catalogs/{shared_catalog}"
+        f"/collections/{typo_collection}/plugins/items_routing_config"
+    )
+
+    resp = await sysadmin_in_process_client_module.put(
+        url, json=_routing_body_valid_minimal()
+    )
+
+    assert resp.status_code == 404, (
+        f"expected 404 against missing collection, got {resp.status_code}: "
+        f"{resp.text}"
+    )
+
+    # Side-effect probe: the rejected PUT must NOT have created the
+    # collection.  Note that GET on the plugin config resolves the
+    # waterfall and returns 200+defaults even for a missing collection,
+    # so we instead re-PUT (still without ?create_if_missing) — if a
+    # collection had been silently materialised by the first call, the
+    # second would slip past the existence gate and return 200.
+    resp2 = await sysadmin_in_process_client_module.put(
+        url, json=_routing_body_valid_minimal()
+    )
+    assert resp2.status_code == 404, (
+        f"rejected PUT must not have created the collection (second "
+        f"PUT returned {resp2.status_code}): {resp2.text}"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_put_against_missing_collection_with_create_if_missing_succeeds(
+    shared_catalog: str,
+    sysadmin_in_process_client_module: AsyncClient,
+) -> None:
+    """#918 Bug 2 opt-in path: the legacy upfront-configure flow is
+    still available behind ``?create_if_missing=true``. Same call,
+    same body — but with the explicit query flag — must succeed and
+    materialise the collection.
+    """
+    new_collection = "upfront-configured-collection-918"
+    url = (
+        f"/configs/catalogs/{shared_catalog}"
+        f"/collections/{new_collection}/plugins/items_routing_config"
+    )
+
+    resp = await sysadmin_in_process_client_module.put(
+        url + "?create_if_missing=true",
+        json=_routing_body_valid_minimal(),
+    )
+
+    assert resp.status_code == 200, (
+        f"expected 200 with ?create_if_missing=true, got "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    # And the collection now exists.
+    get_resp = await sysadmin_in_process_client_module.get(url)
+    assert get_resp.status_code == 200, (
+        f"collection should exist after JIT-create: {get_resp.text}"
+    )
