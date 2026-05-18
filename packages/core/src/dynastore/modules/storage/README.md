@@ -85,8 +85,8 @@ Items-tier ES driver. Writes to per-tenant index `{prefix}-items-{catalog_id}` w
 Stores the full feature (geometry simplified to fit when oversized) in a per-tenant private
 index `{prefix}-{catalog_id}-private-items` with `TENANT_FEATURE_MAPPING` (root `dynamic: false`).
 On `ensure_storage`, applies a catalog-wide DENY policy (`private_deny_{cat}`) blocking public
-read access. `auto_register_for_routing = frozenset()` — operators pin it explicitly OR set
-`CollectionPrivacy.is_private = True` (Cycle E.2/F.0d) which triggers the seed at create-time.
+read access. `auto_register_for_routing = frozenset()` — pinning this driver in a routing config
+is itself the privacy switch (#733 retired the standalone `CollectionPrivacy.is_private` flag).
 
 ### `collection_elasticsearch_driver` / `collection_elasticsearch_private_driver`
 

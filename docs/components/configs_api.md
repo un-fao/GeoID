@@ -85,11 +85,9 @@ configs.platform.{
   catalog.{                                          # CATALOG-TIER TEMPLATES
     drivers.{...}                                    # default catalog driver configs
     routing.{...}                                    # default catalog routing config
-    privacy.{collection_defaults: {is_private}}      # default collection privacy
     collection.{                                     # COLLECTION-TIER TEMPLATES
       drivers.{...}
-      routing.{...}
-      privacy.{is_private}
+      routing.{...}                                  # privacy = routing-pin of private driver (#733)
       info.{type, default_language}
       items.{
         drivers.{items_postgresql_driver: {sidecars}, items_elasticsearch_driver, ...}
@@ -293,7 +291,6 @@ GET /configs/catalogs/demo/collections/sample?resolved=true
           "drivers":  {…},
           "envelope": {…},
           "info":     { "type": "vector", "default_language": "en" },
-          "privacy":  { "is_private": false },
           "routing":  {…},
           "items": {
             "drivers": {
