@@ -108,7 +108,11 @@
             </div>
           </div>
           <div class="form-row">
-            <div style="grid-column:1/-1">
+            <div>
+              <label for="policy-priority">Priority — [-1000, 1000], higher wins; ties → DENY</label>
+              <input id="policy-priority" type="number" min="-1000" max="1000" step="1" value="0">
+            </div>
+            <div>
               <label for="policy-description">Description</label>
               <input id="policy-description" type="text">
             </div>
@@ -140,9 +144,9 @@
         </div>
         <table id="policies-table">
           <thead>
-            <tr><th>ID</th><th>Effect</th><th>Actions</th><th>Resources</th><th></th></tr>
+            <tr><th>ID</th><th>Effect</th><th>Priority</th><th>Actions</th><th>Resources</th><th></th></tr>
           </thead>
-          <tbody><tr class="empty-row"><td colspan="5">Loading…</td></tr></tbody>
+          <tbody><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody>
         </table>
       </div>
     </section>
