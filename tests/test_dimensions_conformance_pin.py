@@ -17,6 +17,7 @@ EXPECTED_URIS = {
     "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/dimension-pagination",
     "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/dimension-inverse",
     "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/dimension-hierarchical",
+    "http://www.opengis.net/spec/ogc-dimensions/1.0/conf/dimension-similarity",
 }
 
 
