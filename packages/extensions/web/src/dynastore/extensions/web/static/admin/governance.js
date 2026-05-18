@@ -232,7 +232,7 @@ function renderPolicies() {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.textContent = "No policies at this scope.";
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -255,7 +255,7 @@ function renderPolicies() {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.textContent = `No policies match "${q}".`;
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -292,6 +292,36 @@ function renderPolicies() {
     eChip.className = `chip effect-${p.effect}`;
     eChip.textContent = p.effect;
     effect.appendChild(eChip);
+
+    const prio = document.createElement("td");
+    const prioInput = document.createElement("input");
+    prioInput.type = "number";
+    prioInput.min = "-1000";
+    prioInput.max = "1000";
+    prioInput.step = "1";
+    prioInput.value = String(p.priority ?? 0);
+    prioInput.disabled = !canWrite;
+    prioInput.style.width = "84px";
+    prioInput.title = "Higher wins; ties → DENY. Range [-1000, 1000].";
+    prioInput.addEventListener("change", async () => {
+      const next = Number(prioInput.value);
+      if (!Number.isFinite(next) || next < -1000 || next > 1000) {
+        setStatus("#policy-status", "Priority must be an integer in [-1000, 1000].", "err");
+        prioInput.value = String(p.priority ?? 0);
+        return;
+      }
+      if (next === (p.priority ?? 0)) return;
+      try {
+        await updatePolicy(p.id, { priority: next }, scopeCatalogId());
+        p.priority = next;
+        setStatus("#policy-status", `Updated ${p.id} priority → ${next}.`, "ok");
+      } catch (e) {
+        setStatus("#policy-status", `Update failed: ${e.message}`, "err");
+        prioInput.value = String(p.priority ?? 0);
+      }
+    });
+    prio.appendChild(prioInput);
+
     const acts = document.createElement("td");
     acts.className = "muted";
     acts.textContent = (p.actions || []).join(", ");
@@ -322,7 +352,7 @@ function renderPolicies() {
     });
     actions.appendChild(del);
 
-    tr.append(id, effect, acts, res, actions);
+    tr.append(id, effect, prio, acts, res, actions);
     tbody.appendChild(tr);
   }
 }
@@ -333,12 +363,19 @@ async function onCreatePolicy(e) {
     setStatus("#policy-status", "You cannot create policies at this scope.", "err");
     return;
   }
+  const prioRaw = $("#policy-priority").value;
+  const priority = prioRaw === "" ? 0 : Number(prioRaw);
+  if (!Number.isFinite(priority) || priority < -1000 || priority > 1000) {
+    setStatus("#policy-status", "Priority must be an integer in [-1000, 1000].", "err");
+    return;
+  }
   const body = {
     id: $("#policy-id").value.trim(),
     description: $("#policy-description").value.trim() || null,
     actions: csv($("#policy-actions").value),
     resources: csv($("#policy-resources").value),
     effect: $("#policy-effect").value,
+    priority,
   };
   if (!body.id) {
     setStatus("#policy-status", "ID is required.", "err");
