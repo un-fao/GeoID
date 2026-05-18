@@ -1593,6 +1593,19 @@ CatalogRoutingConfig.register_validate_handler(cast(_HandlerSig, _validate_catal
 
 _PRIVATE_ITEMS_DRIVER_ID = "items_elasticsearch_private_driver"
 _PRIVATE_COLLECTION_DRIVER_ID = "collection_elasticsearch_private_driver"
+_PRIVATE_CATALOG_DRIVER_ID = "catalog_elasticsearch_private_driver"
+
+
+def _catalog_routing_has_private_driver(
+    routing: "CatalogRoutingConfig",
+) -> bool:
+    """Return True iff ``catalog_elasticsearch_private_driver`` is pinned
+    in any operation of the given catalog routing config (#960)."""
+    for entries in routing.operations.values():
+        for entry in entries:
+            if entry.driver_ref == _PRIVATE_CATALOG_DRIVER_ID:
+                return True
+    return False
 
 
 def _items_routing_has_private_driver(routing: "ItemsRoutingConfig") -> bool:

@@ -25,6 +25,9 @@ Disabling the private-indexing feature in a deployment = removing the
 needs to change.
 """
 
+from dynastore.modules.storage.drivers.elasticsearch_private.catalog_driver import (
+    CatalogElasticsearchPrivateDriver,
+)
 from dynastore.modules.storage.drivers.elasticsearch_private.collection_driver import (
     CollectionElasticsearchPrivateDriver,
 )
@@ -36,6 +39,7 @@ from dynastore.modules.storage.drivers.elasticsearch_private.transformer import 
 )
 
 __all__ = [
+    "CatalogElasticsearchPrivateDriver",
     "CollectionElasticsearchPrivateDriver",
     "ItemsElasticsearchPrivateDriver",
     "PrivateEntityTransformer",
