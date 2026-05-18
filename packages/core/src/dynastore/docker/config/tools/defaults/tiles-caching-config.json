@@ -1,0 +1,8 @@
+{
+  "class_key": "tiles_caching_config",
+  "value": {
+    "cache_enabled": true,
+    "key_prefix": "tiles/collections",
+    "ttl_seconds": 31536000
+  }
+}
