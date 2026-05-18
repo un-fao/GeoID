@@ -233,13 +233,16 @@ def test_compose_tree_places_classes_by_address():
         # the slim filter (covered by dedicated slim-mode tests below).
         tree = ConfigApiService._compose_tree(
             by_class, sources={}, active_scope="catalog",
-            include_mode="upstream",
+            include_mode="upstream", meta_mode="field",
         )
     assert {k: v for k, v in tree["platform"]["web"]["WebConfig"].items() if not k.startswith("_")} == {"brand_name": "x"}
     assert "catalog_core_postgresql_driver" in tree["platform"]["catalog"]["drivers"]
-    # Per #665 slice 3 every leaf carries ``_meta = {tier, source}`` even
-    # under ``meta_mode="none"``.
-    assert {k: v for k, v in tree["platform"]["web"]["WebConfig"]["_meta"].items() if not k.startswith("_")} == {"tier": "catalog", "source": "default"}
+    # Post #946: ``_meta`` envelope is opt-in via ``meta=field`` (here) or
+    # ``meta=schema``.  The leaf carries ``{tier, source}`` plus any
+    # mode-specific extras when the caller asked for it.
+    meta = tree["platform"]["web"]["WebConfig"]["_meta"]
+    assert meta["tier"] == "catalog"
+    assert meta["source"] == "default"
 
 
 def test_compose_tree_filters_collection_only_from_catalog():
@@ -587,7 +590,12 @@ def test_build_routing_refs_transformer_lists_default_empty():
 
 def test_build_routing_refs_unregistered_driver_emits_no_link():
     """Cycle F.7d.3 — composition sub-drivers with no registered config
-    emit zero links.  Drops the old confusing ``config_ref: null`` shape."""
+    emit zero links.  Drops the old confusing ``config_ref: null`` shape.
+
+    Post-#946: empty ``_links`` arrays are dropped from the serialised
+    DriverRef (alongside empty ``_meta``) so the routing payload matches
+    the rest of the tree under ``links=none`` / ``meta=none``.
+    """
     by_class = {
         "catalog_routing_config": {
             "operations": {
@@ -605,7 +613,63 @@ def test_build_routing_refs_unregistered_driver_emits_no_link():
     ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
     assert ref["driver_ref"] == "UnknownDriver"
     assert "config_ref" not in ref
-    assert ref["_links"] == []
+    assert "_links" not in ref
+
+
+def test_build_routing_refs_meta_none_omits_meta_block():
+    """#946: ``meta_mode="none"`` drops the ``_meta`` block from each
+    DriverRef the same way ``_decorate`` drops it from regular leaves.
+    Without this the routing payload leaked ``{tier, source}`` even when
+    the caller asked for a clean round-trippable shape.
+    """
+    by_class = {
+        "catalog_routing_config": {
+            "operations": {
+                "WRITE": [{"driver_ref": "items_postgresql_driver",
+                           "on_failure": "fatal", "write_mode": "sync",
+                           "source": "operator"}]
+            },
+        },
+    }
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(items_postgresql_driver={"__module__": "m"}),
+    ):
+        svc = ConfigApiService(config_service=MagicMock())
+        svc._build_routing_refs(
+            by_class, base_url="http://h/configs/catalogs/x",
+            meta_mode="none", links_mode="none",
+        )
+    ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
+    assert ref["driver_ref"] == "items_postgresql_driver"
+    assert "_meta" not in ref
+    assert "_links" not in ref
+
+
+def test_build_routing_refs_links_none_omits_driver_config_link():
+    """#946: ``links_mode="none"`` skips the ``driver-config`` HATEOAS link
+    even when the driver_ref binds to a registered config class."""
+    by_class = {
+        "catalog_routing_config": {
+            "operations": {
+                "WRITE": [{"driver_ref": "items_postgresql_driver",
+                           "on_failure": "fatal", "write_mode": "sync"}]
+            },
+        },
+    }
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(items_postgresql_driver={"__module__": "m"}),
+    ):
+        svc = ConfigApiService(config_service=MagicMock())
+        svc._build_routing_refs(
+            by_class, base_url="http://h/configs/catalogs/x",
+            meta_mode="field", links_mode="none",
+        )
+    ref = by_class["catalog_routing_config"]["operations"]["WRITE"][0]
+    assert "_links" not in ref
+    # _meta still present because we asked for it.
+    assert ref["_meta"]["tier"] == "catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -1166,8 +1230,11 @@ def test_compose_tree_collection_scope_surfaces_full_config_tree():
         "dynastore.extensions.configs.config_api_service.list_registered_configs",
         return_value=registry,
     ):
+        # Post-#946: opt into the _meta envelope to exercise the source
+        # provenance assertions below (default is now "none").
         tree = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="collection",
+            meta_mode="field",
         )
 
     # Collection-vis stays in body.
@@ -1214,6 +1281,7 @@ def test_compose_tree_catalog_scope_slim_mode_visibility():
     ):
         tree = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope="catalog",
+            meta_mode="field",  # #946: provenance is opt-in
         )
     # Catalog-vis stays in body.
     assert {k: v for k, v in tree["platform"]["catalog"]["routing"]["catalog_routing_config"].items() if not k.startswith("_")} == {"enabled": True}
@@ -1286,7 +1354,8 @@ def test_compose_tree_slim_null_visibility_included_at_non_platform_scopes():
         tree = ConfigApiService._compose_tree(
             by_class, sources={"web_config": "platform"},
             active_scope="collection",
-            # default include_mode="scope"
+            # default include_mode="scope"; opt into _meta for the source check
+            meta_mode="field",
         )
     # Collection-owned config stays in the body.
     assert {k: v for k, v in tree["platform"]["catalog"]["collection"]["items"]["drivers"]["items_postgresql_driver"].items() if not k.startswith("_")} == {"sidecars": []}
@@ -1468,6 +1537,7 @@ def test_761_full_config_surface_at_catalog_and_collection_scope():
     for scope in ("catalog", "collection"):
         tree = ConfigApiService._compose_tree(
             by_class, sources=sources, active_scope=scope,
+            meta_mode="field",  # #946: opt into _meta for the source check below
         )
         assert len(tree) > 0, f"empty tree at {scope} scope"
         for cls in representative:

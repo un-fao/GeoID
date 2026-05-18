@@ -55,12 +55,16 @@ _PARAMS: Dict[str, Dict[str, Any]] = {
         "default": "field",
         "examples": ["field", "schema", "none"],
         "description": (
-            "Per-class documentation mode injected INLINE on each in-scope "
-            "plugin leaf as a ``_meta`` sibling.  Every leaf always carries "
-            "``_meta = {tier, source}`` (provenance is structural).  ``none`` "
-            "— that's all.  ``field`` (default) — adds ``docs: {field_name: "
-            "description}``.  ``schema`` — adds ``json_schema: <full "
-            "Pydantic schema 2020-12>`` (heavier, form-builder ready)."
+            "Per-class metadata sibling injected INLINE on each in-scope "
+            "plugin leaf as a ``_meta`` block.  ``none`` — no ``_meta`` "
+            "key is written; the leaf payload is a clean delta safe to "
+            "copy verbatim into a PATCH body (#946).  ``field`` (default) "
+            "— ``_meta = {tier, source, docs: {field_name: description}}`` "
+            "so dashboards see per-field documentation and provenance.  "
+            "``schema`` — ``_meta = {tier, source, json_schema: <full "
+            "Pydantic schema 2020-12>}`` (heavier, form-builder ready).  "
+            "PUT/PATCH handlers strip ``_meta`` on ingress so payloads "
+            "round-trip cleanly regardless of the mode used to fetch them."
         ),
     },
     "include": {
@@ -110,7 +114,11 @@ _PARAMS: Dict[str, Dict[str, Any]] = {
             "``title`` per link naming the class key and tier "
             "(catalog/collection ids included), plus ``rel=schema`` and "
             "``rel=engine`` cross-links.  ``none`` — no ``_links`` on any "
-            "leaf (opt-out for terse payloads)."
+            "leaf, including routing-config ``DriverRef`` entries which "
+            "previously emitted a ``driver-config`` link unconditionally "
+            "(#946).  PUT/PATCH handlers strip ``_links`` on ingress so "
+            "payloads round-trip cleanly regardless of the mode used "
+            "to fetch them."
         ),
     },
 }
