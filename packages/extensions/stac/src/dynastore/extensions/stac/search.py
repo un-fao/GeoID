@@ -283,7 +283,36 @@ async def _maybe_dispatch_to_es_search(
         )
         return None  # fall back to PG path on error
 
-    return result.features, result.total, None
+    # ItemSearchProtocol returns plain dicts (STAC Item JSON shape from ES
+    # _source). The downstream serializer (stac_generator.create_search_results_collection)
+    # operates on Feature pydantic instances and reads `feature.properties["_catalog_id"]` /
+    # `["_collection_id"]` — injected by the PG path at search.py:882-883. Mirror that
+    # shape here so the ES fast path returns the same contract as PG.
+    from dynastore.models.shared_models import Feature
+    features: list = []
+    for raw in result.features:
+        if isinstance(raw, Feature):
+            features.append(raw)
+            continue
+        try:
+            feat = Feature.model_validate(raw)
+        except Exception as exc:
+            logger.warning(
+                "STAC search → ES dispatch: skipping malformed hit (catalog=%s): %s",
+                cat_id, exc,
+            )
+            continue
+        if feat.properties is None:
+            feat.properties = {}
+        feat.properties.setdefault("_catalog_id", cat_id)
+        # ES indexed doc carries top-level `collection`; fall back to first
+        # requested collection when only one is in scope.
+        coll_id = raw.get("collection") if isinstance(raw, dict) else None
+        if not coll_id and len(cids) == 1:
+            coll_id = cids[0]
+        feat.properties.setdefault("_collection_id", coll_id or "")
+        features.append(feat)
+    return features, result.total, None
 
 
 async def search_items(
