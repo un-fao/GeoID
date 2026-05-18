@@ -1029,6 +1029,7 @@ class ItemsElasticsearchDriver(
                 continue
             doc.setdefault("id", op.entity_id)
             doc.setdefault("collection", ctx.collection)
+            doc.setdefault("catalog_id", ctx.catalog)
             doc = project_item_for_es(doc, known_fields)
             body.append({"index": {
                 "_index": index_name, "_id": op.entity_id,
@@ -1102,6 +1103,7 @@ class ItemsElasticsearchDriver(
 
             doc = feature.model_dump(by_alias=True, exclude_none=True)
             doc["collection"] = collection_id
+            doc["catalog_id"] = catalog_id
             return doc
         except Exception as e:
             logger.warning("Failed to serialize item %s/%s/%s: %s",

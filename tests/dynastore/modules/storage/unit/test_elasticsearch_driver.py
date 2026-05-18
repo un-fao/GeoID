@@ -974,3 +974,54 @@ class TestIndexBulkResponseShapes:
         assert result.failed == 0
         assert es.bulk_calls == []
         assert "ES bulk returned a shape" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_indexed_doc_carries_catalog_id_for_search_filter(self):
+        """#914 — ``SearchService._build_item_query`` appends
+        ``{"term": {"catalog_id": body.catalog_id}}`` when a catalog is
+        scoped, so the indexed doc MUST expose ``catalog_id`` at top-level
+        or the filter excludes every hit even when the tenant-scoped index
+        is the one being queried. Pin both code paths that build the doc:
+
+        * ``op.payload`` carrying only the Feature shape (the upstream
+          ``item_service.upsert`` path that dumps ``Feature`` via
+          ``model_dump`` — never sets ``catalog_id``).
+        * ``_serialize_item`` fallback when ``op.payload`` is ``None``
+          (covered by a separate test that injects the serializer; here
+          we focus on the payload path which is the production hot path).
+        """
+        es = _StubEsBulk({
+            "errors": False,
+            "items": [
+                {"index": {"_id": "f1", "result": "created", "status": 201}},
+            ],
+        })
+        ops = [_make_op(
+            "f1",
+            payload={
+                "id": "f1", "type": "Feature", "collection": "col1",
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {},
+            },
+        )]
+        ctx = _make_ctx()  # catalog="cat1", collection="col1"
+
+        patches = _patch_bulk_dependencies(es)
+        for p in patches:
+            p.start()
+        try:
+            driver = ItemsElasticsearchDriver()
+            await driver.index_bulk(ctx, ops)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert len(es.bulk_calls) == 1
+        body = es.bulk_calls[0]["body"]
+        # body alternates [action, doc, action, doc, ...]
+        docs = [body[i] for i in range(1, len(body), 2)]
+        assert len(docs) == 1
+        assert docs[0].get("catalog_id") == "cat1", (
+            "indexed doc must carry top-level catalog_id so "
+            "SearchService's term filter matches (#914 fix)"
+        )
