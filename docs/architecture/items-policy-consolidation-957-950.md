@@ -1,0 +1,274 @@
+# Items policy consolidation — single SSOT for write/read shape, identity, and derived values
+
+**Date:** 2026-05-19
+**Status:** Draft
+**Scope:** `ItemsWritePolicy`, new `ItemsReadPolicy`, removal of dead `WritePolicyDefaults` + `ItemsSchema.constraints` family, removal of sidecar-side spatial/statistics duplication. Touches `packages/core/src/dynastore/modules/storage/driver_config.py`, `packages/core/src/dynastore/modules/storage/schema_types.py`, `packages/core/src/dynastore/modules/storage/drivers/pg_sidecars/*_config.py`, `packages/core/src/dynastore/tools/geospatial.py`, the four item drivers (PG, ES, DuckDB, Iceberg), and the cross-sidecar `get_feature_type_schema()` aggregation pipeline.
+**Tracking issues:** #950 (ItemsReadPolicy SSOT), #957 (sidecar residue after #940/#943).
+
+## Problem
+
+The collection-tier write/read shape is currently split across **five** config surfaces, three of which are dead, all of which carry partial copies of the same concepts:
+
+1. `ItemsWritePolicy` (`driver_config.py:298`) — active SSOT after #940/#943. Carries `external_id_field`, `require_external_id`, `enable_validity`, `geometries` write behaviour, `identity_matchers: List[IdentityMatcher]` (OR-only flat list), `geohash_precision: int` (one of many cell systems), `matcher_actions: Dict[IdentityMatcher, WriteConflictPolicy]`.
+2. `WritePolicyDefaults` (`driver_config.py:557`) — declared as the "M8 posture-only" successor, **zero call-sites in the repo** beyond docstrings and module exports.
+3. `ItemsSchema.constraints` with `IdentityKeyConstraint` / `ValidityConstraint` / `GeometryHashConstraint` (`schema_types.py:98`) — declared as the field-binding successor; never consumed. `IdentityKeyConstraint.geohash_precision` is the third copy of the same value.
+4. `FeatureAttributeSidecarConfig` / `GeometriesSidecarConfig` (PG sidecars) — carry `feature_type_schema` (twice), `h3_resolutions: List[int]`, `s2_resolutions: List[int]`, `geohash_precision`, `enable_validity` (driver-divergent vs the policy field), `external_id_as_feature_id`, plus `statistics` and `place_statistics` blocks. The schema fragments are aggregated by `SidecarProtocol.get_feature_type_schema()` → `QueryOptimizer.get_feature_type_schema()` → `item_service.py:1557` because the wire shape was split between sidecars.
+5. **No read-side policy exists at all.** Identity-on-read, output transformer chain, and the wire-shape contract for responses have no declarative home. `PrivateEntityTransformer` (`drivers/elasticsearch_private/transformer.py:42`) is registered standalone via the catalog routing template (#733/PR #906) — there is no policy declaring "this collection produces this read shape".
+
+The result:
+
+- The same per-collection answer ("what's the identity, what's the wire shape, what gets computed") is reachable from three layers, only one of which is live. New contributors waste time figuring out which is canonical.
+- Spatial-cell support (H3/S2/geohash) is PG-only by accident: the only driver that reads from `GeometriesSidecarConfig` is PG. ES, DuckDB and Iceberg cannot compute these even though the geometry input is identical.
+- "Duplicate feature where geometry AND attributes both match" is not expressible. `identity_matchers` is a flat OR-list (first match wins); there is no AND-composition.
+- `enable_validity` is a latent driver-divergence bug: PG reads `attr_sidecar.enable_validity` (`postgresql.py:982`); DuckDB and Iceberg read `policy.enable_validity` (`duckdb.py:447`, `iceberg.py:498`).
+
+## Goals
+
+- One config tree per concern. No silent duplication, no "posture vs binding" split.
+- All identity strategies (path-extracted, hash, spatial-cell) expressible under one model, composable via AND within a rule and OR across rules.
+- All derived values (statistics, spatial keys, content hashes) declared once. Drivers consult that list and each materialises it however suits the store.
+- Wire shape declared once. The write JSON Schema is the read shape's default (via `schema_ref`); the read policy declares additional exposed computed fields and an output-transformer chain.
+- Clean break per the no-backcompat invariant (#950 comment 4482694621): no "translate old shape" code paths, destructive schema migration, Pydantic field defaults supply the empty-state ergonomics.
+
+## Non-goals
+
+- Asset-side write policy (`AssetWritePolicy` / `AssetWritePolicyDefaults` in `modules/catalog/write_policy_assets.py`). Untouched here.
+- PG sidecar internals (sidecars stay PG-driver-internal serialization, not a public extension surface; see the long-standing distinction between sidecars and `EntityTransformProtocol`).
+- DDL-shape decisions on PG (column names, JSONB vs relational, partitioning, indexed_paths, GiST/GIN choice, GIN column name). These stay on the sidecar — `ItemsWritePolicy` only declares **what** to compute; the sidecar decides **how** PG stores and indexes it.
+- 3-layer waterfall for these policies. `ItemsWritePolicy` and `ItemsReadPolicy` are collection-scoped only.
+
+## Design
+
+### Models
+
+```python
+class ComputedKind(StrEnum):
+    # Path-extracted (uses ItemsWritePolicy.external_id_field)
+    EXTERNAL_ID = "external_id"
+    # Content fingerprints
+    GEOMETRY_HASH = "geometry_hash"
+    ATTRIBUTES_HASH = "attributes_hash"
+    # Spatial cell keys (require resolution)
+    GEOHASH = "geohash"       # 1..12
+    H3 = "h3"                 # 0..15
+    S2 = "s2"                 # 0..30
+    # Statistics
+    AREA = "area"
+    PERIMETER = "perimeter"
+    LENGTH = "length"
+    CENTROID = "centroid"
+    BBOX = "bbox"
+    VERTEX_COUNT = "vertex_count"
+    HOLE_COUNT = "hole_count"
+
+class ComputedField(BaseModel):
+    kind: ComputedKind
+    resolution: Optional[int] = None  # required iff kind ∈ {geohash, h3, s2}
+    name: Optional[str] = None        # column/field name; default = kind[_resolution]
+
+class IdentityRule(BaseModel):
+    match_on: List[ComputedField]                  # AND within rule
+    on_match: Optional[WriteConflictPolicy] = None # overrides policy.on_conflict
+
+class ItemsWritePolicy(PluginConfig):
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    on_conflict: WriteConflictPolicy = UPDATE
+    on_asset_conflict: Optional[AssetConflictPolicy] = None
+
+    external_id_field: Optional[str] = None
+    require_external_id: bool = False
+
+    enable_validity: bool = False
+    validity_field: str = "valid_from"
+
+    skip_if_unchanged_geometry_hash: bool = False
+
+    schema: Optional[Dict[str, Any]] = None  # JSON Schema for properties; write-time validation
+
+    compute: List[ComputedField] = []        # declared derived values
+    identity: List[IdentityRule] = [
+        IdentityRule(match_on=[ComputedField(kind=ComputedKind.EXTERNAL_ID)])
+    ]
+    geometries: GeometriesWriteBehavior = Field(default_factory=GeometriesWriteBehavior)
+
+class FeatureType(BaseModel):
+    schema_ref: str = "items_write_policy.schema"
+    expose: List[str] = []  # field names from policy.compute (or properties) to surface in responses
+    failure_mode: Literal["strict", "best_effort"] = "best_effort"
+
+class ItemsReadPolicy(PluginConfig):
+    _visibility: ClassVar[Optional[str]] = "collection"
+
+    feature_type: FeatureType = Field(default_factory=FeatureType)
+    output_transformers: List[str] = []  # ordered chain of EntityTransformProtocol class keys
+```
+
+### Semantics
+
+**Write path** — for an incoming feature:
+
+1. Apply `geometries` behaviour (SRID transform, invalid fix/reject, allowed-type check, simplification, vertex normalisation). Failure paths raise the matching exception in `tools.geospatial`.
+2. Validate `properties` against `schema` if set. JSON-Schema failure → 422 with field-level violations. `additionalProperties: false` is honoured.
+3. Compute the union set `U = {policy.compute} ∪ {key for rule in policy.identity for key in rule.match_on}`. Drop `EXTERNAL_ID` (path-extracted, not derived). Pass `U` to `tools.geospatial.compute_derived_fields(feature, U)`, which returns a dict keyed by `ComputedField.resolved_name()` (i.e. `name` override, falling back to `kind` or `kind_resolution`). This dict travels alongside the feature through the write pipeline; each driver decides materialisation.
+4. Resolve identity. Walk `policy.identity` in order. For each rule, compute the conjunction key from the row's computed values and probe the store. First rule whose conjunction matches an existing row wins. If the rule has `on_match`, that overrides `policy.on_conflict`. The skip-if-unchanged-geometry-hash flag, when set, degrades `NEW_VERSION` to no-op and `UPDATE` to `REFUSE_RETURN` when the matched row's `geometry_hash` equals the incoming.
+
+**Read path** — for an outgoing feature:
+
+1. Driver returns the row plus its full set of materialised computed values.
+2. Resolve `read_policy.feature_type.schema_ref`. The string literal `"items_write_policy.schema"` resolves at config-load time (not request-time) to the write JSON Schema. The response promises that `properties` conforms.
+3. Merge `feature_type.expose` (a list of field names from `policy.compute` results or any other read-time computed metadata) into the response as additional read-only fields. Names appearing in `expose` that are not in the available set are skipped under `best_effort` and 502 under `strict`.
+4. Run `output_transformers` in order. Each transformer implements `EntityTransformProtocol.transform_read(entity, ctx)` and may add, remove, or rewrite fields. Failure of any single transformer under `best_effort` omits the field it would have produced and notes via response header; under `strict` it raises.
+
+### Driver responsibilities
+
+| Driver | `compute` materialisation |
+|---|---|
+| PG | Each `ComputedField` resolves to a real column on the attributes/geometries sidecar; PG sidecar config decides DDL details (index type, partition role). |
+| ES | Each `ComputedField` resolves to a numeric/object field in the index mapping. Spatial cells are stored as `keyword` (for exact match) or `long` (for range). |
+| DuckDB | Stored as columns; the driver may choose any computed key as ZONE-MAP / sort key. |
+| Iceberg | Stored as columns; spatial-cell columns are first-class partition-key candidates. |
+
+The minimal driver contract gains one method: `materialize_computed(self, computed: Dict[str, Any], row) -> None`. Existing drivers already write the geohash/geometry_hash columns this way today — the change is making it iterate over `policy.compute` instead of hard-coding the list.
+
+### What disappears
+
+| Today | After |
+|---|---|
+| `IdentityMatcher` enum | replaced by `ComputedKind` |
+| `ItemsWritePolicy.identity_matchers: List[IdentityMatcher]` | replaced by `identity: List[IdentityRule]` |
+| `ItemsWritePolicy.matcher_actions: Dict[IdentityMatcher, WriteConflictPolicy]` | per-rule `on_match` |
+| `ItemsWritePolicy.geohash_precision: int` | inline on `ComputedField(kind=GEOHASH, resolution=N)` |
+| `WritePolicyDefaults` class (whole) | deleted, dead code |
+| `IdentityKeyConstraint` / `ValidityConstraint` / `GeometryHashConstraint` | deleted, dead code |
+| `IdentityKeyConstraint.geohash_precision: int` | deleted (third copy) |
+| `GeometriesSidecarConfig.geohash_precision` | deleted, derived from `policy.compute` |
+| `GeometriesSidecarConfig.h3_resolutions: List[int]` | deleted, derived from `policy.compute` |
+| `GeometriesSidecarConfig.s2_resolutions: List[int]` | deleted, derived from `policy.compute` |
+| `GeometriesSidecarConfig.statistics: GeometriesStatisticsConfig` | deleted, derived from `policy.compute` |
+| `GeometriesSidecarConfig.place_statistics: PlaceStatisticsConfig` | deleted, derived from `policy.compute` |
+| `GeometriesSidecarConfig.store_bbox` / `store_centroid` | deleted, declared via `compute` |
+| `FeatureAttributeSidecarConfig.feature_type_schema` | deleted, `policy.schema` is SSOT |
+| `GeometriesSidecarConfig.feature_type_schema` | deleted, `policy.schema` is SSOT |
+| `FeatureAttributeSidecarConfig.external_id_as_feature_id` | moved to `ItemsReadPolicy.feature_type` |
+| `FeatureAttributeSidecarConfig.enable_validity` | deleted (driver-divergent bug; policy is SSOT) |
+| `SidecarProtocol.get_feature_type_schema()` aggregation | deleted, thin policy read replaces the chain |
+
+### What sidecars keep
+
+Strictly the DDL/PG-internal surface:
+
+- `FeatureAttributeSidecarConfig`: `storage_mode`, `storage_only_fields`, `attribute_schema`, `jsonb_column_name`, `jsonb_indexed_paths`, `use_hot_updates`, `enable_external_id`, `index_external_id`, `enable_asset_id`, `asset_id_field`, `index_asset_id`, `expose_geoid`, `partition_strategy`, `partition_attribute`.
+- `GeometriesSidecarConfig`: `target_srid`, `target_dimension`, `geom_column`, `bbox_column`, `partition_strategy`, `partition_resolution`, plus a new minimal `index_hints: Dict[str, IndexHint]` keyed by the `ComputedField.resolved_name()` so an operator can say "BTREE the area_m2 column".
+
+### Worked example — full feature set
+
+```json
+{
+  "items_write_policy": {
+    "on_conflict": "new_version",
+    "external_id_field": "properties.adm2_pcode",
+    "require_external_id": true,
+    "enable_validity": true,
+    "validity_field": "properties.valid_from",
+    "skip_if_unchanged_geometry_hash": true,
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["adm2_pcode", "adm2_name", "adm0_iso3", "valid_from"],
+      "additionalProperties": false,
+      "properties": {
+        "adm2_pcode": { "type": "string", "pattern": "^[A-Z]{3}[0-9A-Z]+$" },
+        "adm2_name":  { "type": "string", "minLength": 1 },
+        "adm1_pcode": { "type": "string" },
+        "adm0_iso3":  { "type": "string", "minLength": 3, "maxLength": 3 },
+        "valid_from": { "type": "string", "format": "date" },
+        "valid_to":   { "type": ["string", "null"], "format": "date" },
+        "source":     { "type": "string" }
+      }
+    },
+    "compute": [
+      { "kind": "area",        "name": "area_m2" },
+      { "kind": "perimeter",   "name": "perimeter_m" },
+      { "kind": "vertex_count" },
+      { "kind": "centroid" },
+      { "kind": "bbox" },
+      { "kind": "geohash", "resolution": 6 },
+      { "kind": "h3",      "resolution": 7 },
+      { "kind": "s2",      "resolution": 10 },
+      { "kind": "geometry_hash" },
+      { "kind": "attributes_hash" }
+    ],
+    "identity": [
+      { "match_on": [{ "kind": "external_id" }], "on_match": "new_version" },
+      { "match_on": [{ "kind": "geometry_hash" }, { "kind": "attributes_hash" }], "on_match": "refuse_return" },
+      { "match_on": [{ "kind": "h3", "resolution": 7 }, { "kind": "attributes_hash" }], "on_match": "refuse_return" }
+    ],
+    "geometries": {
+      "invalid_geom_policy": "attempt_fix",
+      "srid_mismatch_policy": "transform",
+      "allowed_geometry_types": ["Polygon", "MultiPolygon"],
+      "simplification_algorithm": "topology_preserving",
+      "simplification_tolerance": 0.0001,
+      "remove_redundant_vertices": true
+    }
+  },
+  "items_read_policy": {
+    "feature_type": {
+      "schema_ref": "items_write_policy.schema",
+      "expose": ["area_m2", "perimeter_m", "vertex_count", "centroid", "bbox", "geohash", "h3", "s2"],
+      "failure_mode": "best_effort"
+    },
+    "output_transformers": ["area_unit_normalizer", "locale_name_resolver"]
+  }
+}
+```
+
+## Test plan
+
+1. **Pydantic-level**:
+   - `ComputedField(kind=GEOHASH, resolution=None)` → ValidationError.
+   - `ComputedField(kind=AREA, resolution=9)` → ValidationError (no resolution accepted).
+   - Duplicate `ComputedField.resolved_name()` across `compute` + `identity[*].match_on` → admission-time warning, deduplicated.
+
+2. **Identity resolution** (TestClient against PG + ES drivers, parameterised):
+   - EX1 — external_id default: same pcode → second POST is a new version (when enable_validity).
+   - EX2 — geometry_hash only: identical geometry, different attributes → second POST refuses+returns the first.
+   - EX3 — geometry+attributes AND: identical geometry, identical attributes → second POST refuses+returns; identical geometry + different attributes → new row.
+   - EX4 — multi-rule OR: external_id match short-circuits; absent external_id, geometry_hash rule fires.
+   - EX5 — H3+attrs composite: features in the same H3@7 cell with identical attributes → refuse_return; different cell or different attrs → new row.
+
+3. **Driver parity** (matrix: PG, ES, DuckDB, Iceberg):
+   - For each driver, with `compute=[h3@7, s2@10, area]`, write 5 features and assert: (a) per-driver column/field exists, (b) value matches `tools.geospatial.compute_derived_fields` reference, (c) read-back round-trip equal.
+
+4. **Read path**:
+   - `expose=[area_m2]` → response feature has `area_m2` at root.
+   - `expose=[nonexistent]` under `best_effort` → field omitted, response header notes; under `strict` → 502.
+   - `schema_ref="items_write_policy.schema"` → response `properties` validates against the declared schema (test fixture asserts both ways).
+   - Transformer chain: `["area_unit_normalizer", "locale_name_resolver"]` runs in order; mock transformers assert call sequence.
+
+5. **Migration**:
+   - Fresh database (per draft-schema invariant). No idempotent ALTERs, no shim code paths. Tests assume a clean schema; the dev-compose `db-reset` entrypoint runs unchanged.
+
+## Implementation phasing
+
+1. **Phase 1 — models + tools** (this PR or first split): introduce `ComputedField` / `ComputedKind` / `IdentityRule` / `FeatureType`; add `compute_derived_fields()` in `tools/geospatial.py` covering all `ComputedKind` values. Pure additive, no driver changes yet.
+2. **Phase 2 — `ItemsWritePolicy` rewrite**: replace `identity_matchers` + `matcher_actions` + `geohash_precision` with `identity` + `compute` + `schema`. Update PG, ES, DuckDB, Iceberg drivers to consume the new list (PG: stop reading sidecar h3/s2/geohash; others: gain spatial-key materialisation).
+3. **Phase 3 — `ItemsReadPolicy` introduction**: new policy class, registered in the waterfall (collection-tier only). `_resolve_physical_*` and read drivers honour `feature_type.expose` and run the transformer chain.
+4. **Phase 4 — dead-code removal**: delete `WritePolicyDefaults`, `IdentityKeyConstraint`, `ValidityConstraint`, `GeometryHashConstraint`, sidecar `feature_type_schema` (×2), sidecar `h3_resolutions` / `s2_resolutions` / `geohash_precision`, sidecar statistics blocks, sidecar `enable_validity`, sidecar `external_id_as_feature_id`, the `get_feature_type_schema()` aggregation pipeline. Update module exports.
+5. **Phase 5 — docstring + example fixtures**: rewrite `ItemsWritePolicy` docstring (drops the "legacy vs M8" hedge); update example seed configs under `docker/configs/`; update walkthrough notebooks that touch identity matchers.
+
+Each phase ships as its own PR; phase 4 is the irreversible cleanup and lands last.
+
+## Risks
+
+- **Operator-visible cost**: declaring `compute=[h3@7, s2@10, geohash@6, geometry_hash, attributes_hash, area, perimeter, centroid, bbox, vertex_count]` materialises ten columns per row. Callers who over-declare pay write IO and storage. Docstring on `compute` calls this out; admin UI should sum estimated row width and warn.
+- **Driver capability mismatch**: a writer that cannot compute a `ComputedKind` (e.g. minimal Iceberg writer without the `h3-py` extra) must refuse the policy at admission rather than silently skip. Detection lives in `tools.geospatial.compute_derived_fields`: missing library raises a typed `UnsupportedComputedKind`, surfaced as a 422 with the offending kind.
+- **`enable_validity` fix is observable**: PG collections that were silently relying on the sidecar value will see behaviour change when the policy value differs. The fresh-DB invariant means there is no production state to migrate, but local-dev configs will need to be re-saved through the admin UI.
+- **Phase ordering bug-risk**: phase 2 ships before phase 4. Between them, sidecar fields exist but are unread. The phase-2 PR must include a regression test that grep-asserts no remaining read of sidecar `h3_resolutions` / `s2_resolutions` / `geohash_precision` (mirrors the audit pattern that filed #957 in the first place).
+
+## Open questions
+
+1. Should the spatial-cell `resolution` accept a list (`[7, 8, 9]`) as sugar for three separate `ComputedField` entries? Tempting but adds non-orthogonal sugar. Recommend: no, write the three entries.
+2. `expose` is a flat list of names. Should it also accept a JSON-Pointer-style path so a transformer's nested output is selectable? Out of scope for this PR — revisit when the first real transformer needs it.
+3. Should `output_transformers` be a list of class keys (current `EntityTransformProtocol` registration model) or a richer list with per-entry config? List of keys is fine for v1; per-entry config can land as `output_transformers: List[TransformerSpec]` later without breaking the simpler shape.
