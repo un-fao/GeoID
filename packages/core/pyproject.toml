@@ -80,6 +80,7 @@ storage_bigquery = "dynastore.modules.storage.drivers.bigquery:ItemsBigQueryDriv
 collection_elasticsearch = "dynastore.modules.elasticsearch.collection_es_driver:CollectionElasticsearchDriver"
 collection_elasticsearch_private = "dynastore.modules.storage.drivers.elasticsearch_private.collection_driver:CollectionElasticsearchPrivateDriver"
 catalog_elasticsearch = "dynastore.modules.elasticsearch.catalog_es_driver:CatalogElasticsearchDriver"
+catalog_elasticsearch_private = "dynastore.modules.storage.drivers.elasticsearch_private.catalog_driver:CatalogElasticsearchPrivateDriver"
 collection_postgresql = "dynastore.modules.storage.drivers.collection_postgresql:CollectionPostgresqlDriver"
 catalog_postgresql = "dynastore.modules.storage.drivers.catalog_postgresql:CatalogPostgresqlDriver"
 metadata_catalog_log_indexer = "dynastore.modules.storage.drivers.catalog_log_indexer:LogCatalogIndexer"

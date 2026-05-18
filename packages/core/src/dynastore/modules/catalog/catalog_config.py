@@ -293,6 +293,66 @@ def _build_private_items_routing() -> Any:
     )
 
 
+def _build_private_catalog_routing() -> Any:
+    """Build the catalog-tier ``CatalogRoutingConfig`` that pins
+    ``catalog_elasticsearch_private_driver`` (#960).
+
+    Operators / seed JSONs use this helper to opt into per-tenant
+    catalog-envelope isolation: the catalog metadata document lands in
+    the per-tenant ``{prefix}-{catalog_id}-catalog-private`` index
+    instead of the shared ``{prefix}-catalogs``.
+
+    Mirror of :func:`_build_private_items_routing` /
+    :func:`_build_private_collection_routing`.  WRITE/READ remain pinned
+    on ``catalog_postgresql_driver`` (system of record); INDEX/SEARCH
+    flip to the private ES driver.
+
+    Note: DENY-policy ownership stays with
+    ``items_elasticsearch_private_driver``.  Pin catalog-private without
+    any items-private collection in the catalog and the catalog endpoint
+    is reachable publicly through other read paths — pair this template
+    with private items-or-collection routing for full read protection.
+    """
+    from dynastore.modules.storage.routing_config import (
+        CatalogRoutingConfig,
+        FailurePolicy,
+        Operation,
+        OperationDriverEntry,
+        WriteMode,
+    )
+
+    return CatalogRoutingConfig(
+        operations={
+            Operation.WRITE: [
+                OperationDriverEntry(
+                    driver_ref="catalog_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(
+                    driver_ref="catalog_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+            Operation.INDEX: [
+                OperationDriverEntry(
+                    driver_ref="catalog_elasticsearch_private_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    source="auto",
+                ),
+            ],
+            Operation.SEARCH: [
+                OperationDriverEntry(
+                    driver_ref="catalog_elasticsearch_private_driver",
+                    source="auto",
+                ),
+            ],
+        },
+    )
+
+
 async def apply_catalog_default_routing_seed(
     catalog_id: str,
     collection_id: str,
