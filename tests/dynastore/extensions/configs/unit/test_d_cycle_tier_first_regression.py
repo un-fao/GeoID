@@ -302,6 +302,7 @@ def test_compose_collection_inherited_mirrors_configs_for_real_classes():
 
     tree = ConfigApiService._compose_tree(
         by_class, sources=sources, active_scope="collection",
+        meta_mode="field",  # #946: opt into the _meta envelope
     )
 
     # collection-vis stays in body; _meta carries the active-tier provenance.
@@ -310,7 +311,8 @@ def test_compose_collection_inherited_mirrors_configs_for_real_classes():
         ["items"]["routing"]["items_routing_config"]
     )
     assert leaf["enabled"] is False
-    assert leaf["_meta"] == {"tier": "collection", "source": "collection"}
+    assert leaf["_meta"]["tier"] == "collection"
+    assert leaf["_meta"]["source"] == "collection"
 
     # Per #665 slice 3 the parallel ``inherited`` tree is retired —
     # platform-tier configs are filtered out under slim mode, full stop.

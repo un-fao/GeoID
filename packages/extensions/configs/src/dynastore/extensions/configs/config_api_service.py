@@ -543,18 +543,23 @@ class ConfigApiService:
             dict comes from ``_get_effective_configs`` and has no other
             consumer past this point).
 
-            ``_meta = {tier, source}`` is always injected (per #665 slice 3
-            — provenance is structural, not opt-in).  Field-level extras
-            (``docs`` / ``json_schema``) merge in when ``meta_mode`` opts.
-            Overwrites any pre-existing ``_meta``/``_links`` so the
-            composer is idempotent under repeated calls on the same
+            ``_meta = {tier, source[, docs|json_schema|mutability]}`` is
+            injected when ``meta_mode != "none"``.  Under ``meta_mode="none"``
+            no ``_meta`` is written so the payload is a clean delta safe to
+            copy verbatim into a PATCH body (#946).  The structural-provenance
+            envelope from #665 slice 3 is now opt-in via the explicit
+            ``meta=field`` (default) / ``meta=schema`` modes; the admin UI
+            and any dashboard that wants provenance badges passes one of
+            those.  Overwrites any pre-existing ``_meta`` / ``_links`` so
+            the composer is idempotent under repeated calls on the same
             payload dict.
             """
-            payload["_meta"] = {
-                "tier": scope_label,
-                "source": sources.get(class_key, "default"),
-                **_doc_extras(cls),
-            }
+            if meta_mode != "none":
+                payload["_meta"] = {
+                    "tier": scope_label,
+                    "source": sources.get(class_key, "default"),
+                    **_doc_extras(cls),
+                }
             if wants_links:
                 engine_ref = payload.get("engine_ref") if isinstance(payload, dict) else None
                 if not isinstance(engine_ref, str) or not engine_ref:
@@ -759,6 +764,9 @@ class ConfigApiService:
     def _build_routing_refs(
         by_class: Dict[str, Dict[str, Any]],
         base_url: str,
+        *,
+        meta_mode: str = "field",
+        links_mode: str = "minimal",
     ) -> None:
         """Rewrite ``operations[OP]`` in routing configs as slim ``DriverRef``s.
 
@@ -774,9 +782,20 @@ class ConfigApiService:
         path).  Composition sub-drivers (no registered config) emit no link
         — operators see only what's actionable.  Replaces the old
         ``config_ref: Optional[str]`` scalar (``null`` was confusing).
+
+        Routing refs honor the same ``meta_mode`` / ``links_mode`` knobs as
+        the composed-tree decorator (#946).  When ``meta_mode == "none"`` no
+        ``meta`` field is written into each DriverRef; when
+        ``links_mode == "none"`` no ``links`` are attached.  Without this
+        gate the routing-config leaves leaked ``meta`` and a ``driver-config``
+        link even when the caller asked for a clean round-trippable payload
+        — every other leaf went through ``_decorate`` (gated), only routing
+        refs were ungated.
         """
         all_classes = list_registered_configs()
         scope_label = ConfigApiService._scope_label_from_url(base_url)
+        want_meta = meta_mode != "none"
+        want_links = links_mode in ("minimal", "full")
         for class_key in _routing_config_keys():
             routing = by_class.get(class_key)
             if not routing:
@@ -792,18 +811,20 @@ class ConfigApiService:
                         continue
                     driver_ref = entry.get("driver_ref", "")
                     links: List[Link] = []
-                    if driver_ref in all_classes:
+                    if want_links and driver_ref in all_classes:
                         links.append(Link(
                             rel="driver-config",
                             href=f"{base_url.rstrip('/')}/plugins/{driver_ref}",
                             method="PUT",
                             title=f"PUT this driver's config at {scope_label} scope",
                         ))
-                    entry_meta: Dict[str, Any] = {"tier": scope_label}
-                    src = entry.get("source")
-                    if src is not None:
-                        entry_meta["source"] = src
-                    refs.append(DriverRef(
+                    entry_meta: Dict[str, Any] = {}
+                    if want_meta:
+                        entry_meta["tier"] = scope_label
+                        src = entry.get("source")
+                        if src is not None:
+                            entry_meta["source"] = src
+                    dumped = DriverRef(
                         driver_ref=driver_ref,
                         hints=[str(h) for h in (entry.get("hints") or [])],
                         on_failure=entry.get("on_failure", "fatal"),
@@ -816,7 +837,16 @@ class ConfigApiService:
                         ],
                         meta=entry_meta,
                         links=links,
-                    ).model_dump(by_alias=True, exclude_none=True))
+                    ).model_dump(by_alias=True, exclude_none=True)
+                    # #946: drop empty envelopes so the routing payload
+                    # matches the rest of the tree under ``meta=none`` /
+                    # ``links=none`` — no ``_meta: {}`` or ``_links: []``
+                    # left behind for clients to filter.
+                    if not dumped.get("_meta"):
+                        dumped.pop("_meta", None)
+                    if not dumped.get("_links"):
+                        dumped.pop("_links", None)
+                    refs.append(dumped)
                 rewritten[op] = refs
             routing["operations"] = rewritten
 
@@ -866,7 +896,9 @@ class ConfigApiService:
         extra_refs = await self._get_extra_refs(
             catalog_id=catalog_id, collection_id=collection_id,
         )
-        self._build_routing_refs(by_class, base_url)
+        self._build_routing_refs(
+            by_class, base_url, meta_mode=meta, links_mode=links,
+        )
         configs_root_url = self._configs_root_url(base_url)
         tree = self._compose_tree(
             by_class, sources, "collection",
@@ -897,7 +929,9 @@ class ConfigApiService:
         extra_refs = await self._get_extra_refs(
             catalog_id=catalog_id, collection_id=None,
         )
-        self._build_routing_refs(by_class, base_url)
+        self._build_routing_refs(
+            by_class, base_url, meta_mode=meta, links_mode=links,
+        )
         configs_root_url = self._configs_root_url(base_url)
         tree = self._compose_tree(
             by_class, sources, "catalog",
@@ -927,7 +961,9 @@ class ConfigApiService:
         extra_refs = await self._get_extra_refs(
             catalog_id=None, collection_id=None,
         )
-        self._build_routing_refs(by_class, base_url)
+        self._build_routing_refs(
+            by_class, base_url, meta_mode=meta, links_mode=links,
+        )
         configs_root_url = self._configs_root_url(base_url)
         tree = self._compose_tree(
             by_class, sources, "platform",
@@ -986,6 +1022,15 @@ class ConfigApiService:
                 if value is None:
                     prepared.append((plugin_id, cls, None, False))
                     continue
+                # #946: strip response-only envelopes so payloads fetched
+                # via GET (with any ``meta`` / ``links`` mode) round-trip
+                # cleanly into PATCH.  Without this, ``extra="forbid"`` on
+                # ``PersistentModel`` (#918) rejects ``_meta`` / ``_links``
+                # with a 422.
+                value = {
+                    k: v for k, v in value.items()
+                    if k not in ("_meta", "_links")
+                }
                 current = (await self._config_service.get_persisted_config(
                     cls, catalog_id=catalog_id, collection_id=collection_id,
                 )) or {}
@@ -1003,8 +1048,13 @@ class ConfigApiService:
             # Body must carry the dispatch discriminator.  Accept either
             # ``class_key`` or ``driver_class`` (Cycle F.2 alias for the
             # driver subset of PluginConfigs); strip from the merged
-            # payload so it doesn't reach Pydantic validation.
-            value = dict(value)
+            # payload so it doesn't reach Pydantic validation.  Also strip
+            # response-only envelopes (#946) for the same reason as the
+            # class-keyed path above.
+            value = {
+                k: v for k, v in dict(value).items()
+                if k not in ("_meta", "_links")
+            }
             class_key = value.pop("class_key", None) or value.pop("driver_class", None)
             if not class_key:
                 raise ValueError(

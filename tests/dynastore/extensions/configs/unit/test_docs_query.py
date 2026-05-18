@@ -40,10 +40,15 @@ def _stub_registry_with_schema(**classes):
     return out
 
 
-def test_compose_tree_meta_none_keeps_provenance():
-    """Per #665 slice 3: every leaf carries ``_meta = {tier, source}``
-    even under ``meta_mode="none"`` (provenance is structural).  Only
-    the field-level extras (``docs`` / ``json_schema``) are suppressed.
+def test_compose_tree_meta_none_omits_meta_block():
+    """#946: ``meta_mode="none"`` produces leaves with NO ``_meta`` key.
+
+    Reverses the #665 slice 3 contract — provenance is no longer structural,
+    it is opt-in via ``meta=field`` (default) / ``meta=schema``.  Lets
+    operators copy any composed-GET payload verbatim into a PATCH body
+    without the response envelope tripping ``extra="forbid"`` on
+    ``PersistentModel`` (#918).  Callers that want provenance badges (the
+    admin Configuration Hub) pass ``meta=field`` explicitly.
     """
     by_class = {"web_config": {"brand_name": "X"}}
     registry = _stub_registry_with_schema(
@@ -57,9 +62,9 @@ def test_compose_tree_meta_none_keeps_provenance():
             by_class, sources={}, active_scope="platform", meta_mode="none",
         )
     leaf = tree["platform"]["web"]["web_config"]
-    assert leaf["_meta"] == {"tier": "platform", "source": "default"}
-    assert "docs" not in leaf["_meta"]
-    assert "json_schema" not in leaf["_meta"]
+    assert "_meta" not in leaf
+    assert "_links" not in leaf
+    assert leaf == {"brand_name": "X"}
 
 
 def test_compose_tree_meta_field_attaches_docs():
@@ -170,22 +175,27 @@ def test_compose_tree_catalog_tier_under_upstream_mode_gets_meta():
     assert leaf["_meta"]["docs"] == {"private": "Private mode."}
 
 
-def test_compose_tree_meta_tier_source_always_present_across_modes():
-    """#665 slice 3 lockdown: every rendered leaf carries
-    ``_meta = {tier, source}`` regardless of ``meta_mode``.  Provenance
-    is structural, not opt-in.  Field-level extras (``docs`` /
-    ``json_schema``) gate on the mode; ``tier`` + ``source`` do not.
+def test_compose_tree_meta_envelope_gated_by_mode():
+    """#946: ``_meta`` envelope is opt-in via ``meta_mode``.
+
+    Under ``meta=field`` (default) and ``meta=schema`` every leaf carries
+    ``_meta = {tier, source, ...}``.  Under ``meta=none`` no ``_meta`` key
+    is written at all so the leaf payload is a clean delta that round-trips
+    through PATCH without tripping ``extra="forbid"`` on the model.
+    Field-level extras (``docs`` / ``json_schema``) gate on the mode in
+    the same way they did pre-#946.
     """
     schema = {"properties": {"brand_name": {"description": "Brand label."}}}
     by_class = {"web_config": {"brand_name": "X"}}
     registry = _stub_registry_with_schema(
         web_config={"_address": ("platform", "web"), "schema": schema},
     )
-    for mode, must_have, must_not_have in [
-        ("none",   set(),               {"docs", "json_schema"}),
-        ("field",  {"docs"},            {"json_schema"}),
-        ("schema", {"json_schema"},     {"docs"}),
-    ]:
+    cases = [
+        ("none",   None,            None),
+        ("field",  {"docs"},        {"json_schema"}),
+        ("schema", {"json_schema"}, {"docs"}),
+    ]
+    for mode, must_have, must_not_have in cases:
         with patch(
             "dynastore.extensions.configs.config_api_service.list_registered_configs",
             return_value=registry,
@@ -199,12 +209,15 @@ def test_compose_tree_meta_tier_source_always_present_across_modes():
                 include_mode="upstream",
             )
         leaf = tree["platform"]["web"]["web_config"]
+        if mode == "none":
+            assert "_meta" not in leaf, "meta=none must omit the _meta envelope"
+            continue
         meta = leaf["_meta"]
         assert meta["tier"] == "catalog", f"mode={mode}: tier missing/wrong"
         assert meta["source"] == "platform", f"mode={mode}: source missing/wrong"
-        for k in must_have:
+        for k in must_have or set():
             assert k in meta, f"mode={mode}: missing extra {k}"
-        for k in must_not_have:
+        for k in must_not_have or set():
             assert k not in meta, f"mode={mode}: leaked extra {k}"
 
 

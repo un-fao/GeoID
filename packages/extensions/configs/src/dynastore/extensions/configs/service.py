@@ -342,6 +342,20 @@ class ConfigsService(ExtensionProtocol):
         return result
 
     @staticmethod
+    def _strip_response_envelopes(body: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop ``_meta`` / ``_links`` from a per-plugin PUT body (#946).
+
+        Composed GETs may emit ``_meta`` and routing refs may emit ``_links``
+        depending on the query knobs.  ``PersistentModel`` has
+        ``extra="forbid"`` (#918), so a payload pulled from GET and PUT
+        verbatim would 422 on the envelope keys.  Defensive strip preserves
+        the round-trip semantic operators reasonably expect.
+        """
+        if not isinstance(body, dict):
+            return body
+        return {k: v for k, v in body.items() if k not in ("_meta", "_links")}
+
+    @staticmethod
     def _gate_engine_writes_in_patch_body(
         body: Dict[str, Any], *, scope: str,
     ) -> None:
@@ -690,7 +704,7 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
-            config_model = cls.model_validate(body)
+            config_model = cls.model_validate(self._strip_response_envelopes(body))
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id
@@ -758,7 +772,7 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="catalog")
-            config_model = cls.model_validate(body)
+            config_model = cls.model_validate(self._strip_response_envelopes(body))
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id=None
@@ -818,7 +832,7 @@ class ConfigsService(ExtensionProtocol):
             raise problem_details.plugin_not_registered(plugin_id)
 
         try:
-            config_model = cls.model_validate(body)
+            config_model = cls.model_validate(self._strip_response_envelopes(body))
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id=None, collection_id=None

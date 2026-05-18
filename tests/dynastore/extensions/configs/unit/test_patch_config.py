@@ -159,3 +159,38 @@ async def test_patch_catalog_scope():
     # Verify catalog_id was passed to set_config
     call_kwargs = config_svc.set_config.call_args
     assert call_kwargs.kwargs.get("catalog_id") == "test-catalog"
+
+
+@pytest.mark.asyncio
+async def test_patch_strips_response_envelopes_on_ingress():
+    """#946: PATCH bodies that include ``_meta`` / ``_links`` (e.g. copied
+    from a GET with ``meta=field`` / ``links=minimal``) must round-trip.
+
+    Without the defensive strip the merged dict would be handed to
+    ``cls.model_validate`` which rejects extras (#918 ``extra="forbid"``).
+    The user-facing flow is "fetch resolved config → tweak one field →
+    PATCH back" so any envelope keys in the response must not be a trap.
+    """
+    from dynastore.extensions.configs.config_api_service import ConfigApiService
+
+    stored: Dict = {}
+    config_svc = _make_config_service(stored)
+    api = ConfigApiService(config_service=config_svc)
+
+    await api.patch_config(
+        catalog_id=None,
+        body={
+            "tiles_config": {
+                "enabled": False,
+                "_meta": {"tier": "platform", "source": "default"},
+                "_links": [{"rel": "self", "href": "/configs/plugins/tiles_config"}],
+            },
+        },
+    )
+
+    call_args = config_svc.set_config.call_args
+    written = call_args.args[1]
+    dumped = written.model_dump() if hasattr(written, "model_dump") else dict(written)
+    assert "_meta" not in dumped
+    assert "_links" not in dumped
+    assert dumped.get("enabled") is False
