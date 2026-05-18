@@ -986,6 +986,79 @@ class AdminService(ExtensionProtocol):
         )
 
     # -------------------------------------------------------------------------
+    # Capability stats (/admin/tasks/capability_stats) — #524 Signal A
+    # -------------------------------------------------------------------------
+
+    @router.get(
+        "/tasks/capability_stats",
+        summary="Per-capability dispatcher counters (claim_rejected, dlq_reactive, dlq_proactive)",
+    )
+    async def get_capability_stats():  # type: ignore[reportGeneralTypeIssues]
+        """Returns one row per ``(capability_id, task_type)`` pair that has
+        appeared on a PENDING or DEAD_LETTER row of a capability-gated task
+        type. Each row carries the three Valkey counters maintained by
+        ``capability_stats``: ``claim_rejected``, ``dlq_reactive``,
+        ``dlq_proactive``. Counter values are ``None`` when the cache
+        backend is unreachable (distinct from 0 = "never incremented in
+        the TTL window").
+
+        Gated by the broad ``admin_access`` policy (sysadmin + admin).
+        Catalog-tier admins do not reach this surface — capability state
+        is platform-wide.
+        """
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery, ResultHandler, managed_transaction,
+        )
+        from dynastore.modules.tasks.capability_oracle import (
+            TASK_TYPE_CAPABILITY_INPUTS_KEY,
+        )
+        from dynastore.modules.tasks.capability_stats import read_counters
+        from dynastore.modules.tasks.tasks_module import get_task_schema
+
+        db = get_protocol(DatabaseProtocol)
+        if db is None:
+            raise HTTPException(
+                status_code=503, detail="Database protocol unavailable.",
+            )
+
+        schema = get_task_schema()
+        rows_out: list[dict] = []
+        async with managed_transaction(db.engine) as conn:
+            for task_type, inputs_key in TASK_TYPE_CAPABILITY_INPUTS_KEY.items():
+                # ``inputs_key`` is a validated SQL identifier (see comment
+                # on TASK_TYPE_CAPABILITY_INPUTS_KEY in capability_oracle.py).
+                sql = (
+                    f'SELECT DISTINCT inputs->>\'{inputs_key}\' AS cap_id '  # nosec
+                    f'FROM "{schema}".tasks '
+                    f"WHERE task_type = :task_type "
+                    f"  AND status IN ('PENDING', 'DEAD_LETTER') "
+                    f"  AND inputs->>'{inputs_key}' IS NOT NULL "
+                    f"ORDER BY 1 LIMIT 200;"
+                )
+                try:
+                    cap_rows = await DQLQuery(
+                        sql, result_handler=ResultHandler.ALL_DICTS,
+                    ).execute(conn, task_type=task_type)
+                except Exception as exc:  # noqa: BLE001 — diagnostic endpoint
+                    logger.warning(
+                        "capability_stats: distinct query failed (task_type=%s): %s",
+                        task_type, exc,
+                    )
+                    continue
+                for r in cap_rows or []:
+                    cap_id = r.get("cap_id")
+                    if not cap_id:
+                        continue
+                    counters = await read_counters(cap_id, task_type)
+                    rows_out.append({
+                        "capability_id": cap_id,
+                        "task_type": task_type,
+                        **counters,
+                    })
+        return {"rows": rows_out}
+
+    # -------------------------------------------------------------------------
     # System Defaults (/admin/reset-defaults)
     # -------------------------------------------------------------------------
 

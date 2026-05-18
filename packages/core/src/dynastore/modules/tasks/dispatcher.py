@@ -376,6 +376,13 @@ async def _emit_bulk_dlq(
             "reason=no_live_worker count=%d",
             source, task_type, capability_id, sibling_count,
         )
+        # Observability (#524 Signal A): mirror the log line into a
+        # Valkey counter so the admin dashboard can read it without a
+        # log-pipeline round-trip. Fail-open — capability_stats.bump_dlq
+        # swallows backend errors itself.
+        from dynastore.modules.tasks.capability_stats import bump_dlq
+
+        await bump_dlq(source, capability_id, task_type, sibling_count)
     return sibling_count
 
 
@@ -798,6 +805,16 @@ async def run_dispatcher(
                         "task_id=%s — can_claim returned False on this worker",
                         row["task_type"], cap_id or "-", task_id,
                     )
+                    # Mirror to Valkey counter (#524 Signal A). Only emit
+                    # when we have a real capability id; "-" rows are
+                    # routing rejections we already surface via
+                    # _warn_stuck_pending_tasks.
+                    if cap_id:
+                        from dynastore.modules.tasks.capability_stats import (
+                            bump_claim_rejected,
+                        )
+
+                        await bump_claim_rejected(cap_id, row["task_type"])
                     await reset_task_to_pending(
                         engine, task_id, backoff=_CLAIM_REJECT_BACKOFF,
                     )

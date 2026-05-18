@@ -57,6 +57,34 @@ class TasksPluginConfig(PluginConfig):
         ),
     )
 
+    proactive_sweep_interval_seconds: Mutable[float] = Field(
+        default=60.0,
+        ge=5.0,
+        le=3600.0,
+        description=(
+            "Interval (seconds) between proactive sweeps that DLQ "
+            "PENDING/retry=0 rows whose required capability has no live "
+            "worker (issue #524). Reactive path stays as a safety net. "
+            "Lower → tighter latency before stuck-PENDING rows leave "
+            "PENDING; higher → fewer wakeups when the deployment is "
+            "healthy. Read at startup; live changes apply on next pod "
+            "restart (same model as hard_retry_cap)."
+        ),
+    )
+
+    proactive_sweep_min_age_seconds: Mutable[float] = Field(
+        default=300.0,
+        ge=30.0,
+        description=(
+            "Minimum age (seconds) a row must be PENDING before the "
+            "proactive sweep is allowed to look at it. Guards against "
+            "false-positive DLQs during a publisher cold-start window: "
+            "must be >= 2 * capability_publisher_ttl_seconds so any "
+            "newly-deployed pod has at least one full refresh cycle to "
+            "advertise its capability before a sweep can DLQ rows targeting it."
+        ),
+    )
+
     @model_validator(mode="after")
     def _enforce_refresh_le_half_ttl(self) -> "TasksPluginConfig":
         if self.capability_publisher_refresh_seconds > self.capability_publisher_ttl_seconds / 2:
@@ -68,6 +96,16 @@ class TasksPluginConfig(PluginConfig):
                 "interval larger than half the TTL means one missed tick "
                 "expires the sentinel and the reactive reaper false-DLQs "
                 "live capabilities."
+            )
+        min_age_floor = 2.0 * self.capability_publisher_ttl_seconds
+        if self.proactive_sweep_min_age_seconds < min_age_floor:
+            raise ValueError(
+                "proactive_sweep_min_age_seconds "
+                f"({self.proactive_sweep_min_age_seconds}s) must be "
+                f">= 2 * capability_publisher_ttl_seconds ({min_age_floor}s) "
+                "so a freshly-deployed pod has at least one full publisher "
+                "cycle to advertise its capability before the proactive "
+                "sweeper can DLQ rows targeting it."
             )
         return self
 
