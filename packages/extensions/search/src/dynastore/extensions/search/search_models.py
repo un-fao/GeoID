@@ -35,7 +35,7 @@ class SearchBody(BaseModel):
         None,
         description=(
             "Array of external_id values. Matches items whose ``_external_id`` "
-            "(populated from the configured WriteConflictPolicy.external_id_field) "
+            "(populated from the configured ItemsWritePolicy.external_id_field) "
             "equals one of the supplied values."
         ),
     )

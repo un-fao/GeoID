@@ -737,8 +737,9 @@ async def test_compose_catalog_meta_field_inlines_meta_on_leaf(mock_config_servi
         )
     leaf = r.configs["platform"]["web"]["WebConfig"]
     assert leaf["brand_name"] == "x"
-    # Per #665 slice 3 ``_meta`` carries ``{tier, source}`` always; the
-    # ``docs`` extras merge in when ``meta=field``.
+    # Post-#946: ``_meta`` is emitted only under ``meta=field``/``schema``;
+    # this test asks for ``field`` so the leaf carries ``{tier, source,
+    # docs}``.  Under ``meta=none`` the leaf would have no ``_meta``.
     assert leaf["_meta"]["docs"] == {"brand_name": "Brand label."}
     assert leaf["_meta"]["tier"] == "catalog"
     # Top-level ``meta`` field is gone.
