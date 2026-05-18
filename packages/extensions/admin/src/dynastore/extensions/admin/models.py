@@ -45,6 +45,7 @@ class PolicyCreate(BaseModel):
     actions: List[str]
     resources: List[str]
     effect: Literal["ALLOW", "DENY"] = "ALLOW"
+    priority: int = Field(default=0, ge=-1000, le=1000)
     conditions: List[Condition] = Field(default_factory=list)
 
 
@@ -53,6 +54,7 @@ class PolicyUpdate(BaseModel):
     actions: Optional[List[str]] = None
     resources: Optional[List[str]] = None
     effect: Optional[Literal["ALLOW", "DENY"]] = None
+    priority: Optional[int] = Field(default=None, ge=-1000, le=1000)
     conditions: Optional[List[Condition]] = None
 
 
@@ -62,6 +64,7 @@ class PolicyResponse(BaseModel):
     actions: List[str]
     resources: List[str]
     effect: Literal["ALLOW", "DENY"]
+    priority: int = 0
     partition_key: Optional[str] = None
     conditions: List[Condition] = Field(default_factory=list)
 

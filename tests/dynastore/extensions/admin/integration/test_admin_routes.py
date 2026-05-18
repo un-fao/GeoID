@@ -204,6 +204,46 @@ async def test_list_policies_returns_200(sysadmin_in_process_client: AsyncClient
     assert r.status_code == 200
     data = r.json()
     assert isinstance(data, list)
+    # PR #927 added Policy.priority — every wire row must carry it.
+    if data:
+        assert "priority" in data[0], (
+            f"PolicyResponse missing 'priority' field: keys={list(data[0])}"
+        )
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_policy_priority_roundtrip(sysadmin_in_process_client: AsyncClient):
+    """POST/PUT/GET /admin/policies — priority field set, updated, and surfaced.
+
+    Pins the wire contract for PR #927: clients (admin panel, automation)
+    must be able to read/set Policy.priority through the HTTP surface.
+    """
+    pid = f"test-priority-{uuid.uuid4().hex[:8]}"
+    create_body = {
+        "id": pid,
+        "description": "priority round-trip probe",
+        "actions": ["GET"],
+        "resources": [f"^/never-matched/{pid}$"],
+        "effect": "ALLOW",
+        "priority": 250,
+    }
+    try:
+        r = await sysadmin_in_process_client.post("/admin/policies", json=create_body)
+        assert r.status_code == 201, r.text
+        assert r.json()["priority"] == 250
+
+        r = await sysadmin_in_process_client.put(
+            f"/admin/policies/{pid}", json={"priority": -300},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["priority"] == -300
+
+        r = await sysadmin_in_process_client.get("/admin/policies")
+        match = next((p for p in r.json() if p["id"] == pid), None)
+        assert match is not None and match["priority"] == -300
+    finally:
+        await sysadmin_in_process_client.delete(f"/admin/policies/{pid}")
 
 
 # ---------------------------------------------------------------------------

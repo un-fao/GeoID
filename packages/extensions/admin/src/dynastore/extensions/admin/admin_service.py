@@ -59,6 +59,7 @@ def _policy_to_response(p: Policy) -> PolicyResponse:
         actions=p.actions,
         resources=p.resources,
         effect=p.effect,
+        priority=p.priority,
         partition_key=p.partition_key,
         conditions=getattr(p, "conditions", []) or [],
     )
@@ -755,6 +756,7 @@ class AdminService(ExtensionProtocol):
             actions=body.actions,
             resources=body.resources,
             effect=body.effect,
+            priority=body.priority,
             conditions=body.conditions,
         )
         try:
@@ -784,6 +786,8 @@ class AdminService(ExtensionProtocol):
             existing.resources = body.resources
         if body.effect is not None:
             existing.effect = body.effect
+        if body.priority is not None:
+            existing.priority = body.priority
         if body.conditions is not None:
             existing.conditions = body.conditions
         updated = await pm.update_policy(existing, catalog_id=catalog_id)
