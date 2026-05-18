@@ -44,11 +44,10 @@ Both are stateless: any worker instance can resume any task after a crash.
 
 import asyncio
 import hashlib
-import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 
 def _stable_advisory_lock_key(*parts: str) -> int:
@@ -68,7 +67,6 @@ def _stable_advisory_lock_key(*parts: str) -> int:
     )
     return int.from_bytes(h.digest(), "big") & 0x7FFFFFFFFFFFFFFF
 
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
 from dynastore.modules.db_config.query_executor import DbResource
@@ -279,7 +277,106 @@ def _log_task_terminal(
 # Reactive reaper — DLQ unclaimable rows when no live worker advertises the
 # required capability (issue #502). Companion to ``TaskProtocol.can_claim``
 # and ``TaskProtocol.required_capability``.
+#
+# Two callers share the dead-capability bulk-DLQ machinery below:
+#   * ``_maybe_dlq_unclaimable`` — row-driven path triggered when a claim is
+#     rejected (#502 + #529 fast-path).
+#   * ``sweep_dead_capability_rows`` — capability-driven path used by the
+#     proactive sweeper task (issue #524).
+# Both share the same SQL builder and ``_emit_bulk_dlq`` runner so the bulk
+# UPDATE shape stays identical between reactive and proactive sweeps.
 # ---------------------------------------------------------------------------
+
+# Cross-pod-stable lock namespace shared by reactive + proactive paths so
+# both serialize on the same ``pg_try_advisory_xact_lock`` key per capability.
+_REAPER_LOCK_NAMESPACE = "dynastore.idx_reaper"
+
+
+def _dead_capability_error_message(capability_id: str) -> str:
+    return (
+        f"reaped: no live worker advertises capability {capability_id!r} "
+        f"(check SCOPE/B6 — module not loaded in any reachable pool)"
+    )
+
+
+def _dead_capability_bulk_sql(schema: str, task_type: str) -> Optional[str]:
+    """Build the bulk DLQ UPDATE for ``(task_type, capability)`` PENDING rows.
+
+    Returns ``None`` if ``task_type`` has no entry in
+    ``TASK_TYPE_CAPABILITY_INPUTS_KEY`` — the SQL interpolates ``inputs->>``
+    using the per-task-type key, so an unmapped type cannot construct a
+    safe statement and the caller must skip the bulk sweep entirely.
+    """
+    from dynastore.modules.tasks.capability_oracle import (
+        TASK_TYPE_CAPABILITY_INPUTS_KEY,
+    )
+    inputs_key = TASK_TYPE_CAPABILITY_INPUTS_KEY.get(task_type)
+    if not inputs_key:
+        return None
+    return f"""
+        UPDATE "{schema}".tasks
+        SET status        = 'DEAD_LETTER',
+            error_message = :err,
+            finished_at   = NOW(),
+            owner_id      = NULL,
+            locked_until  = NULL
+        WHERE task_type    = :tt
+          AND status       = 'PENDING'
+          AND retry_count  = 0
+          AND inputs->>'{inputs_key}' = :cap
+        RETURNING task_id
+    """
+
+
+async def _emit_bulk_dlq(
+    conn: Any,
+    *,
+    schema: str,
+    task_type: str,
+    capability_id: str,
+    error_message: str,
+    source: str,
+) -> int:
+    """Run the bulk DLQ UPDATE on a caller-locked connection and log results.
+
+    Caller MUST already hold ``pg_try_advisory_xact_lock`` keyed by
+    ``capability_id`` and have re-confirmed (inside the same transaction)
+    that the oracle reports the capability as dead.
+
+    ``source`` identifies the caller path (``"reactive"`` from
+    ``_maybe_dlq_unclaimable`` or ``"proactive"`` from
+    ``sweep_dead_capability_rows``) and is emitted as a key on the
+    structured count line so dashboards can split fast-path vs sweeper.
+
+    Returns the number of sibling rows DLQ'd (``0`` when ``task_type`` is
+    unmapped or no rows matched).
+    """
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler,
+    )
+
+    bulk_sql = _dead_capability_bulk_sql(schema, task_type)
+    if bulk_sql is None:
+        return 0
+    sibling_rows = await DQLQuery(
+        bulk_sql, result_handler=ResultHandler.ALL_DICTS,
+    ).execute(
+        conn, err=error_message, tt=task_type, cap=capability_id,
+    )
+    sibling_count = len(sibling_rows or [])
+    if sibling_count:
+        logger.warning(
+            "dispatcher: bulk-DLQ'd %d sibling task(s) of "
+            "type %s for dead capability %r",
+            sibling_count, task_type, capability_id,
+        )
+        logger.info(
+            "dispatcher_dlq_bulk_total "
+            "source=%s task_type=%s capability=%s "
+            "reason=no_live_worker count=%d",
+            source, task_type, capability_id, sibling_count,
+        )
+    return sibling_count
 
 
 async def _maybe_dlq_unclaimable(
@@ -298,11 +395,9 @@ async def _maybe_dlq_unclaimable(
     parallel, at most one performs the UPDATE; the others skip and let the
     standard back-off path run.
     """
-    from dynastore.modules.tasks.capability_oracle import (
-        TASK_TYPE_CAPABILITY_INPUTS_KEY, is_capability_live,
-    )
+    from dynastore.modules.tasks.capability_oracle import is_capability_live
     from dynastore.modules.db_config.query_executor import (
-        DQLQuery, DDLQuery, ResultHandler, managed_transaction,
+        DQLQuery, ResultHandler, managed_transaction,
     )
     from dynastore.modules.tasks.tasks_module import get_task_schema
 
@@ -316,13 +411,10 @@ async def _maybe_dlq_unclaimable(
             return False
 
         lock_key = _stable_advisory_lock_key(
-            "dynastore.idx_reaper", capability_id,
+            _REAPER_LOCK_NAMESPACE, capability_id,
         )
         schema = get_task_schema()
-        error_message = (
-            f"reaped: no live worker advertises capability {capability_id!r} "
-            f"(check SCOPE/B6 — module not loaded in any reachable pool)"
-        )
+        error_message = _dead_capability_error_message(capability_id)
         async with managed_transaction(engine) as conn:
             got_lock = await DQLQuery(
                 "SELECT pg_try_advisory_xact_lock(:k) AS got",
@@ -399,45 +491,17 @@ async def _maybe_dlq_unclaimable(
                 # PENDING/retry_count=0 row of the same task_type whose
                 # JSONB capability field matches. Without this, a 500-row
                 # backlog needs 500 separate dispatcher passes to drain.
-                #
-                # ``inputs_key`` is only interpolated from the hardcoded
-                # mapping above — never user input — so direct format is
-                # safe. Bound parameters carry the per-row values.
-                task_type = row.get("task_type") or ""
-                inputs_key = TASK_TYPE_CAPABILITY_INPUTS_KEY.get(task_type)
-                if inputs_key:
-                    bulk_sql = f"""
-                        UPDATE "{schema}".tasks
-                        SET status        = 'DEAD_LETTER',
-                            error_message = :err,
-                            finished_at   = NOW(),
-                            owner_id      = NULL,
-                            locked_until  = NULL
-                        WHERE task_type    = :tt
-                          AND status       = 'PENDING'
-                          AND retry_count  = 0
-                          AND inputs->>'{inputs_key}' = :cap
-                        RETURNING task_id
-                    """
-                    sibling_rows = await DQLQuery(
-                        bulk_sql, result_handler=ResultHandler.ALL_DICTS,
-                    ).execute(
-                        conn, err=error_message, tt=task_type,
-                        cap=capability_id,
-                    )
-                    sibling_count = len(sibling_rows or [])
-                    if sibling_count:
-                        logger.warning(
-                            "dispatcher: bulk-DLQ'd %d sibling task(s) of "
-                            "type %s for dead capability %r",
-                            sibling_count, task_type, capability_id,
-                        )
-                        logger.info(
-                            "dispatcher_reactive_dlq_bulk_total "
-                            "task_type=%s capability=%s "
-                            "reason=no_live_worker count=%d",
-                            task_type, capability_id, sibling_count,
-                        )
+                # Shared with the proactive sweeper (#524) via
+                # ``_emit_bulk_dlq`` so reactive + proactive use the
+                # identical UPDATE shape.
+                await _emit_bulk_dlq(
+                    conn,
+                    schema=schema,
+                    task_type=row.get("task_type") or "",
+                    capability_id=capability_id,
+                    error_message=error_message,
+                    source="reactive",
+                )
                 return True
             return False
     except Exception as exc:  # noqa: BLE001
@@ -446,6 +510,101 @@ async def _maybe_dlq_unclaimable(
             "leaving PENDING: %s", task_id, row.get("task_type"), exc,
         )
         return False
+
+
+async def sweep_dead_capability_rows(
+    engine: DbResource,
+    capability_id: str,
+    *,
+    task_type: Optional[str] = None,
+) -> int:
+    """Proactively bulk-DLQ every PENDING/retry=0 row whose required
+    capability is dead, without waiting for a dispatcher to claim and
+    reject them first (issue #524).
+
+    Used by the periodic capability sweeper (lands in PR B). Re-uses the
+    same advisory-lock + double-check + bulk UPDATE machinery as the
+    reactive reaper so reactive and proactive paths cannot diverge.
+
+    Args:
+        engine: Async DB engine.
+        capability_id: The capability to test for liveness.
+        task_type: Limits the bulk UPDATE to one ``task_type``; required
+            because the ``inputs->>'<key>'`` extraction is task-type-
+            specific (the mapping lives in
+            ``TASK_TYPE_CAPABILITY_INPUTS_KEY``). When ``None`` or unmapped
+            the function returns ``0`` without issuing any SQL.
+
+    Returns the count of rows DLQ'd. Returns ``0`` on oracle says live,
+    advisory-lock contention, inner-oracle timeout, unmapped task_type,
+    or any infra error (fail-open).
+    """
+    from dynastore.modules.tasks.capability_oracle import (
+        TASK_TYPE_CAPABILITY_INPUTS_KEY,
+        is_capability_live,
+    )
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    from dynastore.modules.tasks.tasks_module import get_task_schema
+
+    if not task_type or task_type not in TASK_TYPE_CAPABILITY_INPUTS_KEY:
+        return 0
+
+    try:
+        timeout_s = await _load_oracle_inner_timeout()
+
+        if await is_capability_live(capability_id):
+            return 0
+
+        lock_key = _stable_advisory_lock_key(
+            _REAPER_LOCK_NAMESPACE, capability_id,
+        )
+        schema = get_task_schema()
+        error_message = _dead_capability_error_message(capability_id)
+        async with managed_transaction(engine) as conn:
+            got_lock = await DQLQuery(
+                "SELECT pg_try_advisory_xact_lock(:k) AS got",
+                result_handler=ResultHandler.ONE_DICT,
+            ).execute(conn, k=lock_key)
+            if not got_lock or not got_lock.get("got"):
+                return 0
+
+            # Conservative re-check inside the locked transaction: another
+            # pod may have published between the unlocked oracle call above
+            # and lock acquisition. Bounded by oracle_inner_timeout_seconds
+            # (#629/#639) so a slow cache cannot convoy peers behind the
+            # held DB connection + advisory xact lock.
+            try:
+                live = await asyncio.wait_for(
+                    is_capability_live(capability_id),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                live = True
+                logger.info(
+                    "sweep_dead_capability_inner_oracle_timeout "
+                    "capability=%s timeout_s=%.2f result=live",
+                    capability_id, timeout_s,
+                )
+            if live:
+                return 0
+
+            return await _emit_bulk_dlq(
+                conn,
+                schema=schema,
+                task_type=task_type,
+                capability_id=capability_id,
+                error_message=error_message,
+                source="proactive",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "dispatcher: sweep_dead_capability_rows failed for "
+            "capability=%s task_type=%s — leaving PENDING: %s",
+            capability_id, task_type, exc,
+        )
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +709,7 @@ async def run_dispatcher(
         batch_size:         Max tasks to claim per batch (env: DISPATCHER_BATCH_SIZE).
     """
     from dynastore.modules.tasks.runners import capability_map
-    from dynastore.modules.tasks.models import TaskExecutionMode, PermanentTaskFailure
+    from dynastore.modules.tasks.models import PermanentTaskFailure
     from dynastore.modules.tasks.tasks_module import (
         claim_batch, complete_task, fail_task, reset_task_to_pending,
     )
