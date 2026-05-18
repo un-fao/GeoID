@@ -55,7 +55,17 @@ class Policy(BaseModel):
     version: str = Field(default="1.0", description="Schema version for future-proofing policy logic.")
     description: Optional[str] = None
     effect: Literal["ALLOW", "DENY"] = "ALLOW"
-    
+
+    # Higher priority wins regardless of effect; equal priority → DENY
+    # beats ALLOW (preserves the deny-precedence invariant from #866 for
+    # unprioritised policies). Default 0 keeps legacy seeds unchanged.
+    priority: int = Field(
+        default=0,
+        ge=-1000,
+        le=1000,
+        description="Ranking score for the evaluator; higher wins. On ties, DENY beats ALLOW.",
+    )
+
     # "actions" and "resources" are standard IAM patterns
     actions: List[str] = Field(..., description="List of allowed actions, e.g., ['READ', 'LIST', 'STAC:GET']")
     resources: List[str] = Field(default=["*"], description="Regex list for resource targeting, e.g., ['catalogs/A/collections/*']")

@@ -37,12 +37,20 @@ def _service() -> PolicyService:
     return svc
 
 
-def _allow(pid: str, *, path: str = ".*", method: str = ".*") -> Policy:
-    return Policy(id=pid, effect="ALLOW", actions=[method], resources=[path])
+def _allow(
+    pid: str, *, path: str = ".*", method: str = ".*", priority: int = 0
+) -> Policy:
+    return Policy(
+        id=pid, effect="ALLOW", actions=[method], resources=[path], priority=priority
+    )
 
 
-def _deny(pid: str, *, path: str = ".*", method: str = ".*") -> Policy:
-    return Policy(id=pid, effect="DENY", actions=[method], resources=[path])
+def _deny(
+    pid: str, *, path: str = ".*", method: str = ".*", priority: int = 0
+) -> Policy:
+    return Policy(
+        id=pid, effect="DENY", actions=[method], resources=[path], priority=priority
+    )
 
 
 async def _call(svc: PolicyService, policies: List[Policy]) -> tuple[bool, str]:
@@ -113,10 +121,108 @@ async def test_first_matching_deny_id_is_surfaced() -> None:
 @pytest.mark.asyncio
 async def test_deny_logs_mention_shadowed_allow(caplog: Any) -> None:
     """Operator visibility: when a DENY shadows an ALLOW the log line
-    should call that out so the override is debuggable."""
+    should call that out so the override is debuggable. With both
+    policies at default ``priority=0`` the tie-break path triggers, so
+    the log keeps the historical ``deny-precedence`` tag."""
     import logging
 
     caplog.set_level(logging.INFO, logger="dynastore.modules.iam.policies")
     await _call(_service(), [_allow("a1"), _deny("d1")])
     msgs = [r.getMessage() for r in caplog.records]
     assert any("deny-precedence" in m and "a1" in m and "d1" in m for m in msgs), msgs
+
+
+# --- #915: priority field ---
+
+
+@pytest.mark.asyncio
+async def test_priority_allow_overrides_deny_when_higher() -> None:
+    """A higher-priority ALLOW defeats a lower-priority DENY — the
+    operator can now express ``narrow ALLOW > broad DENY``."""
+    allowed, reason = await _call(
+        _service(),
+        [_deny("d_broad", priority=10), _allow("a_narrow", priority=50)],
+    )
+    assert allowed is True
+    assert "a_narrow" in reason
+
+
+@pytest.mark.asyncio
+async def test_priority_deny_wins_when_higher() -> None:
+    """A higher-priority DENY defeats a lower-priority ALLOW."""
+    allowed, reason = await _call(
+        _service(),
+        [_allow("a_loose", priority=10), _deny("d_strict", priority=50)],
+    )
+    assert allowed is False
+    assert "d_strict" in reason
+
+
+@pytest.mark.asyncio
+async def test_priority_deny_wins_on_equal_priority() -> None:
+    """Equal priority → DENY wins. Regression pin for the #866
+    invariant under the new ranking rule."""
+    allowed, reason = await _call(
+        _service(),
+        [_allow("a1", priority=100), _deny("d1", priority=100)],
+    )
+    assert allowed is False
+    assert "d1" in reason
+
+
+@pytest.mark.asyncio
+async def test_priority_default_zero_preserves_legacy_behavior() -> None:
+    """Default ``priority=0`` for both policies → DENY wins (legacy
+    semantic from #866 — unchanged for unprioritised seeds)."""
+    allowed, reason = await _call(_service(), [_allow("a1"), _deny("d1")])
+    assert allowed is False
+    assert "d1" in reason
+
+
+@pytest.mark.asyncio
+async def test_within_effect_tie_break_is_deterministic() -> None:
+    """Two ALLOWs at equal priority → the lexically-smaller id wins
+    (created_at ASC, id ASC). Audit attribution is stable regardless
+    of input order."""
+    forward = await _call(
+        _service(),
+        [_allow("a_alpha", priority=10), _allow("a_omega", priority=10)],
+    )
+    reverse = await _call(
+        _service(),
+        [_allow("a_omega", priority=10), _allow("a_alpha", priority=10)],
+    )
+    assert forward[0] is True and reverse[0] is True
+    assert "a_alpha" in forward[1]
+    assert "a_alpha" in reverse[1]
+
+
+@pytest.mark.asyncio
+async def test_priority_log_reports_both_policies_when_allow_wins(
+    caplog: Any,
+) -> None:
+    """When a higher-priority ALLOW overrides a DENY, the log records
+    both policies and their priorities so operators can audit the
+    override."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="dynastore.modules.iam.policies")
+    await _call(
+        _service(),
+        [_deny("d_broad", priority=10), _allow("a_narrow", priority=50)],
+    )
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(
+        "ALLOWED by a_narrow" in m and "d_broad" in m and "priority=10" in m
+        for m in msgs
+    ), msgs
+
+
+@pytest.mark.asyncio
+async def test_priority_validation_rejects_out_of_range() -> None:
+    """``Policy.priority`` is bounded to [-1000, 1000] to prevent
+    operators from accidentally seeding an unreachable score."""
+    with pytest.raises(ValueError):
+        Policy(id="x", effect="ALLOW", actions=[".*"], resources=[".*"], priority=10_000)
+    with pytest.raises(ValueError):
+        Policy(id="x", effect="ALLOW", actions=[".*"], resources=[".*"], priority=-10_000)

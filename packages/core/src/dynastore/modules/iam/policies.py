@@ -664,25 +664,31 @@ class PolicyService:
             f"EVAL: Total effective policies to check: {len(effective_policies)}"
         )
 
-        # 4. Evaluate — deny-precedence (#731).
+        # 4. Evaluate — priority ranking with DENY-on-tie (#915).
         #
-        # Earlier this loop returned on the first match, which left the
-        # outcome dependent on iteration order over a Python ``set``
-        # (``all_policy_ids``) plus an un-ORDER-BY'd ``list_policies``.
-        # That divergence from :meth:`evaluate_policy_statements` (the
-        # inline-statement path, which already hardcodes DENY-wins) made
-        # "DENY all writes to X except this narrow ALLOW" impossible to
-        # express and any overlapping ALLOW+DENY non-deterministic.
+        # Highest ``priority`` wins regardless of effect. When the
+        # strongest DENY and strongest ALLOW have equal priority, DENY
+        # wins — preserves the deny-precedence invariant from #731/#866
+        # for unprioritised policies (default ``priority=0`` means
+        # legacy seeds behave exactly as before).
         #
-        # New behaviour: walk all effective policies, collect the first
-        # matching DENY and the first matching ALLOW (with conditions
-        # met), and apply DENY-wins. Both evaluators now share the same
-        # semantic.
-        denying_policy_id: Optional[str] = None
-        allowing_policy_id: Optional[str] = None
+        # Within the same effect, ties are broken by ``id`` ASC so
+        # audit attribution is deterministic across pod restarts, DB
+        # reseeds, and storage backends. ``created_at`` is not used —
+        # it depends on row-creation order which is not a stable input.
+        #
+        # ``evaluate_policy_statements`` (inline statements) still
+        # hardcodes DENY-wins because ``Statement`` has no ``priority``
+        # field per the #915 scope decision.
+        def _rank_key(pol: Policy) -> tuple:
+            # Higher priority sorts first; lower id breaks ties.
+            # Negative priority gives ``min`` semantics over the
+            # strongest policy.
+            return (-pol.priority, pol.id)
+
+        best_deny: Optional[Policy] = None
+        best_allow: Optional[Policy] = None
         for p in effective_policies:
-            # Check action (method) and resource (path).
-            # Actions are also regex patterns after transformation.
             method_match = (
                 not p.actions
                 or ".*" in p.actions
@@ -692,13 +698,13 @@ class PolicyService:
             path_match = p.matches_resource(path)
 
             logger.debug(
-                f"EVAL: Checking policy '{p.id}': method_match={method_match}, path_match={path_match}"
+                f"EVAL: Checking policy '{p.id}' (priority={p.priority}): "
+                f"method_match={method_match}, path_match={path_match}"
             )
 
             if not (method_match and path_match):
                 continue
 
-            # Check conditions
             conditions_met = True
             if p.conditions:
                 for cond in p.conditions:
@@ -709,32 +715,55 @@ class PolicyService:
             if not conditions_met:
                 continue
 
-            if p.effect == "DENY" and denying_policy_id is None:
-                denying_policy_id = p.id
-                # Keep scanning so the warning log can flag any ALLOW
-                # that's being shadowed — operators want visibility into
-                # "this rule was overridden by a deny".
-            elif p.effect == "ALLOW" and allowing_policy_id is None:
-                allowing_policy_id = p.id
+            if p.effect == "DENY":
+                if best_deny is None or _rank_key(p) < _rank_key(best_deny):
+                    best_deny = p
+            elif p.effect == "ALLOW":
+                if best_allow is None or _rank_key(p) < _rank_key(best_allow):
+                    best_allow = p
 
-        if denying_policy_id is not None:
-            if allowing_policy_id is not None:
+        # Apply ranking: highest priority wins; equal priority → DENY.
+        winner: Optional[Policy] = None
+        loser: Optional[Policy] = None
+        if best_deny is not None and best_allow is not None:
+            if best_deny.priority >= best_allow.priority:
+                winner, loser = best_deny, best_allow
+            else:
+                winner, loser = best_allow, best_deny
+        elif best_deny is not None:
+            winner = best_deny
+        elif best_allow is not None:
+            winner = best_allow
+
+        if winner is None:
+            logger.warning(
+                f"EVAL: DENIED (No matching ALLOW policy found) for {principals} on {method} {path}"
+            )
+            return False, "Deny by Default (No matching ALLOW policy found)"
+
+        if winner.effect == "DENY":
+            if loser is not None:
+                # "deny-precedence" wording is preserved for the
+                # equal-priority case (the #866 invariant); when DENY
+                # wins by a higher score the log line still shows both
+                # priorities so the override is debuggable.
+                tag = "deny-precedence " if winner.priority == loser.priority else ""
                 logger.info(
-                    f"EVAL: DENIED by {denying_policy_id} "
-                    f"(deny-precedence over ALLOW from {allowing_policy_id})"
+                    f"EVAL: DENIED by {winner.id} (priority={winner.priority}, "
+                    f"{tag}overrode ALLOW from {loser.id} priority={loser.priority})"
                 )
             else:
-                logger.info(f"EVAL: DENIED by {denying_policy_id}")
-            return False, f"Explicit DENY by policy {denying_policy_id}"
+                logger.info(f"EVAL: DENIED by {winner.id} (priority={winner.priority})")
+            return False, f"Explicit DENY by policy {winner.id}"
 
-        if allowing_policy_id is not None:
-            logger.info(f"EVAL: ALLOWED by {allowing_policy_id}")
-            return True, f"Allowed by policy {allowing_policy_id}"
-
-        logger.warning(
-            f"EVAL: DENIED (No matching ALLOW policy found) for {principals} on {method} {path}"
-        )
-        return False, "Deny by Default (No matching ALLOW policy found)"
+        if loser is not None:
+            logger.info(
+                f"EVAL: ALLOWED by {winner.id} (priority={winner.priority}, "
+                f"overrode DENY from {loser.id} priority={loser.priority})"
+            )
+        else:
+            logger.info(f"EVAL: ALLOWED by {winner.id} (priority={winner.priority})")
+        return True, f"Allowed by policy {winner.id}"
 
     async def _evaluate_condition(self, condition: Condition, context: Any) -> bool:
         """
