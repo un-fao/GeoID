@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from dynastore.tools.typed_store._snake import to_snake as _to_snake
 from dynastore.tools.typed_store.registry import TypedModelRegistry, compute_schema_id
@@ -40,7 +40,16 @@ class PersistentModel(BaseModel):
       so any field change produces a new id. Computed lazily and cached.
 
     Auto-registers in :class:`TypedModelRegistry` at class-creation time.
+
+    ``extra="forbid"`` is set at this layer so wrong-shape payloads — e.g.
+    a request body whose keys belong to a different config class — fail
+    validation with 422 instead of being silently dropped and persisted
+    as ``{}`` (issue #918). Subclasses can still attach their own
+    ``json_schema_extra`` / other ``ConfigDict`` keys; Pydantic v2 merges
+    them with this parent dict.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     # Lazily populated by ``schema_id``. Per-class, not per-instance.
     _cached_schema_id: ClassVar[Optional[str]] = None

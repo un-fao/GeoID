@@ -49,6 +49,7 @@ __all__ = [
     "plugin_not_registered",
     "validation_failed",
     "value_error",
+    "collection_not_found",
     "unexpected_failure",
     "problem_exception_handler",
     "register",
@@ -104,6 +105,33 @@ def value_error(
         title="Configuration resource not found",
         status=404,
         detail=str(exc),
+        instance=instance,
+    ))
+
+
+def collection_not_found(
+    catalog_id: str, collection_id: str, *, instance: Optional[str] = None,
+) -> ProblemException:
+    """404 for ``PUT /catalogs/{cat}/collections/{col}/plugins/{plugin_id}``
+    when ``collection_id`` does not exist and the caller did not opt in to
+    JIT creation with ``?create_if_missing=true`` (issue #918).
+
+    Default-off is the safer wire contract: a fat-fingered collection
+    name (``sentinal`` for ``sentinel``) used to silently create a brand
+    new collection on PUT; now the caller has to explicitly ask for
+    upfront-configure behaviour.
+    """
+    return ProblemException(ProblemDetails(
+        type=f"{_TYPE_BASE}/collection-not-found",
+        title="Collection not found",
+        status=404,
+        detail=(
+            f"Collection '{collection_id}' does not exist in catalog "
+            f"'{catalog_id}'. Re-check the name, create the collection "
+            f"first (POST /stac/catalogs/{catalog_id}/collections), or "
+            f"opt in to JIT creation by re-issuing the request with "
+            f"``?create_if_missing=true``."
+        ),
         instance=instance,
     ))
 

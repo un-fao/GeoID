@@ -44,7 +44,7 @@ async def test_no_files_is_noop(monkeypatch, tmp_path):
 async def test_applies_when_no_existing_config(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "task-routing.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True, "routing": {"t_a": ["catalog"]}},
+        "value": {"routing": {"t_a": ["catalog"]}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
@@ -67,7 +67,7 @@ async def test_applies_when_no_existing_config(monkeypatch, tmp_path):
 async def test_skip_when_existing_no_override(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "task-routing.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+        "value": {"routing": {"t_a": ["maps"]}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
@@ -88,7 +88,7 @@ async def test_skip_when_existing_no_override(monkeypatch, tmp_path):
 async def test_override_forces_apply(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "task-routing.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+        "value": {"routing": {"t_a": ["maps"]}},
         "override": True,
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
@@ -110,11 +110,11 @@ async def test_override_forces_apply(monkeypatch, tmp_path):
 async def test_lexical_overlay_last_wins(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "10-base.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True, "routing": {"t_a": ["catalog"]}},
+        "value": {"routing": {"t_a": ["catalog"]}},
     })
     _write_seed(tmp_path / "defaults", "20-overlay.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True, "routing": {"t_a": ["maps"]}},
+        "value": {"routing": {"t_a": ["maps"]}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
@@ -245,7 +245,7 @@ async def test_malformed_json_raises_in_non_prod(monkeypatch, tmp_path):
 async def test_no_protocol_registered_returns(monkeypatch, tmp_path, caplog):
     _write_seed(tmp_path / "defaults", "task-routing.json", {
         "class_key": "task_routing_config",
-        "value": {"enabled": True},
+        "value": {"routing": {"t_a": ["catalog"]}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
