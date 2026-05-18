@@ -479,6 +479,79 @@ class PolicyService:
                             parent, child, schema, e,
                         )
 
+        # Platform-tier only: bootstrap OidcRoleSyncConfig so the
+        # Keycloak realm role (e.g. ``geoid.sysadmin``) reconciles to
+        # the internal grant on first login. Default Pydantic value of
+        # ``reconcile_enabled`` is False (cautious), but a fresh deploy
+        # has no row in ``iam.configs`` at all — without this seed the
+        # sysadmin JWT user is evaluated with anonymous-tier
+        # permissions and every protected endpoint returns 403.
+        # Idempotent: skip when a row already exists so operator PATCHes
+        # are preserved across cold boots.
+        if catalog_id is None:
+            await self._seed_oidc_role_sync_default()
+
+    async def _seed_oidc_role_sync_default(self) -> None:
+        """One-shot seed of ``OidcRoleSyncConfig(reconcile_enabled=True)``
+        into platform configs when no row exists.
+
+        Closes the #907 / #908 bootstrap gap: ``provision_default_policies``
+        runs at every cold boot; this hook ensures the OIDC role
+        reconciler is on by default but never overwrites a persisted
+        operator PATCH.
+        """
+        from dynastore.models.protocols.platform_configs import (
+            PlatformConfigsProtocol,
+        )
+        from .oidc_role_sync_config import OidcRoleSyncConfig
+
+        configs = get_protocol(PlatformConfigsProtocol)
+        if configs is None:
+            logger.debug(
+                "OidcRoleSyncConfig seed skipped: PlatformConfigsProtocol "
+                "not registered (slim deployment)."
+            )
+            return
+
+        try:
+            persisted = await configs.list_configs()
+        except Exception:
+            logger.debug(
+                "OidcRoleSyncConfig seed skipped: list_configs failed",
+                exc_info=True,
+            )
+            return
+
+        existing = persisted.get(OidcRoleSyncConfig)
+        if existing is None:
+            seed = OidcRoleSyncConfig(reconcile_enabled=True)
+            try:
+                await configs.set_config(OidcRoleSyncConfig, seed)
+                logger.info(
+                    "Seeded OidcRoleSyncConfig(reconcile_enabled=True) — "
+                    "OIDC realm roles will now reconcile to internal grants "
+                    "(operator may PATCH /configs/platform/.../oidc_role_sync "
+                    "to disable)."
+                )
+                effective = seed
+            except Exception:
+                logger.warning(
+                    "OidcRoleSyncConfig seed failed; OIDC role reconciliation "
+                    "remains disabled until operator PATCH.",
+                    exc_info=True,
+                )
+                return
+        else:
+            effective = existing
+
+        if effective.reconcile_enabled and not effective.issuer_whitelist:
+            logger.warning(
+                "OidcRoleSyncConfig.reconcile_enabled=True with empty "
+                "issuer_whitelist: any OIDC issuer accepted by the resource "
+                "server can grant mapped platform roles. Set "
+                "issuer_whitelist=[\"<your-keycloak-issuer-url>\"] to narrow."
+            )
+
     # --- Evaluation ---
 
     @cached(maxsize=512, namespace="policies")
