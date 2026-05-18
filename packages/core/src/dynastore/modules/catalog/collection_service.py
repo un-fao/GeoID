@@ -565,7 +565,7 @@ class CollectionService:
                 )
 
             # 5c. #733 — seed the collection's routing configs from the
-            #     catalog's ``CatalogPrivacy.collection_defaults`` templates.
+            #     catalog's ``CatalogRoutingTemplates.collection_defaults`` templates.
             #     The helper writes ``ItemsRoutingConfig`` (when an
             #     ``items_routing`` template is set) BEFORE
             #     ``CollectionRoutingConfig`` (when a ``collection_routing``
@@ -585,7 +585,7 @@ class CollectionService:
                 )
             except Exception as e:
                 logger.warning(
-                    "Could not apply CatalogPrivacy.collection_defaults routing seed for %s/%s: %s",
+                    "Could not apply CatalogRoutingTemplates.collection_defaults routing seed for %s/%s: %s",
                     catalog_id, collection_model.id, e,
                 )
 

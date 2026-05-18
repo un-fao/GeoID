@@ -306,17 +306,17 @@ def test_cascade_handlers_registered_on_both_routing_configs():
 
 @pytest.mark.asyncio
 async def test_apply_catalog_default_routing_seed_writes_both_templates():
-    """Happy path — CatalogPrivacy.collection_defaults with both templates
+    """Happy path — CatalogRoutingTemplates.collection_defaults with both templates
     set ⇒ helper writes both per-collection configs."""
     from dynastore.modules.catalog.catalog_config import (
-        CatalogPrivacy,
+        CatalogRoutingTemplates,
         _build_private_collection_routing,
         _build_private_items_routing,
         apply_catalog_default_routing_seed,
     )
     from dynastore.modules.storage.routing_config import CatalogRoutingDefaults
 
-    policy = CatalogPrivacy(
+    policy = CatalogRoutingTemplates(
         collection_defaults=CatalogRoutingDefaults(
             items_routing=_build_private_items_routing(),
             collection_routing=_build_private_collection_routing(),

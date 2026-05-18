@@ -121,7 +121,7 @@ def test_known_consumers_have_handlers_registered():
 
     Cycle E retired the catalog-wide private-mode apply handler
     (``ElasticsearchCatalogConfig`` deleted).  The catalog-tier apply
-    handler on ``CatalogPrivacy`` eager-creates the per-tenant private
+    handler on ``CatalogRoutingTemplates`` eager-creates the per-tenant private
     indexes whenever the catalog's routing-seed templates pin a private
     driver (#733).
     """

@@ -1,6 +1,6 @@
-"""#733 — pin the catalog-tier lifecycle hook on ``CatalogPrivacy``.
+"""#733 — pin the catalog-tier lifecycle hook on ``CatalogRoutingTemplates``.
 
-When an operator writes a ``CatalogPrivacy`` whose
+When an operator writes a ``CatalogRoutingTemplates`` whose
 ``collection_defaults`` templates pin private driver variants, the apply
 handler must proactively call ``ensure_storage(catalog_id)`` on the
 relevant per-tenant private drivers (items + collection envelope) so the
@@ -19,7 +19,7 @@ These tests pin the handler's contract:
 - ``ensure_storage`` raises → handler logs warning, the other tier still
   gets its call.
 
-The handler itself is registered on ``CatalogPrivacy`` at module
+The handler itself is registered on ``CatalogRoutingTemplates`` at module
 import time; we exercise it directly here rather than going through
 ``ConfigsProtocol.set_config``.
 """
@@ -30,10 +30,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPrivacy,
+    CatalogRoutingTemplates,
     _build_private_collection_routing,
     _build_private_items_routing,
-    _on_apply_catalog_privacy,
+    _on_apply_catalog_routing_templates,
 )
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingDefaults,
@@ -80,7 +80,7 @@ def _public_collection_template() -> CollectionRoutingConfig:
 
 @pytest.mark.asyncio
 async def test_handler_noop_when_both_templates_are_none():
-    """The default ``CatalogPrivacy()`` has both templates ``None`` —
+    """The default ``CatalogRoutingTemplates()`` has both templates ``None`` —
     no eager create."""
     items_driver = MagicMock()
     items_driver.ensure_storage = AsyncMock()
@@ -91,8 +91,8 @@ async def test_handler_noop_when_both_templates_are_none():
         "dynastore.tools.discovery.get_protocols",
         return_value=[items_driver, coll_driver],
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(),
             "cat-a", None, None,
         )
 
@@ -112,8 +112,8 @@ async def test_handler_noop_when_templates_pin_only_public_drivers():
         "dynastore.tools.discovery.get_protocols",
         return_value=[items_driver, coll_driver],
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(
                 collection_defaults=CatalogRoutingDefaults(
                     items_routing=_public_items_template(),
                     collection_routing=_public_collection_template(),
@@ -138,8 +138,8 @@ async def test_handler_noop_when_catalog_id_missing():
         "dynastore.tools.discovery.get_protocols",
         return_value=[items_driver, coll_driver],
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             None, None, None,
         )
 
@@ -182,8 +182,8 @@ async def test_handler_calls_both_private_drivers_when_both_tiers_private():
         "dynastore.tools.discovery.get_protocols",
         side_effect=fake_get_protocols,
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             "cat-a", None, None,
         )
 
@@ -226,8 +226,8 @@ async def test_handler_calls_only_items_when_only_items_template_is_private():
         "dynastore.tools.discovery.get_protocols",
         side_effect=fake_get_protocols,
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(
                 collection_defaults=CatalogRoutingDefaults(
                     items_routing=_build_private_items_routing(),
                     collection_routing=None,
@@ -269,8 +269,8 @@ async def test_handler_skips_missing_driver_gracefully():
         side_effect=fake_get_protocols,
     ):
         # Should not raise even though collection-private is missing.
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             "cat-a", None, None,
         )
 
@@ -315,8 +315,8 @@ async def test_handler_swallows_ensure_storage_exceptions(caplog):
         side_effect=fake_get_protocols,
     ):
         # Should not raise.
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             "cat-a", None, None,
         )
 
@@ -337,7 +337,7 @@ async def test_handler_picks_driver_with_tenant_isolated_capability():
     a sibling driver without the capability is skipped.
 
     Pins the capability-filter loop in
-    ``catalog_config.py:_on_apply_catalog_privacy`` independent of
+    ``catalog_config.py:_on_apply_catalog_routing_templates`` independent of
     isinstance inspection or ``MagicMock(spec=...)`` introspection
     behaviour — only the ``capabilities`` frozenset is consulted.
     """
@@ -365,8 +365,8 @@ async def test_handler_picks_driver_with_tenant_isolated_capability():
         "dynastore.tools.discovery.get_protocols",
         side_effect=fake_get_protocols,
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             "cat-a", None, None,
         )
 
@@ -405,8 +405,8 @@ async def test_handler_noop_when_no_driver_advertises_tenant_isolated():
         "dynastore.tools.discovery.get_protocols",
         side_effect=fake_get_protocols,
     ):
-        await _on_apply_catalog_privacy(
-            CatalogPrivacy(collection_defaults=_both_private_defaults()),
+        await _on_apply_catalog_routing_templates(
+            CatalogRoutingTemplates(collection_defaults=_both_private_defaults()),
             "cat-a", None, None,
         )
 
@@ -434,12 +434,12 @@ def test_tenant_isolated_string_matches_entity_store_mirror():
 
 
 @pytest.mark.asyncio
-async def test_handler_registered_on_catalog_privacy():
-    """The handler must be in ``CatalogPrivacy.get_apply_handlers()``
+async def test_handler_registered_on_catalog_routing_templates():
+    """The handler must be in ``CatalogRoutingTemplates.get_apply_handlers()``
     so the apply pipeline picks it up.  Pins the registration call at
     module load time."""
-    handlers = CatalogPrivacy.get_apply_handlers()
-    assert _on_apply_catalog_privacy in handlers, (
-        "#733: _on_apply_catalog_privacy must be registered on "
-        "CatalogPrivacy at module import time."
+    handlers = CatalogRoutingTemplates.get_apply_handlers()
+    assert _on_apply_catalog_routing_templates in handlers, (
+        "#733: _on_apply_catalog_routing_templates must be registered on "
+        "CatalogRoutingTemplates at module import time."
     )

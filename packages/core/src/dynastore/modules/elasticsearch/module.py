@@ -205,7 +205,7 @@ class ElasticsearchModule(ModuleProtocol):
     ``ItemsRoutingConfig`` / ``CollectionRoutingConfig``. Each private
     driver owns its per-tenant index plus DENY policy management. This
     module no longer carries catalog-wide private-mode toggles; the
-    catalog-tier ``CatalogPrivacy.collection_defaults.{items_routing,
+    catalog-tier ``CatalogRoutingTemplates.collection_defaults.{items_routing,
     collection_routing}`` templates only seed routing for newly-created
     collections.
     """
