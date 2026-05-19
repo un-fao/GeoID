@@ -22,20 +22,35 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
-# Top-level PyJWT import — load-bearing for SCOPE gating.
-# `tools/discovery.py:159 discover_and_load_plugins` skips entry-points whose
-# top-level imports raise ImportError, so importing PyJWT at module load
-# ensures IamModule is *not* registered on services whose SCOPE excludes
-# `module_iam` (which declares the PyJWT dep).
+# Distribution-presence SCOPE gate (#1003).
 #
-# History: the gate originally used `tenacity`, but tenacity became
-# transitively available on `scope_catalog` via
-# `drivers_grp → module_storage_iceberg → pyiceberg → tenacity`.  PyJWT is
-# declared only by `module_iam` and is not pulled in transitively by any
-# other scope — see GeoID#1003.  If PyJWT ever becomes similarly ubiquitous,
-# replace this gate with the next uniquely-module_iam package, or move to
-# the explicit ``required_distributions`` mechanism (see ExtensionProtocol).
-import jwt  # PyJWT — SCOPE gate; must remain a top-level import
+# `tools/discovery.py:165 discover_and_load_plugins` skips entry-points whose
+# top-level imports raise ImportError, so raising ImportError here when the
+# `dynastore-ext-iam` distribution is absent ensures IamModule is *not*
+# registered on services whose SCOPE excludes the `iam` extras.
+#
+# History: this gate previously used a package-import side-effect (first
+# `from tenacity import ...`, then `import jwt`).  Both packages were silently
+# pulled in transitively by other extras (tenacity via pyiceberg in
+# drivers_grp; PyJWT via gcloud-aio-auth in module_gcp).  A package-import
+# gate is fragile by construction — any new transitive dep can break it.
+#
+# Checking the *distribution name* `dynastore-ext-iam` instead is robust:
+# distribution identities are unique and a transitive dep cannot
+# accidentally install a distribution with that name.  The `iam` aggregate
+# extras (`iam = ["dynastore[module_iam,extension_iam]"]`) always pull both
+# `module_iam` and `extension_iam` together — checking for the extension
+# distribution is therefore a valid signal for whether the module should
+# be active too.
+import importlib.metadata as _importlib_metadata
+
+try:
+    _importlib_metadata.distribution("dynastore-ext-iam")
+except _importlib_metadata.PackageNotFoundError as _exc:
+    raise ImportError(
+        "Skipping IamModule: dynastore-ext-iam distribution not installed "
+        "(SCOPE excludes the iam extras)"
+    ) from _exc
 
 from tenacity import (
     AsyncRetrying,

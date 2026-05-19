@@ -18,15 +18,15 @@ class ExposableConfigMixin(BaseModel):
     )
 
 
-# Legacy fallback constants.  These are kept for backward compatibility and
+# Legacy fallback constants.  Kept for backward compatibility with tests and
 # as a safety net for extensions that have not yet adopted the declarative
 # ``always_on = True`` class attribute (see ``ExtensionProtocol``).
-# "tools" and "documentation" are internal core names that have no registered
-# extension entry-point; they appear here only to suppress false-positive
-# reports from ``find_dead_exposable_configs``.
+# Prefer ``_get_dynamic_sets()`` for new code — it derives the same sets
+# from the live registry and avoids the inverted-dependency drift documented
+# in #1003.
 ALWAYS_ON_EXTENSIONS: frozenset[str] = frozenset({
     "iam", "auth", "configs", "web", "admin",
-    "tools", "template", "httpx", "documentation",
+    "template", "httpx",
 })
 
 KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({

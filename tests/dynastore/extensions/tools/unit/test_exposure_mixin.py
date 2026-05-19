@@ -25,5 +25,9 @@ def test_always_on_is_subset_of_known():
 
 
 def test_always_on_includes_core_controlplane():
-    for e in {"iam", "auth", "configs", "web", "admin", "documentation"}:
+    # The five names below have registered extension entry-points AND declare
+    # ``always_on = True`` on their class.  "documentation" and "tools" used
+    # to be in this set but had no registered entry-point — they were dropped
+    # in #1003 as part of the inverted-dependency cleanup.
+    for e in {"iam", "auth", "configs", "web", "admin"}:
         assert e in ALWAYS_ON_EXTENSIONS
