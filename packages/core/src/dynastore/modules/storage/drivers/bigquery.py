@@ -54,6 +54,15 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
     # the entry by hand (``source: "operator"``).
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset()
 
+    # Structural backend identity (was ``Hint.BIGQUERY`` on
+    # ``supported_hints``).  ``Hint`` is the per-request preference
+    # axis; a driver's self-tag is a structural fact and belongs on a
+    # dedicated ClassVar, not in the request-side vocabulary.
+    # Consumers that need to recognise the BQ driver class can either
+    # ``isinstance`` against ``ItemsBigQueryDriver`` or compare
+    # ``backend_id == "bigquery"``.
+    backend_id: ClassVar[str] = "bigquery"
+
     priority: int = 50
     preferred_chunk_size: int = 500
 
@@ -62,7 +71,7 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
     })
     preferred_for: FrozenSet[Hint] = frozenset({Hint.FEATURES})
     supported_hints: FrozenSet[Hint] = frozenset({
-        Hint.FEATURES, Hint.BIGQUERY,
+        Hint.FEATURES,
         Hint.JOIN,  # BQ can serve as either side of an OGC API - Joins request
         Hint.COUNT, Hint.AGGREGATION,
     })

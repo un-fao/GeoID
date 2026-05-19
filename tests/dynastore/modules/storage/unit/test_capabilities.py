@@ -1,6 +1,7 @@
 import pytest
 
 from dynastore.models.protocols.storage_driver import Capability
+from dynastore.modules.storage.hints import Hint
 
 
 class TestCapabilityEnum:
@@ -50,3 +51,46 @@ class TestCapabilityEnum:
             if not k.startswith("_") and isinstance(v, str)
         ]
         assert len(members) >= 10
+
+
+class TestReadFlavoursOnHintEnum:
+    """Mirror of ``test_read_flavours_moved_to_hint``: pin that the eight
+    relocated read-flavours are present on the ``Hint`` catalogue.
+
+    Together with the negative pin on ``Capability`` this fences the
+    structural-vs-per-request axis split: a future refactor that adds
+    one of these back to ``Capability`` (or drops it from ``Hint``)
+    fails one of these two tests immediately.
+    """
+
+    @pytest.mark.parametrize("name", [
+        "FULLTEXT", "SPATIAL_FILTER", "ATTRIBUTE_FILTER",
+        "AGGREGATION", "COUNT", "STATISTICS", "SORT", "GROUP_BY",
+    ])
+    def test_read_flavour_lives_on_hint(self, name: str) -> None:
+        assert hasattr(Hint, name), (
+            f"Hint.{name} should be the canonical home for the per-request "
+            "read-variant preference."
+        )
+
+
+class TestBigQueryHintRetired:
+    """``Hint.BIGQUERY`` was a legacy driver self-tag, not a per-request
+    preference.  Driver-class identity now lives on
+    ``ItemsBigQueryDriver.backend_id``; the request-side ``Hint``
+    vocabulary stays clean.
+    """
+
+    def test_hint_bigquery_member_removed(self) -> None:
+        assert not hasattr(Hint, "BIGQUERY"), (
+            "Hint.BIGQUERY was removed — use ItemsBigQueryDriver.backend_id "
+            "for structural backend identity instead."
+        )
+
+    def test_bq_driver_advertises_backend_id(self) -> None:
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        assert ItemsBigQueryDriver.backend_id == "bigquery"
+
+    def test_bq_driver_supported_hints_excludes_self_tag(self) -> None:
+        from dynastore.modules.storage.drivers.bigquery import ItemsBigQueryDriver
+        assert "bigquery" not in {str(h) for h in ItemsBigQueryDriver.supported_hints}
