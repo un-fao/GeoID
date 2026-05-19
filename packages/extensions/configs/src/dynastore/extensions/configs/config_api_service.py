@@ -880,16 +880,19 @@ class ConfigApiService:
                         dumped.pop("_meta", None)
                     if not dumped.get("_links"):
                         dumped.pop("_links", None)
-                    # #1016: drop empty transformer arrays on egress.
-                    # Empty list == none configured (Pydantic default), so the
-                    # field carries zero signal in that state.  Round-trips
-                    # remain safe because ``OperationDriverEntry``'s default
-                    # is the empty tuple — PUT bodies that omit the keys
-                    # rehydrate to the same state on the server side.
+                    # #1016: drop empty transformer arrays and empty
+                    # ``hints`` on egress.  Empty list == none configured
+                    # (Pydantic default), so the field carries zero signal
+                    # in that state.  Round-trips remain safe because
+                    # ``OperationDriverEntry``'s defaults are the empty
+                    # tuple / empty frozenset — PUT bodies that omit the
+                    # keys rehydrate to the same state on the server side.
                     if not dumped.get("input_transformers"):
                         dumped.pop("input_transformers", None)
                     if not dumped.get("output_transformers"):
                         dumped.pop("output_transformers", None)
+                    if not dumped.get("hints"):
+                        dumped.pop("hints", None)
                     refs.append(dumped)
                 rewritten[op] = refs
             routing["operations"] = rewritten

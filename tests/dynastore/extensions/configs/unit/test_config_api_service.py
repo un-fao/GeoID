@@ -390,8 +390,11 @@ def test_build_routing_refs_replaces_entries_with_slim_refs():
     assert ref["write_mode"] == "sync"
     # Cycle F.7d.3-fixup: hints + source surface on the slim ref so
     # operators can distinguish hint-gated entries that share the same
-    # driver_ref under one operation.
-    assert ref["hints"] == []
+    # driver_ref under one operation.  #1016 — empty hints are stripped
+    # on egress (same class as input/output_transformers); non-empty
+    # values still surface verbatim (see
+    # ``test_build_routing_refs_forwards_hints_and_source``).
+    assert "hints" not in ref
     # ``sla`` is internal — must NOT appear on the slim ref.
     assert "sla" not in ref
 
@@ -593,6 +596,33 @@ def test_build_routing_refs_transformer_lists_dropped_when_empty():
     ref = local["items_routing_config"]["operations"]["WRITE"][0]
     assert "input_transformers" not in ref
     assert "output_transformers" not in ref
+    # Empty ``hints`` is the same egress-leak class (frozenset() default
+    # serializes as []), so the strip covers it too.
+    assert "hints" not in ref
+
+
+def test_build_routing_refs_hints_dropped_when_empty():
+    """#1016 — empty ``hints`` is stripped on egress alongside the
+    transformer arrays.  Mirrors the transformer-strip pin so a future
+    refactor that splits the strip block can't silently regress hints.
+    """
+    local = {"items_routing_config": {"operations": {
+        "READ": [{"driver_ref": "items_postgresql_driver",
+                  "hints": [],
+                  "on_failure": "fatal", "write_mode": "sync"}]
+    }}}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=_stub_registry(items_postgresql_driver={"__module__": "m"}),
+    ):
+        ConfigApiService(config_service=MagicMock())._build_routing_refs(
+            local, base_url="http://h/configs",
+        )
+    ref = local["items_routing_config"]["operations"]["READ"][0]
+    assert "hints" not in ref
+    # Sanity: non-envelope keys still present.
+    assert ref["driver_ref"] == "items_postgresql_driver"
+    assert ref["write_mode"] == "sync"
 
 
 def test_build_routing_refs_transformer_round_trip_safe():
@@ -622,6 +652,10 @@ def test_build_routing_refs_transformer_round_trip_safe():
     rehydrated = OperationDriverEntry.model_validate(body)
     assert rehydrated.input_transformers == ()
     assert rehydrated.output_transformers == ()
+    # #1016 — ``hints`` round-trips the same way: empty default refills
+    # to an empty frozenset on PUT so the stripped GET body is safe to
+    # send back without provoking a 422.
+    assert rehydrated.hints == frozenset()
 
 
 def test_build_routing_refs_unregistered_driver_emits_no_link():
