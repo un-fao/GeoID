@@ -40,7 +40,6 @@ def mock_col_config():
                 storage_mode=AttributeStorageMode.JSONB,
                 enable_external_id=True,
                 index_external_id=True,
-                external_id_as_feature_id=False,
                 expose_geoid=False,
                 enable_asset_id=True,
                 asset_id_field="asset_id",
@@ -248,3 +247,85 @@ def test_build_optimized_query(mock_col_config, mock_registry):
     assert "WHERE" in sql
     assert "sc_attr.external_id = :filter_0" in sql
     assert params["filter_0"] == "123"
+
+
+def test_read_policy_disables_external_id_as_feature_id(mock_col_config, mock_registry):
+    """When ItemsReadPolicy.feature_type.external_id_as_feature_id is False,
+    QueryOptimizer must NOT alias the sidecar's external_id as ``id`` —
+    feature.id reverts to h.geoid regardless of sidecar capability."""
+    from dynastore.modules.storage.read_policy import ItemsReadPolicy
+    from dynastore.modules.storage.computed_fields import FeatureType
+
+    mock_geom = MagicMock()
+    mock_geom.config.sidecar_id = "geometries"
+    mock_geom.sidecar_id = "geometries"
+    mock_geom.get_queryable_fields.return_value = {
+        "geom": FieldDefinition(
+            name="geom", sql_expression="sc_geom.geom",
+            capabilities=[FieldCapability.SPATIAL], data_type="geometry",
+        )
+    }
+    mock_geom.get_join_clause.return_value = "LEFT JOIN geom_table sc_geom ON h.geoid = sc_geom.geoid"
+    mock_geom.supports_aggregation.return_value = True
+    mock_geom.supports_transformation.return_value = True
+    mock_geom.get_default_sort.return_value = None
+    mock_geom.provides_feature_id = False
+    mock_geom.get_main_geometry_field.return_value = "geom"
+
+    mock_attr = MagicMock()
+    mock_attr.config.sidecar_id = "attributes"
+    mock_attr.sidecar_id = "attributes"
+    mock_attr.get_queryable_fields.return_value = {
+        "external_id": FieldDefinition(
+            name="external_id", sql_expression="sc_attr.external_id",
+            capabilities=[FieldCapability.FILTERABLE], data_type="text",
+        )
+    }
+    mock_attr.get_join_clause.return_value = "LEFT JOIN attr_table sc_attr ON h.geoid = sc_attr.geoid"
+    mock_attr.supports_aggregation.return_value = True
+    mock_attr.supports_transformation.return_value = True
+    mock_attr.get_default_sort.return_value = None
+    mock_attr.provides_feature_id = True
+    mock_attr.feature_id_field_name = "external_id"
+    mock_attr.get_main_geometry_field.return_value = None
+
+    mock_registry.get_sidecar.side_effect = (
+        lambda sc, lenient=True: mock_geom if getattr(sc, "sidecar_type", "") == "geometries" else mock_attr
+    )
+
+    # Filter on external_id to force the attributes sidecar to be required,
+    # so the feature_id_expr resolution path runs.
+    req = QueryRequest(
+        select=[FieldSelection(field="geom", alias="geometry")],
+        filters=[FilterCondition(field="external_id", operator="=", value="X")],
+        raw_where=None, include_total_count=False,
+    )
+
+    # Default (no policy) — external_id IS aliased as id
+    optimizer = QueryOptimizer(mock_col_config)
+    sql_default, _ = optimizer.build_optimized_query(req, "schema", "table")
+    assert "COALESCE(sc_attributes.external_id, h.geoid::text) AS id" in sql_default
+
+    # Policy disables — external_id is NOT aliased; falls back to h.geoid
+    policy = ItemsReadPolicy(
+        feature_type=FeatureType(external_id_as_feature_id=False)
+    )
+    optimizer_off = QueryOptimizer(mock_col_config, read_policy=policy)
+    sql_off, _ = optimizer_off.build_optimized_query(req, "schema", "table")
+    assert "COALESCE(sc_attributes.external_id" not in sql_off
+    assert "h.geoid AS id" in sql_off
+
+
+def test_attributes_sidecar_config_drops_external_id_as_feature_id() -> None:
+    """Sidecar config must no longer accept ``external_id_as_feature_id`` —
+    that knob moved to ItemsReadPolicy.feature_type."""
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        FeatureAttributeSidecarConfig,
+    )
+
+    c = FeatureAttributeSidecarConfig()
+    assert not hasattr(c, "external_id_as_feature_id")
+    assert not hasattr(c, "provides_feature_id")
+    # The storage-layout property is preserved (column name is unrelated to
+    # the wire-shape decision).
+    assert c.feature_id_field_name == "external_id"

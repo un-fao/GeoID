@@ -211,9 +211,10 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     index_external_id: bool = Field(
         default=True, description="Create unique index on external_id"
     )
-    external_id_as_feature_id: bool = Field(
-        default=True, description="Map external_id to feature id (geoid used by default)"
-    )
+    # ``external_id_as_feature_id`` lives on ``ItemsReadPolicy.feature_type``
+    # (wire-shape decision, not a storage knob). The sidecar's
+    # ``provides_feature_id`` property advertises capability only — the
+    # policy decides whether to surface ``external_id`` as ``feature.id``.
     expose_geoid: bool = Field(
         default=False,
         description="Add geoid to feature properties if external_id is not unique",
@@ -307,15 +308,13 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         return {}
 
     @property
-    def provides_feature_id(self) -> bool:
-        """Whether this sidecar provides the feature ID for the collection."""
-        return self.external_id_as_feature_id
-
-    @property
     def feature_id_field_name(self) -> Optional[str]:
-        """The field name used for feature ID in this sidecar's table."""
-        # Return external_id if enabled, regardless of provides_feature_id
-        # This allows ID resolution to work even when external_id is not the "official" feature ID
+        """Column holding the external feature id in this sidecar's table.
+
+        Independent of whether the read policy elects to surface that
+        column as ``feature.id`` — that decision lives on
+        ``ItemsReadPolicy.feature_type.external_id_as_feature_id``.
+        """
         return "external_id" if self.enable_external_id else None
 
     model_config = {"extra": "allow"}

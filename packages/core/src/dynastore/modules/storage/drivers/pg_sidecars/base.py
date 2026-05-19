@@ -424,35 +424,17 @@ class SidecarConfig(BaseModel):
         return mapping.get(self.sidecar_type, self.sidecar_type)
 
     @property
-    def provides_feature_id(self) -> bool:
-        """
-        Whether this sidecar provides the feature ID for the collection.
-
-        IMPORTANT: At most ONE sidecar per collection can return True.
-        This is validated during collection configuration.
-
-        When True, this sidecar's get_feature_id_condition() will be used
-        to add JOIN and WHERE clauses for feature ID resolution.
-
-        Default: False (feature_id == geoid)
-        """
-        return False
-
-    @property
     def feature_id_field_name(self) -> Optional[str]:
         """
         The field name used for feature ID in this sidecar's table.
-        E.g., 'external_id' for AttributesSidecar, 'asset_id' for AssetSidecar.
+        E.g., 'external_id' for AttributesSidecar.
 
-        Returns None if provides_feature_id is False.
+        Returns None when this sidecar has no candidate feature-id column.
 
-        Usage:
-        - Mapping result sets from database queries to feature IDs
-        - Understanding which column in the result corresponds to the feature ID
-        - NOT for table introspection or raw SQL construction
-
-        Example: When processing query results, this tells us that
-        row['external_id'] should be mapped to feature['id'] in the output.
+        Capability ("can this sidecar map to feature.id") lives on the
+        :class:`SidecarProtocol` (``provides_feature_id``). Intent
+        ("should it on a given read") lives on
+        :class:`ItemsReadPolicy.feature_type.external_id_as_feature_id`.
         """
         return None
 
@@ -586,8 +568,15 @@ class SidecarProtocol(ABC):
 
     @property
     def provides_feature_id(self) -> bool:
-        """
-        Whether this sidecar provides the feature ID for the collection.
+        """Capability flag — does this sidecar know how to map a feature
+        column (e.g. ``external_id``) onto ``feature.id`` on read.
+
+        Whether to *use* the capability on a given read is decided by
+        ``ItemsReadPolicy.feature_type.external_id_as_feature_id``; this
+        property only reports the sidecar's capability. At most one
+        sidecar per collection should return True (validated at config
+        time).
+
         Default: False.
         """
         return False

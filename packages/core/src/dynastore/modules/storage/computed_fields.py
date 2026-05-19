@@ -184,12 +184,15 @@ class IdentityRule(BaseModel):
 class FeatureType(BaseModel):
     """Declarative wire-shape contract for the read path.
 
-    Used by the forthcoming ``ItemsReadPolicy``. ``schema_ref`` points at
-    a JSON Schema source — by default the policy's own write-time
-    ``schema`` is reused as the response shape. ``expose`` enumerates
-    field names from ``ItemsWritePolicy.compute`` (or properties) that
-    should be surfaced in responses. ``failure_mode`` controls behaviour
-    when an output transformer raises.
+    Used by ``ItemsReadPolicy``. ``schema_ref`` points at a JSON Schema
+    source — by default the policy's own write-time ``schema`` is reused
+    as the response shape. ``expose`` enumerates field names from
+    ``ItemsWritePolicy.compute`` (or properties) that should be surfaced
+    in responses. ``failure_mode`` controls behaviour when an output
+    transformer raises. ``external_id_as_feature_id`` controls whether
+    a row's ``external_id`` (stored by the attributes sidecar) overrides
+    the default ``feature.id`` (``geoid``) on the outgoing feature; this
+    is purely a wire-shape decision (the storage column is unaffected).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -197,6 +200,7 @@ class FeatureType(BaseModel):
     schema_ref: str = "items_write_policy.schema"
     expose: List[str] = Field(default_factory=list)
     failure_mode: Literal["strict", "best_effort"] = "best_effort"
+    external_id_as_feature_id: bool = True
 
 
 __all__ = [
