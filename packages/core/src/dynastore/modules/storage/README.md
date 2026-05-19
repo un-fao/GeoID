@@ -124,11 +124,12 @@ Built-in presets (in `presets/`):
 Operator API:
 
 ```
-GET  /admin/presets                                        # list registered presets
-POST /admin/catalogs/{catalog_id}/presets/{name}/apply     # apply to a catalog
+GET    /admin/presets                                       # list registered presets
+POST   /admin/catalogs/{catalog_id}/presets/{name}          # apply preset to a catalog
+DELETE /admin/catalogs/{catalog_id}/presets/{name}          # unapply (#971)
 ```
 
-Each `apply` call sets `CatalogRoutingConfig`, the collection + items
+Each `POST` call sets `CatalogRoutingConfig`, the collection + items
 templates, and any audience configs at the catalog tier. The catalog-tier
 cascade validator (#960 scope 4) and the existing items/collection cascade
 handlers catch mixed public/private combos before persistence.

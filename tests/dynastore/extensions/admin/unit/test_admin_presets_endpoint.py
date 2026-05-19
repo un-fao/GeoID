@@ -61,7 +61,7 @@ def _patched_protocols(monkeypatch):
 
 def test_apply_public_catalog_preset_walks_all_three_routing_tiers(_patched_protocols):
     client = TestClient(_app())
-    resp = client.post("/admin/catalogs/cat-pub/presets/public_catalog/apply")
+    resp = client.post("/admin/catalogs/cat-pub/presets/public_catalog")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["preset"] == "public_catalog"
@@ -84,7 +84,7 @@ def test_apply_public_catalog_preset_walks_all_three_routing_tiers(_patched_prot
 
 def test_apply_private_catalog_preset_includes_only_routing_no_audiences(_patched_protocols):
     client = TestClient(_app())
-    resp = client.post("/admin/catalogs/cat-priv/presets/private_catalog/apply")
+    resp = client.post("/admin/catalogs/cat-priv/presets/private_catalog")
     assert resp.status_code == 200, resp.text
     assert resp.json()["applied"] == [
         "catalog_routing",
@@ -95,7 +95,7 @@ def test_apply_private_catalog_preset_includes_only_routing_no_audiences(_patche
 
 def test_apply_unknown_preset_returns_404(_patched_protocols):
     client = TestClient(_app())
-    resp = client.post("/admin/catalogs/cat-x/presets/does_not_exist/apply")
+    resp = client.post("/admin/catalogs/cat-x/presets/does_not_exist")
     assert resp.status_code == 404
     assert "does_not_exist" in resp.json()["detail"]
 
@@ -115,7 +115,7 @@ def test_apply_geoid_preset_flows_audience_configs_through_set_config(_patched_p
     )
 
     client = TestClient(_app())
-    resp = client.post("/admin/catalogs/cat-fao/presets/geoid/apply")
+    resp = client.post("/admin/catalogs/cat-fao/presets/geoid")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["applied"] == [
@@ -146,8 +146,8 @@ def test_apply_preset_is_idempotent_under_repeated_calls(_patched_protocols):
     The endpoint defers idempotency to ``set_config`` itself; this test
     just pins that two back-to-back applies don't raise."""
     client = TestClient(_app())
-    r1 = client.post("/admin/catalogs/cat-pub/presets/public_catalog/apply")
-    r2 = client.post("/admin/catalogs/cat-pub/presets/public_catalog/apply")
+    r1 = client.post("/admin/catalogs/cat-pub/presets/public_catalog")
+    r2 = client.post("/admin/catalogs/cat-pub/presets/public_catalog")
     assert r1.status_code == 200
     assert r2.status_code == 200
     # Six set_config calls total — three per apply.

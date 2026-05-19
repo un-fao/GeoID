@@ -1099,8 +1099,9 @@ class AdminService(ExtensionProtocol):
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
 
     # -------------------------------------------------------------------------
-    # Routing Presets (/admin/presets, /admin/catalogs/{cat}/presets/{name}/apply)
+    # Routing Presets (/admin/presets, /admin/catalogs/{cat}/presets/{name})
     # #847 — named, cascade-consistent bundles operators apply in one call.
+    # REST: POST = apply, DELETE = unapply (DELETE wiring tracked in #971).
     # -------------------------------------------------------------------------
 
     @router.get("/presets", summary="List registered routing presets (#847)")
@@ -1115,7 +1116,7 @@ class AdminService(ExtensionProtocol):
         }
 
     @router.post(
-        "/catalogs/{catalog_id}/presets/{preset_name}/apply",
+        "/catalogs/{catalog_id}/presets/{preset_name}",
         summary="Apply a routing preset to a catalog (#847)",
     )
     async def apply_routing_preset(

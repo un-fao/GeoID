@@ -16,9 +16,11 @@
 
 A preset is a thin factory that emits a ``PresetBundle`` of validated
 routing configs + opt-in audience configs. The admin endpoint
-``PUT /admin/catalogs/{cat}/presets/{pid}`` runs the bundle through the
-standard ``ConfigsProtocol.update_config`` lifecycle; the catalog-tier
+``POST /admin/catalogs/{cat}/presets/{name}`` runs the bundle through the
+standard ``ConfigsProtocol.set_config`` lifecycle; the catalog-tier
 privacy cascade (#960 scope 4) catches mixed private/public combos.
+``DELETE /admin/catalogs/{cat}/presets/{name}`` (#971) is the symmetric
+unapply path on the same resource URL.
 
 Built-in presets are auto-registered on import (see imports below).
 """
