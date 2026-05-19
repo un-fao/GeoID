@@ -1,0 +1,34 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Named routing presets for one-call catalog provisioning (#847).
+
+A preset is a thin factory that emits a ``PresetBundle`` of validated
+routing configs + opt-in audience configs. The admin endpoint
+``PUT /admin/catalogs/{cat}/presets/{pid}`` runs the bundle through the
+standard ``ConfigsProtocol.update_config`` lifecycle; the catalog-tier
+privacy cascade (#960 scope 4) catches mixed private/public combos.
+
+Built-in presets are auto-registered on import (see imports below).
+"""
+from .protocol import PresetBundle, RoutingPreset  # noqa: F401
+from .registry import get_preset, list_presets, register_preset  # noqa: F401
+
+__all__ = [
+    "PresetBundle",
+    "RoutingPreset",
+    "get_preset",
+    "list_presets",
+    "register_preset",
+]
