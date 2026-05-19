@@ -62,7 +62,19 @@ class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigService):
     operator-disabled (e.g. auth, iam, web, admin).  The lifespan and
     instantiation logic reads this to derive the always-on set dynamically
     from the live registry — no hardcoded extension-name list anywhere in
-    the framework (see #1003)."""
+    the framework (see #1003).
+
+    Contract: ``always_on`` is honored **only after** the class is reached
+    via the ``dynastore.extensions`` entry-point group during
+    ``discover_extensions()``.  Setting ``True`` on a class whose wheel is
+    not installed for the current SCOPE has no effect — the class simply
+    isn't in the registry, so ``_get_dynamic_sets()`` returns it in neither
+    the ``always_on`` nor the ``known`` set.  In other words, ``always_on``
+    *selects from* the discovered set; it never *extends* it.  This is the
+    invariant ``_get_dynamic_sets()`` enforces with no fallback union
+    (PR #1014).  Modules with a separate discovery path may still need an
+    explicit ``importlib.metadata.distribution(...)`` shield — see
+    ``IamModule`` for that pattern (PR #1004)."""
 
     def configure_app(self, app: "FastAPI") -> None:
         """
