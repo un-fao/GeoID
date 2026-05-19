@@ -47,7 +47,6 @@ from dynastore.modules.storage.driver_config import (
     CollectionDriverConfig,
     ItemsWritePolicy,
     ItemsSchema,
-    WritePolicyDefaults,
     DriverCapability,
     DriverPluginConfig,
     ItemsPostgresqlDriverConfig,
@@ -112,7 +111,6 @@ __all__ = [
     "DriverCapability",
     # Schema (M8)
     "ItemsSchema",
-    "WritePolicyDefaults",
     "FieldConstraint",
     "RequiredConstraint",
     "UniqueConstraint",

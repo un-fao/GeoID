@@ -7,7 +7,6 @@ Covers:
 - StacSchemaExtension.validate_schema
 - OgcFeaturesSchemaExtension.validate_schema
 - ConfigScopeMixin
-- WritePolicyDefaults (no external_id_field / validity_field / geohash_precision)
 - ItemsSchema with constraints field
 """
 import pytest
@@ -195,49 +194,6 @@ class TestConfigScopeMixin:
     def test_scope_literal_values(self):
         valid_scopes = {"platform_waterfall", "collection_intrinsic", "deployment_env"}
         assert ConfigScopeMixin.config_scope in valid_scopes
-
-
-# ---------------------------------------------------------------------------
-# WritePolicyDefaults — posture-only, no field-name references
-# ---------------------------------------------------------------------------
-
-
-class TestWritePolicyDefaults:
-    def test_importable(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        assert WritePolicyDefaults is not None
-
-    def test_class_key(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        assert WritePolicyDefaults.class_key() == "write_policy_defaults"
-
-    def test_default_construction(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        cfg = WritePolicyDefaults()
-        assert cfg is not None
-
-    def test_no_external_id_field(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        schema = WritePolicyDefaults.model_json_schema()
-        properties = schema.get("properties", {})
-        assert "external_id_field" not in properties
-
-    def test_no_validity_field(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        schema = WritePolicyDefaults.model_json_schema()
-        properties = schema.get("properties", {})
-        assert "validity_field" not in properties
-
-    def test_no_geohash_precision(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        schema = WritePolicyDefaults.model_json_schema()
-        properties = schema.get("properties", {})
-        assert "geohash_precision" not in properties
-
-    def test_has_on_conflict(self):
-        from dynastore.modules.storage.driver_config import WritePolicyDefaults
-        schema = WritePolicyDefaults.model_json_schema()
-        assert "on_conflict" in schema.get("properties", {})
 
 
 # ---------------------------------------------------------------------------

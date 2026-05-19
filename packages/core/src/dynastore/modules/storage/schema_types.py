@@ -45,12 +45,6 @@ ConfigScopeMixin
 Mixin that adds a ``config_scope`` annotation to any ``PluginConfig`` subclass,
 classifying it as ``"platform_waterfall"`` | ``"collection_intrinsic"`` |
 ``"deployment_env"``.  Used by the discovery API (M9) for schema grouping.
-
-WritePolicyDefaults
-===================
-Posture-only write policy — no field name references.  Sits at
-platform / catalog waterfall scope.  Field-level constraints (identity key,
-validity field, geohash precision) live in ``ItemsSchema.constraints``.
 """
 
 from __future__ import annotations
@@ -207,6 +201,3 @@ class ConfigScopeMixin:
     config_scope: ClassVar[ConfigScopeType] = "platform_waterfall"
 
 
-# WritePolicyDefaults is defined in driver_config.py to avoid circular imports.
-# It is exported from this module for convenience:
-# from dynastore.modules.storage.schema_types import WritePolicyDefaults  (after import from driver_config)
