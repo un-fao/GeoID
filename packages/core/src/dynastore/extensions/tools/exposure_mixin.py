@@ -18,11 +18,16 @@ class ExposableConfigMixin(BaseModel):
     )
 
 
+# Legacy fallback constants.  These are kept for backward compatibility and
+# as a safety net for extensions that have not yet adopted the declarative
+# ``always_on = True`` class attribute (see ``ExtensionProtocol``).
+# "tools" and "documentation" are internal core names that have no registered
+# extension entry-point; they appear here only to suppress false-positive
+# reports from ``find_dead_exposable_configs``.
 ALWAYS_ON_EXTENSIONS: frozenset[str] = frozenset({
     "iam", "auth", "configs", "web", "admin",
     "tools", "template", "httpx", "documentation",
 })
-
 
 KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({
     *ALWAYS_ON_EXTENSIONS,
@@ -33,14 +38,36 @@ KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({
 })
 
 
+def _get_dynamic_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """Return (always_on, known) derived from the live extension registry.
+
+    Falls back to the hardcoded constants when the registry is not yet
+    populated (e.g. during config-file import before bootstrap has run).
+    The dynamic sets are preferred because they stay consistent with whatever
+    extensions are actually installed — no manual list maintenance required.
+    """
+    try:
+        from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
+        if not _DYNASTORE_EXTENSIONS:
+            return ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS
+        known = frozenset(_DYNASTORE_EXTENSIONS.keys())
+        always_on = frozenset(
+            name for name, cfg in _DYNASTORE_EXTENSIONS.items()
+            if getattr(cfg.cls, "always_on", False)
+        ) | frozenset(n for n in ALWAYS_ON_EXTENSIONS if n not in known)
+        return always_on, known | ALWAYS_ON_EXTENSIONS
+    except Exception:
+        return ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS
+
+
 def find_dead_exposable_configs() -> list[tuple[type, str]]:
     """Return registered ``ExposableConfigMixin`` subclasses that
     ``ExposureMatrix`` cannot enforce.
 
     The matrix in ``extensions/lifespan.py`` only consults ``enabled`` for
     configs whose module path matches ``dynastore.{extensions,modules}.<ext>``
-    AND ``<ext> in KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS``. Any other
-    use of the mixin produces an ``enabled`` field that appears in
+    AND the ext is togglable (i.e. known but not always-on). Any other use
+    of the mixin produces an ``enabled`` field that appears in
     ``GET /configs/...`` responses but flips without effect — the operator
     bug #853/#854 cleaned up.
 
@@ -57,7 +84,8 @@ def find_dead_exposable_configs() -> list[tuple[type, str]]:
     # imported by config files before the platform service is wired.
     from dynastore.modules.db_config.plugin_config import list_registered_configs
 
-    togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
+    always_on, known = _get_dynamic_sets()
+    togglable = known - always_on
     dead: list[tuple[type, str]] = []
     per_ext: dict[str, list[type]] = {}
     for cls in list_registered_configs().values():
@@ -72,19 +100,19 @@ def find_dead_exposable_configs() -> list[tuple[type, str]]:
             ))
             continue
         ext = parts[2]
-        if ext in ALWAYS_ON_EXTENSIONS:
+        if ext in always_on:
             dead.append((
                 cls,
-                f"extension {ext!r} is in ALWAYS_ON_EXTENSIONS — routes are "
-                "mounted unconditionally, `enabled` is never consulted",
+                f"extension {ext!r} is always-on — routes are mounted "
+                "unconditionally, `enabled` is never consulted",
             ))
             continue
         if ext not in togglable:
             dead.append((
                 cls,
-                f"extension {ext!r} is not in KNOWN_EXTENSION_IDS — "
-                "ExposureMatrix skips it; add it to the registry if the "
-                "toggle should be live",
+                f"extension {ext!r} is not in the known extension registry — "
+                "ExposureMatrix skips it; register the extension or declare "
+                "``always_on = True`` if it should never be gated",
             ))
             continue
         per_ext.setdefault(ext, []).append(cls)

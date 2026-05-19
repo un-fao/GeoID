@@ -352,6 +352,7 @@ class WebConfig(ExposableConfigMixin, PluginConfig):
 
 
 class Web(ExtensionProtocol, OGCServiceMixin):
+    always_on = True
     """
     Core web platform extension.
 

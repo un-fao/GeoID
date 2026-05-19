@@ -22,14 +22,21 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
-# Top-level tenacity import — load-bearing for SCOPE gating.
+# Top-level PyJWT import — load-bearing for SCOPE gating.
 # `tools/discovery.py:159 discover_and_load_plugins` skips entry-points whose
-# top-level imports raise ImportError, so importing tenacity at module load
-# (rather than lazily inside `flush_pending_registrations`) ensures IamModule
-# is *not* registered on services whose SCOPE excludes `module_iam` (which
-# declares the tenacity dep).  Without this, IamModule loaded on every
-# service and crashed at lifespan time when tenacity wasn't installed —
-# see GeoID#252 / PR #249 (the symptom-fix that promoted tenacity to `core`).
+# top-level imports raise ImportError, so importing PyJWT at module load
+# ensures IamModule is *not* registered on services whose SCOPE excludes
+# `module_iam` (which declares the PyJWT dep).
+#
+# History: the gate originally used `tenacity`, but tenacity became
+# transitively available on `scope_catalog` via
+# `drivers_grp → module_storage_iceberg → pyiceberg → tenacity`.  PyJWT is
+# declared only by `module_iam` and is not pulled in transitively by any
+# other scope — see GeoID#1003.  If PyJWT ever becomes similarly ubiquitous,
+# replace this gate with the next uniquely-module_iam package, or move to
+# the explicit ``required_distributions`` mechanism (see ExtensionProtocol).
+import jwt  # PyJWT — SCOPE gate; must remain a top-level import
+
 from tenacity import (
     AsyncRetrying,
     retry_if_exception,

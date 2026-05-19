@@ -39,10 +39,9 @@ from dynastore.extensions.documentation import (
 )
 from dynastore.extensions.tools.exposure_matrix import ExposureMatrix
 from dynastore.extensions.tools.exposure_mixin import (
-    ALWAYS_ON_EXTENSIONS,
-    KNOWN_EXTENSION_IDS,
     ExposableConfigMixin,
     find_dead_exposable_configs,
+    _get_dynamic_sets,
 )
 from dynastore.extensions.tools.exposure_openapi import install_filtered_openapi
 from dynastore.extensions.tools.exposure_route import make_exposure_dependency
@@ -118,10 +117,16 @@ async def lifespan(app: FastAPI):
         # Build the exposure matrix + custom route class.
         # ConfigsProtocol is provided by the catalog module; services whose
         # SCOPE excludes it (e.g. auth, tools) run without exposure gating.
+        #
+        # Derive always-on and known sets dynamically from the live registry
+        # (extensions declare ``always_on = True`` on their class).  Fall back
+        # to hardcoded constants for any extension not yet updated.
+        always_on_exts, known_exts = _get_dynamic_sets()
+        togglable = known_exts - always_on_exts
+
         configs_svc = get_protocol(ConfigsProtocol)
         matrix: ExposureMatrix | None = None
         if configs_svc is not None:
-            togglable = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
             plugin_cls_by_ext: dict[str, type] = {}
             for cls in list_registered_configs().values():
                 if not issubclass(cls, ExposableConfigMixin):
@@ -173,8 +178,7 @@ async def lifespan(app: FastAPI):
                 include_kwargs: dict = {}
                 if (
                     matrix is not None
-                    and extension_name in KNOWN_EXTENSION_IDS
-                    and extension_name not in ALWAYS_ON_EXTENSIONS
+                    and extension_name in togglable
                 ):
                     include_kwargs["dependencies"] = [
                         Depends(make_exposure_dependency(matrix, extension_name))

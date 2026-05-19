@@ -190,6 +190,7 @@ async def _assert_catalog_exists(catalog_id: str) -> None:
 
 
 class AdminService(ExtensionProtocol):
+    always_on = True
     priority: int = 200
     """Admin REST API — user, role, policy, and catalog assignment management.
 

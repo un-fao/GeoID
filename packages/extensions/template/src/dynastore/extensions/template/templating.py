@@ -547,6 +547,7 @@ def _check_headers(which_headers, requests_object, headers, param_name):
             raise HTTPException(
                 status_code=500, detail=f"Parameter '{param_name}' should be a valid object: {str(which_headers)}\nException: {str(e)}")
 class TemplatingExtension(ExtensionProtocol):
+    always_on = True
     priority: int = 100
 
     router:APIRouter = APIRouter(prefix="/template", tags=["Template API"])
