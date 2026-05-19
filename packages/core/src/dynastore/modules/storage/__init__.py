@@ -53,6 +53,13 @@ from dynastore.modules.storage.driver_config import (
     ItemsPostgresqlDriverConfig,
     WriteConflictPolicy,
 )
+from dynastore.modules.storage.computed_fields import (
+    ComputedField,
+    ComputedKind,
+    FeatureType,
+    IdentityRule,
+)
+from dynastore.modules.storage.read_policy import ItemsReadPolicy
 from dynastore.modules.storage.schema_types import (
     FieldConstraint,
     RequiredConstraint,
@@ -123,6 +130,13 @@ __all__ = [
     # Write policy
     "ItemsWritePolicy",
     "WriteConflictPolicy",
+    # Read policy (#950 phase 3 — registered, not yet consumed by drivers)
+    "ItemsReadPolicy",
+    # Computed-field model (#957/#950 phase 1)
+    "ComputedField",
+    "ComputedKind",
+    "FeatureType",
+    "IdentityRule",
     # Entity-transform chain runtime (operates on routing operations[TRANSFORM])
     "apply_transform_chain",
     "restore_transform_chain",
