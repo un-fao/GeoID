@@ -60,8 +60,9 @@ class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigService):
     always_on: ClassVar[bool] = False
     """Set to True on extensions that must load on every scope and cannot be
     operator-disabled (e.g. auth, iam, web, admin).  The lifespan and
-    instantiation logic reads this to derive the equivalent of the old
-    hardcoded ``ALWAYS_ON_EXTENSIONS`` list dynamically from the registry."""
+    instantiation logic reads this to derive the always-on set dynamically
+    from the live registry — no hardcoded extension-name list anywhere in
+    the framework (see #1003)."""
 
     def configure_app(self, app: "FastAPI") -> None:
         """

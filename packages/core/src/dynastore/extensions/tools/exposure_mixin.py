@@ -1,4 +1,4 @@
-"""Shared mixin and registry constants for the service-exposure control panel."""
+"""Shared mixin and registry helpers for the service-exposure control panel."""
 
 from pydantic import BaseModel, Field
 
@@ -18,46 +18,26 @@ class ExposableConfigMixin(BaseModel):
     )
 
 
-# Legacy fallback constants.  Kept for backward compatibility with tests and
-# as a safety net for extensions that have not yet adopted the declarative
-# ``always_on = True`` class attribute (see ``ExtensionProtocol``).
-# Prefer ``_get_dynamic_sets()`` for new code — it derives the same sets
-# from the live registry and avoids the inverted-dependency drift documented
-# in #1003.
-ALWAYS_ON_EXTENSIONS: frozenset[str] = frozenset({
-    "iam", "auth", "configs", "web", "admin",
-    "template", "httpx",
-})
-
-KNOWN_EXTENSION_IDS: frozenset[str] = frozenset({
-    *ALWAYS_ON_EXTENSIONS,
-    "stac", "features", "wfs", "coverages", "edr", "records", "processes", "dggs",
-    "tiles", "maps", "styles", "dimensions", "dwh", "joins", "search", "stats",
-    "gcp", "logs", "notebooks", "crs", "gdal", "assets", "moving_features",
-    "connected_systems", "volumes",
-})
-
-
 def _get_dynamic_sets() -> tuple[frozenset[str], frozenset[str]]:
-    """Return (always_on, known) derived from the live extension registry.
+    """Return ``(always_on, known)`` derived purely from the live extension registry.
 
-    Falls back to the hardcoded constants when the registry is not yet
-    populated (e.g. during config-file import before bootstrap has run).
-    The dynamic sets are preferred because they stay consistent with whatever
-    extensions are actually installed — no manual list maintenance required.
+    Identity is package metadata: ``known`` is exactly the set of names that
+    ``discover_extensions()`` populated from ``[project.entry-points]`` of the
+    installed wheels for the current SCOPE.  ``always_on`` is the subset whose
+    class declares ``always_on = True`` (see ``ExtensionProtocol``).
+
+    Both sets are intentionally allowed to be empty: a SCOPE that installs zero
+    always-on extensions, or no extensions at all, is a valid framework
+    configuration — DynaStore is pyproject-driven (#1003).
     """
-    try:
-        from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
-        if not _DYNASTORE_EXTENSIONS:
-            return ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS
-        known = frozenset(_DYNASTORE_EXTENSIONS.keys())
-        always_on = frozenset(
-            name for name, cfg in _DYNASTORE_EXTENSIONS.items()
-            if getattr(cfg.cls, "always_on", False)
-        ) | frozenset(n for n in ALWAYS_ON_EXTENSIONS if n not in known)
-        return always_on, known | ALWAYS_ON_EXTENSIONS
-    except Exception:
-        return ALWAYS_ON_EXTENSIONS, KNOWN_EXTENSION_IDS
+    from dynastore.extensions.registry import _DYNASTORE_EXTENSIONS
+
+    known = frozenset(_DYNASTORE_EXTENSIONS.keys())
+    always_on = frozenset(
+        name for name, cfg in _DYNASTORE_EXTENSIONS.items()
+        if getattr(cfg.cls, "always_on", False)
+    )
+    return always_on, known
 
 
 def find_dead_exposable_configs() -> list[tuple[type, str]]:
@@ -85,7 +65,6 @@ def find_dead_exposable_configs() -> list[tuple[type, str]]:
     from dynastore.modules.db_config.plugin_config import list_registered_configs
 
     always_on, known = _get_dynamic_sets()
-    togglable = known - always_on
     dead: list[tuple[type, str]] = []
     per_ext: dict[str, list[type]] = {}
     for cls in list_registered_configs().values():
@@ -107,12 +86,13 @@ def find_dead_exposable_configs() -> list[tuple[type, str]]:
                 "unconditionally, `enabled` is never consulted",
             ))
             continue
-        if ext not in togglable:
+        if ext not in known:
             dead.append((
                 cls,
-                f"extension {ext!r} is not in the known extension registry — "
-                "ExposureMatrix skips it; register the extension or declare "
-                "``always_on = True`` if it should never be gated",
+                f"extension {ext!r} is not in the discovered extension registry — "
+                "ExposureMatrix skips it; install its wheel (entry-point under "
+                "``dynastore.extensions``) or declare ``always_on = True`` if it "
+                "should never be gated",
             ))
             continue
         per_ext.setdefault(ext, []).append(cls)

@@ -1,10 +1,9 @@
-"""Tests for the service-exposure control panel mixin and registry."""
+"""Tests for the service-exposure control panel mixin and registry helpers."""
 
 from pydantic import BaseModel
 from dynastore.extensions.tools.exposure_mixin import (
     ExposableConfigMixin,
-    KNOWN_EXTENSION_IDS,
-    ALWAYS_ON_EXTENSIONS,
+    _get_dynamic_sets,
 )
 
 
@@ -21,13 +20,26 @@ def test_mixin_respects_explicit_false():
 
 
 def test_always_on_is_subset_of_known():
-    assert ALWAYS_ON_EXTENSIONS.issubset(KNOWN_EXTENSION_IDS)
+    """Live registry invariant: every always-on extension is also known."""
+    always_on, known = _get_dynamic_sets()
+    assert always_on.issubset(known)
 
 
-def test_always_on_includes_core_controlplane():
-    # The five names below have registered extension entry-points AND declare
-    # ``always_on = True`` on their class.  "documentation" and "tools" used
-    # to be in this set but had no registered entry-point — they were dropped
-    # in #1003 as part of the inverted-dependency cleanup.
+def test_always_on_includes_core_controlplane_when_installed():
+    """The five names below have registered extension entry-points AND declare
+    ``always_on = True`` on their class.  "documentation" and "tools" used
+    to be in the legacy ``ALWAYS_ON_EXTENSIONS`` set but had no registered
+    entry-point — they were dropped in #1003 as part of the
+    inverted-dependency cleanup.
+
+    Conditional: only asserts on extensions actually installed in the active
+    SCOPE.  Reflects #1003's framework-is-pyproject-driven invariant — a
+    minimal SCOPE may legitimately exclude any of these.
+    """
+    always_on, known = _get_dynamic_sets()
     for e in {"iam", "auth", "configs", "web", "admin"}:
-        assert e in ALWAYS_ON_EXTENSIONS
+        if e in known:
+            assert e in always_on, (
+                f"{e!r} is discovered but does not declare ``always_on = True`` "
+                "on its class — every core control-plane extension must opt in."
+            )
