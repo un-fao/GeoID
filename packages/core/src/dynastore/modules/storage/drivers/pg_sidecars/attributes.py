@@ -370,7 +370,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
             # attributes_hash STORED GENERATED column — SHA256 of the
             # canonicalised JSONB (PG keeps jsonb internally normalised so
             # ``jsonb::text`` is deterministic for a given value).  Powers
-            # ``IdentityMatcher.ATTRIBUTES_HASH`` for "same attribute
+            # ``ComputedKind.ATTRIBUTES_HASH`` for "same attribute
             # combination, regardless of geometry" deduplication. Requires
             # pgcrypto, which ``ensure_init_db`` enables at boot.
             columns.append(
@@ -1188,7 +1188,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 "transaction_period", "catalog_id", "collection_id"}
         if self.config.enable_asset_id:
             cols.add("asset_id")
-        # attributes_hash is write-policy plumbing for IdentityMatcher.ATTRIBUTES_HASH;
+        # attributes_hash is write-policy plumbing for ComputedKind.ATTRIBUTES_HASH;
         # never leak it into Feature.properties.  Only present in Mode B (JSONB).
         if self.resolved_storage_mode == AttributeStorageMode.JSONB:
             cols.add("attributes_hash")
@@ -1584,8 +1584,8 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
     ) -> Optional[Dict[str, Any]]:
         """Resolve by EXTERNAL_ID (default) or GEOMETRY_HASH matcher.
 
-        ``matcher`` is a :class:`IdentityMatcher` string.  Unknown matchers
-        and those owned by another sidecar return None.
+        ``matcher`` is a :class:`ComputedKind` string value.  Unknown
+        matchers and those owned by another sidecar return None.
         """
         if matcher is None:
             matcher = "external_id"
@@ -1706,7 +1706,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         'hex')``. Two items with byte-equal canonicalised JSONB attributes
         produce the same hash regardless of geometry.  Use case: "same
         attribute combination, different geometry" detection — pair with
-        ``IdentityMatcher.GEOMETRY_HASH`` to distinguish "duplicate" from
+        ``ComputedKind.GEOMETRY_HASH`` to distinguish "duplicate" from
         "moved" from "renamed".
 
         Returns ``None`` in Mode A (columnar storage) since the column

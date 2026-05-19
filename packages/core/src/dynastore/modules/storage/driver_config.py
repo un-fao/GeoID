@@ -158,7 +158,8 @@ class WriteConflictPolicy(StrEnum):
 
     Drivers read this policy from ``ItemsWritePolicy`` via the config
     waterfall and apply it during ``write_entities()`` after identity is
-    resolved by one of the configured :class:`IdentityMatcher` strategies.
+    resolved by the configured :class:`IdentityRule` chain (each rule's
+    ``match_on`` lists :class:`ComputedField` strategies).
 
     Actions:
       - ``UPDATE``          — overwrite the existing entity's mutable fields in place
@@ -175,39 +176,6 @@ class WriteConflictPolicy(StrEnum):
     REFUSE = "refuse"
     REFUSE_RETURN = "refuse_return"
     REFUSE_FAIL = "refuse_fail"
-
-
-class IdentityMatcher(StrEnum):
-    """Strategies for deciding whether an incoming feature matches an existing one.
-
-    Matchers are evaluated in the order declared on
-    ``ItemsWritePolicy.identity_matchers``; the first one that resolves a
-    record wins.  Each sidecar implements the matchers it owns via its
-    ``resolve_existing_item(..., matcher=...)`` method.
-
-    - ``EXTERNAL_ID``     — match on ``write_policy.external_id_field`` (attributes sidecar)
-    - ``GEOHASH``         — match on geohash of the incoming geometry at
-                            ``geohash_precision`` (geometries sidecar, uses ST_GeoHash)
-    - ``GEOMETRY_HASH``   — match on SHA256 of the geometry (WKB).  Stored as
-                            a hub column today; a follow-up (#220) relocates
-                            it to the geometries sidecar as a STORED GENERATED
-                            column via ``encode(digest(ST_AsBinary(geom),
-                            'sha256'), 'hex')``.
-    - ``ATTRIBUTES_HASH`` — match on SHA256 of the canonicalised attributes JSONB.
-                            Stored as a STORED GENERATED column on the attributes
-                            sidecar via ``encode(digest(attributes::text, 'sha256'), 'hex')``.
-                            Recognises items whose attribute combination is identical
-                            (regardless of geometry).
-
-    Naming convention: ``<source>_hash`` for SHA256-of-source columns.
-    Algorithm-specific spatial indexes (``geohash``, future ``h3``/``s2``)
-    use the algorithm name directly.
-    """
-
-    EXTERNAL_ID = "external_id"
-    GEOHASH = "geohash"
-    GEOMETRY_HASH = "geometry_hash"
-    ATTRIBUTES_HASH = "attributes_hash"
 
 
 class AssetConflictPolicy(StrEnum):
