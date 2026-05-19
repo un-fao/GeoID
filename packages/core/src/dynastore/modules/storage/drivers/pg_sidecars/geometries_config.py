@@ -27,10 +27,9 @@ This module is extracted to avoid circular dependencies between:
 
 from typing import List, Optional, Dict, Literal
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import Field
 from dynastore.modules.storage.computed_fields import (
     ComputedField,
-    StatisticStorageMode,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 
@@ -65,85 +64,6 @@ class GeometryPartitionStrategyPreset(str, Enum):
     """
     H3_CELL = "h3_cell"        # Partition by H3 cell ID (BIGINT)
     S2_CELL = "s2_cell"        # Partition by S2 cell ID (BIGINT)
-
-
-# ============================================================================
-# STATISTICS CONFIGURATION
-# ============================================================================
-#
-# Geometry-statistic computation is governed by ``ItemsWritePolicy.compute``
-# entries with ``storage_mode != None``. The PG driver overlays the filtered
-# list onto :attr:`GeometriesSidecarConfig.compute_fields_overlay` at
-# ``ensure_storage`` time so DDL emission, projection, and FieldDefinition
-# exposure all consult the same snapshot — no second source of truth.
-#
-# JSON-FG ``place`` statistics (3D-only, lives in a separate ``_place``
-# sidecar table) retain their own structurally-distinct config below
-# because they own a table layout, not a per-row scalar set.
-
-class StatisticIndexConfig(BaseModel):
-    """Per-statistic enable/index toggle used by :class:`PlaceStatisticsConfig`."""
-    enabled: bool = Field(default=False, description="Compute this statistic")
-    index: bool = Field(default=False, description="Create B-Tree index on this statistic")
-
-
-class PlaceStatisticsConfig(BaseModel):
-    """
-    Configuration for JSON-FG 'place' geometry statistics.
-    
-    These statistics are only meaningful when a 3D precision 'place' member
-    is provided (e.g., Solid, Prism, 3D Curve) in a local/engineering CRS.
-    """
-    enabled: bool = Field(default=False, description="Enable JSON-FG place statistics computation")
-    storage_mode: StatisticStorageMode = Field(
-        default=StatisticStorageMode.JSONB,
-        description="Storage mode: JSONB or individual columns"
-    )
-    place_column: str = Field(default="place", description="Column name for the JSON-FG place geometry")
-    coordRefSys_column: Optional[str] = Field(
-        default="coordRefSys",
-        description="Column name for the coordinate reference system identifier"
-    )
-    # Volumetric
-    volume: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Volume in cubic units (3D solids and prisms only)"
-    )
-    surface_area: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Total surface area of all exterior faces of a 3D solid"
-    )
-    surface_to_volume_ratio: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Ratio of surface area to volume (building efficiency metric)"
-    )
-    net_floor_area: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Estimated usable floor area for prism features"
-    )
-    # 3D Morphological
-    centroid_3d: bool = Field(
-        default=False,
-        description="Compute 3D centroid (center of gravity) of volume"
-    )
-    z_range: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Vertical elevation delta (max_z - min_z)"
-    )
-    vertical_gradient: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Steepness of a 3D Curve (e.g., slope of a pipe or road)"
-    )
-    # Temporal
-    temporal_duration: StatisticIndexConfig = Field(
-        default_factory=lambda: StatisticIndexConfig(),
-        description="Computed from the JSON-FG 'time' member interval duration"
-    )
-    # Legacy GIN
-    create_gin_index: bool = Field(
-        default=False,
-        description="Create GIN index on place_stats JSONB"
-    )
 
 
 # ============================================================================
@@ -224,6 +144,11 @@ class GeometriesSidecarConfig(SidecarConfig):
     # second source for "which stats does this sidecar materialise". An
     # empty list means the sidecar carries geometry + spatial-index columns
     # only; no stats are materialised at all.
+    #
+    # 3D place-statistics (SURFACE_AREA, Z_RANGE, CENTROID_3D, etc.) are
+    # declared here using the standard ComputedField / ComputedKind API;
+    # the PG driver detects any kind in ``_PLACE_TABLE_KINDS`` and emits a
+    # separate ``{table}_place`` sidecar table automatically.
     compute_fields_overlay: List[ComputedField] = Field(
         default_factory=list,
         description=(
@@ -231,15 +156,6 @@ class GeometriesSidecarConfig(SidecarConfig):
             "``ItemsWritePolicy.compute`` for this collection. Overwritten "
             "by the PG driver at DDL time."
         ),
-    )
-    
-    # JSON-FG Place Statistics (3D geometry metrics)
-    place_statistics: Optional[PlaceStatisticsConfig] = Field(default=None,
-        description=(
-            "Configuration for JSON-FG 'place' geometry statistics. "
-            "Enables 3D metrics like volume, surface area, z-range for Solid/Prism types. "
-            "Requires a 'place' column in the geometry sidecar table."
-        )
     )
     
     # ``feature_type_schema`` was retired in #976: the wire shape of Feature
