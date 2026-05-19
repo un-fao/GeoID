@@ -115,6 +115,7 @@ if IDP_CLIENT_ID and not IDP_AUDIENCE:
 
 
 class Authentication(ExtensionProtocol):
+    always_on = True
     priority: int = 110  # Must run after IamModule (100) which owns users schema init
     """
     Authentication Extension - OAuth2 / OIDC Identity Validation

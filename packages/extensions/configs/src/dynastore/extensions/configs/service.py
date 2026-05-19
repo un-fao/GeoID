@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigsService(ExtensionProtocol):
+    always_on = True
     priority: int = 100
     """
     Unified Configuration Extension.

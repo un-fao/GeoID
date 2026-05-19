@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Protocol, Optional, Any, TYPE_CHECKING, runtime_checkable, AsyncGenerator, List, Tuple
+from typing import ClassVar, Protocol, Optional, Any, TYPE_CHECKING, runtime_checkable, AsyncGenerator, List, Tuple
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, APIRouter
@@ -56,6 +56,12 @@ class ExtensionProtocol(ProtocolPlugin["FastAPI"], HasConfigService):
             app.add_middleware(GZipMiddleware, minimum_size=1000)
     ```
     """
+
+    always_on: ClassVar[bool] = False
+    """Set to True on extensions that must load on every scope and cannot be
+    operator-disabled (e.g. auth, iam, web, admin).  The lifespan and
+    instantiation logic reads this to derive the equivalent of the old
+    hardcoded ``ALWAYS_ON_EXTENSIONS`` list dynamically from the registry."""
 
     def configure_app(self, app: "FastAPI") -> None:
         """

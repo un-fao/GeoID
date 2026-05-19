@@ -22,14 +22,36 @@ import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
-# Top-level tenacity import — load-bearing for SCOPE gating.
-# `tools/discovery.py:159 discover_and_load_plugins` skips entry-points whose
-# top-level imports raise ImportError, so importing tenacity at module load
-# (rather than lazily inside `flush_pending_registrations`) ensures IamModule
-# is *not* registered on services whose SCOPE excludes `module_iam` (which
-# declares the tenacity dep).  Without this, IamModule loaded on every
-# service and crashed at lifespan time when tenacity wasn't installed —
-# see GeoID#252 / PR #249 (the symptom-fix that promoted tenacity to `core`).
+# Distribution-presence SCOPE gate (#1003).
+#
+# `tools/discovery.py:165 discover_and_load_plugins` skips entry-points whose
+# top-level imports raise ImportError, so raising ImportError here when the
+# `dynastore-ext-iam` distribution is absent ensures IamModule is *not*
+# registered on services whose SCOPE excludes the `iam` extras.
+#
+# History: this gate previously used a package-import side-effect (first
+# `from tenacity import ...`, then `import jwt`).  Both packages were silently
+# pulled in transitively by other extras (tenacity via pyiceberg in
+# drivers_grp; PyJWT via gcloud-aio-auth in module_gcp).  A package-import
+# gate is fragile by construction — any new transitive dep can break it.
+#
+# Checking the *distribution name* `dynastore-ext-iam` instead is robust:
+# distribution identities are unique and a transitive dep cannot
+# accidentally install a distribution with that name.  The `iam` aggregate
+# extras (`iam = ["dynastore[module_iam,extension_iam]"]`) always pull both
+# `module_iam` and `extension_iam` together — checking for the extension
+# distribution is therefore a valid signal for whether the module should
+# be active too.
+import importlib.metadata as _importlib_metadata
+
+try:
+    _importlib_metadata.distribution("dynastore-ext-iam")
+except _importlib_metadata.PackageNotFoundError as _exc:
+    raise ImportError(
+        "Skipping IamModule: dynastore-ext-iam distribution not installed "
+        "(SCOPE excludes the iam extras)"
+    ) from _exc
+
 from tenacity import (
     AsyncRetrying,
     retry_if_exception,

@@ -1,11 +1,16 @@
 """Pin the auto-union semantics of ``instantiate_extensions``.
 
 When tests narrow extension instantiation via ``include_only``, the registry
-must still load every name in ``ALWAYS_ON_EXTENSIONS`` — those are the core
+must still load every name flagged as always-on — those are the core
 control-plane components (``iam``, ``auth``, ``configs``, ``web``, ``admin``,
-``tools``, ``template``, ``httpx``, ``documentation``) and the runtime
-exposure-control matrix already enforces them as unconditional in production.
-Asking every test marker to repeat the same nine names is busywork.
+``template``, ``httpx``) and the runtime exposure-control matrix already
+enforces them as unconditional in production.  Asking every test marker to
+repeat the same names is busywork.
+
+Always-on status is now derived from a class-level ``always_on = True``
+declaration on each extension (see ``ExtensionProtocol``); these tests use
+the legacy ``ALWAYS_ON_EXTENSIONS`` constant as a stable fallback for the
+stub-registry scenarios they construct.
 
 These tests assert the union behaviour at the registry layer; the
 upstream conftest mechanism for ``@pytest.mark.enable_extensions`` is

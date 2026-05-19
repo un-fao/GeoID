@@ -95,26 +95,32 @@ def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
     Instantiates all discovered extensions.
 
     ``include_only`` narrows instantiation for test isolation. The set is
-    automatically unioned with ``ALWAYS_ON_EXTENSIONS`` so callers do not
-    have to spell out the always-on extensions (``iam``, ``auth``,
-    ``configs``, ``web``, ``admin``, ``tools``, ``template``, ``httpx``,
-    ``documentation``) every time. Production callers pass ``None`` and
-    load everything that was discovered.
+    automatically unioned with always-on extensions so callers do not have
+    to spell them out every time. Always-on status is derived from the
+    ``always_on = True`` class attribute (see ``ExtensionProtocol``), with
+    the hardcoded fallback list as a safety net for unupdated extensions.
+    Production callers pass ``None`` and load everything discovered.
     """
-    from dynastore.extensions.tools.exposure_mixin import ALWAYS_ON_EXTENSIONS
+    always_on = frozenset(
+        name for name, cfg in _DYNASTORE_EXTENSIONS.items()
+        if getattr(cfg.cls, "always_on", False)
+    )
+    if not always_on:
+        from dynastore.extensions.tools.exposure_mixin import ALWAYS_ON_EXTENSIONS
+        always_on = ALWAYS_ON_EXTENSIONS
 
     extensions_to_load = _DYNASTORE_EXTENSIONS.keys()
 
     # If filtering is requested (e.g. for tests), apply it
     if include_only is not None:
-        # ALWAYS_ON extensions are an unconditional invariant: enforced at
+        # Always-on extensions are an unconditional invariant: enforced at
         # runtime via the exposure-control matrix in production. Tests that
         # narrow ``include_only`` for instantiation isolation must still see
         # them, so union them in here rather than asking every test marker
-        # to repeat the same nine names.
+        # to repeat the names.
         target_names = {
             name.lower().replace("_", "-")
-            for name in (set(include_only) | ALWAYS_ON_EXTENSIONS)
+            for name in (set(include_only) | always_on)
         }
         extensions_to_load = [
             name for name in extensions_to_load

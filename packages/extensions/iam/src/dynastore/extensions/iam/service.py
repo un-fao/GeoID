@@ -245,6 +245,7 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
 
 
 class IamExtension(ExtensionProtocol):
+    always_on = True
     priority: int = 100
     # Base router for high-level categorization
     router: APIRouter = APIRouter(
