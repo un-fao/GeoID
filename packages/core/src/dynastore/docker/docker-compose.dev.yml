@@ -85,6 +85,9 @@ services:
       ES_HOST: elasticsearch
       ES_PORT: "9200"
       DYNASTORE_CONFIG_ROOT: /dynastore/config
+    ports:
+      - "5682:5682" # Debug port
+    command: python -m debugpy --listen 0.0.0.0:5682 -m uvicorn dynastore.main:app --host 0.0.0.0 --port 80 --reload --reload-dir src
 
   worker:
     extends:
