@@ -420,6 +420,44 @@ async def test_apply_deny_policy_falls_back_to_wildcard_when_registry_empty():
     assert re.escape("cat-y") in pat
 
 
+@pytest.mark.asyncio
+async def test_apply_deny_policy_pattern_matches_singular_catalog_and_item_urls():
+    """#960 scope 3 — the DENY regex must cover BOTH the singular catalog
+    envelope (``/stac/catalogs/{cat}``) and item paths
+    (``/stac/catalogs/{cat}/collections/X/items/Y``) under one policy."""
+    captured: list = []
+
+    fake_perm = MagicMock()
+    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    fake_perm.register_role.return_value = None
+    fake_perm.create_policy = AsyncMock()
+
+    with patch(
+        "dynastore.tools.discovery.get_protocol", return_value=fake_perm,
+    ), patch(
+        "dynastore.extensions.tools.conformance.get_ogc_service_prefixes",
+        return_value=["stac", "features"],
+    ):
+        await ItemsElasticsearchPrivateDriver._apply_deny_policy("cat-42")
+
+    assert len(captured) == 1
+    pat = captured[0].resources[0]
+    rx = re.compile(pat)
+    # Singular catalog envelope URL (catalog-private leak path)
+    assert rx.fullmatch("/stac/catalogs/cat-42") is not None, pat
+    assert rx.fullmatch("/features/catalogs/cat-42") is not None, pat
+    # Item URL (existing coverage)
+    assert rx.fullmatch(
+        "/stac/catalogs/cat-42/collections/x/items/y"
+    ) is not None, pat
+    # Collection envelope URL
+    assert rx.fullmatch(
+        "/stac/catalogs/cat-42/collections/x"
+    ) is not None, pat
+    # Other catalogs must NOT be matched
+    assert rx.fullmatch("/stac/catalogs/other-cat") is None, pat
+
+
 def test_get_ogc_service_prefixes_filters_to_path_prefixes():
     """The helper must accept only ``"/x"``-shaped prefixes (drops empty
     string defaults from the mixin and any non-path values)."""
