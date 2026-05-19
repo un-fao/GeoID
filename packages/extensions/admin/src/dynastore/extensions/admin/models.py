@@ -26,8 +26,7 @@ class PrincipalUpdate(BaseModel):
     roles: Optional[List[str]] = None
 
 
-# --- Role / Policy / CatalogRoleAssignment wire DTOs live in
-#     dynastore.models.protocols.policies. ---
+# --- Role / Policy wire DTOs live in dynastore.models.protocols.policies. ---
 
 
 class UsageRow(BaseModel):

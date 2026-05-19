@@ -54,18 +54,19 @@ Endpoint inventory:
 | `/admin/reset-defaults`                                               | POST |
 | `/admin/rotate-jwt-secret`                                            | POST |
 
-DTOs split across two homes:
+DTOs (post #981 + #985):
 
-- `dynastore.models.protocols.policies` (canonical IAM wire schemas):
+- `dynastore.models.protocols.policies` (canonical wire schemas — single
+  import for any consumer, no admin-extension dependency):
   `RoleCreate`, `RoleUpdate`, `RoleResponse`,
-  `AssignRoleRequest`, `PrincipalResponse`.
-- `extensions/admin/.../models.py` (admin extension):
+  `AssignRoleRequest`, `PrincipalResponse`,
+  `PolicyCreate`, `PolicyUpdate`, `PolicyResponse`.
+- `extensions/admin/.../models.py` (admin-extension operational views
+  only — no auth contract):
   `PrincipalCreate`, `PrincipalUpdate` (request bodies for the
   `/admin/principals` POST + PUT — response shape is `PrincipalResponse`
   from `models.protocols.policies`),
-  `PolicyCreate`, `PolicyUpdate`, `PolicyResponse`,
   `UsageRow`, `UsagePage`, `UsageResetResponse`,
-  `CatalogRoleAssignment`,
   `ProvisioningTaskView`, `CatalogProvisioningView`.
 
 ### `/iam/me/*` (self-service)
@@ -200,40 +201,43 @@ into `/admin/*` or `/iam/me/*` themselves.
 | `IamExtension.gov_router` ships and should be removed                  | **Resolved** — symbol no longer exists. |
 | `list catalog users` duplicated in `admin_service.py:382` and `authorization_api.py:596` | **Resolved** — only `admin_service.py:566` remains. |
 | Inconsistent identifiers `principal_id: UUID` vs `email: EmailStr`     | **Resolved** — `/admin/*` uses `principal_id: UUID`; `/iam/me/*` reads identity from request state (no email in path/body except as a returned display field). |
-| `RoleCreate/Update/Response` etc. duplicated across `admin/models.py`, `iam/service.py`, `authorization_api.py` | **Partially resolved** — the duplicates in `service.py` / `authorization_api.py` are gone; the originals in `admin/models.py` still live there and are not yet exposed via `models/protocols/policies.py`. |
+| `RoleCreate/Update/Response` etc. duplicated across `admin/models.py`, `iam/service.py`, `authorization_api.py` | **Resolved** — single canonical home in `models.protocols.policies` (PR #961 / #981 / #985). |
 | Keep `auth_router` (`/iam/auth/jwks.json`)                             | Still present. |
 | Keep `stats_router` (`/iam/credentials/stats/*`)                       | Still present, but **zero in-repo consumers** — recommend deletion. |
 
-## Recommended next steps (each its own PR)
+## Recommended next steps
 
-Ordered by blast radius — small, mergeable, reviewable.
+DTO consolidation is **complete**:
 
-1. **DTO promotion to `models/protocols/policies.py`** — partial.
-   `RoleCreate/Update/Response`, `AssignRoleRequest`, and
-   `PrincipalResponse` already live in `models.protocols.policies`.
-   `UserCreate/UserUpdate` were renamed `PrincipalCreate/PrincipalUpdate`
-   and `UserResponse` (dead) was dropped in **PR #981**.
-   Remaining: relocate `PolicyCreate/PolicyUpdate/PolicyResponse` +
-   `CatalogRoleAssignment` — tracked as **#980**.
+- **PR #961** — items policy consolidation; `RoleCreate/Update/Response`,
+  `AssignRoleRequest`, `PrincipalResponse` promoted to
+  `models.protocols.policies`.
+- **PR #981** — `UserCreate/UserUpdate → PrincipalCreate/PrincipalUpdate`;
+  dead `UserResponse` dropped.
+- **PR #985** — `PolicyCreate/PolicyUpdate/PolicyResponse` relocated to
+  `models.protocols.policies`. `CatalogRoleAssignment` was relocated as
+  part of the same PR per the original #980 scope, then deleted as dead
+  code (zero in-repo consumers, never wired into any route).
 
-2. **Delete `IamExtension.stats_router`** — tracked as **#979**.
-   `/iam/credentials/stats/summary` and `/iam/credentials/stats/logs`
-   have no in-repo consumers and the underlying `get_stats_summary` /
-   `get_access_logs` reach into `dynastore.modules.stats.storage` (the
-   existing TODO comment in `service.py` flags this as a layer
-   violation). Needs external-deployment consumer audit before merge.
+Remaining:
 
-3. **OpenAPI deprecation pass** — no longer needed. The issue body's
-   phase 3 (deprecate duplicates in OpenAPI) is a no-op for routes —
-   there are no duplicates to deprecate. PR #981 hard-renamed the
-   request DTOs (no compat shim, per the project's
-   no-backcompat-keep-code-current convention).
+- **Delete `IamExtension.stats_router`** — tracked as **#979**.
+  `/iam/credentials/stats/summary` and `/iam/credentials/stats/logs`
+  have no in-repo consumers and the underlying `get_stats_summary` /
+  `get_access_logs` reach into `dynastore.modules.stats.storage` (the
+  existing TODO comment in `service.py` flags this as a layer
+  violation). Needs external-deployment consumer audit before merge.
 
-4. **Notebook prose cleanup** *(docs PR)*
-   `collection_vault_geoid_only.ipynb` cell at line 294 narrates a
-   prior architecture using `/iam/governance/hierarchies`. The endpoint
-   is gone; the narrative remains useful as background but should be
-   rephrased so a new reader doesn't try the endpoint.
+- **Notebook prose cleanup** *(docs PR)*
+  `collection_vault_geoid_only.ipynb` cell at line 294 narrates a
+  prior architecture using `/iam/governance/hierarchies`. The endpoint
+  is gone; the narrative remains useful as background but should be
+  rephrased so a new reader doesn't try the endpoint.
+
+OpenAPI deprecation pass is **not needed** — there are no duplicate
+routes to deprecate, and the DTO renames in PR #981 / #985 were hard
+flips with no compat shims per the project's
+no-backcompat-keep-code-current convention.
 
 ## What stays deferred
 
