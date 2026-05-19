@@ -1097,3 +1097,87 @@ class AdminService(ExtensionProtocol):
             raise HTTPException(status_code=503, detail="JWT rotation not supported.")
         await mgr.rotate_jwt_secret()
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
+
+    # -------------------------------------------------------------------------
+    # Routing Presets (/admin/presets, /admin/catalogs/{cat}/presets/{name}/apply)
+    # #847 — named, cascade-consistent bundles operators apply in one call.
+    # -------------------------------------------------------------------------
+
+    @router.get("/presets", summary="List registered routing presets (#847)")
+    async def list_routing_presets(request: Request):  # type: ignore[reportGeneralTypeIssues]
+        from dynastore.modules.storage.presets import get_preset, list_presets
+
+        return {
+            "presets": [
+                {"name": name, "description": get_preset(name).description}
+                for name in list_presets()
+            ]
+        }
+
+    @router.post(
+        "/catalogs/{catalog_id}/presets/{preset_name}/apply",
+        summary="Apply a routing preset to a catalog (#847)",
+    )
+    async def apply_routing_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        preset_name: str,
+    ):
+        """Apply ``preset_name`` to ``catalog_id`` by walking the bundle
+        through the standard ``ConfigsProtocol.set_config`` lifecycle.
+
+        Each slot (catalog routing, collection template, items template,
+        audience configs) is applied at the catalog tier; the cascade
+        validators (#960 scope 4 / items + collection) catch mixed
+        public/private combos and the per-config validators run via
+        ``set_config``. The endpoint does not bypass any validation —
+        a preset is just a named bundle of standard ``set_config`` calls.
+        """
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.presets import get_preset
+        from dynastore.modules.storage.routing_config import (
+            CatalogRoutingConfig,
+            CollectionRoutingConfig,
+            ItemsRoutingConfig,
+        )
+
+        await _assert_catalog_exists(catalog_id)
+        try:
+            preset = get_preset(preset_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            raise HTTPException(status_code=503, detail="Configs service unavailable.")
+
+        bundle = preset.build(catalog_id)
+        applied: list[str] = []
+
+        if bundle.catalog_routing is not None:
+            await configs.set_config(
+                CatalogRoutingConfig, bundle.catalog_routing, catalog_id=catalog_id
+            )
+            applied.append("catalog_routing")
+        if bundle.collection_template is not None:
+            await configs.set_config(
+                CollectionRoutingConfig,
+                bundle.collection_template,
+                catalog_id=catalog_id,
+            )
+            applied.append("collection_template")
+        if bundle.items_template is not None:
+            await configs.set_config(
+                ItemsRoutingConfig, bundle.items_template, catalog_id=catalog_id
+            )
+            applied.append("items_template")
+
+        for plugin_name, cfg in bundle.audience_configs.items():
+            await configs.set_config(type(cfg), cfg, catalog_id=catalog_id)
+            applied.append(f"audience:{plugin_name}")
+
+        return {
+            "preset": preset_name,
+            "catalog_id": catalog_id,
+            "applied": applied,
+        }
