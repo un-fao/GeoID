@@ -25,10 +25,13 @@ This module is extracted to avoid circular dependencies between:
 - tools/geospatial
 """
 
-from typing import List, Optional, Dict, Literal, Any
+from typing import List, Optional, Dict, Literal, Any, TYPE_CHECKING
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.computed_fields import ComputedField
 
 # ============================================================================
 # ENUMS
@@ -90,8 +93,27 @@ class StatisticIndexConfig(BaseModel):
 
 class GeometriesStatisticsConfig(BaseModel):
     """
-    Configuration for geometry statistics computation and storage.
-    
+    Storage-shape configuration for geometry statistics.
+
+    Scope after #978: this block governs **storage shape only** — which
+    columns the geometry sidecar materialises in PostgreSQL (JSONB blob vs
+    typed columnar), which B-Tree indexes to create, and which fields the
+    query layer exposes as ``FieldDefinition``s. The per-row *computation*
+    of the values now flows through the unified
+    :func:`dynastore.tools.geospatial.compute_derived_fields` runner
+    driven by
+    :attr:`dynastore.modules.storage.driver_config.ItemsWritePolicy.compute`.
+    The legacy ``compute_geometry_statistics`` helper has been retired; the
+    sidecar bridges this storage-shape block to the unified compute layer
+    via :func:`statistics_config_to_computed_fields`.
+
+    Migration: operators wishing to evolve away from this block can set
+    explicit :class:`ComputedField` entries on
+    ``ItemsWritePolicy.compute`` instead (``ComputedKind.AREA``,
+    ``ComputedKind.PERIMETER``, ``ComputedKind.CENTROID``, …). The
+    storage-shape block continues to drive DDL and indexing decisions for
+    as long as the PG sidecar wants explicit typed columns.
+
     Supports dual storage modes:
     - JSONB: All stats in single column with functional B-Tree indexes
     - Columnar: Individual typed columns with direct B-Tree indexes
@@ -321,3 +343,84 @@ GeometriesSidecarConfig.model_rebuild()
 
 # Register for polymorphic resolution
 SidecarConfigRegistry.register("geometries", GeometriesSidecarConfig)
+
+
+# ============================================================================
+# BRIDGE: GeometriesStatisticsConfig -> List[ComputedField]
+# ============================================================================
+#
+# Translates a storage-shape statistics block into a list of unified
+# ``ComputedField`` entries, so the PG geometry sidecar can run the same
+# :func:`compute_derived_fields` pipeline as every other ComputedKind
+# consumer (#978).
+#
+# Mapping rules:
+#   - ``area.enabled``       -> ComputedKind.AREA
+#   - ``volume.enabled``     -> ComputedKind.VOLUME
+#   - ``length.enabled``     -> ComputedKind.LENGTH (preserves legacy column
+#                               name; PG sidecar stores polygon perimeter and
+#                               line length in the same ``length`` column,
+#                               matching the pre-#978 behaviour where
+#                               ``stats["length"] = float(shapely_geom.length)``)
+#   - ``centroid_type``      -> ComputedKind.CENTROID (computed value is a
+#                               raw ``[x, y]`` list; the columnar-mode WKB
+#                               encoding is handled in the sidecar at the
+#                               storage boundary, NOT here)
+#   - ``vertex_count``       -> ComputedKind.VERTEX_COUNT
+#   - ``hole_count``         -> ComputedKind.HOLE_COUNT
+#   - morphological indices  -> CIRCULARITY / CONVEXITY / ASPECT_RATIO
+#                               (SPHERICITY / FLATNESS are 3D-only stubs and
+#                               not yet implemented in the unified runner —
+#                               they are dropped silently here, same as the
+#                               pre-#978 ``compute_geometry_statistics``
+#                               which also returned no entry for them.)
+# ============================================================================
+
+
+def statistics_config_to_computed_fields(
+    stats_cfg: Optional[GeometriesStatisticsConfig],
+) -> "List[ComputedField]":
+    """Translate a legacy storage-shape statistics block into the
+    unified computed-field list consumed by
+    :func:`dynastore.tools.geospatial.compute_derived_fields`.
+
+    Returns an empty list when ``stats_cfg`` is ``None`` or disabled.
+    """
+    # Local import to avoid a startup cycle: driver_config imports
+    # computed_fields, which never imports back from here.
+    from dynastore.modules.storage.computed_fields import (
+        ComputedField,
+        ComputedKind,
+    )
+
+    if stats_cfg is None or not stats_cfg.enabled:
+        return []
+
+    fields: "List[ComputedField]" = []
+    if stats_cfg.area.enabled:
+        fields.append(ComputedField(kind=ComputedKind.AREA))
+    if stats_cfg.volume.enabled:
+        fields.append(ComputedField(kind=ComputedKind.VOLUME))
+    if stats_cfg.length.enabled:
+        # Same key for polygons and lines — see mapping note above.
+        fields.append(ComputedField(kind=ComputedKind.LENGTH))
+    if stats_cfg.centroid_type:
+        fields.append(ComputedField(kind=ComputedKind.CENTROID))
+
+    for idx, enabled in stats_cfg.morphological_indices.items():
+        if not enabled:
+            continue
+        if idx == MorphologicalIndex.CIRCULARITY:
+            fields.append(ComputedField(kind=ComputedKind.CIRCULARITY))
+        elif idx == MorphologicalIndex.CONVEXITY:
+            fields.append(ComputedField(kind=ComputedKind.CONVEXITY))
+        elif idx == MorphologicalIndex.ASPECT_RATIO:
+            fields.append(ComputedField(kind=ComputedKind.ASPECT_RATIO))
+        # SPHERICITY / FLATNESS: 3D-only, not implemented in either runner.
+
+    if stats_cfg.vertex_count.enabled:
+        fields.append(ComputedField(kind=ComputedKind.VERTEX_COUNT))
+    if stats_cfg.hole_count.enabled:
+        fields.append(ComputedField(kind=ComputedKind.HOLE_COUNT))
+
+    return fields

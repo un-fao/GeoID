@@ -58,12 +58,13 @@ from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     PlaceStatisticsConfig,
     StatisticStorageMode,
     MorphologicalIndex,
+    statistics_config_to_computed_fields,
 )
 from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler
 from dynastore.tools.geospatial_exceptions import (
     GeometryProcessingError,
 )
-from dynastore.tools.geometry_stats import compute_geometry_statistics
+from dynastore.tools.geospatial import compute_derived_fields
 
 logger = logging.getLogger(__name__)
 
@@ -1205,9 +1206,68 @@ class GeometriesSidecar(SidecarProtocol):
                 if key in indices:
                     payload[key] = indices[key]
 
-        # 3. Calculate Geometry Statistics
+        # 3. Calculate Geometry Statistics via the unified compute pipeline
+        #    (#978). Per-row values flow through
+        #    ``compute_derived_fields`` driven by the field list translated
+        #    from the sidecar's storage-shape statistics block. The
+        #    storage-shape block continues to govern WHICH columns the DDL
+        #    creates and HOW (JSONB blob vs typed columnar) — only the
+        #    per-row computation crossed onto the unified runner.
         if self.config.statistics and self.config.statistics.enabled and shapely_geom:
-            stats = compute_geometry_statistics(shapely_geom, self.config.statistics)
+            stats_fields = statistics_config_to_computed_fields(self.config.statistics)
+            # Read-time properties dict — needed by the unified runner's
+            # signature even though the geometry-statistic kinds don't
+            # consume it.
+            props_for_compute: Dict[str, Any] = {}
+            if isinstance(feature, Feature):
+                props_for_compute = feature.properties or {}
+            elif isinstance(feature, dict):
+                raw_props = feature.get("properties") or {}
+                if isinstance(raw_props, dict):
+                    props_for_compute = raw_props
+
+            stats = compute_derived_fields(
+                shapely_geom, props_for_compute, stats_fields
+            )
+
+            # Columnar centroid: the unified runner emits ``[x, y]`` —
+            # convert to WKB hex here to preserve the GEOMETRY column
+            # shape on the PG side (pre-#978 behaviour). Force 3D output
+            # if the source geometry is 3D and the column type is POINTZ.
+            if (
+                self.config.statistics.storage_mode == StatisticStorageMode.COLUMNAR
+                and "centroid" in stats
+            ):
+                from shapely import wkb as _wkb
+                c = shapely_geom.centroid
+                # Mirror the legacy compute_geometry_statistics behaviour:
+                # when the source has Z the centroid would otherwise drop
+                # it, so force 3D to match the POINTZ column type.
+                if shapely_geom.has_z and not c.has_z:
+                    if shapely_geom.geom_type == "Point":
+                        c = shapely_geom
+                    else:
+                        import shapely as _shp
+                        c = _shp.force_3d(c)
+                if c.has_z:
+                    stats["centroid"] = _wkb.dumps(c, hex=True, output_dimension=3)
+                else:
+                    stats["centroid"] = _wkb.dumps(c, hex=True)
+            elif (
+                self.config.statistics.storage_mode == StatisticStorageMode.JSONB
+                and "centroid" in stats
+            ):
+                # JSONB mode previously appended Z to the list when present;
+                # the unified runner only emits [x, y]. Recover Z to keep
+                # the on-disk JSON shape byte-for-byte stable.
+                c = shapely_geom.centroid
+                centroid: List[float] = [float(c.x), float(c.y)]
+                if shapely_geom.has_z:
+                    if not c.has_z and shapely_geom.geom_type == "Point":
+                        c = shapely_geom
+                    if c.has_z:
+                        centroid.append(float(c.z))
+                stats["centroid"] = centroid
 
             if self.config.statistics.storage_mode == StatisticStorageMode.JSONB:
                 payload["geom_stats"] = stats
