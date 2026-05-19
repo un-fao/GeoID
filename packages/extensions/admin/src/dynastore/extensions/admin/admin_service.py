@@ -1101,7 +1101,7 @@ class AdminService(ExtensionProtocol):
     # -------------------------------------------------------------------------
     # Routing Presets (/admin/presets, /admin/catalogs/{cat}/presets/{name})
     # #847 — named, cascade-consistent bundles operators apply in one call.
-    # REST: POST = apply, DELETE = unapply (DELETE wiring tracked in #971).
+    # REST: POST = apply, DELETE = unapply (rollback shipped in #971).
     # -------------------------------------------------------------------------
 
     @router.get("/presets", summary="List registered routing presets (#847)")
@@ -1181,4 +1181,113 @@ class AdminService(ExtensionProtocol):
             "preset": preset_name,
             "catalog_id": catalog_id,
             "applied": applied,
+        }
+
+    @router.delete(
+        "/catalogs/{catalog_id}/presets/{preset_name}",
+        summary="Rollback a routing preset (#971)",
+    )
+    async def unapply_routing_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        preset_name: str,
+    ):
+        """Rollback ``preset_name`` from ``catalog_id`` when the persisted
+        rows still match the preset bundle byte-for-byte.
+
+        Any slot whose persisted row diverges from the preset's emitted
+        instance is reported via HTTP 409 with a ``diverged`` payload and
+        the endpoint deletes nothing — the operator must reconcile or
+        force-PUT before a rollback succeeds.
+
+        Slots are walked leaf-first (items template → collection template →
+        catalog routing → audiences) so cascade validators see a
+        consistent partial state if a delete in the middle of the bundle
+        raises. Missing rows are no-ops, not errors — the preset may have
+        been partially applied or partially overridden.
+        """
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.presets import get_preset
+        from dynastore.modules.storage.routing_config import (
+            CatalogRoutingConfig,
+            CollectionRoutingConfig,
+            ItemsRoutingConfig,
+        )
+
+        await _assert_catalog_exists(catalog_id)
+        try:
+            preset = get_preset(preset_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            raise HTTPException(status_code=503, detail="Configs service unavailable.")
+
+        bundle = preset.build(catalog_id)
+
+        # Leaf-first: items_template depends on collection_template which
+        # depends on catalog_routing; deleting items first keeps the cascade
+        # validators happy if the operation aborts partway. Audiences are
+        # independent and trail at the end.
+        slots: list[tuple[str, type, object]] = []
+        if bundle.items_template is not None:
+            slots.append(("items_template", ItemsRoutingConfig, bundle.items_template))
+        if bundle.collection_template is not None:
+            slots.append(
+                ("collection_template", CollectionRoutingConfig, bundle.collection_template)
+            )
+        if bundle.catalog_routing is not None:
+            slots.append(("catalog_routing", CatalogRoutingConfig, bundle.catalog_routing))
+        for plugin_name, cfg in bundle.audience_configs.items():
+            slots.append((f"audience:{plugin_name}", type(cfg), cfg))
+
+        diverged: list[dict] = []
+        to_delete: list[tuple[str, type]] = []
+
+        for slot_name, cfg_cls, expected in slots:
+            persisted = await configs.get_persisted_config(
+                cfg_cls, catalog_id=catalog_id
+            )
+            if persisted is None:
+                continue
+            # Normalize both sides via ``model_dump(mode="json")`` so
+            # default-filling, datetime/enum serialization, and dict-key
+            # ordering all match the on-disk JSON shape.
+            try:
+                persisted_norm = cfg_cls.model_validate(persisted).model_dump(mode="json")
+            except Exception:  # noqa: BLE001 — surface the raw payload on validation failure
+                persisted_norm = persisted
+            expected_norm = expected.model_dump(mode="json")
+            if persisted_norm == expected_norm:
+                to_delete.append((slot_name, cfg_cls))
+            else:
+                diverged.append({
+                    "slot": slot_name,
+                    "class": cfg_cls.__name__,
+                    "persisted": persisted_norm,
+                    "expected": expected_norm,
+                })
+
+        if diverged:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"Preset '{preset_name}' cannot be rolled back: "
+                        f"{len(diverged)} slot(s) diverge from the preset bundle."
+                    ),
+                    "diverged": diverged,
+                },
+            )
+
+        deleted: list[str] = []
+        for slot_name, cfg_cls in to_delete:
+            await configs.delete_config(cfg_cls, catalog_id=catalog_id)
+            deleted.append(slot_name)
+
+        return {
+            "preset": preset_name,
+            "catalog_id": catalog_id,
+            "deleted": deleted,
         }
