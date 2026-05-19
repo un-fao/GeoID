@@ -514,10 +514,11 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         # (query_optimizer, item_query, item_service, …) then sees the correct
         # shape without threading the policy itself.
         #
-        # Fields overlaid from ItemsWritePolicy (#974, #1043):
-        #   enable_validity    ← policy.enable_validity
-        #   enable_external_id ← policy has a ComputedField(kind=EXTERNAL_ID)
-        #   enable_asset_id    ← policy.track_asset_id
+        # Null-object overlays applied from ItemsWritePolicy (#974, #1043):
+        #   enable_validity    ← policy.enable_validity  (bool mirror)
+        #   external_id_field  ← "external_id" when policy has EXTERNAL_ID rule,
+        #                        None when absent
+        #   asset_id_field     ← "asset_id" when policy.track_asset_id, else None
         #
         # #978: storage-bearing compute entries drive the geometries sidecar.
         write_policy = await self._resolve_write_policy(catalog_id, collection_id)
@@ -526,8 +527,13 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         )
         from dynastore.modules.storage.driver_config import ComputedKind
 
-        policy_has_external_id = (
-            write_policy.find_compute(ComputedKind.EXTERNAL_ID) is not None
+        policy_external_id_field: Optional[str] = (
+            "external_id"
+            if write_policy.find_compute(ComputedKind.EXTERNAL_ID) is not None
+            else None
+        )
+        policy_asset_id_field: Optional[str] = (
+            "asset_id" if write_policy.track_asset_id else None
         )
         policy_storage_fields = [
             cf for cf in write_policy.compute if cf.storage_mode is not None
@@ -539,10 +545,10 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                 updates: dict = {}
                 if sc.enable_validity != write_policy.enable_validity:
                     updates["enable_validity"] = write_policy.enable_validity
-                if sc.enable_external_id != policy_has_external_id:
-                    updates["enable_external_id"] = policy_has_external_id
-                if sc.enable_asset_id != write_policy.track_asset_id:
-                    updates["enable_asset_id"] = write_policy.track_asset_id
+                if sc.external_id_field != policy_external_id_field:
+                    updates["external_id_field"] = policy_external_id_field
+                if sc.asset_id_field != policy_asset_id_field:
+                    updates["asset_id_field"] = policy_asset_id_field
                 if updates:
                     overlay_sidecars.append(sc.model_copy(update=updates))
                     any_overlay = True

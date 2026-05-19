@@ -174,18 +174,22 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
       per declared attribute with type/nullability/index controls.
       Stronger query plans, requires schema declaration up-front.
 
-    Identity columns (``external_id``, ``asset_id``) are gated by
-    ``enable_external_id`` / ``enable_asset_id`` storage-shape fields.
-    These are overlay fields — the PG driver writes the policy-derived
-    values onto them at ``ensure_storage`` time so every read path that
-    rehydrates this config sees the policy-aligned shape without needing
-    to thread ``ItemsWritePolicy`` to the query layer.
+    Identity columns use a null-object pattern: the field name present
+    means "enabled, use this storage column name"; ``None`` means disabled.
 
-    SSOT for ``enable_external_id``: ``ItemsWritePolicy.identity``
-    (presence of a ``ComputedField(kind=EXTERNAL_ID)`` rule).
-    SSOT for ``enable_asset_id``: ``ItemsWritePolicy.track_asset_id``.
-    Operators MUST set those policy fields; values set directly here are
-    overwritten on the next ``ensure_storage``.
+    * ``external_id_field`` — ``None`` disables the column entirely;
+      any string value (default ``"external_id"``) names the PG column.
+      SSOT: ``ItemsWritePolicy.identity`` (presence of a
+      ``ComputedField(kind=EXTERNAL_ID)`` rule).  The PG driver sets this
+      to ``"external_id"`` or ``None`` at ``ensure_storage`` time.
+
+    * ``asset_id_field`` — ``None`` disables the column; any string value
+      (default ``"asset_id"``) names the PG column.
+      SSOT: ``ItemsWritePolicy.track_asset_id``.  The PG driver sets this
+      to ``"asset_id"`` or ``None`` at ``ensure_storage`` time.
+
+    Operators MUST set the policy fields; values here are overwritten on
+    the next ``ensure_storage``.
     """
 
     sidecar_type: Literal["attributes"] = "attributes"
@@ -209,27 +213,27 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     # #961 phase 2). Sidecars derive their schema fragments from their own
     # storage columns and the policy overlays the user-data ``properties``.
 
-    # Identity Columns Configuration
+    # Identity Columns — null-object pattern
     #
-    # ``external_id_field`` and ``require_external_id`` are NOT declared here —
-    # they are behavior knobs and live exclusively on ``ItemsWritePolicy``
-    # (config key ``items_write_policy``). The sidecar reads them from the
-    # policy at write time via ``processing_context["_items_write_policy"]``.
+    # ``require_external_id`` (behavior) lives exclusively on
+    # ``ItemsWritePolicy`` (config key ``items_write_policy``).  The sidecar
+    # reads it at write time via ``processing_context["_items_write_policy"]``.
     #
-    # ``enable_external_id`` and ``enable_asset_id`` are storage-shape overlay
-    # fields. The PG driver overlays the SSOT values from ``ItemsWritePolicy``
-    # onto these fields at ``ensure_storage`` time and persists the result, so
-    # every read path that rehydrates this config sees the policy-aligned value
-    # without threading the policy.
-    # SSOT: ``ItemsWritePolicy.identity`` (EXTERNAL_ID rule) → enable_external_id
-    # SSOT: ``ItemsWritePolicy.track_asset_id``               → enable_asset_id
-    # Operators MUST set those policy fields; values here are overwritten on
-    # the next ``ensure_storage``.
-    enable_external_id: bool = Field(
-        default=True,
+    # ``external_id_field`` and ``asset_id_field`` are storage-shape overlay
+    # fields using a null-object pattern: a non-None string value names the PG
+    # column (enabling it); ``None`` disables the column entirely.
+    # The PG driver overlays the SSOT values from ``ItemsWritePolicy`` at
+    # ``ensure_storage`` time so persisted config stays policy-aligned.
+    # SSOT: ``ItemsWritePolicy.identity`` (EXTERNAL_ID rule) → external_id_field
+    # SSOT: ``ItemsWritePolicy.track_asset_id``               → asset_id_field
+    # Operators MUST set those policy fields; values here are overwritten on the
+    # next ``ensure_storage``.
+    external_id_field: Optional[str] = Field(
+        default="external_id",
         description=(
-            "Storage-shape mirror of ItemsWritePolicy.identity (EXTERNAL_ID rule presence). "
-            "(SSOT). Overwritten by the driver at DDL time."
+            "Storage column name for the external identifier.  None disables the "
+            "column.  Null-object mirror of ItemsWritePolicy.identity (EXTERNAL_ID "
+            "rule presence).  Overwritten by the PG driver at DDL time."
         ),
     )
     index_external_id: bool = Field(
@@ -244,14 +248,25 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         description="Add geoid to feature properties if external_id is not unique",
     )
 
-    enable_asset_id: bool = Field(
-        default=True,
+    asset_id_field: Optional[str] = Field(
+        default="asset_id",
         description=(
-            "Storage-shape mirror of ItemsWritePolicy.track_asset_id "
-            "(SSOT). Overwritten by the driver at DDL time."
+            "Storage column name for the asset identifier.  None disables the "
+            "column.  Null-object mirror of ItemsWritePolicy.track_asset_id.  "
+            "Overwritten by the PG driver at DDL time."
         ),
     )
     index_asset_id: bool = Field(default=True, description="Create index on asset_id")
+
+    @property
+    def enable_external_id(self) -> bool:
+        """True when ``external_id_field`` is set (null-object pattern)."""
+        return self.external_id_field is not None
+
+    @property
+    def enable_asset_id(self) -> bool:
+        """True when ``asset_id_field`` is set (null-object pattern)."""
+        return self.asset_id_field is not None
 
     # Validity Configuration
     #
@@ -319,11 +334,11 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
         # 2. BY_ASSET_ID -> asset_id
         if self.partition_strategy == AttributePartitionStrategyPreset.BY_ASSET_ID:
-            if not self.enable_asset_id:
+            if self.asset_id_field is None:
                 raise ValueError(
-                    "BY_ASSET_ID partitioning requires enable_asset_id=True"
+                    "BY_ASSET_ID partitioning requires asset_id_field to be set"
                 )
-            return {"asset_id": "VARCHAR(255)"}
+            return {self.asset_id_field: "VARCHAR(255)"}
 
         # 3. BY_ATTRIBUTE_VALUE -> custom attribute
         if (
@@ -355,11 +370,12 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     def feature_id_field_name(self) -> Optional[str]:
         """Column holding the external feature id in this sidecar's table.
 
-        Independent of whether the read policy elects to surface that
-        column as ``feature.id`` — that decision lives on
+        Returns ``external_id_field`` when set, ``None`` when the column is
+        disabled.  Independent of whether the read policy elects to surface
+        the column as ``feature.id`` — that decision lives on
         ``ItemsReadPolicy.feature_type.external_id_as_feature_id``.
         """
-        return "external_id" if self.enable_external_id else None
+        return self.external_id_field
 
     model_config = {"extra": "allow"}
 
