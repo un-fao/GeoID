@@ -26,7 +26,7 @@ from dynastore.extensions.configs.problem_details import (
 )
 from dynastore.extensions.configs.service import ConfigsService
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPrivacy,
+    CatalogRoutingTemplates,
 )
 from dynastore.modules.catalog.catalog_config import CollectionInfo
 from dynastore.modules.db_config.engine_config import (
@@ -92,9 +92,9 @@ def test_reject_engine_write_raises_403_for_each_engine_kind(engine_cls):
 def test_reject_engine_write_passes_for_non_engine_class():
     """Non-engine classes (regular PluginConfig subclasses) must pass
     through the gate without raising."""
-    # CatalogPrivacy is a non-engine PluginConfig.
+    # CatalogRoutingTemplates is a non-engine PluginConfig.
     ConfigsService._reject_engine_write_at_tenant_scope(
-        CatalogPrivacy, "catalog_privacy", scope="catalog",
+        CatalogRoutingTemplates, "catalog_routing_templates", scope="catalog",
     )  # No exception.
 
 
@@ -127,7 +127,7 @@ def test_gate_patch_body_raises_for_engine_key():
     403 BEFORE patch_config fires (atomic — no partial writes)."""
     body = {
         "postgresql_engine_config": {"pool_size": 20},
-        "catalog_privacy": {"collection_defaults": {}},
+        "catalog_routing_templates": {"collection_defaults": {}},
     }
     with pytest.raises(ProblemException) as ei:
         ConfigsService._gate_engine_writes_in_patch_body(body, scope="catalog")
@@ -139,7 +139,7 @@ def test_gate_patch_body_passes_for_non_engine_only_body():
     """A merge-patch body with only non-engine plugins must pass the
     gate (no exception)."""
     body = {
-        "catalog_privacy": {"collection_defaults": {}},
+        "catalog_routing_templates": {"collection_defaults": {}},
     }
     ConfigsService._gate_engine_writes_in_patch_body(body, scope="catalog")
     # No exception.

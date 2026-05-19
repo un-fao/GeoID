@@ -135,7 +135,7 @@ class CollectionPluginConfig(PluginConfig):
 CollectionPluginConfig.model_rebuild()
 
 
-class CatalogPrivacy(PluginConfig):
+class CatalogRoutingTemplates(PluginConfig):
     """Catalog-tier defaults seeded onto newly-created collections.
 
     Holds optional ``ItemsRoutingConfig`` / ``CollectionRoutingConfig``
@@ -153,7 +153,7 @@ class CatalogPrivacy(PluginConfig):
     the cascade validator on the routing configs guarantees a sound
     combination.
     """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "privacy")
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "routing", "templates")
     _visibility: ClassVar[Optional[str]] = "catalog"
 
     # ``CatalogRoutingDefaults`` lives in ``modules/storage/routing_config``
@@ -301,12 +301,12 @@ async def apply_catalog_default_routing_seed(
     db_resource: Any = None,
 ) -> bool:
     """Seed a freshly-created collection's routing configs from the catalog's
-    :class:`CatalogPrivacy.collection_defaults` templates (#733).
+    :class:`CatalogRoutingTemplates.collection_defaults` templates (#733).
 
     Returns ``True`` iff at least one routing template was written.  No-ops
     when:
 
-    - The catalog has no ``CatalogPrivacy`` row yet, or
+    - The catalog has no ``CatalogRoutingTemplates`` row yet, or
     - Both ``collection_defaults.items_routing`` and ``collection_routing``
       are ``None`` (the default — no create-time routing override), or
     - ``configs`` is ``None`` (early-fixture / partial-deployment path).
@@ -328,11 +328,11 @@ async def apply_catalog_default_routing_seed(
 
     try:
         policy = await configs.get_config(
-            CatalogPrivacy, catalog_id=catalog_id, ctx=ctx,
+            CatalogRoutingTemplates, catalog_id=catalog_id, ctx=ctx,
         )
     except Exception:
         return False
-    if not isinstance(policy, CatalogPrivacy):
+    if not isinstance(policy, CatalogRoutingTemplates):
         return False
 
     items_template = policy.collection_defaults.items_routing
@@ -397,8 +397,8 @@ def _collection_template_has_private_driver(coll_template: Any) -> bool:
     return False
 
 
-async def _on_apply_catalog_privacy(
-    config: "CatalogPrivacy",
+async def _on_apply_catalog_routing_templates(
+    config: "CatalogRoutingTemplates",
     catalog_id: Optional[str],
     collection_id: Optional[str],
     db_resource: Any,
@@ -457,7 +457,7 @@ async def _on_apply_catalog_privacy(
                 await d.ensure_storage(catalog_id)
             except Exception as exc:
                 logger.warning(
-                    "CatalogPrivacy apply: items ensure_storage(%r) on %s failed: %s",
+                    "CatalogRoutingTemplates apply: items ensure_storage(%r) on %s failed: %s",
                     catalog_id, type(d).__name__, exc,
                 )
 
@@ -469,9 +469,9 @@ async def _on_apply_catalog_privacy(
                 await d.ensure_storage(catalog_id)
             except Exception as exc:
                 logger.warning(
-                    "CatalogPrivacy apply: collection ensure_storage(%r) on %s failed: %s",
+                    "CatalogRoutingTemplates apply: collection ensure_storage(%r) on %s failed: %s",
                     catalog_id, type(d).__name__, exc,
                 )
 
 
-CatalogPrivacy.register_apply_handler(_on_apply_catalog_privacy)
+CatalogRoutingTemplates.register_apply_handler(_on_apply_catalog_routing_templates)

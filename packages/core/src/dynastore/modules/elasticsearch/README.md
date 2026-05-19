@@ -78,7 +78,7 @@ The Docker Compose files in this repository use
 
 ### Per-Catalog Config (runtime-mutable, stored in AlloyDB)
 
-Catalog-tier routing-template defaults are governed by `CatalogPrivacy`
+Catalog-tier routing-template defaults are governed by `CatalogRoutingTemplates`
 (`modules/catalog/catalog_config.py`) via the standard configuration API.
 The embedded `CatalogRoutingDefaults` (`modules/storage/routing_config.py`)
 carries optional `items_routing` / `collection_routing` templates seeded
@@ -86,7 +86,7 @@ onto each newly-created collection in the catalog. Setting them to
 private-driver templates auto-seeds new collections as private:
 
 ```
-PUT /configs/catalogs/{catalog_id}/plugins/catalog_privacy
+PUT /configs/catalogs/{catalog_id}/plugins/catalog_routing_templates
 {
   "collection_defaults": {
     "items_routing":      { "operations": { "index": [ { "driver_ref": "items_elasticsearch_private_driver" } ] } },

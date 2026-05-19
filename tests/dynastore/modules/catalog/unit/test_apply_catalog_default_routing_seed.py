@@ -3,7 +3,7 @@
 ``apply_catalog_default_routing_seed`` is invoked from
 ``CollectionService.create_collection`` to seed a freshly-created
 collection's routing configs from the catalog's
-``CatalogPrivacy.collection_defaults.{items_routing, collection_routing}``
+``CatalogRoutingTemplates.collection_defaults.{items_routing, collection_routing}``
 templates.
 
 These tests pin the helper's contract:
@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from dynastore.modules.catalog.catalog_config import (
-    CatalogPrivacy,
+    CatalogRoutingTemplates,
     _build_private_collection_routing,
     _build_private_items_routing,
     apply_catalog_default_routing_seed,
@@ -43,8 +43,8 @@ def _configs_returning(policy_or_none) -> MagicMock:
     return proto
 
 
-def _private_default_catalog_privacy() -> CatalogPrivacy:
-    return CatalogPrivacy(
+def _private_default_catalog_routing_templates() -> CatalogRoutingTemplates:
+    return CatalogRoutingTemplates(
         collection_defaults=CatalogRoutingDefaults(
             items_routing=_build_private_items_routing(),
             collection_routing=_build_private_collection_routing(),
@@ -62,7 +62,7 @@ async def test_seed_noop_when_configs_protocol_is_none():
 
 @pytest.mark.asyncio
 async def test_seed_noop_when_catalog_has_no_policy_row():
-    """No CatalogPrivacy row → nothing to seed."""
+    """No CatalogRoutingTemplates row → nothing to seed."""
     proto = _configs_returning(None)
     applied = await apply_catalog_default_routing_seed(
         "cat-a", "col-a", configs=proto,
@@ -73,8 +73,8 @@ async def test_seed_noop_when_catalog_has_no_policy_row():
 
 @pytest.mark.asyncio
 async def test_seed_noop_when_both_templates_are_none():
-    """Default ``CatalogPrivacy()`` carries no templates — nothing to seed."""
-    proto = _configs_returning(CatalogPrivacy())
+    """Default ``CatalogRoutingTemplates()`` carries no templates — nothing to seed."""
+    proto = _configs_returning(CatalogRoutingTemplates())
     applied = await apply_catalog_default_routing_seed(
         "cat-a", "col-a", configs=proto,
     )
@@ -100,7 +100,7 @@ async def test_seed_writes_both_routings_in_cascade_satisfying_order():
     """Both templates set → both routings written.  Items first so the
     cascade validator on the second write finds the items-private
     driver already pinned."""
-    proto = _configs_returning(_private_default_catalog_privacy())
+    proto = _configs_returning(_private_default_catalog_routing_templates())
     applied = await apply_catalog_default_routing_seed(
         "cat-a", "col-a", configs=proto,
     )
@@ -153,7 +153,7 @@ async def test_seed_writes_both_routings_in_cascade_satisfying_order():
 async def test_seed_writes_only_items_when_only_items_template_set():
     """Asymmetric seed: items-routing template set, collection-routing
     template ``None`` → only items routing written."""
-    policy = CatalogPrivacy(
+    policy = CatalogRoutingTemplates(
         collection_defaults=CatalogRoutingDefaults(
             items_routing=_build_private_items_routing(),
             collection_routing=None,
@@ -172,7 +172,7 @@ async def test_seed_writes_only_items_when_only_items_template_set():
 async def test_seed_writes_only_collection_when_only_collection_template_set():
     """Asymmetric seed: only collection-routing template set → only
     collection routing written."""
-    policy = CatalogPrivacy(
+    policy = CatalogRoutingTemplates(
         collection_defaults=CatalogRoutingDefaults(
             items_routing=None,
             collection_routing=_build_private_collection_routing(),
@@ -189,7 +189,7 @@ async def test_seed_writes_only_collection_when_only_collection_template_set():
 
 @pytest.mark.asyncio
 async def test_seed_passes_catalog_and_collection_ids_through_to_set_config():
-    proto = _configs_returning(_private_default_catalog_privacy())
+    proto = _configs_returning(_private_default_catalog_routing_templates())
     await apply_catalog_default_routing_seed(
         "cat-x", "col-y", configs=proto,
     )
@@ -204,7 +204,7 @@ async def test_seed_routing_payload_has_postgresql_in_write_for_durability():
     """WRITE without PG = no SoR.  The default items template pins PG
     WRITE (FATAL) + private ES (ASYNC + OUTBOX) so a private collection
     still has a durable write target."""
-    proto = _configs_returning(_private_default_catalog_privacy())
+    proto = _configs_returning(_private_default_catalog_routing_templates())
     await apply_catalog_default_routing_seed(
         "cat-a", "col-a", configs=proto,
     )

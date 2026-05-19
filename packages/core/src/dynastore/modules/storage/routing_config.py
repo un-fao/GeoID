@@ -1721,14 +1721,14 @@ CollectionRoutingConfig.register_validate_handler(
 class CatalogRoutingDefaults(BaseModel):
     """Optional routing templates seeded onto newly-created collections.
 
-    Embedded inside :class:`CatalogPrivacy.collection_defaults` (see
+    Embedded inside :class:`CatalogRoutingTemplates.collection_defaults` (see
     ``modules/catalog/catalog_config.py``). When either template is set,
     ``apply_catalog_default_routing_seed`` writes it as the per-collection
     config at collection-create time.
 
     Defined here (in ``routing_config.py``) rather than in
     ``catalog_config.py`` to avoid the catalog→routing import cycle:
-    ``CatalogPrivacy`` imports this type from us, and our cascade
+    ``CatalogRoutingTemplates`` imports this type from us, and our cascade
     handlers don't need to know anything about catalog-tier configs.
 
     Replaces the deleted ``CollectionPrivacyDefaults`` (whose only field
