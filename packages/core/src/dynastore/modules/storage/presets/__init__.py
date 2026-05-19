@@ -25,8 +25,14 @@ Built-in presets are auto-registered on import (see imports below).
 from .protocol import PresetBundle, RoutingPreset  # noqa: F401
 from .registry import get_preset, list_presets, register_preset  # noqa: F401
 
+# Built-in presets — auto-register on import.
+from .public_catalog import PublicCatalogPreset  # noqa: E402
+
+register_preset(PublicCatalogPreset())
+
 __all__ = [
     "PresetBundle",
+    "PublicCatalogPreset",
     "RoutingPreset",
     "get_preset",
     "list_presets",
