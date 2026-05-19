@@ -47,6 +47,7 @@ from dynastore.models.protocols.typed_driver import (
 )
 from dynastore.models.mutability import Immutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.modules.storage.driver_config import DriverCapability
 from dynastore.modules.storage.routing_config import Operation
 from dynastore.modules.storage.storage_location import StorageLocation
 from pydantic import Field
@@ -67,6 +68,7 @@ class CatalogElasticsearchDriverConfig(_PluginDriverConfig):
 
     required_engine_class: ClassVar[str] = "elasticsearch_engine"
 
+    capabilities: ClassVar[FrozenSet[str]] = frozenset({DriverCapability.ASYNC})
 
     index_name: Immutable[str] = Field(
         "catalogs",

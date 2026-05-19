@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import pytest
 
+from dynastore.modules.elasticsearch.catalog_es_driver import (
+    CatalogElasticsearchDriverConfig,
+)
 from dynastore.modules.storage.driver_config import (
     AssetElasticsearchDriverConfig,
     AssetPostgresqlDriverConfig,
@@ -55,6 +58,7 @@ _EXPECTED_BY_CLASS = {
         {DriverCapability.SYNC, DriverCapability.TRANSACTIONAL}
     ),
     AssetElasticsearchDriverConfig: frozenset({DriverCapability.ASYNC}),
+    CatalogElasticsearchDriverConfig: frozenset({DriverCapability.ASYNC}),
 }
 
 
