@@ -205,14 +205,18 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    # Temporary bump to 30 min while we triage the 7 stac-integration
-    # failures + chase down which sidecar tables aren't getting created
-    # under the lazy-activation path. Test count grew 53 → 183 (Apr
-    # 26→28); per-test catalog setup ~25 s × N tests overruns the
-    # original 20-min budget post-growth. Permanent fix is shared_catalog
-    # adoption (PR #218 fixture) — once non-lifecycle tests reuse the
-    # module-scoped catalog this job drops back to ~10-12 min and
-    # timeout returns to 20.
+    # 30 min ceiling kept post-#541 triage. Last cancellation 2026-05-15;
+    # nightlies since then run ~17-22 min (pytest 14-17 min + ~5 min
+    # build/start). Pressure now is broad slowness, not a single hang:
+    # slowest-20 reports consistently show 5-7 tests with ~60 s teardown
+    # soaks (httpx-default-timeout on hung DELETE catalog round-trips,
+    # most reliably in tasks/ingestion/integration and the asset_cache
+    # suite) on top of 35-41 s per-test catalog setups (shared_catalog
+    # PR #218 not yet adopted outside its own self-pinning file).
+    # Permanent fix is broader shared_catalog adoption + shorter teardown
+    # DELETE timeout; until that lands, 20 min would cancel current
+    # 22-min nightlies. Drop to 20 once pytest wall-clock is consistently
+    # under 15 min across 5 runs.
     timeout-minutes: 30
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
