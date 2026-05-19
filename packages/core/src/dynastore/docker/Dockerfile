@@ -1,7 +1,7 @@
 # STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
 # Skipped cheaply when BUILD_JUPYTERLITE=false (Cloud Run jobs/workers that
 # never serve /web/pages/notebooks).
-FROM python:3.12-slim AS jupyterlite-builder
+FROM python:3.13-slim AS jupyterlite-builder
 
 ARG BUILD_JUPYTERLITE=false
 
@@ -49,13 +49,13 @@ ARG VENV_PATH=/opt/venv
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     git build-essential libpq-dev python3-full python3-pip \
-    python3.12-venv python3.12-dev sudo curl && \
+    python3.13-venv python3.13-dev sudo curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR ${APP_DIR}
 
 # Virtual Env Setup
-RUN python3.12 -m venv ${VENV_PATH}
+RUN python3.13 -m venv ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
 # No PYTHONPATH — `dynastore` and `dynastore.extensions` are PEP 420 namespace
 # packages, contributed to by dynastore-core (modules, tools, models, tasks)
