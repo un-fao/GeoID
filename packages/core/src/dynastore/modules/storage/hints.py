@@ -81,9 +81,12 @@ driver's ``supported_hints`` ClassVar.  That meant:
 This module is the single source of truth.  The values mirror the
 existing string literals so that ``Hint.GEOMETRY_EXACT == "geometry_exact"``
 holds at runtime — code that already passes the bare string keeps
-working unchanged.  Subsequent PRs migrate driver field types from
-``FrozenSet[str]`` to ``FrozenSet[Hint]`` and reclassify the
-read-variant capabilities into hints.
+working unchanged.  The read-variant flavours (``FULLTEXT``,
+``AGGREGATION``, ``COUNT``, ``STATISTICS``, ``SORT``, ``GROUP_BY``,
+``ATTRIBUTE_FILTER``, ``SPATIAL_FILTER``) were promoted from the
+``Capability`` enum once the structural/per-request axis split
+landed; drivers self-declare which flavours they serve via
+``supported_hints``.
 """
 
 from enum import StrEnum
@@ -119,13 +122,13 @@ class Hint(StrEnum):
     # These are flavours of ``Operation.SEARCH`` (or ``Operation.READ``).
     # The caller asks for a specific shape; the dispatcher picks an
     # entry whose ``hints`` (or driver class ``supported_hints``)
-    # contains the requested flavour.  ``FULLTEXT``, ``AGGREGATION``,
-    # ``COUNT``, ``STATISTICS``, ``SORT``, ``GROUP_BY``,
-    # ``ATTRIBUTE_FILTER`` and ``SPATIAL_FILTER`` are present today as
-    # ``Capability`` members; the migration to ``Hint`` happens in a
-    # follow-up so callers can route via
-    # ``get_driver(Operation.SEARCH, hint=Hint.AGGREGATION)`` instead
-    # of the current capability-as-routing-key contortion.
+    # contains the requested flavour.  Each member below was promoted
+    # from ``Capability`` once the read-variants stopped being treated
+    # as structural facts about the driver and became per-request
+    # preferences — callers route via
+    # ``get_driver(Operation.SEARCH, hint=Hint.AGGREGATION)`` and
+    # drivers self-declare which flavours they serve via
+    # ``supported_hints``.
     SEARCH = "search"
     FULLTEXT = "fulltext"
     ATTRIBUTE_FILTER = "attribute_filter"
@@ -155,14 +158,6 @@ class Hint(StrEnum):
     # joins).  Future cross-driver features add their own hint here
     # rather than minting a Capability.
     JOIN = "join"
-
-    # ── Backend identity (legacy / debugging) ─────────────────────────
-    # ``BIGQUERY`` was used as a self-identifying hint on the BQ
-    # driver's ``supported_hints``.  Kept here for parity with the
-    # current driver declarations so existing matches still hold;
-    # likely deprecated once Phase 3 lands and read-variant hints are
-    # the canonical mechanism.
-    BIGQUERY = "bigquery"
 
     # ── Asset-tier defaults ───────────────────────────────────────────
     # Asset-tier drivers use ``DEFAULT`` as a "no special preference"
