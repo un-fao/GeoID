@@ -120,8 +120,12 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
             }
         })
 
-    if body.catalog_id:
-        filter_.append({"term": {"catalog_id": body.catalog_id}})
+    # ``catalog_id`` scoping is enforced by index naming itself —
+    # :meth:`SearchService._resolve_items_index` routes scoped queries to
+    # ``{prefix}-{catalog_id}-items`` so every doc returned is implicitly
+    # in-catalog. The driver does not materialise a ``catalog_id`` keyword
+    # on each item doc, so a term filter on it would match zero docs and
+    # silently empty every catalog-scoped response (#819 comment 4).
 
     if body.ids:
         filter_.append({"terms": {"id": body.ids}})
