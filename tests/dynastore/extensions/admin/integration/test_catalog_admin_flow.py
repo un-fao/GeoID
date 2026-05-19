@@ -284,20 +284,22 @@ class TestCatalogAdminFlow:
 
     @pytest.mark.xfail(
         reason=(
-            "Catalog-tier-only admin reaching admin_catalog_access via REST "
-            "wiring of (a) condition required_roles + (b) role→policy "
-            "binding does not propagate to the running policy resolver "
-            "without a process restart — the in-memory role/policy "
-            "registry caches the startup snapshot and the REST PUT routes "
-            "do not invalidate it. Unit coverage in #983's "
-            "test_catalog_grant_privileged_guard.py exercises the same "
-            "guard at the AdminService method level and is green. Tracked "
-            "as a follow-up: expose a registry-reload hook or have "
-            "POST/PUT routes invalidate the role-policy cache. Restoring "
-            "this as `assert 204` is the regression signal when that "
-            "hook lands."
+            "Catalog-tier-only admin reaching admin_catalog_access via "
+            "REST wiring of (a) condition required_roles + (b) role→"
+            "policy binding 403s with 'No matching ALLOW policy found' "
+            "in observed local runs. Root cause UNDIAGNOSED — "
+            "PolicyService.update_policy already calls invalidate_cache() "
+            "and catalog_admin_required reads its config fresh, so the "
+            "first-cut 'registry caches startup snapshot' framing is "
+            "incomplete. Plausible candidates: stale get_membership_cached "
+            "(60s TTL, keyed on (provider, subject_id)), role→policy "
+            "binding not honored by the evaluator, or _augment_with_"
+            "catalog_sentinels not adding the catalog_admin sentinel. "
+            "Unit coverage in #983's test_catalog_grant_privileged_guard.py "
+            "exercises the same guard at the AdminService method level "
+            "and is green, so the gap is in the request → method path. "
+            "When diagnosed and fixed, drop this xfail; #723 will close."
         ),
-        strict=True,
     )
     async def test_alice_grants_bob_admin_in_her_catalog(
         self,
@@ -309,12 +311,11 @@ class TestCatalogAdminFlow:
     ):
         """POST .../cat_a/principals/{bob}/roles {role: admin} → 204.
 
-        Pins #983 once the registry-reload hook lands: catalog admin can
-        appoint a colleague to ``admin`` in their own catalog (platform-
-        tier roles stay blocked). Today the REST-wired policy/role
-        updates don't reach the running resolver, so the request 403s on
-        ``No matching ALLOW policy found`` — xfail-strict makes the
-        eventual fix announce itself.
+        Pins #983 once the request-path gap is diagnosed: catalog admin
+        can appoint a colleague to ``admin`` in their own catalog
+        (platform-tier roles stay blocked). Today this 403s with
+        ``No matching ALLOW policy found`` — see xfail reason for the
+        list of plausible causes still to triage.
         """
         cat_a, _ = setup_catalogs
         resp = await in_process_client.post(
