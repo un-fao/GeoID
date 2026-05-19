@@ -121,7 +121,9 @@ async def lifespan(app: FastAPI):
         # Derive always-on and known sets purely from the live registry —
         # extensions declare ``always_on = True`` on their class, and the
         # set of known extensions is whatever was discovered via entry-points
-        # for the current SCOPE (#1003: no hardcoded fallback).
+        # for the current SCOPE.  ``always_on`` selects from the discovered
+        # set, never extends it; an extension whose wheel is not installed
+        # is simply absent (#1003 / #1014: no hardcoded fallback).
         always_on_exts, known_exts = _get_dynamic_sets()
         togglable = known_exts - always_on_exts
 

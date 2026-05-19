@@ -98,8 +98,10 @@ def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
     automatically unioned with always-on extensions so callers do not have
     to spell them out every time. Always-on status is derived purely from
     the ``always_on = True`` class attribute (see ``ExtensionProtocol``);
-    a SCOPE that installs zero always-on extensions is valid (#1003).
-    Production callers pass ``None`` and load everything discovered.
+    ``always_on`` selects from the discovered set, never extends it.  A
+    SCOPE that installs zero always-on extensions is valid (#1003 / #1014:
+    no hardcoded extension-name fallback anywhere).  Production callers
+    pass ``None`` and load everything discovered.
     """
     always_on = frozenset(
         name for name, cfg in _DYNASTORE_EXTENSIONS.items()
