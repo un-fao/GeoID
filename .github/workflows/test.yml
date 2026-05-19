@@ -205,19 +205,16 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-22.04
-    # 30 min ceiling kept post-#541 triage. Last cancellation 2026-05-15;
-    # nightlies since then run ~17-22 min (pytest 14-17 min + ~5 min
-    # build/start). Pressure now is broad slowness, not a single hang:
-    # slowest-20 reports consistently show 5-7 tests with ~60 s teardown
-    # soaks (httpx-default-timeout on hung DELETE catalog round-trips,
-    # most reliably in tasks/ingestion/integration and the asset_cache
-    # suite) on top of 35-41 s per-test catalog setups (shared_catalog
-    # PR #218 not yet adopted outside its own self-pinning file).
-    # Permanent fix is broader shared_catalog adoption + shorter teardown
-    # DELETE timeout; until that lands, 20 min would cancel current
-    # 22-min nightlies. Drop to 20 once pytest wall-clock is consistently
-    # under 15 min across 5 runs.
-    timeout-minutes: 30
+    # Post-#541 triage: cancellations stopped 2026-05-15; recent nightlies
+    # finish in ~21-22 min (pytest 14-17 min + ~5 min build/start). 25 min
+    # gives a tight ~3 min margin above current p95 so a regression surfaces
+    # as a cancellation (and a sentinel artifact) rather than burning the
+    # full 30 min. Underlying slowness is broad — ~5-7 tests with ~60 s
+    # teardown soaks (httpx-default-timeout on hung DELETE catalog
+    # round-trips) plus 35-41 s per-test catalog setups; shared_catalog
+    # PR #218 still not adopted outside its self-pinning file. Drop to 20
+    # only once pytest wall-clock is consistently under 15 min across 5 runs.
+    timeout-minutes: 25
     # inputs.run_integration is only set for workflow_dispatch / workflow_call.
     # For push/pull_request it is undefined (''), so the comparison evaluates
     # != 'false' as true. Skip only when the caller explicitly passes false.
