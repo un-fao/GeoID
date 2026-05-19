@@ -34,6 +34,7 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
 )
 from dynastore.modules.catalog.catalog_module import register_event_listener
+from dynastore.modules.elasticsearch.dashboards_provisioner import kibana_api_key
 from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_LOGS_TABLE
 from dynastore.modules.catalog.log_manager import log_event
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
@@ -101,7 +102,7 @@ async def _probe_dashboards_health() -> Dict[str, bool]:
     import httpx
 
     headers = {"osd-xsrf": "true", "kbn-xsrf": "true"}
-    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+    key = kibana_api_key()
     if key:
         headers["Authorization"] = f"ApiKey {key}"
 
@@ -418,7 +419,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         """Return resolved, **masked** configuration for the embedded dashboard."""
         return {
             "upstream_url": os.environ.get("KIBANA_UPSTREAM_URL", "").strip() or None,
-            "api_key_set": bool(os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()),
+            "api_key_set": kibana_api_key() is not None,
             "public_path": _public_path(),
         }
 

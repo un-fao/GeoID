@@ -49,9 +49,21 @@ def _upstream_url() -> Optional[str]:
     return raw or None
 
 
-def _api_key() -> Optional[str]:
-    """Return the configured Elastic/OpenSearch API key, or None in dev."""
-    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+def kibana_api_key() -> Optional[str]:
+    """Resolve the Kibana / Elastic API key, falling back to ``ES_API_KEY`` (#937).
+
+    Single source of truth for this resolution — imported by the logs-extension
+    proxy and health probe so the three call sites cannot drift.
+
+    On Elastic Cloud deployments the same API key authorizes both the ES
+    cluster and the Kibana endpoint, so operators can omit the Kibana-specific
+    secret and reuse the existing ES one. ``KIBANA_UPSTREAM_API_KEY`` still
+    wins when set, leaving room for a separately-scoped Kibana key.
+    """
+    key = (
+        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+        or os.environ.get("ES_API_KEY", "").strip()
+    )
     return key or None
 
 
@@ -63,7 +75,7 @@ def _forward_headers() -> dict:
         "osd-xsrf": "true",
         "kbn-xsrf": "true",
     }
-    key = _api_key()
+    key = kibana_api_key()
     if key:
         headers["Authorization"] = f"ApiKey {key}"
     return headers
