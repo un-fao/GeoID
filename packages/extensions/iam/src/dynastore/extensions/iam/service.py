@@ -22,13 +22,11 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import (
     APIRouter,
-    HTTPException,
     Request,
     FastAPI,
 )
 from fastapi.openapi.utils import get_openapi
 from typing import Optional, Any, Dict
-from datetime import datetime
 
 import os
 from fastapi.responses import HTMLResponse
@@ -42,14 +40,6 @@ from dynastore.modules.iam.models import (
     Role,
     Policy,
 )
-# TODO: move to StatsProtocol to eliminate cross-module layer violation
-from dynastore.modules.stats.storage import (
-    get_access_logs,
-    get_stats_summary,
-    AccessLogPage,
-    StatsSummary,
-)
-from dynastore.modules import get_protocol
 from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.extensions.iam.middleware import IamMiddleware
 from dynastore.extensions.iam.authorization_api import me_router
@@ -266,11 +256,6 @@ class IamExtension(ExtensionProtocol):
         prefix="/auth", tags=["Authentication & Authorization"]
     )
 
-    # Stats Endpoints (kept from removed credentials router)
-    stats_router: APIRouter = APIRouter(
-        prefix="/credentials", tags=["Authentication & Authorization"]
-    )
-
     def get_web_pages(self):
         from dynastore.extensions.tools.web_collect import collect_web_pages
         return collect_web_pages(self)
@@ -295,7 +280,6 @@ class IamExtension(ExtensionProtocol):
 
         # Include divided routers into the main router
         self.router.include_router(self.auth_router)
-        self.router.include_router(self.stats_router)
 
         self.router.include_router(me_router)
 
@@ -303,14 +287,6 @@ class IamExtension(ExtensionProtocol):
         # Public / Auth
         self.auth_router.add_api_route(
             "/jwks.json", self.get_jwks, methods=["GET"]
-        )
-
-        # Stats
-        self.stats_router.add_api_route(
-            "/stats/summary", self.get_system_stats_summary, methods=["GET"], response_model=StatsSummary,
-        )
-        self.stats_router.add_api_route(
-            "/stats/logs", self.get_system_access_logs, methods=["GET"], response_model=AccessLogPage,
         )
 
 
@@ -555,44 +531,4 @@ class IamExtension(ExtensionProtocol):
     async def get_jwks(self):
         """Public endpoint for JWKS discovery."""
         return await self.iam_manager.get_jwks()
-
-    # --- Stats ---
-
-    async def get_system_stats_summary(
-        self, # Added self
-        request: Request,
-        principal_id: Optional[str] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ):
-        catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.iam_manager._resolve_schema(catalog_id)
-        return await get_stats_summary(
-            self._engine, # Changed _engine to self._engine
-            principal_id=principal_id,
-            start_date=start_date,
-            end_date=end_date,
-            schema=schema,
-        )
-
-    async def get_system_access_logs(
-        self, # Added self
-        request: Request,
-        principal_id: Optional[str] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        cursor: Optional[str] = None,
-        page_size: int = 100,
-    ):
-        catalog_id = getattr(request.state, "catalog_id", None)
-        schema = await self.iam_manager._resolve_schema(catalog_id)
-        return await get_access_logs(
-            self._engine, # Changed _engine to self._engine
-            principal_id=principal_id,
-            start_date=start_date,
-            end_date=end_date,
-            cursor=cursor,
-            page_size=page_size,
-            schema=schema,
-        )
 
