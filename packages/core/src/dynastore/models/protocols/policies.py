@@ -37,7 +37,6 @@ __all__ = [
     "PolicyCreate",
     "PolicyUpdate",
     "PolicyResponse",
-    "CatalogRoleAssignment",
 ]
 
 
@@ -108,13 +107,6 @@ class PolicyResponse(BaseModel):
     priority: int = 0
     partition_key: Optional[str] = None
     conditions: List[Condition] = Field(default_factory=list)
-
-
-# --- Catalog role assignment wire DTO ---
-
-class CatalogRoleAssignment(BaseModel):
-    catalog_id: str
-    role: str
 
 
 @runtime_checkable
