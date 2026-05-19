@@ -50,8 +50,18 @@ def _upstream_url() -> Optional[str]:
 
 
 def _api_key() -> Optional[str]:
-    """Return the configured Elastic/OpenSearch API key, or None in dev."""
-    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+    """Return the configured Elastic/OpenSearch API key, or None in dev.
+
+    Falls back to ``ES_API_KEY`` (#937): on Elastic Cloud deployments the
+    same API key authorizes both the ES cluster and the Kibana endpoint, so
+    operators can omit the Kibana-specific secret and reuse the existing ES
+    one. ``KIBANA_UPSTREAM_API_KEY`` still wins when set, leaving room for a
+    separately-scoped Kibana key in deployments that want it.
+    """
+    key = (
+        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+        or os.environ.get("ES_API_KEY", "").strip()
+    )
     return key or None
 
 

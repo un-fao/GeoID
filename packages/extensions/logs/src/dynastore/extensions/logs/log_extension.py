@@ -58,6 +58,21 @@ def _public_path() -> str:
     return raw.rstrip("/") or "/dashboards"
 
 
+def _api_key() -> Optional[str]:
+    """Return the Kibana API key, falling back to ``ES_API_KEY`` (#937).
+
+    On Elastic Cloud deployments the same API key authorizes both the ES
+    cluster and the Kibana endpoint; the fallback lets operators reuse the
+    existing ES secret instead of duplicating it. ``KIBANA_UPSTREAM_API_KEY``
+    still wins when set.
+    """
+    key = (
+        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+        or os.environ.get("ES_API_KEY", "").strip()
+    )
+    return key or None
+
+
 def _kibana_url() -> Optional[str]:
     """Return a deep-link to the logs dashboard via the same-origin proxy.
 
@@ -101,7 +116,7 @@ async def _probe_dashboards_health() -> Dict[str, bool]:
     import httpx
 
     headers = {"osd-xsrf": "true", "kbn-xsrf": "true"}
-    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+    key = _api_key()
     if key:
         headers["Authorization"] = f"ApiKey {key}"
 
@@ -418,7 +433,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         """Return resolved, **masked** configuration for the embedded dashboard."""
         return {
             "upstream_url": os.environ.get("KIBANA_UPSTREAM_URL", "").strip() or None,
-            "api_key_set": bool(os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()),
+            "api_key_set": _api_key() is not None,
             "public_path": _public_path(),
         }
 

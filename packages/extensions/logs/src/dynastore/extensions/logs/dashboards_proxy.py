@@ -99,7 +99,17 @@ def _upstream_url() -> Optional[str]:
 
 
 def _api_key() -> Optional[str]:
-    key = os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+    """Return the Kibana API key, falling back to ``ES_API_KEY`` (#937).
+
+    On Elastic Cloud deployments the same API key authorizes both the ES
+    cluster and the Kibana endpoint; the fallback lets operators reuse the
+    existing ES secret instead of duplicating it. ``KIBANA_UPSTREAM_API_KEY``
+    still wins when set.
+    """
+    key = (
+        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
+        or os.environ.get("ES_API_KEY", "").strip()
+    )
     return key or None
 
 
