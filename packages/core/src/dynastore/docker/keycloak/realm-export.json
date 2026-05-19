@@ -1,5 +1,6 @@
 {
   "realm": "geoid",
+  "accessTokenLifespan": 432000,
   "enabled": true,
   "displayName": "GeoID",
   "registrationAllowed": false,
