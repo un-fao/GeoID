@@ -26,12 +26,15 @@ from .protocol import PresetBundle, RoutingPreset  # noqa: F401
 from .registry import get_preset, list_presets, register_preset  # noqa: F401
 
 # Built-in presets — auto-register on import.
+from .private_catalog import PrivateCatalogPreset  # noqa: E402
 from .public_catalog import PublicCatalogPreset  # noqa: E402
 
 register_preset(PublicCatalogPreset())
+register_preset(PrivateCatalogPreset())
 
 __all__ = [
     "PresetBundle",
+    "PrivateCatalogPreset",
     "PublicCatalogPreset",
     "RoutingPreset",
     "get_preset",
