@@ -150,3 +150,56 @@ async def test_drop_storage_tolerates_missing_index():
          patch.object(driver, "_get_prefix", return_value="dynastore"):
         await driver.drop_storage("cat-a")
     es_client.indices.delete.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Operator-facing helpers — mirror of _build_private_items_routing /
+# _build_private_collection_routing.  Pin behaviour so the helpers stay
+# wired correctly when future cascade work or seed JSONs reach for them.
+# ---------------------------------------------------------------------------
+
+
+def test_build_private_catalog_routing_pins_private_driver_on_index_and_search():
+    """``_build_private_catalog_routing()`` is the operator-facing seed
+    helper: WRITE/READ stay on PG (system of record); INDEX/SEARCH flip
+    to the per-tenant private ES driver."""
+    from dynastore.modules.catalog.catalog_config import (
+        _build_private_catalog_routing,
+    )
+    from dynastore.modules.storage.routing_config import (
+        CatalogRoutingConfig,
+        Operation,
+    )
+
+    routing = _build_private_catalog_routing()
+    assert isinstance(routing, CatalogRoutingConfig)
+    assert [e.driver_ref for e in routing.operations[Operation.WRITE]] == [
+        "catalog_postgresql_driver",
+    ]
+    assert [e.driver_ref for e in routing.operations[Operation.READ]] == [
+        "catalog_postgresql_driver",
+    ]
+    assert [e.driver_ref for e in routing.operations[Operation.INDEX]] == [
+        "catalog_elasticsearch_private_driver",
+    ]
+    assert [e.driver_ref for e in routing.operations[Operation.SEARCH]] == [
+        "catalog_elasticsearch_private_driver",
+    ]
+
+
+def test_catalog_routing_has_private_driver_detector():
+    """``_catalog_routing_has_private_driver`` detects the pin used by
+    the cascade / admin tooling — True when the private driver appears
+    in any operation, False on a public-defaults routing."""
+    from dynastore.modules.catalog.catalog_config import (
+        _build_private_catalog_routing,
+    )
+    from dynastore.modules.storage.routing_config import (
+        CatalogRoutingConfig,
+        _catalog_routing_has_private_driver,
+    )
+
+    private = _build_private_catalog_routing()
+    public = CatalogRoutingConfig()  # model defaults — public PG + public ES
+    assert _catalog_routing_has_private_driver(private) is True
+    assert _catalog_routing_has_private_driver(public) is False
