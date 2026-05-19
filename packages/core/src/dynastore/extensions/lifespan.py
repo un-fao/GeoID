@@ -118,9 +118,10 @@ async def lifespan(app: FastAPI):
         # ConfigsProtocol is provided by the catalog module; services whose
         # SCOPE excludes it (e.g. auth, tools) run without exposure gating.
         #
-        # Derive always-on and known sets dynamically from the live registry
-        # (extensions declare ``always_on = True`` on their class).  Fall back
-        # to hardcoded constants for any extension not yet updated.
+        # Derive always-on and known sets purely from the live registry —
+        # extensions declare ``always_on = True`` on their class, and the
+        # set of known extensions is whatever was discovered via entry-points
+        # for the current SCOPE (#1003: no hardcoded fallback).
         always_on_exts, known_exts = _get_dynamic_sets()
         togglable = known_exts - always_on_exts
 

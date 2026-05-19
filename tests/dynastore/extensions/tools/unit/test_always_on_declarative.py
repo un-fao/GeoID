@@ -1,10 +1,12 @@
 """Regression tests for the declarative ``always_on`` mechanism (#1003).
 
 Pins:
-- Every extension class previously hardcoded in ``ALWAYS_ON_EXTENSIONS`` now
-  declares ``always_on = True`` on its class.
-- ``_get_dynamic_sets()`` produces the expected union when the registry is
-  populated, and falls back to the hardcoded constants otherwise.
+- ``ExtensionProtocol.always_on`` defaults to ``False`` — extensions opt-in.
+- Every core control-plane extension declares ``always_on = True`` on its
+  class (so the registry can derive the set without a hardcoded list).
+- ``_get_dynamic_sets()`` returns ``(always_on, known)`` derived purely from
+  the live registry — no legacy union, no hardcoded fallback. Empty registry
+  yields ``(frozenset(), frozenset())``; SCOPE drives everything (#1003).
 """
 
 from __future__ import annotations
@@ -15,11 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.tools.exposure_mixin import (
-    ALWAYS_ON_EXTENSIONS,
-    KNOWN_EXTENSION_IDS,
-    _get_dynamic_sets,
-)
+from dynastore.extensions.tools.exposure_mixin import _get_dynamic_sets
 
 
 def test_extension_protocol_default_always_on_is_false():
@@ -40,7 +38,7 @@ def test_extension_protocol_default_always_on_is_false():
     ],
 )
 def test_always_on_extensions_declare_class_attribute(module_path, cls_name):
-    """Every previously-hardcoded always-on extension declares it on the class."""
+    """Every core control-plane extension declares it on the class."""
     pytest.importorskip(module_path)
     import importlib
 
@@ -52,18 +50,16 @@ def test_always_on_extensions_declare_class_attribute(module_path, cls_name):
     )
 
 
-def test_get_dynamic_sets_returns_legacy_constants_when_registry_empty():
-    with patch(
-        "dynastore.extensions.registry._DYNASTORE_EXTENSIONS",
-        {},
-    ):
+def test_get_dynamic_sets_empty_registry_returns_empty_sets():
+    """An empty registry is a valid SCOPE — yields empty sets, not legacy fallback."""
+    with patch("dynastore.extensions.registry._DYNASTORE_EXTENSIONS", {}):
         always_on, known = _get_dynamic_sets()
-    assert always_on == ALWAYS_ON_EXTENSIONS
-    assert known == KNOWN_EXTENSION_IDS
+    assert always_on == frozenset()
+    assert known == frozenset()
 
 
 def test_get_dynamic_sets_derives_always_on_from_class_attribute():
-    """When the registry is populated, always-on is derived from class attrs."""
+    """When the registry is populated, always-on is derived purely from class attrs."""
 
     class _AlwaysOn:
         always_on = True
@@ -76,32 +72,31 @@ def test_get_dynamic_sets_derives_always_on_from_class_attribute():
         "auth": SimpleNamespace(cls=_AlwaysOn, instance=None),
         "stac": SimpleNamespace(cls=_Togglable, instance=None),
     }
-    with patch(
-        "dynastore.extensions.registry._DYNASTORE_EXTENSIONS",
-        stub,
-    ):
+    with patch("dynastore.extensions.registry._DYNASTORE_EXTENSIONS", stub):
         always_on, known = _get_dynamic_sets()
 
-    assert "iam" in always_on
-    assert "auth" in always_on
-    assert "stac" not in always_on
-    assert {"iam", "auth", "stac"}.issubset(known)
+    assert always_on == frozenset({"iam", "auth"})
+    assert known == frozenset({"iam", "auth", "stac"})
 
 
-def test_get_dynamic_sets_unions_legacy_fallback_for_unregistered_names():
-    """Legacy names not represented in the registry stay always-on as a safety net."""
+def test_get_dynamic_sets_no_legacy_union():
+    """A name not in the registry is NOT silently treated as always-on (#1003).
+
+    The previous behaviour unioned ``ALWAYS_ON_EXTENSIONS`` into the result
+    as a safety net; that hid SCOPE bugs (e.g. forgetting to install a wheel)
+    and contradicted DynaStore's framework-is-pyproject-driven invariant.
+    """
 
     class _Togglable:
         pass
 
+    # ``iam`` is the canonical always-on name in legacy thinking — pinning
+    # that the registry doesn't conjure it out of thin air is the point.
     stub = {"stac": SimpleNamespace(cls=_Togglable, instance=None)}
-    with patch(
-        "dynastore.extensions.registry._DYNASTORE_EXTENSIONS",
-        stub,
-    ):
+    with patch("dynastore.extensions.registry._DYNASTORE_EXTENSIONS", stub):
         always_on, known = _get_dynamic_sets()
 
-    # `iam` isn't in the stub but is in the legacy constant — it must still
-    # be treated as always-on so the lifespan logic doesn't accidentally gate
-    # an extension that hasn't yet migrated to the class-attribute pattern.
-    assert "iam" in always_on
+    assert always_on == frozenset()
+    assert known == frozenset({"stac"})
+    assert "iam" not in always_on
+    assert "iam" not in known

@@ -32,17 +32,25 @@ import dynastore.extensions.volumes  # noqa: F401
 import pytest
 from dynastore.extensions.tools.exposure_mixin import (
     ExposableConfigMixin,
-    KNOWN_EXTENSION_IDS,
-    ALWAYS_ON_EXTENSIONS,
     find_dead_exposable_configs,
 )
 from dynastore.modules.db_config.plugin_config import list_registered_configs
 
 
-TOGGLABLE = KNOWN_EXTENSION_IDS - ALWAYS_ON_EXTENSIONS
+# Test fixture, not framework state: the expected togglable extensions
+# under the full test SCOPE. The framework itself no longer carries this
+# list (#1003) — it derives togglable from the live registry. Keeping a
+# test-local expectation lets us assert that every named togglable
+# extension has at least one ExposableConfigMixin config.
+_TOGGLABLE = frozenset({
+    "stac", "features", "wfs", "coverages", "edr", "records", "processes", "dggs",
+    "tiles", "maps", "styles", "dimensions", "dwh", "joins", "search", "stats",
+    "gcp", "logs", "notebooks", "crs", "gdal", "assets", "moving_features",
+    "connected_systems", "volumes",
+})
 
 
-@pytest.mark.parametrize("ext_id", sorted(TOGGLABLE))
+@pytest.mark.parametrize("ext_id", sorted(_TOGGLABLE))
 def test_togglable_has_exposable_config(ext_id):
     """Every togglable extension MUST register at least one PluginConfig inheriting the mixin."""
     classes = list_registered_configs().values()
@@ -74,8 +82,9 @@ def test_no_dead_exposable_configs():
 
     If this fails, a config has been added (or moved) such that its
     `enabled` field appears in /configs/ responses but flipping it does
-    nothing. Either strip the mixin or register the extension name in
-    KNOWN_EXTENSION_IDS — see find_dead_exposable_configs() docstring.
+    nothing. Either strip the mixin, install the wheel that registers
+    the extension entry-point, or declare ``always_on = True`` on the
+    extension class — see ``find_dead_exposable_configs()`` docstring.
     """
     dead = find_dead_exposable_configs()
     assert not dead, "Dead ExposableConfigMixin uses:\n" + "\n".join(

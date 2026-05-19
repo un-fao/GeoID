@@ -96,18 +96,15 @@ def instantiate_extensions(app: Any, include_only: Optional[List[str]] = None):
 
     ``include_only`` narrows instantiation for test isolation. The set is
     automatically unioned with always-on extensions so callers do not have
-    to spell them out every time. Always-on status is derived from the
-    ``always_on = True`` class attribute (see ``ExtensionProtocol``), with
-    the hardcoded fallback list as a safety net for unupdated extensions.
+    to spell them out every time. Always-on status is derived purely from
+    the ``always_on = True`` class attribute (see ``ExtensionProtocol``);
+    a SCOPE that installs zero always-on extensions is valid (#1003).
     Production callers pass ``None`` and load everything discovered.
     """
     always_on = frozenset(
         name for name, cfg in _DYNASTORE_EXTENSIONS.items()
         if getattr(cfg.cls, "always_on", False)
     )
-    if not always_on:
-        from dynastore.extensions.tools.exposure_mixin import ALWAYS_ON_EXTENSIONS
-        always_on = ALWAYS_ON_EXTENSIONS
 
     extensions_to_load = _DYNASTORE_EXTENSIONS.keys()
 
