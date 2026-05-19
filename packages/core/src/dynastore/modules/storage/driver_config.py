@@ -53,6 +53,11 @@ from dynastore.tools.ui_hints import ui
 from dynastore.models.protocols.typed_driver import _PluginDriverConfig
 from dynastore.models.mutability import Immutable, Mutable, WriteOnce
 from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.modules.storage.computed_fields import (
+    ComputedField,
+    ComputedKind,
+    IdentityRule,
+)
 
 # Sidecar machinery is PG-specific — the field type alias and its
 # registry-based coercion live in ``pg_sidecars/base.py`` so that other
@@ -295,12 +300,22 @@ class GeometriesWriteBehavior(BaseModel):
     )
 
 
+def _default_identity_rules() -> List[IdentityRule]:
+    """Default identity chain: single rule matching on ``external_id``.
+
+    Operators who want different identity semantics replace the list; the
+    default works for collections that bind ``external_id`` to a properties
+    path via a corresponding ``ComputedField(kind=EXTERNAL_ID, name="properties.X")``
+    in :attr:`ItemsWritePolicy.compute`.
+    """
+    return [IdentityRule(match_on=[ComputedField(kind=ComputedKind.EXTERNAL_ID)])]
+
+
 class ItemsWritePolicy(PluginConfig):
     """Item-level write behaviour, applied by all capable drivers.
 
     Registered as ``ItemsWritePolicy`` in the config waterfall
-    (identity: class_key, ``items_write_policy``) — collection > catalog >
-    platform > code default.
+    (identity: class_key, ``items_write_policy``) — collection-scoped only.
 
     All drivers (PG, ES, Iceberg, DuckDB) read this single config during
     ``write_entities()`` via::
@@ -310,6 +325,28 @@ class ItemsWritePolicy(PluginConfig):
             ItemsWritePolicy, catalog_id=catalog_id, collection_id=collection_id
         )
 
+    Four irreducible concerns, plus three posture flags. See
+    ``docs/architecture/items-policy-consolidation-957-950.md``:
+
+    - :attr:`schema` — self-contained JSON Schema describing the wire shape
+      of ``properties``. ``type``/``description``/``default``/``required``
+      per field. The OpenAPI body schema, admin-UI form, write-time
+      validation, and the read-side ``schema_ref`` all consult this single
+      object. Setting ``None`` is permissive (no validation, no defaults).
+    - :attr:`compute` — ordered list of :class:`ComputedField` entries the
+      drivers materialise per row (geometry hash, attribute hash, geohash
+      cell, area, centroid, …). The :class:`ComputedKind.EXTERNAL_ID`
+      entry's ``name`` carries the source path (e.g. ``properties.code``).
+    - :attr:`identity` — ordered list of :class:`IdentityRule`. Each rule
+      ANDs its ``match_on`` ComputedFields; rules OR across the list (first
+      match wins). Per-rule ``on_match`` overrides :attr:`on_conflict`.
+    - :attr:`geometries` — per-row geometry transform / validation block
+      (SRID, fix, simplify, allow-list). Runs before :attr:`compute`.
+
+    Posture flags: :attr:`on_conflict`, :attr:`on_asset_conflict`,
+    :attr:`enable_validity` / :attr:`validity_field`,
+    :attr:`skip_if_unchanged_geometry_hash`, :attr:`track_asset_id`.
+
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
 
@@ -318,73 +355,47 @@ class ItemsWritePolicy(PluginConfig):
     - ``valid_from``           — validity range start (ISO-8601 or datetime)
     - ``valid_to``             — validity range end (None = open-ended)
 
-    Composable policies:
-      ``on_conflict`` (item-level) and ``on_asset_conflict`` (batch-level) act
-      independently — both can be set simultaneously.
-
-    Identity matchers:
-      ``identity_matchers`` is an ordered list; the first matcher that
-      resolves a record wins. Unknown / unsupported matchers are silently
-      skipped so a collection can opt into GEOHASH without requiring every
-      sidecar to grow implementations at once. Each matcher is implemented
-      by the sidecar that owns the underlying column — see ``IdentityMatcher``.
-
     Hash-gated versioning:
       When ``skip_if_unchanged_geometry_hash=True`` a match whose
       ``geometry_hash`` equals the incoming feature short-circuits the
       action: ``NEW_VERSION`` degrades to a no-op, ``UPDATE`` degrades to
       ``REFUSE_RETURN``. Enables "new version only when geometry differs".
 
-    Layering vs ``WritePolicyDefaults`` (M8):
-      ``ItemsWritePolicy`` is the collection-INTRINSIC config — carries
-      field-name bindings (``external_id_field``, ``validity_field``) needed
-      by existing write infrastructure. ``WritePolicyDefaults`` (sibling
-      class) is the platform/catalog-tier POSTURE config — carries only
-      posture flags (``on_conflict``, ``require_identity_key``) without
-      field-name references. Field-name binding lives separately in
-      ``ItemsSchema.constraints`` (``IdentityKeyConstraint``,
-      ``ValidityConstraint``, ``ContentHashConstraint``). Operators
-      configuring a NEW collection should set posture in
-      ``WritePolicyDefaults`` at the platform tier and field bindings via
-      ``ItemsSchema.constraints``; ``ItemsWritePolicy`` remains
-      for legacy collections that bound fields here directly.
-
     Worked scenarios:
 
     1. **External-id versioning** (track every change as a new version)::
 
            ItemsWritePolicy(
-               identity_matchers=[IdentityMatcher.EXTERNAL_ID],
                on_conflict=WriteConflictPolicy.NEW_VERSION,
-               external_id_field="properties.code",
+               compute=[ComputedField(kind=ComputedKind.EXTERNAL_ID, name="properties.code")],
                skip_if_unchanged_geometry_hash=True,
            )
 
        Each upsert keyed on ``properties.code`` versions the existing row
        UNLESS the geometry_hash is identical (then it's a no-op).
 
-    2. **Geohash dedup at city precision** (drop duplicate POIs)::
+    2. **Geohash dedup at city precision**::
 
            ItemsWritePolicy(
-               identity_matchers=[IdentityMatcher.GEOHASH],
-               geohash_precision=6,           # ~1.2km
-               on_conflict=WriteConflictPolicy.REFUSE_RETURN,
+               compute=[ComputedField(kind=ComputedKind.GEOHASH, resolution=6)],
+               identity=[IdentityRule(
+                   match_on=[ComputedField(kind=ComputedKind.GEOHASH, resolution=6)],
+                   on_match=WriteConflictPolicy.REFUSE_RETURN,
+               )],
            )
 
-       Incoming features falling within the same ~1.2km tile as an existing
-       row are skipped; the existing row is returned.
-
-    3. **Batch idempotency via geometry hash** (reject the whole asset on
-       any geometry duplicate)::
+    3. **Composite identity** ("same geometry AND same attributes is a duplicate")::
 
            ItemsWritePolicy(
-               identity_matchers=[IdentityMatcher.GEOMETRY_HASH],
-               on_conflict=WriteConflictPolicy.UPDATE,
-               on_asset_conflict=AssetConflictPolicy.REFUSE,
+               compute=[
+                   ComputedField(kind=ComputedKind.GEOMETRY_HASH),
+                   ComputedField(kind=ComputedKind.ATTRIBUTES_HASH),
+               ],
+               identity=[IdentityRule(match_on=[
+                   ComputedField(kind=ComputedKind.GEOMETRY_HASH),
+                   ComputedField(kind=ComputedKind.ATTRIBUTES_HASH),
+               ], on_match=WriteConflictPolicy.REFUSE_RETURN)],
            )
-
-       A re-uploaded asset (same geometries) is rejected entirely; partial
-       overlap fails the whole batch with a 409.
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "policy")
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -416,44 +427,42 @@ class ItemsWritePolicy(PluginConfig):
             "overlap should fail the whole asset."
         ),
     )
-    identity_matchers: Mutable[List[IdentityMatcher]] = Field(
-        default_factory=lambda: [IdentityMatcher.EXTERNAL_ID],
-        examples=[
-            ["external_id"],
-            ["external_id", "geohash"],
-            ["geometry_hash"],
-            ["external_id", "attributes_hash"],
-        ],
+    schema: Mutable[Optional[Dict[str, Any]]] = Field(
+        default=None,
         description=(
-            "Ordered matcher chain — first matcher returning a record wins. "
-            "Matchers are delegated to the sidecar that owns the underlying "
-            "column: ``external_id`` → attributes sidecar (reads "
-            "``external_id_field``); ``geohash`` → geometries sidecar (uses "
-            "ST_GeoHash at ``geohash_precision``); ``geometry_hash`` → "
-            "geometries sidecar (SHA256 of WKB); ``attributes_hash`` → "
-            "attributes sidecar (SHA256 of canonicalised attributes JSONB). "
-            "Unknown matchers are silently skipped so a collection can opt "
-            "into a strategy that requires a sidecar not yet enabled — the "
-            "next matcher in the chain takes over."
+            "Self-contained JSON Schema (Draft 2020-12) describing the wire "
+            "shape of feature ``properties``. Carries ``type``, ``description``, "
+            "``default``, ``required``, ``additionalProperties`` per property; "
+            "no second source of truth (sidecar, driver, model docstring) "
+            "carries any of these. ``None`` = permissive (no validation, no "
+            "defaults). Set ``additionalProperties: false`` for strict ingest."
         ),
     )
-    geohash_precision: Mutable[int] = Field(
-        default=9,
-        ge=1,
-        le=12,
-        examples=[6, 9, 12],
+    compute: Mutable[List[ComputedField]] = Field(
+        default_factory=list,
         description=(
-            "ST_GeoHash precision used when ``IdentityMatcher.GEOHASH`` is "
-            "active — the IDENTITY axis (what 'same place' means on write). "
-            "Cell sizes (latitude-dependent at the equator): "
-            "1≈5000km, 4≈40km, 6≈1.2km, 9≈5m, 12≈4cm. Pick by what 'same place' "
-            "means in your dataset: 6 for cities, 9 for parcels, 12 for points "
-            "of interest. "
-            "Distinct from ``GeometriesSidecarConfig.geohash_precision`` "
-            "(``CHAR(N)`` column width emitted by the geometry sidecar DDL) — "
-            "those control different layers (identity vs storage). Matching is "
-            "computed on-the-fly via ``ST_GeoHash(geom, N)`` from this value, "
-            "NOT read from the stored sidecar column."
+            "Per-row derived values materialised by every capable driver. "
+            "Each :class:`ComputedField` declares ``kind`` (EXTERNAL_ID, "
+            "GEOMETRY_HASH, ATTRIBUTES_HASH, GEOHASH/H3/S2 with resolution, "
+            "AREA, PERIMETER, …) and an optional ``name`` override. The "
+            "EXTERNAL_ID entry's ``name`` doubles as the source path for "
+            "extraction (e.g. ``properties.adm2_pcode``). A "
+            ":class:`ComputedKind.GEOHASH` entry with a resolution is the "
+            "identity-axis successor to the legacy "
+            "``ItemsWritePolicy.geohash_precision`` knob; distinct from "
+            "``GeometriesSidecarConfig.geohash_precision`` which controls the "
+            "stored ``CHAR(N)`` column width (storage layer, not identity)."
+        ),
+    )
+    identity: Mutable[List[IdentityRule]] = Field(
+        default_factory=_default_identity_rules,
+        description=(
+            "Ordered identity rules. Each rule ANDs every ComputedField in "
+            "its ``match_on``; rules OR across the list (first whose AND "
+            "conjunction matches wins). Per-rule ``on_match`` overrides "
+            ":attr:`on_conflict` for that branch. Default is a single rule "
+            "matching on EXTERNAL_ID — operators replace the list to express "
+            "geometry-hash dedup, composite identity, etc."
         ),
     )
     skip_if_unchanged_geometry_hash: Mutable[bool] = Field(
@@ -467,15 +476,6 @@ class ItemsWritePolicy(PluginConfig):
             "to be enabled (it computes geometry_hash on write)."
         ),
     )
-    matcher_actions: Mutable[Optional[Dict[IdentityMatcher, WriteConflictPolicy]]] = Field(
-        default=None,
-        description=(
-            "Per-matcher conflict-action override. When set, the entry for the "
-            "winning matcher overrides the global ``on_conflict``. Unspecified "
-            "matchers fall back to ``on_conflict``. Useful for combinations such "
-            "as ``{external_id: refuse_fail, geometry_hash: refuse_return}``."
-        ),
-    )
     track_asset_id: Mutable[bool] = Field(
         default=True,
         examples=[True, False],
@@ -484,43 +484,6 @@ class ItemsWritePolicy(PluginConfig):
             "entity document — provenance tracking. Disable only when source "
             "tracking is intentionally severed (e.g. derived collections "
             "produced from a join)."
-        ),
-    )
-    external_id_field: Mutable[Optional[str]] = Field(
-        default=None,
-        examples=[None, "id", "asset_id", "ADM2_PCODE", "properties.code"],
-        description=(
-            "Path to extract ``external_id`` from the incoming entity. This "
-            "is the single source of truth — sidecars and write drivers "
-            "consult this value, never their own duplicates.\n\n"
-            "Resolution order applied at extraction time:\n"
-            "  1. Top-level lookup: ``data[path]`` — works for ``id``, "
-            "``asset_id`` and any other first-level field (e.g. the dict "
-            "shape produced by ``Feature.model_dump`` or the CSV reader).\n"
-            "  2. Dot-walk: ``a.b.c`` traverses nested dicts (e.g. "
-            "``properties.code``, ``properties.iso3``).\n"
-            "  3. Properties fallback: when ``path`` has no dot AND "
-            "``data[path]`` is None, ``data['properties'][path]`` is "
-            "tried. This makes user-defined GeoJSON attributes "
-            "(``ADM2_PCODE``, ``feature_key``, ``parcel_id``…) reachable "
-            "without forcing operators to write ``properties.X``.\n\n"
-            "When ``None`` (default), no extraction is attempted and "
-            "conflict resolution uses the geoid directly. When set, a "
-            "fresh geoid is always generated on insert and conflict "
-            "resolution uses the extracted external_id — the geoid "
-            "becomes a stable internal handle while external_id is the "
-            "operator-facing natural key."
-        ),
-    )
-    require_external_id: Mutable[bool] = Field(
-        default=False,
-        examples=[False, True],
-        description=(
-            "If True, an entity whose ``external_id_field`` resolves to "
-            "None or empty is refused at ingestion. Pair with "
-            "``external_id_field`` to enforce that every row carries a "
-            "domain key. Has no effect when ``external_id_field`` is None "
-            "(there is nothing to extract)."
         ),
     )
     enable_validity: Mutable[bool] = Field(
@@ -553,6 +516,73 @@ class ItemsWritePolicy(PluginConfig):
             "storage-shape-only."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Helpers — derive driver-facing values from compute / schema
+    # ------------------------------------------------------------------
+
+    def _all_compute_fields(self) -> List[ComputedField]:
+        """Union of explicit ``compute`` entries plus every ``match_on``
+        field referenced by identity rules.
+
+        Drivers materialise this set — fields referenced for identity
+        resolution have to be present even if the operator forgot to
+        repeat them in ``compute``.
+        """
+        seen: Dict[str, ComputedField] = {}
+        for cf in self.compute:
+            seen.setdefault(cf.resolved_name, cf)
+        for rule in self.identity:
+            for cf in rule.match_on:
+                seen.setdefault(cf.resolved_name, cf)
+        return list(seen.values())
+
+    def find_compute(
+        self, kind: ComputedKind, resolution: Optional[int] = None
+    ) -> Optional[ComputedField]:
+        """Return the first ComputedField matching ``kind`` (and optionally
+        ``resolution``), searched across ``compute`` and identity rules."""
+        for cf in self._all_compute_fields():
+            if cf.kind != kind:
+                continue
+            if resolution is not None and cf.resolution != resolution:
+                continue
+            return cf
+        return None
+
+    def external_id_path(self) -> Optional[str]:
+        """Dot-walk path used to extract the external_id from an incoming
+        feature, or None when external_id identity is not configured.
+
+        Reads the ``name`` override on the first ``ComputedField(kind=EXTERNAL_ID)``
+        in either ``compute`` or any identity rule's ``match_on``.
+
+        Resolution order applied by extraction callers:
+          1. Top-level lookup: ``data[path]`` (e.g. ``id``, ``asset_id``).
+          2. Dot-walk: ``a.b.c`` traverses nested dicts (e.g. ``properties.code``).
+          3. Properties fallback: when ``path`` has no dot AND
+             ``data[path]`` is None, ``data['properties'][path]`` is tried.
+        """
+        cf = self.find_compute(ComputedKind.EXTERNAL_ID)
+        if cf is None:
+            return None
+        # ``name`` on EXTERNAL_ID is the source path (no leading "properties."
+        # collapse — that's resolved at extraction time).
+        return cf.name or None
+
+    def external_id_required(self) -> bool:
+        """True iff the JSON Schema declares the external-id property required.
+
+        Reads the leaf segment of :meth:`external_id_path` and checks the
+        top-level ``required`` list on :attr:`schema`. With no schema or no
+        external_id_path, this returns False.
+        """
+        path = self.external_id_path()
+        if not path or not isinstance(self.schema, dict):
+            return False
+        leaf = path.split(".")[-1]
+        required = self.schema.get("required") or []
+        return leaf in required
 
 
 # ---------------------------------------------------------------------------
@@ -1250,17 +1280,18 @@ async def _validate_write_policy(
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
 ) -> None:
-    """Cross-validate write_policy.external_id_field against ItemsSchema.fields.
+    """Cross-validate the EXTERNAL_ID ComputedField path against ItemsSchema.fields.
 
-    If ``external_id_field`` is set and a ``ItemsSchema`` exists at the
-    same scope, the referenced field must appear in ``ItemsSchema.fields``.
+    If a ``ComputedField(kind=EXTERNAL_ID)`` declares a ``name`` and an
+    ``ItemsSchema`` exists at the same scope, the referenced field must
+    appear in ``ItemsSchema.fields``.
 
-    ``external_id_field = "geoid"`` or ``"id"`` are always accepted (system fields).
-    If ``ItemsSchema`` is not yet configured, validation is skipped.
+    Path "geoid" or "id" is always accepted (system fields). If
+    ``ItemsSchema`` is not yet configured, validation is skipped.
     """
     if not isinstance(config, ItemsWritePolicy):
         return
-    ext_id = config.external_id_field
+    ext_id = config.external_id_path()
     if not ext_id or ext_id in _ALWAYS_VALID_EXTERNAL_ID_FIELDS:
         return
 
@@ -1289,8 +1320,9 @@ async def _validate_write_policy(
 
         if field_key not in defined_fields:
             raise ValueError(
-                f"write_policy.external_id_field '{ext_id}' (field key: '{field_key}') "
-                f"is not defined in ItemsSchema.fields for {catalog_id}/{collection_id}. "
+                f"ItemsWritePolicy ComputedField(kind=EXTERNAL_ID, name='{ext_id}') "
+                f"(field key: '{field_key}') is not defined in ItemsSchema.fields "
+                f"for {catalog_id}/{collection_id}. "
                 f"Defined fields: {sorted(defined_fields)}. "
                 f"Set 'geoid' or 'id' to use system identity fields without schema restriction."
             )
@@ -1424,3 +1456,10 @@ async def _validate_items_es_driver_config(
 
 
 ItemsElasticsearchDriverConfig.register_validate_handler(_validate_items_es_driver_config)
+
+
+# Resolve the forward reference on IdentityRule.on_match now that
+# WriteConflictPolicy is defined in this module. computed_fields.py declares
+# the field as ``Optional["WriteConflictPolicy"]`` to break the otherwise
+# circular import (driver_config → computed_fields → driver_config).
+IdentityRule.model_rebuild(_types_namespace={"WriteConflictPolicy": WriteConflictPolicy})

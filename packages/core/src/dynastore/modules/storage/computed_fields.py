@@ -37,11 +37,12 @@ Public surface:
 """
 
 from enum import StrEnum
-from typing import List, Literal, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from dynastore.modules.storage.driver_config import WriteConflictPolicy
+if TYPE_CHECKING:
+    from dynastore.modules.storage.driver_config import WriteConflictPolicy
 
 _SPATIAL_CELL_KINDS: frozenset = frozenset()  # populated after ComputedKind
 
@@ -177,7 +178,7 @@ class IdentityRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     match_on: List[ComputedField] = Field(min_length=1)
-    on_match: Optional[WriteConflictPolicy] = None
+    on_match: Optional["WriteConflictPolicy"] = None
 
 
 class FeatureType(BaseModel):
