@@ -105,6 +105,41 @@ GCS bucket) or falls back to local temp.
 File-based analytical reads via DuckDB's `read_parquet` / `read_csv_auto` etc. Optionally writes
 to SQLite when `write_path` is configured.
 
+## Routing Presets (#847)
+
+Named, cascade-consistent bundles of routing configs + audience opt-ins that
+operators apply with a single admin call. A preset is a thin factory that
+emits a `PresetBundle` for a catalog id; the admin endpoint walks the bundle
+through the standard `ConfigsProtocol.set_config` lifecycle (no validation
+bypass).
+
+Built-in presets (in `presets/`):
+
+| Name | Composition |
+|------|-------------|
+| `public_catalog` | PG-first storage + public ES indexers on catalog/collection/items. No audience opt-ins; anonymous traffic is gated by the platform's default `public_access` policy. |
+| `private_catalog` | PG-first storage + per-tenant private ES indexers on all three tiers. No audience opt-ins; the `private_deny_{catalog_id}` policy blocks anonymous reads on the envelope + item URLs. |
+| `geoid` (extension) | Composes `private_catalog` and adds `CatalogLookupAudience.is_public=True` + `CollectionWriteAudience.allow_anonymous_create=True` — flagship FAO GeoID profile: private storage, anonymous lookup + intake. Registered by `dynastore.extensions.geoid` on import. |
+
+Operator API:
+
+```
+GET  /admin/presets                                        # list registered presets
+POST /admin/catalogs/{catalog_id}/presets/{name}/apply     # apply to a catalog
+```
+
+Each `apply` call sets `CatalogRoutingConfig`, the collection + items
+templates, and any audience configs at the catalog tier. The catalog-tier
+cascade validator (#960 scope 4) and the existing items/collection cascade
+handlers catch mixed public/private combos before persistence.
+
+Adding a preset: implement the `RoutingPreset` protocol (`name`,
+`description`, `build(catalog_id) -> PresetBundle`) and call
+`register_preset(MyPreset())` from your extension or module bootstrap.
+Core presets live under `presets/` and auto-register on import; extension
+presets register from their package `__init__.py` (see
+`extensions/geoid/presets.py`).
+
 ## Adding a Driver
 
 1. Create `drivers/<name>.py`, subclass `ModuleProtocol` (and the relevant tier protocol —
