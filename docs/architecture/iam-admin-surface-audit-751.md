@@ -17,9 +17,10 @@ so the consolidation PRs can land safely.
   `packages/extensions/admin/.../models.py`. They are not duplicated
   elsewhere today — they are simply not shared. Consolidating them into
   `dynastore.models.protocols.policies` is single-site work.
-- `IamExtension.stats_router` (mounted at `/iam/credentials/stats/*`)
-  has **zero consumers** in this repo. Recommend deletion as part of the
-  cleanup, separate from the DTO move.
+- `IamExtension.stats_router` (was mounted at `/iam/credentials/stats/*`)
+  had **zero in-repo consumers** and was deleted under #979. Stats
+  summary / access-log retrieval re-homed if needed will land under a
+  dedicated `/admin/stats/*` namespace, not the IAM extension.
 
 ## Current surface map
 
@@ -94,21 +95,19 @@ Endpoint inventory:
 DTOs (only used here): `EffectiveAuthorizationResponse`,
 `CatalogAccessResponse`.
 
-### `/iam/*` (IAM extension residual: auth + stats)
+### `/iam/*` (IAM extension residual: auth only)
 
 File: `packages/extensions/iam/src/dynastore/extensions/iam/service.py`
-Two sub-routers mounted under `IamExtension.router`:
+One sub-router mounted under `IamExtension.router`:
 
 - `auth_router` prefix `/auth` → exposes `/iam/auth/jwks.json` (`GET`).
   This is the JWKS-discovery surface that token validators hit.
-- `stats_router` prefix `/credentials` → exposes
-  `/iam/credentials/stats/summary` (`GET`) and
-  `/iam/credentials/stats/logs` (`GET`).
 
+The `stats_router` (`/iam/credentials/stats/*`) was deleted under #979.
 The `gov_router` referenced in the issue body no longer exists; the
 admin endpoints that were once exposed under `/iam/admin/*` and the
 email-keyed mirror referenced in `service.py:398-399` of the issue body
-have already been removed. The current `service.py:300` mounts
+have already been removed. `__init__` now mounts `auth_router` +
 `me_router` only.
 
 ### `/auth/*` (OIDC bridge — separate extension)
@@ -203,7 +202,7 @@ into `/admin/*` or `/iam/me/*` themselves.
 | Inconsistent identifiers `principal_id: UUID` vs `email: EmailStr`     | **Resolved** — `/admin/*` uses `principal_id: UUID`; `/iam/me/*` reads identity from request state (no email in path/body except as a returned display field). |
 | `RoleCreate/Update/Response` etc. duplicated across `admin/models.py`, `iam/service.py`, `authorization_api.py` | **Resolved** — single canonical home in `models.protocols.policies` (PR #961 / #981 / #985). |
 | Keep `auth_router` (`/iam/auth/jwks.json`)                             | Still present. |
-| Keep `stats_router` (`/iam/credentials/stats/*`)                       | Still present, but **zero in-repo consumers** — recommend deletion. |
+| Keep `stats_router` (`/iam/credentials/stats/*`)                       | **Deleted** under #979 — was zero-consumer in repo. |
 
 ## Recommended next steps
 
@@ -221,13 +220,6 @@ DTO consolidation is **complete**:
 
 Remaining:
 
-- **Delete `IamExtension.stats_router`** — tracked as **#979**.
-  `/iam/credentials/stats/summary` and `/iam/credentials/stats/logs`
-  have no in-repo consumers and the underlying `get_stats_summary` /
-  `get_access_logs` reach into `dynastore.modules.stats.storage` (the
-  existing TODO comment in `service.py` flags this as a layer
-  violation). Needs external-deployment consumer audit before merge.
-
 - **Notebook prose cleanup** *(docs PR)*
   `collection_vault_geoid_only.ipynb` cell at line 294 narrates a
   prior architecture using `/iam/governance/hierarchies`. The endpoint
@@ -243,10 +235,6 @@ no-backcompat-keep-code-current convention.
 
 - **Phase 3 / 4 of the issue** (OpenAPI deprecation and DTO-duplicate
   removal in production code) — not in this PR.
-- **External-deployment consumer audit** for `stats_router` removal — the
-  stats endpoints have zero in-repo consumers but production
-  deployments/dashboards may still hit them. Confirm with operators
-  before deleting.
 - **Auth invariant scan** — `IamMiddleware` / `Policy` / `Role` /
   `ConditionHandler` are the enforcement path and are out of scope for
   #751 per the issue's closing note. This audit deliberately did not
