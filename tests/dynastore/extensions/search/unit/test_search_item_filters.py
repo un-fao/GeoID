@@ -72,6 +72,27 @@ def test_empty_body_yields_match_all() -> None:
     assert q == {"match_all": {}}
 
 
+def test_catalog_id_alone_yields_match_all_not_term_filter() -> None:
+    """Catalog scoping is enforced by index naming (the per-tenant
+    ``{prefix}-{catalog_id}-items`` index), not by a doc field. The
+    public items writer does not materialise a ``catalog_id`` keyword
+    on each doc, so a term filter would silently empty every
+    catalog-scoped response. Pinned regression for #819 comment 4."""
+    body = SearchBody(catalog_id="acme")
+    q = _build_item_query(body)
+    assert q == {"match_all": {}}
+
+
+def test_catalog_id_does_not_inject_term_filter_when_other_filters_set() -> None:
+    """Sibling clauses (``collections``, ``geoid``, …) compose normally
+    while ``catalog_id`` stays purely an index-routing concern."""
+    body = SearchBody(catalog_id="acme", collections=["coll-1"])
+    flt = _filters(_build_item_query(body))
+    assert {"terms": {"collection": ["coll-1"]}} in flt
+    assert all("catalog_id" not in (f.get("term", {})) for f in flt)
+    assert all("catalog_id" not in (f.get("terms", {})) for f in flt)
+
+
 def test_search_body_round_trips_geoid_and_external_id_fields() -> None:
     body = SearchBody(geoid=["a", "b"], external_id=["x"])
     dumped = body.model_dump(exclude_none=True)
