@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.modules import get_protocol
 from dynastore.modules.iam.iam_service import IamService
+from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.models.protocols.catalogs import CatalogsProtocol
 from dynastore.models.protocols.policies import (
     Policy, Role, Principal,
@@ -556,11 +557,18 @@ class AdminService(ExtensionProtocol):
         body: AssignRoleRequest,
     ):
         mgr = _iam()
-        # Privilege-escalation guard: only sysadmins may grant a privileged role
-        # at any scope. Catalog-scope grants of platform-privileged roles are
-        # rejected upstream (see role-registry split), but we still gate here
-        # in case an operator extends the privileged set.
-        await ensure_privileged_role_assignment(request, body.role)
+        # Privilege-escalation guard at CATALOG scope: only sysadmins may
+        # grant a platform-tier admin role. Catalog-tier admin grants stay
+        # open to catalog admins (this is the #723 use case — a catalog
+        # admin appointing a colleague as co-admin of the same catalog).
+        # The role-registry split (line below) already rejects platform-tier
+        # role names at the catalog endpoint; this guard is a paranoid
+        # second layer for deployments that extend admin_tier_role_names
+        # with a platform-tier name.
+        await ensure_privileged_role_assignment(
+            request, body.role,
+            protected_roles=IamRolesConfig().platform_admin_tier_role_set,
+        )
         await _assert_catalog_exists(catalog_id)
         p = await mgr.get_principal(principal_id)
         if not p:
@@ -592,8 +600,13 @@ class AdminService(ExtensionProtocol):
         role_name: str,
     ):
         mgr = _iam()
-        # Privilege-escalation guard: only sysadmins may revoke a privileged role.
-        await ensure_privileged_role_assignment(request, role_name)
+        # Privilege-escalation guard at CATALOG scope: same narrowing as
+        # the grant path — only platform-tier admin role names are blocked
+        # here, catalog-tier admin revokes stay open to catalog admins.
+        await ensure_privileged_role_assignment(
+            request, role_name,
+            protected_roles=IamRolesConfig().platform_admin_tier_role_set,
+        )
         await _assert_catalog_exists(catalog_id)
         p = await mgr.get_principal(principal_id)
         if not p:
