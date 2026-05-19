@@ -203,6 +203,18 @@ class IamRolesConfig(PluginConfig):
         return frozenset(self.admin_tier_role_names)
 
     @property
+    def platform_admin_tier_role_set(self) -> frozenset:
+        """Subset of ``admin_role_set`` whose names are platform-tier.
+
+        Used by catalog-scope grant/revoke guards: a catalog admin must
+        be allowed to assign catalog-tier admin authority to colleagues
+        within their own catalog, so the privilege-escalation guard at
+        those routes must only block names that grant **platform-tier**
+        admin. By default this resolves to ``{"sysadmin"}``.
+        """
+        return self.admin_role_set & self.platform_role_names
+
+    @property
     def role_names(self) -> List[str]:
         """Names of every seeded role across both tiers — used to filter
         incoming realm_roles and to enumerate the known landscape."""
