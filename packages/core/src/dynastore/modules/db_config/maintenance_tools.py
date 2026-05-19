@@ -16,11 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import logging
 import os
 import datetime
 from dateutil.relativedelta import relativedelta
 from typing import Literal
+
+from sqlalchemy.exc import OperationalError as SAOperationalError
+
 from dynastore.modules.db_config.exceptions import UniqueViolationError
 from dynastore.modules.db_config.query_executor import (
     DDLQuery,
@@ -45,15 +49,44 @@ logger = logging.getLogger(__name__)
 async def ensure_db_extension(conn: DbResource, extension_name: str):
     """
     Ensures a database extension exists.
+
+    Foundational modules (DatastoreModule) call this in their lifespan before
+    accepting traffic.  Dev compositions reset the DB mid-startup
+    (db_entrypoint_dev.sh), which can drop the connection between Layer 2
+    pool warm-up and this DDL, surfacing as ``OperationalError: server
+    closed the connection unexpectedly``.  SQLAlchemy marks those with
+    ``connection_invalidated=True`` and recycles the pool transparently —
+    we just need to give the engine one or two retries with a short backoff
+    so a transient bounce does not abort the app's lifespan.
     """
-    try:
-        logger.info(f"Ensuring extension '{extension_name}' exists...")
-        await DDLQuery(
-            f'CREATE EXTENSION IF NOT EXISTS "{extension_name}" CASCADE;'
-        ).execute(conn)
-    except Exception as e:
-        logger.error(f"Failed to ensure extension '{extension_name}': {e}")
-        raise
+    attempts = 3
+    delay = 0.5
+    for attempt in range(1, attempts + 1):
+        try:
+            logger.info(
+                f"Ensuring extension '{extension_name}' exists "
+                f"(attempt {attempt}/{attempts})..."
+            )
+            await DDLQuery(
+                f'CREATE EXTENSION IF NOT EXISTS "{extension_name}" CASCADE;'
+            ).execute(conn)
+            return
+        except SAOperationalError as e:
+            if not getattr(e, "connection_invalidated", False) or attempt == attempts:
+                logger.error(
+                    f"Failed to ensure extension '{extension_name}': {e}"
+                )
+                raise
+            logger.warning(
+                f"ensure_db_extension('{extension_name}'): connection "
+                f"invalidated (DB likely restarting); retrying in {delay:.1f}s "
+                f"({attempt}/{attempts - 1})."
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+        except Exception as e:
+            logger.error(f"Failed to ensure extension '{extension_name}': {e}")
+            raise
 
 
 async def ensure_schema_exists(conn: DbResource, schema_name: str):
