@@ -561,13 +561,12 @@ class ItemsWritePolicy(PluginConfig):
 class WritePolicyDefaults(PluginConfig):
     """Posture-only write-policy defaults for the platform / catalog waterfall.
 
-    Carries only posture flags — never references specific field names. This
-    is the M8 cleanup target: write-policy posture (HOW conflicts are handled)
-    is decoupled from field-binding (WHICH columns carry identity, validity,
-    geometry hash). Field-binding lives in ``ItemsSchema.constraints``
-    as ``IdentityKeyConstraint``, ``ValidityConstraint``, and
-    ``GeometryHashConstraint`` instances — owned by the schema, not the
-    write-policy config.
+    Carries only posture flags — never references specific field names.
+    Write-policy posture (HOW conflicts are handled) is decoupled from
+    field-binding (WHICH columns carry identity, validity, geometry hash).
+    Field-binding now lives directly on
+    :class:`ItemsWritePolicy` (``compute``/``identity``/``schema``) at the
+    collection tier — not on this platform/catalog defaults class.
 
     Layering vs ``ItemsWritePolicy`` (sibling class):
       - **At platform / catalog tiers**: set posture defaults via
@@ -589,13 +588,9 @@ class WritePolicyDefaults(PluginConfig):
     1. **Platform-wide strict mode** (no silent skips anywhere)::
 
            # at platform tier:
-           WritePolicyDefaults(
-               on_conflict=WriteConflictPolicy.REFUSE_FAIL,
-               require_identity_key=True,
-           )
+           WritePolicyDefaults(on_conflict=WriteConflictPolicy.REFUSE_FAIL)
 
-       Every collection refuses with a 409 on any duplicate AND must declare
-       an IdentityKeyConstraint in its schema.
+       Every collection refuses with a 409 on any duplicate by default.
 
     2. **Per-catalog defaults** (loose at catalog A, strict at catalog B)::
 
@@ -603,10 +598,7 @@ class WritePolicyDefaults(PluginConfig):
            WritePolicyDefaults(on_conflict=WriteConflictPolicy.UPDATE)
 
            # at catalog B scope (e.g. authoritative master):
-           WritePolicyDefaults(
-               on_conflict=WriteConflictPolicy.REFUSE_FAIL,
-               require_identity_key=True,
-           )
+           WritePolicyDefaults(on_conflict=WriteConflictPolicy.REFUSE_FAIL)
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "policy")
     _visibility: ClassVar[Optional[str]] = "collection"
@@ -631,17 +623,6 @@ class WritePolicyDefaults(PluginConfig):
             "disables batch-level checks at this tier. ``refuse_asset`` "
             "rejects the entire asset if any item conflicts. Cascades like "
             "``on_conflict``."
-        ),
-    )
-    require_identity_key: Mutable[bool] = Field(
-        default=False,
-        examples=[False, True],
-        description=(
-            "If True, every collection at this scope MUST declare exactly one "
-            "``IdentityKeyConstraint`` in its ``ItemsSchema.constraints``. "
-            "Collections missing the constraint are rejected at write time. "
-            "Set at platform / catalog tier to enforce identity-key discipline "
-            "across all owned collections."
         ),
     )
 
@@ -1172,10 +1153,10 @@ class ItemsSchema(PluginConfig):
     instances, e.g.::
 
         ItemsSchema(
-            fields={"feature_id": FieldDefinition(data_type="text")},
+            fields={"name": FieldDefinition(data_type="text")},
             constraints=[
-                IdentityKeyConstraint(geohash_precision=7),
-                ValidityConstraint(field="valid_time"),
+                RequiredConstraint(field="name"),
+                UniqueConstraint(field="name"),
             ],
         )
     """
@@ -1226,7 +1207,7 @@ class ItemsSchema(PluginConfig):
         default_factory=list,
         description=(
             "Declarative field constraints (FieldConstraint subclass instances). "
-            "Examples: IdentityKeyConstraint, ValidityConstraint, GeometryHashConstraint."
+            "Examples: RequiredConstraint, UniqueConstraint."
         ),
     )
 

@@ -20,13 +20,15 @@ Declarative, composable constraints on individual fields in a ``ItemsSchema``.
 Each constraint kind is a frozen Pydantic model implementing the
 ``FieldConstraint`` protocol (``constraint_type: str`` class attribute).
 
-Five built-in constraint types:
+Two built-in constraint types:
 
     RequiredConstraint        — field must be present on every write
     UniqueConstraint          — values must be unique across the collection
-    IdentityKeyConstraint     — deduplication identity key with optional geohash precision
-    ValidityConstraint        — field carries temporal validity range
-    GeometryHashConstraint    — skip write when geometry hash is unchanged
+
+Identity / validity / geometry-hash semantics now live on
+:class:`~dynastore.modules.storage.driver_config.ItemsWritePolicy`
+(``compute``/``identity``/``schema``/``skip_if_unchanged_geometry_hash``)
+rather than as schema constraints.
 
 Additional constraint types can be registered by any module.
 
@@ -93,42 +95,6 @@ class UniqueConstraint(FieldConstraint):
     """
 
     constraint_type: ClassVar[str] = "unique"
-
-
-class IdentityKeyConstraint(FieldConstraint):
-    """This field acts as the deduplication identity key.
-
-    Replaces ``ItemsWritePolicy.external_id_field`` +
-    ``ItemsWritePolicy.geohash_precision``.
-
-    geohash_precision: geohash grid precision when the GEOHASH matcher is used.
-        Ignored when ``external_id_field`` mode is active.
-    """
-
-    constraint_type: ClassVar[str] = "identity_key"
-    geohash_precision: int = Field(default=9, ge=1, le=12)
-
-
-class ValidityConstraint(FieldConstraint):
-    """This field carries the temporal validity range for a feature.
-
-    Replaces ``ItemsWritePolicy.validity_field``.
-
-    field: name of the temporal validity field (e.g. ``"valid_time"``).
-    """
-
-    constraint_type: ClassVar[str] = "validity"
-    field: str = Field(description="Name of the temporal validity field.")
-
-
-class GeometryHashConstraint(FieldConstraint):
-    """Skip write when the incoming geometry hash equals the stored one.
-
-    Replaces ``ItemsWritePolicy.skip_if_unchanged_geometry_hash``.
-    NEW_VERSION degrades to no-op; UPDATE degrades to REFUSE_RETURN.
-    """
-
-    constraint_type: ClassVar[str] = "geometry_hash"
 
 
 # ---------------------------------------------------------------------------

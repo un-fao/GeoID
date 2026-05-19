@@ -77,7 +77,7 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
             return {
                 "results": [
                     {"plugin_id": "write_policy_defaults",
-                     "config": {"require_identity_key": True}},
+                     "config": {"on_conflict": "refuse_fail"}},
                 ],
                 "total": 1,
             }
@@ -94,7 +94,7 @@ async def test_get_effective_configs_resolved_merges_tier_deltas():
         catalog_id="cat-x", collection_id="coll-y", resolved=True,
     )
     assert sources["write_policy_defaults"] == "collection"
-    assert by_class["write_policy_defaults"]["require_identity_key"] is True
+    assert by_class["write_policy_defaults"]["on_conflict"] == "refuse_fail"
     # round-trips through the model so other defaults are present
     default_keys = set(WritePolicyDefaults().model_dump().keys())
     assert set(by_class["write_policy_defaults"].keys()) == default_keys
@@ -155,7 +155,7 @@ async def test_get_effective_configs_consumes_real_list_configs_row_shape(resolv
                 "total": 1,
                 "results": [
                     {"plugin_id": "write_policy_defaults",
-                     "config": {"require_identity_key": True}},
+                     "config": {"on_conflict": "refuse_fail"}},
                 ],
             }
         return {"total": 0, "results": []}
@@ -172,9 +172,9 @@ async def test_get_effective_configs_consumes_real_list_configs_row_shape(resolv
         "stored collection-tier row must surface as source=collection; "
         "regression for items/results & config_data/config field-name drift"
     )
-    assert by_class["write_policy_defaults"]["require_identity_key"] is True
+    assert by_class["write_policy_defaults"]["on_conflict"] == "refuse_fail"
     assert tier_data["collection"]["write_policy_defaults"] == {
-        "require_identity_key": True,
+        "on_conflict": "refuse_fail",
     }
     if resolved:
         # resolved path round-trips through the model so other defaults appear

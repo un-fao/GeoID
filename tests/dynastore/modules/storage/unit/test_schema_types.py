@@ -1,7 +1,7 @@
 """Unit tests for schema_types.py — M8.
 
 Covers:
-- 5 FieldConstraint types (construct, constraint_type, frozen)
+- 2 FieldConstraint types (construct, constraint_type, frozen)
 - SchemaViolation model
 - SchemaExtension Protocol structural check
 - StacSchemaExtension.validate_schema
@@ -15,16 +15,13 @@ from pydantic import ValidationError
 
 from dynastore.modules.storage.schema_types import (
     ConfigScopeMixin,
-    GeometryHashConstraint,
     FieldConstraint,
-    IdentityKeyConstraint,
     OgcFeaturesSchemaExtension,
     RequiredConstraint,
     SchemaExtension,
     SchemaViolation,
     StacSchemaExtension,
     UniqueConstraint,
-    ValidityConstraint,
 )
 
 
@@ -56,57 +53,13 @@ class TestUniqueConstraint:
         assert c.constraint_type == "unique"
 
 
-class TestIdentityKeyConstraint:
-    def test_constraint_type(self):
-        assert IdentityKeyConstraint.constraint_type == "identity_key"
-
-    def test_default_geohash_precision(self):
-        c = IdentityKeyConstraint()
-        assert c.geohash_precision == 9
-
-    def test_custom_geohash_precision(self):
-        c = IdentityKeyConstraint(geohash_precision=6)
-        assert c.geohash_precision == 6
-
-    def test_geohash_precision_bounds(self):
-        with pytest.raises(ValidationError):
-            IdentityKeyConstraint(geohash_precision=0)
-        with pytest.raises(ValidationError):
-            IdentityKeyConstraint(geohash_precision=13)
-
-
-class TestValidityConstraint:
-    def test_constraint_type(self):
-        assert ValidityConstraint.constraint_type == "validity"
-
-    def test_field_required(self):
-        with pytest.raises(ValidationError):
-            ValidityConstraint()  # 'field' is required
-
-    def test_with_field(self):
-        c = ValidityConstraint(field="valid_time")
-        assert c.field == "valid_time"
-
-
-class TestGeometryHashConstraint:
-    def test_constraint_type(self):
-        assert GeometryHashConstraint.constraint_type == "geometry_hash"
-
-    def test_construction(self):
-        c = GeometryHashConstraint()
-        assert c.constraint_type == "geometry_hash"
-
-
 class TestAllConstraintTypesDistinct:
-    def test_five_distinct_types(self):
+    def test_constraint_types_distinct(self):
         types = {
             RequiredConstraint.constraint_type,
             UniqueConstraint.constraint_type,
-            IdentityKeyConstraint.constraint_type,
-            ValidityConstraint.constraint_type,
-            GeometryHashConstraint.constraint_type,
         }
-        assert len(types) == 5
+        assert len(types) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +255,7 @@ class TestItemsSchemaConstraints:
         from dynastore.modules.storage.driver_config import ItemsSchema
         cfg = ItemsSchema(constraints=[
             RequiredConstraint(),
-            IdentityKeyConstraint(geohash_precision=7),
+            UniqueConstraint(),
         ])
         assert len(cfg.constraints) == 2
 
