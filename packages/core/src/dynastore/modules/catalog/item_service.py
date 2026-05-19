@@ -221,6 +221,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         col_config: Any,
         lang: str = "en",
         context: Optional[FeaturePipelineContext] = None,
+        read_policy: Optional[Any] = None,
     ) -> Feature:
         """
         Canonical row-to-Feature mapper. Runs each configured sidecar's
@@ -232,7 +233,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
           2. **Geometry sidecar**: sets ``geometry``, ``bbox``, optional stats
              properties.
           3. **Attributes sidecar**: optionally overrides ``id`` with
-             ``external_id``, populates schema-driven ``properties``.
+             ``external_id`` (controlled by
+             ``ItemsReadPolicy.feature_type.external_id_as_feature_id``,
+             default True), populates schema-driven ``properties``.
           4. **STAC sidecar** (optional): transforms the GeoJSON Feature into
              a STAC Item — adds ``links``, converts timestamps, attaches the
              asset reference from context.
@@ -241,6 +244,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         can share data (e.g. attributes → STAC via ``asset_id``) without
         direct coupling. Internal-field filtering is delegated to sidecars
         via ``get_internal_columns()``.
+
+        ``read_policy`` (optional) is published into context as
+        ``_items_read_policy`` so sidecars can consult wire-shape decisions
+        (e.g. external_id-as-feature-id) without re-fetching configs per row.
         """
 
         if not row:
@@ -262,6 +269,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # Shared context propagated through the entire sidecar pipeline.
         if context is None:
             context = FeaturePipelineContext(lang=lang)
+        if read_policy is not None and context.get("_items_read_policy") is None:
+            context["_items_read_policy"] = read_policy
 
         # M1b.2: resolve effective sidecars (core defaults + registry
         # injections) so default-body collections — whose `col_config`

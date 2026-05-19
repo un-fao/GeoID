@@ -163,8 +163,12 @@ class FeatureAttributeSidecar(SidecarProtocol):
 
     @property
     def provides_feature_id(self) -> bool:
-        """Returns True if this sidecar provides the feature ID (geoid)."""
-        return self.config.provides_feature_id
+        """Capability flag — attributes sidecar can map ``external_id`` to
+        ``feature.id``. Whether to do so on a given read is decided by
+        ``ItemsReadPolicy.feature_type.external_id_as_feature_id`` (the
+        policy intent), not by this property (the sidecar capability).
+        """
+        return True
 
     @property
     def feature_id_field_name(self) -> Optional[str]:
@@ -1198,10 +1202,11 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         """Populate Feature from database row.
 
         Pipeline responsibilities:
-          - **Identity**: If configured as the feature-id provider
-            (``external_id_as_feature_id=True``), override ``feature.id``
-            with ``external_id``.  The Hub already set ``geoid`` as the
-            default; this sidecar only overrides when appropriate.
+          - **Identity**: When the read policy enables it
+            (``ItemsReadPolicy.feature_type.external_id_as_feature_id``,
+            default True), override ``feature.id`` with the row's
+            ``external_id``. The Hub already set ``geoid`` as the
+            default.
           - **Properties**: Merge attribute columns / JSONB blob into
             ``feature.properties``.
           - **Context enrichment**: Write all fetched row values into
@@ -1213,9 +1218,16 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         context.publish(self.sidecar_id, dict(row))
 
         # 1. Identity Mapping
-        # The Hub already initialised feature.id = geoid.  We only override
-        # when this sidecar is the designated feature-id provider.
-        if self.config.provides_feature_id:
+        # Hub initialised feature.id = geoid. Override only when the read
+        # policy enables external_id-as-feature-id (default True when no
+        # policy is plumbed through context).
+        read_policy = context.get("_items_read_policy") if context else None
+        use_external_id = (
+            read_policy.feature_type.external_id_as_feature_id
+            if read_policy is not None
+            else True
+        )
+        if use_external_id:
             ext_id = row.get("external_id")
             if ext_id is not None:
                 feature.id = str(ext_id)

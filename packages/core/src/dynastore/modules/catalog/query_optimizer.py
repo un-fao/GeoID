@@ -19,6 +19,7 @@
 import logging
 from typing import Dict, List, Any, Tuple, Set, Optional
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+from dynastore.modules.storage.read_policy import ItemsReadPolicy
 from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     ConsumerType,
@@ -59,13 +60,25 @@ class QueryOptimizer:
         self,
         col_config: ItemsPostgresqlDriverConfig,
         consumer: Optional[ConsumerType] = None,
+        read_policy: Optional[ItemsReadPolicy] = None,
     ):
         self.col_config = col_config
         # Default to GENERIC when no consumer is supplied — preserves the
         # pre-consumer-aware behaviour for ad-hoc/internal callers.
         self.consumer: ConsumerType = consumer or ConsumerType.GENERIC
+        # ``read_policy`` carries the wire-shape contract. ``None`` means
+        # "use defaults" (external_id_as_feature_id=True). Callers thread
+        # the resolved ItemsReadPolicy where they have it.
+        self.read_policy: Optional[ItemsReadPolicy] = read_policy
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
+
+    def _external_id_as_feature_id(self) -> bool:
+        """Resolve the wire-shape decision from the read policy, defaulting
+        to True when no policy is supplied (preserves pre-policy behaviour)."""
+        if self.read_policy is None:
+            return True
+        return self.read_policy.feature_type.external_id_as_feature_id
 
     def _build_capability_index(self):
         """Build index of all available fields and their capabilities from active sidecars."""
@@ -604,20 +617,20 @@ class QueryOptimizer:
                 seen.add(field)
         select_fields = unique_selects
 
-        # Handle provides_feature_id: ensure the correct column is aliased as 'id'.
-        # One sidecar at most can be the feature-id provider (validated at config time).
-        # Default is h.geoid; a configured sidecar (e.g. attributes with external_id)
-        # can override this for all optimizer-generated queries.
-        # Resolve the feature-ID expression once — used for both SELECT alias and item_ids filter.
-        # Use COALESCE(sidecar_field, h.geoid) so that items without an external_id still
-        # expose their geoid as the public 'id', keeping GET-by-id consistent.
+        # Resolve the feature-ID expression. ``provides_feature_id`` on the
+        # sidecar is a capability flag (at most one sidecar can provide it).
+        # The wire-shape decision lives on the read policy — when
+        # ``external_id_as_feature_id`` is False, ``feature.id == geoid``
+        # regardless of sidecar capability. Use COALESCE so rows without an
+        # ``external_id`` still expose their ``geoid``.
         feature_id_expr: str = "h.geoid"
-        for sc_config in required_sidecars:
-            sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
-            if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
-                sc_alias = f"sc_{sidecar.sidecar_id}"
-                feature_id_expr = f"COALESCE({sc_alias}.{sidecar.feature_id_field_name}, h.geoid::text)"
-                break
+        if self._external_id_as_feature_id():
+            for sc_config in required_sidecars:
+                sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+                if sidecar and sidecar.provides_feature_id and sidecar.feature_id_field_name:
+                    sc_alias = f"sc_{sidecar.sidecar_id}"
+                    feature_id_expr = f"COALESCE({sc_alias}.{sidecar.feature_id_field_name}, h.geoid::text)"
+                    break
 
         if not any("AS id" in f or f.rstrip().endswith(" id") for f in select_fields):
             select_fields.append(f"{feature_id_expr} AS id")

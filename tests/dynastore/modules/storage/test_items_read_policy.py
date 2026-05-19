@@ -36,6 +36,13 @@ class TestItemsReadPolicyShape:
         assert p.feature_type.schema_ref == "items_write_policy.schema"
         assert p.feature_type.failure_mode == "best_effort"
         assert p.feature_type.expose == []
+        assert p.feature_type.external_id_as_feature_id is True
+
+    def test_external_id_as_feature_id_can_be_disabled(self) -> None:
+        p = ItemsReadPolicy(
+            feature_type=FeatureType(external_id_as_feature_id=False)
+        )
+        assert p.feature_type.external_id_as_feature_id is False
 
     def test_collection_scoped_only(self) -> None:
         assert ItemsReadPolicy._visibility == "collection"
