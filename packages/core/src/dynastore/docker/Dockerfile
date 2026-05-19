@@ -1,7 +1,7 @@
 # STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
 # Skipped cheaply when BUILD_JUPYTERLITE=false (Cloud Run jobs/workers that
 # never serve /web/pages/notebooks).
-FROM python:3.12-slim AS jupyterlite-builder
+FROM python:3.13-slim AS jupyterlite-builder
 
 ARG BUILD_JUPYTERLITE=false
 
@@ -38,7 +38,7 @@ RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
     fi
 
 # STAGE 1: Builder (Production dependencies)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS builder
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.0 AS builder
 
 LABEL maintainer="carlo.cancellieri@fao.org"
 
@@ -49,13 +49,13 @@ ARG VENV_PATH=/opt/venv
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     git build-essential libpq-dev python3-full python3-pip \
-    python3.12-venv python3.12-dev sudo curl && \
+    python3.13-venv python3.13-dev sudo curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR ${APP_DIR}
 
 # Virtual Env Setup
-RUN python3.12 -m venv ${VENV_PATH}
+RUN python3.13 -m venv ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
 # No PYTHONPATH — `dynastore` and `dynastore.extensions` are PEP 420 namespace
 # packages, contributed to by dynastore-core (modules, tools, models, tasks)
@@ -140,7 +140,7 @@ ARG BUILD_JUPYTERLITE=false
 # build does NOT include the Arrow/Parquet driver.  Reading GeoParquet over
 # /vsigs/ from the ingestion task therefore failed with
 # ``CPLE_OpenFailedError: not recognized as being in a supported file format``
-# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.12.3``
+# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.13.0``
 # has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
 # → driverShortName='Parquet').  Force fiona to rebuild from sdist against
 # the system libgdal so it inherits every driver the base image ships.
@@ -249,7 +249,7 @@ WORKDIR ${APP_DIR}
 EXPOSE 5678 5679
 
 # STAGE 4: Runtime (Production image)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.3 AS runtime
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.0 AS runtime
 
 ARG APP_USER=dynastore
 ARG APP_UID=1001

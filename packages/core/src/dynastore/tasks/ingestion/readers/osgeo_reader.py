@@ -14,7 +14,7 @@
 Why this exists: ``fiona`` (PyPI wheel) ships a bundled libgdal that
 omits the Arrow/Parquet driver.  ``from osgeo import ogr`` binds to
 the **system** libgdal (the one that comes with the
-``ghcr.io/osgeo/gdal:ubuntu-full-3.12.3`` base image), which DOES
+``ghcr.io/osgeo/gdal:ubuntu-full-3.13.0`` base image), which DOES
 include Parquet, FlatGeobuf, OpenFileGDB, …  Same osgeo binding the
 maps service uses successfully.
 
