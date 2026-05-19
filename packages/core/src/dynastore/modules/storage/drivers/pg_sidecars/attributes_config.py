@@ -175,8 +175,17 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
       Stronger query plans, requires schema declaration up-front.
 
     Identity columns (``external_id``, ``asset_id``) are gated by
-    ``enable_external_id`` / ``enable_asset_id`` flags — used by
-    ``ComputedKind.EXTERNAL_ID`` and the asset-reference cascade.
+    ``enable_external_id`` / ``enable_asset_id`` storage-shape fields.
+    These are overlay fields — the PG driver writes the policy-derived
+    values onto them at ``ensure_storage`` time so every read path that
+    rehydrates this config sees the policy-aligned shape without needing
+    to thread ``ItemsWritePolicy`` to the query layer.
+
+    SSOT for ``enable_external_id``: ``ItemsWritePolicy.identity``
+    (presence of a ``ComputedField(kind=EXTERNAL_ID)`` rule).
+    SSOT for ``enable_asset_id``: ``ItemsWritePolicy.track_asset_id``.
+    Operators MUST set those policy fields; values set directly here are
+    overwritten on the next ``ensure_storage``.
     """
 
     sidecar_type: Literal["attributes"] = "attributes"
@@ -206,8 +215,23 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     # they are behavior knobs and live exclusively on ``ItemsWritePolicy``
     # (config key ``items_write_policy``). The sidecar reads them from the
     # policy at write time via ``processing_context["_items_write_policy"]``.
-    # The flags below are storage/DDL concerns only.
-    enable_external_id: bool = Field(default=True, description="Store external_id column")
+    #
+    # ``enable_external_id`` and ``enable_asset_id`` are storage-shape overlay
+    # fields. The PG driver overlays the SSOT values from ``ItemsWritePolicy``
+    # onto these fields at ``ensure_storage`` time and persists the result, so
+    # every read path that rehydrates this config sees the policy-aligned value
+    # without threading the policy.
+    # SSOT: ``ItemsWritePolicy.identity`` (EXTERNAL_ID rule) → enable_external_id
+    # SSOT: ``ItemsWritePolicy.track_asset_id``               → enable_asset_id
+    # Operators MUST set those policy fields; values here are overwritten on
+    # the next ``ensure_storage``.
+    enable_external_id: bool = Field(
+        default=True,
+        description=(
+            "Storage-shape mirror of ItemsWritePolicy.identity (EXTERNAL_ID rule presence). "
+            "(SSOT). Overwritten by the driver at DDL time."
+        ),
+    )
     index_external_id: bool = Field(
         default=True, description="Create unique index on external_id"
     )
@@ -220,9 +244,12 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         description="Add geoid to feature properties if external_id is not unique",
     )
 
-    enable_asset_id: bool = Field(default=True, description="Store asset_id column")
-    asset_id_field: str = Field(
-        default="asset_id", description="Input field to map to asset_id"
+    enable_asset_id: bool = Field(
+        default=True,
+        description=(
+            "Storage-shape mirror of ItemsWritePolicy.track_asset_id "
+            "(SSOT). Overwritten by the driver at DDL time."
+        ),
     )
     index_asset_id: bool = Field(default=True, description="Create index on asset_id")
 

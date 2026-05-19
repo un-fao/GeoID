@@ -1172,13 +1172,14 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     payload["external_id"] = ext_id
 
             if self.config.enable_asset_id:
-                asset_id_field = getattr(self.config, "asset_id_field", "asset_id")
-                if "." not in asset_id_field and asset_id_field in props_to_save:
-                    del props_to_save[asset_id_field]
+                # asset_id column is always named "asset_id"; the input property
+                # to extract from feature body is the same fixed name.
+                if "asset_id" in props_to_save:
+                    del props_to_save["asset_id"]
 
                 asset_id = context.get("asset_id")
                 if not asset_id:
-                    asset_id = self._extract_value(feature_as_dict, asset_id_field)
+                    asset_id = self._extract_value(feature_as_dict, "asset_id")
                 if asset_id:
                     payload["asset_id"] = asset_id
                     context["asset_id"] = asset_id

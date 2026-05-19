@@ -507,36 +507,47 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                 catalog_id, collection_id, exc,
             )
 
-        # #974: ItemsWritePolicy.enable_validity is the SSOT. Overlay it
-        # onto every ``FeatureAttributeSidecarConfig`` so the persisted
-        # col_config matches the policy decision — every read path that
-        # rehydrates the sidecar (query_optimizer, item_query,
-        # item_service, …) then sees the policy-aligned value without
-        # having to thread the policy itself.
+        # ItemsWritePolicy is the SSOT for several sidecar storage-shape
+        # decisions. The driver overlays the policy-derived values onto the
+        # sidecar config fields at ensure_storage time so the persisted config
+        # stays policy-aligned. Every read path that rehydrates the sidecar
+        # (query_optimizer, item_query, item_service, …) then sees the correct
+        # shape without threading the policy itself.
+        #
+        # Fields overlaid from ItemsWritePolicy (#974, #1043):
+        #   enable_validity    ← policy.enable_validity
+        #   enable_external_id ← policy has a ComputedField(kind=EXTERNAL_ID)
+        #   enable_asset_id    ← policy.track_asset_id
+        #
+        # #978: storage-bearing compute entries drive the geometries sidecar.
         write_policy = await self._resolve_write_policy(catalog_id, collection_id)
-        # #978: storage-bearing entries of ``ItemsWritePolicy.compute`` are
-        # the SSOT for which statistic columns / JSONB keys the geometries
-        # sidecar materialises. Overlay them onto every
-        # ``GeometriesSidecarConfig.compute_fields_overlay`` so every read
-        # path that rehydrates the sidecar sees the same shape decision
-        # without round-tripping to the configs service.
         from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
             GeometriesSidecarConfig,
         )
+        from dynastore.modules.storage.driver_config import ComputedKind
 
+        policy_has_external_id = (
+            write_policy.find_compute(ComputedKind.EXTERNAL_ID) is not None
+        )
         policy_storage_fields = [
             cf for cf in write_policy.compute if cf.storage_mode is not None
         ]
         overlay_sidecars = []
         any_overlay = False
         for sc in col_config.sidecars:
-            if isinstance(sc, FeatureAttributeSidecarConfig) and (
-                sc.enable_validity != write_policy.enable_validity
-            ):
-                overlay_sidecars.append(
-                    sc.model_copy(update={"enable_validity": write_policy.enable_validity})
-                )
-                any_overlay = True
+            if isinstance(sc, FeatureAttributeSidecarConfig):
+                updates: dict = {}
+                if sc.enable_validity != write_policy.enable_validity:
+                    updates["enable_validity"] = write_policy.enable_validity
+                if sc.enable_external_id != policy_has_external_id:
+                    updates["enable_external_id"] = policy_has_external_id
+                if sc.enable_asset_id != write_policy.track_asset_id:
+                    updates["enable_asset_id"] = write_policy.track_asset_id
+                if updates:
+                    overlay_sidecars.append(sc.model_copy(update=updates))
+                    any_overlay = True
+                else:
+                    overlay_sidecars.append(sc)
             elif isinstance(sc, GeometriesSidecarConfig) and (
                 list(sc.compute_fields_overlay) != policy_storage_fields
             ):
