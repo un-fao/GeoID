@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <base href="/web/geoid/">
-  <meta name="description" content="OGC-native multi-tenant geospatial catalog platform. STAC API 1.0, OGC API Features (Parts 1-4), Coverages, Tiles, Maps, Processes, Records, Styles, DGGS, Connected Systems, Moving Features.">
+  <meta name="description" content="OGC-native multi-tenant geospatial catalog platform. STAC API 1.0, OGC API Features (Parts 1-4), Coverages, Tiles, Maps, Processes, Records, Styles, EDR, DGGS, Connected Systems, Moving Features, Joins.">
   <title>GeoID — OGC-native geospatial catalog</title>
   <link rel="icon" type="image/svg+xml" href="geoid_icon.svg">
   <link rel="stylesheet" href="index.css">
@@ -73,7 +73,7 @@
       <h2>Capabilities</h2>
       <div class="capabilities-grid">
         <div class="glass-panel feature-card"><h4>Multi-tenancy</h4><p>Each catalog maps to a distinct PostgreSQL schema. Zero data leakage, rename without data movement.</p></div>
-        <div class="glass-panel feature-card emerald"><h4>OGC Native</h4><p>Features (Parts 1-4), STAC 1.0.0, Coverages, Tiles, Maps, Processes, Records, DGGS, Connected Systems, Moving Features, Styles.</p></div>
+        <div class="glass-panel feature-card emerald"><h4>OGC Native</h4><p>Features (Parts 1-4), STAC 1.0.0, Coverages, Tiles, Maps, Processes, Records, EDR, DGGS, Connected Systems, Moving Features, Joins, Styles.</p></div>
         <div class="glass-panel feature-card purple"><h4>Trillion-row scale</h4><p>Lazy JIT partitioning via DB triggers. Base62-encoded physical schemas. No upfront capacity planning.</p></div>
         <div class="glass-panel feature-card"><h4>ABAC / RBAC</h4><p>Fine-grained, declarative authorization. Identity matchers + content-hash gating for write paths.</p></div>
         <div class="glass-panel feature-card emerald"><h4>Asset registry</h4><p>Stable URIs for every asset. Content-hash deduplication. Bridges STAC items to physical files.</p></div>
