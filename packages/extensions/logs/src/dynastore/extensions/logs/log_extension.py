@@ -34,6 +34,7 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
 )
 from dynastore.modules.catalog.catalog_module import register_event_listener
+from dynastore.modules.elasticsearch.dashboards_provisioner import kibana_api_key
 from dynastore.models.shared_models import SYSTEM_CATALOG_ID, SYSTEM_LOGS_TABLE
 from dynastore.modules.catalog.log_manager import log_event
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
@@ -56,21 +57,6 @@ def _public_path() -> str:
     if not raw.startswith("/"):
         raw = "/" + raw
     return raw.rstrip("/") or "/dashboards"
-
-
-def _api_key() -> Optional[str]:
-    """Return the Kibana API key, falling back to ``ES_API_KEY`` (#937).
-
-    On Elastic Cloud deployments the same API key authorizes both the ES
-    cluster and the Kibana endpoint; the fallback lets operators reuse the
-    existing ES secret instead of duplicating it. ``KIBANA_UPSTREAM_API_KEY``
-    still wins when set.
-    """
-    key = (
-        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
-        or os.environ.get("ES_API_KEY", "").strip()
-    )
-    return key or None
 
 
 def _kibana_url() -> Optional[str]:
@@ -116,7 +102,7 @@ async def _probe_dashboards_health() -> Dict[str, bool]:
     import httpx
 
     headers = {"osd-xsrf": "true", "kbn-xsrf": "true"}
-    key = _api_key()
+    key = kibana_api_key()
     if key:
         headers["Authorization"] = f"ApiKey {key}"
 
@@ -433,7 +419,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         """Return resolved, **masked** configuration for the embedded dashboard."""
         return {
             "upstream_url": os.environ.get("KIBANA_UPSTREAM_URL", "").strip() or None,
-            "api_key_set": _api_key() is not None,
+            "api_key_set": kibana_api_key() is not None,
             "public_path": _public_path(),
         }
 

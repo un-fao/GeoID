@@ -45,6 +45,8 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import StreamingResponse
 
+from dynastore.modules.elasticsearch.dashboards_provisioner import kibana_api_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,21 +100,6 @@ def _upstream_url() -> Optional[str]:
     return raw or None
 
 
-def _api_key() -> Optional[str]:
-    """Return the Kibana API key, falling back to ``ES_API_KEY`` (#937).
-
-    On Elastic Cloud deployments the same API key authorizes both the ES
-    cluster and the Kibana endpoint; the fallback lets operators reuse the
-    existing ES secret instead of duplicating it. ``KIBANA_UPSTREAM_API_KEY``
-    still wins when set.
-    """
-    key = (
-        os.environ.get("KIBANA_UPSTREAM_API_KEY", "").strip()
-        or os.environ.get("ES_API_KEY", "").strip()
-    )
-    return key or None
-
-
 def _public_path() -> str:
     """The path under which the proxy is mounted on the geoid origin."""
     raw = os.environ.get("KIBANA_PUBLIC_PATH", "/dashboards").strip()
@@ -131,7 +118,7 @@ def _forward_request_headers(request: Request) -> dict:
     # XSRF bypass for OpenSearch Dashboards / Kibana
     out.setdefault("osd-xsrf", "true")
     out.setdefault("kbn-xsrf", "true")
-    key = _api_key()
+    key = kibana_api_key()
     if key:
         out["Authorization"] = f"ApiKey {key}"
     return out
