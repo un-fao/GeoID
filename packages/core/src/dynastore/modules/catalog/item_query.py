@@ -207,12 +207,45 @@ class ItemQueryMixin:
     ) -> Any:
         raise NotImplementedError("ItemQueryMixin requires a concrete _get_collection_config")
 
+    async def _resolve_read_policy(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> Optional[Any]:
+        """Resolve the collection's :class:`ItemsReadPolicy` for read assembly.
+
+        Fetched once per query (not per row) so the row mapper can honour the
+        wire-shape contract — ``feature_type.expose`` value-merge and
+        ``external_id_as_feature_id``. Returns ``None`` when the configs
+        protocol is unavailable; callers then fall back to default wire shape.
+        """
+        try:
+            from dynastore.modules.storage.read_policy import ItemsReadPolicy
+
+            configs = get_protocol(ConfigsProtocol)
+            if configs is None:
+                return None
+            return await configs.get_config(
+                ItemsReadPolicy,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - read assembly must not break on config miss
+            logger.debug(
+                "read policy resolution skipped for %s/%s: %s",
+                catalog_id,
+                collection_id,
+                exc,
+            )
+            return None
+
     def map_row_to_feature(
         self,
         row: Dict[str, Any],
         col_config: Any,
         lang: str = "en",
         context: Any = None,
+        read_policy: Optional[Any] = None,
     ) -> Feature:
         raise NotImplementedError("ItemQueryMixin requires a concrete map_row_to_feature")
 
@@ -249,10 +282,16 @@ class ItemQueryMixin:
 
         if col_config is None or phys_schema is None or phys_table is None:
             return []
+        read_policy = await self._resolve_read_policy(catalog_id, collection_id)
         optimizer = QueryOptimizer(col_config)
         sql, params = optimizer.build_optimized_query(request, phys_schema, phys_table)
         rows = await _run_query(conn, text(sql), params)
-        return [self.map_row_to_feature(dict(row._mapping), col_config) for row in rows]
+        return [
+            self.map_row_to_feature(
+                dict(row._mapping), col_config, read_policy=read_policy
+            )
+            for row in rows
+        ]
 
     async def get_features_query(
         self,

@@ -1325,11 +1325,102 @@ class GeometriesSidecar(SidecarProtocol):
         # These are usually internal but can be exposed if needed.
         if feature.properties is None:
             feature.properties = {}
+
+        # 4. Statistics are projected via ``get_select_fields`` and consumed
+        # by the read API as queryable fields (COLUMNAR) or remain inside
+        # the ``geom_stats`` JSONB column. They are NOT auto-merged into
+        # ``properties`` — a collection opts each computed value into the wire
+        # output via ``ItemsReadPolicy.feature_type.expose``.
+        self._merge_exposed_computed_values(row, feature, context)
+
+    def _merge_exposed_computed_values(
+        self,
+        row: Dict[str, Any],
+        feature: Feature,
+        context: FeaturePipelineContext,
+    ) -> None:
+        """Merge ``ItemsReadPolicy.feature_type.expose`` values onto properties.
+
+        The read query already SELECTed every storage-bearing computed field
+        this sidecar materialises (see ``get_select_fields``). This step copies
+        the subset named in ``expose`` onto ``feature.properties``, keyed by
+        ``ComputedField.resolved_name``. Values not named in ``expose`` stay
+        hidden so storage plumbing never leaks into the wire shape.
+
+        ``failure_mode`` decides what happens when an exposed value is absent
+        or NULL: ``best_effort`` (default) silently omits it; ``strict``
+        raises so a typo or a mid-flight schema change surfaces loudly.
+        """
+        policy = context.get("_items_read_policy")
+        feature_type = getattr(policy, "feature_type", None)
+        if feature_type is None:
+            return
+        expose = list(getattr(feature_type, "expose", None) or [])
+        if not expose:
+            return
+        strict = getattr(feature_type, "failure_mode", "best_effort") == "strict"
+
+        # Only the names this sidecar can actually produce — the attributes
+        # sidecar owns external_id / schema fields, so a name it doesn't
+        # materialise is simply not ours to merge here.
+        producible = {f.resolved_name for f in self._storage_fields()}
+
+        if feature.properties is None:
+            feature.properties = {}
         props = feature.properties
 
-        # Statistics are projected via ``get_select_fields`` and consumed
-        # by the read API as queryable fields (COLUMNAR) or remain inside
-        # the ``geom_stats`` JSONB column (no auto-merge into properties).
+        for name in expose:
+            if name not in producible:
+                continue
+            found, value = self._resolve_computed_value(row, name)
+            if not found or value is None:
+                if strict:
+                    raise ValueError(
+                        "ItemsReadPolicy.feature_type.expose lists "
+                        f"'{name}' but the read row carries no value for it."
+                    )
+                continue
+            props[name] = value
+
+    def _resolve_computed_value(
+        self, row: Dict[str, Any], resolved_name: str
+    ) -> Tuple[bool, Any]:
+        """Locate a storage-bearing computed value in a read row.
+
+        Returns ``(found, value)``. Mirrors the storage layout decided by
+        ``get_select_fields``: COLUMNAR fields surface as a top-level row key;
+        JSONB fields live inside the shared ``geom_stats`` column; 3D place
+        statistics live in their own ``{table}_place`` projection (columnar
+        ``place_{name}`` keys or a ``place_stats`` JSONB blob). ``found`` is
+        ``False`` only when the layout has no slot for the value at all.
+        """
+        field = next(
+            (f for f in self._storage_fields() if f.resolved_name == resolved_name),
+            None,
+        )
+        if field is None:
+            return (False, None)
+
+        is_place = field.kind in _PLACE_TABLE_KINDS
+        if field.storage_mode == StatisticStorageMode.COLUMNAR:
+            key = f"place_{resolved_name}" if is_place else resolved_name
+            if key in row:
+                return (True, row[key])
+            return (False, None)
+
+        # JSONB: value nests inside the shared stats blob for this sidecar.
+        blob_key = "place_stats" if is_place else "geom_stats"
+        blob = row.get(blob_key)
+        if isinstance(blob, (str, bytes, bytearray)):
+            import json as _json
+
+            try:
+                blob = _json.loads(blob)
+            except Exception:
+                return (False, None)
+        if isinstance(blob, dict) and resolved_name in blob:
+            return (True, blob[resolved_name])
+        return (False, None)
 
     async def expire_version(
         self,
