@@ -115,10 +115,6 @@ def _make_service():
     from dynastore.modules.catalog.catalog_service import CatalogService
 
     svc = CatalogService.__new__(CatalogService)
-    # Cache invalidation is a method on a wrapped descriptor — stub the surface
-    cache = MagicMock()
-    cache.cache_invalidate = MagicMock()
-    svc._get_catalog_model_cached = cache  # type: ignore[attr-defined]
     return svc
 
 
@@ -168,7 +164,9 @@ async def test_update_provisioning_status_fans_out_to_metadata_router() -> None:
     ) as DQLQueryCls, patch(
         "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
-    ):
+    ), patch(
+        "dynastore.modules.catalog.catalog_service._invalidate_catalog_model_cache",
+    ) as inv_mock:
         # DQLQuery(...).execute(...) returns the row dict
         DQLQueryCls.return_value.execute = AsyncMock(return_value=dql_result)
 
@@ -176,7 +174,7 @@ async def test_update_provisioning_status_fans_out_to_metadata_router() -> None:
 
     assert ok is True
     # Cache invalidated on the source-of-truth flip
-    svc._get_catalog_model_cached.cache_invalidate.assert_called_once_with("cat_x")
+    inv_mock.assert_called_once_with("cat_x")
     # Router fan-out actually happened with the new status carried in
     assert upsert_called_with["catalog_id"] == "cat_x"
     assert upsert_called_with["metadata"]["provisioning_status"] == "ready"
@@ -213,13 +211,15 @@ async def test_update_provisioning_status_skips_router_when_pg_returns_no_row() 
     ) as DQLQueryCls, patch(
         "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
-    ):
+    ), patch(
+        "dynastore.modules.catalog.catalog_service._invalidate_catalog_model_cache",
+    ) as inv_mock:
         DQLQueryCls.return_value.execute = AsyncMock(return_value=None)
         ok = await svc.update_provisioning_status("missing_cat", "ready")
 
     assert ok is False
     assert router_called is False
-    svc._get_catalog_model_cached.cache_invalidate.assert_not_called()
+    inv_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -262,11 +262,13 @@ async def test_update_provisioning_status_skips_router_when_payload_empty() -> N
     ) as DQLQueryCls, patch(
         "dynastore.modules.catalog.catalog_router.upsert_catalog_metadata",
         new=_fake_upsert,
-    ):
+    ), patch(
+        "dynastore.modules.catalog.catalog_service._invalidate_catalog_model_cache",
+    ) as inv_mock:
         DQLQueryCls.return_value.execute = AsyncMock(return_value={"id": "cat_x"})
         ok = await svc.update_provisioning_status("cat_x", "ready")
 
     assert ok is True
     # Cache still invalidated (the row DID flip), but router skipped (empty payload)
-    svc._get_catalog_model_cached.cache_invalidate.assert_called_once_with("cat_x")
+    inv_mock.assert_called_once_with("cat_x")
     assert router_called is False
