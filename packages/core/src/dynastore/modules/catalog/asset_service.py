@@ -810,7 +810,7 @@ class AssetService(AssetsProtocol):
         ignored the operator; full operator coverage is tracked
         separately.
         """
-        from dynastore.modules.storage.router import get_asset_driver
+        from dynastore.modules.storage.router import get_asset_search_driver
 
         unsupported = sorted({f.op.value for f in filters if f.op != FilterOperator.EQ})
         if unsupported:
@@ -824,7 +824,7 @@ class AssetService(AssetsProtocol):
 
         eq_query: Dict[str, Any] = {f.field: f.value for f in filters}
 
-        driver = await get_asset_driver("READ", catalog_id, collection_id)
+        driver = await get_asset_search_driver(catalog_id, collection_id)
         docs = await driver.search_assets(
             catalog_id,
             collection_id=collection_id,
