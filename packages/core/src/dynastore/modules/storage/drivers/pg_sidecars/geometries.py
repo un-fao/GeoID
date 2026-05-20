@@ -65,7 +65,6 @@ from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, Res
 from dynastore.tools.geospatial_exceptions import (
     GeometryProcessingError,
 )
-from dynastore.tools.geospatial import compute_derived_fields
 
 logger = logging.getLogger(__name__)
 
@@ -1160,6 +1159,8 @@ class GeometriesSidecar(SidecarProtocol):
                 props = feature.properties or {}
             elif isinstance(feature, dict):
                 props = feature.get("properties") or {}
+            from dynastore.tools.geospatial import compute_derived_fields
+
             derived = compute_derived_fields(shapely_geom, props, storage_fields)
             jsonb_payload: Dict[str, Any] = {}
             for f in storage_fields:
