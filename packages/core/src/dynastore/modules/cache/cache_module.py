@@ -148,6 +148,9 @@ async def _load_cache_config() -> "CachePluginConfig":
             )
             return CachePluginConfig()
 
+        if configs_proto is None:
+            return CachePluginConfig()
+
         try:
             cfg = await configs_proto.get_config(CachePluginConfig)
             if cfg:

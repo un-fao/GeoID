@@ -26,7 +26,7 @@ This module provides the FeatureAttributeSidecar which manages:
 
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple, Union, cast
 from enum import Enum
 from pydantic import Field, BaseModel
 from geojson_pydantic import Feature
@@ -107,7 +107,7 @@ def _resolve_external_id_field(context: Dict[str, Any]) -> Optional[str]:
     if policy is None:
         return None
     getter = getattr(policy, "external_id_path", None)
-    return getter() if callable(getter) else None
+    return cast(Optional[str], getter()) if callable(getter) else None
 
 
 def _resolve_require_external_id(context: Dict[str, Any]) -> bool:

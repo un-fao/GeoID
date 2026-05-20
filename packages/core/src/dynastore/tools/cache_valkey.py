@@ -351,7 +351,7 @@ def build_valkey_client(
 
         # Discovery endpoint preferred (Memorystore Valkey CLUSTER pattern)
         if discovery_host:
-            client = ValkeyCluster(
+            client = ValkeyCluster(  # type: ignore[abstract]
                 host=discovery_host,
                 port=discovery_port,
                 **cluster_kwargs,

@@ -563,7 +563,10 @@ class CatalogService(CatalogsProtocol):
         """
         from dynastore.modules.storage.router import get_driver
         return await get_driver(
-            operation, catalog_id, collection_id, hints=hints,
+            operation,
+            catalog_id,
+            collection_id,
+            hints=hints if hints is not None else frozenset(),
         )
 
     async def resolve_physical_table(

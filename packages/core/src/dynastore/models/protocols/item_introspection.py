@@ -81,6 +81,7 @@ class ItemIntrospectionProtocol(Protocol):
         col_config: Any,
         lang: str = "en",
         context: Optional[Any] = None,
+        read_policy: Optional[Any] = None,
     ) -> Feature:
         """
         Transform a database row dict into a GeoJSON ``Feature``.

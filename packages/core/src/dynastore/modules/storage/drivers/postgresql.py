@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, ClassVar, Dict, FrozenSet,
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.storage_location import StorageLocation
+    from dynastore.modules.storage.driver_config import ItemsWritePolicy
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext

@@ -938,7 +938,7 @@ async def evaluate_condition(condition: Condition, ctx: EvaluationContext) -> bo
 
 async def evaluate_conditions(conditions: List[Condition], ctx: EvaluationContext) -> bool:
     """Helper to evaluate a list of conditions."""
-    return await condition_registry.evaluate_all(conditions, ctx)
+    return await _get_condition_registry().evaluate_all(conditions, ctx)
 
 def register_condition_handler(handler: ConditionHandler):
     """
@@ -948,4 +948,4 @@ def register_condition_handler(handler: ConditionHandler):
         class MyHandler(ConditionHandler): ...
         register_condition_handler(MyHandler())
     """
-    condition_registry.register(handler)
+    _get_condition_registry().register(handler)

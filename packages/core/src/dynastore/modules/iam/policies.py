@@ -522,7 +522,7 @@ class PolicyService:
             )
             return
 
-        existing = persisted.get(OidcRoleSyncConfig)
+        existing = cast(Optional[OidcRoleSyncConfig], persisted.get(OidcRoleSyncConfig))
         if existing is None:
             seed = OidcRoleSyncConfig(reconcile_enabled=True)
             try:
