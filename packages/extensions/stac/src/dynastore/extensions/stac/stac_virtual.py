@@ -914,14 +914,21 @@ class StacVirtualMixin(_Host):
 
             # Map to Features
             from dynastore.models.protocols import ItemsProtocol
+            from dynastore.extensions.tools.query import resolve_items_read_policy
             items_svc = get_protocol(ItemsProtocol)
             assert items_svc is not None
             catalogs_svc = await self._get_catalogs_service()
+            # Resolve the read policy once per query so the row mapper honours
+            # ``feature_type.expose`` and ``external_id_as_feature_id`` on the
+            # virtual-hierarchy path too (STAC items already key on external_id
+            # by convention; the expose merge surfaces computed values that the
+            # STAC item generator then reads from ``feature.properties``).
+            read_policy = await resolve_items_read_policy(catalog_id, collection_id)
             features = []
             for row in items_rows:
                 # Hierarchy queries return base table rows + sidecar joins if configured
                 col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, ctx=DriverContext(db_resource=conn))
-                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
+                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config, read_policy=read_policy)
                 if feat:
                     features.append(feat)
 
@@ -1034,13 +1041,18 @@ class StacVirtualMixin(_Host):
 
             # Map to Features
             from dynastore.models.protocols import ItemsProtocol
+            from dynastore.extensions.tools.query import resolve_items_read_policy
             items_svc = get_protocol(ItemsProtocol)
             catalogs_svc = get_protocol(CatalogsProtocol)
             assert items_svc is not None and catalogs_svc is not None
+            # Resolve the read policy once per query so the row mapper honours
+            # ``feature_type.expose`` and ``external_id_as_feature_id`` on the
+            # virtual-hierarchy search path too (see get_virtual_hierarchy_items).
+            read_policy = await resolve_items_read_policy(catalog_id, collection_id)
             features = []
             for row in items_rows:
                 col_config = await catalogs_svc.get_collection_config(catalog_id, collection_id, ctx=DriverContext(db_resource=conn))
-                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config)
+                feat = items_svc.map_row_to_feature(dict(row._mapping) if hasattr(row, "_mapping") else dict(row), col_config, read_policy=read_policy)
                 if feat:
                     features.append(feat)
 

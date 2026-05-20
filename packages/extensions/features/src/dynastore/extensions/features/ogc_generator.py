@@ -126,6 +126,7 @@ def _db_row_to_ogc_feature(
     collection_id: str,
     root_url: str,
     layer_config: Optional[ItemsPostgresqlDriverConfig] = None,
+    read_policy: Optional[Any] = None,
 ) -> ogc_models.Feature:
     """
     Converts a database row or an already-mapped Feature into an OGC Feature.
@@ -136,6 +137,12 @@ def _db_row_to_ogc_feature(
       - validity TSTZRANGE -> ``start_datetime`` / ``end_datetime``
       - safe ``id`` serialisation (never the string ``'None'``)
       - collection/self links
+
+    ``read_policy`` is the resolved :class:`ItemsReadPolicy` for the
+    collection; it is threaded into the sidecar pipeline so the raw-row
+    fallback honours ``feature_type.expose`` / ``external_id_as_feature_id``.
+    Items arriving already mapped (the canonical ``get_item``/``stream_items``
+    path) skip the fallback and are unaffected.
     """
     from geojson_pydantic import Feature as _GeoJSONFeature
 
@@ -143,7 +150,9 @@ def _db_row_to_ogc_feature(
     if not isinstance(item, _GeoJSONFeature):
         items_mod = get_protocol(ItemsProtocol)
         if items_mod and layer_config:
-            item = items_mod.map_row_to_feature(item, layer_config)
+            item = items_mod.map_row_to_feature(
+                item, layer_config, read_policy=read_policy
+            )
         else:
             logger.warning(
                 "Cannot map DB row: ItemsProtocol unavailable or no layer_config. "

@@ -78,7 +78,7 @@ from dynastore.modules.db_config.query_executor import DbResource
 import re
 from . import features_db
 from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
-from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features
+from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features, resolve_items_read_policy
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
 
 logger = logging.getLogger(__name__)
@@ -1181,9 +1181,11 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
         )
+        read_policy = await resolve_items_read_policy(catalog_id, collection_id)
         root_url = get_root_url(request)
         ogc_feature = ogc_generator._db_row_to_ogc_feature(
-            feature, catalog_id, collection_id, root_url, layer_config
+            feature, catalog_id, collection_id, root_url, layer_config,
+            read_policy=read_policy,
         )
         return JSONResponse(
             content=ogc_feature.model_dump(exclude_none=True, by_alias=True),

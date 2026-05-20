@@ -38,6 +38,42 @@ from dynastore.tools.json import orjson_default
 logger = logging.getLogger(__name__)
 
 
+async def resolve_items_read_policy(
+    catalog_id: str,
+    collection_id: str,
+) -> Optional[Any]:
+    """Resolve a collection's :class:`ItemsReadPolicy` for OGC read assembly.
+
+    Shared by the OGC generators (Features / Records) so a raw-row fallback in
+    ``map_row_to_feature`` honours the read-time wire-shape contract —
+    ``feature_type.expose`` value-merge and ``external_id_as_feature_id``.
+    Mirrors ``ItemQueryMixin._resolve_read_policy`` for callers that don't have
+    a mixin instance. Returns ``None`` when the configs protocol is unavailable
+    or the lookup fails; callers then fall back to the default wire shape.
+    """
+    try:
+        from dynastore.models.protocols import ConfigsProtocol
+        from dynastore.modules.storage.read_policy import ItemsReadPolicy
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return None
+        return await configs.get_config(
+            ItemsReadPolicy,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - read assembly must not break on config miss
+        logger.debug(
+            "read policy resolution skipped for %s/%s: %s",
+            catalog_id,
+            collection_id,
+            exc,
+        )
+        return None
+
+
 def parse_ogc_query_request(
     bbox: Optional[str] = None,
     datetime_param: Optional[str] = None,
