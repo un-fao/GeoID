@@ -8,6 +8,12 @@ name: Test
 #     or `gh workflow run test.yml --ref <branch>`);
 #   - via workflow_call from dynastore / fao-aip-catalog deploy gates, so
 #     production deploys remain test-gated.
+#
+# Fail-fast: the test jobs pass `pytest -x`, so a job aborts at its first
+# failing test instead of running the whole suite. On a broken run this saves
+# most of the per-job pytest wall-clock (the long pole); on a green run it
+# changes nothing. The trade-off — only the first failure surfaces per run, not
+# the full list — is acceptable because the fix-and-re-dispatch loop is short.
 on:
   schedule:
     # Daily nightly run at 04:00 UTC (~05/06 Europe/Rome). Surfaces overnight
@@ -171,6 +177,7 @@ jobs:
             -e DYNASTORE_ASSERT_ALL_EXTENSIONS=true \
             geoid-test-runner:ci \
             /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*" \
+              -x \
               --durations=20 \
               --junitxml=/dynastore/workspace/unit-test-results.xml
 
@@ -313,7 +320,7 @@ jobs:
             -e PYTEST_CURRENT_TEST=true \
             -e DYNASTORE_TEST_SENTINEL=/dynastore/workspace/last-test.txt \
             geoid-test-runner:ci \
-            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; PYTHONUNBUFFERED=1 /opt/venv/bin/pytest "${TESTS[@]}" -v --tb=short -p no:cacheprovider --durations=20 --junitxml=/dynastore/workspace/test-results.xml 2>&1 | tee /dynastore/workspace/integration-tests.log'
+            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; PYTHONUNBUFFERED=1 /opt/venv/bin/pytest "${TESTS[@]}" -x -v --tb=short -p no:cacheprovider --durations=20 --junitxml=/dynastore/workspace/test-results.xml 2>&1 | tee /dynastore/workspace/integration-tests.log'
 
       - name: Display db logs on failure
         if: failure()
@@ -427,6 +434,7 @@ jobs:
             geoid-test-runner:ci \
             /opt/venv/bin/pytest -m elasticsearch \
               tests/dynastore/ \
+              -x \
               --durations=10 \
               --junitxml=/dynastore/workspace/test-results-es.xml
 
