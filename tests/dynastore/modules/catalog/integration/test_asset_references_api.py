@@ -43,10 +43,16 @@ from dynastore.models.shared_models import CoreAssetReferenceType
 
 
 def _asset_payload(asset_id: str, owned: bool = True) -> dict:
-    """Create an AssetBase payload dict.  owned=True sets owned_by='test' so
-    the deletion guard is active."""
+    """Create an AssetCreate payload dict.  owned=True sets owned_by='test' so
+    the deletion guard is active.
+
+    ``filename`` is required by the physical-asset create model (the
+    POST ``/assets/catalogs/{cat}`` endpoint accepts ``AssetCreate`` only;
+    virtual assets land on the ``/virtual-assets`` route).
+    """
     p: dict = {
         "asset_id": asset_id,
+        "filename": f"{asset_id}.tif",
         "uri": f"gs://bucket/{asset_id}.tif",
         "asset_type": "ASSET",
         "metadata": {"test": True},

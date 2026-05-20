@@ -68,7 +68,19 @@ async def drain_es_items_outbox(catalog_id: str) -> int:
 
     conn = await asyncpg.connect(_resolve_asyncpg_url())
     try:
-        await conn.execute(f'SET search_path TO "{catalog_id}"')
+        # storage_outbox lives in the catalog's physical_schema (s_<rand>),
+        # not under the catalog_id itself.  Resolve it from catalog.catalogs
+        # before pinning search_path — without this, the drain queries
+        # against the wrong schema and surfaces ``relation "storage_outbox"
+        # does not exist`` even though it was created by ``create_catalog``.
+        physical_schema = await conn.fetchval(
+            'SELECT physical_schema FROM catalog.catalogs '
+            'WHERE id = $1 AND deleted_at IS NULL',
+            catalog_id,
+        )
+        if not physical_schema:
+            physical_schema = catalog_id
+        await conn.execute(f'SET search_path TO "{physical_schema}"')
         task = await build_es_drain_task(conn=conn, catalog_id=catalog_id)
         total = 0
         # Bounded loop: a healthy claim batch is finite; the cap guards

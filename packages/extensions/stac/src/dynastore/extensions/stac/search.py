@@ -486,6 +486,10 @@ async def search_items(
 
     # Store table mapping for hydration: collection_id -> (phys_table, sidecar_table, geom_table, item_meta_table, stac_meta_table, has_attr, has_geom, has_item_meta, has_stac_meta)
     collection_table_map = {}
+    # Per-collection flag: does the attributes sidecar persist a ``validity``
+    # column? Mirrors ``ItemsWritePolicy.enable_validity`` (#974). When False,
+    # the column does not exist and the hydration SELECT must not reference it.
+    collection_validity_enabled: dict = {}
 
     for collection_id in target_collections:
         config = collection_configs[collection_id]
@@ -690,6 +694,9 @@ async def search_items(
                 stype = getattr(sc, "sidecar_type", "")
                 if stype in ["attributes", "feature_attributes"]:
                     has_attr_sidecar = True
+                    collection_validity_enabled[collection_id] = bool(
+                        getattr(sc, "enable_validity", False)
+                    )
                 elif stype in ["geometries", "geometry"]:
                     has_geom_sidecar = True
                 elif stype == "item_metadata":
@@ -793,11 +800,24 @@ async def search_items(
         joins = [f'FROM "{phys_schema}"."{p_tab}" h']
 
         if has_attr:
+            # #974: ``validity`` only exists on the attributes sidecar when
+            # ``ItemsWritePolicy.enable_validity`` is True. When disabled the
+            # column is absent, so fall back to the hub transaction_time for
+            # ``valid_from`` and NULL bounds rather than emitting ``s.validity``.
+            if collection_validity_enabled.get(coll_id, False):
+                validity_select = (
+                    ", lower(s.validity) as valid_from"
+                    ", upper(s.validity) as valid_to"
+                )
+            else:
+                validity_select = (
+                    ", h.transaction_time as valid_from"
+                    ", null::timestamptz as valid_to"
+                )
             select_parts.append(
                 ", COALESCE(s.external_id, h.geoid::text) as id"
                 ", s.external_id"
-                ", lower(s.validity) as valid_from"
-                ", upper(s.validity) as valid_to"
+                f"{validity_select}"
                 ", s.attributes, s.asset_id"
             )
             joins.append(f'LEFT JOIN "{phys_schema}"."{s_tab}" s ON h.geoid = s.geoid')

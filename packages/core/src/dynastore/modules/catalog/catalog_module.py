@@ -66,7 +66,7 @@ from dynastore.models.protocols import (
     LocalizationProtocol,
     LogsProtocol,
 )
-from dynastore.tools.discovery import register_plugin, get_protocol
+from dynastore.tools.discovery import register_plugin, unregister_plugin, get_protocol
 from dynastore.modules.catalog.catalog_service import CatalogService
 from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
@@ -207,9 +207,19 @@ class CatalogModule(ModuleProtocol):
 
         # --- Instantiate and register internal services ---
         self.log_service = LogService()
-        self.catalog_service = CatalogService(engine=engine)  # type: ignore[abstract]
+        # Build the collection/item services first, then inject them into the
+        # CatalogService facade. CatalogService auto-creates its own internal
+        # CollectionService/ItemService when none are supplied; without this
+        # injection the module would hold a SECOND CollectionService with its
+        # own private read cache, so a write+invalidate routed through one
+        # instance would leave stale entries readable through the other.
         self.collection_service = CollectionService(engine=engine)
         self.items_service = ItemService(engine=engine)
+        self.catalog_service = CatalogService(  # type: ignore[abstract]
+            engine=engine,
+            collection_service=self.collection_service,
+            item_service=self.items_service,
+        )
         self.config_service = ConfigService(engine=engine)
         self.asset_service = AssetService(engine=engine, event_emitter=_asset_event_bridge)  # type: ignore[abstract]
         self.properties_service = PropertiesService(engine=engine)
@@ -223,24 +233,31 @@ class CatalogModule(ModuleProtocol):
         self.pg_storage_driver = ItemsPostgresqlDriver()  # type: ignore[abstract]
 
         from contextlib import AsyncExitStack
+        # Track the services registered with the discovery registry so the
+        # lifespan teardown can remove exactly them. Leaving them registered
+        # leaks stale instances into the process-global registry on a
+        # re-entered lifespan, which can hand callers a stale CollectionService
+        # whose private read cache is never invalidated by the live instance's
+        # writes (manifests as stale localized reads after an update).
+        registered_services = (
+            self.log_service,
+            self.catalog_service,
+            self.collection_service,
+            self.items_service,
+            self.config_service,
+            self.asset_service,
+            self.pg_asset_driver,
+            self.pg_storage_driver,
+            self.properties_service,
+            self.localization_service,
+            self.event_service,
+        )
         async with AsyncExitStack() as stack:
-            for svc in (
-                self.log_service,
-                self.catalog_service,
-                self.collection_service,
-                self.items_service,
-                self.config_service,
-                self.asset_service,
-                self.pg_asset_driver,
-                self.pg_storage_driver,
-                self.properties_service,
-                self.localization_service,
-                self.event_service,
-            ):
+            for svc in registered_services:
                 # Enter plugin lifespan if it exists
                 if hasattr(svc, "lifespan"):
                     await stack.enter_async_context(svc.lifespan(app_state))  # type: ignore[attr-defined]
-                
+
                 # Register for discovery
                 register_plugin(svc)
 
@@ -422,6 +439,10 @@ class CatalogModule(ModuleProtocol):
                 _consumer_shutdown.set()
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
+                # Remove the services from the discovery registry so a future
+                # lifespan does not leave stale instances behind them.
+                for svc in registered_services:
+                    unregister_plugin(svc)
 
     # === Private service accessors (assert-narrowed for pyright) ===
 

@@ -381,9 +381,21 @@ class ItemQueryMixin:
                     "geoid": text("h.geoid"),
                     "deleted_at": text("h.deleted_at"),
                     "transaction_time": text("h.transaction_time"),
-                    "validity": text("h.validity"),
                 }
             )
+            # #974: ``validity`` only exists on the hub when it is a
+            # partition key; otherwise it lives on a sidecar (or nowhere at
+            # all when ``ItemsWritePolicy.enable_validity`` is False).
+            # Defer to the optimizer so CQL filters bind to the correct
+            # column reference instead of a non-existent ``h.validity``.
+            validity_expr = temp_optimizer.resolve_validity_expression()
+            if validity_expr is not None:
+                field_mapping["validity"] = text(validity_expr)
+            else:
+                # Bind ``validity`` to ``NULL::tstzrange`` so CQL filters
+                # referencing it parse cleanly and evaluate to NULL (the
+                # standard Postgres semantics for a missing temporal axis).
+                field_mapping["validity"] = text("NULL::tstzrange")
 
             try:
                 cql_where, cql_params = parse_cql_filter(

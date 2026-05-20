@@ -101,6 +101,14 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
     filter_: List[Dict[str, Any]] = []
 
     if body.q:
+        # ``lenient: true`` makes Elasticsearch skip fields that cannot
+        # honour the query (e.g. ``properties.file:size`` is mapped as
+        # ``long`` but the ``properties.*`` wildcard pulls it into the
+        # multi_match — without lenient, ES rejects the whole search with
+        # ``Can only use fuzzy queries on keyword and text fields - not on
+        # [properties.file:size] which is of type [long]``).  The wildcard
+        # is load-bearing for STAC extension keywords we don't list
+        # explicitly, so we keep it and let ES ignore type mismatches.
         must.append({
             "multi_match": {
                 "query": body.q,
@@ -116,6 +124,7 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
                     "properties.*",
                 ],
                 "fuzziness": "AUTO",
+                "lenient": True,
                 "minimum_should_match": "1",
             }
         })

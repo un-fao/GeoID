@@ -25,7 +25,7 @@ import os
 import inspect
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, Type, TypeVar, List, Optional
+from typing import Any, Dict, Tuple, Type, TypeVar, List, Optional
 from pathlib import Path
 
 from .protocols import ModuleProtocol
@@ -149,9 +149,36 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
 
     # If filtering is requested (e.g. for tests), apply it
     if include_only is not None:
-        target_names = {name.lower().replace("_", "-") for name in include_only}
+        # Auto-expand module aliases that bundle multiple entry-points. The
+        # ``elasticsearch`` module is registered as a separate entry-point
+        # from its three drivers (``storage_elasticsearch``,
+        # ``collection_elasticsearch``, ``catalog_elasticsearch``); in
+        # production main.py passes ``include_only=None`` so all four load
+        # via the entry-point sweep, but tests opting into ES via
+        # ``enable_modules("elasticsearch", ...)`` historically loaded the
+        # module without its drivers — causing the ``Driver
+        # 'items_elasticsearch_driver' ... is not registered`` cascade
+        # because ``DriverRegistry.collection_index()`` is empty for ES.
+        # Expanding the alias here keeps the driver-registration parity
+        # with production without touching call sites or test markers.
+        _MODULE_ALIAS_BUNDLES: Dict[str, Tuple[str, ...]] = {
+            "elasticsearch": (
+                "elasticsearch",
+                "storage_elasticsearch",
+                "collection_elasticsearch",
+                "catalog_elasticsearch",
+            ),
+        }
+        expanded: List[str] = []
+        for name in include_only:
+            bundle = _MODULE_ALIAS_BUNDLES.get(name.lower().replace("-", "_"))
+            if bundle is not None:
+                expanded.extend(bundle)
+            else:
+                expanded.append(name)
+        target_names = {name.lower().replace("_", "-") for name in expanded}
         available_modules = [
-            name for name in available_modules 
+            name for name in available_modules
             if name.lower().replace("_", "-") in target_names
         ]
 

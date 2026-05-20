@@ -35,14 +35,15 @@ async def test_add_french_translation_to_catalog(sysadmin_in_process_client, in_
     r = await sysadmin_in_process_client.post("/stac/catalogs?lang=en", json=payload_en)
     assert r.status_code == 201
     
-    # Update with French (should preserve English)
+    # Add the French translation while preserving English. Layering a single
+    # language onto an existing catalog is PATCH (merge) semantics; PUT would
+    # replace the whole resource and drop the English variant.
     payload_fr = {
-        "id": catalog_id,
         "title": "Titre Français",
         "description": "Description Française",
         "license": "MIT"
     }
-    r = await sysadmin_in_process_client.put(f"/stac/catalogs/{catalog_id}?lang=fr", json=payload_fr)
+    r = await sysadmin_in_process_client.patch(f"/stac/catalogs/{catalog_id}?lang=fr", json=payload_fr)
     assert r.status_code == 200
     data = r.json()
     assert data["title"] == "Titre Français"  # Returns French when lang=fr
@@ -110,18 +111,15 @@ async def test_multilingual_collection_update(sysadmin_in_process_client, in_pro
     )
     assert r.status_code == 201
     
-    # Add Spanish translation
+    # Add Spanish translation. This layers a new language onto the existing
+    # collection while preserving English, which is PATCH (merge) semantics;
+    # PUT replaces the whole resource and would drop the English variant.
     payload_es = {
-        "id": collection_id,
         "title": "Colección Española",
         "description": "Descripción Española",
-        "license": "MIT",
-        "extent": {
-            "spatial": {"bbox": [[-180, -90, 180, 90]]},
-            "temporal": {"interval": [[None, None]]}
-        }
+        "license": "MIT"
     }
-    r = await sysadmin_in_process_client.put(
+    r = await sysadmin_in_process_client.patch(
         f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=es",
         json=payload_es
     )
@@ -224,16 +222,17 @@ async def test_keywords_localization(sysadmin_in_process_client, in_process_clie
     assert r.status_code == 201
     assert r.json()["title"] == "English Collection"
     
-    # Add French keywords
+    # Add French keywords. Layering a single language onto an existing
+    # collection is PATCH semantics (partial body, lang-scoped); PUT would
+    # require the full collection body (including ``extent``) and replace it.
     payload_fr = {
-        "id": collection_id,
         "title": "French Collection",
         "description": "French Description",
         "keywords": ["géospatial", "données", "test"],
         "license": "MIT"
     }
-    
-    r = await sysadmin_in_process_client.put(f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=fr", json=payload_fr)
+
+    r = await sysadmin_in_process_client.patch(f"/stac/catalogs/{catalog_id}/collections/{collection_id}?lang=fr", json=payload_fr)
     assert r.status_code == 200
     
     # Verify English keywords
