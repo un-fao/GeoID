@@ -1329,60 +1329,25 @@ class GeometriesSidecar(SidecarProtocol):
         # 4. Statistics are projected via ``get_select_fields`` and consumed
         # by the read API as queryable fields (COLUMNAR) or remain inside
         # the ``geom_stats`` JSONB column. They are NOT auto-merged into
-        # ``properties`` — a collection opts each computed value into the wire
-        # output via ``ItemsReadPolicy.feature_type.expose``.
-        self._merge_exposed_computed_values(row, feature, context)
+        # ``properties``: a collection opts each computed value into the wire
+        # output via ``ItemsReadPolicy.feature_type.expose``. The exposure loop
+        # runs once at the pipeline level
+        # (``SidecarProtocol.apply_exposed_computed_values``); this sidecar only
+        # declares which names it owns and how to read them — see
+        # ``producible_computed_names`` / ``resolve_computed_value`` below.
 
-    def _merge_exposed_computed_values(
-        self,
-        row: Dict[str, Any],
-        feature: Feature,
-        context: FeaturePipelineContext,
-    ) -> None:
-        """Merge ``ItemsReadPolicy.feature_type.expose`` values onto properties.
+    def producible_computed_names(self) -> set:
+        """Computed-field resolved names this sidecar can surface at read.
 
-        The read query already SELECTed every storage-bearing computed field
-        this sidecar materialises (see ``get_select_fields``). This step copies
-        the subset named in ``expose`` onto ``feature.properties``, keyed by
-        ``ComputedField.resolved_name``. Values not named in ``expose`` stay
-        hidden so storage plumbing never leaks into the wire shape.
-
-        ``failure_mode`` decides what happens when an exposed value is absent
-        or NULL: ``best_effort`` (default) silently omits it; ``strict``
-        raises so a typo or a mid-flight schema change surfaces loudly.
+        These are the storage-bearing statistics projected by
+        ``get_select_fields`` (COLUMNAR columns, ``geom_stats`` / ``place_stats``
+        JSONB entries). The pipeline-level exposure loop
+        (``SidecarProtocol.apply_exposed_computed_values``) intersects this with
+        ``ItemsReadPolicy.feature_type.expose``.
         """
-        policy = context.get("_items_read_policy")
-        feature_type = getattr(policy, "feature_type", None)
-        if feature_type is None:
-            return
-        expose = list(getattr(feature_type, "expose", None) or [])
-        if not expose:
-            return
-        strict = getattr(feature_type, "failure_mode", "best_effort") == "strict"
+        return {f.resolved_name for f in self._storage_fields()}
 
-        # Only the names this sidecar can actually produce — the attributes
-        # sidecar owns external_id / schema fields, so a name it doesn't
-        # materialise is simply not ours to merge here.
-        producible = {f.resolved_name for f in self._storage_fields()}
-
-        if feature.properties is None:
-            feature.properties = {}
-        props = feature.properties
-
-        for name in expose:
-            if name not in producible:
-                continue
-            found, value = self._resolve_computed_value(row, name)
-            if not found or value is None:
-                if strict:
-                    raise ValueError(
-                        "ItemsReadPolicy.feature_type.expose lists "
-                        f"'{name}' but the read row carries no value for it."
-                    )
-                continue
-            props[name] = value
-
-    def _resolve_computed_value(
+    def resolve_computed_value(
         self, row: Dict[str, Any], resolved_name: str
     ) -> Tuple[bool, Any]:
         """Locate a storage-bearing computed value in a read row.

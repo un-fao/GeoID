@@ -340,6 +340,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             SidecarRegistry,
             _effective_sidecars,
         )
+        from dynastore.modules.storage.drivers.pg_sidecars.base import (
+            SidecarProtocol,
+        )
         sidecar_configs = _effective_sidecars(
             col_config, catalog_id="", collection_id="",
         )
@@ -360,10 +363,20 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     all_internal.update(sidecar.get_internal_columns())
             context._all_internal_cols = all_internal
 
+            resolved_sidecars: List[SidecarProtocol] = []
             for sc_config in sidecar_configs:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
                 if sidecar:
+                    resolved_sidecars.append(sidecar)
                     sidecar.map_row_to_feature(row_dict, feature, context=context)
+
+            # Read-shape exposure: surface ItemsReadPolicy.feature_type.expose
+            # computed values onto properties once, after every sidecar has
+            # contributed — so failure_mode sees the full producible set and the
+            # loop is not duplicated per sidecar.
+            SidecarProtocol.apply_exposed_computed_values(
+                resolved_sidecars, row_dict, feature, context
+            )
 
             # Bridge context to feature model_extra for extension generators (e.g. STAC)
             if context:
