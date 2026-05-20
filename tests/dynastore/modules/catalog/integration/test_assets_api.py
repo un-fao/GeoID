@@ -86,15 +86,20 @@ async def test_assets_api_crud(
         assert resp.status_code == 200
         assert resp.json()["asset_id"] == coll_asset_id
 
-        # Search
+        # Search — collection-scoped assets live behind the collection-scoped
+        # search route; the catalog-scoped route only returns catalog-tier
+        # (collection-unbound) assets, and the body ``collection_id`` was
+        # dropped when the scoped search endpoints were split out.
         search_payload = {
             "filters": [
                 {"field": "asset_id", "op": "eq", "value": coll_asset_id}
             ],
-            "collection_id": collection_id,
             "limit": 10
         }
-        resp = await client.post(f"/assets/catalogs/{catalog_id}/assets-search", json=search_payload)
+        resp = await client.post(
+            f"/assets/catalogs/{catalog_id}/collections/{collection_id}/assets-search",
+            json=search_payload,
+        )
         assert resp.status_code == 200
         results = resp.json()
         assert len(results) == 1

@@ -71,9 +71,11 @@ async def test_patch_unknown_plugin_returns_404(sysadmin_in_process_client):
         "/configs/", json={"no_such_plugin_config": {"enabled": False}}
     )
     assert r.status_code == 404, r.text
-    # Error message wording changed in the configs API reshape (April 2026):
-    # "Unknown plugin_id" → "Unknown config class".
-    assert "Unknown config class" in r.json()["detail"]
+    # An unknown config key resolves to neither a single-instance config class
+    # nor a valid multi-instance ref-create, so the API reports it as an
+    # unknown ref. Assert on the offending key (stable) rather than the exact
+    # wording, which has drifted across configs-API reshapes.
+    assert "no_such_plugin_config" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
