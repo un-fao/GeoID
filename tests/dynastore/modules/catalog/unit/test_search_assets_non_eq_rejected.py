@@ -101,18 +101,20 @@ def test_eq_only_filters_reach_driver_unchanged():
             query: Optional[Dict[str, Any]] = None,
             limit: int = 10,
             offset: int = 0,
+            all_collections: bool = False,
             db_resource: Any = None,
         ) -> List[Dict[str, Any]]:
             captured["catalog_id"] = catalog_id
             captured["collection_id"] = collection_id
             captured["query"] = query
+            captured["all_collections"] = all_collections
             return []
 
     async def _fake_get_driver(*_args, **_kwargs):
         return _FakeDriver()
 
     with patch(
-        "dynastore.modules.storage.router.get_asset_driver",
+        "dynastore.modules.storage.router.get_asset_search_driver",
         _fake_get_driver,
     ):
         result = asyncio.run(svc.search_assets(catalog_id="cat-x", filters=filters))
