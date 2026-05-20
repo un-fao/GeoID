@@ -1,3 +1,10 @@
+# GDAL version is pinned in 5 places that MUST stay in lockstep:
+#   1-2. this Dockerfile — two `FROM ghcr.io/osgeo/gdal:ubuntu-full-<X>` stages
+#   3.   pyproject.toml (root) — `module_gdal` extra `GDAL==<X>`
+#   4.   pyproject.toml (root) — `extension_maps` extra `GDAL==<X>`
+#   5.   packages/extensions/gdal/pyproject.toml + packages/extensions/maps/pyproject.toml — `GDAL==<X>`
+# Bump all 5 together; CI guards drift via scripts/check_gdal_pin_consistency.py.
+
 # STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
 # Skipped cheaply when BUILD_JUPYTERLITE=false (Cloud Run jobs/workers that
 # never serve /web/pages/notebooks).
