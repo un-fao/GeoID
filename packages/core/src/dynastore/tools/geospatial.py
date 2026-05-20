@@ -560,7 +560,6 @@ def compute_derived_fields(
     # ``computed_fields`` future direction without ordering pain.
     from dynastore.modules.storage.computed_fields import (
         ComputedKind,
-        SPATIAL_CELL_KINDS,
     )
 
     out: Dict[str, Any] = {}
@@ -747,7 +746,340 @@ def compute_derived_fields(
 
         else:
             raise UnsupportedComputedKind(
-                f"ComputedKind.{kind.name} is not implemented in compute_derived_fields()"
+                f"ComputedKind.{kind.name} is not implemented in compute_derived_fields(). "
+                "3D place-statistics (SURFACE_AREA, Z_RANGE, CENTROID_3D, etc.) are "
+                "computed from the JSON-FG 'place' member via compute_place_derived_fields()."
             )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# compute_place_derived_fields — JSON-FG 'place' member statistics.
+#
+# Handles the 3D place-stat ComputedKinds (all members of _PLACE_TABLE_KINDS).
+# Input is the raw JSON-FG 'place' dict (Solid, Prism, 3D Curve, …) plus the
+# declared ComputedField list and optional JSON-FG validity interval.
+#
+# Design note on SURFACE_AREA for arbitrary Solid meshes: the triangulated-
+# divergence-theorem approach used here gives exact results for any closed
+# polyhedral mesh. For curved surfaces (B-rep, NURBS) that PostGIS ST_3DArea
+# handles, the Python result will be approximate — this is documented in the
+# kind's handler below and is the honest behaviour.
+# ---------------------------------------------------------------------------
+
+def compute_place_derived_fields(
+    place_dict: Dict[str, Any],
+    fields: "List[Any]",
+    validity: Any = None,
+) -> Dict[str, Any]:
+    """Materialise declared 3D place-stat :class:`ComputedField` entries.
+
+    ``place_dict`` is the raw JSON-FG ``place`` geometry dict.
+    ``fields`` is the subset of ``compute_fields_overlay`` whose kinds are
+    in ``_PLACE_TABLE_KINDS``.  ``validity`` is an optional JSON-FG ``time``
+    interval value (dict / str / tuple) for ``TEMPORAL_DURATION``.
+
+    Returns a dict keyed by each field's ``resolved_name``. Fields that
+    cannot be derived (wrong geometry type, missing Z) are silently skipped.
+    """
+    from dynastore.modules.storage.computed_fields import ComputedKind
+
+    out: Dict[str, Any] = {}
+    geom_type = place_dict.get("type", "") if place_dict else ""
+
+    for f in fields:
+        kind = f.kind
+        key = f.resolved_name
+        try:
+            if kind == ComputedKind.Z_RANGE:
+                zs = _place_collect_z(place_dict)
+                if zs:
+                    out[key] = float(max(zs) - min(zs))
+
+            elif kind == ComputedKind.CENTROID_3D:
+                result = _place_centroid_3d(place_dict, geom_type)
+                if result is not None:
+                    out[key] = result
+
+            elif kind == ComputedKind.VERTICAL_GRADIENT:
+                result = _place_vertical_gradient(place_dict, geom_type)
+                if result is not None:
+                    out[key] = result
+
+            elif kind == ComputedKind.SURFACE_AREA:
+                result = _place_surface_area(place_dict, geom_type)
+                if result is not None:
+                    out[key] = result
+
+            elif kind == ComputedKind.SURFACE_TO_VOLUME_RATIO:
+                vol = _place_volume(place_dict, geom_type)
+                sa = out.get("surface_area") or _place_surface_area(place_dict, geom_type)
+                if vol and sa and vol > 0:
+                    out[key] = float(sa) / float(vol)
+
+            elif kind == ComputedKind.NET_FLOOR_AREA:
+                result = _place_net_floor_area(place_dict, geom_type)
+                if result is not None:
+                    out[key] = result
+
+            elif kind == ComputedKind.TEMPORAL_DURATION:
+                result = _place_temporal_duration(validity)
+                if result is not None:
+                    out[key] = result
+
+        except Exception as exc:
+            logger.warning(
+                f"compute_place_derived_fields: kind={kind.value} geom_type={geom_type}: {exc}"
+            )
+
+    return out
+
+
+# --- Internal geometry helpers for place-stat kinds -------------------------
+
+def _place_collect_z(place: Dict[str, Any]) -> List[float]:
+    geom_type = place.get("type", "")
+    if geom_type == "Prism":
+        lower = place.get("lower")
+        upper = place.get("upper")
+        return [float(lower), float(upper)] if lower is not None and upper is not None else []
+    if geom_type in ("MultiPrism",):
+        zs: List[float] = []
+        for p in place.get("prisms", []):
+            zs.extend(_place_collect_z(p))
+        return zs
+    if geom_type in ("Solid", "MultiSolid"):
+        coords = _place_flat_coords(place)
+        return [c[2] for c in coords if len(c) >= 3]
+    # GeoJSON-compatible: coordinates
+    raw = place.get("coordinates")
+    if raw is None:
+        return []
+    flat = _flatten_coords(raw)
+    return [c[2] for c in flat if len(c) >= 3]
+
+
+def _flatten_coords(raw: Any) -> List[List[float]]:
+    if not raw:
+        return []
+    if isinstance(raw[0], (int, float)):
+        return [raw]
+    result: List[List[float]] = []
+    for item in raw:
+        result.extend(_flatten_coords(item))
+    return result
+
+
+def _place_flat_coords(place: Dict[str, Any]) -> List[Any]:
+    geom_type = place.get("type", "")
+    if geom_type == "Solid":
+        coords: List[Any] = []
+        for shell in place.get("exterior", []):
+            if isinstance(shell, list):
+                for ring in shell:
+                    if isinstance(ring, list):
+                        coords.extend(ring)
+        return coords
+    if geom_type == "MultiSolid":
+        coords = []
+        for solid in place.get("solids", []):
+            coords.extend(_place_flat_coords(solid))
+        return coords
+    return []
+
+
+def _triangle_surface_volume(v0: Any, v1: Any, v2: Any) -> Tuple[float, float]:
+    import math as _math
+    ax, ay, az = float(v0[0]), float(v0[1]), float(v0[2])
+    bx, by, bz = float(v1[0]), float(v1[1]), float(v1[2])
+    cx, cy, cz = float(v2[0]), float(v2[1]), float(v2[2])
+    ux, uy, uz = bx - ax, by - ay, bz - az
+    vx, vy, vz = cx - ax, cy - ay, cz - az
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    area = _math.sqrt(nx * nx + ny * ny + nz * nz) / 2.0
+    signed_vol = ax * (by * cz - bz * cy) + bx * (cy * az - cz * ay) + cx * (ay * bz - az * by)
+    return area, signed_vol
+
+
+def _place_surface_area(place: Dict[str, Any], geom_type: str) -> Optional[float]:
+    if geom_type == "Prism":
+        from shapely.geometry import shape as _shape
+        base = place.get("base")
+        lower, upper = place.get("lower"), place.get("upper")
+        if not base:
+            return None
+        try:
+            poly = _shape(base)
+            height = abs(float(upper) - float(lower)) if lower is not None and upper is not None else None
+            if height is None:
+                return None
+            return float(2 * poly.area + poly.length * height)
+        except Exception:
+            return None
+    if geom_type == "Solid":
+        faces = []
+        for shell in place.get("exterior", []):
+            if isinstance(shell, list):
+                for ring in shell:
+                    if isinstance(ring, list) and len(ring) >= 3:
+                        faces.append(ring)
+        total = 0.0
+        for face in faces:
+            v0 = face[0]
+            for i in range(1, len(face) - 2):
+                if len(v0) >= 3 and len(face[i]) >= 3 and len(face[i + 1]) >= 3:
+                    area, _ = _triangle_surface_volume(v0, face[i], face[i + 1])
+                    total += area
+        return total if faces else None
+    if geom_type == "MultiSolid":
+        totals = [_place_surface_area(s, "Solid") for s in place.get("solids", [])]
+        vals = [t for t in totals if t is not None]
+        return sum(vals) if vals else None
+    if geom_type == "MultiPrism":
+        totals = [_place_surface_area(p, "Prism") for p in place.get("prisms", [])]
+        vals = [t for t in totals if t is not None]
+        return sum(vals) if vals else None
+    return None
+
+
+def _place_volume(place: Dict[str, Any], geom_type: str) -> Optional[float]:
+    if geom_type == "Prism":
+        from shapely.geometry import shape as _shape
+        base = place.get("base")
+        lower, upper = place.get("lower"), place.get("upper")
+        if not base or lower is None or upper is None:
+            return None
+        try:
+            return float(_shape(base).area) * abs(float(upper) - float(lower))
+        except Exception:
+            return None
+    if geom_type == "Solid":
+        faces = []
+        for shell in place.get("exterior", []):
+            if isinstance(shell, list):
+                for ring in shell:
+                    if isinstance(ring, list) and len(ring) >= 3:
+                        faces.append(ring)
+        total = 0.0
+        for face in faces:
+            v0 = face[0]
+            for i in range(1, len(face) - 2):
+                if len(v0) >= 3 and len(face[i]) >= 3 and len(face[i + 1]) >= 3:
+                    _, sv = _triangle_surface_volume(v0, face[i], face[i + 1])
+                    total += sv
+        return abs(total) / 6.0 if faces else None
+    if geom_type == "MultiSolid":
+        vals = [_place_volume(s, "Solid") for s in place.get("solids", [])]
+        nums = [v for v in vals if v is not None]
+        return sum(nums) if nums else None
+    if geom_type == "MultiPrism":
+        vals = [_place_volume(p, "Prism") for p in place.get("prisms", [])]
+        nums = [v for v in vals if v is not None]
+        return sum(nums) if nums else None
+    return None
+
+
+def _place_net_floor_area(place: Dict[str, Any], geom_type: str) -> Optional[float]:
+    if geom_type == "Prism":
+        from shapely.geometry import shape as _shape
+        base = place.get("base")
+        if not base:
+            return None
+        try:
+            return float(_shape(base).area)
+        except Exception:
+            return None
+    if geom_type == "MultiPrism":
+        vals = [_place_net_floor_area(p, "Prism") for p in place.get("prisms", [])]
+        nums = [v for v in vals if v is not None]
+        return sum(nums) if nums else None
+    return None
+
+
+def _place_centroid_3d(place: Dict[str, Any], geom_type: str) -> Optional[List[float]]:
+    if geom_type == "Prism":
+        from shapely.geometry import shape as _shape
+        base = place.get("base")
+        lower, upper = place.get("lower"), place.get("upper")
+        if not base:
+            return None
+        try:
+            c = _shape(base).centroid
+            mid_z = (float(lower) + float(upper)) / 2.0 if lower is not None and upper is not None else 0.0
+            return [float(c.x), float(c.y), mid_z]
+        except Exception:
+            return None
+    if geom_type == "Solid":
+        coords = _place_flat_coords(place)
+        z_coords = [c for c in coords if len(c) >= 3]
+        if not z_coords:
+            return None
+        cx = sum(float(c[0]) for c in z_coords) / len(z_coords)
+        cy = sum(float(c[1]) for c in z_coords) / len(z_coords)
+        cz = sum(float(c[2]) for c in z_coords) / len(z_coords)
+        return [cx, cy, cz]
+    zs = _place_collect_z(place)
+    flat = _flatten_coords(place.get("coordinates") or [])
+    if flat and zs:
+        cx = sum(float(c[0]) for c in flat) / len(flat)
+        cy = sum(float(c[1]) for c in flat) / len(flat)
+        return [cx, cy, (max(zs) + min(zs)) / 2.0]
+    return None
+
+
+def _place_vertical_gradient(place: Dict[str, Any], geom_type: str) -> Optional[float]:
+    import math as _math
+    if geom_type not in ("LineString", "MultiLineString"):
+        return None
+    coords = _flatten_coords(place.get("coordinates") or [])
+    if len(coords) < 2:
+        return None
+    total_rise = sum(
+        abs(float(coords[i][2]) - float(coords[i - 1][2]))
+        for i in range(1, len(coords))
+        if len(coords[i]) >= 3 and len(coords[i - 1]) >= 3
+    )
+    total_run = sum(
+        _math.hypot(
+            float(coords[i][0]) - float(coords[i - 1][0]),
+            float(coords[i][1]) - float(coords[i - 1][1]),
+        )
+        for i in range(1, len(coords))
+    )
+    return float(total_rise / total_run) if total_run > 0 else 0.0
+
+
+def _place_temporal_duration(validity: Any) -> Optional[float]:
+    """Compute duration in seconds from a JSON-FG validity interval."""
+    try:
+        from datetime import datetime
+
+        def _parse(v: Any) -> Optional[datetime]:
+            if isinstance(v, datetime):
+                return v
+            if isinstance(v, str):
+                return datetime.fromisoformat(v.strip("[()] ").replace("Z", "+00:00"))
+            return None
+
+        if isinstance(validity, dict):
+            start = _parse(validity.get("lower") or validity.get("start"))
+            end = _parse(validity.get("upper") or validity.get("end"))
+        elif isinstance(validity, (list, tuple)) and len(validity) == 2:
+            start, end = _parse(validity[0]), _parse(validity[1])
+        elif isinstance(validity, str):
+            parts = validity.strip("[]()").split(",")
+            if len(parts) == 2:
+                start, end = _parse(parts[0].strip()), _parse(parts[1].strip())
+            else:
+                return None
+        else:
+            return None
+
+        if start and end:
+            return (end - start).total_seconds()
+    except Exception as exc:
+        logger.debug(f"_place_temporal_duration: {exc}")
+    return None

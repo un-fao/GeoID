@@ -51,6 +51,7 @@ from dynastore.modules.storage.computed_fields import (
     ComputedField,
     ComputedKind,
     StatisticStorageMode,
+    _PLACE_TABLE_KINDS,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
@@ -59,7 +60,6 @@ from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     SridMismatchPolicy,
     SimplificationAlgorithm,
     GeometryPartitionStrategyPreset,
-    PlaceStatisticsConfig,
 )
 from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler
 from dynastore.tools.geospatial_exceptions import (
@@ -93,6 +93,7 @@ class GeometriesSidecar(SidecarProtocol):
 
     # Map of ``ComputedKind`` → SQL column type for COLUMNAR storage. ``CENTROID``
     # is special-cased because it needs the active SRID + 2D/3D selection.
+    # ``CENTROID_3D`` always emits GEOMETRY(POINTZ, 4326) regardless of srid.
     _COLUMNAR_SQL_TYPE: Dict[ComputedKind, str] = {
         ComputedKind.AREA: "DOUBLE PRECISION",
         ComputedKind.VOLUME: "DOUBLE PRECISION",
@@ -104,6 +105,14 @@ class GeometriesSidecar(SidecarProtocol):
         ComputedKind.CIRCULARITY: "DOUBLE PRECISION",
         ComputedKind.CONVEXITY: "DOUBLE PRECISION",
         ComputedKind.ASPECT_RATIO: "DOUBLE PRECISION",
+        # JSON-FG 3D place-statistics
+        ComputedKind.SURFACE_AREA: "DOUBLE PRECISION",
+        ComputedKind.SURFACE_TO_VOLUME_RATIO: "DOUBLE PRECISION",
+        ComputedKind.NET_FLOOR_AREA: "DOUBLE PRECISION",
+        ComputedKind.CENTROID_3D: "GEOMETRY(POINTZ, 4326)",
+        ComputedKind.Z_RANGE: "DOUBLE PRECISION",
+        ComputedKind.VERTICAL_GRADIENT: "DOUBLE PRECISION",
+        ComputedKind.TEMPORAL_DURATION: "INTERVAL",
     }
 
     _NUMERIC_KINDS: frozenset = frozenset({
@@ -459,58 +468,49 @@ class GeometriesSidecar(SidecarProtocol):
             )
 
         # --- Place Statistics DDL (JSON-FG 'place' column) ---
-        if self.config.place_statistics and self.config.place_statistics.enabled:
-            ps_cfg = self.config.place_statistics
-            place_col = ps_cfg.place_column
-            coordref_col = ps_cfg.coordRefSys_column
-
-            place_cols = ["geoid UUID NOT NULL", f"{place_col} JSONB NOT NULL"]
-            if coordref_col:
-                place_cols.append(f"{coordref_col} TEXT")
-
-            if ps_cfg.storage_mode == StatisticStorageMode.JSONB:
-                place_cols.append("place_stats JSONB")
-            else:
-                if ps_cfg.volume.enabled:
-                    place_cols.append("place_volume NUMERIC")
-                if ps_cfg.surface_area.enabled:
-                    place_cols.append("place_surface_area NUMERIC")
-                if ps_cfg.surface_to_volume_ratio.enabled:
-                    place_cols.append("place_surface_to_volume_ratio NUMERIC")
-                if ps_cfg.net_floor_area.enabled:
-                    place_cols.append("place_net_floor_area NUMERIC")
-                if ps_cfg.centroid_3d:
-                    place_cols.append("place_centroid_3d GEOMETRY(POINTZ, 4326)")
-                if ps_cfg.z_range.enabled:
-                    place_cols.append("place_z_range NUMERIC")
-                if ps_cfg.vertical_gradient.enabled:
-                    place_cols.append("place_vertical_gradient NUMERIC")
-                if ps_cfg.temporal_duration.enabled:
-                    place_cols.append("place_temporal_duration INTERVAL")
-
+        # Emitted when any storage-bearing ComputedField in the overlay belongs
+        # to _PLACE_TABLE_KINDS. The table always has a 'place' JSONB column
+        # (the raw JSON-FG 'place' member) and a 'coordRefSys' TEXT column.
+        # Stat columns follow the same JSONB-vs-COLUMNAR logic as geom_stats.
+        place_fields = [
+            f for f in self._storage_fields() if f.kind in _PLACE_TABLE_KINDS
+        ]
+        if place_fields:
             place_table = f"{physical_table}_place"
-            ddl += f'\nCREATE TABLE IF NOT EXISTS {{schema}}."{place_table}" ({", ".join(place_cols)}, PRIMARY KEY ("geoid"));'
+            place_cols = [
+                "geoid UUID NOT NULL",
+                "place JSONB NOT NULL",
+                "coordRefSys TEXT",
+            ]
+            has_jsonb = any(
+                f.storage_mode == StatisticStorageMode.JSONB for f in place_fields
+            )
+            if has_jsonb:
+                place_cols.append("place_stats JSONB")
+            for f in place_fields:
+                if f.storage_mode != StatisticStorageMode.COLUMNAR:
+                    continue
+                col_type = self._COLUMNAR_SQL_TYPE.get(f.kind, "DOUBLE PRECISION")
+                place_cols.append(f"place_{f.resolved_name} {col_type}")
+
+            ddl += (
+                f'\nCREATE TABLE IF NOT EXISTS {{schema}}."{place_table}" '
+                f'({", ".join(place_cols)}, PRIMARY KEY ("geoid"));'
+            )
             ddl += (
                 f'\nALTER TABLE {{schema}}."{place_table}" '
                 f'ADD CONSTRAINT "fk_{place_table}_hub" '
-                f'FOREIGN KEY (geoid) REFERENCES {{schema}}."{physical_table}" (geoid) ON DELETE CASCADE;'
+                f'FOREIGN KEY (geoid) REFERENCES {{schema}}."{physical_table}" '
+                f'(geoid) ON DELETE CASCADE;'
             )
-            if ps_cfg.storage_mode == StatisticStorageMode.JSONB:
-                if ps_cfg.volume.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_volume" ON {{schema}}."{place_table}" (((place_stats->>\'volume\')::numeric));'
-                if ps_cfg.surface_area.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_surface_area" ON {{schema}}."{place_table}" (((place_stats->>\'surface_area\')::numeric));'
-                if ps_cfg.z_range.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_z_range" ON {{schema}}."{place_table}" (((place_stats->>\'z_range\')::numeric));'
-                if ps_cfg.create_gin_index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_gin" ON {{schema}}."{place_table}" USING GIN(place_stats);'
-            else:
-                if ps_cfg.volume.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_volume" ON {{schema}}."{place_table}" (place_volume);'
-                if ps_cfg.surface_area.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_surface_area" ON {{schema}}."{place_table}" (place_surface_area);'
-                if ps_cfg.z_range.index:
-                    ddl += f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_z_range" ON {{schema}}."{place_table}" (place_z_range);'
+            # Indexes for COLUMNAR place fields
+            for f in place_fields:
+                if f.storage_mode == StatisticStorageMode.COLUMNAR and f.indexed:
+                    col_name = f"place_{f.resolved_name}"
+                    ddl += (
+                        f'\nCREATE INDEX IF NOT EXISTS "idx_{place_table}_{f.resolved_name}" '
+                        f'ON {{schema}}."{place_table}" ({col_name});'
+                    )
 
         return ddl
 
@@ -1186,68 +1186,72 @@ class GeometriesSidecar(SidecarProtocol):
         feature: Union[Feature, Dict[str, Any]],
         context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        """Extract the JSON-FG 'place' member and compute declared 3D statistics.
+
+        Returns a payload dict for the ``{table}_place`` sidecar table, or
+        ``None`` when no 3D place-stat fields are declared in the overlay or
+        the feature has no ``place`` member.
         """
-        Extract and process JSON-FG 'place' geometry from a feature for upsert.
-        Returns a payload dict for the <table>_place sidecar table, or None if place is absent.
-        Only runs when place_statistics is enabled in config.
-        """
-        if not (self.config.place_statistics and self.config.place_statistics.enabled):
+        place_fields = [
+            f for f in self._storage_fields() if f.kind in _PLACE_TABLE_KINDS
+        ]
+        if not place_fields:
             return None
 
-        ps_cfg = self.config.place_statistics
         geoid = context.get("geoid")
         if not geoid:
             raise ValueError("geoid is required in context")
 
-        # Extract place geometry from feature
+        # Extract place raw value and coordRefSys
         if isinstance(feature, dict):
-            place_raw = feature.get(ps_cfg.place_column) or feature.get("place")
-            coordref = feature.get(ps_cfg.coordRefSys_column) if ps_cfg.coordRefSys_column else None
-            validity = feature.get("validity")
+            place_raw = feature.get("place")
+            coordref = feature.get("coordRefSys")
+            props = feature.get("properties") or {}
+            validity = props.get("validity") if isinstance(props, dict) else None
         else:
-            place_raw = getattr(feature, ps_cfg.place_column, None) or getattr(feature, "place", None)
-            # Also check model_extra for JSON-FG extra fields
+            place_raw = getattr(feature, "place", None)
             if place_raw is None and hasattr(feature, "model_extra") and feature.model_extra:
-                place_raw = feature.model_extra.get(ps_cfg.place_column) or feature.model_extra.get("place")
-            coordref = None
-            if ps_cfg.coordRefSys_column:
-                coordref = getattr(feature, ps_cfg.coordRefSys_column, None)
-                if coordref is None and hasattr(feature, "model_extra") and feature.model_extra:
-                    coordref = feature.model_extra.get(ps_cfg.coordRefSys_column)
-            props = feature.properties if hasattr(feature, "properties") else {}
-            validity = (props or {}).get("validity") if isinstance(props, dict) else None
+                place_raw = feature.model_extra.get("place")
+            coordref = getattr(feature, "coordRefSys", None)
+            if coordref is None and hasattr(feature, "model_extra") and feature.model_extra:
+                coordref = feature.model_extra.get("coordRefSys")
+            raw_props = feature.properties if hasattr(feature, "properties") else {}
+            validity = (raw_props or {}).get("validity") if isinstance(raw_props, dict) else None
 
         if not place_raw:
-            return None  # No place geometry, stats not applicable
+            return None
 
-        # Serialize place to JSONB-compatible dict
+        # Normalise to dict
         if hasattr(place_raw, "model_dump"):
             place_dict = place_raw.model_dump()
         elif isinstance(place_raw, dict):
             place_dict = place_raw
         else:
-            import json
+            import json as _json
             try:
-                place_dict = json.loads(place_raw) if isinstance(place_raw, str) else dict(place_raw)
+                place_dict = _json.loads(place_raw) if isinstance(place_raw, str) else dict(place_raw)  # type: ignore[call-overload]
             except Exception:
-                logger.warning(f"Could not parse place geometry: {type(place_raw)}")
+                logger.warning(f"Could not parse place geometry for geoid={geoid}: {type(place_raw)}")
                 return None
 
         payload: Dict[str, Any] = {
             "geoid": geoid,
-            ps_cfg.place_column: place_dict,
+            "place": place_dict,
         }
-        if coordref and ps_cfg.coordRefSys_column:
-            payload[ps_cfg.coordRefSys_column] = str(coordref)
+        if coordref is not None:
+            payload["coordRefSys"] = str(coordref)
 
-        # Compute place statistics
-        from dynastore.tools.place_stats import compute_place_statistics
-        place_stats = compute_place_statistics(place_dict, ps_cfg, validity=validity)
+        # Compute declared statistics via the unified handler
+        from dynastore.tools.geospatial import compute_place_derived_fields
+        place_stats = compute_place_derived_fields(place_dict, place_fields, validity=validity)
+
         if place_stats:
-            if ps_cfg.storage_mode == StatisticStorageMode.JSONB:
+            has_jsonb = any(
+                f.storage_mode == StatisticStorageMode.JSONB for f in place_fields
+            )
+            if has_jsonb:
                 payload["place_stats"] = place_stats
             else:
-                # Columnar: prefix all keys with "place_"
                 for k, v in place_stats.items():
                     payload[f"place_{k}"] = v
 
@@ -1430,13 +1434,15 @@ class GeometriesSidecar(SidecarProtocol):
             if f.kind == ComputedKind.CENTROID:
                 cols.add(f.resolved_name)
 
-        if self.config.place_statistics and self.config.place_statistics.enabled:
-            cols.add(self.config.place_statistics.place_column)
-            if self.config.place_statistics.storage_mode == StatisticStorageMode.JSONB:
+        place_fields = [
+            f for f in self._storage_fields() if f.kind in _PLACE_TABLE_KINDS
+        ]
+        if place_fields:
+            cols.add("place")
+            cols.add("coordRefSys")
+            if any(f.storage_mode == StatisticStorageMode.JSONB for f in place_fields):
                 cols.add("place_stats")
-            if self.config.place_statistics.coordRefSys_column:
-                cols.add(self.config.place_statistics.coordRefSys_column)
-                
+
         return cols
 
     def finalize_upsert_payload(
