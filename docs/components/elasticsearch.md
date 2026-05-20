@@ -72,14 +72,13 @@ Dynamic templates are applied in order (first match wins) to handle multilingual
 
 ## Per-Collection Privacy
 
-Privacy is expressed by **routing-pin presence** of the private-class drivers in a collection's routing configs (#733 retired the standalone `CollectionPrivacy.is_private` flag). Two specialized drivers — both opt-in only via explicit routing pin (`auto_register_for_routing = frozenset()`) — write privacy-sensitive data into per-tenant indexes:
+Privacy is expressed by **routing-pin presence** of the private items driver in a collection's routing configs (#733 retired the standalone `CollectionPrivacy.is_private` flag). The private ES branch is **items-only** — there is no catalog/collection private ES driver; catalog and collection envelopes for private catalogs stay PG-only. The private items driver is opt-in only via explicit routing pin (`auto_register_for_routing = frozenset()`):
 
 | Driver | Tier | Per-tenant index | Provided by |
 |---|---|---|---|
 | `items_elasticsearch_private_driver` | items | `{prefix}-{cat}-private-items` (geoid-only docs) | `modules/storage/drivers/elasticsearch_private/driver.py` |
-| `collection_elasticsearch_private_driver` | collection envelopes | `{prefix}-{cat}-collections-private` (full collection envelope) | `modules/storage/drivers/elasticsearch_private/collection_driver.py` |
 
-A collection is "private" iff one of its routing configs pins a private driver. No separate config plugin or flag is consulted.
+A collection is "private" iff one of its routing configs pins the private items driver. Per-catalog privacy is configured via routing presets — `POST /admin/catalogs/{catalog_id}/presets/private_catalog`. No separate config plugin or flag is consulted.
 
 ### Cascade rule
 
@@ -87,7 +86,7 @@ Mixing public + private driver pins in the same routing config is rejected: it w
 
 ### DENY policy
 
-Catalog-wide DENY (`private_deny_{catalog_id}`) is owned by the items-private driver and blocks all `GET` requests under `/(catalog|stac|features|tiles|wfs|maps)/catalogs/{cat}/...`. The collection-private driver does NOT manage its own DENY policies.
+Catalog-wide DENY (`private_deny_{catalog_id}`) is owned by the items-private driver and blocks all `GET` requests under `/(catalog|stac|features|tiles|wfs|maps)/catalogs/{cat}/...`.
 
 The items-private driver's `_restore_deny_policies` lifespan hook scans all catalogs at startup and re-registers DENY policies for any catalog with at least one collection whose routing configs pin a private driver.
 
@@ -98,10 +97,9 @@ To opt a collection into per-tenant privacy, pin a private driver in the routing
 ```
 PUT /configs/catalogs/{cat}/collections/{col}/plugins/items_routing_config
 { "operations": { "INDEX": [{ "driver_ref": "items_elasticsearch_private_driver", ... }] } }
-
-PUT /configs/catalogs/{cat}/collections/{col}/plugins/collection_routing_config
-{ "operations": { "INDEX": [{ "driver_ref": "collection_elasticsearch_private_driver", ... }] } }
 ```
+
+Per-catalog privacy can also be applied in one call via the routing preset: `POST /admin/catalogs/{cat}/presets/private_catalog`.
 
 There is no follow-up "set private" step. The cascade validator rejects mixed public/private pins in the same routing config with a clear error message.
 
@@ -226,16 +224,13 @@ modules/elasticsearch/
   __init__.py              # Exports ElasticsearchModule
   module.py                # Event listeners, IndexerProtocol impl
   config.py                # EnvVar-based ES connection config
-  mappings.py              # Index mappings + helpers (incl.
-                           #   get_tenant_collections_private_index — Cycle E.2.b)
+  mappings.py              # Index mappings + helpers
   collection_es_driver.py  # Public CollectionStore driver (shared
                            #   {prefix}-collections singleton)
 
 modules/storage/drivers/elasticsearch_private/
   driver.py                # ItemsElasticsearchPrivateDriver — per-tenant
                            #   geoid-only index + DENY policy management
-  collection_driver.py     # CollectionElasticsearchPrivateDriver — per-tenant
-                           #   collection envelope index (Cycle E.2.b)
   mappings.py              # Tenant-feature mapping for items private index
 
 extensions/search/
