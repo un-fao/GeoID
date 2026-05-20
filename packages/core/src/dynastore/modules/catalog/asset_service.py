@@ -152,7 +152,7 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.router import ResolvedDriver
 from sqlalchemy import text
 from dynastore.tools.cache import cached
-from pydantic import BaseModel, Field, ConfigDict, StringConstraints
+from pydantic import BaseModel, Field, ConfigDict, StringConstraints, model_validator
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -254,21 +254,51 @@ class AssetCreate(AssetBase):
     """
     Physical asset create payload — blob lives in a managed bucket / disk.
 
-    Used by upload-create REST routes.  ``filename`` is mandatory and must
+    Used by upload-create REST routes.  At least one of ``filename`` or
+    ``uri`` must be supplied: upload-create flows pass ``filename`` (the blob
+    has not landed yet, so there is no URI), while direct registration of an
+    already-stored blob passes ``uri`` (e.g. ``gs://bucket/file.zip``) and the
+    ``filename`` is derived from the URI tail when omitted. ``filename`` must
     not contain slashes or NUL bytes.
 
-    ``uri`` is for internal storage-event callers (GCS / local finalize)
-    that already know the storage URI and need to create the row as ACTIVE
-    in one shot. REST-facing flows leave it ``None`` and let Stage 4's
-    finalize event populate it.
+    ``uri`` is also used by internal storage-event callers (GCS / local
+    finalize) that already know the storage URI and need to create the row as
+    ACTIVE in one shot.
     """
 
     kind: Literal[AssetKind.PHYSICAL] = AssetKind.PHYSICAL
-    filename: Filename
+    filename: Optional[Filename] = Field(
+        default=None,
+        description=(
+            "Display filename (no slashes/NUL). Required unless ``uri`` is "
+            "given, in which case it is derived from the URI tail."
+        ),
+    )
     uri: Optional[str] = Field(
         default=None,
-        description="Internal-use: pre-resolved storage URI for storage-event creates.",
+        description=(
+            "Pre-resolved storage URI for direct registration of an "
+            "already-stored blob (e.g. 'gs://bucket/file.zip') or for "
+            "storage-event finalize creates."
+        ),
     )
+
+    @model_validator(mode="after")
+    def _require_filename_or_uri(self) -> "AssetCreate":
+        if not self.filename:
+            if not self.uri:
+                raise ValueError(
+                    "AssetCreate requires either 'filename' or 'uri'."
+                )
+            # Derive a slash-free filename from the URI tail.
+            tail = self.uri.rstrip("/").split("/")[-1]
+            if not tail or "\x00" in tail:
+                raise ValueError(
+                    f"Cannot derive a valid filename from uri {self.uri!r}; "
+                    "supply 'filename' explicitly."
+                )
+            self.filename = tail
+        return self
 
 
 class VirtualAssetCreate(AssetBase):

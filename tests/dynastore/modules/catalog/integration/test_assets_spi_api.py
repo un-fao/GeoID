@@ -48,6 +48,7 @@ async def test_asset_immutability(sysadmin_in_process_client, app_lifespan, cata
     asset_id_val = "test-asset-immutability"
     asset_payload = {
         "asset_id": asset_id_val,
+        "filename": "test.tif",
         "uri": "gs://bucket/test.tif",
         "asset_type": "RASTER",
         "metadata": {"initial": True}
@@ -113,6 +114,7 @@ async def test_asset_spi_task_discovery(sysadmin_in_process_client, app_lifespan
         asset_id = "test-asset-spi-gdal"
         asset_payload = {
             "asset_id": asset_id,
+            "filename": "test.tif",
             "uri": "gs://bucket/test.tif",
             "asset_type": "RASTER",
             "metadata": {}
