@@ -179,7 +179,7 @@ class GeometriesSidecarConfig(SidecarConfig):
 
     @property
     def write_bbox(self) -> bool:
-        """Legacy support for write_bbox toggle."""
+        """True when a dedicated bbox column is configured."""
         return self.bbox_column is not None
     
     # Processing policies are operator-tunable write-time behaviour and live
@@ -241,10 +241,6 @@ class GeometriesSidecarConfig(SidecarConfig):
             "Requires a 'place' column in the geometry sidecar table."
         )
     )
-    
-    # Protocol-Driven Architecture
-    store_bbox: bool = Field(default=True, description="Store bounding box geometry")
-    store_centroid: bool = Field(default=False, description="Store centroid point")
     
     # ``feature_type_schema`` was retired in #976: the wire shape of Feature
     # ``properties`` is now the SSOT on ``ItemsWritePolicy.schema``. The

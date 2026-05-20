@@ -235,18 +235,6 @@ class GeometriesSidecar(SidecarProtocol):
                 description="Geometry bounding box",
             )
 
-        # Centroid - if enabled, query-only
-        if self.config.store_centroid:
-            fields["centroid"] = FieldDefinition(
-                name="centroid",
-                sql_expression=f"ST_Centroid({alias}.geom)",
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SPATIAL],
-                data_type="point",
-                expose=False,  # Query-only
-                title="Centroid",
-                description="Geometry centroid",
-            )
-
         # Add index fields from get_field_definitions if needed
         # Just use defaults from get_field_definitions to ensure consistency
         other_fields = self.get_field_definitions(sidecar_alias=alias)
@@ -899,9 +887,9 @@ class GeometriesSidecar(SidecarProtocol):
                     aggregations=["sum", "avg", "min", "max", "count"],
                 )
 
-        # Virtual Bbox components for STAC - Optimised to use bbox_geom if available
+        # Virtual Bbox components for STAC - use stored bbox column when available
         bbox_source = (
-            f"{alias}.bbox_geom" if self.config.write_bbox else f"{alias}.geom"
+            f"{alias}.{self.config.bbox_column}" if self.config.write_bbox else f"{alias}.geom"
         )
 
         fields["bbox_xmin"] = FieldDefinition(
