@@ -30,7 +30,6 @@ from dynastore.extensions.admin.admin_service import (
 
 
 _GET_PROTOCOL = "dynastore.extensions.admin.admin_service.get_protocol"
-_MEMBERSHIP_CACHE = "dynastore.extensions.iam.membership_cache.get_membership_cached"
 
 
 def _make_request(principal: Optional[Any]) -> Any:
@@ -49,21 +48,29 @@ def _make_principal(
     )
 
 
+def _membership_cache_proto(membership: Optional[Dict[str, Any]] = None) -> Any:
+    """A stand-in MembershipCacheProtocol whose ``get_membership`` returns the
+    supplied membership dict — ``_is_catalog_only_admin`` resolves the caller's
+    platform-vs-catalog standing through this protocol."""
+    proto = MagicMock()
+    proto.get_membership = AsyncMock(return_value=membership or {})
+    return proto
+
+
 @contextmanager
-def _patched(
-    membership: Optional[Dict[str, Any]] = None,
-    iam_query: Any = MagicMock(),
-):
+def _patched(membership: Optional[Dict[str, Any]] = None):
+    cache_proto = _membership_cache_proto(membership)
+
     def _get_proto(cls):
-        from dynastore.models.protocols.iam_query import IamQueryProtocol
-        if cls is IamQueryProtocol:
-            return iam_query
+        from dynastore.models.protocols.membership_cache import (
+            MembershipCacheProtocol,
+        )
+        if cls is MembershipCacheProtocol:
+            return cache_proto
         return None
 
-    cache_mock = AsyncMock(return_value=membership or {})
-    with patch(_GET_PROTOCOL, side_effect=_get_proto), \
-         patch(_MEMBERSHIP_CACHE, new=cache_mock):
-        yield cache_mock
+    with patch(_GET_PROTOCOL, side_effect=_get_proto):
+        yield cache_proto.get_membership
 
 
 @pytest.mark.asyncio
@@ -124,15 +131,15 @@ async def test_principal_without_provider_or_subject_is_not_catalog_only_admin()
 
 
 @pytest.mark.asyncio
-async def test_no_iam_query_protocol_is_not_catalog_only_admin():
-    """Slim deployments without IamQueryProtocol can't resolve memberships;
-    the narrowing branch is skipped so existing platform-admin behaviour
-    is preserved.
+async def test_no_membership_cache_protocol_is_not_catalog_only_admin():
+    """Slim deployments without MembershipCacheProtocol can't resolve
+    memberships; the narrowing branch is skipped so existing platform-admin
+    behaviour is preserved.
     """
     req = _make_request(principal=_make_principal(roles=["catalog_admin"]))
 
     def _get_proto(_cls):
-        return None  # IamQueryProtocol → None
+        return None  # MembershipCacheProtocol → None
 
     with patch(_GET_PROTOCOL, side_effect=_get_proto):
         assert await _is_catalog_only_admin(req) is False
@@ -166,21 +173,22 @@ async def test_handler_rejects_catalog_admin_without_q():
     """
     req = _make_request(principal=_make_principal(roles=["catalog_admin"]))
     mgr = _make_iam_mgr()
+    cache_proto = _membership_cache_proto({
+        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
+    })
 
     def _get_proto(cls):
         from dynastore.modules.iam.iam_service import IamService
-        from dynastore.models.protocols.iam_query import IamQueryProtocol
+        from dynastore.models.protocols.membership_cache import (
+            MembershipCacheProtocol,
+        )
         if cls is IamService:
             return mgr
-        if cls is IamQueryProtocol:
-            return MagicMock()
+        if cls is MembershipCacheProtocol:
+            return cache_proto
         return None
 
-    cache_mock = AsyncMock(return_value={
-        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
-    })
-    with patch(_GET_PROTOCOL, side_effect=_get_proto), \
-         patch(_MEMBERSHIP_CACHE, new=cache_mock):
+    with patch(_GET_PROTOCOL, side_effect=_get_proto):
         with pytest.raises(HTTPException) as exc:
             await _handler(req, limit=50, offset=0, provider=None, q=None,
                            role=None, catalog_id=None)
@@ -192,21 +200,22 @@ async def test_handler_rejects_catalog_admin_with_blank_q():
     """``q=""`` (whitespace) is treated as missing — no enumeration loophole."""
     req = _make_request(principal=_make_principal(roles=["catalog_admin"]))
     mgr = _make_iam_mgr()
+    cache_proto = _membership_cache_proto({
+        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
+    })
 
     def _get_proto(cls):
         from dynastore.modules.iam.iam_service import IamService
-        from dynastore.models.protocols.iam_query import IamQueryProtocol
+        from dynastore.models.protocols.membership_cache import (
+            MembershipCacheProtocol,
+        )
         if cls is IamService:
             return mgr
-        if cls is IamQueryProtocol:
-            return MagicMock()
+        if cls is MembershipCacheProtocol:
+            return cache_proto
         return None
 
-    cache_mock = AsyncMock(return_value={
-        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
-    })
-    with patch(_GET_PROTOCOL, side_effect=_get_proto), \
-         patch(_MEMBERSHIP_CACHE, new=cache_mock):
+    with patch(_GET_PROTOCOL, side_effect=_get_proto):
         with pytest.raises(HTTPException) as exc:
             await _handler(req, limit=50, offset=0, provider=None, q="   ",
                            role=None, catalog_id=None)
@@ -221,21 +230,22 @@ async def test_handler_accepts_catalog_admin_with_q():
     """
     req = _make_request(principal=_make_principal(roles=["catalog_admin"]))
     mgr = _make_iam_mgr()
+    cache_proto = _membership_cache_proto({
+        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
+    })
 
     def _get_proto(cls):
         from dynastore.modules.iam.iam_service import IamService
-        from dynastore.models.protocols.iam_query import IamQueryProtocol
+        from dynastore.models.protocols.membership_cache import (
+            MembershipCacheProtocol,
+        )
         if cls is IamService:
             return mgr
-        if cls is IamQueryProtocol:
-            return MagicMock()
+        if cls is MembershipCacheProtocol:
+            return cache_proto
         return None
 
-    cache_mock = AsyncMock(return_value={
-        "platform": False, "catalog_roles": {"cat-a": ["admin"]},
-    })
-    with patch(_GET_PROTOCOL, side_effect=_get_proto), \
-         patch(_MEMBERSHIP_CACHE, new=cache_mock):
+    with patch(_GET_PROTOCOL, side_effect=_get_proto):
         result = await _handler(req, limit=1, offset=0, provider=None,
                                 q="target-subject", role=None, catalog_id=None)
     assert result == []
