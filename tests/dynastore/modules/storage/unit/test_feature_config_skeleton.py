@@ -1,5 +1,5 @@
 """Phase 1–3 feature-config skeleton: compute presets, derived/forbidden wire
-schema, nullable feature_type.schema_ref, and expose cross-validation."""
+schema, and expose cross-validation."""
 
 import asyncio
 
@@ -48,14 +48,6 @@ class TestForbidAuthoredWireSchema:
 
     def test_passes_when_none(self) -> None:
         asyncio.run(_forbid_authored_wire_schema(ItemsWritePolicy(), "cat", "col", None))
-
-
-class TestFeatureTypeSchemaRef:
-    def test_default_ref(self) -> None:
-        assert FeatureType().schema_ref == "items_write_policy.schema"
-
-    def test_nullable_ref(self) -> None:
-        assert FeatureType(schema_ref=None).schema_ref is None
 
 
 def _fake_configs(wp: ItemsWritePolicy, schema: ItemsSchema):

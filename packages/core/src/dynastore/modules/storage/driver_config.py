@@ -307,11 +307,11 @@ class ItemsWritePolicy(PluginConfig):
     Four irreducible concerns, plus three posture flags. See
     ``docs/architecture/items-policy-consolidation-957-950.md``:
 
-    - :attr:`schema` — self-contained JSON Schema describing the wire shape
-      of ``properties``. ``type``/``description``/``default``/``required``
-      per field. The OpenAPI body schema, admin-UI form, write-time
-      validation, and the read-side ``schema_ref`` all consult this single
-      object. Setting ``None`` is permissive (no validation, no defaults).
+    - :attr:`schema` — DERIVED, read-only wire JSON-Schema for ``properties``,
+      built from ``items_schema`` at read time (see ``get_collection_schema``)
+      and surfaced for the OpenAPI body schema and admin-UI form. Authoring a
+      non-null value is rejected at config-save; ``items_schema`` is the single
+      source of truth for field types/constraints.
     - :attr:`compute` — ordered list of :class:`ComputedField` entries the
       drivers materialise per row (geometry hash, attribute hash, geohash
       cell, area, centroid, …). The :class:`ComputedKind.EXTERNAL_ID`

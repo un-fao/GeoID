@@ -303,28 +303,23 @@ class IdentityRule(BaseModel):
 class FeatureType(BaseModel):
     """Declarative wire-shape contract for the read path.
 
-    Used by ``ItemsReadPolicy``. ``schema_ref`` selects the JSON Schema
-    source for the produced feature:
-
-    - ``"items_write_policy.schema"`` (default) — the derived wire schema
-      (itself derived from ``items_schema``) is the response shape.
-    - ``None`` — derive the output ``properties`` directly from
-      ``items_schema`` plus the ``expose`` computed fields, ignoring the
-      wire-validation schema.
+    Used by ``ItemsReadPolicy``. The produced feature's ``properties`` are
+    derived unconditionally from ``items_schema`` (the single source of
+    truth) plus the ``expose`` computed fields — there is no separate
+    schema-source selector.
 
     ``expose`` enumerates ``ComputedField.resolved_name`` values from
     ``ItemsWritePolicy.compute`` that should be surfaced as additional
-    output properties. ``failure_mode`` governs read-failure behaviour:
-    ``best_effort`` (default) degrades to a bare feature with the missing
-    enriched fields silently absent; ``strict`` raises.
-    ``external_id_as_feature_id`` controls whether a row's ``external_id``
-    (stored by the attributes sidecar) overrides the default
-    ``feature.id`` (``geoid``); purely a wire-shape decision.
+    output properties beyond the declared schema fields. ``failure_mode``
+    governs read-failure behaviour: ``best_effort`` (default) degrades to a
+    bare feature with the missing enriched fields silently absent;
+    ``strict`` raises. ``external_id_as_feature_id`` controls whether a
+    row's ``external_id`` (stored by the attributes sidecar) overrides the
+    default ``feature.id`` (``geoid``); purely a wire-shape decision.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_ref: Optional[str] = "items_write_policy.schema"
     expose: List[str] = Field(default_factory=list)
     failure_mode: Literal["strict", "best_effort"] = "best_effort"
     external_id_as_feature_id: bool = True
