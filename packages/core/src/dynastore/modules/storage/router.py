@@ -375,6 +375,52 @@ async def get_asset_driver(
     return resolved[0].driver
 
 
+async def get_asset_search_driver(
+    catalog_id: str,
+    collection_id: Optional[str] = None,
+    *,
+    hints: FrozenSet[Hint] = frozenset(),
+):
+    """Routing-aware single-driver resolution for asset SEARCH.
+
+    Resolution order, mirroring the collection tier (``collection_router``)
+    and the routing-aware lookup design in issue #989:
+
+    1. ``AssetRoutingConfig.operations[SEARCH]`` — if an operator pinned a
+       search-optimised driver for this catalog/collection (e.g. an
+       Elasticsearch index), use it.
+    2. Fall back to ``AssetRoutingConfig.operations[READ]`` when no SEARCH
+       entry resolves. Any READ-capable driver advertises SEARCH via
+       :func:`derive_supported_operations` (Capability.READ → {READ, SEARCH}),
+       so the read primary (PG by default) serves filtered queries when no
+       dedicated search backend is configured.
+
+    Returns the first matching ``AssetStore`` or raises when neither
+    operation resolves a registered driver.
+    """
+    resolved = await resolve_drivers(
+        Operation.SEARCH,
+        catalog_id,
+        collection_id,
+        hints=hints,
+        routing_plugin_cls=AssetRoutingConfig,
+    )
+    if not resolved:
+        resolved = await resolve_drivers(
+            Operation.READ,
+            catalog_id,
+            collection_id,
+            hints=hints,
+            routing_plugin_cls=AssetRoutingConfig,
+        )
+    if not resolved:
+        raise ValueError(
+            f"No asset SEARCH/READ driver found for "
+            f"hints={sorted(hints)}, catalog='{catalog_id}', collection='{collection_id}'"
+        )
+    return resolved[0].driver
+
+
 async def get_asset_write_drivers(
     catalog_id: str,
     collection_id: Optional[str] = None,

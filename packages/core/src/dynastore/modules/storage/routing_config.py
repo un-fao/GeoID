@@ -777,9 +777,17 @@ class AssetRoutingConfig(PluginConfig):
 
     @model_validator(mode="after")
     def _augment_with_discoverable_indexers(self) -> "AssetRoutingConfig":
-        """Asset tier has no SEARCH op today (assets aren't searchable
-        the way collection items / catalogs are), so only INDEX + UPLOAD
-        are augmented.  Mirrors :meth:`CatalogRoutingConfig._augment_*`."""
+        """Augment INDEX + UPLOAD with discoverable drivers.
+
+        SEARCH is resolvable on the asset tier but carries no hardcoded
+        default and is not auto-augmented: ``get_asset_search_driver``
+        resolves ``operations[SEARCH]`` first and falls back to
+        ``operations[READ]`` when an operator has not pinned a dedicated
+        search backend (see ``modules/storage/router.py`` and #989). This
+        keeps the zero-config default behaviour (PG-backed READ serves
+        filtered queries) while letting an operator route SEARCH to an
+        index driver (e.g. Elasticsearch) per catalog/collection without a
+        code change. Mirrors :meth:`CatalogRoutingConfig._augment_*`."""
         try:
             _self_register_indexers_into(self.operations, AssetIndexer)
             from dynastore.models.protocols.asset_upload import AssetUploadProtocol

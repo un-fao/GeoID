@@ -18,7 +18,7 @@
 
 import json
 import logging
-from typing import Dict, Any, Optional, List, Annotated, Union, cast
+from typing import Dict, Any, Optional, List, Union, cast
 from dynastore.modules import get_protocol
 from dynastore.tools.discovery import get_protocols
 from fastapi import (
@@ -103,17 +103,21 @@ logger = logging.getLogger(__name__)
 
 
 class SearchQuery(BaseModel):
-    """Payload for advanced asset searching."""
+    """Payload for advanced asset searching.
+
+    Scope (catalog vs. collection) is taken from the request **path**, not
+    the body — symmetric with every other asset operation. Use the
+    catalog-scoped endpoint for catalog-tier assets, the collection-scoped
+    endpoint for a collection, and the global endpoint for cross-catalog
+    search. To filter on the ``collection_id`` column itself, pass an
+    ``AssetFilter(field="collection_id", value=...)``.
+    """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     filters: List[AssetFilter] = Field(
         default_factory=list, description="List of granular filters to apply."
     )
-    collection_id: Annotated[
-        Optional[str],
-        Field(None, description="Optional scope to a specific collection."),
-    ]
     limit: int = Field(10, ge=1, le=100)
     offset: int = Field(0, ge=0)
 class UploadRequest(BaseModel):
@@ -419,18 +423,44 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             status_code=status.HTTP_204_NO_CONTENT,
             summary="Delete All Collection Assets",
         )
-        # Canonical asset search routes
+        # Canonical asset search routes (path-scoped, routing-aware).
+        # All three share one ``_run_scoped_search`` impl; the scope is
+        # taken from the path. Search resolves the ``SEARCH`` asset driver
+        # with a fallback to ``READ`` (see ``get_asset_search_driver``), so
+        # an operator can route asset search to a dedicated index driver
+        # (e.g. Elasticsearch) per catalog/collection without code changes.
         self.router.add_api_route(
             "/assets-search",
             self.advanced_search_global,
             methods=["POST"],
             summary="Advanced Asset Search (cross-catalog)",
+            description=(
+                "Cross-catalog asset search. Aggregates up to ``limit`` "
+                "matches across the catalogs the caller can see. Resolves "
+                "each catalog's routed SEARCH driver (READ fallback)."
+            ),
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets-search",
             self.advanced_search,
             methods=["POST"],
             summary="Advanced Asset Search (scoped to catalog)",
+            description=(
+                "Search catalog-tier assets (those not bound to a "
+                "collection). Resolves the catalog's routed SEARCH driver "
+                "with a READ fallback."
+            ),
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/assets-search",
+            self.advanced_search_collection,
+            methods=["POST"],
+            summary="Advanced Asset Search (scoped to collection)",
+            description=(
+                "Search assets within a single collection. The "
+                "``collection_id`` from the path is authoritative. Resolves "
+                "the collection's routed SEARCH driver with a READ fallback."
+            ),
         )
         # -----------------------------------------------------------------
         # Upload endpoints (backend-agnostic)
@@ -1222,20 +1252,63 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     # =============================================================================
 
 
+    async def _run_scoped_search(
+        self,
+        *,
+        catalog_id: str,
+        collection_id: Optional[str],
+        query: SearchQuery,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Asset]:
+        """Shared search impl for the catalog / collection / global routes.
+
+        Delegates to ``AssetsProtocol.search_assets``, which resolves the
+        routed SEARCH driver (READ fallback) via ``get_asset_search_driver``.
+        ``collection_id=None`` scopes to catalog-tier assets; a value scopes
+        to that collection — symmetric with ``list_catalog_assets`` /
+        ``list_collection_assets``.
+        """
+        return await self.assets.search_assets(
+            catalog_id=catalog_id,
+            filters=query.filters,
+            collection_id=collection_id,
+            limit=limit if limit is not None else query.limit,
+            offset=offset,
+        )
+
     async def advanced_search(
         self,
         catalog_id: str = Path(..., description="The catalog ID"),
         query: SearchQuery = Body(...),
     ):
-        """
-        Granular POST-based search using the advanced query builder.
+        """Granular POST-based search over catalog-tier assets."""
+        try:
+            return await self._run_scoped_search(
+                catalog_id=catalog_id,
+                collection_id=None,
+                query=query,
+                offset=query.offset,
+            )
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
+
+    async def advanced_search_collection(
+        self,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        collection_id: str = Path(..., description="The collection ID"),
+        query: SearchQuery = Body(...),
+    ):
+        """Granular POST-based search scoped to a single collection.
+
+        The ``collection_id`` from the path is authoritative.
         """
         try:
-            return await self.assets.search_assets(
+            return await self._run_scoped_search(
                 catalog_id=catalog_id,
-                filters=query.filters,
-                collection_id=query.collection_id,
-                limit=query.limit,
+                collection_id=collection_id,
+                query=query,
                 offset=query.offset,
             )
         except Exception as e:
@@ -1273,10 +1346,10 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             if not cat_id:
                 continue
             try:
-                rows = await self.assets.search_assets(
+                rows = await self._run_scoped_search(
                     catalog_id=cat_id,
-                    filters=query.filters,
-                    collection_id=query.collection_id,
+                    collection_id=None,
+                    query=query,
                     limit=remaining,
                     offset=0,
                 )

@@ -54,6 +54,13 @@ ASSETS_REFERENCES = f"{_NS}/references"
    driver-owned referencing entities (collections, DuckDB tables,
    Iceberg tables, ...)."""
 
+ASSETS_SEARCH = f"{_NS}/search"
+"""Granular asset search via ``POST .../assets-search`` with an
+   ``AssetFilter`` list. Path-scoped (catalog-tier / collection /
+   cross-catalog) and routing-aware: resolves the SEARCH-routed driver
+   with a READ fallback. Maps to the ``Search`` class in the proposal
+   (``docs/proposals/asset-transactions-extension.md`` §5)."""
+
 ASSETS_CONFORMANCE_URIS = (
     ASSETS_CORE,
     ASSETS_UPLOADS,
@@ -61,6 +68,7 @@ ASSETS_CONFORMANCE_URIS = (
     ASSETS_VERSIONING,
     ASSETS_VIRTUAL_ASSETS,
     ASSETS_REFERENCES,
+    ASSETS_SEARCH,
 )
 
 __all__ = (
@@ -70,5 +78,6 @@ __all__ = (
     "ASSETS_VERSIONING",
     "ASSETS_VIRTUAL_ASSETS",
     "ASSETS_REFERENCES",
+    "ASSETS_SEARCH",
     "ASSETS_CONFORMANCE_URIS",
 )

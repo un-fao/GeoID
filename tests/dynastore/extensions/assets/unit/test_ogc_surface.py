@@ -17,7 +17,7 @@
 Covers:
 
 * GET /assets/ landing page (links: self, conformance, service-doc).
-* GET /assets/conformance returns the six draft conformance URIs.
+* GET /assets/conformance returns the draft conformance URIs (incl. search).
 * Single-asset GET surfaces HATEOAS ``links`` (self / collection /
   alternate-download).
 * Bulk POST returns 201 ``BulkCreationResponse`` when fully accepted.
@@ -166,7 +166,7 @@ def test_landing_page_lists_self_and_conformance() -> None:
     assert {"self", "conformance", "service-doc"}.issubset(rels)
 
 
-def test_conformance_lists_all_six_assets_uris() -> None:
+def test_conformance_lists_all_assets_uris() -> None:
     svc = _build_service()
     client = TestClient(svc.app)
 
@@ -175,6 +175,19 @@ def test_conformance_lists_all_six_assets_uris() -> None:
     advertised = set(r.json()["conformsTo"])
     for uri in ASSETS_CONFORMANCE_URIS:
         assert uri in advertised, f"missing conformance URI: {uri}"
+
+
+def test_conformance_includes_search_uri() -> None:
+    """The Search class (proposal §5) must be advertised."""
+    from dynastore.extensions.assets.conformance import ASSETS_SEARCH
+
+    svc = _build_service()
+    client = TestClient(svc.app)
+
+    r = client.get("/assets/conformance")
+    assert r.status_code == 200
+    assert ASSETS_SEARCH in set(r.json()["conformsTo"])
+    assert ASSETS_SEARCH.endswith("/search")
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +381,67 @@ def test_bulk_post_returns_207_when_fully_rejected(
     assert len(body["rejections"]) == 2
     # IngestionReport.is_fully_rejected — verify by shape (no accepted, has rejections).
     assert all(r["matcher"] == "filename" for r in body["rejections"])
+
+
+# ---------------------------------------------------------------------------
+# Search routes: path-authoritative scoping (catalog / collection / global)
+# ---------------------------------------------------------------------------
+
+
+def test_collection_search_route_is_mounted_and_path_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /catalogs/{cat}/collections/{col}/assets-search exists and
+    forwards the path ``collection_id`` to ``search_assets``."""
+    svc = _build_service()
+
+    fake_assets = AsyncMock()
+    fake_assets.search_assets = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        AssetService, "assets", property(lambda self: fake_assets)
+    )
+
+    client = TestClient(svc.app)
+    r = client.post(
+        "/assets/catalogs/cat/collections/col/assets-search",
+        json={"filters": [], "limit": 5},
+    )
+    assert r.status_code == 200, r.text
+    fake_assets.search_assets.assert_awaited_once()
+    kwargs = fake_assets.search_assets.await_args.kwargs
+    assert kwargs["catalog_id"] == "cat"
+    assert kwargs["collection_id"] == "col"
+
+
+def test_catalog_search_route_scopes_to_catalog_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /catalogs/{cat}/assets-search scopes to catalog-tier
+    (collection_id=None) — body carries no collection scope."""
+    svc = _build_service()
+
+    fake_assets = AsyncMock()
+    fake_assets.search_assets = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        AssetService, "assets", property(lambda self: fake_assets)
+    )
+
+    client = TestClient(svc.app)
+    r = client.post(
+        "/assets/catalogs/cat/assets-search",
+        json={"filters": [], "limit": 5},
+    )
+    assert r.status_code == 200, r.text
+    kwargs = fake_assets.search_assets.await_args.kwargs
+    assert kwargs["catalog_id"] == "cat"
+    assert kwargs["collection_id"] is None
+
+
+def test_search_query_rejects_collection_id_in_body() -> None:
+    """The body ``collection_id`` field was dropped — scope comes from the
+    path. ``extra='allow'`` means an unknown key is ignored, not honoured;
+    assert the model exposes no ``collection_id`` attribute."""
+    from dynastore.extensions.assets.assets_service import SearchQuery
+
+    q = SearchQuery.model_validate({"filters": [], "collection_id": "sneaky"})
+    assert "collection_id" not in type(q).model_fields
