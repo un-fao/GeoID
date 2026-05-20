@@ -26,7 +26,7 @@ ENTRYPOINT ["/usr/local/bin/start.sh"]
 CMD ["api"]
 
 # STAGE 2: Runtime
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.4 AS runtime
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.5@sha256:c43777f16389c514fff84cf1cb7e9ab1f275ff3ea015673f727517c400bdb1e6 AS runtime
 
 ARG APP_USER=my_project
 ARG APP_UID=1001
