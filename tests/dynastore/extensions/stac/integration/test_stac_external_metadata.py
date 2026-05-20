@@ -153,19 +153,33 @@ async def test_stac_metadata_pruning_verification(sysadmin_in_process_client, in
             catalog_id, collection_id, db_resource=conn
         )
 
-        # 1. Check item_metadata table (formerly stac_metadata)
-        stac_table = f"{table}_item_metadata"
+        import json
+
+        # 1. Generic descriptive metadata (title/description/keywords) is owned
+        # by the item_metadata sidecar.
+        meta_table = f"{table}_item_metadata"
         res = await conn.execute(
-            text(f'SELECT title, external_assets FROM "{schema}"."{stac_table}"')
+            text(f'SELECT title FROM "{schema}"."{meta_table}"')
         )
         row = res.fetchone()
         assert row is not None
-        import json
-
         title_json = row[0]
         if isinstance(title_json, str):
             title_json = json.loads(title_json)
         assert title_json.get("en") == "Pruned Title"
+
+        # 1b. STAC-specific external content (external_assets/extensions/
+        # extra_fields) is owned by the separate stac_metadata sidecar.
+        stac_table = f"{table}_stac_metadata"
+        res = await conn.execute(
+            text(f'SELECT external_assets FROM "{schema}"."{stac_table}"')
+        )
+        row = res.fetchone()
+        assert row is not None
+        ext_assets = row[0]
+        if isinstance(ext_assets, str):
+            ext_assets = json.loads(ext_assets)
+        assert "external" in (ext_assets or {})
 
         # 2. Check attributes sidecar table - it should NOT contain the title or assets if we pruned them
         # Wait, current AttributesSidecar stores EVERYTHING in 'attributes' JSONB.

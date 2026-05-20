@@ -546,9 +546,16 @@ class ItemQueryMixin:
                 "collection_id": collection_id,
                 "col_config": col_config,
             }
+            # Thread the caller's consumer (e.g. STAC) into the SQL build so
+            # consumer-gated sidecars — like stac_metadata, which serves only
+            # ConsumerType.STAC — are JOINed and their columns selected.
+            # Without this the single-item read defaults to GENERIC and the
+            # stac_metadata payload (external_assets/extensions/extra_fields)
+            # is silently dropped from the row.
+            consumer = getattr(context, "consumer", None) or ConsumerType.GENERIC
             sql, params = await self._apply_query_transformations(
                 request, query_ctx, catalog_id, collection_id, col_config,
-                db_resource=conn,
+                db_resource=conn, consumer=consumer,
             )
 
             result = await _run_query(conn, text(sql), params)

@@ -17,6 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import asyncio
+import copy
 import logging
 import json
 from datetime import datetime, timezone
@@ -741,6 +742,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 "geoid": geoid,
                 "operation": "insert",
                 "_raw_item": raw_item,
+                # Pristine snapshot taken before any sidecar mutates raw_item.
+                # A prune-first sidecar (item_metadata) strips title/description/
+                # keywords and ``:``-namespaced extension keys from the shared
+                # ``properties`` in place so the attributes residue stays clean.
+                # The stac_metadata sidecar, which runs afterwards and owns those
+                # extension keys (extra_fields), reads from this snapshot so its
+                # content isn't lost to the earlier strip.
+                "_pristine_item": copy.deepcopy(raw_item),
                 "_items_write_policy": items_write_policy,
                 **(processing_context or {}),
             }
