@@ -73,12 +73,23 @@ async def _create_db_template_with_retry(
     re-attempts up to ``attempts`` times. If external clients are persistently
     connected the loop exhausts and raises a RuntimeError pointing the operator
     at the resolution path (clear-db workflow + stop the local/review stack).
+
+    Terminate is strictly scoped by ``datname = source_db`` (the master
+    ``gis_dev``) — sibling worker per-DBs (``gis_dev_gw*``) and any database
+    not matching that name are never touched.  This is the load-bearing guard
+    behind the per-worker DB drop race (#1027) — coupled with the file lock
+    in ``_ensure_worker_db`` that prevents two workers from terminating +
+    creating concurrently.
     """
     import asyncio
     import asyncpg
 
     last_exc: Exception | None = None
     for _ in range(attempts):
+        # Strictly scoped to the source DB only — sibling workers' per-worker
+        # DBs (``gis_dev_gw*``) match a DIFFERENT ``datname`` and are left
+        # untouched.  ``pid <> pg_backend_pid()`` keeps us from killing our
+        # own admin connection (which holds the advisory + file lock).
         await execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
             "WHERE datname = $1 AND pid <> pg_backend_pid()",
@@ -105,19 +116,34 @@ async def _ensure_worker_db():
     """
     Create the per-xdist-worker DB by cloning the master ``gis_dev`` TEMPLATE.
 
-    Serialized across workers via a Postgres advisory lock so that simultaneous
-    clones don't fail with "source database is being accessed by other users"
-    against each other. External clients (dev stack on docker-compose.dev.yml,
-    pgAdmin, leftover sessions from interrupted runs) connected to the source DB
-    are best-effort terminated; if they immediately reconnect, the bounded retry
-    in ``_create_db_template_with_retry`` covers the transient race. Persistent
-    external connections must be cleared by the operator before launching the
-    session — the helper does not mutate source-DB settings (#894).
+    Serialized across workers via TWO layers (#1027):
+
+    1. **OS-level file lock** acquired BEFORE opening any DB connection.  Without
+       this, every worker simultaneously connects to ``/postgres`` to grab the
+       Postgres advisory lock — under ``-n auto`` that's 12-16 concurrent admin
+       connections and the ensuing terminate-backend storms (one per worker)
+       inside ``_create_db_template_with_retry`` could collide with another
+       worker's in-flight CREATE DATABASE TEMPLATE, leaving its target DB in a
+       half-dropped state ("database gis_dev_gwN does not exist" cascades).
+       The file lock ensures only ONE worker is inside this critical section
+       at a time, so terminate-storms can never overlap with a peer's CREATE.
+
+    2. **Postgres advisory lock** retained as belt-and-braces in case multiple
+       pytest invocations run against the same Postgres on the same host (the
+       file lock is per-host-tempdir, the advisory lock is per-cluster).
+
+    External clients (dev stack, pgAdmin, leftover sessions) connected to the
+    source DB are best-effort terminated (see ``_create_db_template_with_retry``);
+    persistent external connections must be cleared by the operator before
+    launching the session — the helper does not mutate source-DB settings (#894).
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
         return
+    import asyncio
     import asyncpg
+    import fcntl
+    import tempfile
     from urllib.parse import urlparse
 
     base = os.environ["DATABASE_URL"]
@@ -131,46 +157,66 @@ async def _ensure_worker_db():
     worker_db = suffixed
     admin_url = base.replace(f"/{suffixed}", "/postgres")
 
-    conn = await asyncpg.connect(admin_url)
+    # Per-host file lock — serialize worker template-creation across xdist
+    # workers in this pytest invocation BEFORE we ever touch Postgres.
+    # The lock path is keyed on the source DB so that pytest runs against
+    # different Postgres instances (different ports / clusters) do not block
+    # each other unnecessarily.
+    lock_path = os.path.join(
+        tempfile.gettempdir(), f"dynastore_xdist_ensure_db_{source_db}.lock"
+    )
+    # Open with O_CREAT|O_RDWR so multiple workers can independently take
+    # an exclusive lock on the same inode.
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        # Cross-worker advisory lock so CREATE DATABASE TEMPLATE serializes.
-        await conn.execute("SELECT pg_advisory_lock(8472001)")
+        # Block until we hold the exclusive lock — this can take a few seconds
+        # under -n auto while sibling workers finish their CREATE TEMPLATE.
+        # Use a polled loop in the executor so we don't pin the event loop.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, fcntl.flock, lock_fd, fcntl.LOCK_EX)
+        conn = await asyncpg.connect(admin_url)
         try:
-            await conn.execute(
-                f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'
-            )
-            await _create_db_template_with_retry(
-                conn.execute, source_db, worker_db,
-            )
+            # Belt-and-braces: serialize against any concurrent pytest
+            # invocation that may be sharing the same Postgres cluster.
+            await conn.execute("SELECT pg_advisory_lock(8472001)")
+            try:
+                await conn.execute(
+                    f'DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)'
+                )
+                await _create_db_template_with_retry(
+                    conn.execute, source_db, worker_db,
+                )
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(8472001)")
         finally:
-            await conn.execute("SELECT pg_advisory_unlock(8472001)")
+            await conn.close()
     finally:
-        await conn.close()
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 
 async def _drop_worker_db():
-    worker = os.environ.get("PYTEST_XDIST_WORKER")
-    if not worker:
-        return
-    import asyncpg
-    from urllib.parse import urlparse
+    """No-op stub kept for backward compatibility (#1027).
 
-    base = os.environ["DATABASE_URL"]
-    p = urlparse(base)
-    suffixed = p.path.lstrip("/")
-    if not suffixed.endswith(f"_{worker}"):
-        return
-    admin_url = base.replace(f"/{suffixed}", "/postgres")
-    try:
-        conn = await asyncpg.connect(admin_url)
-        try:
-            await conn.execute(
-                f'DROP DATABASE IF EXISTS "{suffixed}" WITH (FORCE)'
-            )
-        finally:
-            await conn.close()
-    except Exception:
-        pass  # best-effort teardown
+    Per-worker DBs (``gis_dev_gw*``) are NOT dropped at session finish:
+
+    * The next session's ``_ensure_worker_db`` already does
+      ``DROP DATABASE IF EXISTS "{worker_db}" WITH (FORCE)`` immediately
+      before re-cloning the template, so stale DBs are reaped on the
+      following run.
+    * Dropping at session-finish on the worker leaked through xdist's
+      crashed-worker / replaced-worker lifecycle: when xdist replaced a
+      crashed worker, the OLD process could still run ``_drop_worker_db``
+      AFTER the REPLACEMENT process had successfully re-created the DB,
+      yielding the "database gis_dev_gwN does not exist" cascades that
+      flagged #1027.  Leaving the DB around between sessions sidesteps
+      that race entirely.
+    * The controller's session-finish hook still runs ``cleanup_db()`` on
+      the master ``gis_dev`` so shared state is reset between sessions.
+    """
+    return
 
 
 def pytest_sessionstart(session):
@@ -186,8 +232,12 @@ def pytest_sessionfinish(session, exitstatus):
     """
     Run database cleanup after the full test session.
 
-    With xdist: workers drop their own per-worker DBs; the controller runs the
-    final shared-state cleanup pass on the master gis_dev DB.
+    With xdist: workers do NOT drop their per-worker DBs (#1027 — the drop
+    raced with replacement-worker startup when xdist restarted a crashed
+    worker, leaving the recreated DB dropped just after creation). Worker
+    DBs are reaped at the START of the next session by ``_ensure_worker_db``
+    (DROP IF EXISTS + recreate from template). The controller still runs
+    the final shared-state cleanup pass on the master gis_dev DB.
 
     Without xdist: called in the main process after all tests finish; runs
     cleanup_db on the single shared DB.
@@ -195,7 +245,9 @@ def pytest_sessionfinish(session, exitstatus):
     import asyncio
 
     if os.environ.get("PYTEST_XDIST_WORKER"):
-        # Worker drops its own per-worker DB.
+        # Worker drop deliberately deferred to next session's
+        # ``_ensure_worker_db`` (see #1027). Keep the call for the
+        # no-op stub so callers / docstrings stay in sync.
         try:
             asyncio.run(_drop_worker_db())
         except Exception as e:
