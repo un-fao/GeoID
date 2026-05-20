@@ -872,9 +872,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         conn: Any,
     ) -> Tuple[Optional[Feature], Dict[str, Any]]:
         """Utility to get an item and its raw row via FeaturePipelineContext."""
-        from dynastore.modules.storage.drivers.pg_sidecars.base import FeaturePipelineContext
+        from dynastore.modules.storage.drivers.pg_sidecars.base import (
+            FeaturePipelineContext,
+            ConsumerType,
+        )
 
-        context = FeaturePipelineContext(lang=language)
+        context = FeaturePipelineContext(lang=language, consumer=ConsumerType.STAC)
         item = await items_svc.get_item(
             catalog_id=catalog_id,
             collection_id=collection_id,

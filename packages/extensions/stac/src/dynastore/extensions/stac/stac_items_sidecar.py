@@ -331,12 +331,20 @@ class StacItemsSidecar(SidecarProtocol):
                 "geoid is required in context for stac_metadata sidecar"
             )
 
-        if hasattr(feature, "dict"):
-            data = feature.dict(by_alias=True)
-        elif hasattr(feature, "model_dump"):
-            data = feature.model_dump(by_alias=True)
+        # Prefer the pristine pre-prune snapshot: a prune-first sidecar
+        # (item_metadata) strips ``:``-namespaced extension keys from the
+        # shared ``properties`` before this sidecar runs, so reading the live
+        # feature here would silently drop ``extra_fields``.
+        source = context.get("_pristine_item")
+        if source is None:
+            source = feature
+
+        if hasattr(source, "dict"):
+            data = source.dict(by_alias=True)
+        elif hasattr(source, "model_dump"):
+            data = source.model_dump(by_alias=True)
         else:
-            data = dict(feature)
+            data = dict(source)
 
         from dynastore.tools.discovery import get_protocols
         from dynastore.extensions.stac.stac_extension_protocol import (
