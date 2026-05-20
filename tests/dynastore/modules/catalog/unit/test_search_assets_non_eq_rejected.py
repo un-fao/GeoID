@@ -112,7 +112,7 @@ def test_eq_only_filters_reach_driver_unchanged():
         return _FakeDriver()
 
     with patch(
-        "dynastore.modules.storage.router.get_asset_driver",
+        "dynastore.modules.storage.router.get_asset_search_driver",
         _fake_get_driver,
     ):
         result = asyncio.run(svc.search_assets(catalog_id="cat-x", filters=filters))
