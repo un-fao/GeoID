@@ -38,7 +38,7 @@ RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
     fi
 
 # STAGE 1: Builder (Production dependencies)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.0 AS builder
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.4 AS builder
 
 LABEL maintainer="carlo.cancellieri@fao.org"
 
@@ -140,7 +140,7 @@ ARG BUILD_JUPYTERLITE=false
 # build does NOT include the Arrow/Parquet driver.  Reading GeoParquet over
 # /vsigs/ from the ingestion task therefore failed with
 # ``CPLE_OpenFailedError: not recognized as being in a supported file format``
-# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.13.0``
+# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.12.4``
 # has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
 # → driverShortName='Parquet').  Force fiona to rebuild from sdist against
 # the system libgdal so it inherits every driver the base image ships.
@@ -266,7 +266,7 @@ WORKDIR ${APP_DIR}
 EXPOSE 5678 5679
 
 # STAGE 4: Runtime (Production image)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.13.0 AS runtime
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.4 AS runtime
 
 ARG APP_USER=dynastore
 ARG APP_UID=1001
