@@ -88,3 +88,68 @@ def test_field_format_overrides_timestamp_default():
     props = derive_wire_schema(fields)["properties"]  # type: ignore[index]
     assert props["ts"]["format"] == "date"
     assert props["raw"]["format"] == "email"
+
+
+# ── purpose="write" variant ─────────────────────────────────────────────
+# The write variant feeds the write-path JSON-Schema validator. It must
+# carry value constraints (type/enum/min/max/maxLength/pattern/format) but
+# NOT structural constraints already owned by other write-path checks:
+# - ``additionalProperties`` is owned by the strict-unknown-fields check
+# - ``required`` is owned by NOT NULL DDL (PG) / the ``check_required``
+#   app-level fallback (ES)
+
+
+def test_write_purpose_omits_additional_properties_even_when_strict():
+    fields = {"a": FieldDefinition(name="a", data_type="text")}
+    schema = derive_wire_schema(fields, strict=True, purpose="write")
+    assert schema is not None
+    # strict would set additionalProperties=False on the read variant, but the
+    # write variant must never do so (would double-422 with the unknown-fields
+    # check).
+    assert "additionalProperties" not in schema
+
+
+def test_write_purpose_omits_required():
+    fields = {
+        "name": FieldDefinition(name="name", data_type="text", required=True),
+        "score": FieldDefinition(name="score", data_type="float", required=True),
+    }
+    schema = derive_wire_schema(fields, purpose="write")
+    assert schema is not None
+    # required is enforced by NOT NULL DDL / app-level fallback, not here.
+    assert "required" not in schema
+
+
+def test_write_purpose_keeps_value_constraints():
+    fields = {
+        "name": FieldDefinition(
+            name="name", data_type="text", max_length=50, pattern="^[a-z]+$"
+        ),
+        "score": FieldDefinition(
+            name="score", data_type="float", minimum=0.0, maximum=100.0
+        ),
+        "kind": FieldDefinition(name="kind", data_type="text", enum=["a", "b", "c"]),
+    }
+    schema = derive_wire_schema(fields, purpose="write")
+    assert schema is not None
+    props = schema["properties"]
+    assert props["name"]["type"] == "string"
+    assert props["name"]["maxLength"] == 50
+    assert props["name"]["pattern"] == "^[a-z]+$"
+    assert props["score"]["minimum"] == 0.0
+    assert props["score"]["maximum"] == 100.0
+    assert props["kind"]["enum"] == ["a", "b", "c"]
+
+
+def test_write_purpose_returns_none_for_empty_fields():
+    assert derive_wire_schema({}, purpose="write") is None
+
+
+def test_read_purpose_is_default_and_unchanged():
+    fields = {"a": FieldDefinition(name="a", data_type="text", required=True)}
+    default = derive_wire_schema(fields, strict=True)
+    explicit_read = derive_wire_schema(fields, strict=True, purpose="read")
+    assert default == explicit_read
+    # the read variant keeps both required and additionalProperties
+    assert default["required"] == ["a"]  # type: ignore[index]
+    assert default["additionalProperties"] is False  # type: ignore[index]

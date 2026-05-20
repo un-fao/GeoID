@@ -5,7 +5,7 @@ Pure, dependency-light: the collection's items-schema becomes the single source
 of truth for both write-validation and the produced feature shape.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 from dynastore.models.protocols.field_definition import FieldDefinition
 
@@ -37,15 +37,37 @@ _TYPE_MAP: Dict[str, dict] = {
 
 
 def derive_wire_schema(
-    fields: Dict[str, FieldDefinition], *, strict: bool = False
+    fields: Dict[str, FieldDefinition],
+    *,
+    strict: bool = False,
+    purpose: Literal["read", "write"] = "read",
 ) -> Optional[dict]:
     """Build a Draft-2020-12 ``object`` schema for a feature's ``properties``.
 
     Returns ``None`` when ``fields`` is empty (blob collection — nothing to
-    validate). When ``strict`` is True the schema forbids extra properties.
+    validate).
+
+    ``purpose`` selects which structural constraints the schema carries; in
+    both cases the per-field VALUE constraints (type, enum, minimum, maximum,
+    maxLength, pattern, format) are always emitted:
+
+    - ``"read"`` (default) — the schema published on the wire and used to
+      describe a collection. ``required`` is included, and ``strict=True``
+      adds ``additionalProperties: false``.
+    - ``"write"`` — the schema fed to the write-path value validator. It
+      OMITS both ``required`` and ``additionalProperties`` because those are
+      already enforced earlier on the write path by separate mechanisms:
+      ``required`` by the ``NOT NULL`` sidecar columns derived from the items
+      schema (or, for non-native backends, the ``check_required`` app-level
+      fallback), and unknown-key rejection by the strict-unknown-fields
+      check. Re-asserting them here would raise a second, conflicting 422 for
+      the same input.
     """
     if not fields:
         return None
+
+    include_required = purpose == "read"
+    include_additional_properties = purpose == "read"
 
     properties: Dict[str, dict] = {}
     required = []
@@ -74,8 +96,9 @@ def derive_wire_schema(
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": properties,
-        "required": sorted(required),
     }
-    if strict:
+    if include_required:
+        schema["required"] = sorted(required)
+    if strict and include_additional_properties:
         schema["additionalProperties"] = False
     return schema
