@@ -219,6 +219,35 @@ async def _drop_worker_db():
     return
 
 
+async def _assert_foundational_schemas(engine) -> None:
+    """Fail fast if foundational DB schemas are missing after module startup.
+
+    ``DBConfigModule`` must create ``configs.platform_configs`` during its
+    lifespan.  If that table is absent after ``modules.lifespan`` returns,
+    every config read will raise and every collection/catalog create will
+    500.  Asserting here surfaces the regression immediately with a clear
+    message instead of burying it under hundreds of cascade 500s.
+    """
+    import pytest
+    from sqlalchemy import text
+
+    _REQUIRED: tuple[tuple[str, str], ...] = (
+        ("configs", "platform_configs"),
+    )
+    async with engine.connect() as conn:
+        for schema, table in _REQUIRED:
+            fq = f'"{schema}"."{table}"'
+            row = await conn.execute(
+                text("SELECT to_regclass(:fq)"), {"fq": fq}
+            )
+            if row.scalar() is None:
+                pytest.fail(
+                    f"Foundational schema regression: {fq} does not exist after "
+                    f"module lifespan startup. DBConfigModule may have failed to "
+                    f"initialize storage. Check module startup logs for CRITICAL errors."
+                )
+
+
 def pytest_sessionstart(session):
     """Per-worker DB provisioning. No-op outside xdist."""
     if not os.environ.get("PYTEST_XDIST_WORKER"):
@@ -986,6 +1015,10 @@ async def app_lifespan(
             modules.lifespan(app.state)
         )
 
+        # Regression guard: foundational schemas must exist after module
+        # lifespan startup or every subsequent create will 500-cascade.
+        await _assert_foundational_schemas(db_engine)
+
         # 5. Apply Global GCP Config for Tests (Faster visibility / reliable cleanup)
         try:
             import logging
@@ -1175,6 +1208,10 @@ async def app_lifespan_module(request):
 
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(modules.lifespan(app.state))
+
+        # Regression guard: foundational schemas must exist after module
+        # lifespan startup or every subsequent create will 500-cascade.
+        await _assert_foundational_schemas(engine)
 
         try:
             import logging
