@@ -554,8 +554,12 @@ class ItemQueryMixin:
             result = await _run_query(conn, text(sql), params)
             row = result.mappings().first()
 
+            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
             return (
-                self.map_row_to_feature(dict(row), col_config, lang=lang, context=context)
+                self.map_row_to_feature(
+                    dict(row), col_config, lang=lang, context=context,
+                    read_policy=read_policy,
+                )
                 if row else None
             )
 
@@ -772,6 +776,7 @@ class ItemQueryMixin:
 
         # Stream Generator (O(1) Memory)
         lang = (request.raw_params or {}).get("lang", "en")
+        read_policy = await self._resolve_read_policy(catalog_id, collection_id)
         async def feature_stream():
             # Open a fresh connection/transaction for streaming to ensure isolation and avoid leaks
             async with managed_transaction(self.engine) as stream_conn:
@@ -781,6 +786,7 @@ class ItemQueryMixin:
                     feature_ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
                     yield self.map_row_to_feature(
                         dict(row._mapping), col_config, context=feature_ctx,
+                        read_policy=read_policy,
                     )
 
         return QueryResponse(
@@ -874,7 +880,11 @@ class ItemQueryMixin:
         ) as (query, conn, params):
             rows = await query.execute(conn, **params)
             col_config = params.get("col_config")
-            return [self.map_row_to_feature(row, col_config) for row in rows]
+            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
+            return [
+                self.map_row_to_feature(row, col_config, read_policy=read_policy)
+                for row in rows
+            ]
 
     async def stream_items_from_query(
         self,
@@ -963,6 +973,9 @@ class ItemQueryMixin:
                 query_string += " OFFSET :_qo_offset"
                 bind_params["_qo_offset"] = offset
 
+            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
             query = GeoDQLQuery(text(query_string), result_handler=ResultHandler.ALL)
             async for item in await query.stream(conn, **bind_params):
-                yield self.map_row_to_feature(item, col_config)
+                yield self.map_row_to_feature(
+                    item, col_config, read_policy=read_policy
+                )
