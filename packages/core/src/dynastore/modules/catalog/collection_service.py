@@ -45,6 +45,33 @@ from dynastore.modules.db_config import shared_queries
 logger = logging.getLogger(__name__)
 
 
+@cached(maxsize=1024, namespace="collection_model", ignore=["service"])
+async def _collection_model_cache(
+    service: "CollectionService", catalog_id: str, collection_id: str
+) -> Optional[Collection]:
+    """Process-shared cache for collection metadata models.
+
+    Keyed on ``(catalog_id, collection_id)`` only — ``service`` is ignored so
+    every ``CollectionService`` instance shares one cache entry per collection.
+    A module-level cache (single decorator closure → single backend) is what
+    makes ``cache_invalidate`` from any instance visible to reads issued
+    through any other instance; an instance-bound cache would give each
+    service its own backend, so a write+invalidate on one instance would leave
+    stale entries readable through another (e.g. the facade-internal service
+    vs. the standalone one).
+    """
+    return await service._get_collection_model_db(catalog_id, collection_id)
+
+
+def _invalidate_collection_model_cache(catalog_id: str, collection_id: str) -> None:
+    """Drop the shared collection-model cache entry for a collection.
+
+    ``service`` is part of the cache signature but ignored for keying, so any
+    sentinel is fine here.
+    """
+    _collection_model_cache.cache_invalidate(None, catalog_id, collection_id)
+
+
 def _make_collection_exists_query(phys_schema: str) -> DQLQuery:
     """SELECT id FROM ``phys_schema``.collections by id (non-deleted only).
 
@@ -65,10 +92,10 @@ class CollectionService:
 
     def __init__(self, engine: Optional[DbResource] = None):
         self.engine = engine
-        # Instance-bound caches (private)
-        self._get_collection_model_cached = cached(maxsize=1024, namespace="collection_model")(
-            self._get_collection_model_db
-        )
+        # The collection-model read cache is a process-shared module-level
+        # cache (``_collection_model_cache``) rather than an instance-bound
+        # one, so invalidations land in the same backend every instance reads
+        # from. See that function's docstring for why this matters.
 
     def is_available(self) -> bool:
         return self.engine is not None
@@ -341,7 +368,7 @@ class CollectionService:
                 return await self._get_collection_model_logic(
                     catalog_id, collection_id, conn
                 )
-        return await self._get_collection_model_cached(catalog_id, collection_id)
+        return await _collection_model_cache(self, catalog_id, collection_id)
 
     async def get_collection_column_names(
         self,
@@ -604,9 +631,7 @@ class CollectionService:
             physical_table = None
 
         # Invalidate caches
-        self._get_collection_model_cached.cache_invalidate(
-            catalog_id, collection_model.id
-        )
+        _invalidate_collection_model_cache(catalog_id, collection_model.id)
 
         # Trigger async lifecycle
         config_snapshot = {}
@@ -814,9 +839,7 @@ class CollectionService:
         # stale data that subsequent GETs would happily serve. Mirror
         # what create_collection (line 624) and delete_collection (923)
         # already do: invalidate after the `async with` exits.
-        self._get_collection_model_cached.cache_invalidate(
-            catalog_id, collection_id
-        )
+        _invalidate_collection_model_cache(catalog_id, collection_id)
 
         return fresh
 
@@ -917,7 +940,7 @@ class CollectionService:
                     f"[LIFECYCLE] Hard deleted collection '{catalog_id}:{collection_id}' successfully"
                 )
 
-        self._get_collection_model_cached.cache_invalidate(catalog_id, collection_id)
+        _invalidate_collection_model_cache(catalog_id, collection_id)
 
         if force and phys_schema:
             lifecycle_registry.destroy_async_collection(
@@ -999,8 +1022,6 @@ class CollectionService:
                 db_resource=conn,
             )
 
-            self._get_collection_model_cached.cache_invalidate(
-                catalog_id, collection_id
-            )
+            _invalidate_collection_model_cache(catalog_id, collection_id)
             return True
 
