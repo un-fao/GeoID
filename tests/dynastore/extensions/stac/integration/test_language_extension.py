@@ -190,12 +190,15 @@ async def test_partial_language_update(sysadmin_in_process_client):
     )
     assert create_resp.status_code == 201
     
-    # Update with new Spanish translation
+    # Update with new Spanish translation.
+    # Merging a single language into an existing resource is PATCH semantics
+    # (partial body, lang-scoped). PUT is reserved for full replacement and
+    # requires the complete body including ``id``.
     update_payload = {
         "description": "Descripción en español"
     }
-    
-    update_resp = await sysadmin_in_process_client.put(
+
+    update_resp = await sysadmin_in_process_client.patch(
         f"/stac/catalogs/{catalog_id}",
         json=update_payload,
         params={"lang": "es"}
@@ -236,14 +239,18 @@ async def test_language_deletion_with_full_replacement(sysadmin_in_process_clien
     )
     assert create_resp.status_code == 201
     
-    # Full replacement with only English and French
+    # Full replacement with only English and French.
+    # PUT replaces the whole resource, so the body must be complete (including
+    # ``id``); lang='*' signals a multi-language replace that drops omitted
+    # languages (here Spanish).
     update_payload = {
+        "id": catalog_id,
         "description": {
             "en": "Updated English",
             "fr": "Français mis à jour"
         }
     }
-    
+
     update_resp = await sysadmin_in_process_client.put(
         f"/stac/catalogs/{catalog_id}",
         json=update_payload,

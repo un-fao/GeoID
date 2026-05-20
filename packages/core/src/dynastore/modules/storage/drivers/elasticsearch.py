@@ -97,6 +97,54 @@ def _tenant_items_index(catalog_id: str) -> str:
     return get_tenant_items_index(get_index_prefix(), catalog_id)
 
 
+# Fields that the items ES mapping models as multilingual ``object`` blocks
+# (one ``text`` sub-property per supported locale — see
+# ``items_projection._localized_text_field``). The platform's read pipeline
+# (``ItemMetadataSidecar.map_row_to_feature``) collapses these to a plain
+# string for the requested ``context.lang`` before the Feature is dumped to
+# the dispatch payload. Sending a string to an ``object``-typed field would
+# trip ``object mapping for [properties.<field>] tried to parse field [..]
+# as object, but found a concrete value`` and fail every item write on the
+# dispatcher path. Re-wrap the collapsed string back into the canonical
+# ``{<lang>: <value>}`` dict so the ES mapping accepts it.
+_LOCALIZED_OBJECT_PROPERTIES: tuple = ("title", "description")
+# ``keywords`` is mapped as keyword + .text — concrete values are fine
+# there, so it intentionally stays out of the wrap list.
+
+
+def _ensure_localized_object_shape(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-wrap localised string fields back into ``{<lang>: <value>}`` dicts.
+
+    The read pipeline collapses multilingual fields (``properties.title``,
+    ``properties.description``) into a plain string for the active
+    ``context.lang``. The ES items mapping types those fields as ``object``
+    with per-locale sub-properties, so a string payload is rejected by ES.
+
+    This helper restores the canonical object shape — non-destructive when
+    the field is already a dict or absent. Pure function; the input is not
+    mutated. The lang label defaults to ``en`` (matches
+    ``FeaturePipelineContext.lang`` default and aligns with the only
+    language the dispatch path resolves at present).
+    """
+    if not isinstance(doc, dict):
+        return doc
+    props = doc.get("properties")
+    if not isinstance(props, dict):
+        return doc
+    new_props: Optional[Dict[str, Any]] = None
+    for field in _LOCALIZED_OBJECT_PROPERTIES:
+        value = props.get(field)
+        if isinstance(value, str):
+            if new_props is None:
+                new_props = dict(props)
+            new_props[field] = {"en": value}
+    if new_props is None:
+        return doc
+    out = dict(doc)
+    out["properties"] = new_props
+    return out
+
+
 # Per-process cache: catalogs whose tenant items index has already been
 # added to the platform public alias on this worker. Live indexer paths
 # (index() / index_bulk()) consult this before issuing the alias call so
@@ -979,6 +1027,7 @@ class ItemsElasticsearchDriver(
             project_item_for_es,
             resolve_catalog_known_fields,
         )
+        doc = _ensure_localized_object_shape(doc)
         doc = project_item_for_es(doc, await resolve_catalog_known_fields(ctx.catalog))
         await es.index(
             index=index_name, id=op.entity_id, body=doc,
@@ -1030,6 +1079,7 @@ class ItemsElasticsearchDriver(
             doc.setdefault("id", op.entity_id)
             doc.setdefault("collection", ctx.collection)
             doc.setdefault("catalog_id", ctx.catalog)
+            doc = _ensure_localized_object_shape(doc)
             doc = project_item_for_es(doc, known_fields)
             body.append({"index": {
                 "_index": index_name, "_id": op.entity_id,

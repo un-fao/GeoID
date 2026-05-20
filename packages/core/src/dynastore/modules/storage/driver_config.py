@@ -266,6 +266,17 @@ class GeometriesWriteBehavior(BaseModel):
             "which also fixes winding order."
         ),
     )
+    skip_if_unchanged_geometry_hash: bool = Field(
+        default=False,
+        examples=[False, True],
+        description=(
+            "If True, matched features whose ``geometry_hash`` equals the "
+            "incoming one bypass ``NEW_VERSION`` (treated as a no-op) and "
+            "collapse ``UPDATE`` to ``REFUSE_RETURN``. Enables 'new version "
+            "only when geometry differs'. Requires the geometries sidecar "
+            "to be enabled (it computes geometry_hash on write)."
+        ),
+    )
 
 
 def _default_identity_rules() -> List[IdentityRule]:
@@ -296,11 +307,11 @@ class ItemsWritePolicy(PluginConfig):
     Four irreducible concerns, plus three posture flags. See
     ``docs/architecture/items-policy-consolidation-957-950.md``:
 
-    - :attr:`schema` — self-contained JSON Schema describing the wire shape
-      of ``properties``. ``type``/``description``/``default``/``required``
-      per field. The OpenAPI body schema, admin-UI form, write-time
-      validation, and the read-side ``schema_ref`` all consult this single
-      object. Setting ``None`` is permissive (no validation, no defaults).
+    - :attr:`schema` — DERIVED, read-only wire JSON-Schema for ``properties``,
+      built from ``items_schema`` at read time (see ``get_collection_schema``)
+      and surfaced for the OpenAPI body schema and admin-UI form. Authoring a
+      non-null value is rejected at config-save; ``items_schema`` is the single
+      source of truth for field types/constraints.
     - :attr:`compute` — ordered list of :class:`ComputedField` entries the
       drivers materialise per row (geometry hash, attribute hash, geohash
       cell, area, centroid, …). The :class:`ComputedKind.EXTERNAL_ID`
@@ -309,11 +320,11 @@ class ItemsWritePolicy(PluginConfig):
       ANDs its ``match_on`` ComputedFields; rules OR across the list (first
       match wins). Per-rule ``on_match`` overrides :attr:`on_conflict`.
     - :attr:`geometries` — per-row geometry transform / validation block
-      (SRID, fix, simplify, allow-list). Runs before :attr:`compute`.
+      (SRID, fix, simplify, allow-list, geometry-hash version gate). Runs
+      before :attr:`compute`.
 
     Posture flags: :attr:`on_conflict`, :attr:`on_asset_conflict`,
-    :attr:`enable_validity` / :attr:`validity_field`,
-    :attr:`skip_if_unchanged_geometry_hash`, :attr:`track_asset_id`.
+    :attr:`enable_validity` / :attr:`validity_field`, :attr:`track_asset_id`.
 
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
@@ -324,7 +335,7 @@ class ItemsWritePolicy(PluginConfig):
     - ``valid_to``             — validity range end (None = open-ended)
 
     Hash-gated versioning:
-      When ``skip_if_unchanged_geometry_hash=True`` a match whose
+      When ``geometries.skip_if_unchanged_geometry_hash=True`` a match whose
       ``geometry_hash`` equals the incoming feature short-circuits the
       action: ``NEW_VERSION`` degrades to a no-op, ``UPDATE`` degrades to
       ``REFUSE_RETURN``. Enables "new version only when geometry differs".
@@ -336,7 +347,7 @@ class ItemsWritePolicy(PluginConfig):
            ItemsWritePolicy(
                on_conflict=WriteConflictPolicy.NEW_VERSION,
                compute=[ComputedField(kind=ComputedKind.EXTERNAL_ID, name="properties.code")],
-               skip_if_unchanged_geometry_hash=True,
+               geometries=GeometriesWriteBehavior(skip_if_unchanged_geometry_hash=True),
            )
 
        Each upsert keyed on ``properties.code`` versions the existing row
@@ -398,12 +409,12 @@ class ItemsWritePolicy(PluginConfig):
     schema: Mutable[Optional[Dict[str, Any]]] = Field(
         default=None,
         description=(
-            "Self-contained JSON Schema (Draft 2020-12) describing the wire "
-            "shape of feature ``properties``. Carries ``type``, ``description``, "
-            "``default``, ``required``, ``additionalProperties`` per property; "
-            "no second source of truth (sidecar, driver, model docstring) "
-            "carries any of these. ``None`` = permissive (no validation, no "
-            "defaults). Set ``additionalProperties: false`` for strict ingest."
+            "DERIVED, read-only. The wire JSON-Schema (Draft 2020-12) for "
+            "feature ``properties`` is derived from ``items_schema`` at read "
+            "time (see ``get_collection_schema``) and surfaced here; authoring "
+            "a non-null value is rejected at config-save. ``items_schema`` is "
+            "the single source of truth for field types/constraints, and "
+            "``strict_unknown_fields`` drives ``additionalProperties: false``."
         ),
     )
     compute: Mutable[List[ComputedField]] = Field(
@@ -430,17 +441,6 @@ class ItemsWritePolicy(PluginConfig):
             ":attr:`on_conflict` for that branch. Default is a single rule "
             "matching on EXTERNAL_ID — operators replace the list to express "
             "geometry-hash dedup, composite identity, etc."
-        ),
-    )
-    skip_if_unchanged_geometry_hash: Mutable[bool] = Field(
-        default=False,
-        examples=[False, True],
-        description=(
-            "If True, matched features whose ``geometry_hash`` equals the "
-            "incoming one bypass ``NEW_VERSION`` (treated as a no-op) and "
-            "collapse ``UPDATE`` to ``REFUSE_RETURN``. Enables 'new version "
-            "only when geometry differs'. Requires the geometries sidecar "
-            "to be enabled (it computes geometry_hash on write)."
         ),
     )
     track_asset_id: Mutable[bool] = Field(
@@ -516,6 +516,22 @@ class ItemsWritePolicy(PluginConfig):
                 continue
             return cf
         return None
+
+    @field_validator("compute", mode="before")
+    @classmethod
+    def _expand_compute_presets(cls, v: Any) -> Any:
+        """Accept a preset name, a mixed list, or explicit fields for ``compute``.
+
+        ``"geometry_stats"`` / ``["geometry_stats", {...}]`` / a plain
+        ``List[ComputedField]`` all normalise to a deduped ``List[ComputedField]``
+        via the compute-preset registry. Preset entries leave storage modality
+        unset so the driver decides; an explicit entry overrides a preset one.
+        """
+        if v is None:
+            return []
+        from dynastore.modules.storage.compute_presets import resolve_compute
+
+        return resolve_compute(v)
 
     def external_id_path(self) -> Optional[str]:
         """Dot-walk path used to extract the external_id from an incoming
@@ -1210,6 +1226,31 @@ async def _validate_write_policy(
 
 
 ItemsWritePolicy.register_validate_handler(_validate_write_policy)
+
+
+async def _forbid_authored_wire_schema(
+    config: PluginConfig,
+    catalog_id: "Optional[str]",
+    collection_id: "Optional[str]",
+    db_resource: "Optional[Any]",
+) -> None:
+    """Reject an authored ``ItemsWritePolicy.schema``.
+
+    The wire JSON-Schema is derived from ``ItemsSchema`` at read time
+    (see ``ItemService.get_collection_schema``); it must never be authored
+    or stored. ``items_schema`` is the single source of truth.
+    """
+    if not isinstance(config, ItemsWritePolicy):
+        return
+    if config.schema is not None:
+        raise ValueError(
+            "ItemsWritePolicy.schema is derived from the items schema and must "
+            "not be authored; remove this field "
+            f"({catalog_id or '-'}/{collection_id or '-'})."
+        )
+
+
+ItemsWritePolicy.register_validate_handler(_forbid_authored_wire_schema)
 
 
 # ---------------------------------------------------------------------------

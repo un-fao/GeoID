@@ -264,6 +264,14 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
                             restored.append(bounds)
                     if restored:
                         temporal["interval"] = restored
+                # If ``_enrich_doc`` dropped an all-null-bounds interval to
+                # keep ES date_range happy, restore the canonical STAC
+                # ``[[None, None]]`` so the Pydantic ``Collection`` envelope
+                # round-trips cleanly.  Without this, ``extent.temporal``
+                # comes back as ``{}`` and validation fails with
+                # ``extent.temporal.interval Field required``.
+                if "interval" not in temporal:
+                    temporal["interval"] = [[None, None]]
         return doc
 
     async def get_metadata(
@@ -546,7 +554,10 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
             hits = resp.get("hits", {})
             total = hits.get("total", {})
             total_count = total.get("value", 0) if isinstance(total, dict) else total
-            results = [hit["_source"] for hit in hits.get("hits", [])]
+            results = [
+                self._unenrich_doc(hit["_source"])
+                for hit in hits.get("hits", [])
+            ]
             return results, total_count
         except Exception as e:
             logger.warning("search_metadata ES error for %s: %s", catalog_id, e)

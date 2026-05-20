@@ -88,7 +88,7 @@ async def _load_oracle_inner_timeout() -> float:
     try:
         from dynastore.modules.cache.cache_config import CachePluginConfig
         from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.frameworks.plugin import get_protocol
+        from dynastore.tools.discovery import get_protocol
         configs_proto = get_protocol(ConfigsProtocol)
         cfg = await configs_proto.get_config(CachePluginConfig)
         if cfg is not None:

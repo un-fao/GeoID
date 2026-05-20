@@ -377,6 +377,55 @@ _delete_tenant_cron_jobs_query = DQLQuery(
 )
 
 
+def _catalog_model_is_ready(c: Any) -> bool:
+    """Only cache 'ready' catalogs: transient states ('provisioning',
+    'failed') would otherwise stick in L1 forever (no cross-worker
+    invalidation), making init-upload return 503 long after provisioning
+    completes.  Applied on read too (cache.py fast path) so pre-existing
+    stale entries can't keep being served.  L1 stores the Catalog model
+    directly; L2 (msgpack) returns a dict — handle both.
+    """
+    if c is None:
+        return False
+    status = (
+        c.get("provisioning_status")
+        if isinstance(c, dict)
+        else getattr(c, "provisioning_status", None)
+    )
+    return status == "ready"
+
+
+@cached(
+    maxsize=128,
+    ttl=30,
+    jitter=5,
+    namespace="catalog_model",
+    condition=_catalog_model_is_ready,
+    ignore=["service"],
+)
+async def _catalog_model_cache(service: "CatalogService", catalog_id: str):
+    """Process-shared cache for catalog metadata models.
+
+    Keyed on ``catalog_id`` only — ``service`` is ignored so every
+    ``CatalogService`` instance shares one cache entry per catalog. A
+    module-level cache (single decorator closure → single backend) is what
+    makes ``cache_invalidate`` from any instance visible to reads issued
+    through any other instance; an instance-bound cache gives each service its
+    own backend, so a write+invalidate on one instance leaves stale entries
+    readable through another.
+    """
+    return await service._get_catalog_model_db(catalog_id)
+
+
+def _invalidate_catalog_model_cache(catalog_id: str) -> None:
+    """Drop the shared catalog-model cache entry for a catalog.
+
+    ``service`` is part of the cache signature but ignored for keying, so any
+    sentinel is fine here.
+    """
+    _catalog_model_cache.cache_invalidate(None, catalog_id)
+
+
 from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
 from dynastore.tools.protocol_helpers import get_engine
@@ -407,27 +456,10 @@ class CatalogService(CatalogsProtocol):
             if not self._item_service:
                 self._item_service = ItemService(self.engine)
 
-        # Instance-bound caches (private)
-        # Only cache 'ready' catalogs: transient states ('provisioning', 'failed')
-        # would otherwise stick in per-worker L1 forever (no cross-worker invalidation),
-        # making init-upload return 503 long after provisioning completes.
-        # Condition is also applied on read (cache.py fast path) so pre-existing
-        # stale entries in L2/Valkey can't keep being served.  L1 stores the
-        # Catalog model directly; L2 (msgpack) returns a dict — handle both.
-        def _is_ready(c: Any) -> bool:
-            if c is None:
-                return False
-            status = c.get("provisioning_status") if isinstance(c, dict) \
-                else getattr(c, "provisioning_status", None)
-            return status == "ready"
-
-        self._get_catalog_model_cached = cached(
-            maxsize=128,
-            ttl=30,
-            jitter=5,
-            namespace="catalog_model",
-            condition=_is_ready,
-        )(self._get_catalog_model_db)
+        # The catalog-model read cache is a process-shared module-level cache
+        # (``_catalog_model_cache``) rather than an instance-bound one, so
+        # invalidations land in the same backend every instance reads from.
+        # See that function's docstring for why this matters.
 
     def is_available(self) -> bool:
         """Returns True if the service is initialized and ready."""
@@ -507,7 +539,7 @@ class CatalogService(CatalogsProtocol):
                     raise ValueError(f"Catalog '{catalog_id}' not found.")
                 return res
         # Use cached catalog model to get physical schema
-        catalog_model = await self._get_catalog_model_cached(catalog_id)
+        catalog_model = await _catalog_model_cache(self, catalog_id)
         if not catalog_model and not allow_missing:
             raise ValueError(f"Catalog '{catalog_id}' not found.")
         
@@ -814,7 +846,7 @@ class CatalogService(CatalogsProtocol):
             )
 
             # Invalidate cache to ensure it's re-fetched in subsequent calls
-            self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
+            _invalidate_catalog_model_cache(catalog_model.id)
 
         # Execute async external component initializers OUTSIDE transaction
         config_snapshot = {}
@@ -841,7 +873,7 @@ class CatalogService(CatalogsProtocol):
         # Invalidate caches BEFORE emitting signal to prevent visibility gap race conditions.
         # (The in-transaction invalidate above already covered the happy path; this second
         # call guards against readers between the transaction commit and the signal below.)
-        self._get_catalog_model_cached.cache_invalidate(catalog_model.id)
+        _invalidate_catalog_model_cache(catalog_model.id)
 
         # Emit signal to wake up background tasks (Visibility Gap fix)
         # This must happen OUTSIDE the transaction above so that background listeners
@@ -1008,7 +1040,7 @@ class CatalogService(CatalogsProtocol):
                     result, router_metadata=router_metadata,
                 )
         else:
-            catalog = await self._get_catalog_model_cached(catalog_id)
+            catalog = await _catalog_model_cache(self, catalog_id)
 
         if catalog is None:
             return None
@@ -1118,7 +1150,7 @@ class CatalogService(CatalogsProtocol):
                     catalog_id=catalog_id,
                     db_resource=conn,
                 )
-                self._get_catalog_model_cached.cache_invalidate(catalog_id)
+                _invalidate_catalog_model_cache(catalog_id)
                 return merged_model
 
             from dynastore.modules.catalog.catalog_router import (
@@ -1139,7 +1171,7 @@ class CatalogService(CatalogsProtocol):
             )
 
         # Invalidate cache
-        self._get_catalog_model_cached.cache_invalidate(catalog_id)
+        _invalidate_catalog_model_cache(catalog_id)
 
         return await self.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None)
 
@@ -1219,7 +1251,7 @@ class CatalogService(CatalogsProtocol):
                     db_resource=conn,
                 )
 
-            self._get_catalog_model_cached.cache_invalidate(catalog_id)
+            _invalidate_catalog_model_cache(catalog_id)
             return True
 
     async def list_catalogs(
@@ -1402,7 +1434,7 @@ class CatalogService(CatalogsProtocol):
                         "operation": "soft_delete",
                     },
                 )
-                self._get_catalog_model_cached.cache_invalidate(catalog_id)
+                _invalidate_catalog_model_cache(catalog_id)
                 return True
 
             # 2. Hard Delete (Force)
@@ -1503,7 +1535,7 @@ class CatalogService(CatalogsProtocol):
             )
             logger.warning(f"DEBUG: delete_catalog: Emitted AFTER_CATALOG_HARD_DELETION")
         # Post-transaction cleanup
-        self._get_catalog_model_cached.cache_invalidate(catalog_id)
+        _invalidate_catalog_model_cache(catalog_id)
 
         # Trigger async cleanup (external resources) if needed
         # The 'BEFORE_CATALOG_HARD_DELETION' event might have triggered async listeners?
@@ -1861,7 +1893,7 @@ class CatalogService(CatalogsProtocol):
             )
             if not result:
                 return False
-            self._get_catalog_model_cached.cache_invalidate(catalog_id)
+            _invalidate_catalog_model_cache(catalog_id)
 
             # Re-fetch the model so the metadata-driver fan-out sees the new
             # status. Pass the same connection so the read participates in

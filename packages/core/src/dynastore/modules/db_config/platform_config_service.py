@@ -171,9 +171,22 @@ async def is_materialized(
     visibility = getattr(cls, "_visibility", None)
     try:
         if visibility == "collection":
-            return await _collection_is_materialized(catalog_id, collection_id, conn)
+            # When set at the platform/catalog tier (no collection_id, or no
+            # catalog_id at all), the "collection has rows" question doesn't
+            # apply — fall up the tier. A platform-tier write to a
+            # collection-visibility class is effectively a default; gate it
+            # on whether any catalog/collection has been provisioned so the
+            # operator mental model (locked once anything depends on it)
+            # still holds.
+            if catalog_id and collection_id:
+                return await _collection_is_materialized(catalog_id, collection_id, conn)
+            if catalog_id:
+                return await _catalog_is_materialized(catalog_id, conn)
+            return await _platform_is_materialized(conn)
         if visibility == "catalog":
-            return await _catalog_is_materialized(catalog_id, conn)
+            if catalog_id:
+                return await _catalog_is_materialized(catalog_id, conn)
+            return await _platform_is_materialized(conn)
         # platform / None → global catalogs count
         return await _platform_is_materialized(conn)
     except _EXPECTED_ABSENT_LAYER as exc:
@@ -270,12 +283,17 @@ async def _catalog_is_materialized(
 
 
 async def _platform_is_materialized(conn: Any) -> bool:
-    """True iff the platform has at least one provisioned catalog."""
+    """True iff the platform has at least one provisioned catalog.
+
+    The catalog row lives in ``catalog.catalogs`` (the catalog tier's
+    own schema), not ``configs.catalogs`` (configs registry, which holds
+    plugin config rows).
+    """
     from dynastore.modules.db_config.locking_tools import check_table_exists
-    if not await check_table_exists(conn, "catalogs", "configs"):
+    if not await check_table_exists(conn, "catalogs", "catalog"):
         return False
     res = await DQLQuery(
-        'SELECT 1 FROM "configs"."catalogs" LIMIT 1',
+        'SELECT 1 FROM "catalog"."catalogs" LIMIT 1',
         result_handler=ResultHandler.SCALAR,
     ).execute(conn)
     return res is not None

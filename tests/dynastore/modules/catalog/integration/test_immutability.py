@@ -54,7 +54,13 @@ def _pin_all(config):
 async def test_collection_config_immutability(
     app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
 ):
-    """Test that immutable fields in collection config cannot be modified."""
+    """Test that immutable fields in collection config cannot be modified.
+
+    The immutability gate is materialization-gated since PR #738 — Immutable
+    fields are still editable on an empty collection (no rows in the items
+    table). The test materialises the collection by inserting an item so the
+    gate fires.
+    """
     # 1. Setup Catalog and Collection
     catalogs = get_protocol(CatalogsProtocol)
     await catalogs.delete_catalog(catalog_id, force=True)
@@ -76,6 +82,31 @@ async def test_collection_config_immutability(
         collection_id=collection_id,
         check_immutability=False,
     )
+
+    # 2b. Materialise the collection so the immutability gate engages.
+    # ``enforce_config_immutability`` short-circuits on empty items tables;
+    # see ``platform_config_service._collection_is_materialized``.
+    from dynastore.extensions.features.ogc_models import FeatureDefinition
+
+    await catalogs.upsert(
+        catalog_id,
+        collection_id,
+        FeatureDefinition(
+            type="Feature",
+            id=f"immut_seed_{catalog_id[:8]}",
+            geometry={"type": "Point", "coordinates": [12.5, 41.9]},
+            properties={"name": "materialisation seed"},
+        ),
+    )
+
+    # Re-fetch the persisted config so the test inherits driver-assigned
+    # WriteOnce fields (``physical_table``, ``engine_ref``) — otherwise the
+    # next set_config would null them and trip the WriteOnce guard before
+    # the Immutable check we're actually exercising.
+    persisted = await config_manager.get_config(
+        PG_DRIVER_PLUGIN_ID, catalog_id, collection_id,
+    )
+    initial_config = persisted
 
     # 3. Try to modify attribute_schema (nested in sidecars, which is Immutable)
     invalid_config_schema = initial_config.model_copy(deep=True)
@@ -126,8 +157,16 @@ async def test_collection_config_immutability(
 
 
 @pytest.mark.asyncio
-async def test_platform_config_immutability(app_lifespan):
-    """Test immutability at the platform level."""
+async def test_platform_config_immutability(app_lifespan, catalog_obj, catalog_id):
+    """Test immutability at the platform level.
+
+    The platform-tier check needs at least one provisioned catalog to count
+    as materialised; without it the gate skips by design (PR #738).
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await catalogs.create_catalog(catalog_obj)
+
     config_manager = get_protocol(ConfigsProtocol)
     platform_manager = config_manager.platform_config_service
 
@@ -166,6 +205,7 @@ async def test_platform_config_immutability(app_lifespan):
 
     finally:
         await platform_manager.delete_config(plugin_id)
+        await catalogs.delete_catalog(catalog_id, force=True)
 
 
 @pytest.mark.asyncio

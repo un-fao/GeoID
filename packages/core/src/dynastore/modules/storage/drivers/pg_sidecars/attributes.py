@@ -1036,11 +1036,26 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
     ) -> Optional[Dict[str, Any]]:
         """Extract attributes and identity from feature."""
         # 1. Identity Extraction & Mapping
+        #
+        # Resolution precedence:
+        #   1. Real ``geojson_pydantic.Feature`` -> ``feature.id`` (the
+        #      top-level GeoJSON id member is the canonical identity).
+        #   2. Dict / pydantic shape with no policy override -> fall back
+        #      to the top-level ``id`` key. This matches the GeoJSON
+        #      contract and preserves the pre-#940 default of treating
+        #      ``"id"`` as the implicit identity path when the operator
+        #      hasn't configured an ``ItemsWritePolicy.external_id_field``.
+        #   3. Policy-bound path -> ``_extract_value`` walks the path.
         if isinstance(feature, Feature):
             ext_id = feature.id
         else:
             field_path = _resolve_external_id_field(context)
-            ext_id = self._extract_value(feature, field_path) if field_path else None
+            if field_path:
+                ext_id = self._extract_value(feature, field_path)
+            elif isinstance(feature, dict):
+                ext_id = feature.get("id")
+            else:
+                ext_id = getattr(feature, "id", None)
 
         # Fallback to context if not in feature
         if ext_id is None:

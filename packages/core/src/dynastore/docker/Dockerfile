@@ -207,6 +207,16 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DYNASTORE="${APP_VERSION:-0.0.0+unknown}" \
     ${VENV_PATH}/bin/pip install --no-deps --force-reinstall --no-build-isolation .
 
+# SCOPE manifest: snapshot the exact dynastore-ext-* set this SCOPE resolved to
+# (the clean, pruned builder set). The tester stage re-runs `uv pip install`,
+# which re-pulls workspace members the SCOPE excluded; it reads this manifest to
+# prune them back out so the dev/test image matches the service SCOPE instead of
+# silently activating excluded middleware (e.g. ext-iam on scope_catalog).
+RUN ${VENV_PATH}/bin/pip list 2>/dev/null \
+        | awk '/^dynastore-ext-/ {print $1}' | sort > ${VENV_PATH}/scope-exts.txt && \
+    echo "Builder SCOPE manifest ($(wc -l < ${VENV_PATH}/scope-exts.txt) exts):" && \
+    cat ${VENV_PATH}/scope-exts.txt
+
 # Startup scripts ship as package data under dynastore/scripts/ (SSOT).
 # Read them from the local source tree (Layer 3 has overlaid the real files);
 # the deployment-wrapper Dockerfile reads the equivalent files out of
@@ -259,9 +269,22 @@ WORKDIR ${APP_DIR}
 
 ARG SCOPE=test,all
 ARG APP_VERSION=
+# `uv pip install ".[…,dev]"` re-pulls workspace members the SCOPE excluded
+# (the in-scope set becomes editable; excluded exts land as plain wheels). The
+# builder's Layer 3 already guards its own venv; replay that guard here using the
+# builder SCOPE manifest so the dev/test image carries the same ext set as the
+# service it represents. SCOPE=all (CI test image) prunes nothing.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     SETUPTOOLS_SCM_PRETEND_VERSION="${APP_VERSION:-0.0.0+unknown}" \
-    ${VENV_PATH}/bin/uv pip install ".[${SCOPE},dev]"
+    ${VENV_PATH}/bin/uv pip install ".[${SCOPE},dev]" && \
+    keep=$(cat ${VENV_PATH}/scope-exts.txt) && \
+    for pkg in $(${VENV_PATH}/bin/pip list 2>/dev/null | awk '/^dynastore-ext-/ {print $1}'); do \
+        if ! echo "$keep" | grep -qx "$pkg"; then \
+            echo "tester: SCOPE-prune out-of-scope ext '$pkg' (not in builder SCOPE manifest)"; \
+            ${VENV_PATH}/bin/pip uninstall -y "$pkg" >/dev/null 2>&1 || true; \
+        fi; \
+    done && \
+    echo "tester: ext set after prune ($(${VENV_PATH}/bin/pip list 2>/dev/null | grep -c '^dynastore-ext-') exts)"
 
 # STAGE 3: Development (Specific for local development with debugging)
 FROM tester AS development

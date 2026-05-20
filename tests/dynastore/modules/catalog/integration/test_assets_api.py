@@ -34,6 +34,7 @@ async def test_assets_api_crud(
         cat_asset_id = f"CAT_ASSET_{generate_test_id()}"
         cat_asset_payload = {
             "asset_id": cat_asset_id,
+            "filename": "cat_asset.tif",
             "uri": "gs://bucket/cat_asset.tif",
             "asset_type": "ASSET",
             "metadata": {"type": "report"}
@@ -67,6 +68,7 @@ async def test_assets_api_crud(
         coll_asset_id = f"COLL_ASSET_{generate_test_id()}"
         coll_asset_payload = {
             "asset_id": coll_asset_id,
+            "filename": "coll_asset.tif",
             "uri": "gs://bucket/coll_asset.tif",
             "asset_type": "RASTER",
             "metadata": {"sensor": "S2"}
