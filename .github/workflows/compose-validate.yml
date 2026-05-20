@@ -40,6 +40,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # GDAL is pinned in 5 places that must stay in lockstep (drift caused
+      # the #1040 outage). Fail fast before any compose work if they disagree.
+      - name: Check GDAL version-pin consistency
+        run: python scripts/check_gdal_pin_consistency.py
+
       # .env is gitignored. Copy the tracked .env.example so variable
       # interpolation has values; the values don't need to be valid since
       # `config --quiet` only checks structure.
