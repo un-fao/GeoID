@@ -1340,6 +1340,33 @@ async def _sync_deny_policy_for_catalog(
         )
 
 
+async def _resolve_parent_catalog_routing(
+    catalog_id: str,
+    db_resource: Optional[Any],
+) -> Optional["CatalogRoutingConfig"]:
+    """Resolve the parent catalog's :class:`CatalogRoutingConfig` (waterfall:
+    catalog → platform → defaults) for the composition guard.
+
+    Returns ``None`` when the configs protocol is not available (e.g. early
+    bootstrap / test fixtures that validate before plugins register) so the
+    caller can decide how to treat an un-resolvable parent. Reads through the
+    in-flight ``db_resource`` connection so the lookup is consistent with the
+    enclosing config-write transaction.
+    """
+    from dynastore.models.driver_context import DriverContext
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.tools.discovery import get_protocol
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs is None:
+        return None
+    ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+    cfg = await configs.get_config(
+        CatalogRoutingConfig, catalog_id=catalog_id, ctx=ctx,
+    )
+    return cfg if isinstance(cfg, CatalogRoutingConfig) else None
+
+
 async def _validate_collection_routing_config(
     config: CollectionRoutingConfig,
     catalog_id: Optional[str],
@@ -1400,6 +1427,17 @@ async def _validate_collection_routing_config(
     # read-time model_validator on CollectionRoutingConfig.
     _self_register_indexers_into(config.operations, CollectionIndexer)
     _self_register_searchers_into(config.operations, CollectionStore)
+
+    # Composition guard (#1047): a public-ES collection requires a public-ES
+    # parent catalog. Cross-tier rule — needs the parent catalog's routing
+    # config, which a single-model pydantic validator can't reach. Resolved
+    # here, pre-persist, so a violation rolls back the upsert and surfaces as
+    # HTTP 400.
+    if catalog_id and _collection_routing_is_public(config):
+        parent_catalog_routing = await _resolve_parent_catalog_routing(
+            catalog_id, db_resource,
+        )
+        _assert_public_collection_has_public_parent(config, parent_catalog_routing)
 
 
 async def _on_apply_collection_routing_config(
@@ -1566,6 +1604,15 @@ CatalogRoutingConfig.register_validate_handler(cast(_HandlerSig, _validate_catal
 
 _PRIVATE_ITEMS_DRIVER_ID = "items_elasticsearch_private_driver"
 
+# Public ES envelope drivers — membership in a tier's global public index is
+# expressed by pinning these in ``operations[WRITE]`` (#1047 SSOT; post-#990
+# canonical shape where the ES indexer rides WRITE with ASYNC + OUTBOX, as the
+# items tier already does).  A collection is globally searchable when the
+# public collection ES driver is pinned; a catalog is globally navigable when
+# the public catalog ES driver is pinned.
+_PUBLIC_COLLECTION_ES_DRIVER_ID = "collection_elasticsearch_driver"
+_PUBLIC_CATALOG_ES_DRIVER_ID = "catalog_elasticsearch_driver"
+
 
 def _items_routing_has_private_driver(routing: "ItemsRoutingConfig") -> bool:
     """Return True iff ``items_elasticsearch_private_driver`` is pinned in
@@ -1575,6 +1622,85 @@ def _items_routing_has_private_driver(routing: "ItemsRoutingConfig") -> bool:
             if entry.driver_ref == _PRIVATE_ITEMS_DRIVER_ID:
                 return True
     return False
+
+
+def _operation_pins_driver(
+    config: "PluginConfig",
+    operation: str,
+    driver_ref: str,
+) -> bool:
+    """Return True iff ``driver_ref`` is pinned in ``operations[operation]``
+    of the given routing config.
+
+    Tolerant of configs that omit ``operations`` (returns False) so callers
+    can probe an arbitrary routing config without first proving its shape.
+    """
+    operations = getattr(config, "operations", None) or {}
+    return any(
+        entry.driver_ref == driver_ref
+        for entry in operations.get(operation, [])
+    )
+
+
+def _collection_routing_is_public(routing: "CollectionRoutingConfig") -> bool:
+    """Return True iff the collection routing config pins the public
+    collection ES driver in ``operations[WRITE]`` — i.e. the collection
+    envelope lands in the global ``{prefix}-collections`` index and is
+    therefore globally searchable (#1047)."""
+    return _operation_pins_driver(
+        routing, Operation.WRITE, _PUBLIC_COLLECTION_ES_DRIVER_ID,
+    )
+
+
+def _catalog_routing_is_public(routing: "CatalogRoutingConfig") -> bool:
+    """Return True iff the catalog routing config pins the public catalog ES
+    driver in ``operations[WRITE]`` — i.e. the catalog envelope lands in the
+    global ``{prefix}-catalogs`` index and the catalog is globally navigable
+    (#1047)."""
+    return _operation_pins_driver(
+        routing, Operation.WRITE, _PUBLIC_CATALOG_ES_DRIVER_ID,
+    )
+
+
+def _assert_public_collection_has_public_parent(
+    collection_routing: "CollectionRoutingConfig",
+    parent_catalog_routing: Optional["CatalogRoutingConfig"],
+) -> None:
+    """Composition guard (#1047): a public-ES collection requires a public-ES
+    parent catalog.
+
+    Enforces SSOT rule 1 ("public collection ⇒ publicly-visible parent
+    catalog"): a globally-searchable collection envelope under a catalog that
+    is not itself in the public ``{prefix}-catalogs`` index would leak the
+    collection into global search while its parent is not navigable. Rules 2
+    (a public catalog may mix public + private collections) and 3 (a private
+    catalog has no public children) both fall out of this single check — a
+    private collection (no public ES pin) is always accepted, and a public
+    collection under a private catalog is always rejected. IAM remains the
+    access SSOT; the index split is defense-in-depth.
+
+    No-op when the collection is not public. Raises ``ValueError`` (mapped to
+    HTTP 400 by ``run_validate_handlers``) when the collection is public but
+    the parent catalog routing config is missing or not public.
+    """
+    if not _collection_routing_is_public(collection_routing):
+        return
+    if parent_catalog_routing is not None and _catalog_routing_is_public(
+        parent_catalog_routing
+    ):
+        return
+    raise ValueError(
+        "Composition guard: a public collection (CollectionRoutingConfig "
+        f"pins '{_PUBLIC_COLLECTION_ES_DRIVER_ID}' in operations[WRITE]) "
+        "requires its parent catalog to be public (CatalogRoutingConfig "
+        f"must pin '{_PUBLIC_CATALOG_ES_DRIVER_ID}' in operations[WRITE]). "
+        "A globally-searchable collection under a non-public catalog would "
+        "leak the collection envelope into global search while the parent "
+        "catalog is not navigable. Apply the 'public_catalog' preset (or "
+        "pin the public catalog ES driver) on the parent catalog first, or "
+        "keep this collection private (drop the public collection ES driver "
+        "from operations[WRITE])."
+    )
 
 
 # ---------------------------------------------------------------------------
