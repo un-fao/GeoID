@@ -449,17 +449,18 @@ def test_catalog_routing_validator_augments_INDEX_and_SEARCH():
 
 def test_catalog_routing_validator_no_op_when_no_indexers_discoverable():
     """No discoverable indexer/searcher → operations stays at the
-    default-factory shape: WRITE+READ plus the explicit INDEX default
-    entry (#732), and no SEARCH key folded in by discovery."""
+    default-factory shape: WRITE+READ only. INDEX and SEARCH are both
+    discovery-driven, so with nothing discoverable the ES INDEX hop is
+    NOT present (#1069 / #1073) — a PG-only deployment must not pin an
+    undrainable OUTBOX hop into tasks.tasks."""
     from unittest.mock import patch
 
     with patch("dynastore.tools.discovery.get_protocols", lambda proto: []):
         cfg = CatalogRoutingConfig()
 
-    # The default factory ships an explicit INDEX entry pointing at the ES
-    # catalog driver; with nothing discoverable, that's all INDEX contains.
+    # Nothing discoverable → no ES INDEX hop folded in.
     index_ids = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
-    assert index_ids == {"catalog_elasticsearch_driver"}
+    assert "catalog_elasticsearch_driver" not in index_ids
     # SEARCH is purely discovery-driven — empty when nothing is discoverable.
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
 
@@ -581,10 +582,11 @@ def test_validator_failure_in_discovery_does_not_break_construction():
     # ``catalog_postgresql_driver`` composition wrapper (#732).
     write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     assert write_ids == {"catalog_postgresql_driver"}
-    # INDEX keeps only its explicit default entry (discovery augmentation
-    # was skipped); SEARCH is discovery-only, so it stays absent.
+    # Discovery augmentation was skipped, and the ES INDEX hop is no longer
+    # hard-coded (#1069 / #1073) — so INDEX has no ES entry; SEARCH is
+    # discovery-only, so it stays absent.
     index_ids = {e.driver_ref for e in cfg.operations.get(Operation.INDEX, [])}
-    assert index_ids == {"catalog_elasticsearch_driver"}
+    assert "catalog_elasticsearch_driver" not in index_ids
     assert Operation.SEARCH not in cfg.operations or cfg.operations[Operation.SEARCH] == []
 
 

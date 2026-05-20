@@ -67,15 +67,23 @@ def test_collection_routing_default_read_is_pg_primary():
     assert read[0].on_failure == FailurePolicy.FATAL
 
 
-def test_collection_routing_default_index_is_es_async_outbox():
+def test_collection_routing_default_index_has_no_hardcoded_es_hop():
+    """The ES INDEX hop is NOT hard-coded in the code default (#1069 / #1073).
+
+    A PG-only deployment (no ES CollectionIndexer registered, no preset
+    applied) must get NO INDEX entry — otherwise a plain collection create
+    enqueues an OUTBOX row into tasks.tasks that nothing will ever drain,
+    which poisons the create transaction when the outbox table is absent.
+    The ES INDEX hop (ASYNC + OUTBOX) is supplied at validation time by
+    ``_self_register_indexers_into`` when an ES driver is registered (see
+    test_collection_routing_validator_augments_INDEX_and_SEARCH) and by the
+    routing presets (see test_preset_public_catalog)."""
     from dynastore.modules.storage.routing_config import (
-        CollectionRoutingConfig, FailurePolicy, Operation, WriteMode,
+        CollectionRoutingConfig, Operation,
     )
     cfg = CollectionRoutingConfig()
-    index = cfg.operations[Operation.INDEX]
-    es = next(e for e in index if e.driver_ref == "collection_elasticsearch_driver")
-    assert es.write_mode == WriteMode.ASYNC
-    assert es.on_failure == FailurePolicy.OUTBOX
+    index = cfg.operations.get(Operation.INDEX, [])
+    assert "collection_elasticsearch_driver" not in {e.driver_ref for e in index}
 
 
 def test_collection_routing_default_search_is_es_first_pg_fallback():

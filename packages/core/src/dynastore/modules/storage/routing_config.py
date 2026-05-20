@@ -607,6 +607,15 @@ class CollectionRoutingConfig(PluginConfig):
             # the INDEX hop (OUTBOX-durable) and fronting SEARCH. PG is
             # the SEARCH fallback so a deploy without ES still answers
             # collection search from the authoritative store.
+            #
+            # The ES INDEX hop is intentionally NOT hard-coded here: it is
+            # supplied by ``_self_register_indexers_into`` at validation
+            # time when a CollectionIndexer (ES) driver is registered, and
+            # by the routing presets (e.g. public_catalog) for explicit
+            # deployments. A PG-only deployment with no ES driver and no
+            # outbox-draining worker therefore gets no INDEX entry, so a
+            # plain collection create does not enqueue an OUTBOX row into
+            # tasks.tasks that nothing would ever drain (#1069 / #1073).
             Operation.WRITE: [
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
@@ -618,14 +627,6 @@ class CollectionRoutingConfig(PluginConfig):
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
-                    source="auto",
-                ),
-            ],
-            Operation.INDEX: [
-                OperationDriverEntry(
-                    driver_ref="collection_elasticsearch_driver",
-                    write_mode=WriteMode.ASYNC,
-                    on_failure=FailurePolicy.OUTBOX,
                     source="auto",
                 ),
             ],
@@ -649,7 +650,10 @@ class CollectionRoutingConfig(PluginConfig):
         description=(
             "Operation -> ordered driver list for collection-tier routing. "
             "WRITE/READ = collection_postgresql_driver (system of record). "
-            "INDEX = async OUTBOX-durable propagation to Elasticsearch. "
+            "INDEX = async OUTBOX-durable propagation to Elasticsearch, "
+            "added by self-registration when an ES CollectionIndexer is "
+            "registered (or by a routing preset) — not hard-coded, so a "
+            "PG-only deployment enqueues no undrainable outbox rows. "
             "SEARCH = Elasticsearch primary (geometry_simplified), "
             "PostgreSQL fallback (geometry_exact). "
             "TRANSFORM entries are auto-augmented at validation time."
@@ -819,10 +823,14 @@ class CatalogRoutingConfig(PluginConfig):
             # composition wrapper — it fans CRUD across the catalog_core +
             # catalog_stac PG sidecars internally. It is the system of
             # record (FATAL) for both WRITE and READ. INDEX propagates to
-            # Elasticsearch asynchronously (OUTBOX-durable). INDEX is also
-            # auto-augmented at validation time with discoverable
-            # CatalogIndexer drivers; the explicit entry keeps the default
-            # config self-contained.
+            # Elasticsearch asynchronously (OUTBOX-durable). The ES INDEX
+            # hop is NOT hard-coded: it is auto-augmented at validation
+            # time with discoverable CatalogIndexer drivers (and supplied
+            # by routing presets for explicit deployments). A PG-only
+            # deployment with no ES driver and no outbox-draining worker
+            # therefore gets no INDEX entry, so a plain catalog create does
+            # not enqueue an OUTBOX row into tasks.tasks that nothing would
+            # ever drain (#1069 / #1073).
             Operation.WRITE: [
                 OperationDriverEntry(
                     driver_ref="catalog_postgresql_driver",
@@ -837,21 +845,15 @@ class CatalogRoutingConfig(PluginConfig):
                     source="auto",
                 ),
             ],
-            Operation.INDEX: [
-                OperationDriverEntry(
-                    driver_ref="catalog_elasticsearch_driver",
-                    write_mode=WriteMode.ASYNC,
-                    on_failure=FailurePolicy.OUTBOX,
-                    source="auto",
-                ),
-            ],
         },
         description=(
             "Operation -> ordered driver list for catalog-tier CatalogStore "
             "drivers. WRITE/READ = catalog_postgresql_driver (system of "
             "record). INDEX = async OUTBOX-durable propagation to "
-            "Elasticsearch; auto-augmented at validation time with every "
-            "discoverable CatalogIndexer. Operator-explicit entries take "
+            "Elasticsearch, auto-augmented at validation time with every "
+            "discoverable CatalogIndexer (or supplied by a routing preset) "
+            "— not hard-coded, so a PG-only deployment enqueues no "
+            "undrainable outbox rows. Operator-explicit entries take "
             "precedence; auto-augmentation is idempotent set-default."
         ),
     )
