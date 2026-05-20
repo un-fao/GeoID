@@ -170,12 +170,12 @@ def _build_private_items_routing() -> Any:
             Operation.SEARCH: [
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_private_driver",
-                    hints=[Hint.GEOMETRY_SIMPLIFIED],
+                    hints={Hint.GEOMETRY_SIMPLIFIED},
                     source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
-                    hints=[Hint.GEOMETRY_EXACT],
+                    hints={Hint.GEOMETRY_EXACT},
                     write_mode=WriteMode.SYNC,
                     source="auto",
                 )

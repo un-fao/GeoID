@@ -41,10 +41,14 @@ from typing import (
     Protocol,
     Tuple,
     Type,
+    TypeVar,
+    cast,
     runtime_checkable,
 )
 
 from dynastore.modules.db_config.plugin_config import PluginConfig
+
+_C = TypeVar("_C", bound=PluginConfig)
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingConfig,
     CollectionRoutingConfig,
@@ -143,10 +147,10 @@ class PresetBundle:
             if e.slot.startswith("audience:")
         }
 
-    def _first_instance(self, cls: Type[PluginConfig]) -> Optional[PluginConfig]:
+    def _first_instance(self, cls: Type[_C]) -> Optional[_C]:
         for e in self.entries:
             if e.config_cls is cls:
-                return e.instance
+                return cast(_C, e.instance)
         return None
 
     def _entries_from_legacy_fields(self) -> Tuple[PresetBundleEntry, ...]:

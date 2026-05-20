@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 # eager shapely import propagated through its consumer chain.
 if TYPE_CHECKING:
     from shapely.geometry.base import BaseGeometry
+    from dynastore.modules.storage.driver_config import GeometriesWriteBehavior
 
 # Try importing optional spatial libraries
 try:
@@ -639,17 +640,15 @@ def compute_derived_fields(
             lat, lon = _centroid()
             latlng = s2sphere.LatLng.from_degrees(lat, lon)
             cell = s2sphere.CellId.from_lat_lng(latlng).parent(f.resolution)
-            out[key] = cell.to_token()
+            out[key] = cell.to_token()  # type: ignore[union-attr]
 
         elif kind == ComputedKind.AREA:
             out[key] = float(geometry.area)
 
         elif kind == ComputedKind.VOLUME:
             # Shapely exposes .volume only on 3D closed types (Solid).
-            if hasattr(geometry, "volume"):
-                out[key] = float(geometry.volume)
-            else:
-                out[key] = 0.0
+            volume = getattr(geometry, "volume", None)
+            out[key] = float(volume) if volume is not None else 0.0
 
         elif kind == ComputedKind.CIRCULARITY:
             import math as _math
@@ -718,15 +717,18 @@ def compute_derived_fields(
             out[key] = [float(minx), float(miny), float(maxx), float(maxy)]
 
         elif kind == ComputedKind.VERTEX_COUNT:
-            if hasattr(geometry, "exterior") and geometry.exterior is not None:
-                out[key] = len(geometry.exterior.coords)
+            exterior = getattr(geometry, "exterior", None)
+            geoms = getattr(geometry, "geoms", None)
+            if exterior is not None:
+                out[key] = len(exterior.coords)
             elif hasattr(geometry, "coords"):
                 out[key] = len(geometry.coords)
-            elif hasattr(geometry, "geoms"):
+            elif geoms is not None:
                 total = 0
-                for g in geometry.geoms:
-                    if hasattr(g, "exterior") and g.exterior is not None:
-                        total += len(g.exterior.coords)
+                for g in geoms:
+                    g_exterior = getattr(g, "exterior", None)
+                    if g_exterior is not None:
+                        total += len(g_exterior.coords)
                     elif hasattr(g, "coords"):
                         total += len(g.coords)
                 out[key] = total
@@ -734,13 +736,16 @@ def compute_derived_fields(
                 out[key] = 0
 
         elif kind == ComputedKind.HOLE_COUNT:
-            if hasattr(geometry, "interiors"):
-                out[key] = len(list(geometry.interiors))
-            elif hasattr(geometry, "geoms"):
+            interiors = getattr(geometry, "interiors", None)
+            geoms = getattr(geometry, "geoms", None)
+            if interiors is not None:
+                out[key] = len(list(interiors))
+            elif geoms is not None:
                 total = 0
-                for g in geometry.geoms:
-                    if hasattr(g, "interiors"):
-                        total += len(list(g.interiors))
+                for g in geoms:
+                    g_interiors = getattr(g, "interiors", None)
+                    if g_interiors is not None:
+                        total += len(list(g_interiors))
                 out[key] = total
             else:
                 out[key] = 0

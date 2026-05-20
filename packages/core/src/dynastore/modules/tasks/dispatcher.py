@@ -90,9 +90,10 @@ async def _load_oracle_inner_timeout() -> float:
         from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
         configs_proto = get_protocol(ConfigsProtocol)
-        cfg = await configs_proto.get_config(CachePluginConfig)
-        if cfg is not None:
-            return cfg.oracle_inner_timeout_seconds
+        if configs_proto is not None:
+            cfg = await configs_proto.get_config(CachePluginConfig)
+            if cfg is not None:
+                return cfg.oracle_inner_timeout_seconds
     except Exception as e:
         logger.debug(
             "dispatcher: oracle_inner_timeout config load failed (%s), using default",
