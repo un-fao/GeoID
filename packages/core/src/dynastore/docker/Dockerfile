@@ -4,6 +4,15 @@
 #   4.   pyproject.toml (root) — `extension_maps` extra `GDAL==<X>`
 #   5.   packages/extensions/gdal/pyproject.toml + packages/extensions/maps/pyproject.toml — `GDAL==<X>`
 # Bump all 5 together; CI guards drift via scripts/check_gdal_pin_consistency.py.
+#
+# The base image is pinned by DIGEST, not just by the ubuntu-full-<X> tag.
+# osgeo rebuilds those tags in place onto newer Ubuntu releases: the
+# `ubuntu-full-3.12.4` tag was rebased onto Ubuntu 26.04 / Python 3.14, for
+# which the pinned geospatial+columnar stack (numpy 1.26.4, pyarrow<19, fiona,
+# geopandas, shapely) has no cp314 wheels, so the tester build fails compiling
+# them from source. Pinning the digest freezes Python at 3.12 until the stack
+# is migrated to numpy 2 / Python 3.14 deliberately. Current digest resolves
+# `ubuntu-full-3.11.5` = GDAL 3.11.5 on Ubuntu 24.04 / Python 3.12.3.
 
 # STAGE 0: JupyterLite Builder — pre-builds browser-based Python kernel (Pyodide)
 # Skipped cheaply when BUILD_JUPYTERLITE=false (Cloud Run jobs/workers that
@@ -45,7 +54,7 @@ RUN if [ "${BUILD_JUPYTERLITE}" = "true" ]; then \
     fi
 
 # STAGE 1: Builder (Production dependencies)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.4 AS builder
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.5@sha256:c43777f16389c514fff84cf1cb7e9ab1f275ff3ea015673f727517c400bdb1e6 AS builder
 
 LABEL maintainer="carlo.cancellieri@fao.org"
 
@@ -147,7 +156,7 @@ ARG BUILD_JUPYTERLITE=false
 # build does NOT include the Arrow/Parquet driver.  Reading GeoParquet over
 # /vsigs/ from the ingestion task therefore failed with
 # ``CPLE_OpenFailedError: not recognized as being in a supported file format``
-# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.12.4``
+# even though the system GDAL from ``ghcr.io/osgeo/gdal:ubuntu-full-3.11.5``
 # has the Parquet driver (the maps service confirms via /maps/gdal/vector/info
 # → driverShortName='Parquet').  Force fiona to rebuild from sdist against
 # the system libgdal so it inherits every driver the base image ships.
@@ -296,7 +305,7 @@ WORKDIR ${APP_DIR}
 EXPOSE 5678 5679
 
 # STAGE 4: Runtime (Production image)
-FROM ghcr.io/osgeo/gdal:ubuntu-full-3.12.4 AS runtime
+FROM ghcr.io/osgeo/gdal:ubuntu-full-3.11.5@sha256:c43777f16389c514fff84cf1cb7e9ab1f275ff3ea015673f727517c400bdb1e6 AS runtime
 
 ARG APP_USER=dynastore
 ARG APP_UID=1001
