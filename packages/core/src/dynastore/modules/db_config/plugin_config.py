@@ -203,11 +203,30 @@ class PluginConfig(PersistentModel):
     # ---------------------------------------------------------------------
     _address: ClassVar[Tuple[Optional[str], ...]] = ()
 
-    # Optional scope-visibility filter:
-    # - ``None`` (default) → visible at every scope (collection / catalog / platform).
-    # - ``"collection"`` → only at collection scope.
-    # - ``"catalog"`` → only at catalog and platform scopes (hidden at collection).
+    # Optional scope-visibility filter.  Two roles:
+    #  1. Drives the immutability materialization gate (``is_materialized``
+    #     dispatches on it to pick the tier at which "the resource exists"
+    #     is evaluated).
+    #  2. Marks catalog-/collection-tier *templates* so the platform-scope
+    #     composed view can slim them out of the strict body.
+    # It NO LONGER drives tree placement in the composed view — that is
+    # ``_view_scopes`` (below), so a config can be gated at one tier yet
+    # rendered at others.
+    # - ``None`` (default) → gate at platform tier.
+    # - ``"collection"`` → gate at the collection's physical items table.
+    # - ``"catalog"`` → gate at the catalog (any collection registered).
     _visibility: ClassVar[Optional[str]] = None
+
+    # Optional override for the scopes at which this config RENDERS in the
+    # composed-config view (``ConfigApiService._place``).  Decoupled from
+    # ``_visibility`` so a config can be gated for immutability at one tier
+    # yet be viewable/editable at others.  ``None`` (default) → derive the
+    # view scopes from ``_visibility`` for back-compat (``"collection"`` →
+    # collection only; everything else → all scopes).  Routing configs set
+    # this explicitly: a routing default applied at the catalog tier
+    # cascades to collections, so it must surface in the catalog view even
+    # though it stays ``_visibility="collection"`` for the gate.
+    _view_scopes: ClassVar[Optional[Tuple[str, ...]]] = None
 
     # NB: ``_on_apply: ClassVar`` declaration pattern retired in Phase 1.5.
     # Concrete subclasses register apply handlers imperatively at module-

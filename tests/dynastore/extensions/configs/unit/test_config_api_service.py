@@ -282,6 +282,145 @@ def test_compose_tree_includes_collection_only_at_collection_scope():
     assert {k: v for k, v in tree["platform"]["catalog"]["collection"]["items"]["policy"]["items_write_policy"].items() if not k.startswith("_")} == {"on_conflict": "update"}
 
 
+def test_compose_tree_renders_catalog_tier_items_routing_at_catalog_scope():
+    """End-to-end composer regression for the reported bug.
+
+    A catalog-applied items-routing default (e.g. a routing preset) is
+    persisted + waterfall-resolved at the catalog tier, so it MUST appear
+    in the catalog composed tree.  Before the ``_view_scopes`` fix the
+    composer dropped it (``_visibility="collection"``) and operators saw
+    only the defaults.
+    """
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig
+
+    by_class = {"items_routing_config": ItemsRoutingConfig().model_dump()}
+    registry = {"items_routing_config": ItemsRoutingConfig}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree = ConfigApiService._compose_tree(
+            by_class,
+            sources={"items_routing_config": "catalog"},
+            active_scope="catalog",
+        )
+    routing_node = tree["platform"]["catalog"]["collection"]["items"]["routing"]
+    assert "items_routing_config" in routing_node, (
+        "catalog-tier items routing must surface in the catalog composed tree"
+    )
+
+
+def test_compose_tree_renders_routing_config_at_platform_scope_strict():
+    """A routing default applied at the platform (base) tier must be
+    visible in the default ``GET /configs`` body (``include=scope``,
+    ``strict=True``).
+
+    ``_place`` admits it (``_view_scopes`` includes "platform"), and the
+    slim-mode ``_is_in_scope`` must honour that explicit opt-in rather
+    than slimming it as a ``_visibility="collection"`` template — else a
+    platform-applied routing default is invisible at the tier it was set,
+    re-introducing the catalog-tier bug one level up.
+    """
+    from dynastore.modules.storage.routing_config import ItemsRoutingConfig
+
+    by_class = {"items_routing_config": ItemsRoutingConfig().model_dump()}
+    registry = {"items_routing_config": ItemsRoutingConfig}
+    with patch(
+        "dynastore.extensions.configs.config_api_service.list_registered_configs",
+        return_value=registry,
+    ):
+        tree = ConfigApiService._compose_tree(
+            by_class,
+            sources={"items_routing_config": "platform"},
+            active_scope="platform",
+            include_mode="scope",
+            strict=True,
+        )
+    routing_node = tree["platform"]["catalog"]["collection"]["items"]["routing"]
+    assert "items_routing_config" in routing_node, (
+        "platform-tier routing default must survive strict slim-mode at "
+        "platform scope when _view_scopes opts it in"
+    )
+
+
+def test_view_scopes_overrides_visibility_for_view_only():
+    """``_view_scopes`` decouples view placement from ``_visibility``.
+
+    A class with ``_visibility="collection"`` (which keeps gating the
+    immutability materialization check at the collection tier) but an
+    explicit ``_view_scopes`` covering catalog must RENDER at catalog
+    scope.  This is the contract routing presets rely on: a routing
+    default applied at the catalog tier is persisted + resolvable, so it
+    must also be visible in the catalog composed view.
+    """
+    from dynastore.extensions.configs.config_api_service import _place
+
+    cls = _stub_registry(
+        widget_routing={
+            "_address": ("platform", "catalog", "collection", "widget", "routing"),
+            "_visibility": "collection",
+        },
+    )["widget_routing"]
+    # Inject the view-scope override the real routing configs declare.
+    cls._view_scopes = ("platform", "catalog", "collection")
+
+    assert _place(cls, "platform") is not None
+    assert _place(cls, "catalog") is not None, (
+        "_view_scopes must surface a collection-visibility config at catalog scope"
+    )
+    assert _place(cls, "collection") is not None
+
+
+def test_routing_configs_visible_at_catalog_scope():
+    """Regression for catalog-applied routing presets being invisible.
+
+    ``Items/Collection/Asset`` routing cascade platform → catalog →
+    collection, so a catalog-tier preset must show in the catalog (and
+    platform) composed view.  ``Catalog`` routing applies at platform +
+    catalog only (catalogs don't nest) and must NOT leak into a
+    collection view.
+    """
+    from dynastore.extensions.configs.config_api_service import _place
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+        CollectionRoutingConfig,
+        ItemsRoutingConfig,
+    )
+
+    for cls in (ItemsRoutingConfig, CollectionRoutingConfig, AssetRoutingConfig):
+        for scope in ("platform", "catalog", "collection"):
+            assert _place(cls, scope) is not None, (
+                f"{cls.__name__} must render at scope={scope!r}"
+            )
+
+    assert _place(CatalogRoutingConfig, "platform") is not None
+    assert _place(CatalogRoutingConfig, "catalog") is not None
+    assert _place(CatalogRoutingConfig, "collection") is None, (
+        "CatalogRoutingConfig must not leak into the collection view"
+    )
+
+
+def test_routing_view_scopes_do_not_disturb_immutability_visibility():
+    """The fix must leave ``_visibility`` (immutability gate) untouched.
+
+    Decoupling means ``_view_scopes`` drives the view while ``_visibility``
+    keeps driving ``is_materialized`` granularity.  The collection-tier
+    routing configs must retain ``_visibility="collection"``.
+    """
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        CollectionRoutingConfig,
+        ItemsRoutingConfig,
+    )
+
+    for cls in (ItemsRoutingConfig, CollectionRoutingConfig, AssetRoutingConfig):
+        assert cls._visibility == "collection", (
+            f"{cls.__name__}._visibility must stay 'collection' so the "
+            f"immutability materialization gate is unchanged"
+        )
+
+
 def test_compose_tree_drops_abstract_bases():
     # All four legacy abstract bases (PluginConfig, _PluginDriverConfig,
     # DriverPluginConfig, CollectionDriverConfig, AssetDriverConfig) MUST
