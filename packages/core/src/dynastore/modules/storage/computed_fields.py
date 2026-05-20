@@ -113,6 +113,14 @@ class ComputedKind(StrEnum):
     CIRCULARITY = "circularity"    # (4·π·area) / perimeter²; perfect circle = 1
     CONVEXITY = "convexity"        # area / convex_hull.area; perfect convex = 1
     ASPECT_RATIO = "aspect_ratio"  # bbox width / bbox height
+    # JSON-FG 3D place-statistics (sourced from the 'place' member, not 'geometry')
+    SURFACE_AREA = "surface_area"
+    SURFACE_TO_VOLUME_RATIO = "surface_to_volume_ratio"
+    NET_FLOOR_AREA = "net_floor_area"
+    CENTROID_3D = "centroid_3d"    # GEOMETRY(POINTZ, 4326) column; distinct from CENTROID
+    Z_RANGE = "z_range"
+    VERTICAL_GRADIENT = "vertical_gradient"
+    TEMPORAL_DURATION = "temporal_duration"  # non-geometry-derived: reads JSON-FG 'time' member
 
 
 # Kinds that may carry ``storage_mode != None``. Identity-style kinds
@@ -131,6 +139,28 @@ _STATISTIC_STORAGE_KINDS: frozenset = frozenset({
     ComputedKind.CIRCULARITY,
     ComputedKind.CONVEXITY,
     ComputedKind.ASPECT_RATIO,
+    # JSON-FG 3D place-statistics
+    ComputedKind.SURFACE_AREA,
+    ComputedKind.SURFACE_TO_VOLUME_RATIO,
+    ComputedKind.NET_FLOOR_AREA,
+    ComputedKind.CENTROID_3D,
+    ComputedKind.Z_RANGE,
+    ComputedKind.VERTICAL_GRADIENT,
+    ComputedKind.TEMPORAL_DURATION,
+})
+
+# Kinds that live in the JSON-FG ``_place`` sidecar table rather than the
+# main geometries sidecar. Declaring any of these in
+# ``ItemsWritePolicy.compute`` causes the PG driver to emit a
+# ``{table}_place`` table with a FK to the hub.
+_PLACE_TABLE_KINDS: frozenset = frozenset({
+    ComputedKind.SURFACE_AREA,
+    ComputedKind.SURFACE_TO_VOLUME_RATIO,
+    ComputedKind.NET_FLOOR_AREA,
+    ComputedKind.CENTROID_3D,
+    ComputedKind.Z_RANGE,
+    ComputedKind.VERTICAL_GRADIENT,
+    ComputedKind.TEMPORAL_DURATION,
 })
 
 
@@ -300,4 +330,5 @@ __all__ = [
     "StatisticStorageMode",
     "SPATIAL_CELL_KINDS",
     "PATH_EXTRACTED_KINDS",
+    "_PLACE_TABLE_KINDS",
 ]

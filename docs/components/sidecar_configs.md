@@ -87,20 +87,21 @@ RECORDS (no spatial component).
   // Statistics block (per-row stored columns + indexes)
   "statistics": {
     "enabled": true,
-    "storage_mode": "columnar",                         // columnar (typed columns) | jsonb (PlaceStats)
+    "storage_mode": "columnar",                         // columnar (typed columns) | jsonb
     "area":   {"enabled": true, "index": true},
     "volume": {"enabled": true, "index": true},
     "length": {"enabled": true, "index": true},
-    "centroid_type": "geometric",                       // geometric | weighted | population (place_stats)
+    "centroid_type": "geometric",                       // geometric | weighted | population
     "index_centroid": true,
     "morphological_indices": {},                        // {indicator: {enabled, index}}
     "vertex_count": {"enabled": false, "index": false},
     "hole_count":   {"enabled": false, "index": false},
-    "create_gin_index": false                           // GIN on place_stats JSONB (legacy)
+    "create_gin_index": false                           // GIN on the stats JSONB (legacy)
   },
 
-  // Place statistics (population/density attached to centroid)
-  "place_statistics": null,
+  // 3D place statistics (population/density attached to centroid) are no
+  // longer a sidecar block — declare them on items_write_policy.compute
+  // via ComputedField / ComputedKind.
 
   // Hub-level mirroring
   "store_bbox": true,                                   // mirror bbox_geom on hub for fast filters
@@ -130,13 +131,12 @@ write-policy gate (SHA256 of canonicalised attributes JSON).
   "storage_only_fields": [],                            // fields persisted but not indexed
 
   // External ID handling
-  "enable_external_id": true,
+  "external_id_field": "external_id",                   // storage column name; null disables
   "index_external_id": true,
   "expose_geoid": false,                                // surface internal geoid in API responses
 
   // Asset linkage
-  "enable_asset_id": true,
-  "asset_id_field": "asset_id",
+  "asset_id_field": "asset_id",                         // storage column name; null disables
   "index_asset_id": true,
 
   // Attribute schema (drives indexed JSONB paths)

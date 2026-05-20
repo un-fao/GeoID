@@ -186,7 +186,7 @@ The minimal driver contract gains one method: `materialize_computed(self, comput
 
 Strictly the DDL/PG-internal surface:
 
-- `FeatureAttributeSidecarConfig`: `storage_mode`, `storage_only_fields`, `attribute_schema`, `jsonb_column_name`, `jsonb_indexed_paths`, `use_hot_updates`, `enable_external_id`, `index_external_id`, `enable_asset_id`, `asset_id_field`, `index_asset_id`, `expose_geoid`, `partition_strategy`, `partition_attribute`.
+- `FeatureAttributeSidecarConfig`: `storage_mode`, `storage_only_fields`, `attribute_schema`, `jsonb_column_name`, `jsonb_indexed_paths`, `use_hot_updates`, `external_id_field`, `index_external_id`, `asset_id_field`, `index_asset_id`, `expose_geoid`, `partition_strategy`, `partition_attribute`.
 - `GeometriesSidecarConfig`: `target_srid`, `target_dimension`, `geom_column`, `bbox_column`, `partition_strategy`, `partition_resolution`, plus a new minimal `index_hints: Dict[str, IndexHint]` keyed by the `ComputedField.resolved_name()` so an operator can say "BTREE the area_m2 column".
 
 ### Minimal example — empty policy
