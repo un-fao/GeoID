@@ -139,7 +139,7 @@ async def _load_cache_config() -> "CachePluginConfig":
         from dynastore.models.protocols.configs import ConfigsProtocol
 
         try:
-            from dynastore.frameworks.plugin import get_protocol
+            from dynastore.tools.discovery import get_protocol
 
             configs_proto = get_protocol(ConfigsProtocol)
         except Exception as e:
