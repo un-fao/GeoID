@@ -424,6 +424,10 @@ class ItemsRoutingConfig(PluginConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
+    # Items routing cascades platform → catalog → collection: a catalog-tier
+    # default (e.g. a routing preset) must surface in the catalog view even
+    # though the immutability gate stays collection-scoped (``_visibility``).
+    _view_scopes: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection")
 
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
@@ -593,6 +597,10 @@ class CollectionRoutingConfig(PluginConfig):
     # than under an items/assets sibling.
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
+    # Collection routing cascades platform → catalog → collection: a
+    # catalog-tier default must surface in the catalog view while the
+    # immutability gate stays collection-scoped (``_visibility``).
+    _view_scopes: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection")
 
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
@@ -701,6 +709,10 @@ class AssetRoutingConfig(PluginConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "assets", "routing")
     _visibility: ClassVar[Optional[str]] = "collection"
+    # Asset routing cascades platform → catalog → collection: a catalog-tier
+    # default must surface in the catalog view while the immutability gate
+    # stays collection-scoped (``_visibility``).
+    _view_scopes: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection")
 
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
@@ -815,6 +827,11 @@ class CatalogRoutingConfig(PluginConfig):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "routing")
     _visibility: ClassVar[Optional[str]] = "catalog"
+    # Catalog routing applies at platform + catalog only (catalogs don't
+    # nest); it must not leak into a collection view.  Explicit so the view
+    # no longer depends on the unimplemented ``_visibility="catalog"`` hide-
+    # at-collection rule.
+    _view_scopes: ClassVar[Tuple[str, ...]] = ("platform", "catalog")
 
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(

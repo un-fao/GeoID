@@ -23,10 +23,14 @@ Placement is read from each ``PluginConfig`` subclass's mandatory
 ``_address: ClassVar[Tuple[Optional[str], ...]]`` ClassVar (variable-length
 post Cycle D.0; subclass annotations may stay narrower as 3-tuples and
 migrate incrementally during D.2).
-Scope filtering is read from the optional ``_visibility`` ClassVar
-(``"collection"`` / ``"catalog"`` / ``None`` = visible everywhere).
-The composer no longer owns a placement heuristic — there is exactly
-one source of truth per class.
+Scope placement is read from the optional ``_view_scopes`` ClassVar
+(the set of scopes a config renders at), falling back to ``_visibility``
+when unset (``"collection"`` → collection only; everything else →
+everywhere).  ``_view_scopes`` is decoupled from ``_visibility`` so a
+config gated for immutability at one tier can still be viewed/edited at
+others — routing configs use this to surface catalog-tier defaults that
+cascade to collections.  The composer no longer owns a placement
+heuristic — there is exactly one source of truth per class.
 """
 
 from __future__ import annotations
@@ -68,6 +72,25 @@ def _routing_config_keys() -> frozenset[str]:
     })
 
 
+def _view_scopes_for(cls: Type[PluginConfig]) -> frozenset[str]:
+    """Effective scopes at which ``cls`` renders in the composed view.
+
+    Prefers the explicit ``_view_scopes`` override (decoupled from the
+    immutability gate that ``_visibility`` drives).  When unset, derives
+    the scopes from ``_visibility`` so existing configs behave exactly as
+    before: ``"collection"`` → collection only; every other value
+    (including ``None`` and ``"catalog"``) → all scopes.  Read via
+    ``getattr`` so synthetic test stubs (plain classes, not PluginConfig
+    subclasses) resolve too.
+    """
+    explicit = getattr(cls, "_view_scopes", None)
+    if explicit is not None:
+        return frozenset(explicit)
+    if getattr(cls, "_visibility", None) == "collection":
+        return frozenset({"collection"})
+    return frozenset({"platform", "catalog", "collection"})
+
+
 def _place(
     cls: Type[PluginConfig], active_scope: str,
 ) -> Optional[Tuple[Optional[str], ...]]:
@@ -81,13 +104,12 @@ def _place(
 
     Filters:
     - Abstract bases (``is_abstract_base = True``) → dropped.
-    - ``_visibility = "collection"`` and ``active_scope != "collection"`` → dropped.
-    - ``_visibility = "catalog"`` and ``active_scope == "collection"`` → dropped.
+    - ``active_scope`` not in the config's effective view scopes
+      (``_view_scopes`` override, else derived from ``_visibility``) → dropped.
     """
     if cls.__dict__.get("is_abstract_base", False):
         return None
-    visibility = getattr(cls, "_visibility", None)
-    if visibility == "collection" and active_scope != "collection":
+    if active_scope not in _view_scopes_for(cls):
         return None
     address = getattr(cls, "_address", None)
     if not address:
@@ -460,6 +482,13 @@ class ConfigApiService:
             as platform-intrinsic — kept in body at platform scope strict
             mode.  Engines ARE platform-tier resources by definition.
 
+            An explicit ``_view_scopes`` is authoritative and overrides the
+            ``_visibility`` template-slim: a config that opts into the
+            platform view (e.g. routing defaults, which cascade from the
+            platform base tier) stays in the body even under strict mode,
+            so it is visible at the tier it was applied at.  Configs without
+            ``_view_scopes`` keep the ``_visibility`` slimming behaviour.
+
             At catalog/collection scope: include every config that passed
             ``_place()`` — the resolved config response must surface the full
             configurable surface (modules, extensions, tasks, engines,
@@ -475,24 +504,30 @@ class ConfigApiService:
             want round-trip-into-PATCH semantics get a real filter rather
             than relying on ``resolved=false`` to drop inherited fields.
             """
-            visibility = getattr(cls, "_visibility", None)
             if active_scope == "platform":
                 if not strict:
                     return True
-                # Strict: platform-intrinsic configs stay in body.  Both
-                # ``_visibility=None`` (default; visible everywhere —
+                # Explicit ``_view_scopes`` wins over the ``_visibility``
+                # template-slim: a config that opts into the platform view
+                # is shown even under strict mode (consistent with
+                # ``_place``, which placed it here for the same reason).
+                explicit_scopes = getattr(cls, "_view_scopes", None)
+                if explicit_scopes is not None:
+                    return "platform" in explicit_scopes
+                # Strict fallback: platform-intrinsic configs stay in body.
+                # Both ``_visibility=None`` (default; visible everywhere —
                 # owned at platform when stored there) AND
                 # ``_visibility="platform"`` (engines + other platform-
                 # exclusive configs) qualify.  Catalog-/collection-tier
                 # templates (``_visibility="catalog"`` / ``"collection"``)
                 # are filtered out.
+                visibility = getattr(cls, "_visibility", None)
                 return visibility is None or visibility == "platform"
             # Non-platform scopes (catalog / collection): show everything
             # that ``_place()`` accepts.  ``_place()`` already drops
             # collection-vis configs at non-collection scopes; everything
             # else is informative context at this tier.
             del class_key  # unused at non-platform scopes
-            del visibility  # unused at non-platform scopes
             return True
 
         def _doc_extras(cls: Type[PluginConfig]) -> Dict[str, Any]:
