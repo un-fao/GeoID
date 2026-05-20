@@ -1747,9 +1747,10 @@ class CatalogService(CatalogsProtocol):
         row: Any,
         col_config: CollectionPluginConfig,
         lang: str = "en",
+        read_policy: Optional[Any] = None,
     ) -> Feature:
         return self._item_svc.map_row_to_feature(  # type: ignore[return-value]
-            row, col_config, lang=lang
+            row, col_config, lang=lang, read_policy=read_policy
         )
 
     async def get_collection_schema(

@@ -39,6 +39,7 @@ from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.url import get_root_url
+from dynastore.extensions.tools.query import resolve_items_read_policy  # noqa: E402
 from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
 from dynastore.models.shared_models import Link
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
@@ -301,10 +302,11 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
+        read_policy = await resolve_items_read_policy(catalog_id, collection_id)
 
         records: List[rm.Record] = []
         async for feature in query_response:
-            records.append(gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config))
+            records.append(gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config, read_policy=read_policy))
 
         # Pagination links
         from dynastore.extensions.tools.pagination import build_pagination_links
@@ -342,8 +344,9 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
+        read_policy = await resolve_items_read_policy(catalog_id, collection_id)
         root_url = get_root_url(request)
-        record = gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config)
+        record = gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config, read_policy=read_policy)
         return JSONResponse(
             content=record.model_dump(exclude_none=True),
         )
@@ -401,10 +404,12 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         layer_config = await catalogs_svc.get_collection_config(
             catalog_id, collection_id, ctx=DriverContext(db_resource=conn),
         )
+        read_policy = await resolve_items_read_policy(catalog_id, collection_id)
 
         if was_single:
             record = gen.db_row_to_record(
-                accepted_rows[0], catalog_id, collection_id, root_url, layer_config
+                accepted_rows[0], catalog_id, collection_id, root_url, layer_config,
+                read_policy=read_policy,
             )
             return JSONResponse(
                 content=record.model_dump(exclude_none=True),
@@ -412,7 +417,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             )
 
         records = [
-            gen.db_row_to_record(feat, catalog_id, collection_id, root_url, layer_config)
+            gen.db_row_to_record(feat, catalog_id, collection_id, root_url, layer_config, read_policy=read_policy)
             for feat in accepted_rows
         ]
         collection = rm.RecordCollection(

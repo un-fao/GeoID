@@ -864,6 +864,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         async with managed_transaction(engine) as read_conn:
             results = await self.fetch_features_bulk(
                 read_conn, phys_schema, phys_table, result_geoids, col_config,
+                catalog_id=catalog_id, collection_id=collection_id,
             )
 
         # ── Post-commit: fan-out to secondary drivers ──────────────────

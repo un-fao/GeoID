@@ -913,10 +913,29 @@ async def search_items(
 
     # Reconstruct sorted list
     rows = []
-    
+
     from dynastore.models.protocols import ItemsProtocol
+    from dynastore.extensions.tools.query import resolve_items_read_policy
     items_svc = get_protocol(ItemsProtocol)
-    
+
+    # Resolve the read policy once per collection (STAC search may span
+    # several), so the row mapper surfaces ``feature_type.expose`` computed
+    # values onto ``feature.properties`` for the STAC item generator to read.
+    # NOTE: STAC search keeps its own native id projection — the hydration
+    # SQL above aliases ``COALESCE(s.external_id, h.geoid::text) AS id`` for
+    # every row, which is the STAC Item convention (items key on external_id).
+    # ``ItemsReadPolicy.feature_type.external_id_as_feature_id`` therefore does
+    # NOT override the STAC item id on this path by design; only the expose
+    # merge is honoured here.
+    _read_policy_by_collection: Dict[str, Any] = {}
+
+    async def _read_policy_for(collection_id: str) -> Any:
+        if collection_id not in _read_policy_by_collection:
+            _read_policy_by_collection[collection_id] = (
+                await resolve_items_read_policy(cat_id, collection_id)
+            )
+        return _read_policy_by_collection[collection_id]
+
     for row in page_rows:
         key = (row["collection_id"], row["geoid"])
         if key in hydrated_items:
@@ -925,12 +944,13 @@ async def search_items(
                 item_data["geom"] = item_data.pop("simplified_geom")
             else:
                 item_data["geom"] = None
-            
+
             if items_svc:
                 col_config = collection_configs.get(item_data["collection_id"])
+                read_policy = await _read_policy_for(item_data["collection_id"])
                 # We need to preserve original `item_data` values for sidecars (e.g., stac_title/stac_description)
                 # ItemsProtocol will place these nicely into `feature.properties` or `feature.stac_extensions` etc.
-                feature = items_svc.map_row_to_feature(item_data, col_config=col_config)
+                feature = items_svc.map_row_to_feature(item_data, col_config=col_config, read_policy=read_policy)
                 if feature:
                     if feature.properties is None:
                         feature.properties = {}

@@ -41,6 +41,7 @@ def db_row_to_record(
     collection_id: str,
     root_url: str,
     layer_config: Optional[ItemsPostgresqlDriverConfig] = None,
+    read_policy: Optional[Any] = None,
 ) -> rm.Record:
     """Convert a DB row or mapped Feature into an OGC Record.
 
@@ -49,12 +50,20 @@ def db_row_to_record(
     post-processing is applied:
       - ``validity`` TSTZRANGE -> ``time.interval``
       - self / collection links
+
+    ``read_policy`` is the resolved :class:`ItemsReadPolicy` for the
+    collection; it is threaded into the sidecar pipeline so the raw-row
+    fallback honours ``feature_type.expose`` / ``external_id_as_feature_id``.
+    Items arriving already mapped (the canonical ``stream_items`` path) skip
+    the fallback and are unaffected.
     """
     # Map raw DB row via sidecar pipeline if needed
     if not isinstance(item, _GeoJSONFeature):
         items_mod = get_protocol(ItemsProtocol)
         if items_mod and layer_config:
-            item = items_mod.map_row_to_feature(item, layer_config)
+            item = items_mod.map_row_to_feature(
+                item, layer_config, read_policy=read_policy
+            )
         else:
             logger.warning(
                 "Cannot map DB row: ItemsProtocol unavailable or no layer_config."

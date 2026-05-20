@@ -44,8 +44,14 @@ if TYPE_CHECKING:
         async def _resolve_physical_table(
             self, catalog_id: str, collection_id: str, *, db_resource: Any = None
         ) -> Optional[str]: ...
+        async def _resolve_read_policy(
+            self, catalog_id: str, collection_id: str
+        ) -> Optional[Any]: ...
         def map_row_to_feature(
-            self, row: Dict[str, Any], col_config: Any
+            self,
+            row: Dict[str, Any],
+            col_config: Any,
+            read_policy: Optional[Any] = None,
         ) -> "_Feature": ...
 else:
     class _Host: ...
@@ -654,6 +660,8 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
         hub_table: str,
         geoids: List[Any],
         col_config,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
     ) -> "List[_Feature]":
         """Bulk-load joined Features for a list of geoids in a single SELECT.
 
@@ -665,11 +673,22 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
 
         Returns a list of Feature objects in the same order as ``geoids``.
         Missing geoids are skipped silently.
+
+        When ``catalog_id``/``collection_id`` are supplied the collection's
+        :class:`ItemsReadPolicy` is resolved once and threaded into both the
+        :class:`QueryOptimizer` (so SQL ``external_id``-as-id aliasing honours
+        the policy) and ``map_row_to_feature`` (so the ``feature_type.expose``
+        merge fires) — keeping the post-write read-back wire shape identical to
+        the canonical read paths.
         """
         if not geoids:
             return []
 
-        optimizer = QueryOptimizer(col_config)
+        read_policy = None
+        if catalog_id is not None and collection_id is not None:
+            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
+
+        optimizer = QueryOptimizer(col_config, read_policy=read_policy)
         fetch_req = QueryRequest(
             raw_where="h.geoid = ANY(:bulk_geoids)",
             raw_params={"bulk_geoids": list(geoids)},
@@ -689,5 +708,9 @@ ON CONFLICT ({conflict_target}) {on_conflict_clause};
         for g in geoids:
             row = by_geoid.get(g)
             if row is not None:
-                out.append(self.map_row_to_feature(dict(row), col_config))
+                out.append(
+                    self.map_row_to_feature(
+                        dict(row), col_config, read_policy=read_policy
+                    )
+                )
         return out

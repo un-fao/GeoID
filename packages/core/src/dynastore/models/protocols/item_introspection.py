@@ -89,6 +89,13 @@ class ItemIntrospectionProtocol(Protocol):
         Chains all active sidecars in declaration order via
         ``FeaturePipelineContext`` (blackboard pattern).  Each sidecar
         contributes its domain: geometry, attributes, STAC metadata, etc.
+
+        ``read_policy`` is the resolved :class:`ItemsReadPolicy` for the
+        collection, fetched once per query. It carries the wire-shape
+        contract — ``feature_type.expose`` computed-value merge and
+        ``feature_type.external_id_as_feature_id``. When ``None`` the row
+        mapper applies the default wire shape (external_id-as-id on, no
+        expose merge).
         """
         ...
 
