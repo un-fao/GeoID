@@ -49,8 +49,14 @@ Not in this file yet (follow-up M3.1b)
 - Advisory-lock sharding across worker replicas.
 - Catch-up / backfill pass that sweeps catalogs whose split-table
   ``updated_at`` ≥ some cursor.
-- Per-Indexer TRANSFORM chain (when ``entry.transformed = True``).
-  M3.1 only implements ``transformed = False`` — raw Primary envelope.
+
+The per-Indexer transform chain runs via ``entry.input_transformers``
+(resolved against the ``EntityTransformProtocol`` registry and applied with
+``transform_runtime.apply_transform_chain`` in
+``_transform_envelope_for_entry``) — the same SSOT the items path uses. The
+legacy ``entry.transformed`` boolean is redundant with a non-empty
+``input_transformers`` tuple and is retired in the routing rationalization
+(#990).
 
 """
 
@@ -63,7 +69,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.entity_store import CatalogStore
 from dynastore.modules.storage.routing_config import (
-    CatalogRoutingConfig, Operation, OperationDriverEntry,
+    CatalogRoutingConfig, FailurePolicy, Operation, OperationDriverEntry,
 )
 from dynastore.tools.typed_store.base import _to_snake
 
@@ -300,30 +306,46 @@ class ReindexWorker:
         fatal_errors: List[str] = []
         degraded_errors: List[str] = []
         for entry, driver in indexers:
-            # F3 — surface the transformed=True gap: M3.1 does not
-            # implement the TRANSFORM chain.  An entry that asks for
-            # the transformed envelope silently gets the raw one,
-            # which could look correct at unit-test time and then
-            # diverge in production.  Log a WARNING per-event so the
-            # gap is visible; feeding raw instead of transformed is
-            # still the best-available behaviour (ACK the event so
-            # the outbox doesn't stall), but the operator needs to
-            # know their routing-config directive is not honoured.
-            if getattr(entry, "transformed", False):
+            # Apply the entry's input_transformers chain to the envelope
+            # before dispatch. ``input_transformers`` is the SSOT for which
+            # transform chain runs on the way INTO an indexer (see
+            # EntityTransformProtocol); this mirrors the items path in
+            # IndexDispatcher._apply_input_transformers. A transform failure
+            # is surfaced per the entry's on_failure policy rather than
+            # silently shipping an un-transformed doc.
+            try:
+                entry_envelope = await self._transform_envelope_for_entry(
+                    entry=entry, envelope=envelope, catalog_id=catalog_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                message = (
+                    f"input_transformer chain failed for "
+                    f"'{entry.driver_ref}': {exc}"
+                )
                 logger.warning(
-                    "ReindexWorker: CatalogRoutingConfig INDEX entry %r "
-                    "requested transformed=True but the TRANSFORM chain "
-                    "is not implemented yet (M3.1 only supports raw "
-                    "envelopes) — dispatching the raw envelope for "
-                    "catalog_id=%s.  Remove ``transformed=True`` from "
-                    "the routing config or wait for a future milestone.",
+                    "ReindexWorker: %s (catalog_id=%s)", message, catalog_id,
+                )
+                if entry.on_failure == FailurePolicy.FATAL:
+                    fatal_errors.append(message)
+                else:
+                    degraded_errors.append(message)
+                continue
+            if getattr(entry, "transformed", False) and (
+                not entry.input_transformers
+            ):
+                logger.warning(
+                    "ReindexWorker: CatalogRoutingConfig INDEX entry %r set "
+                    "transformed=True but declares no input_transformers — "
+                    "nothing to apply; dispatching the raw envelope for "
+                    "catalog_id=%s. Attach input_transformers to enable the "
+                    "transform chain.",
                     entry.driver_ref, catalog_id,
                 )
             outcome = await self._dispatch_one(
                 entry=entry,
                 driver=driver,
                 catalog_id=catalog_id,
-                envelope=envelope,
+                envelope=entry_envelope,
                 operation=operation,
                 db_resource=db_resource,
             )
@@ -345,6 +367,56 @@ class ReindexWorker:
         return _DispatchResult(
             event_id=event_id, succeeded=True, should_retry=False,
             errors=degraded_errors,
+        )
+
+    async def _transform_envelope_for_entry(
+        self,
+        *,
+        entry: OperationDriverEntry,
+        envelope: Optional[Dict[str, Any]],
+        catalog_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Apply ``entry.input_transformers`` to the catalog envelope.
+
+        ``input_transformers`` is the SSOT for which transform chain runs on
+        the way INTO an indexer (see :class:`EntityTransformProtocol`); refs
+        resolve via ``get_protocols(EntityTransformProtocol)``, the same
+        discovery the items path uses. Empty / unresolved chain ⇒ the
+        envelope is returned unchanged. Raises on transformer failure so the
+        caller can apply the entry's ``on_failure`` policy.
+        """
+        if envelope is None or not entry.input_transformers:
+            return envelope
+        from dynastore.models.protocols.entity_transform import (
+            EntityTransformProtocol,
+        )
+        from dynastore.modules.storage.transform_runtime import (
+            apply_transform_chain,
+        )
+        from dynastore.tools.discovery import get_protocols
+
+        by_ref = {
+            _to_snake(type(t).__name__): t
+            for t in get_protocols(EntityTransformProtocol)
+        }
+        chain: List[Any] = []
+        for ref in entry.input_transformers:
+            transformer = by_ref.get(ref)
+            if transformer is None:
+                logger.warning(
+                    "ReindexWorker: input transformer '%s' not registered "
+                    "(catalog_id=%s); skipping in chain.", ref, catalog_id,
+                )
+                continue
+            chain.append(transformer)
+        if not chain:
+            return envelope
+        return await apply_transform_chain(
+            envelope,
+            chain,
+            catalog_id=catalog_id,
+            collection_id=None,
+            entity_kind="catalog",
         )
 
     async def _dispatch_one(
