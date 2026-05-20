@@ -30,7 +30,6 @@ Drivers (instances discovered via `dynastore.modules` entry points)
     ├── ItemsElasticsearchPrivateDriver         driver_ref="items_elasticsearch_private_driver"     (DENY-policied)
     ├── CollectionPostgresqlDriver              driver_ref="collection_postgresql_driver"
     ├── CollectionElasticsearchDriver           driver_ref="collection_elasticsearch_driver"
-    ├── CollectionElasticsearchPrivateDriver    driver_ref="collection_elasticsearch_private_driver"
     ├── CatalogPostgresqlDriver                 driver_ref="catalog_postgresql_driver"
     ├── CatalogElasticsearchDriver              driver_ref="catalog_elasticsearch_driver"
     ├── AssetPostgresqlDriver                   driver_ref="asset_postgresql_driver"
@@ -395,23 +394,27 @@ The items driver writes directly with `_routing=collection_id` and is enrolled i
 **Direct programmatic indexing:** `index_item()` / `delete_item()` (and per-tier equivalents)
 remain available for explicit ops calls.
 
-### Elasticsearch Private Drivers (per-tenant, DENY-policied)
+### Elasticsearch Private Driver (items-only, per-tenant, DENY-policied)
 
-Two classes:
+The private ES branch is **items-only** (#1047). Catalog and collection envelopes have no
+private ES driver — when private they live in PostgreSQL only and are not indexed in ES at
+all. There is also **no global private alias**: private data is tenant-scoped, so every
+private items search resolves to a single `{prefix}-{catalog_id}-private-items` index from the
+URL/principal scope; cross-tenant search of private items is not a feature.
 
 | Class | driver_ref | Per-tenant index |
 |-------|-----------|-------------------|
 | `ItemsElasticsearchPrivateDriver` | `items_elasticsearch_private_driver` | `{prefix}-{catalog_id}-private-items` |
-| `CollectionElasticsearchPrivateDriver` | `collection_elasticsearch_private_driver` | `{prefix}-{catalog_id}-collections-private` |
 
 **Privacy contract**:
 - `auto_register_for_routing: ClassVar[FrozenSet[Operation]] = frozenset()` — opt-in only.
-  Operators pin them in `ItemsRoutingConfig` / `CollectionRoutingConfig`; the pin itself
-  is the privacy switch (#733 retired the standalone `CollectionPrivacy.is_private` flag).
+  Operators pin it in `ItemsRoutingConfig`; the pin itself is the privacy switch (#733 retired
+  the standalone `CollectionPrivacy.is_private` flag).
 - The items-private driver applies a catalog-wide DENY policy (`private_deny_{cat}`) on
-  `ensure_storage` blocking public read access at `/.../catalogs/{cat}/...`. The collection-private
-  driver does NOT manage its own DENY (the cascade rule rejects mixed public+private pins
-  in the same routing config, so the items-private DENY covers the catalog).
+  `ensure_storage` blocking public read access at `/.../catalogs/{cat}/...`.
+- A config-write composition guard rejects a public-ES collection whose parent catalog does
+  not pin the public catalog ES driver (would leak the collection envelope while hiding catalog
+  navigation) — see `_assert_public_collection_has_public_parent` in `routing_config.py`.
 - Write paths shrink oversized geometries via `simplify_to_fit` for the items-private index.
 
 Stores `{geoid, catalog_id, collection_id}` in a custom index with `dynamic: false` mapping.
@@ -783,8 +786,7 @@ src/dynastore/
 │       ├── iceberg.py                   # ItemsIcebergDriver
 │       ├── duckdb.py                    # ItemsDuckdbDriver
 │       ├── elasticsearch.py             # ItemsElasticsearchDriver + AssetElasticsearchDriver
-│       └── elasticsearch_private/       # ItemsElasticsearchPrivateDriver +
-│                                        # CollectionElasticsearchPrivateDriver (DENY-policied)
+│       └── elasticsearch_private/       # ItemsElasticsearchPrivateDriver (items-only, DENY-policied)
 └── docs/components/
     ├── storage_drivers.md               # This file
     ├── platform_engines.md              # Engines layer (Cycle F): connection pools,
