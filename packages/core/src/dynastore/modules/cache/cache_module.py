@@ -446,6 +446,23 @@ class CacheModule(ModuleProtocol):
                     )
                 else:
                     raise
+            except ValueError as e:
+                # ``ValkeyEngineConfig.engine_init`` -> ``build_valkey_client``
+                # raises ``ValueError`` when neither ``connection_url`` nor a
+                # ``discovery_host`` is configured (e.g. empty defaults in
+                # integration tests, notebooks, demos, fresh installs).
+                # Treat it like the "disabled" RuntimeError path: fall through
+                # to the legacy env-driven fallback (which itself falls back
+                # to LOCAL in-memory cache when ``VALKEY_URL`` is also unset).
+                # WARNING level so misconfigured production deployments are
+                # still visible in logs without aborting the whole lifespan.
+                logger.warning(
+                    "CacheModule: valkey_engine misconfigured (%s); "
+                    "falling back to VALKEY_URL env. If this is production, "
+                    "set VALKEY_URL or VALKEY_DISCOVERY_HOST to restore the "
+                    "Valkey backend.",
+                    e,
+                )
 
         # Legacy fallback: env-driven mode.
         if not engine_mode:
