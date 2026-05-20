@@ -1044,7 +1044,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             geom_alias = "h"
             geom_col = "geom"
             storage_srid = 4326
-            temporal_alias = "h"
+            temporal_alias: Optional[str] = None
             joins = []
 
             if layer_config.sidecars:
@@ -1074,6 +1074,9 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                 # ``attr_sc.enable_validity`` mirrors ``ItemsWritePolicy``
                 # (overlaid by ``ensure_storage`` at DDL time, #974) so
                 # reading the sidecar is the SSOT for this collection.
+                # Only join the attributes table for temporal extents when
+                # validity is actually persisted — otherwise the row carries
+                # no ``validity`` column and the SELECT would error.
                 if attr_sc and attr_sc.enable_validity:
                     temporal_source = f"{table}_{attr_sc.sidecar_id}"
                     temporal_alias = "a"
@@ -1091,12 +1094,22 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
 
             join_clause = "\n" + "\n".join(joins) if joins else ""
 
+            # Temporal extent only when validity is actually persisted on a
+            # joined sidecar. With no validity column anywhere, fall back to
+            # NULL bounds so the SELECT remains valid.
+            if temporal_alias is not None:
+                min_validity_expr = f"MIN(lower({temporal_alias}.validity))"
+                max_validity_expr = f"MAX(upper({temporal_alias}.validity))"
+            else:
+                min_validity_expr = "NULL::timestamptz"
+                max_validity_expr = "NULL::timestamptz"
+
             sql = f"""
                 WITH calculated_extents AS (
                     SELECT
                         {spatial_expr} AS combined_geom,
-                        MIN(lower({temporal_alias}.validity)) AS min_validity,
-                        MAX(upper({temporal_alias}.validity)) AS max_validity
+                        {min_validity_expr} AS min_validity,
+                        {max_validity_expr} AS max_validity
                     FROM "{schema}"."{table}" h
                     {join_clause}
                     WHERE h.deleted_at IS NULL AND {geom_alias}.{geom_col} IS NOT NULL

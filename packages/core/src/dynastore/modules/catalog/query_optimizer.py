@@ -80,6 +80,36 @@ class QueryOptimizer:
             return True
         return self.read_policy.feature_type.external_id_as_feature_id
 
+    def resolve_validity_expression(self) -> Optional[str]:
+        """Resolve the SQL expression for the ``validity`` column.
+
+        Returns ``"h.validity"`` when validity is a hub partition key, or
+        the sidecar-qualified expression (e.g. ``"sc_attributes.validity"``)
+        when a sidecar materialises validity. Returns ``None`` when the
+        collection has no validity column at all (the post-#974 default
+        when ``ItemsWritePolicy.enable_validity`` is ``False``). Callers
+        that need a SQL-safe placeholder can use ``NULL::tstzrange``.
+        """
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+            SidecarRegistry,
+        )
+
+        partition_keys = (
+            getattr(
+                getattr(self.col_config, "partitioning", None),
+                "partition_keys",
+                None,
+            )
+            or []
+        )
+        if "validity" in partition_keys:
+            return "h.validity"
+        for sc_config in driver_sidecars(self.col_config):
+            sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+            if sidecar and sidecar.has_validity():
+                return f"sc_{sidecar.sidecar_id}.validity"
+        return None
+
     def _build_capability_index(self):
         """Build index of all available fields and their capabilities from active sidecars."""
         from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
@@ -502,26 +532,17 @@ class QueryOptimizer:
             if filt.field in ["geoid", "deleted_at", "transaction_time"]:
                 expr = f"h.{filt.field}"
             elif filt.field == "validity":
-                partition_keys = (
-                    getattr(
-                        getattr(self.col_config, "partitioning", None),
-                        "partition_keys",
-                        None,
-                    )
-                    or []
-                )
-                if "validity" in partition_keys:
-                    expr = "h.validity"
-                else:
-                    sidecar_with_validity = None
-                    for sc_config in driver_sidecars(self.col_config):
-                        sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
-                        if sidecar and sidecar.has_validity():
-                            sidecar_with_validity = sidecar
-                            break
-                    if sidecar_with_validity is None:
-                        continue
-                    expr = f"sc_{sidecar_with_validity.sidecar_id}.validity"
+                # #974: validity is no longer present on the hub by default
+                # (``ItemsWritePolicy.enable_validity`` defaults to False).
+                # Resolve the actual SQL expression — when no hub partition
+                # key and no sidecar materialise validity, the column does
+                # not exist anywhere, so we silently drop the filter
+                # (matches OGC behaviour: an unsatisfiable temporal filter
+                # produces no rows; here we have no column to test against).
+                resolved = self.resolve_validity_expression()
+                if resolved is None:
+                    continue
+                expr = resolved
             else:
                 _, field_def = self.field_index[filt.field]
                 expr = field_def.sql_expression
@@ -582,6 +603,22 @@ class QueryOptimizer:
                 pattern = rf"\b{re.escape(field_name)}\b"
                 processed_where = re.sub(
                     pattern, field_def.sql_expression, processed_where
+                )
+
+            # #974: When the bare ``validity`` token survives the field-index
+            # substitution above, it means no sidecar exposes ``validity`` as
+            # a queryable field (``ItemsWritePolicy.enable_validity`` is
+            # False on this collection). Rewrite remaining references to the
+            # resolved hub/sidecar expression — or to ``NULL::tstzrange``
+            # when the column does not exist anywhere — so an upstream
+            # ``where_sql`` emitter (e.g. ``shared_queries.build_filter_clause``)
+            # that hard-codes ``validity`` does not produce
+            # ``column "validity" does not exist``.
+            if re.search(r"\bvalidity\b", processed_where):
+                resolved = self.resolve_validity_expression()
+                replacement = resolved if resolved is not None else "NULL::tstzrange"
+                processed_where = re.sub(
+                    r"\bvalidity\b", replacement, processed_where
                 )
 
             where_conditions.append(f"({processed_where})")
