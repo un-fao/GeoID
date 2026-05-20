@@ -467,7 +467,13 @@ def dynastore_modules(request):
     scope_env = os.environ.get("SCOPE", "").strip()
     if scope_env:
         return [name.strip() for name in scope_env.split(",") if name.strip()]
-    return ["db_config", "db", "catalog", "stats", "iam", "stac", "collection_postgresql", "catalog_postgresql"]
+    # ``tasks`` is required by the default routing: collection/catalog WRITE fans
+    # out an INDEX hop to the ES driver with on_failure=OUTBOX, which writes a
+    # transactional-outbox row to ``tasks.tasks`` on the caller's connection.
+    # Without the tasks module that table never exists, so the outbox INSERT
+    # aborts the write transaction and the create rolls back. Real catalog
+    # deployments always run tasks, so the default set must too.
+    return ["db_config", "db", "catalog", "stats", "iam", "stac", "tasks", "collection_postgresql", "catalog_postgresql"]
 
 
 @pytest.fixture
@@ -1044,7 +1050,10 @@ async def app_lifespan(
 
 
 _DEFAULT_MODULE_LIST = [
-    "db_config", "db", "catalog", "stats", "iam", "stac",
+    # ``tasks`` mirrors ``dynastore_modules``: the default routing's INDEX hop
+    # enqueues a transactional-outbox row into ``tasks.tasks`` on collection /
+    # catalog writes, so the table must exist or the write rolls back.
+    "db_config", "db", "catalog", "stats", "iam", "stac", "tasks",
     "collection_postgresql",
     "catalog_postgresql",
 ]
