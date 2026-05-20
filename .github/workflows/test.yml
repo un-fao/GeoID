@@ -303,6 +303,10 @@ jobs:
           # placeholder tokens like '<change-me>' that bash `source` mis-parses
           # as redirections (line 84: IDP_CLIENT_SECRET=<change-me>).
           eval "$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB)=' packages/core/src/dynastore/docker/.env | sed 's/^/export /')"
+          # notebooks/ is mounted at the same /dynastore root as src + tests
+          # because integration tests resolve on-disk notebook fixtures via a
+          # path relative to the test file (parents[5]/notebooks/...), which
+          # lands at /dynastore/notebooks — not /dynastore/workspace/notebooks.
           docker run --rm \
             --network "$NETWORK" \
             --workdir /dynastore \
@@ -310,6 +314,7 @@ jobs:
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/docs":/dynastore/docs \
+            -v "$WORKSPACE/notebooks":/dynastore/notebooks \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
             --env-file packages/core/src/dynastore/docker/.env \
             -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
@@ -421,6 +426,7 @@ jobs:
             -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/docs":/dynastore/docs \
+            -v "$WORKSPACE/notebooks":/dynastore/notebooks \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
             --env-file packages/core/src/dynastore/docker/.env \
             -e DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
