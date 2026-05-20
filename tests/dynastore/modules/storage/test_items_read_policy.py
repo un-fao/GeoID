@@ -47,14 +47,20 @@ class TestItemsReadPolicyShape:
     def test_collection_scoped_only(self) -> None:
         assert ItemsReadPolicy._visibility == "collection"
 
-    def test_address_tuple_matches_design(self) -> None:
+    def test_address_grouped_under_items_policy(self) -> None:
+        # Grouped with ItemsWritePolicy under ``items.policy``; the composer
+        # keys each leaf by class_key, so this nests as
+        # ``items.policy.items_read_policy``. Storage/lookup is by class_key.
+        from dynastore.modules.storage import ItemsWritePolicy
+
         assert ItemsReadPolicy._address == (
             "platform",
             "catalog",
             "collection",
             "items",
-            "read_policy",
+            "policy",
         )
+        assert ItemsReadPolicy._address == ItemsWritePolicy._address
 
     def test_class_key_is_distinct_from_write_policy(self) -> None:
         from dynastore.modules.storage import ItemsWritePolicy

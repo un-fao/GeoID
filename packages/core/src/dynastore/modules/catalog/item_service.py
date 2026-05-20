@@ -1619,6 +1619,26 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             if isinstance(wp, ItemsWritePolicy) and isinstance(wp.schema, dict) and wp.schema:
                 policy_schema = wp.schema
 
+        if policy_schema is None and configs is not None:
+            # Derive the wire schema from items_schema (the SSOT). When the
+            # collection declares no fields (blob), the sidecar aggregation
+            # remains the sole source.
+            from dynastore.modules.storage.driver_config import ItemsSchema
+            from dynastore.modules.storage.schema_derive import derive_wire_schema
+
+            try:
+                its = await configs.get_config(
+                    ItemsSchema,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+            except Exception:
+                its = None
+            if isinstance(its, ItemsSchema):
+                policy_schema = derive_wire_schema(
+                    its.fields, strict=its.strict_unknown_fields
+                )
+
         if policy_schema is None:
             return sidecar_schema
 

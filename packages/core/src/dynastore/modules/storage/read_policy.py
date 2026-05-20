@@ -30,6 +30,7 @@ read-policy seeds and unblocks admin-UI work in parallel.
 Collection-scoped only (see [[feedback_items_policies_collection_scoped_only]]).
 """
 
+import logging
 from typing import ClassVar, List, Optional, Tuple
 
 from pydantic import Field
@@ -37,6 +38,8 @@ from pydantic import Field
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.modules.storage.computed_fields import FeatureType
+
+_logger = logging.getLogger(__name__)
 
 
 class ItemsReadPolicy(PluginConfig):
@@ -62,12 +65,16 @@ class ItemsReadPolicy(PluginConfig):
     auto-memory feedback rule on collection-scoped-only).
     """
 
+    # Grouped with ItemsWritePolicy under ``items.policy`` — the composer keys
+    # each leaf by ``class_key``, so this nests as ``items.policy.items_read_policy``
+    # alongside ``items.policy.items_write_policy``. Storage/lookup is by class_key,
+    # independent of this address.
     _address: ClassVar[Tuple[str, ...]] = (
         "platform",
         "catalog",
         "collection",
         "items",
-        "read_policy",
+        "policy",
     )
     _visibility: ClassVar[Optional[str]] = "collection"
 
@@ -88,6 +95,69 @@ class ItemsReadPolicy(PluginConfig):
             "no transformation beyond the driver's native read shape."
         ),
     )
+
+
+async def _validate_read_policy(
+    config: PluginConfig,
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+    db_resource: Optional[object],
+) -> None:
+    """Reject ``feature_type.expose`` names the collection can't produce.
+
+    Each ``expose`` entry must resolve to a ``ComputedField.resolved_name``
+    from ``ItemsWritePolicy.compute`` or a declared ``ItemsSchema.fields``
+    key at the same scope. Fail-fast at config-save so a typo never silently
+    drops an expected output property. Skipped when the sibling configs are
+    not yet present.
+    """
+    if not isinstance(config, ItemsReadPolicy):
+        return
+    expose = list(config.feature_type.expose or [])
+    if not expose or not (catalog_id and collection_id):
+        return
+
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.driver_config import (
+            ItemsSchema,
+            ItemsWritePolicy,
+        )
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
+            return
+
+        wp = await configs.get_config(
+            ItemsWritePolicy, catalog_id=catalog_id, collection_id=collection_id
+        )
+        computed = {cf.resolved_name for cf in getattr(wp, "compute", []) or []}
+        schema = await configs.get_config(
+            ItemsSchema, catalog_id=catalog_id, collection_id=collection_id
+        )
+        declared = set(getattr(schema, "fields", {}) or {})
+        allowed = computed | declared
+        unknown = [e for e in expose if e not in allowed]
+        if unknown:
+            raise ValueError(
+                "ItemsReadPolicy.feature_type.expose references field(s) not produced "
+                f"by ItemsWritePolicy.compute nor declared in ItemsSchema.fields for "
+                f"{catalog_id}/{collection_id}: {sorted(unknown)}. "
+                f"Computed: {sorted(computed)}; declared: {sorted(declared)}."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        _logger.debug(
+            "read_policy expose validation skipped for %s/%s: %s",
+            catalog_id,
+            collection_id,
+            exc,
+        )
+
+
+ItemsReadPolicy.register_validate_handler(_validate_read_policy)
 
 
 __all__ = ["ItemsReadPolicy"]

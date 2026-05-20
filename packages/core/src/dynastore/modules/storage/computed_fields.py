@@ -303,20 +303,28 @@ class IdentityRule(BaseModel):
 class FeatureType(BaseModel):
     """Declarative wire-shape contract for the read path.
 
-    Used by ``ItemsReadPolicy``. ``schema_ref`` points at a JSON Schema
-    source — by default the policy's own write-time ``schema`` is reused
-    as the response shape. ``expose`` enumerates field names from
-    ``ItemsWritePolicy.compute`` (or properties) that should be surfaced
-    in responses. ``failure_mode`` controls behaviour when an output
-    transformer raises. ``external_id_as_feature_id`` controls whether
-    a row's ``external_id`` (stored by the attributes sidecar) overrides
-    the default ``feature.id`` (``geoid``) on the outgoing feature; this
-    is purely a wire-shape decision (the storage column is unaffected).
+    Used by ``ItemsReadPolicy``. ``schema_ref`` selects the JSON Schema
+    source for the produced feature:
+
+    - ``"items_write_policy.schema"`` (default) — the derived wire schema
+      (itself derived from ``items_schema``) is the response shape.
+    - ``None`` — derive the output ``properties`` directly from
+      ``items_schema`` plus the ``expose`` computed fields, ignoring the
+      wire-validation schema.
+
+    ``expose`` enumerates ``ComputedField.resolved_name`` values from
+    ``ItemsWritePolicy.compute`` that should be surfaced as additional
+    output properties. ``failure_mode`` governs read-failure behaviour:
+    ``best_effort`` (default) degrades to a bare feature with the missing
+    enriched fields silently absent; ``strict`` raises.
+    ``external_id_as_feature_id`` controls whether a row's ``external_id``
+    (stored by the attributes sidecar) overrides the default
+    ``feature.id`` (``geoid``); purely a wire-shape decision.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_ref: str = "items_write_policy.schema"
+    schema_ref: Optional[str] = "items_write_policy.schema"
     expose: List[str] = Field(default_factory=list)
     failure_mode: Literal["strict", "best_effort"] = "best_effort"
     external_id_as_feature_id: bool = True
