@@ -13,7 +13,7 @@ Used by export tasks, WFS service, and other components that need to stream feat
 import logging
 from typing import AsyncIterator, Dict, Any, Optional, List, Set
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import literal_column
 from sqlalchemy.sql import column as sql_column
 
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
@@ -162,10 +162,13 @@ async def stream_features(
         # Add common aliases
         valid_props.add("geometry")
 
-        # Build mapping for parser
+        # Build mapping for parser.
+        # ``literal_column`` (not ``text``) so pygeofilter's ``to_filter`` can
+        # build real bound-parameter comparisons; a ``TextClause`` has no
+        # comparison operators and silently collapses every predicate to 1=0.
         field_mapping = {}
         for name, definition in field_defs.items():
-            field_mapping[name] = text(definition.sql_expression)
+            field_mapping[name] = literal_column(definition.sql_expression)
 
         # Parse
         try:
