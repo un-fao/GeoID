@@ -9,6 +9,16 @@ exists in the OGC Processes registry but the asset router returns
 Delegates to ``processes_module.execute_process`` so the standard OGC pipeline
 (input validation, mode selection, ExecutionEngine routing) is reused — no
 duplicate dispatch code here.
+
+GDAL itself is **not** required in the service that hosts this process. The
+catalog API only *dispatches* the work; a GDAL-equipped backend executes it:
+
+* the deployed ``dynastore-gdal-job`` Cloud Run Job (via ``GcpJobRunner``), or
+* an in-process GDAL worker (via ``BackgroundRunner``, when ``osgeo`` is
+  installed in that service).
+
+Applicability and availability are therefore decided by *runner* presence, not
+by ``GDAL_AVAILABLE`` in the local process.
 """
 from __future__ import annotations
 
@@ -27,13 +37,36 @@ from dynastore.modules.catalog.asset_service import Asset, AssetTypeEnum
 logger = logging.getLogger(__name__)
 
 
+def gdal_backend_available() -> bool:
+    """True when some runner can execute the ``gdal`` task.
+
+    Covers both delivery paths without requiring GDAL in *this* process:
+
+    * ``GcpJobRunner`` — advertises ``gdal`` when the ``dynastore-gdal-job``
+      Cloud Run Job is configured in the job map.
+    * ``BackgroundRunner`` — advertises ``gdal`` when the ``GdalInfoTask`` is
+      loaded (i.e. ``osgeo`` is installed in this service).
+
+    Re-uses ``ExecutionEngine.get_runners_for`` so the availability check and the
+    actual ``execute()`` dispatch resolve runners through identical logic.
+    """
+    from dynastore.modules.tasks.execution import execution_engine
+    from dynastore.modules.tasks.models import TaskExecutionMode
+
+    runners = execution_engine.get_runners_for(
+        "gdal", TaskExecutionMode.ASYNCHRONOUS
+    )
+    return bool(runners)
+
+
 class GdalAssetProcess:
     """Asset-scoped invocation surface for the GDAL info task.
 
-    Applicable to RASTER and VECTORIAL assets when GDAL is available in the
-    runtime. The execute path delegates to the OGC Processes layer so a single
-    canonical execution code path runs the GdalInfoTask — both via this asset
-    surface and via direct OGC ``/processes/gdal/execution`` calls.
+    Applicable to RASTER and VECTORIAL assets whenever a GDAL execution backend
+    is reachable (Cloud Run Job or in-process worker). The execute path delegates
+    to the OGC Processes layer so a single canonical execution code path runs the
+    GdalInfoTask — both via this asset surface and via direct OGC
+    ``/processes/gdal/execution`` calls.
     """
 
     process_id: str = "gdal"
@@ -45,20 +78,24 @@ class GdalAssetProcess:
     )
 
     async def describe(self, asset: Asset) -> AssetProcessDescriptor:
-        from dynastore.modules.gdal import service as gdal_module
-
-        applicable = (
-            gdal_module.GDAL_AVAILABLE
-            and asset.asset_type in (AssetTypeEnum.RASTER, AssetTypeEnum.VECTORIAL)
+        asset_type_ok = asset.asset_type in (
+            AssetTypeEnum.RASTER,
+            AssetTypeEnum.VECTORIAL,
         )
-        if not gdal_module.GDAL_AVAILABLE:
-            reason = "GDAL/OGR runtime not available in this service."
-        elif not applicable:
+        if not asset_type_ok:
+            applicable = False
             reason = (
                 f"GDAL info applies only to RASTER/VECTORIAL assets; "
                 f"this asset is {asset.asset_type.value}."
             )
+        elif not gdal_backend_available():
+            applicable = False
+            reason = (
+                "No GDAL execution backend available: neither an in-process "
+                "GDAL worker nor a deployed GDAL Cloud Run Job is registered."
+            )
         else:
+            applicable = True
             reason = None
         return AssetProcessDescriptor(
             process_id=self.process_id,
@@ -81,13 +118,6 @@ class GdalAssetProcess:
     async def execute(
         self, asset: Asset, params: Dict[str, Any]
     ) -> AssetProcessOutput:
-        from dynastore.modules.gdal import service as gdal_module
-
-        if not gdal_module.GDAL_AVAILABLE:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="GDAL/OGR runtime not available in this service.",
-            )
         if asset.asset_type not in (AssetTypeEnum.RASTER, AssetTypeEnum.VECTORIAL):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -96,11 +126,12 @@ class GdalAssetProcess:
                 ),
             )
 
-        # Delegate to the OGC Processes layer. ExecutionEngine picks the right
-        # runner (in-process BackgroundRunner for sync, GcpJobRunner for the
-        # Cloud Run dynastore-gdal-job). The GdalInfoTask itself uses the
-        # AssetTasksSPI to inject the asset metadata into inputs, so we only
-        # need to supply caller-provided extras here.
+        # No local GDAL guard: this service dispatches; a GDAL-equipped backend
+        # executes. ExecutionEngine picks the right runner — GcpJobRunner spawns
+        # the deployed dynastore-gdal-job Cloud Run Job, or BackgroundRunner runs
+        # the GdalInfoTask in-process where osgeo is installed. The GdalInfoTask
+        # uses the AssetTasksSPI to inject asset metadata into inputs, so we only
+        # supply caller-provided extras plus the asset locators here.
         from dynastore.modules.processes import processes_module
         from dynastore.modules.processes.models import (
             ExecuteRequest,
@@ -128,14 +159,12 @@ class GdalAssetProcess:
         )
 
         try:
-            # ASYNC_EXECUTE so the dispatcher routes to GcpJobRunner →
-            # spawns the deployed dynastore-gdal-job Cloud Run Job (which has
-            # GDAL/OGR installed). SYNC_EXECUTE would route to BackgroundRunner
-            # in-process; the catalog API service does NOT carry the
-            # `module_gdal` SCOPE (osgeo only ships in worker_task_gdal), so
-            # in-process execution returns 503 "GDAL/OGR runtime not available".
-            # Confirmed against review env image :857 — POST returned 503 even
-            # though the gdal Cloud Run Job was deployed and capable.
+            # ASYNC_EXECUTE so the dispatcher routes to a backend runner rather
+            # than attempting in-process execution: GcpJobRunner → the deployed
+            # dynastore-gdal-job Cloud Run Job (which has GDAL/OGR installed), or
+            # BackgroundRunner in services that ship osgeo. The catalog API
+            # service carries neither GDAL nor the gdal task, which is fine — it
+            # only needs a capable runner registered, not GDAL itself.
             result = await processes_module.execute_process(
                 process_id="gdal",
                 execution_request=execution_request,
@@ -144,6 +173,26 @@ class GdalAssetProcess:
                 catalog_id=asset.catalog_id,
                 collection_id=asset.collection_id,
             )
+        except NotImplementedError as exc:
+            # ExecutionEngine.execute raises this when no runner can handle the
+            # 'gdal' task in the requested mode — i.e. neither a GDAL Cloud Run
+            # Job nor an in-process GDAL worker is deployed anywhere. This is a
+            # capability/deployment gap, distinct from a per-request error.
+            logger.warning(
+                "GdalAssetProcess.execute: no GDAL execution backend available "
+                "for asset=%s/%s/%s: %s",
+                asset.catalog_id,
+                asset.collection_id,
+                asset.asset_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "No GDAL execution backend available: deploy the GDAL "
+                    "Cloud Run Job or a GDAL-equipped worker to run this process."
+                ),
+            ) from exc
         except Exception as exc:
             logger.exception(
                 "GdalAssetProcess.execute: dispatch failed for "
