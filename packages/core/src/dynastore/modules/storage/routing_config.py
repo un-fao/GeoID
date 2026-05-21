@@ -886,7 +886,7 @@ class CatalogRoutingConfig(_RoutingConfigBase):
     Parallels :class:`ItemsRoutingConfig` but scoped to catalog-tier
     drivers (``CatalogStore`` implementations).  Introduced by the
     role-based driver refactor so catalogs follow the same Primary /
-    Transformer / Indexer / Backup pattern as collections.
+    Transformer / Indexer pattern as collections.
 
     The registered ``CatalogStore`` is ``CatalogPostgresqlDriver`` — a
     composition wrapper that fans CRUD across the ``catalog_core`` and
