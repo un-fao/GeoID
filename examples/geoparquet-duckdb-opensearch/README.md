@@ -400,7 +400,7 @@ print(f"\nImported {imported}/{len(rows)} features")
 Run it:
 
 ```bash
-cd /Users/ccancellieri/work/code/geoid
+cd /path/to/geoid
 python3 examples/geoparquet-duckdb-opensearch/import_countries.py
 ```
 
