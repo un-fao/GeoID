@@ -852,6 +852,25 @@ class CatalogService(CatalogsProtocol):
                     db_resource=conn,
                 )
 
+            # #1079 (c): freeze the catalog's inherited config defaults now that
+            # the registry row + tenant config tables exist. Captures the
+            # resolved platform/code defaults for stable value-configs into a
+            # schema-id-tagged blob so a later default change cannot silently
+            # re-resolve into this catalog's collections. Best-effort — a
+            # snapshot failure must not abort catalog creation.
+            try:
+                _cfg = self.configs
+                if _cfg is not None:
+                    await _cfg.snapshot_catalog_defaults(
+                        catalog_model.id, ctx=DriverContext(db_resource=conn)
+                    )
+            except Exception:
+                logger.warning(
+                    "catalog %s: defaults-snapshot capture failed",
+                    catalog_model.id,
+                    exc_info=True,
+                )
+
             # Lifecycle Phase 2: EVENT (Now after schema is ready AND record exists)
             await emit_event(
                 CatalogEventType.CATALOG_CREATION,
