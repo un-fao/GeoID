@@ -96,13 +96,15 @@ async def test_patch_null_deletes_config():
 @pytest.mark.asyncio
 async def test_patch_unknown_plugin_raises_value_error():
     """PATCH with an unknown body key + no discriminator raises a clear
-    ValueError before any write fires.
+    "Unknown config class" ValueError before any write fires.
 
-    Post-Cycle F.4d.2 the composer treats unknown body keys as possible
-    multi-instance ref names: a plain ``{"NonExistentConfig":
-    {"enabled": False}}`` body fails because no ``class_key`` (or
-    ``driver_class``) is provided to resolve the dispatch class.  The
-    error message points operators at the discriminator field.
+    A body with no ``class_key``/``driver_class`` discriminator is *not* a
+    multi-instance ref-create attempt, so an unregistered key is a plain
+    unknown single-instance config class (e.g. a typo).  The composer must
+    surface it as "Unknown config class" (mapped to a 404 at the route
+    layer, ``problem_details.value_error``) rather than implying the caller
+    meant to create a ref.  The offending key appears in the message so
+    operators can spot the typo.  Guards the #1102 (item 2) regression.
     """
     from dynastore.extensions.configs.config_api_service import ConfigApiService
 
@@ -110,15 +112,47 @@ async def test_patch_unknown_plugin_raises_value_error():
     config_svc = _make_config_service(stored)
     api = ConfigApiService(config_service=config_svc)
 
-    with pytest.raises(ValueError, match=r"must include 'class_key'"):
+    with pytest.raises(ValueError, match=r"Unknown config class") as exc:
         await api.patch_config(
             catalog_id=None,
-            body={"NonExistentConfig": {"enabled": False}},
+            body={"no_such_plugin_config": {"enabled": False}},
         )
+    # Offending key is surfaced (the integration assertion in
+    # test_exposure_control checks the same).
+    assert "no_such_plugin_config" in str(exc.value)
 
     # No writes should have occurred
     config_svc.set_config.assert_not_called()
     config_svc.delete_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_ref_create_with_bogus_discriminator_still_errors():
+    """A body that *does* carry a ``class_key``/``driver_class`` discriminator
+    is a genuine multi-instance ref-create attempt — it must keep the
+    distinct "is not a registered config class" error (not the unknown-class
+    path), preserving the ref-create contract alongside the #1102 fix.
+    """
+    from dynastore.extensions.configs.config_api_service import ConfigApiService
+
+    stored: Dict = {}
+    config_svc = _make_config_service(stored)
+    api = ConfigApiService(config_service=config_svc)
+
+    with pytest.raises(
+        ValueError, match=r"is not a registered config class"
+    ):
+        await api.patch_config(
+            catalog_id=None,
+            body={
+                "my_ref": {
+                    "class_key": "NonExistentConfig",
+                    "enabled": False,
+                },
+            },
+        )
+
+    config_svc.set_config.assert_not_called()
 
 
 @pytest.mark.asyncio
