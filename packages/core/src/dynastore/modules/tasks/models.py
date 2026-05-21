@@ -1,4 +1,3 @@
-# /Users/ccancellieri/work/code/dynastore/src/dynastore/modules/tasks/models.py
 #    Copyright 2025 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");

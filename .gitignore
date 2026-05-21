@@ -101,6 +101,8 @@ pytype
 # Re-ignore build artifacts under the logs package: the broad `!.../logs/**`
 # above otherwise un-ignores them and they leak into the working tree.
 packages/extensions/logs/**/*.egg-info/
+packages/extensions/logs/**/__pycache__/
+packages/extensions/logs/**/*.pyc
 packages/extensions/logs/src/dynastore/extensions/logs/_scm_version.py
 *.log
 test_output*
