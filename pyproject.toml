@@ -80,7 +80,7 @@ dynastore-ext-assets = { workspace = true }
 module_storage = []
 module_storage_postgresql = []
 module_storage_duckdb = ["duckdb>=1.0.0"]
-module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.9.0", "pyarrow>=14.0.0"]
+module_storage_iceberg = ["pyiceberg[sql-postgres]>=0.11.1", "pyarrow>=22"]
 module_storage_elasticsearch = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_private = ["dynastore[module_elasticsearch]"]
 module_storage_elasticsearch_assets = ["dynastore[module_elasticsearch]"]
@@ -233,8 +233,8 @@ geospatial_core = [
 geospatial_io = [
     "dynastore[geospatial_core]",
     "lxml>=6.1.0,<7",
-    "pyarrow<19,>=16",
-    "numpy==1.26.4",
+    "pyarrow>=22",
+    "numpy>=2,<3",
     "geopandas>=1.0",
     "pyogrio>=0.8",
 ]
