@@ -30,6 +30,41 @@ def test_list_routing_presets_returns_registered_names():
     assert {"public_catalog", "private_catalog"}.issubset(names)
     for entry in body["presets"]:
         assert entry["description"]
+        # PR-2: every preset advertises its tier + catalog_scopable flag.
+        assert entry["tier"]
+        assert "catalog_scopable" in entry
+
+
+def test_list_routing_presets_includes_multitier_presets():
+    """The shipped platform + collection presets surface with their tiers."""
+    import dynastore.extensions.geoid  # noqa: F401 — register geoid preset
+
+    client = TestClient(_app())
+    body = client.get("/admin/presets").json()
+    by_name = {p["name"]: p for p in body["presets"]}
+    assert by_name["defaults_postgres"]["tier"] == "platform"
+    assert by_name["private_collection"]["tier"] == "collection"
+    assert by_name["public_catalog"]["tier"] == "catalog"
+
+
+def test_list_routing_presets_filters_by_tier():
+    client = TestClient(_app())
+    resp = client.get("/admin/presets", params={"tier": "catalog"})
+    assert resp.status_code == 200
+    tiers = {p["tier"] for p in resp.json()["presets"]}
+    assert tiers == {"catalog"}
+
+    resp = client.get("/admin/presets", params={"tier": "platform"})
+    names = {p["name"] for p in resp.json()["presets"]}
+    assert "defaults_postgres" in names
+    assert "public_catalog" not in names
+
+
+def test_list_routing_presets_unknown_tier_returns_400():
+    client = TestClient(_app())
+    resp = client.get("/admin/presets", params={"tier": "bogus"})
+    assert resp.status_code == 400
+    assert "bogus" in resp.json()["detail"]
 
 
 @pytest.fixture
@@ -38,6 +73,7 @@ def _patched_protocols(monkeypatch):
     ``ConfigsProtocol`` (so set_config records calls)."""
     catalogs_mock = MagicMock()
     catalogs_mock.get_catalog_model = AsyncMock(return_value=MagicMock())
+    catalogs_mock.collections.get_collection = AsyncMock(return_value=MagicMock())
 
     configs_mock = MagicMock()
     configs_mock.set_config = AsyncMock(return_value=None)
@@ -166,6 +202,7 @@ def _patched_protocols_with_persistence(monkeypatch):
     DELETE can drive the byte-for-byte equality check end-to-end."""
     catalogs_mock = MagicMock()
     catalogs_mock.get_catalog_model = AsyncMock(return_value=MagicMock())
+    catalogs_mock.collections.get_collection = AsyncMock(return_value=MagicMock())
 
     store: dict[type, dict] = {}
 
@@ -334,3 +371,157 @@ def test_delete_preset_skips_missing_slots(_patched_protocols_with_persistence):
     assert del_resp.json()["deleted"] == ["items_template", "collection_template"]
     assert ItemsRoutingConfig not in _patched_protocols_with_persistence._store
     assert CollectionRoutingConfig not in _patched_protocols_with_persistence._store
+
+
+# ---------------------------------------------------------------------------
+# Platform tier — POST/DELETE /admin/presets/{name}  (#972)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_platform_preset_walks_bundle_without_scope(_patched_protocols):
+    """A PLATFORM-tier preset applies at the unscoped platform level:
+    no catalog_id / collection_id reaches ``set_config``."""
+    client = TestClient(_app())
+    resp = client.post("/admin/presets/defaults_postgres")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["preset"] == "defaults_postgres"
+    assert body["applied"] == [
+        "catalog_routing",
+        "collection_template",
+        "items_template",
+    ]
+    # No scope keys are echoed back and none reach set_config.
+    assert "catalog_id" not in body
+    assert "collection_id" not in body
+    for call in _patched_protocols.set_config.await_args_list:
+        assert "catalog_id" not in call.kwargs
+        assert "collection_id" not in call.kwargs
+
+
+def test_apply_catalog_preset_at_platform_url_returns_409(_patched_protocols):
+    """A CATALOG-tier preset applied at the platform URL family is a
+    scope/tier mismatch → 409, not 404 (the preset exists)."""
+    client = TestClient(_app())
+    resp = client.post("/admin/presets/public_catalog")
+    assert resp.status_code == 409, resp.text
+    assert "platform" in resp.json()["detail"]
+    _patched_protocols.set_config.assert_not_awaited()
+
+
+def test_apply_unknown_platform_preset_returns_404(_patched_protocols):
+    client = TestClient(_app())
+    resp = client.post("/admin/presets/does_not_exist")
+    assert resp.status_code == 404
+    assert "does_not_exist" in resp.json()["detail"]
+
+
+def test_delete_platform_preset_round_trip(_patched_protocols_with_persistence):
+    client = TestClient(_app())
+    apply_resp = client.post("/admin/presets/defaults_postgres")
+    assert apply_resp.status_code == 200, apply_resp.text
+
+    del_resp = client.delete("/admin/presets/defaults_postgres")
+    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.json()["deleted"] == [
+        "items_template",
+        "collection_template",
+        "catalog_routing",
+    ]
+    assert _patched_protocols_with_persistence._store == {}
+
+
+# ---------------------------------------------------------------------------
+# Collection tier — POST/DELETE /admin/catalogs/{c}/collections/{col}/...
+# ---------------------------------------------------------------------------
+
+
+def test_apply_collection_preset_scopes_to_catalog_and_collection(_patched_protocols):
+    client = TestClient(_app())
+    resp = client.post(
+        "/admin/catalogs/cat-a/collections/col-1/presets/private_collection"
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["preset"] == "private_collection"
+    assert body["catalog_id"] == "cat-a"
+    assert body["collection_id"] == "col-1"
+    assert body["applied"] == ["items_template"]
+
+    # The set_config call carries both scope keys.
+    call = _patched_protocols.set_config.await_args_list[0]
+    assert call.args[0] is ItemsRoutingConfig
+    assert call.kwargs["catalog_id"] == "cat-a"
+    assert call.kwargs["collection_id"] == "col-1"
+
+
+def test_apply_catalog_preset_at_collection_url_returns_409(_patched_protocols):
+    """A CATALOG-tier preset applied at the collection URL family → 409."""
+    client = TestClient(_app())
+    resp = client.post(
+        "/admin/catalogs/cat-a/collections/col-1/presets/public_catalog"
+    )
+    assert resp.status_code == 409, resp.text
+    assert "collection" in resp.json()["detail"]
+    _patched_protocols.set_config.assert_not_awaited()
+
+
+def test_apply_collection_preset_at_catalog_url_returns_409(_patched_protocols):
+    """A COLLECTION-tier preset applied at the catalog URL family → 409."""
+    client = TestClient(_app())
+    resp = client.post("/admin/catalogs/cat-a/presets/private_collection")
+    assert resp.status_code == 409, resp.text
+    assert "catalog" in resp.json()["detail"]
+    _patched_protocols.set_config.assert_not_awaited()
+
+
+def test_apply_collection_preset_unknown_collection_returns_404(monkeypatch):
+    """Unknown collection segment → 404 before any config write."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    catalogs_mock = MagicMock()
+    catalogs_mock.get_catalog_model = AsyncMock(return_value=MagicMock())
+    catalogs_mock.collections.get_collection = AsyncMock(return_value=None)
+    configs_mock = MagicMock()
+    configs_mock.set_config = AsyncMock(return_value=None)
+
+    def _fake_get_protocol(proto):
+        from dynastore.models.protocols.catalogs import CatalogsProtocol
+        from dynastore.models.protocols.configs import ConfigsProtocol
+
+        if proto is CatalogsProtocol:
+            return catalogs_mock
+        if proto is ConfigsProtocol:
+            return configs_mock
+        return None
+
+    monkeypatch.setattr(
+        "dynastore.extensions.admin.admin_service.get_protocol",
+        _fake_get_protocol,
+    )
+
+    client = TestClient(_app())
+    resp = client.post(
+        "/admin/catalogs/cat-a/collections/ghost/presets/private_collection"
+    )
+    assert resp.status_code == 404
+    assert "ghost" in resp.json()["detail"]
+    configs_mock.set_config.assert_not_awaited()
+
+
+def test_delete_collection_preset_round_trip(_patched_protocols_with_persistence):
+    client = TestClient(_app())
+    apply_resp = client.post(
+        "/admin/catalogs/cat-a/collections/col-1/presets/private_collection"
+    )
+    assert apply_resp.status_code == 200, apply_resp.text
+
+    del_resp = client.delete(
+        "/admin/catalogs/cat-a/collections/col-1/presets/private_collection"
+    )
+    assert del_resp.status_code == 200, del_resp.text
+    body = del_resp.json()
+    assert body["deleted"] == ["items_template"]
+    assert body["catalog_id"] == "cat-a"
+    assert body["collection_id"] == "col-1"
+    assert _patched_protocols_with_persistence._store == {}

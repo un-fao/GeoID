@@ -108,39 +108,58 @@ GCS bucket) or falls back to local temp.
 File-based analytical reads via DuckDB's `read_parquet` / `read_csv_auto` etc. Optionally writes
 to SQLite when `write_path` is configured.
 
-## Routing Presets (#847)
+## Routing Presets (#847, #972)
 
 Named, cascade-consistent bundles of routing configs + audience opt-ins that
 operators apply with a single admin call. A preset is a thin factory that
-emits a `PresetBundle` for a catalog id; the admin endpoint walks the bundle
-through the standard `ConfigsProtocol.set_config` lifecycle (no validation
-bypass).
+emits a `PresetBundle`; the admin endpoint walks the bundle through the
+standard `ConfigsProtocol.set_config` lifecycle (no validation bypass).
+
+The registry is a single flat namespace. Each preset declares a `tier`
+(`PresetTier`) that decides which admin URL family it is reachable from; the
+URL encodes the apply scope. Items/assets-tier presets can attach at the
+collection family always, and at the catalog family when
+`catalog_scopable=True`.
 
 Built-in presets (in `presets/`):
 
-| Name | Composition |
-|------|-------------|
-| `public_catalog` | PG-first storage + public ES indexers on catalog/collection/items. No audience opt-ins; anonymous traffic is gated by the platform's default `public_access` policy. |
-| `private_catalog` | PG-only catalog/collection envelopes + per-tenant private ES indexer on the items tier. No audience opt-ins; the `private_deny_{catalog_id}` policy blocks anonymous reads on item URL patterns. |
-| `geoid` (extension) | Composes `private_catalog` and adds `CatalogLookupAudience.is_public=True` + `CollectionWriteAudience.allow_anonymous_create=True` — flagship FAO GeoID profile: private storage, anonymous lookup + intake. Registered by `dynastore.extensions.geoid` on import. |
+| Name | Tier | Composition |
+|------|------|-------------|
+| `public_catalog` | catalog | PG-first storage + public ES indexers on catalog/collection/items. No audience opt-ins; anonymous traffic is gated by the platform's default `public_access` policy. |
+| `private_catalog` | catalog | PG-only catalog/collection envelopes + per-tenant private ES indexer on the items tier. No audience opt-ins; the `private_deny_{catalog_id}` policy blocks anonymous reads on item URL patterns. |
+| `defaults_postgres` | platform | Platform-wide PG-first routing defaults for catalog/collection/items. No indexers, no audience opt-ins — a safe baseline new catalogs inherit before any override. |
+| `private_collection` | collection | Per-collection private items routing override (pins `items_elasticsearch_private_driver` on one collection). |
+| `geoid` (extension) | catalog | Composes `private_catalog` and adds `CatalogLookupAudience.is_public=True` + `CollectionWriteAudience.allow_anonymous_create=True` — flagship FAO GeoID profile: private storage, anonymous lookup + intake. Registered by `dynastore.extensions.geoid` on import. |
 
 Operator API:
 
 ```
-GET    /admin/presets                                       # list registered presets
-POST   /admin/catalogs/{catalog_id}/presets/{name}          # apply preset to a catalog
-DELETE /admin/catalogs/{catalog_id}/presets/{name}          # unapply (#971)
+GET    /admin/presets                                                        # list all presets (name, tier, catalog_scopable)
+GET    /admin/presets?tier=collection                                        # filter by tier
+
+POST   /admin/presets/{name}                                                 # platform tier
+DELETE /admin/presets/{name}
+
+POST   /admin/catalogs/{catalog_id}/presets/{name}                           # catalog tier
+DELETE /admin/catalogs/{catalog_id}/presets/{name}
+
+POST   /admin/catalogs/{catalog_id}/collections/{collection_id}/presets/{name}   # collection tier
+DELETE /admin/catalogs/{catalog_id}/collections/{collection_id}/presets/{name}
 ```
 
-Each `POST` call sets `CatalogRoutingConfig`, the collection + items
-templates, and any audience configs at the catalog tier.
+Each `POST` walks the bundle's entries through `set_config` at the URL-derived
+scope; `DELETE` rolls them back leaf-first and returns **409** if a persisted
+row diverges from the preset bundle. Applying a preset at a URL family that
+does not match its tier returns **409** (the preset exists but is invalid at
+that scope).
 
 Adding a preset: implement the `RoutingPreset` protocol (`name`,
-`description`, `build(catalog_id) -> PresetBundle`) and call
-`register_preset(MyPreset())` from your extension or module bootstrap.
-Core presets live under `presets/` and auto-register on import; extension
-presets register from their package `__init__.py` (see
-`extensions/geoid/presets.py`).
+`description`, `tier`, `catalog_scopable`, `build(**scope) -> PresetBundle`)
+and call `register_preset(MyPreset())` from your extension or module
+bootstrap. `build` receives the scope its tier needs (`()` platform,
+`catalog_id` catalog, `catalog_id` + `collection_id` collection). Core
+presets live under `presets/` and auto-register on import; extension presets
+register from their package `__init__.py` (see `extensions/geoid/presets.py`).
 
 ## Adding a Driver
 

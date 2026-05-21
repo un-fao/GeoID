@@ -135,6 +135,7 @@ class PublicCatalogPreset:
 
     name = "public_catalog"
     tier: ClassVar[PresetTier] = PresetTier.CATALOG
+    catalog_scopable: ClassVar[bool] = False
     description = (
         "PG-first storage + public Elasticsearch indexers across the "
         "catalog, collection, and items tiers. No IAM audience opt-ins; "
@@ -142,7 +143,7 @@ class PublicCatalogPreset:
         "public_access policy. Suitable for fully-public open-data catalogs."
     )
 
-    def build(self, catalog_id: str) -> PresetBundle:  # noqa: ARG002
+    def build(self, catalog_id: str, **_scope: str) -> PresetBundle:  # noqa: ARG002
         return PresetBundle(
             catalog_routing=_public_catalog_routing(),
             collection_template=_public_collection_template(),

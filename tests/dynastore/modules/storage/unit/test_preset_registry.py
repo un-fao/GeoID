@@ -17,6 +17,7 @@ from dynastore.modules.storage.presets import (
 
 class _DummyPreset:
     tier: ClassVar[PresetTier] = PresetTier.CATALOG
+    catalog_scopable: ClassVar[bool] = False
 
     def __init__(self, name: str = "demo-preset") -> None:
         self.name = name
@@ -27,8 +28,8 @@ class _DummyPreset:
 
 
 def test_protocol_runtime_checkable_accepts_dummy():
-    """A class with ``name``, ``description``, ``tier``, ``build()``
-    satisfies the structural ``RoutingPreset`` protocol."""
+    """A class with ``name``, ``description``, ``tier``, ``catalog_scopable``,
+    ``build()`` satisfies the structural ``RoutingPreset`` protocol."""
     assert isinstance(_DummyPreset(), RoutingPreset)
 
 
@@ -58,3 +59,30 @@ def test_list_presets_returns_sorted_names():
     names = list_presets()
     relevant = [n for n in names if n.endswith("-list-preset")]
     assert relevant == sorted(relevant)
+
+
+class _PlatformPreset(_DummyPreset):
+    tier: ClassVar[PresetTier] = PresetTier.PLATFORM
+
+
+def test_list_presets_filters_by_tier():
+    """``list_presets(tier=...)`` returns only presets of that tier; the
+    registry stays a single flat namespace, the filter is read-time."""
+    register_preset(_DummyPreset(name="filter-catalog-preset"))
+    register_preset(_PlatformPreset(name="filter-platform-preset"))
+
+    catalog_names = list_presets(PresetTier.CATALOG)
+    platform_names = list_presets(PresetTier.PLATFORM)
+
+    assert "filter-catalog-preset" in catalog_names
+    assert "filter-catalog-preset" not in platform_names
+    assert "filter-platform-preset" in platform_names
+    assert "filter-platform-preset" not in catalog_names
+
+
+def test_builtin_presets_declare_expected_tiers():
+    """The shipped presets declare the tiers their URL families expect."""
+    assert get_preset("public_catalog").tier == PresetTier.CATALOG
+    assert get_preset("private_catalog").tier == PresetTier.CATALOG
+    assert get_preset("defaults_postgres").tier == PresetTier.PLATFORM
+    assert get_preset("private_collection").tier == PresetTier.COLLECTION

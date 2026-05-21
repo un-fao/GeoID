@@ -20,9 +20,9 @@ presets during module bootstrap by importing ``register_preset``.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from .protocol import RoutingPreset
+from .protocol import PresetTier, RoutingPreset
 
 _REGISTRY: Dict[str, RoutingPreset] = {}
 
@@ -53,6 +53,17 @@ def get_preset(name: str) -> RoutingPreset:
     return _REGISTRY[name]
 
 
-def list_presets() -> List[str]:
-    """Sorted list of registered preset names."""
-    return sorted(_REGISTRY)
+def list_presets(tier: Optional[PresetTier] = None) -> List[str]:
+    """Sorted list of registered preset names.
+
+    When ``tier`` is given, only presets declaring that tier are
+    returned — the registry stays a single flat namespace, the filter is
+    applied at read time.
+    """
+    if tier is None:
+        return sorted(_REGISTRY)
+    return sorted(
+        name
+        for name, preset in _REGISTRY.items()
+        if getattr(preset, "tier", None) == tier
+    )
