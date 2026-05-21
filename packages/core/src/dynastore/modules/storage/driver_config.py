@@ -327,6 +327,16 @@ class ItemsWritePolicy(PluginConfig):
     :attr:`validity_field` (null-object; :attr:`enable_validity` is a derived
     read-only property), :attr:`track_asset_id`.
 
+    Materialisation freeze (#1079): the fields that bake into a collection's
+    stored shape or identity — :attr:`compute`, :attr:`identity`,
+    :attr:`geometries`, :attr:`validity_field` — are ``Immutable``. The
+    materialization-gated enforcer leaves them freely editable until the first
+    collection lands, then freezes them so a catalog-tier default change cannot
+    silently re-resolve into (and diverge) already-materialised collections.
+    The behaviour knobs (:attr:`on_conflict`, :attr:`on_asset_conflict`,
+    :attr:`track_asset_id`) stay ``Mutable`` — they alter future write
+    behaviour without rewriting existing rows.
+
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
 
@@ -418,7 +428,7 @@ class ItemsWritePolicy(PluginConfig):
             "``strict_unknown_fields`` drives ``additionalProperties: false``."
         ),
     )
-    compute: Mutable[List[ComputedField]] = Field(
+    compute: Immutable[List[ComputedField]] = Field(
         default_factory=list,
         description=(
             "Per-row derived values materialised by every capable driver. "
@@ -430,10 +440,15 @@ class ItemsWritePolicy(PluginConfig):
             ":class:`ComputedKind.GEOHASH` entry with a resolution is the "
             "identity-axis spatial-cell rule; distinct from "
             "``GeometriesSidecarConfig.geohash_precision`` which controls the "
-            "stored ``CHAR(N)`` column width (storage layer, not identity)."
+            "stored ``CHAR(N)`` column width (storage layer, not identity). "
+            "Immutable once a collection is materialised (#1079): the derived "
+            "columns and identity axis are baked into existing rows, so "
+            "changing this after data lands would silently diverge the shape "
+            "of already-materialised collections. Tune it before the first "
+            "collection is created."
         ),
     )
-    identity: Mutable[List[IdentityRule]] = Field(
+    identity: Immutable[List[IdentityRule]] = Field(
         default_factory=_default_identity_rules,
         description=(
             "Ordered identity rules. Each rule ANDs every ComputedField in "
@@ -441,7 +456,11 @@ class ItemsWritePolicy(PluginConfig):
             "conjunction matches wins). Per-rule ``on_match`` overrides "
             ":attr:`on_conflict` for that branch. Default is a single rule "
             "matching on EXTERNAL_ID — operators replace the list to express "
-            "geometry-hash dedup, composite identity, etc."
+            "geometry-hash dedup, composite identity, etc. Immutable once a "
+            "collection is materialised (#1079): identity determines how new "
+            "writes dedupe against existing rows, so changing it after data "
+            "lands would apply different identity semantics to old vs new "
+            "rows. Set it before the first collection is created."
         ),
     )
     track_asset_id: Mutable[bool] = Field(
@@ -454,7 +473,7 @@ class ItemsWritePolicy(PluginConfig):
             "produced from a join)."
         ),
     )
-    validity_field: Mutable[Optional[str]] = Field(
+    validity_field: Immutable[Optional[str]] = Field(
         default=None,
         examples=[None, "valid_from", "valid_time"],
         description=(
@@ -469,7 +488,11 @@ class ItemsWritePolicy(PluginConfig):
             "runtime context, not the named field). Required (non-None) for "
             "``NEW_VERSION`` semantics — when ``None``, ``on_conflict=NEW_VERSION`` "
             "falls back to ``UPDATE``. Validity END is either provided in "
-            "``write_context.valid_to`` or computed as ``None`` (open-ended)."
+            "``write_context.valid_to`` or computed as ``None`` (open-ended). "
+            "Immutable once a collection is materialised (#1079): this names a "
+            "physical temporal column, so changing it after the column exists "
+            "would orphan the old column and diverge existing collections. Set "
+            "it before the first collection is created."
         ),
     )
 
@@ -483,7 +506,7 @@ class ItemsWritePolicy(PluginConfig):
         """
         return self.validity_field is not None
 
-    geometries: Mutable[GeometriesWriteBehavior] = Field(
+    geometries: Immutable[GeometriesWriteBehavior] = Field(
         default_factory=GeometriesWriteBehavior,
         description=(
             "Per-row geometry transform and validation behaviour. See "
@@ -491,7 +514,11 @@ class ItemsWritePolicy(PluginConfig):
             "co-located on ``GeometriesSidecarConfig`` next to DDL fields; "
             "moved here so operators tune write behaviour from a single "
             "policy plugin while the sidecar config remains "
-            "storage-shape-only."
+            "storage-shape-only. Immutable once a collection is materialised "
+            "(#1079): SRID / simplification / geometry-hash settings shape the "
+            "stored geometry, so changing them after rows land would diverge "
+            "the geometry of existing collections from the new default. Tune "
+            "it before the first collection is created."
         ),
     )
 
