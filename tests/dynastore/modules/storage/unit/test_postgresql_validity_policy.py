@@ -12,21 +12,21 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Issue #957/#974/#1126 — ``ItemsWritePolicy.validity`` (:class:`ValiditySpec`)
-is the null-object SSOT for the sidecar's validity column.
+"""Issue #957/#974/#1126/#1168 — ``ItemsWritePolicy.validity`` (:class:`ValiditySpec`)
+is the null-object SSOT for temporal validity.
 
-Validity is expressed as a first-class null-object :class:`ValiditySpec` on
-``ItemsWritePolicy.validity``. Its presence IS the toggle: a spec enables the
-validity column, ``None`` disables it. ``ValiditySpec.column`` NAMES the
-``tstzrange`` storage column (a column name, NOT a source path — #1126);
-``start_from`` / ``end_from`` select the validity VALUES. ``enable_validity`` and
-``validity_column`` are derived read-only properties.
+Validity is a driver-abstracted **concept** expressed as a first-class
+null-object :class:`ValiditySpec` on ``ItemsWritePolicy.validity``. Its presence
+IS the toggle: a spec enables validity tracking, ``None`` disables it.
+``start_from`` / ``end_from`` select where the validity VALUES come from. The
+spec carries no physical column name — each driver owns its storage layout
+(#1168). ``enable_validity`` is the derived read-only toggle.
 
-The PG driver overlays ``policy.validity.column`` onto
-``FeatureAttributeSidecarConfig.validity_column`` (and the value sources onto
-``validity_start_from`` / ``validity_end_from``) at ``ensure_storage`` time and
-persists the result, so every read path that rehydrates the collection's driver
-config sees the policy-aligned value. These tests pin the SSOT contract.
+The PG driver supplies its own fixed ``validity`` tstzrange column on
+``FeatureAttributeSidecarConfig.validity_column`` (and overlays the value sources
+onto ``validity_start_from`` / ``validity_end_from``) at ``ensure_storage`` time
+and persists the result, so every read path that rehydrates the collection's
+driver config sees the policy-aligned value. These tests pin the SSOT contract.
 """
 
 from __future__ import annotations
@@ -46,24 +46,24 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
 )
 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
+# The fixed physical column the PG driver owns for temporal validity (#1168).
+_PG_VALIDITY_COLUMN = "validity"
+
 
 class TestPolicyNullObject:
-    """``ItemsWritePolicy.validity`` is the null-object SSOT;
-    ``enable_validity`` / ``validity_column`` are derived and not independently
-    settable."""
+    """``ItemsWritePolicy.validity`` is the null-object SSOT; ``enable_validity``
+    is derived and not independently settable. The policy never carries a
+    physical column name (#1168)."""
 
     def test_default_validity_is_none(self):
         policy = ItemsWritePolicy()
         assert policy.validity is None
         assert policy.enable_validity is False
-        assert policy.validity_column is None
 
     def test_set_validity_enables_validity(self):
-        policy = ItemsWritePolicy(validity=ValiditySpec(column="reference_year"))
+        policy = ItemsWritePolicy(validity=ValiditySpec())
         assert policy.validity is not None
-        assert policy.validity.column == "reference_year"
         assert policy.enable_validity is True
-        assert policy.validity_column == "reference_year"
 
     def test_enable_validity_is_not_a_settable_field(self):
         """The bool is a derived property — authoring it is rejected so it can
@@ -71,26 +71,24 @@ class TestPolicyNullObject:
         with pytest.raises(Exception):
             ItemsWritePolicy(enable_validity=True)
 
-    def test_validity_column_is_not_a_settable_field(self):
-        """``validity_column`` is a derived property over ``validity.column``;
-        authoring it directly is rejected."""
+    def test_validity_column_is_not_a_policy_field(self):
+        """The policy exposes no physical column name (#1168); authoring
+        ``validity_column`` on the policy is rejected by ``extra=forbid``."""
         with pytest.raises(Exception):
-            ItemsWritePolicy(validity_column="x")
+            ItemsWritePolicy(validity_column="x")  # type: ignore[call-arg]
 
 
 class TestValiditySpec:
     """The :class:`ValiditySpec` value object — validation and defaults."""
 
     def test_defaults(self):
-        spec = ValiditySpec(column="valid_from")
-        assert spec.column == "valid_from"
+        spec = ValiditySpec()
         assert spec.start_from == "context"
         assert spec.end_from is None
         assert spec.close_on_new_version is True
 
     def test_explicit_paths(self):
         spec = ValiditySpec(
-            column="validity",
             start_from="properties.start_date",
             end_from="properties.end_date",
             close_on_new_version=False,
@@ -100,47 +98,41 @@ class TestValiditySpec:
         assert spec.close_on_new_version is False
 
     def test_frozen(self):
-        spec = ValiditySpec(column="valid_from")
+        spec = ValiditySpec()
         with pytest.raises(Exception):
-            spec.column = "other"  # type: ignore[misc]
+            spec.start_from = "other"  # type: ignore[misc]
 
     def test_extra_forbidden(self):
         with pytest.raises(Exception):
-            ValiditySpec(column="valid_from", bogus=1)  # type: ignore[call-arg]
+            ValiditySpec(bogus=1)  # type: ignore[call-arg]
 
-    def test_column_required(self):
+    def test_column_is_no_longer_accepted(self):
+        """#1168 — the physical column name is no longer part of the contract;
+        passing ``column`` is rejected by ``extra=forbid``."""
         with pytest.raises(Exception):
-            ValiditySpec()  # type: ignore[call-arg]
+            ValiditySpec(column="valid_from")  # type: ignore[call-arg]
 
-    def test_column_must_be_valid_identifier(self):
-        # Empty / invalid SQL identifier rejected at validation time.
-        with pytest.raises(Exception):
-            ValiditySpec(column="")
-        with pytest.raises(Exception):
-            ValiditySpec(column="bad name!")
-
-    def test_column_is_lowercased_by_identifier_validator(self):
-        # validate_sql_identifier lowercases — proves the helper is wired in.
-        spec = ValiditySpec(column="ValidFrom")
-        assert spec.column == "validfrom"
+    def test_presence_is_the_toggle(self):
+        """A bare ``ValiditySpec()`` is valid — presence enables validity."""
+        spec = ValiditySpec()
+        assert spec.start_from == "context"
 
 
 class TestSidecarNullObject:
-    """The sidecar mirrors the policy via the null-object ``validity_column``.
-    Its default matches the policy default so a collection that sets neither
-    side has validity OFF everywhere."""
+    """The sidecar carries the PG driver's own ``validity_column`` storage-shape
+    field. Its default (None) means validity OFF; the driver sets the fixed
+    ``validity`` column when the policy enables it."""
 
-    def test_sidecar_default_validity_column_matches_policy(self):
+    def test_sidecar_default_validity_is_off(self):
         sc = FeatureAttributeSidecarConfig()
         policy = ItemsWritePolicy()
         assert sc.validity_column is None
         assert sc.enable_validity is False
-        assert policy.validity_column is None
-        assert sc.validity_column == policy.validity_column
+        assert policy.validity is None
 
     def test_enable_validity_property_derives_from_column(self):
         sc_off = FeatureAttributeSidecarConfig(validity_column=None)
-        sc_on = FeatureAttributeSidecarConfig(validity_column="valid_from")
+        sc_on = FeatureAttributeSidecarConfig(validity_column=_PG_VALIDITY_COLUMN)
         assert sc_off.enable_validity is False
         assert sc_off.has_validity is False
         assert sc_on.enable_validity is True
@@ -156,8 +148,8 @@ class TestSidecarNullObject:
 
     def test_sidecar_factory_propagates_config_value(self):
         """Sidecar ``has_validity()`` reads ``self.config.validity_column`` via
-        the derived property — the value the driver overlaid from policy."""
-        sc = FeatureAttributeSidecarConfig(validity_column="valid_from")
+        the derived property — the value the driver set from policy presence."""
+        sc = FeatureAttributeSidecarConfig(validity_column=_PG_VALIDITY_COLUMN)
         impl = SidecarRegistry.get_sidecar(sc)
         assert impl is not None
         assert impl.has_validity() is True
@@ -175,7 +167,7 @@ class TestSidecarNullObject:
             FeatureAttributeSidecar,
         )
 
-        instance = FeatureAttributeSidecar(sc, policy=MagicMock(validity_column="x"))
+        instance = FeatureAttributeSidecar(sc, policy=MagicMock(enable_validity=True))
         # policy is not consumed by the ctor — config remains the SSOT source.
         assert instance.config.validity_column is None
 
@@ -191,13 +183,13 @@ class TestResolveWritePolicy:
 
         mock_configs = MagicMock()
         mock_configs.get_config = AsyncMock(
-            return_value=ItemsWritePolicy(validity=ValiditySpec(column="valid_from"))
+            return_value=ItemsWritePolicy(validity=ValiditySpec())
         )
         with patch(
             "dynastore.tools.discovery.get_protocol", return_value=mock_configs
         ):
             policy = await ItemsPostgresqlDriver._resolve_write_policy("c", "col")
-        assert policy.validity_column == "valid_from"
+        assert policy.validity is not None
         assert policy.enable_validity is True
 
     @pytest.mark.asyncio
@@ -229,8 +221,10 @@ class TestResolveWritePolicy:
 class TestPolicyOverlay:
     """The overlay logic at ``ensure_storage`` updates each
     :class:`FeatureAttributeSidecarConfig` so its ``validity_column`` (and value
-    sources) match the resolved policy. The same overlay is applied to the
-    persisted col_config so reads see the policy-aligned value."""
+    sources) match the resolved policy. The column is the driver's own fixed
+    ``validity`` (gated on policy presence), NOT a policy-configured name (#1168).
+    The same overlay is applied to the persisted col_config so reads see the
+    policy-aligned value."""
 
     @staticmethod
     def _apply_overlay(
@@ -239,7 +233,7 @@ class TestPolicyOverlay:
         """Inlines the validity overlay block from
         ``ItemsPostgresqlDriver.ensure_storage`` so the contract can be pinned
         without spinning a DB."""
-        policy_column = policy.validity_column
+        policy_column = _PG_VALIDITY_COLUMN if policy.validity is not None else None
         policy_start = (
             policy.validity.start_from if policy.validity is not None else "context"
         )
@@ -268,13 +262,14 @@ class TestPolicyOverlay:
             return col_config.model_copy(update={"sidecars": overlay_sidecars})
         return col_config
 
-    def test_overlay_enables_sidecar_when_policy_sets_column(self):
-        """Divergent case: sidecar=None, policy=column → sidecar gets the column."""
+    def test_overlay_enables_sidecar_when_policy_sets_validity(self):
+        """Divergent case: sidecar=None, policy has validity → sidecar gets the
+        driver's fixed ``validity`` column."""
         sc = FeatureAttributeSidecarConfig(
             storage_mode=AttributeStorageMode.JSONB, validity_column=None
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
-        policy = ItemsWritePolicy(validity=ValiditySpec(column="valid_from"))
+        policy = ItemsWritePolicy(validity=ValiditySpec())
 
         overlaid = self._apply_overlay(col, policy)
         attr_sc = next(
@@ -282,13 +277,14 @@ class TestPolicyOverlay:
             for s in overlaid.sidecars
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
-        assert attr_sc.validity_column == "valid_from"
+        assert attr_sc.validity_column == _PG_VALIDITY_COLUMN
         assert attr_sc.enable_validity is True
 
-    def test_overlay_disables_sidecar_when_policy_clears_column(self):
+    def test_overlay_disables_sidecar_when_policy_clears_validity(self):
         """Divergent case: sidecar=column, policy=None → sidecar cleared."""
         sc = FeatureAttributeSidecarConfig(
-            storage_mode=AttributeStorageMode.JSONB, validity_column="valid_from"
+            storage_mode=AttributeStorageMode.JSONB,
+            validity_column=_PG_VALIDITY_COLUMN,
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
         policy = ItemsWritePolicy(validity=None)
@@ -305,24 +301,25 @@ class TestPolicyOverlay:
     def test_overlay_no_op_when_aligned(self):
         """Sidecar and policy already agree → no model_copy churn."""
         sc = FeatureAttributeSidecarConfig(
-            storage_mode=AttributeStorageMode.JSONB, validity_column="valid_from"
+            storage_mode=AttributeStorageMode.JSONB,
+            validity_column=_PG_VALIDITY_COLUMN,
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
-        policy = ItemsWritePolicy(validity=ValiditySpec(column="valid_from"))
+        policy = ItemsWritePolicy(validity=ValiditySpec())
 
         overlaid = self._apply_overlay(col, policy)
         assert overlaid is col  # Same object — no overlay applied.
 
     def test_overlay_propagates_value_sources(self):
-        """The overlay carries the start/end value sources, not just the column —
-        the sidecar mirror keeps the policy's source-path selection (#1126)."""
+        """The overlay carries the start/end value sources — the sidecar mirror
+        keeps the policy's source-path selection (#1126); the column itself is
+        the driver's fixed ``validity`` (#1168)."""
         sc = FeatureAttributeSidecarConfig(
             storage_mode=AttributeStorageMode.JSONB, validity_column=None
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
         policy = ItemsWritePolicy(
             validity=ValiditySpec(
-                column="validity",
                 start_from="properties.start_date",
                 end_from="properties.end_date",
             )
@@ -334,7 +331,7 @@ class TestPolicyOverlay:
             for s in overlaid.sidecars
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
-        assert attr_sc.validity_column == "validity"
+        assert attr_sc.validity_column == _PG_VALIDITY_COLUMN
         assert attr_sc.validity_start_from == "properties.start_date"
         assert attr_sc.validity_end_from == "properties.end_date"
 
@@ -351,7 +348,7 @@ class TestPolicyOverlay:
             target_dimension=TargetDimension.FORCE_2D,
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[geom_sc, attr_sc])
-        policy = ItemsWritePolicy(validity=ValiditySpec(column="valid_from"))
+        policy = ItemsWritePolicy(validity=ValiditySpec())
 
         overlaid = self._apply_overlay(col, policy)
         geom_after = next(
@@ -363,7 +360,7 @@ class TestPolicyOverlay:
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
         assert geom_after is geom_sc  # Untouched
-        assert attr_after.validity_column == "valid_from"  # Overlaid
+        assert attr_after.validity_column == _PG_VALIDITY_COLUMN  # Overlaid
 
 
 class TestValidityValueExtraction:
@@ -379,7 +376,7 @@ class TestValidityValueExtraction:
 
         cfg = FeatureAttributeSidecarConfig(
             storage_mode=AttributeStorageMode.JSONB,
-            validity_column="validity",
+            validity_column=_PG_VALIDITY_COLUMN,
             **overrides,
         )
         return FeatureAttributeSidecar(cfg)
@@ -449,8 +446,8 @@ class TestValidityValueExtraction:
 
 
 class TestByTimePartitionValidation:
-    """``BY_TIME`` partitioning requires the validity column. The validation
-    reads the null-object field via the derived property."""
+    """``BY_TIME`` partitioning requires validity. The validation reads the
+    null-object field via the derived property."""
 
     def test_by_time_requires_validity(self):
         from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
@@ -470,7 +467,7 @@ class TestByTimePartitionValidation:
         )
 
         sc = FeatureAttributeSidecarConfig(
-            validity_column="valid_from",
+            validity_column=_PG_VALIDITY_COLUMN,
             partition_strategy=AttributePartitionStrategyPreset.BY_TIME,
         )
         assert sc.partition_key_contributions == {"validity": "TSTZRANGE"}

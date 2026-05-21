@@ -18,29 +18,36 @@
 
 """First-class temporal-validity specification for ``ItemsWritePolicy``.
 
-``ValiditySpec`` replaces the bare ``ItemsWritePolicy.validity`` string toggle
-with a driver-agnostic null-object value object.  The presence of a
-``ValiditySpec`` (``validity is not None``) IS the toggle that enables temporal
+``ValiditySpec`` is a driver-agnostic, null-object value object describing the
+temporal-validity **concept** for an entity.  The presence of a ``ValiditySpec``
+(``validity is not None``) IS the toggle that enables temporal
 ``valid_from`` / ``valid_to`` tracking per entity; ``None`` disables validity
 entirely.
 
-Resolving the historic #1126 confusion explicitly:
+Validity is a concept, not a storage layout.  Each driver decides how to
+physically persist it — PostgreSQL, for example, stores the window in a single
+``tstzrange`` system column, the same way it owns ``geoid`` /
+``transaction_time`` / ``deleted_at``.  That choice is an implementation
+detail and is deliberately NOT part of this contract: the spec carries only the
+concept (where the start / end values come from), never a physical column name.
 
-- ``column`` is a **COLUMN NAME** — it names the ``tstzrange`` storage column on
-  the temporal sidecar.  It is NOT a source path into the feature.
-- The validity **VALUES** come from ``start_from`` / ``end_from``:
-    * ``"context"`` (the default for ``start_from``) reads
-      ``write_context.valid_from`` / ``write_context.valid_to``;
-    * any other string is a **dotted source path** walked into the feature
-      (e.g. ``"properties.start_date"``);
-    * ``end_from=None`` (the default) means open-ended (no upper bound).
+The validity **VALUES** come from ``start_from`` / ``end_from``:
+
+- ``"context"`` (the default for ``start_from``) reads
+  ``write_context.valid_from`` / ``write_context.valid_to``;
+- any other string is a **dotted source path** walked into the feature
+  (e.g. ``"properties.start_date"``);
+- ``end_from=None`` (the default) means open-ended (no upper bound).
+
+A feature always receives an ingestion time (``transaction_time``); the
+validity ``(from, to)`` window is optional.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 __all__ = ["ValiditySpec"]
 
@@ -50,12 +57,10 @@ class ValiditySpec(BaseModel):
 
     The mere presence of this spec on ``ItemsWritePolicy.validity`` enables
     validity tracking — ``ItemsWritePolicy.enable_validity`` is the derived
-    boolean over ``validity is not None``.
+    boolean over ``validity is not None``.  How the validity window is stored
+    is the driver's choice; this spec describes only the concept.
 
     Attributes:
-        column: Names the ``tstzrange`` storage column (a COLUMN NAME, NOT a
-            source path).  Must be a non-empty, valid SQL identifier.  Its
-            presence is the toggle that turns validity on.
         start_from: Where the validity-range **start** value comes from.
             ``"context"`` (default) reads ``write_context.valid_from``; any
             other value is a dotted source path walked into the feature
@@ -71,17 +76,6 @@ class ValiditySpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    column: str
     start_from: str = "context"
     end_from: Optional[str] = None
     close_on_new_version: bool = True
-
-    @field_validator("column")
-    @classmethod
-    def _validate_column(cls, v: str) -> str:
-        """``column`` is a physical column name and flows into DDL/SQL — it must
-        be a non-empty, valid SQL identifier (reuses the #1135 helper so the
-        same identifier rules apply everywhere)."""
-        from dynastore.tools.db import validate_sql_identifier
-
-        return validate_sql_identifier(v)

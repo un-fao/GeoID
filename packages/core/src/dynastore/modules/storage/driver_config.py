@@ -346,8 +346,10 @@ class ItemsWritePolicy(PluginConfig):
 
     Posture flags: :attr:`on_conflict`, :attr:`on_asset_conflict`,
     :attr:`validity` (null-object :class:`ValiditySpec`; :attr:`enable_validity`
-    is a derived read-only property, :attr:`validity_column` exposes the column
-    name), :attr:`track_asset_id`.
+    is a derived read-only property), :attr:`track_asset_id`. Validity is a
+    driver-abstracted concept — the policy carries where the validity start/end
+    values come from, never a physical column name (each driver owns its own
+    storage layout).
 
     Materialisation freeze (#1079): the fields that bake into a collection's
     stored shape or identity — :attr:`derive`, :attr:`identity`,
@@ -547,16 +549,6 @@ class ItemsWritePolicy(PluginConfig):
         the spec can never independently diverge.
         """
         return self.validity is not None
-
-    @property
-    def validity_column(self) -> Optional[str]:
-        """The temporal column name, or ``None`` when validity is disabled.
-
-        Convenience for column-name-only consumers (the PG sidecar overlay, DDL
-        sites) so they churn minimally — equivalent to
-        ``self.validity.column if self.validity else None``.
-        """
-        return self.validity.column if self.validity is not None else None
 
     geometries: Immutable[GeometriesWriteBehavior] = Field(
         default_factory=GeometriesWriteBehavior,

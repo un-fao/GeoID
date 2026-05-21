@@ -271,23 +271,24 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
     # Validity Configuration
     #
-    # ``validity_column`` is a null-object storage-shape mirror of the SSOT
-    # ``ItemsWritePolicy.validity`` (:class:`ValiditySpec`). The PG driver
-    # overlays ``policy.validity.column`` onto this field at ``ensure_storage``
-    # time. Its presence IS the toggle: a non-None value names/enables the
-    # validity column, ``None`` disables it. The value is a COLUMN NAME, NOT a
-    # source path for extraction. The PG driver persists the result, so every
-    # read path that loads the collection's sidecar config sees the
-    # policy-aligned value (#957/#974/#1126).
+    # ``validity_column`` is the PG driver's own storage-shape field, NOT a
+    # policy-configured value. Validity is a driver-abstracted concept on
+    # ``ItemsWritePolicy.validity`` (:class:`ValiditySpec`) whose PRESENCE is the
+    # toggle; the policy never names a physical column (#1168). At
+    # ``ensure_storage`` time the PG driver supplies its own fixed ``validity``
+    # tstzrange column name here when the policy enables validity, else ``None``.
+    # Its presence still IS the local toggle, so the ~13 DDL/SQL callsites in
+    # ``attributes.py`` keep reading a column name / boolean. The PG driver
+    # persists the result, so every read path that loads the collection's sidecar
+    # config sees the policy-aligned value (#957/#974/#1126/#1168).
     # Operators MUST set ``validity`` on ``ItemsWritePolicy``;
     # values set here are overwritten on the next ``ensure_storage``.
     validity_column: Optional[str] = Field(
         default=None,
         description=(
-            "Null-object storage-shape mirror of ItemsWritePolicy.validity.column "
-            "(SSOT). Non-None names/enables the validity column; None → disabled. "
-            "Column name only, not a source path. Overwritten by the driver at "
-            "DDL time."
+            "PG storage-shape field (driver-owned, NOT policy-configured): the "
+            "fixed 'validity' tstzrange column name when ItemsWritePolicy.validity "
+            "is set, else None → disabled. Overwritten by the driver at DDL time."
         ),
     )
 
@@ -321,8 +322,8 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         """True when ``validity_column`` is set (null-object pattern).
 
         Bool shim over the null-object field so the ~13 DDL/SQL callsites in
-        ``attributes.py`` keep reading a boolean. The field name is the single
-        toggle, so the bool can never diverge from the configured column.
+        ``attributes.py`` keep reading a boolean. The driver-set field is the
+        single local toggle, so the bool can never diverge from it.
         """
         return self.validity_column is not None
 
@@ -375,8 +376,8 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     def has_validity(self) -> bool:
         """Whether this sidecar is configured to manage validity.
 
-        Mirrors :attr:`ItemsWritePolicy.validity`; the driver overlays
-        ``policy.validity.column`` onto :attr:`validity_column` at DDL time
+        Mirrors :attr:`ItemsWritePolicy.validity` presence; the driver sets its
+        own fixed :attr:`validity_column` at DDL time when validity is enabled
         and persists the result so every read sees the same value.
         """
         return self.enable_validity

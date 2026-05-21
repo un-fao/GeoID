@@ -279,11 +279,11 @@ async def test_catalog_config_frozen_once_collection_exists(
         check_immutability=False,
     )
 
-    # 2. Immutable shape/identity field (validity names a physical temporal
-    #    column via ValiditySpec.column) cannot change at the catalog tier now
-    #    that a collection exists — the #1079 freeze.
+    # 2. Immutable shape/identity field (validity, the driver-abstracted temporal
+    #    concept) cannot change at the catalog tier now that a collection
+    #    exists — the #1079 freeze.
     changed_validity = baseline.model_copy(deep=True)
-    changed_validity.validity = ValiditySpec(column="valid_from")
+    changed_validity.validity = ValiditySpec(start_from="properties.start_date")
     with pytest.raises(ImmutableConfigError) as excinfo:
         await config_manager.set_config(
             ItemsWritePolicy,
