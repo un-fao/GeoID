@@ -122,6 +122,19 @@ class ConfigsProtocol(Protocol):
         """
         ...
 
+    async def snapshot_catalog_defaults(
+        self,
+        catalog_id: str,
+        ctx: Optional["DriverContext"] = None,
+    ) -> None:
+        """Freeze the catalog's inherited config defaults at creation (#1079 c).
+
+        Captures the resolved platform/code defaults for stable value-configs
+        into a schema-id-tagged blob used as the inheritance base, so later
+        default changes do not silently re-resolve into existing collections.
+        """
+        ...
+
     async def delete_config(
         self,
         config_cls: Type["PluginConfig"],

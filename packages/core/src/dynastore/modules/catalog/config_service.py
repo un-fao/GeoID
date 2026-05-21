@@ -278,6 +278,30 @@ class ConfigService(ConfigsProtocol):
         if not catalog_id:
             return base
 
+        # #1079 (c): if this catalog froze a still-valid defaults snapshot for
+        # ``cls`` at creation, use it as the inheritance base instead of the
+        # live platform/code default — so a later default change does not
+        # silently re-resolve into collections that already inherited it. The
+        # snapshot is schema-id-gated: on a class-schema change the entry is
+        # ignored and we keep the live ``base`` above (see config_snapshot).
+        from dynastore.modules.catalog.config_snapshot import (
+            SNAPSHOT_REF_KEY,
+            select_snapshot_base,
+        )
+        try:
+            snapshot_blob = await self.get_catalog_config_internal_cached(
+                catalog_id, SNAPSHOT_REF_KEY
+            )
+            snap_base = select_snapshot_base(snapshot_blob, cls)
+            if snap_base is not None:
+                base = snap_base
+        except Exception:  # noqa: BLE001 — snapshot is best-effort; never block a read
+            logger.debug(
+                "defaults-snapshot base resolution failed for %s — using live default",
+                class_key,
+                exc_info=True,
+            )
+
         # Collect per-tier deltas top-down.
         deltas: list[dict] = []
 
@@ -413,6 +437,72 @@ class ConfigService(ConfigsProtocol):
                 ctx=DriverContext(db_resource=db_resource) if db_resource else None,
             )
         return config
+
+    async def snapshot_catalog_defaults(
+        self, catalog_id: str, ctx: Optional[DriverContext] = None
+    ) -> None:
+        """#1079 (c): freeze the catalog's inherited defaults at creation.
+
+        Resolves the platform/code default for every stable behaviour/shape
+        value-config and stores them as a single schema-id-tagged blob (the
+        reserved ``__catalog_defaults_snapshot__`` row). ``get_config`` then
+        uses that blob as the inheritance base for this catalog and its
+        collections, so a later platform/code default change can no longer
+        silently re-resolve into already-materialised collections.
+
+        Best-effort per class: a config that cannot be resolved is skipped (it
+        simply keeps live inheritance) rather than aborting catalog creation.
+        Driver/routing configs are excluded by ``snapshottable_config_classes``.
+        """
+        from dynastore.modules.catalog.config_snapshot import (
+            SNAPSHOT_REF_KEY,
+            serialize_for_snapshot,
+            snapshottable_config_classes,
+        )
+
+        db_resource = ctx.db_resource if ctx else None
+        snapshot: Dict[str, Any] = {}
+        for cls in snapshottable_config_classes():
+            try:
+                resolved = await self.get_config(cls, ctx=ctx)
+                snapshot[cls.class_key()] = serialize_for_snapshot(resolved)
+            except Exception:  # noqa: BLE001 — one bad class must not block creation
+                logger.warning(
+                    "snapshot_catalog_defaults: skipping %s for catalog %s",
+                    cls.class_key(),
+                    catalog_id,
+                    exc_info=True,
+                )
+        if not snapshot:
+            return
+
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._get_catalog_manager().resolve_physical_schema(
+                catalog_id, ctx=DriverContext(db_resource=conn)
+            )
+            if not phys_schema:
+                return
+            # ``catalog_configs.schema_id`` is NOT NULL with a FK into
+            # ``configs.schemas``. Register a fixed sentinel schema (ON CONFLICT
+            # DO NOTHING) so the reserved blob row satisfies the constraint
+            # without inventing a PluginConfig class for the snapshot envelope.
+            await _cq.register_schema.execute(
+                conn,
+                schema_id=SNAPSHOT_REF_KEY,
+                class_key=SNAPSHOT_REF_KEY,
+                schema_json="{}",
+            )
+            await _cq.upsert_catalog_config(phys_schema).execute(
+                conn,
+                ref_key=SNAPSHOT_REF_KEY,
+                class_key=SNAPSHOT_REF_KEY,
+                schema_id=SNAPSHOT_REF_KEY,
+                config_data=json.dumps(snapshot, cls=CustomJSONEncoder),
+            )
+
+        _catalog_config_cache.cache_invalidate(
+            self.engine, self._get_catalog_manager(), catalog_id, SNAPSHOT_REF_KEY
+        )
 
     async def _set_catalog_config(
         self,
@@ -656,6 +746,8 @@ class ConfigService(ConfigsProtocol):
             results = []
             for r in rows:
                 ck: str = r["class_key"]
+                if ck.startswith("__"):
+                    continue  # reserved internal row (e.g. #1079 defaults snapshot)
                 cls = resolve_config_class(ck)
                 if cls is None:
                     logger.warning("Skipping catalog_configs row for unknown class_key %r", ck)
@@ -695,6 +787,8 @@ class ConfigService(ConfigsProtocol):
         configs: Dict[str, PluginConfig] = {}
         for row in rows:
             class_key: str = row["class_key"]
+            if class_key.startswith("__"):
+                continue  # reserved internal row (e.g. #1079 defaults snapshot)
             cls = resolve_config_class(class_key)
             if cls is None:
                 logger.warning("Skipping catalog_configs row for unknown class_key %r", class_key)
