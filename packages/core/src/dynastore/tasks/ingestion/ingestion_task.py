@@ -24,8 +24,9 @@ from typing import Any, Optional
 # (transitively required by the ``geospatial_io`` extra in worker_task_ingestion
 # → ingestion → task_ingestion_deps → geospatial → geospatial_io) so the
 # CapabilityMap doesn't list this task as claimable on services lacking it.
-# ``main_ingestion.py`` itself imports fiona lazily inside functions, but we
-# need the strict gate at the task entry-point layer.
+# ``main_ingestion.py`` / ``tools/file_io.py`` import geopandas + pyogrio
+# lazily inside functions, but we need the strict gate at the task
+# entry-point layer.
 import geopandas  # noqa: F401
 
 from dynastore.tasks.protocols import TaskProtocol

@@ -34,14 +34,14 @@ from .base import SourceReaderProtocol, register_reader, resolve_reader
 from .registry import ReaderRegistry
 
 # Side-effect import so default readers self-register at module load.
-# Each reader hard-imports its heavy dep (osgeo, fiona) at module top —
+# Each reader hard-imports its heavy dep (osgeo, pyogrio) at module top —
 # when the dep isn't installed, the import fails and the reader is
 # silently skipped from the registry.  Mirrors the wrong-SCOPE-soft-skip
 # contract used everywhere else in the codebase.
 import logging as _logging  # noqa: E402
 _logger = _logging.getLogger(__name__)
 
-for _mod in ("osgeo_reader", "fiona_reader"):
+for _mod in ("osgeo_reader", "pyogrio_reader"):
     try:
         __import__(f"{__name__}.{_mod}")
     except ImportError as _exc:  # noqa: PERF203

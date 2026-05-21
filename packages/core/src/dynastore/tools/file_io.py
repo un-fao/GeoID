@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 def _sanitize(o: Any) -> Any:
     """
-    Sanitize an object to a format suitable for file writing (GeoPandas/Fiona).
+    Sanitize an object to a format suitable for file writing (GeoPandas/GDAL).
     Matches CustomJSONEncoder logic for consistency across the system.
     """
     if isinstance(o, (uuid.UUID, Decimal, datetime, date)):
@@ -86,30 +86,17 @@ def _sanitize(o: Any) -> Any:
 
 
 def _write_gdf_to_file_safe(gdf: gpd.GeoDataFrame, filename: str, driver: str, **kwargs):
-    """
-    Workaround for NumPy 2.0 compatibility issue in GeoPandas < 1.0 iterfeatures().
-    Bypasses the problematic self[geom_col].values call that uses np.array(..., copy=False).
-    """
-    from geopandas.io.file import infer_schema
-    import fiona
-    from shapely.geometry import mapping
+    """Write a GeoDataFrame to a vector file via geopandas/pyogrio.
 
-    schema = infer_schema(gdf)
-    mode = kwargs.pop("mode", "w")
-    encoding = kwargs.pop("encoding", "utf-8")
-
-    with fiona.open(
-        filename, mode=mode, driver=driver, crs=gdf.crs, schema=schema, encoding=encoding, **kwargs
-    ) as c:
-        geom_col = gdf._geometry_column_name
-        for i, row in gdf.iterrows():
-            feature = {
-                "type": "Feature",
-                "id": str(i),
-                "properties": _sanitize(row.drop(geom_col).to_dict()),
-                "geometry": mapping(row[geom_col]) if row[geom_col] is not None else None,  # type: ignore[arg-type]
-            }
-            c.write(feature)
+    Property values were already coerced to writable scalars upstream in
+    ``_process_records_for_writing`` (``_sanitize``), so this is a thin
+    wrapper over ``GeoDataFrame.to_file`` with the pyogrio engine (the
+    geopandas >= 1.0 default). ``mode``/``layer``/``encoding`` pass through;
+    the CRS travels on the GeoDataFrame. This replaces the former
+    fiona-backed per-feature writer that existed only to work around a
+    numpy-2 incompatibility in geopandas < 1.0 ``iterfeatures()``.
+    """
+    gdf.to_file(filename, driver=driver, engine="pyogrio", **kwargs)
 
 
 def _ensure_temp_dir() -> str:
@@ -205,19 +192,17 @@ def get_file_reader(
 def read_shapefile(
     file_path_or_buffer: Union[str, io.BytesIO], encoding="utf-8"
 ) -> Generator[Dict[str, Any], None, None]:
-    """Reads a zipped Shapefile and yields records."""
-    import fiona
+    """Reads a zipped Shapefile and yields GeoJSON-shaped records."""
+    import geopandas as gpd
 
     logger.info(f"Reading Zipped Shapefile from: {file_path_or_buffer}")
 
     # Handle both file paths and in-memory buffers
     if isinstance(file_path_or_buffer, io.BytesIO):
-        # If it's a BytesIO, geopandas can read it directly if fiona is properly configured.
-        # However, unzipping still requires a temporary location.
-        # Using a TemporaryDirectory ensures it writes to the GCS-backed volume via TMPDIR.
-        # Fiona can read from a vsizip path, which avoids full extraction to disk.
-        # The format is /vsizip/{path_to_zip}/{path_inside_zip}
-        # We still need to write the buffer to a temporary file for fiona to access it.
+        # Buffers must be spilled to a temp file so GDAL's /vsizip/ driver
+        # can address them. Using _ensure_temp_dir() keeps the spill on the
+        # GCS-backed volume via TMPDIR. /vsizip/{archive}/{member} reads the
+        # member directly out of the archive without full extraction.
         with tempfile.NamedTemporaryFile(
             suffix=".zip", dir=_ensure_temp_dir(), delete=True
         ) as tmp_zip:
@@ -232,18 +217,21 @@ def read_shapefile(
                 )
                 if not shp_in_zip:
                     raise FileNotFoundError("No .shp file found in the zip archive.")
-            # Use fiona's vsizip virtual filesystem to stream records
-            with fiona.open(
-                f"/vsizip/{zip_path}/{shp_in_zip}", encoding=encoding
-            ) as collection:
-                for feature in collection:
-                    yield feature
+            gdf = gpd.read_file(
+                f"/vsizip/{zip_path}/{shp_in_zip}",
+                engine="pyogrio",
+                encoding=encoding,
+            )
+            yield from gdf.iterfeatures()
     else:  # It's a file path string
-        with fiona.open(
-            f"zip://{file_path_or_buffer}", encoding=encoding
-        ) as collection:
-            for feature in collection:
-                yield feature
+        # Trailing slash leaves the inner path empty so GDAL discovers the
+        # .shp component itself.
+        gdf = gpd.read_file(
+            f"/vsizip/{file_path_or_buffer}",
+            engine="pyogrio",
+            encoding=encoding,
+        )
+        yield from gdf.iterfeatures()
 
 
 def read_geopackage(
@@ -571,14 +559,14 @@ def write_geopackage(
     processed_records_gen = _process_records_for_writing(records)
     record_chunks = _iterate_chunks(processed_records_gen, chunk_size=chunk_size)
 
-    # Use delete=False so we can unlink before fiona writes (fiona's GPKG driver
-    # refuses to overwrite an existing file when mode="w").
+    # Use delete=False so we can unlink before the first write (the GPKG
+    # driver refuses to overwrite an existing file when mode="w").
     tmpfile = tempfile.NamedTemporaryFile(
         suffix=".gpkg", dir=_ensure_temp_dir(), delete=False
     )
     gpkg_path = tmpfile.name
     tmpfile.close()
-    # Remove the empty placeholder so fiona can create a fresh GPKG file.
+    # Remove the empty placeholder so the driver can create a fresh GPKG file.
     os.unlink(gpkg_path)
     try:
         first_chunk = True
@@ -656,7 +644,7 @@ def write_shapefile(
         random_name = f"features_{generate_uuidv7()}"
         shapefile_name = os.path.join(tmpdir, f"{random_name}.shp")
 
-        # Shapefile encoding is handled by the driver, specifically via 'encoding' param if using fiona/gpd
+        # Shapefile encoding is handled by the driver via the 'encoding' param
         _write_gdf_to_file_safe(
             gdf, shapefile_name, driver="ESRI Shapefile", encoding=encoding
         )

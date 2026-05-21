@@ -13,6 +13,7 @@ from dynastore.tools.features import Feature
 from dynastore.tools.file_io import (
     _process_records_for_writing,
     _sanitize,
+    read_shapefile,
     write_geojson,
     write_geopackage,
     write_geoparquet,
@@ -326,3 +327,42 @@ def test_write_shapefile_empty_records():
     # May be empty or a zero-record shapefile — either is acceptable
     if full:
         assert full[:2] == b"PK"
+
+
+# ---------------------------------------------------------------------------
+# read_shapefile — round-trip (pyogrio-backed, no fiona)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xdist_group("shapefile_pyarrow_isolation")
+def test_read_shapefile_roundtrip_from_buffer():
+    """A zipped Shapefile written by write_shapefile reads back via
+    read_shapefile, yielding GeoJSON-shaped feature dicts (geometry +
+    properties).  Exercises the pyogrio /vsizip/ path that replaced fiona."""
+    records = [
+        {"attributes": {"idx": i, "label": f"p{i}"}, "geom": wkb.dumps(Point(i, i))}
+        for i in range(3)
+    ]
+    zip_bytes = b"".join(write_shapefile(records, srid=4326))
+    assert zip_bytes.startswith(b"PK")
+
+    features = list(read_shapefile(io.BytesIO(zip_bytes)))
+    assert len(features) == 3
+    for feat in features:
+        assert feat["type"] == "Feature"
+        assert feat["geometry"]["type"] == "Point"
+        # property columns survive the round-trip (shapefile truncates names
+        # to 10 chars but ``idx``/``label`` are short enough to be intact).
+        assert "idx" in feat["properties"]
+        assert "label" in feat["properties"]
+
+
+@pytest.mark.xdist_group("shapefile_pyarrow_isolation")
+def test_read_shapefile_missing_shp_raises():
+    """A zip without a .shp component raises a clear FileNotFoundError."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("readme.txt", "no shapefile here")
+    buf.seek(0)
+    with pytest.raises(FileNotFoundError):
+        list(read_shapefile(buf))

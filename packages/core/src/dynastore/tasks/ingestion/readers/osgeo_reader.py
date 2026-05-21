@@ -11,9 +11,10 @@
 
 """GdalOsgeoReader — primary reader, uses system libgdal via ``osgeo.ogr``.
 
-Why this exists: ``fiona`` (PyPI wheel) ships a bundled libgdal that
-omits the Arrow/Parquet driver.  ``from osgeo import ogr`` binds to
-the **system** libgdal (the one that comes with the
+Why this exists: PyPI GDAL wheels (``pyogrio``, like ``fiona`` before
+it) ship a bundled libgdal that omits the Arrow/Parquet driver.
+``from osgeo import ogr`` binds to the **system** libgdal (the one that
+comes with the
 ``ghcr.io/osgeo/gdal:ubuntu-full-3.13.0`` base image), which DOES
 include Parquet, FlatGeobuf, OpenFileGDB, …  Same osgeo binding the
 maps service uses successfully.
@@ -35,7 +36,7 @@ from typing import Any, ClassVar, Iterable, Iterator, Tuple
 # (most worker scopes), the ImportError prevents this module's
 # ``register_reader(GdalOsgeoReader)`` line from running — the registry
 # stays narrower and resolve() falls through to the next candidate
-# (FionaReader / future PyArrow reader).
+# (PyogrioReader / future PyArrow reader).
 from osgeo import ogr, gdal  # noqa: F401
 
 from .base import SourceReaderProtocol, _to_vsigs, register_reader
@@ -65,7 +66,7 @@ class GdalOsgeoReader(SourceReaderProtocol):
 
     # Drivers we explicitly know GDAL can open from /vsigs/ + a small
     # extension hint set so the registry's *priority* ordering still
-    # picks us over the legacy fiona reader for common formats.
+    # picks us over the pyogrio fallback reader for common formats.
     KNOWN_EXT: ClassVar[Tuple[str, ...]] = (
         ".parquet", ".geoparquet",
         ".fgb",
@@ -225,9 +226,9 @@ class GdalOsgeoReader(SourceReaderProtocol):
                         geom_wkb = bytes(geom.ExportToWkb())
                     except Exception:  # noqa: BLE001
                         pass
-                # Mirror fiona's record shape (`{"properties": …,
-                # "geometry": …}`) so call sites that already deconstruct
-                # fiona records don't need to branch.  Add ``geometry_wkb``
+                # Emit the GeoJSON Feature record shape (`{"properties": …,
+                # "geometry": …}`) so call sites that deconstruct reader
+                # records don't need to branch per reader.  Add ``geometry_wkb``
                 # as a convenience so column_mapping=geometry_wkb just
                 # works for STAC items.
                 yield {
