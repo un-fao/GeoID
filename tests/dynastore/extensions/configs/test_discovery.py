@@ -119,7 +119,10 @@ class TestGetConfigSchema:
         assert "compute" not in props
         assert "derive" in props
         assert "identity" in props
-        assert "schema" in props
+        # ``schema`` was renamed to ``resolved_schema`` (it shadowed the
+        # inherited Pydantic ``BaseModel.schema``); still derived/read-only.
+        assert "schema" not in props
+        assert "resolved_schema" in props
 
     @pytest.mark.asyncio
     async def test_items_write_policy_schema_has_on_conflict(self, service):

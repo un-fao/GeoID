@@ -48,7 +48,7 @@ def _ctx(
         kwargs["derive"] = DeriveSpec(external_id=external_id_field)
     if require_external_id and external_id_field is not None:
         leaf = external_id_field.split(".")[-1]
-        kwargs["schema"] = {
+        kwargs["resolved_schema"] = {
             "type": "object",
             "required": [leaf],
             "properties": {leaf: {"type": "string"}},
@@ -56,7 +56,7 @@ def _ctx(
     elif require_external_id:
         # Path missing — still flag required so the validator sees the
         # "required but no path" combination.
-        kwargs["schema"] = {"type": "object", "required": ["external_id"]}
+        kwargs["resolved_schema"] = {"type": "object", "required": ["external_id"]}
         kwargs["derive"] = DeriveSpec(external_id="external_id")
     policy = ItemsWritePolicy(**kwargs)
     return {"_items_write_policy": policy}

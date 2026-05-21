@@ -326,7 +326,7 @@ class ItemsWritePolicy(PluginConfig):
     Four irreducible concerns, plus three posture flags. See
     ``docs/architecture/items-policy-consolidation-957-950.md``:
 
-    - :attr:`schema` — DERIVED, read-only wire JSON-Schema for ``properties``,
+    - :attr:`resolved_schema` — DERIVED, read-only wire JSON-Schema for ``properties``,
       built from ``items_schema`` at read time (see ``get_collection_schema``)
       and surfaced for the OpenAPI body schema and admin-UI form. Authoring a
       non-null value is rejected at config-save; ``items_schema`` is the single
@@ -436,7 +436,7 @@ class ItemsWritePolicy(PluginConfig):
             "overlap should fail the whole asset."
         ),
     )
-    schema: Computed[Optional[Dict[str, Any]]] = Field(
+    resolved_schema: Computed[Optional[Dict[str, Any]]] = Field(
         default=None,
         description=(
             "DERIVED, read-only. The wire JSON-Schema (Draft 2020-12) for "
@@ -701,14 +701,14 @@ class ItemsWritePolicy(PluginConfig):
         """True iff the JSON Schema declares the external-id property required.
 
         Reads the leaf segment of :meth:`external_id_path` and checks the
-        top-level ``required`` list on :attr:`schema`. With no schema or no
-        external_id_path, this returns False.
+        top-level ``required`` list on :attr:`resolved_schema`. With no schema
+        or no external_id_path, this returns False.
         """
         path = self.external_id_path()
-        if not path or not isinstance(self.schema, dict):
+        if not path or not isinstance(self.resolved_schema, dict):
             return False
         leaf = path.split(".")[-1]
-        required = self.schema.get("required") or []
+        required = self.resolved_schema.get("required") or []
         return leaf in required
 
 
@@ -1421,7 +1421,7 @@ async def _forbid_authored_wire_schema(
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
 ) -> None:
-    """Reject an authored ``ItemsWritePolicy.schema``.
+    """Reject an authored ``ItemsWritePolicy.resolved_schema``.
 
     The wire JSON-Schema is derived from ``ItemsSchema`` at read time
     (see ``ItemService.get_collection_schema``); it must never be authored
@@ -1429,9 +1429,9 @@ async def _forbid_authored_wire_schema(
     """
     if not isinstance(config, ItemsWritePolicy):
         return
-    if config.schema is not None:
+    if config.resolved_schema is not None:
         raise ValueError(
-            "ItemsWritePolicy.schema is derived from the items schema and must "
+            "ItemsWritePolicy.resolved_schema is derived from the items schema and must "
             "not be authored; remove this field "
             f"({catalog_id or '-'}/{collection_id or '-'})."
         )

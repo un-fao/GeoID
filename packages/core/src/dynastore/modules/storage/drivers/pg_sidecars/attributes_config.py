@@ -210,7 +210,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
     # ``feature_type_schema`` was retired in #976: the wire shape of Feature
-    # ``properties`` is now the SSOT on ``ItemsWritePolicy.schema`` (see PR
+    # ``properties`` is now the SSOT on ``ItemsWritePolicy.resolved_schema`` (see PR
     # #961 phase 2). Sidecars derive their schema fragments from their own
     # storage columns and the policy overlays the user-data ``properties``.
 

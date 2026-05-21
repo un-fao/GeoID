@@ -198,7 +198,7 @@ class GeometriesSidecarConfig(SidecarConfig):
     )
     
     # ``feature_type_schema`` was retired in #976: the wire shape of Feature
-    # ``properties`` is now the SSOT on ``ItemsWritePolicy.schema``. The
+    # ``properties`` is now the SSOT on ``ItemsWritePolicy.resolved_schema``. The
     # geometry contribution stays auto-derived from this sidecar's columns.
 
     @property

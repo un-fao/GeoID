@@ -318,7 +318,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
         Returns JSON Schema for Feature properties contribution.
 
         Auto-derived from this sidecar's ``attribute_schema``; the user-data
-        wire shape SSOT lives on ``ItemsWritePolicy.schema`` and overlays
+        wire shape SSOT lives on ``ItemsWritePolicy.resolved_schema`` and overlays
         this fragment at the service layer (#976).
         """
         schema: Dict[str, Any] = {}

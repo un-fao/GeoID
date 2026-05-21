@@ -43,7 +43,7 @@ class TestComputePresetValidator:
 
 class TestForbidAuthoredWireSchema:
     def test_raises_when_authored(self) -> None:
-        wp = ItemsWritePolicy(schema={"type": "object"})
+        wp = ItemsWritePolicy(resolved_schema={"type": "object"})
         with pytest.raises(ValueError, match="derived"):
             asyncio.run(_forbid_authored_wire_schema(wp, "cat", "col", None))
 
