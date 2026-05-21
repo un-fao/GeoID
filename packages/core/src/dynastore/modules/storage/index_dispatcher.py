@@ -969,7 +969,10 @@ class IndexDispatcher:
             )
             return []
         ops_map = getattr(routing, "operations", {}) or {}
-        return list(ops_map.get(Operation.INDEX, []))
+        from dynastore.modules.storage.routing_config import (
+            secondary_index_entries,
+        )
+        return secondary_index_entries(ops_map)
 
     async def _handle_missing(
         self,

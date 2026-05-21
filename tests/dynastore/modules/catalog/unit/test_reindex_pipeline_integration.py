@@ -54,7 +54,8 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# Fixture: a routing-config override that pins LogCatalogIndexer on INDEX
+# Fixture: a routing-config override that pins LogCatalogIndexer as a WRITE
+# secondary index
 # ---------------------------------------------------------------------------
 
 
@@ -99,7 +100,7 @@ async def test_pipeline_router_emit_listener_worker_indexer(
     - The worker resolves indexers via the real async
       :func:`_resolve_catalog_indexers` — which queries our fake
       ``ConfigsProtocol`` and returns :class:`LogCatalogIndexer`
-      as the sole INDEX entry.
+      as the sole WRITE secondary-index entry.
     - ``LogCatalogIndexer.upsert_catalog_metadata`` fires and logs.
 
     Final assertion: a log line from ``LogCatalogIndexer`` names the
@@ -131,11 +132,15 @@ async def test_pipeline_router_emit_listener_worker_indexer(
     # ------- Wire the reindex listener with a worker that uses the
     #         real async _resolve_catalog_indexers
     log_indexer = LogCatalogIndexer()
+    _base_ops = CatalogRoutingConfig().operations
     routing_cfg = CatalogRoutingConfig(
         operations={
-            **CatalogRoutingConfig().operations,
-            Operation.INDEX: [
-                OperationDriverEntry(driver_ref="LogCatalogIndexer"),
+            **_base_ops,
+            # Secondary-index sink merged into the WRITE list (#990).
+            Operation.WRITE: list(_base_ops.get(Operation.WRITE, [])) + [
+                OperationDriverEntry(
+                    driver_ref="LogCatalogIndexer", secondary_index=True,
+                ),
             ],
         },
     )
@@ -243,11 +248,15 @@ async def test_pipeline_deletes_route_to_delete_catalog_metadata(
     monkeypatch.setattr(event_service_mod, "emit_event", svc.emit)
 
     log_indexer = LogCatalogIndexer()
+    _base_ops = CatalogRoutingConfig().operations
     routing_cfg = CatalogRoutingConfig(
         operations={
-            **CatalogRoutingConfig().operations,
-            Operation.INDEX: [
-                OperationDriverEntry(driver_ref="LogCatalogIndexer"),
+            **_base_ops,
+            # Secondary-index sink merged into the WRITE list (#990).
+            Operation.WRITE: list(_base_ops.get(Operation.WRITE, [])) + [
+                OperationDriverEntry(
+                    driver_ref="LogCatalogIndexer", secondary_index=True,
+                ),
             ],
         },
     )

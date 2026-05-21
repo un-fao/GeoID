@@ -40,7 +40,7 @@ from dynastore.modules.storage.routing_config import (
 
 class _StubRouting:
     def __init__(self, entries):
-        self.operations = {Operation.INDEX: entries}
+        self.operations = {Operation.WRITE: entries}
 
 
 def _dispatcher(entries, *, outbox=None):
@@ -78,14 +78,18 @@ def op():
 
 @pytest.mark.asyncio
 async def test_missing_fatal_raises(ctx, op):
-    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.FATAL)
+    entry = OperationDriverEntry(
+        driver_ref="d", on_failure=FailurePolicy.FATAL, secondary_index=True,
+    )
     with pytest.raises(IndexerFatal):
         await _dispatcher([entry]).fan_out_bulk(ctx, [op])
 
 
 @pytest.mark.asyncio
 async def test_missing_warn_logs_once(ctx, op, caplog):
-    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.WARN)
+    entry = OperationDriverEntry(
+        driver_ref="d", on_failure=FailurePolicy.WARN, secondary_index=True,
+    )
     d = _dispatcher([entry])
     with caplog.at_level(
         logging.WARNING,
@@ -99,7 +103,9 @@ async def test_missing_warn_logs_once(ctx, op, caplog):
 
 @pytest.mark.asyncio
 async def test_missing_ignore_silent(ctx, op, caplog):
-    entry = OperationDriverEntry(driver_ref="d", on_failure=FailurePolicy.IGNORE)
+    entry = OperationDriverEntry(
+        driver_ref="d", on_failure=FailurePolicy.IGNORE, secondary_index=True,
+    )
     with caplog.at_level(
         logging.WARNING,
         logger="dynastore.modules.storage.index_dispatcher",
@@ -142,6 +148,7 @@ async def test_missing_outbox_enqueues(ctx, op):
         driver_ref="d",
         write_mode=WriteMode.ASYNC,
         on_failure=FailurePolicy.OUTBOX,
+        secondary_index=True,
     )
     await _dispatcher([entry], outbox=_Stub()).fan_out_bulk(ctx, [op])
     assert len(enq) == 1
@@ -168,7 +175,7 @@ async def test_handle_missing_with_pg_outbox_persists(async_conn, async_schema, 
         return _StubRouting([
             OperationDriverEntry(
                 driver_ref="missing", write_mode=WriteMode.ASYNC,
-                on_failure=FailurePolicy.OUTBOX,
+                on_failure=FailurePolicy.OUTBOX, secondary_index=True,
             ),
         ])
 

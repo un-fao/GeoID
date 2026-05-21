@@ -677,11 +677,12 @@ def test_build_routing_refs_surfaces_transformer_attachments():
     by_class = {
         "items_routing_config": {
             "operations": {
-                "INDEX": [{
+                "WRITE": [{
                     "driver_ref": "items_elasticsearch_private_driver",
                     "input_transformers": ("private_entity_transformer",),
                     "output_transformers": (),
                     "on_failure": "outbox", "write_mode": "sync",
+                    "secondary_index": True,
                     "source": "auto",
                 }],
                 "SEARCH": [{
@@ -703,7 +704,7 @@ def test_build_routing_refs_surfaces_transformer_attachments():
         ConfigApiService(config_service=MagicMock())._build_routing_refs(
             by_class, base_url="http://h/configs",
         )
-    [idx] = by_class["items_routing_config"]["operations"]["INDEX"]
+    [idx] = by_class["items_routing_config"]["operations"]["WRITE"]
     [srch] = by_class["items_routing_config"]["operations"]["SEARCH"]
     # Non-empty transformer chains are surfaced verbatim.
     assert idx["input_transformers"] == ["private_entity_transformer"]

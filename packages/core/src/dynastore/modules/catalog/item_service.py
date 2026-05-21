@@ -1120,19 +1120,19 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             )
 
         ops_map = getattr(routing, "operations", {}) or {}
+        from dynastore.modules.storage.routing_config import (
+            secondary_index_entries,
+        )
         write_entries = list(ops_map.get(Operation.WRITE, []))
-        index_entries = list(ops_map.get(Operation.INDEX, []))
 
         fatal_entries = [
             e for e in write_entries
             if e.on_failure == FailurePolicy.FATAL
             and e.write_mode == WriteMode.SYNC
         ]
-        async_outbox_entries = [
-            e for e in index_entries
-            if e.write_mode == WriteMode.ASYNC
-            and e.on_failure == FailurePolicy.OUTBOX
-        ]
+        async_outbox_entries = secondary_index_entries(
+            ops_map, async_outbox_only=True,
+        )
 
         # ── Resolve driver registry (test seam first) ─────────────────
         registry = getattr(self, "_test_driver_registry", None)

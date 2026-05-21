@@ -2,11 +2,11 @@
 :class:`CollectionElasticsearchDriver` and
 :class:`CatalogElasticsearchDriver` — closes the gap that caused #491.
 
-These drivers opt into ``Operation.INDEX`` auto-registration via the
-marker Protocols (``is_collection_indexer`` / ``is_catalog_indexer``)
-but, prior to #503, did not implement the dispatcher-facing
-``index`` / ``index_bulk`` / ``ensure_indexer`` surface.  The
-dispatcher then raised an AttributeError at dispatch time.
+These drivers opt into ``Operation.WRITE`` secondary-index
+auto-registration via the marker Protocols (``is_collection_indexer`` /
+``is_catalog_indexer``) but, prior to #503, did not implement the
+dispatcher-facing ``index`` / ``index_bulk`` / ``ensure_indexer``
+surface.  The dispatcher then raised an AttributeError at dispatch time.
 """
 from __future__ import annotations
 

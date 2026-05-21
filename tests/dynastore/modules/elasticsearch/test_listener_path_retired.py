@@ -32,10 +32,11 @@ def test_no_lifecycle_listener_methods() -> None:
     ):
         assert not hasattr(ElasticsearchModule, attr), (
             f"ElasticsearchModule.{attr} was reintroduced — this is the "
-            "legacy listener path that #825 retired. Catalog INDEX now "
-            "flows via catalog_router → CATALOG_METADATA_CHANGED → "
-            "ReindexWorker → CatalogRoutingConfig.operations[INDEX]; "
-            "collection INDEX via collection_router._dispatch_collection_index "
+            "legacy listener path that #825 retired. Catalog secondary-index "
+            "propagation now flows via catalog_router → "
+            "CATALOG_METADATA_CHANGED → ReindexWorker → the secondary-index "
+            "entries of CatalogRoutingConfig.operations[WRITE]; collection "
+            "secondary-index via collection_router._dispatch_collection_index "
             "→ IndexDispatcher.fan_out_bulk."
         )
 

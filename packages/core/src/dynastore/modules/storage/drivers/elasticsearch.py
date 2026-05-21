@@ -348,9 +348,10 @@ class ItemsElasticsearchDriver(
 
     is_item_indexer: ClassVar[bool] = True
 
-    # ES (public) is the canonical async indexer + primary SEARCH
-    # backend for items routing.  Auto-defaults into both Operations.
-    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})
+    # ES (public) is the canonical async secondary index + primary SEARCH
+    # backend for items routing.  It auto-defaults into WRITE (as a secondary
+    # index, identified by ``is_item_indexer``) and SEARCH.
+    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.WRITE})
 
     priority: int = 50
     preferred_chunk_size: int = 500
@@ -1399,9 +1400,10 @@ class AssetElasticsearchDriver(
 
     is_asset_indexer: ClassVar[bool] = True
 
-    # Asset ES is the canonical async indexer + primary SEARCH backend
-    # for asset metadata routing.  Auto-defaults into both Operations.
-    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})
+    # Asset ES is the canonical async secondary index + primary SEARCH
+    # backend for asset metadata routing.  It auto-defaults into WRITE (as a
+    # secondary index, identified by ``is_asset_indexer``) and SEARCH.
+    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.WRITE})
 
     priority: int = 52
     capabilities: FrozenSet[str] = frozenset({

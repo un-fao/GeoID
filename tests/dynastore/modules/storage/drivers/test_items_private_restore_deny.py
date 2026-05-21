@@ -52,11 +52,12 @@ def _stub_catalog(cat_id: str) -> MagicMock:
 def _items_private_routing() -> ItemsRoutingConfig:
     return ItemsRoutingConfig(
         operations={
-            Operation.INDEX: [
+            Operation.WRITE: [
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_private_driver",
                     on_failure=FailurePolicy.OUTBOX,
                     write_mode=WriteMode.ASYNC,
+                    secondary_index=True,
                 ),
             ],
         },

@@ -68,21 +68,22 @@ def test_collection_routing_default_read_is_pg_primary():
 
 
 def test_collection_routing_default_index_has_no_hardcoded_es_hop():
-    """The ES INDEX hop is NOT hard-coded in the code default (#1069 / #1073).
+    """The ES secondary-index hop is NOT hard-coded in the code default
+    (#1069 / #1073).
 
     A PG-only deployment (no ES CollectionIndexer registered, no preset
-    applied) must get NO INDEX entry — otherwise a plain collection create
-    enqueues an OUTBOX row into tasks.tasks that nothing will ever drain,
-    which poisons the create transaction when the outbox table is absent.
-    The ES INDEX hop (ASYNC + OUTBOX) is supplied at validation time by
-    ``_self_register_indexers_into`` when an ES driver is registered (see
-    test_collection_routing_validator_augments_INDEX_and_SEARCH) and by the
-    routing presets (see test_preset_public_catalog)."""
+    applied) must get NO secondary-index WRITE entry — otherwise a plain
+    collection create enqueues an OUTBOX row into tasks.tasks that nothing
+    will ever drain, which poisons the create transaction when the outbox
+    table is absent. The ES secondary-index hop (ASYNC + OUTBOX) is supplied
+    at validation time by ``_self_register_indexers_into`` when an ES driver
+    is registered (see test_collection_routing_validator_augments_write_index_and_search)
+    and by the routing presets (see test_preset_public_catalog)."""
     from dynastore.modules.storage.routing_config import (
-        CollectionRoutingConfig, Operation,
+        CollectionRoutingConfig, secondary_index_entries,
     )
     cfg = CollectionRoutingConfig()
-    index = cfg.operations.get(Operation.INDEX, [])
+    index = secondary_index_entries(cfg.operations)
     assert "collection_elasticsearch_driver" not in {e.driver_ref for e in index}
 
 

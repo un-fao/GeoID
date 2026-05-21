@@ -130,10 +130,10 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
     is_collection_indexer: ClassVar[bool] = True
 
-    # Collection ES is the canonical async indexer + primary SEARCH
-    # backend for collection metadata routing.  Auto-defaults into both
-    # Operations.
-    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})
+    # Collection ES is the canonical async secondary index + primary SEARCH
+    # backend for collection metadata routing.  It auto-defaults into WRITE
+    # (as a secondary index, identified by ``is_collection_indexer``) and SEARCH.
+    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.WRITE})
 
     capabilities: FrozenSet[str] = frozenset({
         EntityStoreCapability.READ,

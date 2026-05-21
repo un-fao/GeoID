@@ -45,19 +45,18 @@ def _public_catalog_routing() -> CatalogRoutingConfig:
                     driver_ref="catalog_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
+                OperationDriverEntry(
+                    driver_ref="catalog_elasticsearch_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    secondary_index=True,
+                    source="auto",
+                ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
                     driver_ref="catalog_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
-                ),
-            ],
-            Operation.INDEX: [
-                OperationDriverEntry(
-                    driver_ref="catalog_elasticsearch_driver",
-                    write_mode=WriteMode.ASYNC,
-                    on_failure=FailurePolicy.OUTBOX,
-                    source="auto",
                 ),
             ],
             Operation.SEARCH: [
@@ -78,19 +77,18 @@ def _public_collection_template() -> CollectionRoutingConfig:
                     driver_ref="collection_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
                 ),
+                OperationDriverEntry(
+                    driver_ref="collection_elasticsearch_driver",
+                    write_mode=WriteMode.ASYNC,
+                    on_failure=FailurePolicy.OUTBOX,
+                    secondary_index=True,
+                    source="auto",
+                ),
             ],
             Operation.READ: [
                 OperationDriverEntry(
                     driver_ref="collection_postgresql_driver",
                     on_failure=FailurePolicy.FATAL,
-                ),
-            ],
-            Operation.INDEX: [
-                OperationDriverEntry(
-                    driver_ref="collection_elasticsearch_driver",
-                    write_mode=WriteMode.ASYNC,
-                    on_failure=FailurePolicy.OUTBOX,
-                    source="auto",
                 ),
             ],
             Operation.SEARCH: [
@@ -115,19 +113,12 @@ def _public_items_template() -> ItemsRoutingConfig:
                     driver_ref="items_elasticsearch_driver",
                     write_mode=WriteMode.ASYNC,
                     on_failure=FailurePolicy.OUTBOX,
+                    secondary_index=True,
                     source="auto",
                 ),
             ],
             Operation.READ: [
                 OperationDriverEntry(driver_ref="items_postgresql_driver"),
-            ],
-            Operation.INDEX: [
-                OperationDriverEntry(
-                    driver_ref="items_elasticsearch_driver",
-                    write_mode=WriteMode.ASYNC,
-                    on_failure=FailurePolicy.OUTBOX,
-                    source="auto",
-                ),
             ],
             Operation.SEARCH: [
                 OperationDriverEntry(

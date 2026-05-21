@@ -49,7 +49,7 @@ def _service_with(routing_entries: List[OperationDriverEntry], outbox: _FakeOutb
     svc = ItemService.__new__(ItemService)
 
     async def _resolver(_catalog_id: str, _collection_id: str):
-        return SimpleNamespace(operations={Operation.INDEX: list(routing_entries)})
+        return SimpleNamespace(operations={Operation.WRITE: list(routing_entries)})
 
     svc._test_routing_resolver = _resolver  # type: ignore[attr-defined]
     svc._test_outbox_store = outbox  # type: ignore[attr-defined]
@@ -61,6 +61,7 @@ def _async_es_entry() -> OperationDriverEntry:
         driver_ref="items_elasticsearch_driver",
         on_failure=FailurePolicy.OUTBOX,
         write_mode=WriteMode.ASYNC,
+        secondary_index=True,
     )
 
 
@@ -105,8 +106,8 @@ def test_delete_is_noop_when_no_geoids_resolved():
 
 
 def test_delete_skips_non_async_outbox_index_entries():
-    """Only ASYNC+OUTBOX INDEX entries are enqueued here — a SYNC/FATAL
-    write entry must not produce an outbox delete row."""
+    """Only ASYNC+OUTBOX secondary-index WRITE entries are enqueued here — a
+    SYNC/FATAL primary write entry must not produce an outbox delete row."""
     outbox = _FakeOutbox()
     sync_entry = OperationDriverEntry(
         driver_ref="items_postgresql_driver",

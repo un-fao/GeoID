@@ -141,9 +141,10 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
 
     is_catalog_indexer: ClassVar[bool] = True
 
-    # Catalog ES is the canonical async indexer + primary SEARCH backend
-    # for catalog metadata routing.  Auto-defaults into both Operations.
-    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.INDEX})
+    # Catalog ES is the canonical async secondary index + primary SEARCH
+    # backend for catalog metadata routing.  It auto-defaults into WRITE
+    # (as a secondary index, identified by ``is_catalog_indexer``) and SEARCH.
+    auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset({Operation.SEARCH, Operation.WRITE})
 
     capabilities: FrozenSet[str] = frozenset({
         EntityStoreCapability.READ,
