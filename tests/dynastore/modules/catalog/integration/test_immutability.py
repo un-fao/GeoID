@@ -8,6 +8,9 @@ from dynastore.modules.catalog.config_service import (
 )
 from dynastore.modules.storage.driver_config import (
     ItemsPostgresqlDriverConfig,
+    ItemsWritePolicy,
+    WriteConflictPolicy,
+    InvalidGeometryPolicy,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     GeometriesSidecarConfig,
@@ -206,6 +209,84 @@ async def test_platform_config_immutability(app_lifespan, catalog_obj, catalog_i
     finally:
         await platform_manager.delete_config(plugin_id)
         await catalogs.delete_catalog(catalog_id, force=True)
+
+
+@pytest.mark.asyncio
+async def test_catalog_config_frozen_once_collection_exists(
+    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+):
+    """#1079: catalog-tier defaults freeze once a collection is materialised.
+
+    This pins the catalog-tier branch of the materialization gate, which had no
+    coverage (only the collection and platform tiers were tested). The danger
+    #1079 describes — change a catalog default, have it silently re-resolve into
+    (and diverge) collections that already inherited it — is blocked for the
+    shape/identity-defining ``ItemsWritePolicy`` fields, which are Immutable.
+
+    ``_catalog_is_materialized`` is true once the catalog has at least one
+    physically-created collection, so creating ``collection_obj`` arms the gate.
+    Behaviour knobs (``on_conflict``) stay editable: they change future write
+    behaviour without rewriting existing rows.
+    """
+    import asyncio
+
+    catalogs = get_protocol(CatalogsProtocol)
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await asyncio.sleep(2)
+    await catalogs.create_catalog(catalog_obj)
+    # Creating a collection materialises the CATALOG tier.
+    await catalogs.create_collection(catalog_id, collection_obj)
+
+    config_manager = get_protocol(ConfigsProtocol)
+
+    # 1. Establish a baseline ItemsWritePolicy at the CATALOG tier (no
+    #    collection_id → a catalog-tier default inherited by its collections).
+    baseline = ItemsWritePolicy()
+    await config_manager.set_config(
+        ItemsWritePolicy,
+        _pin_all(baseline),
+        catalog_id=catalog_id,
+        check_immutability=False,
+    )
+
+    # 2. Immutable shape/identity field (validity_field names a physical
+    #    temporal column) cannot change at the catalog tier now that a
+    #    collection exists — the #1079 freeze.
+    changed_validity = baseline.model_copy(deep=True)
+    changed_validity.validity_field = "valid_from"
+    with pytest.raises(ImmutableConfigError) as excinfo:
+        await config_manager.set_config(
+            ItemsWritePolicy,
+            _pin_all(changed_validity),
+            catalog_id=catalog_id,
+        )
+    assert "validity_field" in str(excinfo.value)
+
+    # 2b. A nested geometry-shape knob is likewise frozen.
+    changed_geom = baseline.model_copy(deep=True)
+    changed_geom.geometries.invalid_geom_policy = InvalidGeometryPolicy.REJECT
+    with pytest.raises(ImmutableConfigError) as excinfo:
+        await config_manager.set_config(
+            ItemsWritePolicy,
+            _pin_all(changed_geom),
+            catalog_id=catalog_id,
+        )
+    assert "geometries" in str(excinfo.value)
+
+    # 3. Positive control: a Mutable behaviour knob (on_conflict) is still
+    #    editable at the catalog tier — the freeze is scoped to shape/identity,
+    #    not to operational tuning that leaves existing rows untouched.
+    changed_conflict = baseline.model_copy(deep=True)
+    changed_conflict.on_conflict = WriteConflictPolicy.REFUSE_RETURN
+    await config_manager.set_config(  # must NOT raise
+        ItemsWritePolicy,
+        _pin_all(changed_conflict),
+        catalog_id=catalog_id,
+    )
+    persisted = await config_manager.get_config(
+        ItemsWritePolicy, catalog_id, None
+    )
+    assert persisted.on_conflict == WriteConflictPolicy.REFUSE_RETURN
 
 
 @pytest.mark.asyncio
