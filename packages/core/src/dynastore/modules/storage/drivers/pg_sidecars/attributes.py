@@ -144,9 +144,9 @@ class FeatureAttributeSidecar(SidecarProtocol):
     ):
         # ``**_kwargs`` absorbs forward-compatible factory inputs
         # (e.g. ``policy=...``) reserved for future SSOT threading.
-        # ``config.enable_validity`` is already policy-aligned because
-        # the driver overlays ``ItemsWritePolicy.enable_validity`` onto
-        # the sidecar config at ``ensure_storage`` time (#974).
+        # ``config.validity_field`` is already policy-aligned because
+        # the driver overlays ``ItemsWritePolicy.validity_field`` onto
+        # the sidecar config at ``ensure_storage`` time (#957/#974).
         self.config = config
 
     @property
@@ -355,8 +355,9 @@ class FeatureAttributeSidecar(SidecarProtocol):
     def has_validity(self) -> bool:
         """Returns True if this sidecar manages temporal validity.
 
-        SSOT: ``ItemsWritePolicy.enable_validity`` — mirrored onto
-        ``self.config.enable_validity`` by the PG driver at DDL time.
+        SSOT: ``ItemsWritePolicy.validity_field`` (null-object) — mirrored
+        onto ``self.config.validity_field`` by the PG driver at DDL time;
+        ``config.enable_validity`` is the derived bool over that field.
         """
         return self.config.has_validity
 
