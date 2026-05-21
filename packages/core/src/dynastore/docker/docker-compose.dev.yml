@@ -40,6 +40,13 @@ services:
       - .env
       - path: .env.local
         required: false
+      # Local GCP creds (gitignored). Sets GOOGLE_APPLICATION_CREDENTIALS /
+      # GOOGLE_CLOUD_PROJECT / REGION / GCP_BUCKET so the container can auth to
+      # GCS. The key json lives under the mounted module dir; resolve_gcp_
+      # credentials() remaps the /dynastore/... path to the mounted location.
+      # required:false → devs without local creds are unaffected.
+      - path: ../modules/gcp/.env
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -77,6 +84,15 @@ services:
     volumes:
       - ../../../..:/dynastore/packages # Hot reload mount (editable-install root; see catalog service)
       - ./config/geoid:/dynastore/config:ro
+    env_file:
+      # geoid runs the full scope (incl. gcp). Declaring env_file here replaces
+      # the base list, so .env / .env.local are re-listed alongside the local
+      # GCP creds (gitignored, required:false — see catalog service).
+      - .env
+      - path: .env.local
+        required: false
+      - path: ../modules/gcp/.env
+        required: false
     depends_on:
       db:
         condition: service_healthy
@@ -109,6 +125,10 @@ services:
     env_file:
       - .env
       - path: .env.local
+        required: false
+      # Local GCP creds (gitignored) — see catalog service. The worker handles
+      # GCS finalize/activation, so it needs the same credentials.
+      - path: ../modules/gcp/.env
         required: false
     depends_on:
       db:

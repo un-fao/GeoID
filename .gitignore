@@ -131,7 +131,9 @@ data/
 # policy config (non-secret), sourced by db_reset.sh — must stay tracked
 *.env
 !src/dynastore/scripts/reset_policy.env
-src/dynastore/modules/gcp/*.json
+# GCP service-account keys — path-agnostic so the monorepo `packages/.../modules/gcp/`
+# layout (and any future move) is covered, not just the pre-monorepo `src/` path.
+**/modules/gcp/*.json
 
 # Orphaned / Temporary Files
 package-lock.json
