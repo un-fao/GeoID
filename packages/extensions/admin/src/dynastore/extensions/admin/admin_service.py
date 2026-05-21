@@ -16,8 +16,11 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.presets import PresetTier
 
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Request
 from contextlib import asynccontextmanager
@@ -214,6 +217,150 @@ async def _assert_catalog_exists(catalog_id: str) -> None:
     model = await catalogs.get_catalog_model(catalog_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+
+
+async def _assert_collection_exists(catalog_id: str, collection_id: str) -> None:
+    """Raise 404 if ``collection_id`` does not exist under ``catalog_id``.
+
+    Collection-scope preset endpoints write collection-tier config rows;
+    an operator typo for the collection segment must fail loudly rather
+    than seed orphan config under a non-existent collection.
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        return
+    collection = await catalogs.collections.get_collection(catalog_id, collection_id)
+    if collection is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection '{collection_id}' not found in catalog '{catalog_id}'.",
+        )
+
+
+def _preset_reachable_at(preset, url_tier: "PresetTier") -> bool:
+    """Whether ``preset`` may be applied at the ``url_tier`` URL family.
+
+    Single-family tiers (``PLATFORM`` / ``CATALOG`` / ``COLLECTION``) match
+    only their own URL family. ``ITEMS`` / ``ASSETS`` presets bind to the
+    collection family always and additionally to the catalog family when
+    ``catalog_scopable`` is set. Mismatches are surfaced as HTTP 409 by
+    the caller — the preset exists but is not valid at that scope.
+    """
+    from dynastore.modules.storage.presets import PresetTier
+
+    preset_tier = getattr(preset, "tier", None)
+    if preset_tier == url_tier:
+        return True
+    if preset_tier in (PresetTier.ITEMS, PresetTier.ASSETS):
+        if url_tier == PresetTier.COLLECTION:
+            return True
+        if url_tier == PresetTier.CATALOG:
+            return bool(getattr(preset, "catalog_scopable", False))
+    return False
+
+
+def _resolve_preset_for_scope(preset_name: str, url_tier: "PresetTier"):
+    """Look the preset up and verify it is reachable at ``url_tier``.
+
+    Returns the preset on success. Raises 404 when unknown, 409 when the
+    URL scope does not match the preset's declared tier.
+    """
+    from dynastore.modules.storage.presets import PresetTier, get_preset
+
+    try:
+        preset = get_preset(preset_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not _preset_reachable_at(preset, url_tier):
+        preset_tier = getattr(preset, "tier", None)
+        tier_label = preset_tier.value if isinstance(preset_tier, PresetTier) else str(preset_tier)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Preset '{preset_name}' is a {tier_label}-tier preset and "
+                f"cannot be applied at the {url_tier.value} URL scope."
+            ),
+        )
+    return preset
+
+
+async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
+    """Walk a preset bundle through ``ConfigsProtocol.set_config``.
+
+    ``base_scope`` is the URL-derived scope (``{}`` / ``{catalog_id}`` /
+    ``{catalog_id, collection_id}``); the preset's own per-entry scope is
+    layered on top so a bundle can mix tiers. Returns the response body.
+    """
+    from dynastore.models.protocols.configs import ConfigsProtocol
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs is None:
+        raise HTTPException(status_code=503, detail="Configs service unavailable.")
+
+    bundle = preset.build(**base_scope)
+    applied: list[str] = []
+    for entry in bundle.iter_apply():
+        scope = {**base_scope, **dict(entry.scope)}
+        await configs.set_config(entry.config_cls, entry.instance, **scope)
+        applied.append(entry.slot)
+    return {"preset": preset.name, "applied": applied, **base_scope}
+
+
+async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
+    """Rollback a preset bundle, leaf-first, with 409 on divergence.
+
+    Mirrors the catalog-tier rollback contract (#971): a persisted row
+    that no longer matches the preset's emitted instance blocks the whole
+    rollback with 409 and nothing is deleted; missing rows are no-ops.
+    """
+    from dynastore.models.protocols.configs import ConfigsProtocol
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs is None:
+        raise HTTPException(status_code=503, detail="Configs service unavailable.")
+
+    bundle = preset.build(**base_scope)
+    diverged: list[dict] = []
+    to_delete: list[tuple[str, type, dict]] = []
+
+    for entry in bundle.iter_rollback():
+        scope = {**base_scope, **dict(entry.scope)}
+        persisted = await configs.get_persisted_config(entry.config_cls, **scope)
+        if persisted is None:
+            continue
+        try:
+            persisted_norm = entry.config_cls.model_validate(persisted).model_dump(mode="json")
+        except Exception:  # noqa: BLE001 — surface the raw payload on validation failure
+            persisted_norm = persisted
+        expected_norm = entry.instance.model_dump(mode="json")
+        if persisted_norm == expected_norm:
+            to_delete.append((entry.slot, entry.config_cls, scope))
+        else:
+            diverged.append({
+                "slot": entry.slot,
+                "class": entry.config_cls.__name__,
+                "persisted": persisted_norm,
+                "expected": expected_norm,
+            })
+
+    if diverged:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Preset '{preset.name}' cannot be rolled back: "
+                    f"{len(diverged)} slot(s) diverge from the preset bundle."
+                ),
+                "diverged": diverged,
+            },
+        )
+
+    deleted: list[str] = []
+    for slot_name, cfg_cls, scope in to_delete:
+        await configs.delete_config(cfg_cls, **scope)
+        deleted.append(slot_name)
+    return {"preset": preset.name, "deleted": deleted, **base_scope}
 
 
 class AdminService(ExtensionProtocol):
@@ -1127,28 +1274,105 @@ class AdminService(ExtensionProtocol):
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
 
     # -------------------------------------------------------------------------
-    # Routing Presets (/admin/presets, /admin/catalogs/{cat}/presets/{name})
-    # #847 — named, cascade-consistent bundles operators apply in one call.
-    # REST: POST = apply, DELETE = unapply (rollback shipped in #971).
+    # Routing Presets (#847 / #972) — named, cascade-consistent config
+    # bundles operators apply in one call. The registry is a single flat
+    # namespace; a preset declares its ``tier`` and the URL family encodes
+    # the apply scope. Three URL families, each with POST (apply) / DELETE
+    # (rollback, #971) symmetry, dispatching on the preset's tier:
+    #
+    #   /admin/presets/{name}                                  platform
+    #   /admin/catalogs/{cat}/presets/{name}                   catalog
+    #   /admin/catalogs/{cat}/collections/{col}/presets/{name} collection
+    #
+    # Items/assets-tier presets are reachable at the collection family
+    # (and at the catalog family when ``catalog_scopable``). A preset
+    # applied at a URL family that does not match its tier returns 409.
+    # All three families share ``_apply_preset_bundle`` /
+    # ``_unapply_preset_bundle`` so apply/rollback semantics stay identical
+    # across scopes.
     # -------------------------------------------------------------------------
 
-    @router.get("/presets", summary="List registered routing presets (#847)")
-    async def list_routing_presets(request: Request):  # type: ignore[reportGeneralTypeIssues]
-        from dynastore.modules.storage.presets import get_preset, list_presets
+    @router.get("/presets", summary="List registered routing presets (#847, #972)")
+    async def list_routing_presets(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        tier: Optional[str] = Query(
+            None,
+            description=(
+                "Filter to presets of this tier "
+                "(platform / catalog / collection / items / assets)."
+            ),
+        ),
+    ):
+        from dynastore.modules.storage.presets import (
+            PresetTier,
+            get_preset,
+            list_presets,
+        )
+
+        tier_filter: Optional[PresetTier] = None
+        if tier is not None:
+            try:
+                tier_filter = PresetTier(tier)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unknown tier {tier!r}. Known: "
+                        f"{[t.value for t in PresetTier]}"
+                    ),
+                ) from exc
 
         out = []
-        for name in list_presets():
+        for name in list_presets(tier_filter):
             preset = get_preset(name)
             entry = {"name": name, "description": preset.description}
-            # ``tier`` is the #972 PR-1 addition; emitted opportunistically
-            # so the response is forward-compatible with the URL families
-            # PR-2 will add — operators can already see which family a
-            # preset will route through.
-            tier = getattr(preset, "tier", None)
-            if tier is not None:
-                entry["tier"] = tier.value if hasattr(tier, "value") else str(tier)
+            preset_tier = getattr(preset, "tier", None)
+            if preset_tier is not None:
+                entry["tier"] = (
+                    preset_tier.value
+                    if hasattr(preset_tier, "value")
+                    else str(preset_tier)
+                )
+            # ``catalog_scopable`` only carries meaning for items/assets
+            # presets but is emitted for all so clients can render it
+            # uniformly.
+            entry["catalog_scopable"] = bool(getattr(preset, "catalog_scopable", False))
             out.append(entry)
         return {"presets": out}
+
+    # ----- Platform tier: /admin/presets/{name} -----------------------------
+
+    @router.post(
+        "/presets/{preset_name}",
+        summary="Apply a platform-tier routing preset (#972)",
+    )
+    async def apply_platform_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        preset_name: str,
+    ):
+        """Apply a ``PLATFORM``-tier preset (no scope params). Returns 409
+        if ``preset_name`` declares a non-platform tier."""
+        from dynastore.modules.storage.presets import PresetTier
+
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.PLATFORM)
+        return await _apply_preset_bundle(preset, {})
+
+    @router.delete(
+        "/presets/{preset_name}",
+        summary="Rollback a platform-tier routing preset (#972)",
+    )
+    async def unapply_platform_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        preset_name: str,
+    ):
+        from dynastore.modules.storage.presets import PresetTier
+
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.PLATFORM)
+        return await _unapply_preset_bundle(preset, {})
+
+    # ----- Catalog tier: /admin/catalogs/{cat}/presets/{name} ---------------
+    # Existing #847/#971 contract. Also reachable by items/assets presets
+    # that declare ``catalog_scopable``.
 
     @router.post(
         "/catalogs/{catalog_id}/presets/{preset_name}",
@@ -1162,44 +1386,19 @@ class AdminService(ExtensionProtocol):
         """Apply ``preset_name`` to ``catalog_id`` by walking the bundle
         through the standard ``ConfigsProtocol.set_config`` lifecycle.
 
-        Each slot (catalog routing, collection template, items template,
-        audience configs) is applied at the catalog tier; the cascade
-        validators (#960 scope 4 / items + collection) catch mixed
-        public/private combos and the per-config validators run via
-        ``set_config``. The endpoint does not bypass any validation —
-        a preset is just a named bundle of standard ``set_config`` calls.
+        Each slot is applied at the catalog tier; the cascade validators
+        (#960 scope 4 / items + collection) catch mixed public/private
+        combos and the per-config validators run via ``set_config``. The
+        endpoint does not bypass any validation — a preset is just a named
+        bundle of standard ``set_config`` calls. Returns 409 if the preset
+        is not reachable at the catalog scope (e.g. a collection-only
+        preset).
         """
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.presets import get_preset
+        from dynastore.modules.storage.presets import PresetTier
 
         await _assert_catalog_exists(catalog_id)
-        try:
-            preset = get_preset(preset_name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        configs = get_protocol(ConfigsProtocol)
-        if configs is None:
-            raise HTTPException(status_code=503, detail="Configs service unavailable.")
-
-        bundle = preset.build(catalog_id)
-        applied: list[str] = []
-
-        # Generic walker (#972 PR-1): each bundle entry carries its own
-        # config class, instance, and slot label. URL-derived scope
-        # (``catalog_id`` here) is layered on top of whatever scope the
-        # preset itself emitted so future tiers (PR-2+) compose without
-        # touching this endpoint.
-        for entry in bundle.iter_apply():
-            scope = {"catalog_id": catalog_id, **dict(entry.scope)}
-            await configs.set_config(entry.config_cls, entry.instance, **scope)
-            applied.append(entry.slot)
-
-        return {
-            "preset": preset_name,
-            "catalog_id": catalog_id,
-            "applied": applied,
-        }
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.CATALOG)
+        return await _apply_preset_bundle(preset, {"catalog_id": catalog_id})
 
     @router.delete(
         "/catalogs/{catalog_id}/presets/{preset_name}",
@@ -1216,81 +1415,57 @@ class AdminService(ExtensionProtocol):
         Any slot whose persisted row diverges from the preset's emitted
         instance is reported via HTTP 409 with a ``diverged`` payload and
         the endpoint deletes nothing — the operator must reconcile or
-        force-PUT before a rollback succeeds.
-
-        Slots are walked leaf-first (items template → collection template →
-        catalog routing → audiences) so cascade validators see a
-        consistent partial state if a delete in the middle of the bundle
-        raises. Missing rows are no-ops, not errors — the preset may have
-        been partially applied or partially overridden.
+        force-PUT before a rollback succeeds. Slots are walked leaf-first
+        (items template → collection template → catalog routing →
+        audiences). Missing rows are no-ops.
         """
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.modules.storage.presets import get_preset
+        from dynastore.modules.storage.presets import PresetTier
 
         await _assert_catalog_exists(catalog_id)
-        try:
-            preset = get_preset(preset_name)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.CATALOG)
+        return await _unapply_preset_bundle(preset, {"catalog_id": catalog_id})
 
-        configs = get_protocol(ConfigsProtocol)
-        if configs is None:
-            raise HTTPException(status_code=503, detail="Configs service unavailable.")
+    # ----- Collection tier: /admin/catalogs/{cat}/collections/{col}/... -----
+    # Reachable by COLLECTION-tier presets and by items/assets presets at
+    # collection scope (#972).
 
-        bundle = preset.build(catalog_id)
+    @router.post(
+        "/catalogs/{catalog_id}/collections/{collection_id}/presets/{preset_name}",
+        summary="Apply a routing preset to a collection (#972)",
+    )
+    async def apply_collection_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        preset_name: str,
+    ):
+        """Apply ``preset_name`` at the collection scope. Returns 409 if the
+        preset is not reachable at the collection scope (e.g. a catalog-tier
+        preset)."""
+        from dynastore.modules.storage.presets import PresetTier
 
-        # Generic leaf-first walker (#972 PR-1). The bundle's
-        # ``iter_rollback`` honours each entry's ``rollback_priority`` so
-        # items templates come off before collection templates / catalog
-        # routing (cascade-validator dependency) and audiences trail at
-        # the end, matching the pre-#972 hand-rolled ordering.
-        diverged: list[dict] = []
-        to_delete: list[tuple[str, type, dict]] = []
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.COLLECTION)
+        return await _apply_preset_bundle(
+            preset, {"catalog_id": catalog_id, "collection_id": collection_id}
+        )
 
-        for entry in bundle.iter_rollback():
-            scope = {"catalog_id": catalog_id, **dict(entry.scope)}
-            persisted = await configs.get_persisted_config(
-                entry.config_cls, **scope
-            )
-            if persisted is None:
-                continue
-            # Normalize both sides via ``model_dump(mode="json")`` so
-            # default-filling, datetime/enum serialization, and dict-key
-            # ordering all match the on-disk JSON shape.
-            try:
-                persisted_norm = entry.config_cls.model_validate(persisted).model_dump(mode="json")
-            except Exception:  # noqa: BLE001 — surface the raw payload on validation failure
-                persisted_norm = persisted
-            expected_norm = entry.instance.model_dump(mode="json")
-            if persisted_norm == expected_norm:
-                to_delete.append((entry.slot, entry.config_cls, scope))
-            else:
-                diverged.append({
-                    "slot": entry.slot,
-                    "class": entry.config_cls.__name__,
-                    "persisted": persisted_norm,
-                    "expected": expected_norm,
-                })
+    @router.delete(
+        "/catalogs/{catalog_id}/collections/{collection_id}/presets/{preset_name}",
+        summary="Rollback a collection routing preset (#972)",
+    )
+    async def unapply_collection_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        preset_name: str,
+    ):
+        from dynastore.modules.storage.presets import PresetTier
 
-        if diverged:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": (
-                        f"Preset '{preset_name}' cannot be rolled back: "
-                        f"{len(diverged)} slot(s) diverge from the preset bundle."
-                    ),
-                    "diverged": diverged,
-                },
-            )
-
-        deleted: list[str] = []
-        for slot_name, cfg_cls, scope in to_delete:
-            await configs.delete_config(cfg_cls, **scope)
-            deleted.append(slot_name)
-
-        return {
-            "preset": preset_name,
-            "catalog_id": catalog_id,
-            "deleted": deleted,
-        }
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        preset = _resolve_preset_for_scope(preset_name, PresetTier.COLLECTION)
+        return await _unapply_preset_bundle(
+            preset, {"catalog_id": catalog_id, "collection_id": collection_id}
+        )

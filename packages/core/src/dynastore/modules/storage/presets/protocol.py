@@ -47,25 +47,39 @@ from typing import (
 )
 
 from dynastore.modules.db_config.plugin_config import PluginConfig
-
-_C = TypeVar("_C", bound=PluginConfig)
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingConfig,
     CollectionRoutingConfig,
     ItemsRoutingConfig,
 )
 
+_C = TypeVar("_C", bound=PluginConfig)
+
 
 class PresetTier(str, Enum):
     """The URL/scope tier a preset targets.
 
-    URL dispatch in the admin router (#972 PR-2) keys off this value to
-    pick which ``/admin/.../presets/{name}`` family the preset is reachable
-    from. The single ``CATALOG`` value is shipped here; ``PLATFORM``,
-    ``COLLECTION``, ``ITEMS``, ``ASSETS`` arrive with PR-2/3.
+    URL dispatch in the admin router keys off this value to pick which
+    ``/admin/.../presets/{name}`` family the preset is reachable from:
+
+    * ``PLATFORM``   — ``/admin/presets/{name}`` (no scope params; ``build()``)
+    * ``CATALOG``    — ``/admin/catalogs/{cat}/presets/{name}``
+      (``build(catalog_id)``)
+    * ``COLLECTION`` — ``/admin/catalogs/{cat}/collections/{col}/presets/{name}``
+      (``build(catalog_id, collection_id)``)
+    * ``ITEMS`` / ``ASSETS`` — attachable at the catalog **or** collection
+      URL family. Which families are reachable is governed by
+      ``RoutingPreset.catalog_scopable``: a collection-scope items/assets
+      preset reaches the collection family only; one with
+      ``catalog_scopable=True`` also reaches the catalog family. ``build``
+      receives whichever scope the URL supplies.
     """
 
+    PLATFORM = "platform"
     CATALOG = "catalog"
+    COLLECTION = "collection"
+    ITEMS = "items"
+    ASSETS = "assets"
 
 
 @dataclass(frozen=True)
@@ -207,13 +221,27 @@ class RoutingPreset(Protocol):
 
     ``name`` is the registry key + URL path segment; ``description`` is
     surfaced by ``GET /admin/presets``. ``tier`` keys the admin URL
-    family the preset is reachable from (catalog-only today; #972 PR-2+
-    expand the enum). ``build(catalog_id)`` is called per apply — preset
-    implementations stay stateless so the registry can be a plain dict.
+    family the preset is reachable from (see :class:`PresetTier`).
+
+    ``catalog_scopable`` only matters for the ``ITEMS`` / ``ASSETS`` tiers,
+    which can attach at the catalog OR collection URL family. When
+    ``True`` the preset is also reachable at
+    ``/admin/catalogs/{cat}/presets/{name}`` (template applied at catalog
+    scope); when ``False`` it is collection-only. Ignored for the
+    ``PLATFORM`` / ``CATALOG`` / ``COLLECTION`` tiers, which bind to a
+    single URL family.
+
+    ``build`` is called per apply with the scope the URL supplies — no
+    args for platform, ``catalog_id`` for catalog / catalog-scoped
+    items/assets, ``catalog_id`` + ``collection_id`` for collection /
+    collection-scoped items/assets. Implementations stay stateless so the
+    registry can be a plain dict; accept ``**scope`` (or the precise
+    keywords your tier needs) and ignore what you do not consume.
     """
 
     name: str
     description: str
     tier: ClassVar[PresetTier]
+    catalog_scopable: ClassVar[bool]
 
-    def build(self, catalog_id: str) -> PresetBundle: ...
+    def build(self, **scope: str) -> PresetBundle: ...

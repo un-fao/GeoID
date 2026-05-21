@@ -12,15 +12,23 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Named routing presets for one-call catalog provisioning (#847).
+"""Named routing presets for one-call provisioning (#847, #972).
 
 A preset is a thin factory that emits a ``PresetBundle`` of validated
-routing configs + opt-in audience configs. The admin endpoint
-``POST /admin/catalogs/{cat}/presets/{name}`` runs the bundle through the
-standard ``ConfigsProtocol.set_config`` lifecycle; the catalog-tier
-privacy cascade (#960 scope 4) catches mixed private/public combos.
-``DELETE /admin/catalogs/{cat}/presets/{name}`` (#971) is the symmetric
-unapply path on the same resource URL.
+routing configs + opt-in audience configs. Each preset declares a
+``tier`` (``PresetTier``) selecting the admin URL family it is reachable
+from; the URL encodes the apply scope:
+
+* ``PLATFORM``   — ``/admin/presets/{name}`` (no scope)
+* ``CATALOG``    — ``/admin/catalogs/{cat}/presets/{name}``
+* ``COLLECTION`` — ``/admin/catalogs/{cat}/collections/{col}/presets/{name}``
+* ``ITEMS`` / ``ASSETS`` — collection family always; catalog family when
+  ``catalog_scopable=True``.
+
+Each endpoint runs the bundle through the standard
+``ConfigsProtocol.set_config`` lifecycle (no validation bypass) — the
+privacy cascade (#960) catches mixed private/public combos. ``DELETE``
+is the symmetric unapply path (#971) on the same resource URL.
 
 Built-in presets are auto-registered on import (see imports below).
 """
@@ -33,17 +41,23 @@ from .protocol import (  # noqa: F401
 from .registry import get_preset, list_presets, register_preset  # noqa: F401
 
 # Built-in presets — auto-register on import.
+from .defaults_postgres import DefaultsPostgresPreset  # noqa: E402
 from .private_catalog import PrivateCatalogPreset  # noqa: E402
+from .private_collection import PrivateCollectionPreset  # noqa: E402
 from .public_catalog import PublicCatalogPreset  # noqa: E402
 
 register_preset(PublicCatalogPreset())
 register_preset(PrivateCatalogPreset())
+register_preset(DefaultsPostgresPreset())
+register_preset(PrivateCollectionPreset())
 
 __all__ = [
+    "DefaultsPostgresPreset",
     "PresetBundle",
     "PresetBundleEntry",
     "PresetTier",
     "PrivateCatalogPreset",
+    "PrivateCollectionPreset",
     "PublicCatalogPreset",
     "RoutingPreset",
     "get_preset",

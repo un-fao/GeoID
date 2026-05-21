@@ -50,6 +50,7 @@ class GeoidPreset:
 
     name = "geoid"
     tier: ClassVar[PresetTier] = PresetTier.CATALOG
+    catalog_scopable: ClassVar[bool] = False
     description = (
         "FAO GeoID flagship profile. Composes the private_catalog bundle "
         "(PG-first storage + per-tenant private ES indexers, IAM DENY on "
@@ -61,8 +62,8 @@ class GeoidPreset:
         "while keeping the read/index surface private."
     )
 
-    def build(self, catalog_id: str) -> PresetBundle:
-        base = get_preset("private_catalog").build(catalog_id)
+    def build(self, catalog_id: str, **_scope: str) -> PresetBundle:
+        base = get_preset("private_catalog").build(catalog_id=catalog_id)
         return PresetBundle(
             catalog_routing=base.catalog_routing,
             collection_template=base.collection_template,

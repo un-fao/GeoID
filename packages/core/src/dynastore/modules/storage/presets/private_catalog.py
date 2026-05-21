@@ -97,6 +97,7 @@ class PrivateCatalogPreset:
 
     name = "private_catalog"
     tier: ClassVar[PresetTier] = PresetTier.CATALOG
+    catalog_scopable: ClassVar[bool] = False
     description = (
         "PG-only catalog/collection envelopes + per-tenant private "
         "Elasticsearch indexer on the items tier. No anonymous read paths; "
@@ -105,7 +106,7 @@ class PrivateCatalogPreset:
         "isolated tenant catalogs."
     )
 
-    def build(self, catalog_id: str) -> PresetBundle:  # noqa: ARG002
+    def build(self, catalog_id: str, **_scope: str) -> PresetBundle:  # noqa: ARG002
         return PresetBundle(
             catalog_routing=_build_pg_only_catalog_routing(),
             collection_template=_build_pg_only_collection_routing(),
