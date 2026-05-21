@@ -324,7 +324,8 @@ class ItemsWritePolicy(PluginConfig):
       before :attr:`compute`.
 
     Posture flags: :attr:`on_conflict`, :attr:`on_asset_conflict`,
-    :attr:`enable_validity` / :attr:`validity_field`, :attr:`track_asset_id`.
+    :attr:`validity_field` (null-object; :attr:`enable_validity` is a derived
+    read-only property), :attr:`track_asset_id`.
 
     The ``context`` dict passed to ``write_entities()`` carries runtime values
     that override config defaults:
@@ -453,25 +454,30 @@ class ItemsWritePolicy(PluginConfig):
             "produced from a join)."
         ),
     )
-    enable_validity: Mutable[bool] = Field(
-        default=False,
-        examples=[False, True],
+    validity_field: Mutable[Optional[str]] = Field(
+        default=None,
+        examples=[None, "valid_from", "properties.start_date", "valid_time.start"],
         description=(
-            "Track ``valid_from`` / ``valid_to`` temporal range per entity. "
-            "Required for ``NEW_VERSION`` semantics — when False, "
-            "``on_conflict=NEW_VERSION`` falls back to ``UPDATE``."
+            "Null-object SSOT for temporal validity. The field name IS the "
+            "toggle: a dot-notation path enables ``valid_from`` / ``valid_to`` "
+            "tracking per entity and selects the source path for the validity "
+            "start; ``None`` disables validity entirely. Required (non-None) for "
+            "``NEW_VERSION`` semantics — when ``None``, ``on_conflict=NEW_VERSION`` "
+            "falls back to ``UPDATE``. Validity END is either provided in "
+            "``write_context.valid_to`` or computed as ``None`` (open-ended)."
         ),
     )
-    validity_field: Mutable[str] = Field(
-        default="valid_from",
-        examples=["valid_from", "properties.start_date", "valid_time.start"],
-        description=(
-            "Dot-notation path to extract validity start from the incoming "
-            "entity. Used only when ``enable_validity=True``. Validity END is "
-            "either provided in ``write_context.valid_to`` or computed as "
-            "``None`` (open-ended)."
-        ),
-    )
+
+    @property
+    def enable_validity(self) -> bool:
+        """True when ``validity_field`` is set (null-object pattern).
+
+        Derived, read-only. ``validity_field`` is the single source of truth;
+        all drivers gate temporal-column emission on this property so the bool
+        and the path can never independently diverge.
+        """
+        return self.validity_field is not None
+
     geometries: Mutable[GeometriesWriteBehavior] = Field(
         default_factory=GeometriesWriteBehavior,
         description=(

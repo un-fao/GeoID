@@ -176,7 +176,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         """Resolve ``ItemsWritePolicy`` from the config waterfall.
 
         Used by ``ensure_storage`` and ``compute_extents`` to obtain the
-        SSOT for ``enable_validity`` (and any other policy-driven
+        SSOT for ``validity_field`` (and any other policy-driven
         sidecar shape decisions). Mirrors
         ``IcebergItemsDriver._resolve_write_policy`` — falls back to
         defaults if the configs service or config is missing.
@@ -527,8 +527,8 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         # (query_optimizer, item_query, item_service, …) then sees the correct
         # shape without threading the policy itself.
         #
-        # Null-object overlays applied from ItemsWritePolicy (#974, #1043):
-        #   enable_validity    ← policy.enable_validity  (bool mirror)
+        # Null-object overlays applied from ItemsWritePolicy (#957, #974, #1043):
+        #   validity_field     ← policy.validity_field  (path or None)
         #   external_id_field  ← "external_id" when policy has EXTERNAL_ID rule,
         #                        None when absent
         #   asset_id_field     ← "asset_id" when policy.track_asset_id, else None
@@ -571,8 +571,8 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         for sc in col_config.sidecars:
             if isinstance(sc, FeatureAttributeSidecarConfig):
                 updates: dict = {}
-                if sc.enable_validity != write_policy.enable_validity:
-                    updates["enable_validity"] = write_policy.enable_validity
+                if sc.validity_field != write_policy.validity_field:
+                    updates["validity_field"] = write_policy.validity_field
                 if sc.external_id_field != policy_external_id_field:
                     updates["external_id_field"] = policy_external_id_field
                 if sc.asset_id_field != policy_asset_id_field:
@@ -651,7 +651,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             await DDLQuery(create_hub_sql).execute(conn)
 
             # --- Create sidecar tables ---
-            # ``sidecar_config.enable_validity`` is already policy-aligned
+            # ``sidecar_config.validity_field`` is already policy-aligned
             # (overlay above), so the factory can stay policy-agnostic.
             for sidecar_config in col_config.sidecars:
                 try:
@@ -1101,9 +1101,10 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                     (sc for sc in layer_config.sidecars if isinstance(sc, FeatureAttributeSidecarConfig)),
                     None,
                 )
-                # ``attr_sc.enable_validity`` mirrors ``ItemsWritePolicy``
-                # (overlaid by ``ensure_storage`` at DDL time, #974) so
-                # reading the sidecar is the SSOT for this collection.
+                # ``attr_sc.enable_validity`` (derived from ``validity_field``)
+                # mirrors ``ItemsWritePolicy`` (overlaid by ``ensure_storage``
+                # at DDL time, #957/#974) so reading the sidecar is the SSOT
+                # for this collection.
                 # Only join the attributes table for temporal extents when
                 # validity is actually persisted — otherwise the row carries
                 # no ``validity`` column and the SELECT would error.

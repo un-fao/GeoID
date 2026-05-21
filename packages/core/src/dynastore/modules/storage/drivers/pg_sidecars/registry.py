@@ -88,9 +88,10 @@ class SidecarRegistry:
 
         If lenient=True, returns None if implementation is not registered.
 
-        Note (#974): validity SSOT is ``ItemsWritePolicy.enable_validity``;
-        the PG driver mirrors it onto ``FeatureAttributeSidecarConfig.enable_validity``
-        at ``ensure_storage`` time, so the factory itself stays policy-agnostic.
+        Note (#957/#974): validity SSOT is ``ItemsWritePolicy.validity_field``
+        (null-object); the PG driver mirrors it onto
+        ``FeatureAttributeSidecarConfig.validity_field`` at ``ensure_storage``
+        time, so the factory itself stays policy-agnostic.
         Sidecar ctors accept ``**_kwargs`` to absorb forward-compatible
         factory inputs.
         """

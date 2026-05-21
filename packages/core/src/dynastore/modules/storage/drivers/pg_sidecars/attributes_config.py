@@ -271,20 +271,32 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
 
     # Validity Configuration
     #
-    # ``enable_validity`` is a storage-shape mirror of the SSOT field
-    # ``ItemsWritePolicy.enable_validity``. The PG driver overlays the
-    # policy value onto this field at ``ensure_storage`` time and
-    # persists the result, so every read path that loads the
-    # collection's sidecar config sees the policy-aligned value (#974).
-    # Operators MUST set ``enable_validity`` on ``ItemsWritePolicy``;
+    # ``validity_field`` is a null-object storage-shape mirror of the SSOT
+    # field ``ItemsWritePolicy.validity_field``. The field name IS the toggle:
+    # a path enables the validity column, ``None`` disables it. The PG driver
+    # overlays the policy value onto this field at ``ensure_storage`` time and
+    # persists the result, so every read path that loads the collection's
+    # sidecar config sees the policy-aligned value (#957/#974).
+    # Operators MUST set ``validity_field`` on ``ItemsWritePolicy``;
     # values set here are overwritten on the next ``ensure_storage``.
-    enable_validity: bool = Field(
-        default=False,
+    validity_field: Optional[str] = Field(
+        default=None,
         description=(
-            "Storage-shape mirror of ItemsWritePolicy.enable_validity "
-            "(SSOT). Overwritten by the driver at DDL time."
+            "Null-object storage-shape mirror of ItemsWritePolicy.validity_field "
+            "(SSOT). Path → validity column enabled; None → disabled. "
+            "Overwritten by the driver at DDL time."
         ),
     )
+
+    @property
+    def enable_validity(self) -> bool:
+        """True when ``validity_field`` is set (null-object pattern).
+
+        Bool shim over the null-object field so the ~13 DDL/SQL callsites in
+        ``attributes.py`` keep reading a boolean. The field name is the single
+        toggle, so the bool can never diverge from the configured path.
+        """
+        return self.validity_field is not None
 
     # Mode A: Relational schema
     attribute_schema: Optional[List[AttributeSchemaEntry]] = Field(default=None, description="List of attribute definitions for relational mode"
@@ -335,8 +347,8 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     def has_validity(self) -> bool:
         """Whether this sidecar is configured to manage validity.
 
-        Mirrors :attr:`ItemsWritePolicy.enable_validity`; the driver
-        overlays the policy onto :attr:`enable_validity` at DDL time
+        Mirrors :attr:`ItemsWritePolicy.validity_field`; the driver
+        overlays the policy onto :attr:`validity_field` at DDL time
         and persists the result so every read sees the same value.
         """
         return self.enable_validity
@@ -350,7 +362,9 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         # 1. BY_TIME -> validity
         if self.partition_strategy == AttributePartitionStrategyPreset.BY_TIME:
             if not self.enable_validity:
-                raise ValueError("BY_TIME partitioning requires enable_validity=True")
+                raise ValueError(
+                    "BY_TIME partitioning requires validity_field to be set"
+                )
             return {"validity": "TSTZRANGE"}
 
         # 2. BY_ASSET_ID -> asset_id

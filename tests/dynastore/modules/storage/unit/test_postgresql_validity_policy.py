@@ -12,14 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Issue #974 — ItemsWritePolicy.enable_validity is the SSOT for the
-sidecar's validity column.
+"""Issue #957/#974 — ``ItemsWritePolicy.validity_field`` is the null-object
+SSOT for the sidecar's validity column.
 
-The PG driver overlays ``ItemsWritePolicy.enable_validity`` onto
-``FeatureAttributeSidecarConfig.enable_validity`` at ``ensure_storage``
-time and persists the result, so every read path that rehydrates the
-collection's driver config sees the policy-aligned value. These tests
-pin the SSOT contract.
+Following the null-object pattern (#1048), validity is expressed as a single
+``validity_field: Optional[str]`` on both ``ItemsWritePolicy`` and
+``FeatureAttributeSidecarConfig``. The field name IS the toggle: a path enables
+the validity column, ``None`` disables it. ``enable_validity`` is a derived
+read-only property on both sides, so the bool can never independently diverge
+from the configured path.
+
+The PG driver overlays ``ItemsWritePolicy.validity_field`` onto
+``FeatureAttributeSidecarConfig.validity_field`` at ``ensure_storage`` time and
+persists the result, so every read path that rehydrates the collection's driver
+config sees the policy-aligned value. These tests pin the SSOT contract.
 """
 
 from __future__ import annotations
@@ -39,36 +45,69 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
 from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
 
 
-class TestSidecarConfigDefaults:
-    """Sidecar config defaults must match the policy default so collections
-    that never set the field on either side stay consistent."""
+class TestPolicyNullObject:
+    """``ItemsWritePolicy.validity_field`` is the null-object SSOT;
+    ``enable_validity`` is derived and not independently settable."""
 
-    def test_attributes_config_enable_validity_defaults_match_policy(self):
-        """The sidecar field defaults to ``False`` — identical to
-        :attr:`ItemsWritePolicy.enable_validity` default. A collection
-        configured with neither side set therefore has validity OFF
-        everywhere (was previously divergent: sidecar=True / policy=False)."""
+    def test_default_validity_field_is_none(self):
+        policy = ItemsWritePolicy()
+        assert policy.validity_field is None
+        assert policy.enable_validity is False
+
+    def test_set_validity_field_enables_validity(self):
+        policy = ItemsWritePolicy(validity_field="reference_year")
+        assert policy.validity_field == "reference_year"
+        assert policy.enable_validity is True
+
+    def test_enable_validity_is_not_a_settable_field(self):
+        """The bool is a derived property — authoring it is rejected so it can
+        never diverge from ``validity_field`` (PluginConfig is ``extra=forbid``)."""
+        import pytest as _pytest
+
+        with _pytest.raises(Exception):
+            ItemsWritePolicy(enable_validity=True)
+
+
+class TestSidecarNullObject:
+    """The sidecar mirrors the policy via the same null-object field. Its
+    default matches the policy default so a collection that sets neither side
+    has validity OFF everywhere (was previously divergent: sidecar=True /
+    policy=False before the SSOT collapse)."""
+
+    def test_sidecar_default_validity_field_matches_policy(self):
         sc = FeatureAttributeSidecarConfig()
         policy = ItemsWritePolicy()
+        assert sc.validity_field is None
         assert sc.enable_validity is False
-        assert policy.enable_validity is False
-        assert sc.enable_validity == policy.enable_validity
+        assert policy.validity_field is None
+        assert sc.validity_field == policy.validity_field
 
-    def test_has_validity_property_mirrors_field(self):
-        sc_off = FeatureAttributeSidecarConfig(enable_validity=False)
-        sc_on = FeatureAttributeSidecarConfig(enable_validity=True)
+    def test_enable_validity_property_derives_from_field(self):
+        sc_off = FeatureAttributeSidecarConfig(validity_field=None)
+        sc_on = FeatureAttributeSidecarConfig(validity_field="valid_from")
+        assert sc_off.enable_validity is False
         assert sc_off.has_validity is False
+        assert sc_on.enable_validity is True
         assert sc_on.has_validity is True
 
-    def test_sidecar_factory_propagates_config_value(self):
-        """Sidecar ``has_validity()`` reads ``self.config.enable_validity``
-        — the value the driver overlaid from policy at DDL time."""
+    def test_bool_cannot_drive_behaviour(self):
+        """A stray ``enable_validity=True`` (no path) does NOT enable validity —
+        only ``validity_field`` does. Proves the bool can't diverge from the
+        path: the field name is the single toggle."""
         sc = FeatureAttributeSidecarConfig(enable_validity=True)
+        assert sc.validity_field is None
+        assert sc.enable_validity is False
+        assert sc.has_validity is False
+
+    def test_sidecar_factory_propagates_config_value(self):
+        """Sidecar ``has_validity()`` reads ``self.config.validity_field`` via
+        the derived property — the value the driver overlaid from policy."""
+        sc = FeatureAttributeSidecarConfig(validity_field="valid_from")
         impl = SidecarRegistry.get_sidecar(sc)
         assert impl is not None
         assert impl.has_validity() is True
 
-        sc_off = FeatureAttributeSidecarConfig(enable_validity=False)
+        sc_off = FeatureAttributeSidecarConfig(validity_field=None)
         impl_off = SidecarRegistry.get_sidecar(sc_off)
         assert impl_off is not None
         assert impl_off.has_validity() is False
@@ -77,14 +116,13 @@ class TestSidecarConfigDefaults:
         """Ctor accepts forward-compatible kwargs (e.g. ``policy=...``)
         without erroring — keeps room for full SSOT threading later."""
         sc = FeatureAttributeSidecarConfig()
-        # The factory itself does not pass policy today; verify the
-        # ctor itself tolerates it for direct callers.
         from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
             FeatureAttributeSidecar,
         )
 
-        instance = FeatureAttributeSidecar(sc, policy=MagicMock(enable_validity=True))
-        assert instance.config.enable_validity is False  # policy is not consumed by ctor
+        instance = FeatureAttributeSidecar(sc, policy=MagicMock(validity_field="x"))
+        # policy is not consumed by the ctor — config remains the SSOT source.
+        assert instance.config.validity_field is None
 
 
 class TestResolveWritePolicy:
@@ -99,12 +137,13 @@ class TestResolveWritePolicy:
 
         mock_configs = MagicMock()
         mock_configs.get_config = AsyncMock(
-            return_value=ItemsWritePolicy(enable_validity=True)
+            return_value=ItemsWritePolicy(validity_field="valid_from")
         )
         with patch(
             "dynastore.tools.discovery.get_protocol", return_value=mock_configs
         ):
             policy = await ItemsPostgresqlDriver._resolve_write_policy("c", "col")
+        assert policy.validity_field == "valid_from"
         assert policy.enable_validity is True
 
     @pytest.mark.asyncio
@@ -115,6 +154,7 @@ class TestResolveWritePolicy:
             "dynastore.tools.discovery.get_protocol", return_value=None
         ):
             policy = await ItemsPostgresqlDriver._resolve_write_policy("c", "col")
+        assert policy.validity_field is None
         assert policy.enable_validity is False
 
     @pytest.mark.asyncio
@@ -128,12 +168,13 @@ class TestResolveWritePolicy:
         ):
             policy = await ItemsPostgresqlDriver._resolve_write_policy("c", "col")
         # Falls back to defaults — divergence resolution must never raise.
+        assert policy.validity_field is None
         assert policy.enable_validity is False
 
 
 class TestPolicyOverlay:
     """The overlay logic at ``ensure_storage`` updates each
-    :class:`FeatureAttributeSidecarConfig` so its ``enable_validity``
+    :class:`FeatureAttributeSidecarConfig` so its ``validity_field``
     matches the resolved policy. The same overlay is applied to the
     persisted col_config so reads see the policy-aligned value."""
 
@@ -147,10 +188,10 @@ class TestPolicyOverlay:
         any_overlay = False
         for sc in col_config.sidecars:
             if isinstance(sc, FeatureAttributeSidecarConfig) and (
-                sc.enable_validity != policy.enable_validity
+                sc.validity_field != policy.validity_field
             ):
                 overlay_sidecars.append(
-                    sc.model_copy(update={"enable_validity": policy.enable_validity})
+                    sc.model_copy(update={"validity_field": policy.validity_field})
                 )
                 any_overlay = True
             else:
@@ -159,13 +200,13 @@ class TestPolicyOverlay:
             return col_config.model_copy(update={"sidecars": overlay_sidecars})
         return col_config
 
-    def test_overlay_flips_sidecar_when_policy_says_true(self):
-        """Divergent case: sidecar=False, policy=True → sidecar becomes True."""
+    def test_overlay_enables_sidecar_when_policy_sets_path(self):
+        """Divergent case: sidecar=None, policy=path → sidecar gets the path."""
         sc = FeatureAttributeSidecarConfig(
-            storage_mode=AttributeStorageMode.JSONB, enable_validity=False
+            storage_mode=AttributeStorageMode.JSONB, validity_field=None
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
-        policy = ItemsWritePolicy(enable_validity=True)
+        policy = ItemsWritePolicy(validity_field="valid_from")
 
         overlaid = self._apply_overlay(col, policy)
         attr_sc = next(
@@ -173,15 +214,16 @@ class TestPolicyOverlay:
             for s in overlaid.sidecars
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
+        assert attr_sc.validity_field == "valid_from"
         assert attr_sc.enable_validity is True
 
-    def test_overlay_flips_sidecar_when_policy_says_false(self):
-        """Divergent case: sidecar=True, policy=False → sidecar becomes False."""
+    def test_overlay_disables_sidecar_when_policy_clears_path(self):
+        """Divergent case: sidecar=path, policy=None → sidecar cleared."""
         sc = FeatureAttributeSidecarConfig(
-            storage_mode=AttributeStorageMode.JSONB, enable_validity=True
+            storage_mode=AttributeStorageMode.JSONB, validity_field="valid_from"
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
-        policy = ItemsWritePolicy(enable_validity=False)
+        policy = ItemsWritePolicy(validity_field=None)
 
         overlaid = self._apply_overlay(col, policy)
         attr_sc = next(
@@ -189,18 +231,36 @@ class TestPolicyOverlay:
             for s in overlaid.sidecars
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
+        assert attr_sc.validity_field is None
         assert attr_sc.enable_validity is False
 
     def test_overlay_no_op_when_aligned(self):
         """Sidecar and policy already agree → no model_copy churn."""
         sc = FeatureAttributeSidecarConfig(
-            storage_mode=AttributeStorageMode.JSONB, enable_validity=True
+            storage_mode=AttributeStorageMode.JSONB, validity_field="valid_from"
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[sc])
-        policy = ItemsWritePolicy(enable_validity=True)
+        policy = ItemsWritePolicy(validity_field="valid_from")
 
         overlaid = self._apply_overlay(col, policy)
         assert overlaid is col  # Same object — no overlay applied.
+
+    def test_overlay_propagates_non_default_path(self):
+        """The overlay carries the actual path, not just a boolean — the
+        sidecar mirror keeps the policy's source field selection."""
+        sc = FeatureAttributeSidecarConfig(
+            storage_mode=AttributeStorageMode.JSONB, validity_field=None
+        )
+        col = ItemsPostgresqlDriverConfig(sidecars=[sc])
+        policy = ItemsWritePolicy(validity_field="properties.start_date")
+
+        overlaid = self._apply_overlay(col, policy)
+        attr_sc = next(
+            s
+            for s in overlaid.sidecars
+            if isinstance(s, FeatureAttributeSidecarConfig)
+        )
+        assert attr_sc.validity_field == "properties.start_date"
 
     def test_overlay_sets_external_id_field_from_policy(self):
         """Policy has EXTERNAL_ID compute rule → external_id_field="external_id"."""
@@ -329,13 +389,13 @@ class TestPolicyOverlay:
             TargetDimension,
         )
 
-        attr_sc = FeatureAttributeSidecarConfig(enable_validity=False)
+        attr_sc = FeatureAttributeSidecarConfig(validity_field=None)
         geom_sc = GeometriesSidecarConfig(
             target_srid=4326,
             target_dimension=TargetDimension.FORCE_2D,
         )
         col = ItemsPostgresqlDriverConfig(sidecars=[geom_sc, attr_sc])
-        policy = ItemsWritePolicy(enable_validity=True)
+        policy = ItemsWritePolicy(validity_field="valid_from")
 
         overlaid = self._apply_overlay(col, policy)
         geom_after = next(
@@ -347,4 +407,32 @@ class TestPolicyOverlay:
             if isinstance(s, FeatureAttributeSidecarConfig)
         )
         assert geom_after is geom_sc  # Untouched
-        assert attr_after.enable_validity is True  # Overlaid
+        assert attr_after.validity_field == "valid_from"  # Overlaid
+
+
+class TestByTimePartitionValidation:
+    """``BY_TIME`` partitioning requires the validity column. The validation
+    reads the null-object field via the derived property."""
+
+    def test_by_time_requires_validity_field(self):
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributePartitionStrategyPreset,
+        )
+
+        sc = FeatureAttributeSidecarConfig(
+            validity_field=None,
+            partition_strategy=AttributePartitionStrategyPreset.BY_TIME,
+        )
+        with pytest.raises(ValueError, match="BY_TIME partitioning requires"):
+            _ = sc.partition_key_contributions
+
+    def test_by_time_ok_when_validity_field_set(self):
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributePartitionStrategyPreset,
+        )
+
+        sc = FeatureAttributeSidecarConfig(
+            validity_field="valid_from",
+            partition_strategy=AttributePartitionStrategyPreset.BY_TIME,
+        )
+        assert sc.partition_key_contributions == {"validity": "TSTZRANGE"}
