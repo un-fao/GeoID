@@ -668,9 +668,10 @@ async def test_dispatch_path_not_logged_on_failure(caplog):
 
 @pytest.mark.asyncio
 async def test_fan_out_warns_when_ops_submitted_but_routing_returns_no_entries(caplog):
-    """If RoutingConfig.operations[INDEX] is empty, every write silently
-    skips every indexer. Pin a WARN that names the scope so a misconfigured
-    routing table is visible in logs instead of invisibly swallowing writes.
+    """If RoutingConfig.operations[WRITE] has no secondary-index entries,
+    every write silently skips every indexer. Pin a WARN that names the scope
+    so a misconfigured routing table is visible in logs instead of invisibly
+    swallowing writes.
     """
     import logging as _logging
     dispatcher = _make_dispatcher(entries=[], indexers={})
@@ -679,7 +680,8 @@ async def test_fan_out_warns_when_ops_submitted_but_routing_returns_no_entries(c
     assert results == {}
     msgs = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
     assert any(
-        "routing returned NO INDEX entries" in m and "cat-x" in m and "col-y" in m
+        "routing returned NO secondary-index entries" in m
+        and "cat-x" in m and "col-y" in m
         for m in msgs
     ), msgs
 
@@ -695,4 +697,6 @@ async def test_fan_out_does_not_warn_when_no_ops_and_no_entries(caplog):
         results = await dispatcher.fan_out_bulk(_ctx(), [])
     assert results == {}
     msgs = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
-    assert not any("routing returned NO INDEX entries" in m for m in msgs), msgs
+    assert not any(
+        "routing returned NO secondary-index entries" in m for m in msgs
+    ), msgs
