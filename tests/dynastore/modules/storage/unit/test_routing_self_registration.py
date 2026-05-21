@@ -845,8 +845,8 @@ def test_validate_handlers_invoke_searcher_self_registration():
 
 
 def test_transformer_helper_picks_up_entity_transform_protocol_implementers():
-    """Any registered EntityTransformProtocol implementer lands in
-    operations[TRANSFORM] keyed by class name (matching indexer/searcher
+    """Any registered EntityTransformProtocol implementer lands in the
+    ``transformers`` registry keyed by class name (matching indexer/searcher
     convention)."""
     from unittest.mock import patch
 
@@ -862,54 +862,56 @@ def test_transformer_helper_picks_up_entity_transform_protocol_implementers():
         async def transform_for_index(self, entity, **_): return entity
         async def restore_from_index(self, doc, **_): return doc
 
-    target_ops: dict = {}
+    registry: list = []
     fake_pool = [TransformerOne(), TransformerTwo()]
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: fake_pool):
-        _self_register_transformers_into(target_ops)
+        _self_register_transformers_into(registry)
 
-    ids = {e.driver_ref for e in target_ops.get(Operation.TRANSFORM, [])}
+    ids = {e.driver_ref for e in registry}
     assert ids == {"transformer_one", "transformer_two"}
+    assert all(e.source == "auto" for e in registry)
 
 
 def test_transformer_helper_idempotent_and_preserves_operator_entry():
-    """Repeated calls are no-ops; an operator-supplied entry survives."""
+    """An operator-authored registry is invariant under auto-augmentation."""
     from unittest.mock import patch
 
     from dynastore.modules.storage.routing_config import (
         _self_register_transformers_into,
+        TransformerEntry,
     )
 
     class CustomTransformer:
         async def transform_for_index(self, entity, **_): return entity
         async def restore_from_index(self, doc, **_): return doc
 
-    from dynastore.modules.storage.hints import Hint
-    op_entry = OperationDriverEntry(driver_ref="custom_transformer", hints={Hint.METADATA})
-    target_ops: dict = {Operation.TRANSFORM: [op_entry]}
+    op_entry = TransformerEntry(driver_ref="custom_transformer", source="operator")
+    registry: list = [op_entry]
 
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: [CustomTransformer()]):
-        _self_register_transformers_into(target_ops)
-        _self_register_transformers_into(target_ops)
+        _self_register_transformers_into(registry)
+        _self_register_transformers_into(registry)
 
-    assert len(target_ops[Operation.TRANSFORM]) == 1
-    assert target_ops[Operation.TRANSFORM][0].hints == {Hint.METADATA}
+    assert len(registry) == 1
+    assert registry[0].driver_ref == "custom_transformer"
+    assert registry[0].source == "operator"
 
 
 def test_transformer_helper_no_op_when_no_implementers():
-    """Empty discovery → operations[TRANSFORM] stays absent (no implicit empty key)."""
+    """Empty discovery → the registry stays empty."""
     from unittest.mock import patch
 
     from dynastore.modules.storage.routing_config import (
         _self_register_transformers_into,
     )
 
-    target_ops: dict = {}
+    registry: list = []
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: []):
-        _self_register_transformers_into(target_ops)
-    assert target_ops.get(Operation.TRANSFORM, []) == []
+        _self_register_transformers_into(registry)
+    assert registry == []
 
 
 # ---------------------------------------------------------------------------
@@ -1045,22 +1047,21 @@ def test_option_a_transformer_helper_skips_operator_managed_list():
 
     from dynastore.modules.storage.routing_config import (
         _self_register_transformers_into,
+        TransformerEntry,
     )
 
     class _NewTransformer:
         async def transform_for_index(self, entity, **_): return entity
         async def restore_from_index(self, doc, **_): return doc
 
-    target_ops: dict = {
-        Operation.TRANSFORM: [
-            OperationDriverEntry(driver_ref="pinned_tf", source="operator"),
-        ],
-    }
+    registry: list = [
+        TransformerEntry(driver_ref="pinned_tf", source="operator"),
+    ]
     with patch("dynastore.tools.discovery.get_protocols",
                lambda proto: [_NewTransformer()]):
-        _self_register_transformers_into(target_ops)
+        _self_register_transformers_into(registry)
 
-    refs = {e.driver_ref for e in target_ops[Operation.TRANSFORM]}
+    refs = {e.driver_ref for e in registry}
     assert refs == {"pinned_tf"}
 
 

@@ -175,9 +175,6 @@ async def test_input_on_index_only_runs_at_index_hop_not_at_search():
     ops = {
         Operation.WRITE: [index_entry],
         Operation.SEARCH: [search_entry],
-        Operation.TRANSFORM: [
-            OperationDriverEntry(driver_ref="payload_append_transformer"),
-        ],
     }
     assert index_entry.input_transformers == ("payload_append_transformer",)
     assert search_entry.output_transformers == ()
@@ -213,9 +210,6 @@ async def test_output_on_search_only_resolves_inverse_chain():
                 driver_ref="items_indexer",
                 output_transformers=("payload_append_transformer",),
             ),
-        ],
-        Operation.TRANSFORM: [
-            OperationDriverEntry(driver_ref="payload_append_transformer"),
         ],
     }
     appender = PayloadAppendTransformer("X")
@@ -269,8 +263,8 @@ async def test_chain_composition_two_transformers_left_to_right_then_right_to_le
 
 def test_validator_rejects_dangling_input_transformer_ref():
     """A driver_ref listed in input_transformers that is not present in
-    operations[TRANSFORM] makes the routing config raise ValueError at
-    build time."""
+    the ``transformers`` registry makes the routing config raise ValueError
+    at build time."""
     from dynastore.modules.storage.routing_config import (
         AssetRoutingConfig,
         Operation,
@@ -302,6 +296,7 @@ def test_deferred_hop_warns_once_for_read_input_transformers(caplog):
         AssetRoutingConfig,
         Operation,
         OperationDriverEntry,
+        TransformerEntry,
         _DEFERRED_HOP_WARNED,
     )
 
@@ -317,10 +312,10 @@ def test_deferred_hop_warns_once_for_read_input_transformers(caplog):
                         input_transformers=("noop_attached_transformer",),
                     ),
                 ],
-                Operation.TRANSFORM: [
-                    OperationDriverEntry(driver_ref="noop_attached_transformer"),
-                ],
             },
+            transformers=[
+                TransformerEntry(driver_ref="noop_attached_transformer"),
+            ],
         )
     matches = [
         rec for rec in caplog.records
@@ -342,10 +337,10 @@ def test_deferred_hop_warns_once_for_read_input_transformers(caplog):
                         input_transformers=("noop_attached_transformer",),
                     ),
                 ],
-                Operation.TRANSFORM: [
-                    OperationDriverEntry(driver_ref="noop_attached_transformer"),
-                ],
             },
+            transformers=[
+                TransformerEntry(driver_ref="noop_attached_transformer"),
+            ],
         )
     matches = [
         rec for rec in caplog.records
@@ -402,9 +397,6 @@ async def test_per_item_failure_isolation_with_transformer_at_index_hop():
     class _Routing:
         operations = {
             Operation.WRITE: [entry],
-            Operation.TRANSFORM: [
-                OperationDriverEntry(driver_ref="selective_raise"),
-            ],
         }
 
     indexer = _Indexer()

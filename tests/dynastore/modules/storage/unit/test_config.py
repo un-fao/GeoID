@@ -19,6 +19,7 @@ from dynastore.modules.storage.routing_config import (
     CollectionRoutingConfig,
     Operation,
     OperationDriverEntry,
+    TransformerEntry,
     FailurePolicy,
     WriteMode,
 )
@@ -325,11 +326,12 @@ class TestCollectionMetadataRouting:
 
 
 class TestOperationEnum:
-    def test_transform_exists(self):
-        assert Operation.TRANSFORM == "TRANSFORM"
+    def test_transform_not_an_operation(self):
+        # #990: transformers are a registry, not a dispatch operation.
+        assert not hasattr(Operation, "TRANSFORM")
 
     def test_all_operations(self):
-        ops = {Operation.WRITE, Operation.READ, Operation.SEARCH, Operation.TRANSFORM}
+        ops = {Operation.WRITE, Operation.READ, Operation.SEARCH, Operation.UPLOAD}
         assert len(ops) == 4
 
 
@@ -337,7 +339,10 @@ class TestWriteMode:
     def test_composition_modes_exist(self):
         assert WriteMode.FIRST == "first"
         assert WriteMode.FAN_OUT == "fan_out"
-        assert WriteMode.CHAIN == "chain"
+
+    def test_chain_mode_retired(self):
+        # #990: CHAIN was only ever the TRANSFORM-op composition mode.
+        assert not hasattr(WriteMode, "CHAIN")
 
     def test_execution_modes_still_exist(self):
         assert WriteMode.SYNC == "sync"
@@ -348,12 +353,12 @@ class TestMetadataRoutingConfig:
     def test_default_operations_shape(self):
         cfg = CollectionRoutingConfig()
         # #732 ships non-empty WRITE/READ defaults: the PG collection driver
-        # is the system of record for both. INDEX/SEARCH may also be seeded
+        # is the system of record for both. SEARCH may also be seeded
         # (explicit default entry + Searcher auto-self-registration). The
-        # invariant that still holds: TRANSFORM is never seeded by default —
-        # it remains operator-driven.
-        assert Operation.TRANSFORM not in cfg.operations, (
-            f"TRANSFORM unexpectedly present in default operations: {cfg.operations}"
+        # invariant that still holds: no transformer is seeded by default
+        # unless an EntityTransformProtocol implementer is discoverable.
+        assert cfg.transformers == [], (
+            f"transformers unexpectedly seeded by default: {cfg.transformers}"
         )
         for op in (Operation.WRITE, Operation.READ):
             refs = {e.driver_ref for e in cfg.operations[op]}
@@ -371,26 +376,26 @@ class TestMetadataRoutingConfig:
         assert len(cfg.operations[Operation.READ]) == 1
         assert cfg.operations[Operation.READ][0].driver_ref == "collection_elasticsearch_driver"
 
-    def test_transform_operation(self):
-        cfg = CollectionRoutingConfig(operations={
-            Operation.TRANSFORM: [OperationDriverEntry(
-                driver_ref="items_iceberg_driver",
-                write_mode=WriteMode.CHAIN,
-                on_failure=FailurePolicy.WARN,
-            )],
-        })
-        entry = cfg.operations[Operation.TRANSFORM][0]
+    def test_transformer_registry_entry(self):
+        cfg = CollectionRoutingConfig(transformers=[
+            TransformerEntry(driver_ref="items_iceberg_driver"),
+        ])
+        entry = cfg.transformers[0]
         assert entry.driver_ref == "items_iceberg_driver"
-        assert entry.write_mode == WriteMode.CHAIN
-        assert entry.on_failure == FailurePolicy.WARN
+        assert entry.source == "operator"
+        assert entry.sla is None
 
-    def test_read_and_transform_together(self):
-        cfg = CollectionRoutingConfig(operations={
-            Operation.READ: [OperationDriverEntry(driver_ref="collection_postgresql_driver")],
-            Operation.TRANSFORM: [OperationDriverEntry(driver_ref="items_iceberg_driver")],
-        })
+    def test_read_and_transformers_together(self):
+        cfg = CollectionRoutingConfig(
+            operations={
+                Operation.READ: [
+                    OperationDriverEntry(driver_ref="collection_postgresql_driver")
+                ],
+            },
+            transformers=[TransformerEntry(driver_ref="items_iceberg_driver")],
+        )
         assert Operation.READ in cfg.operations
-        assert Operation.TRANSFORM in cfg.operations
+        assert any(t.driver_ref == "items_iceberg_driver" for t in cfg.transformers)
 
 class TestAssetRoutingConfig:
     def test_class_key(self):

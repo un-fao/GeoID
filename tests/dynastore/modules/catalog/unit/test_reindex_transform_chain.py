@@ -1,10 +1,10 @@
 """ReindexWorker input_transformers chain.
 
-Closes the M3.1 ``transformed=True`` gap (#990): catalog INDEX entries used to
-silently ship the raw envelope when a transform was requested. The worker now
-applies the entry's ``input_transformers`` chain (the documented SSOT, resolved
-via ``get_protocols(EntityTransformProtocol)``) before dispatch, and surfaces
-transformer failures instead of swallowing them.
+A secondary-index WRITE entry's ``input_transformers`` is the sole trigger for
+feeding a transformed envelope (#990): the worker applies the entry's chain
+(resolved via ``get_protocols(EntityTransformProtocol)``) before dispatch, and
+surfaces transformer failures instead of swallowing them. With no
+``input_transformers`` the raw envelope is dispatched.
 """
 
 from __future__ import annotations

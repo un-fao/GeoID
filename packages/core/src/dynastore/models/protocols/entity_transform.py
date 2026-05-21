@@ -20,14 +20,14 @@ A transformer is a driver whose role is to reshape an entity payload before
 it lands in an indexer's storage, and to reverse that reshape on the way
 back out for clients.
 
-``operations[TRANSFORM]`` is the **registry** of available transformer
-instances (populated by ``_self_register_transformers_into`` or by operators).
-*Where* a transformer runs is decided by the per-driver attachment fields
-on each :class:`OperationDriverEntry`:
+The routing config's ``transformers`` field is the **registry** of available
+transformer instances (populated by ``_self_register_transformers_into`` or by
+operators).  *Where* a transformer runs is decided by the per-driver
+attachment fields on each :class:`OperationDriverEntry`:
 
 - ``input_transformers``  — transformer ``driver_ref``s applied to entities
-  going INTO this driver call (e.g. the INDEX entry for an items indexer).
-  Composition is left-to-right.
+  going INTO this driver call (e.g. a secondary-index WRITE entry for an items
+  indexer).  Composition is left-to-right.
 - ``output_transformers`` — transformer ``driver_ref``s applied to entities
   coming OUT of this driver call (e.g. the SEARCH entry for the same driver).
   Composition is right-to-left so the inverse chain matches the original
@@ -58,7 +58,7 @@ class EntityTransformProtocol(Protocol):
     :class:`IndexerProtocol` / :class:`SearchProtocol` and as used by
     ``_self_register_indexers_into`` / ``_self_register_searchers_into``.
     ``_self_register_transformers_into`` writes
-    ``type(transformer).__name__`` into ``OperationDriverEntry.driver_ref``;
+    ``type(transformer).__name__`` into ``TransformerEntry.driver_ref``;
     routing entries reference these names from ``input_transformers`` /
     ``output_transformers`` to choose which chain runs where.
 

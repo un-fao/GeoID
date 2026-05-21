@@ -62,7 +62,7 @@ def test_items_has_private_driver_returns_false_when_absent():
 
 
 def test_items_has_private_driver_finds_entry_in_any_operation():
-    for op in (Operation.WRITE, Operation.READ, Operation.SEARCH, Operation.TRANSFORM):
+    for op in (Operation.WRITE, Operation.READ, Operation.SEARCH):
         routing = _items_routing_with_private(operation=op)
         assert _items_routing_has_private_driver(routing) is True, (
             f"private driver in operations[{op}] must satisfy the cascade gate"
