@@ -125,8 +125,8 @@ def register_bucket_annotation_patcher() -> None:
     """Register ``BucketAnnotationPatcher`` on the global event bus.
 
     Wires ``CatalogEventType.ASSET_CREATION`` and ``ASSET_UPDATE`` to the
-    upsert handler. ``ASSET_DELETION``/``ASSET_HARD_DELETION`` are not wired —
-    bucket lifecycle handles object removal independently of metadata mirror.
+    upsert handler. ``ASSET_DELETION`` is not wired — soft-deletes keep the
+    object. Object removal on hard-delete is owned by ``AssetBlobReaper``.
     """
     async_event_listener(CatalogEventType.ASSET_CREATION)(
         BucketAnnotationPatcher.on_asset_upsert
@@ -136,4 +136,95 @@ def register_bucket_annotation_patcher() -> None:
     )
     logger.info(
         "BucketAnnotationPatcher: registered on CatalogEventType.ASSET_CREATION/UPDATE"
+    )
+
+
+class AssetBlobReaper:
+    """Best-effort GCS object removal driven by asset hard-delete events.
+
+    Subscribes to ``CatalogEventType.ASSET_HARD_DELETION``. When the
+    hard-deleted asset is backed by GCS (``owned_by == "gcs"`` and a
+    ``gs://`` ``uri``), deletes the underlying object so the bucket does
+    not accumulate orphans once the row is gone.
+
+    Soft-deletes are intentionally *not* wired: they retain the row
+    (``status='deleted'``) and the object must survive a possible
+    re-activation. Virtual assets (external ``href``, no ``owned_by``) are
+    skipped — we never delete bytes we do not manage.
+
+    Status: best-effort. The assets table + events outbox are the source of
+    truth; any GCS API failure is logged and swallowed (Stage-6 bucket
+    reconciliation owns durable orphan cleanup).
+    """
+
+    @staticmethod
+    async def on_asset_hard_delete(
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        **_kwargs,
+    ) -> None:
+        del _kwargs
+        if not catalog_id or not asset_id or not isinstance(payload, dict):
+            return
+        if payload.get("owned_by") != "gcs":
+            return
+        uri = payload.get("uri")
+        if not isinstance(uri, str):
+            return
+        parsed = _parse_gs_uri(uri)
+        if parsed is None:
+            return
+        bucket_name, blob_path = parsed
+        ctx = f"{catalog_id}/{collection_id or '<catalog-tier>'}/{asset_id}"
+
+        try:
+            from dynastore.modules.gcp.gcp_module import GCPModule
+
+            gcp = get_protocol(GCPModule)
+        except Exception as exc:
+            logger.warning(
+                "AssetBlobReaper: GCPModule unavailable for %s: %s", ctx, exc,
+            )
+            return
+        if gcp is None:
+            return
+
+        try:
+            client = gcp.get_storage_client()
+        except RuntimeError as exc:
+            logger.warning(
+                "AssetBlobReaper: storage client unavailable for %s: %s",
+                ctx, exc,
+            )
+            return
+
+        def _delete() -> None:
+            client.bucket(bucket_name).blob(blob_path).delete()
+
+        try:
+            await run_in_thread(_delete)
+            logger.info(
+                "AssetBlobReaper: deleted gs://%s/%s (%s)",
+                bucket_name, blob_path, ctx,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AssetBlobReaper: delete failed for gs://%s/%s (%s): %s",
+                bucket_name, blob_path, ctx, exc,
+            )
+
+
+def register_asset_blob_reaper() -> None:
+    """Register ``AssetBlobReaper`` on the global event bus.
+
+    Wires ``CatalogEventType.ASSET_HARD_DELETION`` only — soft-deletes keep
+    the row and the GCS object.
+    """
+    async_event_listener(CatalogEventType.ASSET_HARD_DELETION)(
+        AssetBlobReaper.on_asset_hard_delete
+    )
+    logger.info(
+        "AssetBlobReaper: registered on CatalogEventType.ASSET_HARD_DELETION"
     )
