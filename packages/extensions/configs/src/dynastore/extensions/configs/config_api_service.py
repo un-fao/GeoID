@@ -1133,10 +1133,14 @@ class ConfigApiService:
         Multi-instance ref entries (key not in
         :func:`list_registered_configs`) require a ``class_key`` (or
         ``driver_class``) discriminator inside the body so the composer can
-        resolve the dispatch class and validate the payload.  Deletes
-        (``value is None``) for an unknown key are allowed without a
-        discriminator — the F.4c.4 ``delete_config_by_ref`` returns False
-        for no-op without surfacing an error.
+        resolve the dispatch class and validate the payload.  An unregistered
+        key whose body carries *no* discriminator is treated as an unknown
+        single-instance config class (404 "Unknown config class"), not as a
+        ref-create attempt — only a body with a discriminator is interpreted
+        as a multi-instance ref-create.  Deletes (``value is None``) for an
+        unknown key are allowed without a discriminator — the F.4c.4
+        ``delete_config_by_ref`` returns False for no-op without surfacing an
+        error.
 
         Set-by-ref dispatches to :meth:`ConfigsProtocol.set_config_by_ref`
         (refusing to overwrite a stored row whose ``class_key`` differs
@@ -1193,11 +1197,18 @@ class ConfigApiService:
             }
             class_key = value.pop("class_key", None) or value.pop("driver_class", None)
             if not class_key:
+                # Without a ``class_key``/``driver_class`` discriminator the
+                # body is not a multi-instance ref-create attempt, so the
+                # unregistered key is simply an unknown single-instance config
+                # class (e.g. a typo) — surface it as a clean 404 rather than
+                # implying the caller meant to create a ref.  A genuine
+                # ref-create (discriminator present) falls through below.
                 raise ValueError(
-                    f"Unknown ref '{plugin_id}': body must include "
-                    f"'class_key' (or 'driver_class') to create or update "
-                    f"a multi-instance row.  Existing class-keyed configs "
-                    f"are: {sorted(all_classes)[:5]}..."
+                    f"Unknown config class '{plugin_id}'. It is neither a "
+                    f"registered single-instance config nor a multi-instance "
+                    f"ref-create (add a 'class_key' or 'driver_class' "
+                    f"discriminator to create a multi-instance row). "
+                    f"Existing config classes are: {sorted(all_classes)[:5]}..."
                 )
             cls = all_classes.get(class_key)
             if cls is None:

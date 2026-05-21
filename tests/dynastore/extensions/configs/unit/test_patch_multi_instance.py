@@ -116,14 +116,18 @@ async def test_patch_accepts_driver_class_alias_for_discriminator():
 
 @pytest.mark.asyncio
 async def test_patch_unknown_ref_without_discriminator_raises():
-    """Operators get a clear error when the body is a fresh ref with no
-    discriminator — the composer can't guess which class to validate."""
+    """An unregistered body key with no ``class_key``/``driver_class``
+    discriminator is *not* a multi-instance ref-create — it's an unknown
+    single-instance config class.  Operators get the "Unknown config class"
+    error (mapped to 404), which still points them at the discriminator to
+    create a ref.  Guards the #1102 (item 2) regression where this path
+    incorrectly reported an "Unknown ref" ref-create error."""
     from dynastore.extensions.configs.config_api_service import ConfigApiService
 
     svc, _ = _make_ref_aware_service()
     api = ConfigApiService(config_service=svc)
 
-    with pytest.raises(ValueError, match=r"must include 'class_key'"):
+    with pytest.raises(ValueError, match=r"Unknown config class"):
         await api.patch_config(
             catalog_id=None,
             body={"tiles_orphan": {"min_zoom": 7}},
