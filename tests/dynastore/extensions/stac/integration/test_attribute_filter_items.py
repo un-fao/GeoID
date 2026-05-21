@@ -19,10 +19,12 @@ to cover the issue's four assertions:
 This is a live-DB integration test: like every test in this directory it
 requires a reachable PostgreSQL service (provided by the Docker/CI test path).
 
-Three assertions are currently ``xfail(strict=True)`` because they surface real
-defects in the shipped filter rather than test gaps (see the per-test reasons).
-The strict markers keep the suite green today and will flip to a hard failure
-the moment the underlying behaviour is fixed, prompting their removal.
+Matching (STAC + Features), validation, and injection-safety all pass against
+the fixed filter pipeline. One assertion — filtered pagination — remains
+``xfail(strict=True)`` for a separate, narrower defect (``numberMatched`` does
+not reflect the active filter under pagination). The strict marker keeps the
+suite green today and flips to a hard failure the moment that count path is
+fixed, prompting its removal.
 """
 
 import pytest
@@ -136,16 +138,6 @@ def _feature_pcodes(features: list) -> list:
 
 @MARKER
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Shipped attribute filter does not match: the route builds the CQL "
-        "field mapping from SQL text fragments, and the CQL backend collapses "
-        "the equality predicate to an always-false clause, so a filter on a "
-        "declared attribute column returns zero rows instead of the matching "
-        "items. Remove this marker once the column comparison is generated."
-    ),
-)
 async def test_stac_attribute_filter_matches_only(
     sysadmin_in_process_client: AsyncClient, catalog_id, collection_id
 ):
@@ -206,6 +198,11 @@ async def test_stac_attribute_filter_validation_and_injection(
     assert r.status_code == 400, f"cql: expected 400, got {r.status_code}: {r.text}"
 
     # Assertion 3: single-quote value must not 500 and must not be executed as SQL.
+    # Known limitation: the shorthand doubles the quote per CQL2-Text (``''``),
+    # but the bundled pygeofilter lark grammar does not accept ``''`` inside a
+    # string literal and rejects it with a parse error -> 400. That is a safe,
+    # non-injectable outcome (the value is never run as SQL), so both a clean
+    # 200 (bound, zero matches) and a 400 (parse rejection) are accepted here.
     r = await sysadmin_in_process_client.get(base, params={ATTR: _INJECTION_VALUE})
     assert r.status_code in (200, 400), f"injection: unexpected {r.status_code}: {r.text}"
     if r.status_code == 200:
@@ -219,10 +216,12 @@ async def test_stac_attribute_filter_validation_and_injection(
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Depends on the attribute filter actually matching: with the current "
-        "always-false predicate a filtered response matches zero items, so no "
-        "'next' link is emitted and the filter-preservation check cannot run. "
-        "Remove this marker together with the matching xfail."
+        "Separate filtered-pagination count defect. With the attribute filter "
+        "now matching, a `limit=1` request over two matching items returns the "
+        "page correctly but `numberMatched` reports 1 instead of the full "
+        "filtered total (2): the total-count path does not reflect the CQL "
+        "filter under pagination. The links and matching themselves are fine — "
+        "remove this marker once `numberMatched` honours the active filter."
     ),
 )
 async def test_stac_attribute_filter_pagination_preserves_filter(
@@ -268,18 +267,6 @@ async def test_stac_attribute_filter_pagination_preserves_filter(
 
 @MARKER
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "On a collection that declares a COLUMNAR attribute_schema (and thus "
-        "has no temporal-validity column), the OGC Features /items endpoint "
-        "appends a default 'validity now()' filter that fails query validation "
-        "with 'Cannot filter by unknown field: validity', returning 400 even "
-        "for the unfiltered listing — so the attribute filter is never reached. "
-        "Remove this marker once the default validity filter is dropped when the "
-        "collection has no validity column."
-    ),
-)
 async def test_features_attribute_filter_matches_only(
     sysadmin_in_process_client: AsyncClient, catalog_id, collection_id
 ):

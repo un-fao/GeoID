@@ -10,7 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional, Any, Dict, Tuple, AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import literal_column, text
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -408,18 +408,21 @@ class ItemQueryMixin:
             temp_optimizer = QueryOptimizer(col_config, consumer=consumer)
             queryable_fields = temp_optimizer.get_all_queryable_fields()
 
-            # Create mapping for CQL parser
-            # We map field names to their SQL expressions
+            # Create mapping for CQL parser.
+            # ``literal_column`` (not ``text``): pygeofilter's ``to_filter``
+            # needs a column-like object with comparison operators to emit a
+            # real bound-parameter predicate. A ``TextClause`` has none, so it
+            # silently collapses every comparison to an always-false 1=0.
             field_mapping = {
-                name: text(field_def.sql_expression)
+                name: literal_column(field_def.sql_expression)
                 for name, field_def in queryable_fields.items()
             }
             # Add implicit fields
             field_mapping.update(
                 {
-                    "geoid": text("h.geoid"),
-                    "deleted_at": text("h.deleted_at"),
-                    "transaction_time": text("h.transaction_time"),
+                    "geoid": literal_column("h.geoid"),
+                    "deleted_at": literal_column("h.deleted_at"),
+                    "transaction_time": literal_column("h.transaction_time"),
                 }
             )
             # #974: ``validity`` only exists on the hub when it is a
@@ -429,12 +432,12 @@ class ItemQueryMixin:
             # column reference instead of a non-existent ``h.validity``.
             validity_expr = temp_optimizer.resolve_validity_expression()
             if validity_expr is not None:
-                field_mapping["validity"] = text(validity_expr)
+                field_mapping["validity"] = literal_column(validity_expr)
             else:
                 # Bind ``validity`` to ``NULL::tstzrange`` so CQL filters
                 # referencing it parse cleanly and evaluate to NULL (the
                 # standard Postgres semantics for a missing temporal axis).
-                field_mapping["validity"] = text("NULL::tstzrange")
+                field_mapping["validity"] = literal_column("NULL::tstzrange")
 
             try:
                 cql_where, cql_params = parse_cql_filter(

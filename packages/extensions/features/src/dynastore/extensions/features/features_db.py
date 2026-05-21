@@ -125,7 +125,7 @@ async def get_items_filtered(
     # --- 3. CQL Filter ---
     if cql_filter:
         try:
-            from sqlalchemy import text
+            from sqlalchemy import literal_column
             from dynastore.models.protocols import ItemsProtocol
             
             items_svc = get_protocol(ItemsProtocol)
@@ -144,8 +144,11 @@ async def get_items_filtered(
             field_mapping = {}
             
             for name, defn in field_defs.items():
-                # Map to SQL expression defined by sidecar (e.g. "a.asset_id", "h.geoid")
-                field_mapping[name] = text(defn.sql_expression or name)
+                # Map to SQL expression defined by sidecar (e.g. "a.asset_id", "h.geoid").
+                # ``literal_column`` (not ``text``) so pygeofilter's ``to_filter``
+                # builds real bound-parameter comparisons; a ``TextClause`` lacks
+                # comparison operators and collapses every predicate to 1=0.
+                field_mapping[name] = literal_column(defn.sql_expression or name)
 
             cql_where, cql_params = parse_cql_filter(
                 cql_filter, 

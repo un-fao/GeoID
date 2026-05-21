@@ -207,6 +207,19 @@ class QueryOptimizer:
                 if filt.field in ["geoid", "deleted_at", "transaction_time"]:
                     continue
 
+                # #974: ``validity`` is special. On a collection with no
+                # temporal axis (no hub partition key and no sidecar
+                # materialises validity) the column does not exist anywhere,
+                # so ``build_optimized_query`` silently drops a ``validity``
+                # filter (see ``resolve_validity_expression`` -> None). The
+                # OGC Features endpoint always appends a default
+                # ``validity @> now()`` filter, so rejecting it here would
+                # turn every listing on such a collection into a 400. Defer
+                # to the build step: allow it when there is no validity
+                # column to test against.
+                if filt.field == "validity" and self.resolve_validity_expression() is None:
+                    continue
+
                 # Try to resolve dynamically
                 found_dynamic = False
                 for sc_config in driver_sidecars(self.col_config):
@@ -409,6 +422,26 @@ class QueryOptimizer:
                     sidecar, _ = self.field_index[field]
                     required_sidecars.add(sidecar.sidecar_id)
 
+        # Check raw WHERE. CQL filters are compiled into ``raw_where`` against
+        # the resolved sidecar expressions (e.g. ``sc_attributes.adm2_pcode``),
+        # bypassing the structured ``query.filters`` checked above. Without
+        # this, a CQL/attribute filter on a sidecar column would reference a
+        # table that was never JOINed -> "invalid reference to FROM-clause
+        # entry". Mark any sidecar whose alias (``sc_<id>.``) or whose
+        # queryable field name appears in ``raw_where`` as required.
+        if query.raw_where:
+            import re as _re
+
+            for sc_config in driver_sidecars(self.col_config):
+                alias = f"sc_{sc_config.sidecar_id}"
+                if _re.search(rf"\b{_re.escape(alias)}\b", query.raw_where):
+                    required_sidecars.add(sc_config.sidecar_id)
+            for field_name, (sidecar, _field_def) in self.field_index.items():
+                if field_name == "geoid":
+                    continue
+                if _re.search(rf"\b{_re.escape(field_name)}\b", query.raw_where):
+                    required_sidecars.add(sidecar.sidecar_id)
+
         # Always include the geometry sidecar for full Feature responses.
         # Without this, queries that only filter by non-spatial fields (e.g.
         # asset_id) would produce features without geometry.
@@ -599,13 +632,18 @@ class QueryOptimizer:
 
             processed_where = query.raw_where
 
-            # Sort fields by length descending to avoid partial replacement issues (e.g. 'geometry' vs 'geom')
-            # But word boundary \b should handle most cases.
+            # Map bare field tokens to their sidecar expressions (e.g.
+            # 'geom' -> 'sc_geom.geom'). The negative lookbehind on '.' (and a
+            # word char) skips tokens that are ALREADY table-qualified — CQL
+            # filters compile straight to resolved expressions like
+            # 'sc_attributes.adm2_pcode', and a bare '\b' would re-match the
+            # trailing 'adm2_pcode' and double-prefix it into the invalid
+            # 'sc_attributes.sc_attributes.adm2_pcode'.
             for field_name, (sidecar, field_def) in self.field_index.items():
                 if field_name == "geoid":
                     continue
 
-                pattern = rf"\b{re.escape(field_name)}\b"
+                pattern = rf"(?<![.\w])\b{re.escape(field_name)}\b"
                 processed_where = re.sub(
                     pattern, field_def.sql_expression, processed_where
                 )
