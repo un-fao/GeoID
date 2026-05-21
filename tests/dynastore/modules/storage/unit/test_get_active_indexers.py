@@ -16,12 +16,27 @@ from dynastore.modules.storage.routing_config import (
 )
 
 
-def _ops(**by_op):
-    """Build a fake operations dict from keyword pairs of OP -> [driver_ids]."""
-    return {
+def _ops(*, INDEX=None, **by_op):
+    """Build a fake operations dict from keyword pairs of OP -> [driver_ids].
+
+    The ``INDEX`` pseudo-key models secondary indexes under the role-based
+    model (#990): its drivers land in ``operations[WRITE]`` carrying
+    ``secondary_index=True`` so ``secondary_index_entries`` (which backs
+    ``get_active_indexers``) recognises them. Other op kwargs map straight
+    to their own op-key with primary (non-index) entries.
+    """
+    from dynastore.modules.storage.routing_config import Operation
+
+    ops = {
         op: [OperationDriverEntry(driver_ref=did) for did in dids]
         for op, dids in by_op.items()
     }
+    if INDEX is not None:
+        ops.setdefault(Operation.WRITE, []).extend(
+            OperationDriverEntry(driver_ref=did, secondary_index=True)
+            for did in INDEX
+        )
+    return ops
 
 
 @pytest.mark.asyncio
@@ -37,7 +52,7 @@ async def test_returns_all_INDEX_driver_ids():
 
 @pytest.mark.asyncio
 async def test_returns_empty_set_when_no_INDEX_entries():
-    fake = _ops(SEARCH=["es_items_driver"])  # No INDEX entry
+    fake = _ops(SEARCH=["es_items_driver"])  # No secondary-index entry
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",
         return_value=fake,
@@ -61,7 +76,7 @@ async def test_works_for_each_entity_kind():
 
 @pytest.mark.asyncio
 async def test_dedupes_via_set_semantics():
-    """Same driver_ref listed twice in INDEX collapses to one entry."""
+    """Same driver_ref listed twice as a secondary index collapses to one entry."""
     fake = _ops(INDEX=["es_items_driver", "es_items_driver"])
     with patch(
         "dynastore.modules.storage.routing_config._resolve_entity_operations",

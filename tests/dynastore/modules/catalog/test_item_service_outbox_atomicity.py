@@ -188,12 +188,14 @@ def _make_routing_resolver(
                 write_mode=WriteMode.SYNC,
             )
             for d in fatal_drivers
-        ],
-        Operation.INDEX: [
+        ] + [
+            # Secondary-index sinks live in the same WRITE list, role-tagged
+            # via secondary_index=True (#990).
             OperationDriverEntry(
                 driver_ref=d,
                 on_failure=FailurePolicy.OUTBOX,
                 write_mode=WriteMode.ASYNC,
+                secondary_index=True,
             )
             for d in outbox_drivers
         ],

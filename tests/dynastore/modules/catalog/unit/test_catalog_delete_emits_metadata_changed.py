@@ -1,8 +1,8 @@
 """Regression coverage for #825: catalog_service.delete_catalog must
 emit ``CATALOG_METADATA_CHANGED`` so ReindexWorker fans the delete out
-to ``CatalogRoutingConfig.operations[INDEX]`` (the canonical ES cleanup
-path that replaces the retired ``ElasticsearchModule._on_catalog_delete``
-listener).
+to the secondary-index entries of ``CatalogRoutingConfig.operations[WRITE]``
+(the canonical ES cleanup path that replaces the retired
+``ElasticsearchModule._on_catalog_delete`` listener).
 
 Asserts at source-shape level: both the soft- and hard-delete branches
 of ``catalog_service.delete_catalog`` contain a

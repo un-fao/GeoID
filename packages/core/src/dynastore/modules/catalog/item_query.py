@@ -740,11 +740,12 @@ class ItemQueryMixin:
             )
 
         ops_map = getattr(routing, "operations", {}) or {}
-        async_outbox_entries = [
-            e for e in ops_map.get(Operation.INDEX, [])
-            if e.write_mode == WriteMode.ASYNC
-            and e.on_failure == FailurePolicy.OUTBOX
-        ]
+        from dynastore.modules.storage.routing_config import (
+            secondary_index_entries,
+        )
+        async_outbox_entries = secondary_index_entries(
+            ops_map, async_outbox_only=True,
+        )
         if not async_outbox_entries:
             return
 

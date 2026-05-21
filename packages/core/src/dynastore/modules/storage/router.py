@@ -445,23 +445,26 @@ async def get_asset_index_drivers(
     *,
     hints: FrozenSet[Hint] = frozenset(),
 ) -> "List[ResolvedDriver[AssetStore]]":
-    """Multi-driver resolution for asset INDEX fan-out.
+    """Multi-driver resolution for asset secondary indexes.
 
-    INDEX is auto-augmented at config-validation time with every discoverable
+    A secondary index is not a distinct operation: it is a ``WRITE`` target
+    whose driver implements the ``AssetIndexer`` role (``is_asset_indexer``).
+    WRITE is auto-augmented at config-validation time with every discoverable
     ``AssetIndexer`` driver — which is how ``AssetElasticsearchDriver`` gets
-    picked up without explicit operator config. Used by ``AssetService`` to
-    fan secondary writes out to indexer-only drivers (those that opt into
-    ``AssetIndexer`` but are not pinned under WRITE).
+    picked up without explicit operator config. This filters the resolved
+    WRITE fan-out down to the indexer-role drivers, used by reconcile/sync to
+    (re)propagate assets to their search sinks.
     """
     from dynastore.models.protocols.asset_driver import AssetStore as _ADP
     result = await resolve_drivers(
-        Operation.INDEX,
+        Operation.WRITE,
         catalog_id,
         collection_id,
         hints=hints,
         routing_plugin_cls=AssetRoutingConfig,
     )
-    return cast(List["ResolvedDriver[_ADP]"], result)
+    indexers = [rd for rd in result if getattr(rd.driver, "is_asset_indexer", False)]
+    return cast(List["ResolvedDriver[_ADP]"], indexers)
 
 
 async def get_asset_upload_driver(

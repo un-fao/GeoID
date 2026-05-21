@@ -12,9 +12,10 @@ Cover the entity-aware default routing resolver and the dispatcher's
 * :func:`_call_resolver` tolerates legacy 2-arg resolver stubs so
   pre-existing test fixtures continue to dispatch correctly.
 * :class:`IndexDispatcher` routes per-call via ``ctx.entity_type`` —
-  pinning a driver in :class:`ItemsRoutingConfig.operations[INDEX]` and
-  dispatching with ``entity_type='item'`` calls the indexer; pinning the
-  same entry in :class:`CollectionRoutingConfig` and dispatching with
+  pinning a secondary-index driver in
+  :class:`ItemsRoutingConfig.operations[WRITE]` and dispatching with
+  ``entity_type='item'`` calls the indexer; pinning the same entry in
+  :class:`CollectionRoutingConfig` and dispatching with
   ``entity_type='item'`` does NOT (the bug pre-#810).
 """
 
@@ -68,6 +69,7 @@ def _entry(driver_ref: str) -> OperationDriverEntry:
         driver_ref=driver_ref,
         on_failure=FailurePolicy.WARN,
         write_mode=WriteMode.SYNC,
+        secondary_index=True,
         source="auto",
     )
 
@@ -82,7 +84,7 @@ async def test_default_resolver_returns_items_routing_for_item_entity_type():
     """entity_type='item' resolves to a default ItemsRoutingConfig
     instance when ConfigsProtocol is unregistered (the no-platform
     branch). This is the #810 fix: pre-Option-B, the items path read
-    CollectionRoutingConfig, which is why operator-pinned items-INDEX
+    CollectionRoutingConfig, which is why operator-pinned items-WRITE secondary-index
     entries silently no-opped."""
     resolver = _make_default_routing_resolver()
     cfg = await resolver("cat", "col", entity_type="item")
@@ -161,10 +163,10 @@ async def test_dispatcher_reads_items_routing_when_entity_type_is_item():
     collection_indexer = _StubIndexer("collection_indexer")
 
     items_routing = ItemsRoutingConfig(
-        operations={Operation.INDEX: [_entry("items_indexer")]},
+        operations={Operation.WRITE: [_entry("items_indexer")]},
     )
     collection_routing = CollectionRoutingConfig(
-        operations={Operation.INDEX: [_entry("collection_indexer")]},
+        operations={Operation.WRITE: [_entry("collection_indexer")]},
     )
 
     async def resolver(catalog, collection, *, entity_type=None):
@@ -191,7 +193,7 @@ async def test_dispatcher_reads_items_routing_when_entity_type_is_item():
 
     assert len(items_indexer.bulk_calls) == 1, (
         "items_indexer must fire when entity_type='item' picks "
-        "ItemsRoutingConfig.operations[INDEX] — the #810 contract"
+        "ItemsRoutingConfig.operations[WRITE] secondary index — the #810 contract"
     )
     assert items_indexer.bulk_calls[0][0].entity_id == "i-1"
     assert collection_indexer.bulk_calls == [], (
@@ -207,10 +209,10 @@ async def test_dispatcher_reads_collection_routing_when_entity_type_is_collectio
     collection_indexer = _StubIndexer("collection_indexer")
 
     items_routing = ItemsRoutingConfig(
-        operations={Operation.INDEX: [_entry("items_indexer")]},
+        operations={Operation.WRITE: [_entry("items_indexer")]},
     )
     collection_routing = CollectionRoutingConfig(
-        operations={Operation.INDEX: [_entry("collection_indexer")]},
+        operations={Operation.WRITE: [_entry("collection_indexer")]},
     )
 
     async def resolver(catalog, collection, *, entity_type=None):
@@ -249,10 +251,10 @@ async def test_dispatcher_back_compat_none_entity_type_reads_collection_routing(
     collection_indexer = _StubIndexer("collection_indexer")
 
     items_routing = ItemsRoutingConfig(
-        operations={Operation.INDEX: [_entry("items_indexer")]},
+        operations={Operation.WRITE: [_entry("items_indexer")]},
     )
     collection_routing = CollectionRoutingConfig(
-        operations={Operation.INDEX: [_entry("collection_indexer")]},
+        operations={Operation.WRITE: [_entry("collection_indexer")]},
     )
 
     async def resolver(catalog, collection, *, entity_type=None):
@@ -287,7 +289,7 @@ async def test_dispatcher_works_with_legacy_two_arg_resolver_stub():
     indexer = _StubIndexer("a")
 
     routing = CollectionRoutingConfig(
-        operations={Operation.INDEX: [_entry("a")]},
+        operations={Operation.WRITE: [_entry("a")]},
     )
 
     async def legacy_resolver(catalog, collection):

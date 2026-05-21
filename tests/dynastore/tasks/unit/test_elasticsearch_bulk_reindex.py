@@ -70,18 +70,19 @@ class _FakeCatalogs:
 
 
 def _routing_with_es(driver_ref: str = "items_elasticsearch_driver"):
-    """Fake ItemsRoutingConfig listing the regular ES driver."""
+    """Fake ItemsRoutingConfig listing the regular ES driver as a WRITE
+    secondary index."""
     return type("Routing", (), {
-        "operations": {"INDEX": [
-            type("Entry", (), {"driver_ref": driver_ref})()
+        "operations": {"WRITE": [
+            type("Entry", (), {"driver_ref": driver_ref, "secondary_index": True})()
         ]},
     })()
 
 
 def _routing_without_es():
     return type("Routing", (), {
-        "operations": {"INDEX": [
-            type("Entry", (), {"driver_ref": "other_driver"})()
+        "operations": {"WRITE": [
+            type("Entry", (), {"driver_ref": "other_driver", "secondary_index": False})()
         ]},
     })()
 
@@ -328,9 +329,12 @@ async def test_is_es_active_for_returns_false_for_private_only_routing():
 
     routing = ItemsRoutingConfig(
         operations={
-            Operation.WRITE: [OperationDriverEntry(driver_ref="items_postgresql_driver")],
-            Operation.INDEX: [
-                OperationDriverEntry(driver_ref="items_elasticsearch_private_driver"),
+            Operation.WRITE: [
+                OperationDriverEntry(driver_ref="items_postgresql_driver"),
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_private_driver",
+                    secondary_index=True,
+                ),
             ],
         },
     )
@@ -500,10 +504,14 @@ async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned
         operations={
             Operation.WRITE: [
                 OperationDriverEntry(driver_ref="items_postgresql_driver"),
-                OperationDriverEntry(driver_ref="items_elasticsearch_driver"),
-            ],
-            Operation.INDEX: [
-                OperationDriverEntry(driver_ref="items_elasticsearch_private_driver"),
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_driver",
+                    secondary_index=True,
+                ),
+                OperationDriverEntry(
+                    driver_ref="items_elasticsearch_private_driver",
+                    secondary_index=True,
+                ),
             ],
         },
     )

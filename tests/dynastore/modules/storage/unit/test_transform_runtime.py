@@ -5,9 +5,9 @@ right-to-left so the output shape matches the original entity. Empty chain
 is identity. Exceptions propagate after a warning log.
 
 Also exercises the per-(operation, driver) attachment introduced by #501:
-input_transformers on INDEX entries, output_transformers on SEARCH entries,
-validator rejection of dangling refs, deferred-hop WARN logs, and
-per-item failure isolation inside IndexDispatcher.fan_out_bulk.
+input_transformers on WRITE secondary-index entries, output_transformers on
+SEARCH entries, validator rejection of dangling refs, deferred-hop WARN logs,
+and per-item failure isolation inside IndexDispatcher.fan_out_bulk.
 """
 
 from __future__ import annotations
@@ -124,8 +124,8 @@ async def test_apply_then_restore_round_trips():
 class PayloadAppendTransformer:  # noqa: D401 — test fixture
     """Variant of ``_AppendTransformer`` that works on dict payloads.
 
-    Mutates ``payload["tag"]`` so the dispatcher INDEX hop tests can
-    verify the per-item payload reshape end-to-end.
+    Mutates ``payload["tag"]`` so the dispatcher secondary-index hop tests
+    can verify the per-item payload reshape end-to-end.
     """
 
     def __init__(self, tag: str) -> None:
@@ -157,9 +157,9 @@ class _Append:
 
 @pytest.mark.asyncio
 async def test_input_on_index_only_runs_at_index_hop_not_at_search():
-    """When only INDEX declares input_transformers, the indexed doc is
-    transformed; the SEARCH-side restore does not fire (no
-    output_transformers declared)."""
+    """When only the WRITE secondary-index entry declares
+    input_transformers, the indexed doc is transformed; the SEARCH-side
+    restore does not fire (no output_transformers declared)."""
     from dynastore.modules.storage.routing_config import (
         Operation,
         OperationDriverEntry,
@@ -169,10 +169,11 @@ async def test_input_on_index_only_runs_at_index_hop_not_at_search():
     index_entry = OperationDriverEntry(
         driver_ref="items_indexer",
         input_transformers=("payload_append_transformer",),
+        secondary_index=True,
     )
     search_entry = OperationDriverEntry(driver_ref="items_indexer")
     ops = {
-        Operation.INDEX: [index_entry],
+        Operation.WRITE: [index_entry],
         Operation.SEARCH: [search_entry],
         Operation.TRANSFORM: [
             OperationDriverEntry(driver_ref="payload_append_transformer"),
@@ -279,20 +280,24 @@ def test_validator_rejects_dangling_input_transformer_ref():
     with pytest.raises(ValueError, match="dangling_ref"):
         AssetRoutingConfig(
             operations={
-                Operation.INDEX: [
+                Operation.WRITE: [
                     OperationDriverEntry(
                         driver_ref="asset_indexer",
                         input_transformers=("dangling_ref",),
+                        secondary_index=True,
                     ),
                 ],
             },
         )
 
 
-def test_deferred_hop_warns_once_for_write_input_transformers(caplog):
-    """Declaring input_transformers on a WRITE entry is a no-op until the
-    hop is wired in a future PR. The config-load path emits exactly one
-    WARN per (operation, driver, side) tuple."""
+def test_deferred_hop_warns_once_for_read_input_transformers(caplog):
+    """Declaring input_transformers on a non-wired hop (READ) is a no-op
+    until that hop is wired in a future PR. The config-load path emits
+    exactly one WARN per (operation, driver, side) tuple.
+
+    WRITE is the wired input hop (secondary-index propagation), so it does
+    NOT warn — READ stands in here for the still-deferred case."""
     from dynastore.modules.storage.routing_config import (
         AssetRoutingConfig,
         Operation,
@@ -306,7 +311,7 @@ def test_deferred_hop_warns_once_for_write_input_transformers(caplog):
     ):
         AssetRoutingConfig(
             operations={
-                Operation.WRITE: [
+                Operation.READ: [
                     OperationDriverEntry(
                         driver_ref="asset_indexer",
                         input_transformers=("noop_attached_transformer",),
@@ -319,7 +324,7 @@ def test_deferred_hop_warns_once_for_write_input_transformers(caplog):
         )
     matches = [
         rec for rec in caplog.records
-        if "input_transformers declared on operation 'WRITE'" in rec.message
+        if "input_transformers declared on operation 'READ'" in rec.message
     ]
     assert len(matches) == 1, (
         "Expected exactly one deferred-hop WARN; got %d" % len(matches)
@@ -331,7 +336,7 @@ def test_deferred_hop_warns_once_for_write_input_transformers(caplog):
     ):
         AssetRoutingConfig(
             operations={
-                Operation.WRITE: [
+                Operation.READ: [
                     OperationDriverEntry(
                         driver_ref="asset_indexer",
                         input_transformers=("noop_attached_transformer",),
@@ -344,7 +349,7 @@ def test_deferred_hop_warns_once_for_write_input_transformers(caplog):
         )
     matches = [
         rec for rec in caplog.records
-        if "input_transformers declared on operation 'WRITE'" in rec.message
+        if "input_transformers declared on operation 'READ'" in rec.message
     ]
     assert matches == [], "Second load must not re-emit; dedupe failed"
 
@@ -391,11 +396,12 @@ async def test_per_item_failure_isolation_with_transformer_at_index_hop():
     entry = OperationDriverEntry(
         driver_ref="stub_indexer",
         input_transformers=("selective_raise",),
+        secondary_index=True,
     )
 
     class _Routing:
         operations = {
-            Operation.INDEX: [entry],
+            Operation.WRITE: [entry],
             Operation.TRANSFORM: [
                 OperationDriverEntry(driver_ref="selective_raise"),
             ],

@@ -70,6 +70,7 @@ from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.entity_store import CatalogStore
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingConfig, FailurePolicy, Operation, OperationDriverEntry,
+    secondary_index_entries,
 )
 from dynastore.tools.typed_store.base import _to_snake
 
@@ -566,8 +567,8 @@ async def _resolve_catalog_indexers(
             routing_config = await configs.get_config(
                 CatalogRoutingConfig, catalog_id=catalog_id,
             )
-            entries = list(
-                routing_config.operations.get(Operation.INDEX, [])
+            entries = secondary_index_entries(
+                routing_config.operations,
             )
     except Exception as exc:  # noqa: BLE001 — diagnostic fallback
         logger.debug(
@@ -577,9 +578,9 @@ async def _resolve_catalog_indexers(
         )
 
     if not entries:
-        # Fall back to the code-level default — currently empty for INDEX.
+        # Fall back to the code-level default secondary-index entries.
         cfg = CatalogRoutingConfig()
-        entries = list(cfg.operations.get(Operation.INDEX, []))
+        entries = secondary_index_entries(cfg.operations)
     if not entries:
         return []
 

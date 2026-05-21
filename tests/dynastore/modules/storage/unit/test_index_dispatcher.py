@@ -69,7 +69,7 @@ class _StubIndexer:
 
 class _StubRouting:
     def __init__(self, entries: List[OperationDriverEntry]) -> None:
-        self.operations = {Operation.INDEX: entries}
+        self.operations = {Operation.WRITE: entries}
 
 
 def _make_dispatcher(
@@ -95,6 +95,7 @@ def _entry(driver_ref: str, *, on_failure: FailurePolicy) -> OperationDriverEntr
         driver_ref=driver_ref,
         on_failure=on_failure,
         write_mode=WriteMode.SYNC,
+        secondary_index=True,
         source="auto",
     )
 
