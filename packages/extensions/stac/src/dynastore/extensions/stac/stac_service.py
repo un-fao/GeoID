@@ -829,11 +829,30 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         engine=Depends(get_async_engine),
         limit: int = Query(10, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        filter: Optional[str] = Query(None, description="CQL2-Text filter expression"),
         language: str = Depends(get_language),
     ):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
         catalogs_svc = await self._get_catalogs_service()
+
+        # Single-field equality shorthand: any non-reserved query parameter is
+        # treated as a ``?{property}={value}`` attribute filter and combined with
+        # the explicit CQL2 ``filter`` into one expression. Both go through the
+        # same validated CQL pipeline as the OGC Features ``/items`` endpoint —
+        # property names are validated against the collection's queryable fields
+        # (unknown → 400) and values are bound as parameters, never interpolated.
+        from dynastore.extensions.tools.query import (
+            OGC_RESERVED_QUERY_PARAMS,
+            combine_cql_filters,
+        )
+
+        extra_filters = {
+            key: value
+            for key, value in request.query_params.items()
+            if key not in OGC_RESERVED_QUERY_PARAMS and value != ""
+        }
+        cql_filter = combine_cql_filters(filter, extra_filters)
 
         async with managed_transaction(engine) as conn:
             collection_metadata = await catalogs_svc.get_collection(
@@ -848,18 +867,23 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 catalog_id, collection_id, db_resource=conn
             )
 
-            result = await stac_generator.create_item_collection(
-                request,
-                conn,
-                schema=catalog_id,
-                table=collection_id,
-                limit=limit,
-                offset=offset,
-                stac_config=stac_config,
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                lang=language,
-            )
+            try:
+                result = await stac_generator.create_item_collection(
+                    request,
+                    conn,
+                    schema=catalog_id,
+                    table=collection_id,
+                    limit=limit,
+                    offset=offset,
+                    stac_config=stac_config,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    lang=language,
+                    cql_filter=cql_filter,
+                )
+            except ValueError as e:
+                # Unknown property / malformed CQL → 400
+                raise HTTPException(status_code=400, detail=str(e))
         return JSONResponse(content=result)
 
     async def _get_item_with_row(

@@ -93,6 +93,7 @@ OGC_RESERVED_QUERY_PARAMS: frozenset = frozenset({
     "language",
     "token",
     "access_token",
+    "_",  # cache-buster appended by browsers/jQuery; never an attribute
 })
 
 
@@ -128,6 +129,28 @@ def build_attribute_equality_cql(extra_filters: Dict[str, str]) -> Optional[str]
     if not clauses:
         return None
     return " AND ".join(clauses)
+
+
+def combine_cql_filters(
+    filter: Optional[str] = None,
+    extra_filters: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Merge an explicit CQL2 ``filter`` with ``?{property}={value}`` shorthand.
+
+    The shorthand pairs are converted to CQL2-Text equality clauses via
+    :func:`build_attribute_equality_cql` and AND-combined with the explicit
+    ``filter`` into a single CQL2 expression so both go through the same
+    validated CQL parsing path downstream. Returns ``None`` when neither side
+    contributes anything. This is the single source of truth for building the
+    combined CQL string, shared by the OGC Features and STAC items endpoints.
+    """
+    shorthand_cql = build_attribute_equality_cql(extra_filters or {})
+    cql_parts = [c for c in (filter, shorthand_cql) if c]
+    if not cql_parts:
+        return None
+    if len(cql_parts) == 1:
+        return cql_parts[0]
+    return " AND ".join(f"({c})" for c in cql_parts)
 
 
 def parse_ogc_query_request(
@@ -248,14 +271,7 @@ def parse_ogc_query_request(
     # Combine the explicit CQL2 ``filter`` with any ``?{property}={value}``
     # shorthand equality filters into a single CQL2 expression. Both go through
     # the same validated CQL parsing path downstream.
-    shorthand_cql = build_attribute_equality_cql(extra_filters or {})
-    cql_parts = [c for c in (filter, shorthand_cql) if c]
-    if cql_parts:
-        request_obj.cql_filter = (
-            " AND ".join(f"({c})" for c in cql_parts)
-            if len(cql_parts) > 1
-            else cql_parts[0]
-        )
+    request_obj.cql_filter = combine_cql_filters(filter, extra_filters)
 
     return request_obj
 

@@ -1052,6 +1052,7 @@ async def create_item_collection(
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
     lang: str = "en",
+    cql_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generates a STAC ItemCollection for a single collection."""
     # Ensure logical IDs are available for row-to-feature conversion
@@ -1059,7 +1060,8 @@ async def create_item_collection(
     collection_id = collection_id or table
 
     items_rows, item_count = await stac_db.get_stac_items_paginated(
-        conn, catalog_id, collection_id, limit, offset, stac_config
+        conn, catalog_id, collection_id, limit, offset, stac_config,
+        cql_filter=cql_filter,
     )
 
     stac_items_tasks = [
@@ -1080,32 +1082,44 @@ async def create_item_collection(
     collection_dict = item_collection.to_dict()
 
     self_href = get_url(request, remove_qp=True)
+    # Preserve any filter query params (filter, filter-lang, ?{property}={value}
+    # shorthand, …) on the pagination links so paging through a filtered result
+    # set keeps the filter. ``limit``/``offset`` are set explicitly per link.
+    from urllib.parse import urlencode
+
+    preserved = {
+        k: v
+        for k, v in request.query_params.items()
+        if k not in ("limit", "offset")
+    }
+
+    def _page_href(page_offset: int) -> str:
+        params = {**preserved, "limit": limit, "offset": page_offset}
+        return f"{self_href}?{urlencode(params)}"
+
     collection_dict.setdefault("links", []).append(
         {
             "rel": "self",
-            "href": f"{self_href}?limit={limit}&offset={offset}",
+            "href": _page_href(offset),
             "type": "application/geo+json",
         }
     )
 
     if (offset + limit) < item_count:
-        next_href = f"{self_href}?offset={offset + limit}&limit={limit}"
         collection_dict["links"].append(
             {
                 "rel": "next",
-                "href": next_href,
+                "href": _page_href(offset + limit),
                 "type": "application/geo+json",
                 "title": "Next page",
             }
         )
 
     if offset > 0:
-        prev_offset = max(0, offset - limit)
-        prev_href = f"{self_href}?offset={prev_offset}&limit={limit}"
         collection_dict["links"].append(
             {
                 "rel": "prev",
-                "href": prev_href,
+                "href": _page_href(max(0, offset - limit)),
                 "type": "application/geo+json",
                 "title": "Previous page",
             }
