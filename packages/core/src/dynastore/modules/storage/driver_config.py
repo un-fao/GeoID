@@ -456,12 +456,17 @@ class ItemsWritePolicy(PluginConfig):
     )
     validity_field: Mutable[Optional[str]] = Field(
         default=None,
-        examples=[None, "valid_from", "properties.start_date", "valid_time.start"],
+        examples=[None, "valid_from", "valid_time"],
         description=(
             "Null-object SSOT for temporal validity. The field name IS the "
-            "toggle: a dot-notation path enables ``valid_from`` / ``valid_to`` "
-            "tracking per entity and selects the source path for the validity "
-            "start; ``None`` disables validity entirely. Required (non-None) for "
+            "toggle: any non-None string enables ``valid_from`` / ``valid_to`` "
+            "tracking per entity and NAMES the temporal storage column (the PG "
+            "driver overlays this value onto the attributes sidecar at "
+            "``ensure_storage`` to name and gate the column); ``None`` disables "
+            "validity entirely. The string is a column name, NOT a source path "
+            "for extraction — the validity-start VALUE comes from "
+            "``write_context.valid_from`` (DuckDB / Iceberg / PG all read the "
+            "runtime context, not the named field). Required (non-None) for "
             "``NEW_VERSION`` semantics — when ``None``, ``on_conflict=NEW_VERSION`` "
             "falls back to ``UPDATE``. Validity END is either provided in "
             "``write_context.valid_to`` or computed as ``None`` (open-ended)."
