@@ -36,7 +36,6 @@ from dynastore.modules.catalog.asset_service import (
 )
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.modules.processes.models import ExecuteRequest, Process
-from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.models.protocols import AssetsProtocol
 from dynastore.modules import get_protocol
@@ -46,9 +45,12 @@ from dynastore.tasks.gdal.definition import GDALINFO_PROCESS_DEFINITION
 logger = logging.getLogger(__name__)
 
 
-class GdalInfoTask(TaskProtocol, AssetTasksSPI):
+class GdalInfoTask(TaskProtocol):
     """
     Task that calculates GDAL/OGR info for an asset and enriches its metadata.
+
+    A plain OGC process: invoked through OGC API - Processes with the asset
+    locators in ``inputs`` (``asset_id`` + ``catalog_id`` [+ ``collection_id``]).
     """
 
     @staticmethod
@@ -57,37 +59,6 @@ class GdalInfoTask(TaskProtocol, AssetTasksSPI):
 
     def __init__(self, app_state: object):
         self.app_state = app_state
-
-    async def can_run_on_asset(self, asset: Asset) -> bool:
-        """
-        GdalInfo can run on any asset that GDAL can handle (Raster or Vectorial).
-        """
-        if not gdal_module.GDAL_AVAILABLE:
-            return False
-        return asset.asset_type in [AssetTypeEnum.RASTER, AssetTypeEnum.VECTORIAL]
-
-    async def get_execution_request(
-        self, asset: Asset, execution_request: ExecuteRequest
-    ) -> ExecuteRequest:
-        """
-        Injects asset information into the execution request inputs.
-        """
-        inputs = execution_request.inputs.copy() or {}
-        inputs.update(
-            {
-                "asset_uri": str(asset.uri),
-                "asset_id": asset.asset_id,
-                "catalog_id": asset.catalog_id,
-                "collection_id": asset.collection_id,
-                "asset_type": asset.asset_type.value,
-            }
-        )
-        # Create a new request with updated inputs (pydantic model is immutable by default but we are creating new)
-        return ExecuteRequest(
-            inputs=inputs,
-            outputs=execution_request.outputs,
-            response=execution_request.response,
-        )
 
     async def run(self, payload: TaskPayload[ExecuteRequest]) -> Any:
         # payload.inputs is a generic InputType which might be a dict or a model

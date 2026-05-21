@@ -60,10 +60,11 @@ class ProcessScope(str, Enum):
                     Task rows live in the tenant schema.
       - COLLECTION: targets a single collection. Requires ``catalog_id`` +
                     ``collection_id`` in URL. Task rows live in the tenant schema.
-      - ASSET:      targets a single asset (e.g. gdalinfo, vector ingestion).
-                    Requires ``catalog_id`` + ``collection_id`` in URL plus
-                    ``asset_id`` in the inputs (or via ``AssetTasksSPI`` when
-                    triggered by the AssetService).
+      - ASSET:      targets a single asset (e.g. gdalinfo). Executed at the
+                    asset mount ``/catalogs/{c}[/collections/{col}]/assets/{a}
+                    /processes/{id}/execution``; ``catalog_id``/``collection_id``
+                    /``asset_id`` are taken from the URL path and injected into
+                    ``inputs`` so the task resolves the asset itself.
     """
 
     PLATFORM = "platform"
