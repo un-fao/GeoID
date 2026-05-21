@@ -1060,6 +1060,22 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             target_crs_srid = await self._resolve_crs_srid(conn, catalog_id, crs)
             bbox_crs_srid = await self._resolve_crs_srid(conn, catalog_id, bbox_crs)
 
+            # Single-field equality shorthand: any query parameter that is not a
+            # reserved OGC parameter is treated as a `?{property}={value}` filter
+            # on the collection's attributes. The property name is validated
+            # against the collection's queryable fields downstream (unknown →
+            # 400) and the value is bound as a query parameter — never
+            # interpolated into SQL.
+            from dynastore.extensions.tools.query import (
+                OGC_RESERVED_QUERY_PARAMS,
+            )
+
+            extra_filters = {
+                key: value
+                for key, value in request.query_params.items()
+                if key not in OGC_RESERVED_QUERY_PARAMS and value != ""
+            }
+
             request_obj = parse_ogc_query_request(
                 bbox=bbox,
                 datetime_param=datetime_param,
@@ -1069,6 +1085,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 offset=offset,
                 bbox_crs_srid=bbox_crs_srid,
                 include_total_count=True,
+                extra_filters=extra_filters,
             )
 
             # Execute search via protocol (streaming)

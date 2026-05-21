@@ -74,6 +74,62 @@ async def resolve_items_read_policy(
         return None
 
 
+# OGC API Features query parameters that are handled explicitly by the
+# request parser / route handler and therefore must NOT be treated as
+# ad-hoc property=value attribute filters.
+OGC_RESERVED_QUERY_PARAMS: frozenset = frozenset({
+    "bbox",
+    "bbox-crs",
+    "datetime",
+    "limit",
+    "offset",
+    "filter",
+    "filter-lang",
+    "filter_lang",
+    "crs",
+    "sortby",
+    "f",
+    "lang",
+    "language",
+    "token",
+    "access_token",
+})
+
+
+def _cql_escape_literal(value: str) -> str:
+    """Escape a value for embedding inside a single-quoted CQL2 string literal.
+
+    CQL2-Text escapes a single quote by doubling it. The property name is never
+    interpolated into SQL — it is validated against the collection's queryable
+    fields by ``parse_cql_filter`` and only the resolved column reference reaches
+    the query — and the value here is rendered as a quoted CQL literal that the
+    CQL backend turns into a bound parameter. Escaping keeps the generated CQL
+    text well-formed for values that themselves contain single quotes.
+    """
+    return value.replace("'", "''")
+
+
+def build_attribute_equality_cql(extra_filters: Dict[str, str]) -> Optional[str]:
+    """Translate ``{property: value}`` pairs into a CQL2-Text equality filter.
+
+    Each pair becomes ``property = 'value'`` and the clauses are joined with
+    ``AND``. The resulting CQL string is parsed and validated downstream by
+    :func:`dynastore.modules.tools.cql.parse_cql_filter`, which rejects unknown
+    property names (→ 400) and binds the values as query parameters. Returns
+    ``None`` when there is nothing to filter on.
+    """
+    if not extra_filters:
+        return None
+    clauses = [
+        f"{name} = '{_cql_escape_literal(str(value))}'"
+        for name, value in extra_filters.items()
+        if value is not None
+    ]
+    if not clauses:
+        return None
+    return " AND ".join(clauses)
+
+
 def parse_ogc_query_request(
     bbox: Optional[str] = None,
     datetime_param: Optional[str] = None,
@@ -84,9 +140,15 @@ def parse_ogc_query_request(
     offset: int = 0,
     bbox_crs_srid: Optional[int] = None,
     include_total_count: bool = True,
+    extra_filters: Optional[Dict[str, str]] = None,
 ) -> QueryRequest:
     """
     Unifies OGC parameter parsing into a structured QueryRequest.
+
+    ``extra_filters`` carries ad-hoc ``?{property}={value}`` shorthand
+    parameters (the simple single-field equality form). They are converted to
+    CQL2-Text equality clauses and combined with any explicit ``filter`` so both
+    paths share the same validation, identifier safety, and parameter binding.
     """
     request_obj = QueryRequest(
         limit=limit,
@@ -183,8 +245,17 @@ def parse_ogc_query_request(
                 SortOrder(field=v.lstrip("+-"), direction=direction)
             )
 
-    if filter:
-        request_obj.cql_filter = filter
+    # Combine the explicit CQL2 ``filter`` with any ``?{property}={value}``
+    # shorthand equality filters into a single CQL2 expression. Both go through
+    # the same validated CQL parsing path downstream.
+    shorthand_cql = build_attribute_equality_cql(extra_filters or {})
+    cql_parts = [c for c in (filter, shorthand_cql) if c]
+    if cql_parts:
+        request_obj.cql_filter = (
+            " AND ".join(f"({c})" for c in cql_parts)
+            if len(cql_parts) > 1
+            else cql_parts[0]
+        )
 
     return request_obj
 
