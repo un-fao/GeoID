@@ -106,9 +106,10 @@ class MyCustomModule(ModuleProtocol):
         item_id = event.get("item_id")
 
         # NOTE: Do heavy lifting via TaskDispatcher, not directly in this handler!
-        # (For item INDEX propagation specifically, prefer the routing-config
-        # rail — IndexDispatcher.fan_out_bulk reads
-        # ItemsRoutingConfig.operations[INDEX] and handles outbox/retry. Bespoke
+        # (For item secondary-index propagation specifically, prefer the routing-config
+        # rail — IndexDispatcher.fan_out_bulk reads the secondary-index WRITE
+        # entries (secondary_index=True) in ItemsRoutingConfig.operations[WRITE]
+        # and handles outbox/retry. Bespoke
         # listener-driven dispatch is the right shape only when you're emitting
         # work for a NEW task type that has no routing-config home.)
         dispatcher = get_protocol(TaskDispatcher)

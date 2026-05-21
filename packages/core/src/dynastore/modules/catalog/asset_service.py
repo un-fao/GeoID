@@ -628,12 +628,14 @@ class AssetService(AssetsProtocol):
     ) -> List["ResolvedDriver"]:
         """Return non-primary WRITE asset drivers for fan-out.
 
-        Reads only ``AssetRoutingConfig.operations[WRITE]`` — operator-pinned
+        Reads only the primary WRITE entries (``secondary_index=False``) in
+        ``AssetRoutingConfig.operations[WRITE]`` — operator-pinned
         multi-writes. The first entry is the primary (the caller handles it
         directly); the rest are returned here.
 
-        ``operations[INDEX]`` (auto-augmented with discoverable ``AssetIndexer``
-        drivers like ``AssetElasticsearchDriver``) is **not** folded in here —
+        The secondary-index ``WRITE`` entries (``secondary_index=True``,
+        auto-augmented with discoverable ``AssetIndexer`` drivers like
+        ``AssetElasticsearchDriver``) are **not** folded in here —
         indexer drivers are driven by ``AssetEntitySyncSubscriber`` via the
         events bus, decoupling sync writers from indexer fan-out.
 

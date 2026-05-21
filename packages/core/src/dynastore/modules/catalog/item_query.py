@@ -700,7 +700,8 @@ class ItemQueryMixin:
         """Enqueue one ES-delete OUTBOX row per soft-deleted geoid.
 
         Symmetric counterpart to ``ItemService.upsert_bulk``'s async-OUTBOX
-        enqueue: resolve ``ItemsRoutingConfig.operations[INDEX]`` entries
+        enqueue: resolve the secondary-index ``WRITE`` entries
+        (``secondary_index=True``) in ``ItemsRoutingConfig.operations[WRITE]``
         that are ``write_mode=ASYNC`` + ``on_failure=OUTBOX`` and write one
         ``OutboxRecord(op="delete")`` per (entry, geoid) onto the caller's
         transaction, keyed by the geoid. The drain's delete branch keys the

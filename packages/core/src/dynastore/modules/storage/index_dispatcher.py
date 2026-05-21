@@ -573,9 +573,9 @@ def _make_default_routing_resolver():
       (``item_service._dispatch_index_upsert``) and item delete
       (``item_query``). Carries the privacy-cascade validator's contract
       into runtime: a private collection that pins
-      ``items_elasticsearch_private_driver`` in
-      ``ItemsRoutingConfig.operations[INDEX]`` now fires on item
-      upsert/delete via the OGC endpoints.
+      ``items_elasticsearch_private_driver`` as a secondary-index ``WRITE``
+      entry (``secondary_index=True``) in ``ItemsRoutingConfig.operations[WRITE]``
+      now fires on item upsert/delete via the OGC endpoints.
     * ``entity_type="collection"`` -> :class:`CollectionRoutingConfig` —
       collection metadata propagation (``_dispatch_collection_index``).
     * ``entity_type="catalog"`` -> :class:`CatalogRoutingConfig` — catalog
@@ -741,7 +741,8 @@ class IndexDispatcher:
     Parameters
     ----------
     routing_resolver
-        Async callable used to look up ``operations[INDEX]``. The
+        Async callable used to look up the secondary-index ``WRITE`` entries
+        (``secondary_index=True``) in ``operations[WRITE]``. The
         production resolver accepts an ``entity_type`` keyword and returns
         the matching ``*RoutingConfig`` per tier (items/collection/
         catalog/asset). Legacy 2-arg ``(catalog, collection)`` stubs are
@@ -812,8 +813,9 @@ class IndexDispatcher:
             logger.warning(
                 "IndexDispatcher: %d op(s) submitted for catalog=%s "
                 "collection=%s entity_type=%s but routing returned NO "
-                "INDEX entries — writes will not reach any indexer. "
-                "Check RoutingConfig.operations[INDEX] for this scope.",
+                "secondary-index entries — writes will not reach any indexer. "
+                "Check RoutingConfig.operations[WRITE] for secondary-index "
+                "entries (secondary_index=True) in this scope.",
                 len(ops), ctx.catalog, ctx.collection,
                 getattr(ctx, "entity_type", None),
             )

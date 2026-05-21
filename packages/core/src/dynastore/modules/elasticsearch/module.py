@@ -189,11 +189,12 @@ class ElasticsearchModule(ModuleProtocol):
     Ensures the platform-wide ES indices/aliases exist and exposes
     bulk-reindex orchestration entry points.
 
-    Catalog, collection, and item INDEX propagation are all driven by the
-    routing-config rails today — items via ``IndexDispatcher.fan_out_bulk``
+    Catalog, collection, and item secondary-index propagation are all driven by
+    the routing-config rails today — items via ``IndexDispatcher.fan_out_bulk``
     reading ``ItemsRoutingConfig``/``CollectionRoutingConfig`` (#820), catalogs
     via ``ReindexWorker`` consuming ``CATALOG_METADATA_CHANGED`` events and
-    fanning out to ``CatalogRoutingConfig.operations[INDEX]``. The legacy
+    fanning out to the secondary-index ``WRITE`` entries (``secondary_index=True``)
+    in ``CatalogRoutingConfig.operations[WRITE]``. The legacy
     listener path that dispatched ``elasticsearch_index``/``elasticsearch_delete``
     tasks on catalog/collection lifecycle events was retired in #825 — it ran
     in parallel to the canonical rails and was the source of the misleading

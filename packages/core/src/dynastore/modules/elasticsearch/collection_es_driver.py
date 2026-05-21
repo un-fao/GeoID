@@ -351,7 +351,8 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
 
         Tier guard (#728): non-collection ops are refused outright rather
         than silently upserted into the singleton ``dynastore-collections``
-        index. A misconfigured ``ItemsRoutingConfig.operations[INDEX]``
+        index. A misconfigured secondary-index ``WRITE`` entry
+        (``secondary_index=True``) in ``ItemsRoutingConfig.operations[WRITE]``
         pointing at the collection driver previously leaked 180 STAC
         items into the collection index and poisoned its dynamic mapping;
         the loud refusal here surfaces that misconfiguration immediately.

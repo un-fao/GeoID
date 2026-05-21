@@ -34,8 +34,9 @@ Two drivers in this module:
 
 * ``AssetElasticsearchDriver``  (driver_ref ``"elasticsearch_assets"``)
   Indexes asset metadata into per-catalog ``{prefix}-assets-{catalog_id}``
-  indices.  Driven by ``AssetRoutingConfig.operations[INDEX]`` (auto-augmented
-  with discoverable ``AssetIndexer`` impls) and dispatched via
+  indices.  Driven by the secondary-index ``WRITE`` entries
+  (``secondary_index=True``) in ``AssetRoutingConfig.operations[WRITE]``
+  (auto-augmented with discoverable ``AssetIndexer`` impls) and dispatched via
   ``AssetEntitySyncSubscriber`` from the events outbox — single-writer fan-out,
   no per-driver listener block.  Direct programmatic indexing via
   ``index_asset()`` / ``delete_asset()`` remains available.
@@ -47,8 +48,9 @@ its own self-contained subpackage at
 file.
 
 All drivers register as async event listeners, dispatched by the post-PR-#261
-operation-based router via ``ItemsRoutingConfig.operations[INDEX]`` /
-``AssetRoutingConfig.operations[INDEX]``.
+operation-based router via the secondary-index ``WRITE`` entries
+(``secondary_index=True``) in ``ItemsRoutingConfig.operations[WRITE]`` /
+``AssetRoutingConfig.operations[WRITE]``.
 """
 
 import logging
@@ -343,7 +345,8 @@ class ItemsElasticsearchDriver(
     Registered as ``storage_elasticsearch`` via entry points.
 
     Indexer marker — opts in to :class:`ItemIndexer` so the items routing
-    config auto-registers it under ``operations[INDEX]``.
+    config auto-registers it in ``operations[WRITE]`` as a secondary-index
+    entry (``secondary_index=True``).
     """
 
     is_item_indexer: ClassVar[bool] = True
@@ -987,9 +990,10 @@ class ItemsElasticsearchDriver(
         → enqueue retry row in same TX, WARN → log).
 
         No ``_is_secondary_for`` / ``_is_write_driver_for`` guards: the
-        dispatcher only invokes drivers listed in
-        ``operations[INDEX]`` for this ``(catalog, collection)`` — guard
-        is moved out of the driver into the routing layer.
+        dispatcher only invokes drivers pinned as secondary-index ``WRITE``
+        entries (``secondary_index=True``) in ``operations[WRITE]`` for this
+        ``(catalog, collection)`` — guard is moved out of the driver into the
+        routing layer.
         """
         if op.entity_type != "item":
             # Items driver only handles item-tier ops.  Non-item routes
@@ -1391,7 +1395,8 @@ class AssetElasticsearchDriver(
     Lifecycle wiring
     ----------------
     No lifespan-time wiring is required.  Asset writes flow through the
-    ``AssetIndexer`` route in ``AssetRoutingConfig.operations[INDEX]`` —
+    ``AssetIndexer`` secondary-index ``WRITE`` entry (``secondary_index=True``)
+    in ``AssetRoutingConfig.operations[WRITE]`` —
     invoked by ``AssetService``'s secondary-driver fan-out — and through
     direct programmatic calls to ``index_asset()`` / ``delete_asset()``.
 
@@ -1428,8 +1433,9 @@ class AssetElasticsearchDriver(
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
-        # Asset writes flow exclusively through the AssetIndexer route in
-        # AssetRoutingConfig.operations[INDEX] — invoked by AssetService's
+        # Asset writes flow exclusively through the AssetIndexer secondary-index
+        # WRITE entry (secondary_index=True) in AssetRoutingConfig.operations[WRITE]
+        # — invoked by AssetService's
         # secondary-driver fan-out. The previous CatalogEventType.ASSET_*
         # listener path was retired to eliminate a dual-write race against
         # the same index.

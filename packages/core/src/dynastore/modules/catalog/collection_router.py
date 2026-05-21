@@ -144,7 +144,8 @@ async def _dispatch_collection_index(
     db_resource: Optional[Any] = None,
 ) -> None:
     """Fan a collection ``upsert`` / ``delete`` to every Indexer configured
-    under ``CollectionRoutingConfig.operations[INDEX]``.
+    as a secondary-index ``WRITE`` entry (``secondary_index=True``) in
+    ``CollectionRoutingConfig.operations[WRITE]``.
 
     Mirrors :meth:`item_service.ItemService._dispatch_index_upsert` at the
     collection-envelope tier — the single dispatch call site that replaces
@@ -161,11 +162,12 @@ async def _dispatch_collection_index(
     ``IndexerFatal`` propagates.
 
     Asymmetry note: there is no ``_dispatch_catalog_index`` analogue in
-    ``catalog_router``.  Catalog INDEX is event-driven —
+    ``catalog_router``.  Catalog secondary indexing is event-driven —
     ``catalog_metadata_changed`` is emitted inside the WRITE transaction
     and ``ReindexWorker`` fans it out to ``CatalogRoutingConfig``'s
-    INDEX entries.  Same OUTBOX durability, different trigger.  See the
-    "Catalog INDEX hop" section in ``catalog_router``'s module docstring.
+    secondary-index ``WRITE`` entries (``secondary_index=True``).  Same
+    OUTBOX durability, different trigger.  See the "Catalog secondary-index
+    WRITE hop" section in ``catalog_router``'s module docstring.
     """
     from dynastore.models.protocols.indexer import IndexContext, IndexOp
     from dynastore.modules.storage.index_dispatcher import IndexerFatal
@@ -324,9 +326,9 @@ async def upsert_collection_metadata(
             )
             raise
 
-    # INDEX hop — propagate the envelope to ES (and any other configured
-    # Indexer).  Pure post-write propagation; PG above is the system of
-    # record.  db_resource (when a live conn) makes the OUTBOX enqueue
+    # secondary-index WRITE hop — propagate the envelope to ES (and any
+    # other configured Indexer).  Pure post-write propagation; PG above is
+    # the system of record.  db_resource (when a live conn) makes the OUTBOX enqueue
     # atomic with the caller's transaction.
     await _dispatch_collection_index(
         catalog_id, collection_id, metadata, db_resource=db_resource,
@@ -385,7 +387,7 @@ async def delete_collection_metadata(
                 first_error = exc
 
     if first_error is None:
-        # INDEX hop — propagate the delete so ES drops the document too.
+        # secondary-index WRITE hop — propagate the delete so ES drops the document too.
         # Mirrors the upsert path; fires only on a clean fan-out, because a
         # partial-failure delete left the row in PG (system of record) and
         # ES must keep its copy until a clean retry.

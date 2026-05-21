@@ -30,8 +30,9 @@ Scope of M3.1 (this file)
 
 - **Batch dispatcher**: given a list of catalog_metadata_changed event
   dicts, hydrate each (via ``catalog_router.get_catalog_metadata``)
-  and fan out to every INDEX-role driver configured in
-  ``CatalogRoutingConfig.metadata.operations[INDEX]``.
+  and fan out to every secondary-index driver configured as a
+  secondary-index ``WRITE`` entry (``secondary_index=True``) in
+  ``CatalogRoutingConfig.operations[WRITE]``.
 - **Per-driver SLA**: honours ``DriverSla.timeout_ms`` via
   ``asyncio.wait_for``.  On timeout / raise, applies the entry's
   ``on_timeout`` ∈ {"fail", "degrade", "skip"} policy.
