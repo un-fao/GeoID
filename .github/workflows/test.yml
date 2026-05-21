@@ -165,7 +165,6 @@ jobs:
             --workdir /dynastore \
             --env-file packages/core/src/dynastore/docker/.env \
             -v "$WORKSPACE":/dynastore/workspace \
-            -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/pytest.ini":/dynastore/pytest.ini \
@@ -311,7 +310,6 @@ jobs:
             --network "$NETWORK" \
             --workdir /dynastore \
             -v "$WORKSPACE":/dynastore/workspace \
-            -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/notebooks":/dynastore/notebooks \
@@ -423,7 +421,6 @@ jobs:
             --network "$NETWORK" \
             --workdir /dynastore \
             -v "$WORKSPACE":/dynastore/workspace \
-            -v "$WORKSPACE/src":/dynastore/src \
             -v "$WORKSPACE/tests":/dynastore/tests \
             -v "$WORKSPACE/docs":/dynastore/docs \
             -v "$WORKSPACE/notebooks":/dynastore/notebooks \

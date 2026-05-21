@@ -291,10 +291,10 @@ docker compose -f src/dynastore/docker/docker-compose.yml -f src/dynastore/docke
 .venv/bin/pytest tests/ --ignore-glob="**/integration/*"
 
 # Or, mirror CI: run inside the `tester` Dockerfile stage joined to the compose network
-docker compose -f src/dynastore/docker/docker-compose.yml up -d db
+docker compose -f packages/core/src/dynastore/docker/docker-compose.yml up -d db
 NETWORK=$(docker network ls --filter "name=dynastore_net" --format "{{.Name}}" | head -n1)
 docker run --rm --network "$NETWORK" \
-  -v "$PWD":/dynastore/workspace -v "$PWD/src":/dynastore/src \
+  -v "$PWD":/dynastore/workspace \
   -v "$PWD/tests":/dynastore/tests -v "$PWD/pytest.ini":/dynastore/pytest.ini \
   -e DATABASE_URL=postgresql://postgres:postgres@db:5432/gis_dev \
   geoid-test-runner:ci /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*"
