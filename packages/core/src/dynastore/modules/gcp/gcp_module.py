@@ -409,8 +409,10 @@ class GCPModule(
 
             from dynastore.modules.gcp.asset_sync import (
                 register_bucket_annotation_patcher,
+                register_asset_blob_reaper,
             )
             register_bucket_annotation_patcher()
+            register_asset_blob_reaper()
 
             # --- Liveness reconciler (#735) ---
             # Replaces the fixed spawn-lease guess: probe lapsed-lease Cloud Run

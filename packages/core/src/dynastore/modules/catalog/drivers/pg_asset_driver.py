@@ -580,7 +580,9 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
         Returns:
             ``(rowcount, matched_rows)`` where ``matched_rows`` is a list of
             dicts with ``asset_id``, ``catalog_id``, ``collection_id``,
-            ``owned_by`` for each matched asset.
+            ``owned_by``, ``uri`` for each matched asset. ``uri`` lets
+            hard-delete subscribers reap the backing object (e.g. the GCS
+            blob) after the row is gone.
         """
         schema = await self._resolve_schema(catalog_id, db_resource)
         if not schema:
@@ -610,7 +612,7 @@ class AssetPostgresqlDriver(TypedDriver[AssetPostgresqlDriverConfig]):
 
         async with managed_transaction(db_resource or self.engine) as conn:
             fetch_sql = text(
-                f'SELECT asset_id, catalog_id, collection_id, owned_by '
+                f'SELECT asset_id, catalog_id, collection_id, owned_by, uri '
                 f'FROM "{schema}".assets WHERE {where_stmt}'
             )
             asset_rows = await DQLQuery(
