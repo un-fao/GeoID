@@ -544,8 +544,10 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         # (query_optimizer, item_query, item_service, …) then sees the correct
         # shape without threading the policy itself.
         #
-        # Null-object overlays applied from ItemsWritePolicy (#957, #974, #1043, #1126):
-        #   validity_column       ← policy.validity.column (column name or None)
+        # Null-object overlays applied from ItemsWritePolicy (#957, #974, #1043, #1126, #1168):
+        #   validity_column       ← driver-owned fixed "validity" when validity is
+        #                           enabled, else None (the PG storage layout — NOT
+        #                           policy-configured; #1168)
         #   validity_start_from   ← policy.validity.start_from ("context" or path)
         #   validity_end_from     ← policy.validity.end_from   (None/"context"/path)
         #   external_id_field  ← "external_id" when policy has EXTERNAL_ID rule,
@@ -600,9 +602,15 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         for sc in col_config.sidecars:
             if isinstance(sc, FeatureAttributeSidecarConfig):
                 updates: dict = {}
-                # Validity overlay (#1126): column NAME from policy.validity.column;
-                # value sources from policy.validity.start_from / end_from.
-                policy_validity_column = write_policy.validity_column
+                # Validity overlay (#1126/#1168): validity is a driver-abstracted
+                # concept — the policy carries only the value sources
+                # (start_from / end_from), never a physical column name. The PG
+                # driver owns its storage layout, so it supplies its own fixed
+                # ``validity`` tstzrange column name here (gated on the policy's
+                # presence toggle); the DDL emits that same fixed column.
+                policy_validity_column = (
+                    "validity" if write_policy.validity is not None else None
+                )
                 policy_validity_start = (
                     write_policy.validity.start_from
                     if write_policy.validity is not None

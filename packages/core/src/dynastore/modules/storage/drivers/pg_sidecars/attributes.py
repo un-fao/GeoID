@@ -144,9 +144,11 @@ class FeatureAttributeSidecar(SidecarProtocol):
     ):
         # ``**_kwargs`` absorbs forward-compatible factory inputs
         # (e.g. ``policy=...``) reserved for future SSOT threading.
-        # ``config.validity_column`` is already policy-aligned because
-        # the driver overlays ``ItemsWritePolicy.validity.column`` onto
-        # the sidecar config at ``ensure_storage`` time (#957/#974/#1126).
+        # ``config.validity_column`` is already policy-aligned because the PG
+        # driver sets its own fixed ``validity`` column on the sidecar config at
+        # ``ensure_storage`` time when ``ItemsWritePolicy.validity`` is enabled
+        # (#957/#974/#1126/#1168 — validity is a driver-abstracted concept; the
+        # policy never names a physical column).
         self.config = config
 
     @property
@@ -356,9 +358,9 @@ class FeatureAttributeSidecar(SidecarProtocol):
         """Returns True if this sidecar manages temporal validity.
 
         SSOT: ``ItemsWritePolicy.validity`` (null-object ValiditySpec) — its
-        ``column`` is mirrored onto ``self.config.validity_column`` by the PG
-        driver at DDL time;
-        ``config.enable_validity`` is the derived bool over that field.
+        PRESENCE enables validity; the PG driver sets its own fixed
+        ``validity`` column on ``self.config.validity_column`` at DDL time
+        (#1168); ``config.enable_validity`` is the derived bool over that field.
         """
         return self.config.has_validity
 
