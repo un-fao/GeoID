@@ -53,10 +53,9 @@ Not in this file yet (follow-up M3.1b)
 The per-Indexer transform chain runs via ``entry.input_transformers``
 (resolved against the ``EntityTransformProtocol`` registry and applied with
 ``transform_runtime.apply_transform_chain`` in
-``_transform_envelope_for_entry``) — the same SSOT the items path uses. The
-legacy ``entry.transformed`` boolean is redundant with a non-empty
-``input_transformers`` tuple and is retired in the routing rationalization
-(#990).
+``_transform_envelope_for_entry``) — the same SSOT the items path uses. A
+non-empty ``input_transformers`` tuple is the sole trigger for feeding an
+indexer a transformed envelope; with none, the raw envelope is dispatched.
 
 """
 
@@ -331,17 +330,6 @@ class ReindexWorker:
                 else:
                     degraded_errors.append(message)
                 continue
-            if getattr(entry, "transformed", False) and (
-                not entry.input_transformers
-            ):
-                logger.warning(
-                    "ReindexWorker: CatalogRoutingConfig INDEX entry %r set "
-                    "transformed=True but declares no input_transformers — "
-                    "nothing to apply; dispatching the raw envelope for "
-                    "catalog_id=%s. Attach input_transformers to enable the "
-                    "transform chain.",
-                    entry.driver_ref, catalog_id,
-                )
             outcome = await self._dispatch_one(
                 entry=entry,
                 driver=driver,

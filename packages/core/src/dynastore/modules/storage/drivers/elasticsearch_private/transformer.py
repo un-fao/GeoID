@@ -23,10 +23,10 @@ transformation can be reused with a different storage backend in the
 future (e.g. BigQuery) without driver-class proliferation.
 
 Discovery: implements :class:`EntityTransformProtocol`. Active when
-``PrivateEntityTransformer`` is listed in
-``operations[TRANSFORM]`` of the relevant routing config. The
-auto-augment helper ``_self_register_transformers_into`` will also
-register it automatically when the package is loaded.
+``PrivateEntityTransformer`` is listed in the ``transformers`` registry
+of the relevant routing config. The auto-augment helper
+``_self_register_transformers_into`` will also register it automatically
+when the package is loaded.
 """
 
 from __future__ import annotations

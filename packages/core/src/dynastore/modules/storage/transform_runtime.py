@@ -16,9 +16,10 @@
 Entity-transform chain runtime.
 
 Walks the ordered chain of :class:`EntityTransformProtocol` implementers
-resolved from ``operations[TRANSFORM]`` of the active routing config and
-applies them to an entity at index time, or applies their inverses at
-read time.
+resolved from a WRITE / SEARCH entry's ``input_transformers`` /
+``output_transformers`` (refs into the routing config's ``transformers``
+registry) and applies them to an entity at index time, or applies their
+inverses at read time.
 
 Empty chain ⇒ identity (no-op). The default behavior when no transformer
 is registered for an entity is to leave the entity unchanged.

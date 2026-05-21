@@ -95,6 +95,7 @@ from dynastore.modules.storage.routing_config import (
     ItemsRoutingConfig,
     Operation,
     OperationDriverEntry,
+    TransformerEntry,
     WriteMode,
 )
 
@@ -129,7 +130,7 @@ __all__ = [
     "ComputedKind",
     "FeatureType",
     "IdentityRule",
-    # Entity-transform chain runtime (operates on routing operations[TRANSFORM])
+    # Entity-transform chain runtime (operates on the ``transformers`` registry)
     "apply_transform_chain",
     "restore_transform_chain",
     # Routing configs
@@ -138,6 +139,7 @@ __all__ = [
     "AssetRoutingConfig",
     "CatalogRoutingConfig",
     "OperationDriverEntry",
+    "TransformerEntry",
     "FailurePolicy",
     "Operation",
     "WriteMode",

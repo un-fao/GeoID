@@ -110,9 +110,11 @@ class Operation(StrEnum):
                   on_failure=outbox) by the ReindexWorker. Role — not a
                   distinct operation — distinguishes primary from index (see
                   ``secondary_index_entries``).
-    - TRANSFORM : ordered chain — drivers (typically items drivers) that
-                  enrich the collection row at READ time (extents, counts,
-                  summaries derived from items).
+
+    Entity transformers are **not** an operation. They live in the
+    sibling ``transformers`` registry (a tuple of
+    :class:`TransformerEntry`) and are attached to WRITE / SEARCH entries
+    via their ``input_transformers`` / ``output_transformers`` refs.
 
     Catalog routing (``CatalogRoutingConfig.operations``) — same shape on
     catalog rows.
@@ -128,7 +130,6 @@ class Operation(StrEnum):
     WRITE = "WRITE"
     READ = "READ"
     SEARCH = "SEARCH"
-    TRANSFORM = "TRANSFORM"
     UPLOAD = "UPLOAD"
 
 
@@ -145,16 +146,12 @@ class WriteMode(StrEnum):
                      (used with ``Operation.READ``)
     - ``fan_out``  : call all drivers independently; merge results
                      (used with ``Operation.WRITE``)
-    - ``chain``    : pipe output through drivers in declared order;
-                     each driver receives the previous output
-                     (used with ``Operation.TRANSFORM``)
     """
 
     SYNC = "sync"
     ASYNC = "async"
     FIRST = "first"
     FAN_OUT = "fan_out"
-    CHAIN = "chain"
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +171,9 @@ def derive_supported_operations(capabilities: FrozenSet[str]) -> FrozenSet[str]:
     propagated asynchronously — the role is derived from the driver, not a
     distinct operation.
 
-    ``Operation.TRANSFORM`` participation is determined by implementing
-    :class:`EntityTransformProtocol` rather than via a Capability flag.
+    Entity-transform participation is expressed by implementing
+    :class:`EntityTransformProtocol`; transformers populate the routing
+    config's ``transformers`` registry (not an :class:`Operation`).
     See ``modules/storage/routing_config.py:_self_register_transformers_into``.
     """
     from dynastore.models.protocols.storage_driver import Capability
@@ -214,13 +212,7 @@ class OperationDriverEntry(BaseModel):
     Role-based driver plan additions (optional, default-inert):
 
     - ``sla``         — per-entry SLA override.  When ``None``, the driver's
-                         class-level ``sla`` ClassVar (if any) is used.  On
-                         TRANSFORM entries, either the entry or the class
-                         must provide one; CI guard enforces.
-    - ``transformed`` — for secondary-index WRITE entries: ``True`` means the ReindexWorker
-                         feeds this sink the transformed envelope (TRANSFORM
-                         chain applied); ``False`` means the raw Primary
-                         envelope.  Ignored on other operations.
+                         class-level ``sla`` ClassVar (if any) is used.
     """
 
     driver_ref: Immutable[str] = Field(
@@ -271,16 +263,7 @@ class OperationDriverEntry(BaseModel):
         default=None,
         description=(
             "Per-entry SLA override.  When None, falls back to the driver's "
-            "class-level SLA (if declared).  Mandatory on TRANSFORM entries "
-            "— without an SLA, a transform can quietly tax the hot path."
-        ),
-    )
-    transformed: bool = Field(
-        default=False,
-        description=(
-            "For secondary-index WRITE entries only: True → ReindexWorker "
-            "feeds the transformed envelope (TRANSFORM chain applied); False "
-            "→ raw Primary envelope.  Ignored on other operations."
+            "class-level SLA (if declared)."
         ),
     )
     secondary_index: bool = Field(
@@ -322,8 +305,8 @@ class OperationDriverEntry(BaseModel):
             "Ordered transformer ``driver_ref``s applied to entities going "
             "INTO this driver call. The chain runs left-to-right: each "
             "transformer receives the previous transformer's output. Every "
-            "ref must also appear in ``operations[TRANSFORM]`` of the same "
-            "routing config — the validator rejects dangling references at "
+            "ref must also appear in the routing config's ``transformers`` "
+            "registry — the validator rejects dangling references at "
             "config-build time. Wired hops in this release: ``WRITE`` "
             "(secondary-index propagation). Declaring this on other "
             "operations emits a one-time WARN because the hop is not yet "
@@ -352,6 +335,52 @@ class OperationDriverEntry(BaseModel):
         if isinstance(v, (list, tuple)):
             return tuple(_to_snake(item) if isinstance(item, str) and item else item for item in v)
         return v
+
+
+class TransformerEntry(BaseModel):
+    """A member of a routing config's ``transformers`` registry.
+
+    A transformer is **not** a dispatch operation: it carries no
+    ``write_mode`` / ``on_failure`` / ``secondary_index`` semantics.  It is a
+    named, ordered registry entry that WRITE / SEARCH operation entries
+    reference by ``driver_ref`` through their ``input_transformers`` /
+    ``output_transformers`` attachments.  The concrete driver must implement
+    :class:`EntityTransformProtocol`; the chain runtime lives in
+    ``modules/storage/transform_runtime.py``.
+
+    The registry is auto-populated from discoverable
+    ``EntityTransformProtocol`` implementers (see
+    :func:`_self_register_transformers_into`) and persists in the config so
+    that attachment-ref validation succeeds in any SCOPE — including one where
+    the transformer's driver is configured but not locally installed.
+    """
+
+    driver_ref: Immutable[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Transformer reference — the snake_case class name of an "
+            "``EntityTransformProtocol`` implementer "
+            "(e.g. ``private_entity_transformer``)."
+        ),
+    )
+    sla: Optional[DriverSla] = Field(
+        default=None,
+        description=(
+            "Optional per-transformer SLA.  Without one a transform runs "
+            "unbounded on the hot path; pin an SLA to bound it."
+        ),
+    )
+    source: Literal["operator", "auto"] = Field(
+        default="operator",
+        description=(
+            "Provenance.  ``operator`` = explicitly configured; ``auto`` = "
+            "appended by ``_self_register_transformers_into`` from a "
+            "discoverable implementer.  An operator-authored registry (any "
+            "``source='operator'`` entry present) is invariant under "
+            "auto-augmentation."
+        ),
+    )
 
 
 # Operations whose transformer hop is wired in this release. Declaring
@@ -396,15 +425,14 @@ def _warn_deferred_transformer_hops(
 
 def _validate_transformer_attachment(
     operations: Dict[str, List["OperationDriverEntry"]],
+    transformers: Sequence["TransformerEntry"],
     config_label: str,
 ) -> None:
     """Every ref under ``input_transformers`` / ``output_transformers``
-    must also appear as a ``driver_ref`` in ``operations[TRANSFORM]``.
+    must also appear as a ``driver_ref`` in the ``transformers`` registry.
     Raises ``ValueError`` listing the dangling refs.
     """
-    transform_refs = {
-        entry.driver_ref for entry in operations.get(Operation.TRANSFORM, [])
-    }
+    transform_refs = {entry.driver_ref for entry in transformers}
     dangling: List[str] = []
     for op_name, entries in operations.items():
         for entry in entries:
@@ -421,8 +449,8 @@ def _validate_transformer_attachment(
     if dangling:
         raise ValueError(
             f"{config_label}: transformer driver_ref(s) {dangling} listed in "
-            f"input_transformers/output_transformers do not appear in "
-            f"operations[TRANSFORM]. Register them as TRANSFORM entries "
+            f"input_transformers/output_transformers do not appear in the "
+            f"``transformers`` registry. Register them as transformers "
             f"(or remove the attachment)."
         )
 
@@ -547,6 +575,15 @@ class ItemsRoutingConfig(PluginConfig):
             "See un-fao/GeoID#810 (Option B)."
         ),
     )
+    transformers: Immutable[List[TransformerEntry]] = Field(
+        default_factory=list,
+        description=(
+            "Registry of entity transformers available to this config. "
+            "Auto-populated from discoverable EntityTransformProtocol "
+            "implementers; WRITE/SEARCH entries reference these by "
+            "driver_ref via input_transformers/output_transformers."
+        ),
+    )
 
     @model_validator(mode="after")
     def _augment_items_with_discoverable_indexers_searchers(
@@ -567,14 +604,16 @@ class ItemsRoutingConfig(PluginConfig):
         try:
             _self_register_indexers_into(self.operations, ItemIndexer)
             _self_register_searchers_into(self.operations, CollectionItemsStore)
-            _self_register_transformers_into(self.operations)
+            _self_register_transformers_into(self.transformers)
         except Exception as exc:
             logger.debug(
                 "ItemsRoutingConfig: items-tier read-time self-"
                 "register skipped (%s); apply-handler will populate on "
                 "next write.", exc,
             )
-        _validate_transformer_attachment(self.operations, "ItemsRoutingConfig")
+        _validate_transformer_attachment(
+            self.operations, self.transformers, "ItemsRoutingConfig"
+        )
         _warn_deferred_transformer_hops(self.operations, "ItemsRoutingConfig")
         return self
 
@@ -598,19 +637,20 @@ class CollectionRoutingConfig(PluginConfig):
         Primary ``CollectionStore`` driver(s) committing in-transaction.  Empty →
         defaults to the Primary PG driver.
 
-    ``TRANSFORM`` (``write_mode=chain``, **lazy**):
-        Drivers that enrich collection metadata.  **Not** invoked on default
-        read paths — only when an endpoint opts in (e.g. STAC derived fields)
-        or when the async reindex pipeline is preparing an envelope for a
-        secondary-index WRITE entry marked ``transformed=true``.  Each entry
-        should carry an SLA; see role-based driver plan §Routing.
+    ``transformers`` registry (**lazy**):
+        Entity transformers that enrich collection metadata.  These live in
+        the sibling ``transformers`` field — **not** an operation.  A WRITE /
+        SEARCH entry opts a transformer in via its ``input_transformers`` /
+        ``output_transformers`` refs; the async reindex pipeline applies the
+        WRITE entry's ``input_transformers`` before dispatching to a
+        secondary-index sink.  Each transformer should carry an SLA.
 
     ``WRITE`` secondary indexes (optional, typically async):
         Post-write propagation targets for search-capable sinks (ES, Vertex AI,
         vector DBs) live in ``WRITE`` with ``secondary_index=True`` — they are
-        not a separate operation.  Each entry declares ``transformed: bool`` to
-        pick raw vs transformed envelopes.  When absent, search falls through
-        to the Primary's ``SEARCH`` capability.
+        not a separate operation.  An entry's ``input_transformers`` decide
+        whether the indexer receives a transformed envelope; with none it gets
+        the raw Primary envelope.
 
     Identity is the class itself; see ``class_key()`` in ``platform_config_service.py``.
     """
@@ -689,8 +729,16 @@ class CollectionRoutingConfig(PluginConfig):
             "a routing preset) — not hard-coded, so a PG-only deployment "
             "enqueues no undrainable outbox rows. "
             "SEARCH = Elasticsearch primary (geometry_simplified), "
-            "PostgreSQL fallback (geometry_exact). "
-            "TRANSFORM entries are auto-augmented at validation time."
+            "PostgreSQL fallback (geometry_exact)."
+        ),
+    )
+    transformers: Immutable[List[TransformerEntry]] = Field(
+        default_factory=list,
+        description=(
+            "Registry of entity transformers available to this config. "
+            "Auto-populated from discoverable EntityTransformProtocol "
+            "implementers; WRITE/SEARCH entries reference these by "
+            "driver_ref via input_transformers/output_transformers."
         ),
     )
 
@@ -714,14 +762,16 @@ class CollectionRoutingConfig(PluginConfig):
             _self_register_searchers_into(
                 self.operations, CollectionStore,
             )
-            _self_register_transformers_into(self.operations)
+            _self_register_transformers_into(self.transformers)
         except Exception as exc:
             logger.debug(
                 "CollectionRoutingConfig: read-time self-register "
                 "skipped (%s); apply-handler will populate on next write.",
                 exc,
             )
-        _validate_transformer_attachment(self.operations, "CollectionRoutingConfig")
+        _validate_transformer_attachment(
+            self.operations, self.transformers, "CollectionRoutingConfig"
+        )
         _warn_deferred_transformer_hops(self.operations, "CollectionRoutingConfig")
         return self
 
@@ -802,6 +852,15 @@ class AssetRoutingConfig(PluginConfig):
             "with discoverable AssetUploadProtocol impls."
         ),
     )
+    transformers: Immutable[List[TransformerEntry]] = Field(
+        default_factory=list,
+        description=(
+            "Registry of entity transformers available to this config. "
+            "Auto-populated from discoverable EntityTransformProtocol "
+            "implementers; WRITE/SEARCH entries reference these by "
+            "driver_ref via input_transformers/output_transformers."
+        ),
+    )
 
     @model_validator(mode="after")
     def _augment_with_discoverable_indexers(self) -> "AssetRoutingConfig":
@@ -820,13 +879,15 @@ class AssetRoutingConfig(PluginConfig):
             _self_register_indexers_into(self.operations, AssetIndexer)
             from dynastore.models.protocols.asset_upload import AssetUploadProtocol
             _self_register_upload_into(self.operations, AssetUploadProtocol)
-            _self_register_transformers_into(self.operations)
+            _self_register_transformers_into(self.transformers)
         except Exception as exc:
             logger.debug(
                 "AssetRoutingConfig: read-time self-register skipped "
                 "(%s); apply-handler will populate on next write.", exc,
             )
-        _validate_transformer_attachment(self.operations, "AssetRoutingConfig")
+        _validate_transformer_attachment(
+            self.operations, self.transformers, "AssetRoutingConfig"
+        )
         _warn_deferred_transformer_hops(self.operations, "AssetRoutingConfig")
         return self
 
@@ -846,7 +907,8 @@ class CatalogRoutingConfig(PluginConfig):
     explicit platform config.
 
     ``operations`` supports the same keys as :class:`CollectionRoutingConfig`:
-    ``WRITE``, ``READ``, ``SEARCH``, ``TRANSFORM``.
+    ``WRITE``, ``READ``, ``SEARCH`` (plus the sibling ``transformers``
+    registry).
     See that class for per-key semantics, with one trigger difference:
     secondary-index WRITE entries on this config are consumed by
     :class:`~dynastore.modules.catalog.reindex_worker.ReindexWorker` off
@@ -912,6 +974,15 @@ class CatalogRoutingConfig(PluginConfig):
             "augmentation is idempotent set-default."
         ),
     )
+    transformers: Immutable[List[TransformerEntry]] = Field(
+        default_factory=list,
+        description=(
+            "Registry of entity transformers available to this config. "
+            "Auto-populated from discoverable EntityTransformProtocol "
+            "implementers; WRITE/SEARCH entries reference these by "
+            "driver_ref via input_transformers/output_transformers."
+        ),
+    )
 
     @model_validator(mode="after")
     def _augment_with_discoverable_indexers_searchers(
@@ -937,7 +1008,7 @@ class CatalogRoutingConfig(PluginConfig):
         try:
             _self_register_indexers_into(self.operations, CatalogIndexer)
             _self_register_searchers_into(self.operations, CatalogStore)
-            _self_register_transformers_into(self.operations)
+            _self_register_transformers_into(self.transformers)
         except Exception as exc:
             # Discovery may not be ready (e.g. test fixtures that
             # validate routing configs before plugins register).  The
@@ -946,7 +1017,9 @@ class CatalogRoutingConfig(PluginConfig):
                 "CatalogRoutingConfig: read-time self-register skipped "
                 "(%s); apply-handler will populate on next write.", exc,
             )
-        _validate_transformer_attachment(self.operations, "CatalogRoutingConfig")
+        _validate_transformer_attachment(
+            self.operations, self.transformers, "CatalogRoutingConfig"
+        )
         _warn_deferred_transformer_hops(self.operations, "CatalogRoutingConfig")
         return self
 
@@ -1468,12 +1541,12 @@ async def _validate_collection_routing_config(
                 f"Available: {sorted(store_driver_index)}"
             )
 
-    # Validate operations[TRANSFORM] (CollectionItemsStore drivers — they
+    # Validate the transformers registry (CollectionItemsStore drivers — they
     # contribute item-derived metadata at READ time)
-    for entry in config.operations.get(Operation.TRANSFORM, []):
+    for entry in config.transformers:
         if entry.driver_ref not in driver_index:
             raise ValueError(
-                f"Collection metadata routing config: operations[TRANSFORM] driver "
+                f"Collection metadata routing config: transformer driver "
                 f"'{entry.driver_ref}' is not registered. "
                 f"Available: {sorted(driver_index)}"
             )
@@ -1784,8 +1857,11 @@ def _assert_public_collection_has_public_parent(
 #   - WRITE:     fan-out across every listed driver; secondary-index
 #                entries (secondary_index=True) propagate to search sinks.
 #   - SEARCH:    single-driver. Default = first; driver_hint overrides.
-#   - TRANSFORM: ordered chain. Composition runtime in
-#                modules/storage/transform_runtime.py applies it.
+#
+# Transformers are not an operation: WRITE/SEARCH entries attach them via
+# input_transformers/output_transformers refs into the ``transformers``
+# registry; the composition runtime in
+# modules/storage/transform_runtime.py applies the chain.
 #
 # Entity-agnostic: parameterised by ``entity`` ∈ {item, collection, catalog,
 # asset}. Each entity reads from a different config:
@@ -2015,49 +2091,17 @@ async def get_output_transformers_for_search(
     return chain
 
 
-def supported_operations(driver: Any) -> FrozenSet[str]:
-    """Return the set of :class:`Operation` values this driver participates in.
-
-    Combines the two discovery axes used by the platform:
-
-    1. **Capability-derived operations** — ``derive_supported_operations(
-       driver.capabilities)`` translates the driver's ``Capability`` flag set
-       into the operations those flags qualify it for (WRITE / READ /
-       SEARCH).
-    2. **Protocol-derived operations** — operations whose participation is
-       expressed by implementing a Protocol rather than by setting a flag.
-       Currently only ``Operation.TRANSFORM`` (via
-       :class:`EntityTransformProtocol`); other future operations may follow
-       the same pattern when they have no variant capabilities.
-
-    The asymmetry is intentional: capabilities express variant subsets within
-    one structural type (a ``CollectionItemsStore`` may support FULLTEXT but
-    not SPATIAL_FILTER); a Protocol expresses an identity with no variants
-    (a transformer is a transformer).
-
-    Drivers MAY expose a ``supported_operations`` property forwarding to
-    this helper; it is not required.
-    """
-    from dynastore.models.protocols.entity_transform import EntityTransformProtocol
-
-    caps = getattr(driver, "capabilities", frozenset())
-    ops: Set[str] = set(derive_supported_operations(caps))
-    if isinstance(driver, EntityTransformProtocol):
-        ops.add(Operation.TRANSFORM)
-    return frozenset(ops)
-
-
 def _self_register_transformers_into(
-    target_ops: Dict[str, List["OperationDriverEntry"]],
+    transformers: List["TransformerEntry"],
 ) -> None:
-    """Auto-append every installed ``EntityTransformProtocol`` implementer
-    to ``target_ops[TRANSFORM]``.
+    """Auto-append every installed ``EntityTransformProtocol`` implementer to
+    the ``transformers`` registry (in place).
 
     Mirrors :func:`_self_register_indexers_into` and
-    :func:`_self_register_searchers_into`. Operator-override: a no-op
-    when ``target_ops[TRANSFORM]`` contains any entry with
-    ``source="operator"`` — operator-managed lists are invariant under
-    auto-augmentation (#792 / #889).
+    :func:`_self_register_searchers_into`. Operator-override: a no-op when the
+    registry already contains any entry with ``source="operator"`` — an
+    operator-authored registry is invariant under auto-augmentation
+    (#792 / #889).
 
     Discovery is purely structural: any driver implementing
     ``EntityTransformProtocol`` is eligible. There is no separate capability
@@ -2066,19 +2110,17 @@ def _self_register_transformers_into(
     from dynastore.models.protocols.entity_transform import EntityTransformProtocol
     from dynastore.tools.discovery import get_protocols
 
-    if _is_operator_managed(target_ops, Operation.TRANSFORM):
+    if any(entry.source == "operator" for entry in transformers):
         return
-    listed = {entry.driver_ref for entry in target_ops.get(Operation.TRANSFORM, [])}
+    listed = {entry.driver_ref for entry in transformers}
     for transformer in get_protocols(EntityTransformProtocol):
         driver_ref = _to_snake(type(transformer).__name__)
         if driver_ref in listed:
             continue
-        target_ops.setdefault(Operation.TRANSFORM, []).append(
-            OperationDriverEntry(driver_ref=driver_ref, source="auto")
-        )
+        transformers.append(TransformerEntry(driver_ref=driver_ref, source="auto"))
         listed.add(driver_ref)
         logger.debug(
             "Routing config self-registration: appended EntityTransformProtocol "
-            "driver '%s' to operations[TRANSFORM] (source=auto)",
+            "driver '%s' to transformers registry (source=auto)",
             driver_ref,
         )
