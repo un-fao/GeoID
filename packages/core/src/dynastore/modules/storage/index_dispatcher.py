@@ -619,8 +619,8 @@ def _make_default_routing_resolver():
         configs = get_protocol(ConfigsProtocol)
         if configs is None:
             # No platform configs in this process — return a default
-            # routing config so the dispatcher gracefully degrades to
-            # empty-INDEX (no fan-out).
+            # routing config so the dispatcher gracefully degrades to no
+            # secondary-index entries (no fan-out).
             return config_cls()
         return await configs.get_config(
             config_cls,

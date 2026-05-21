@@ -1071,9 +1071,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         (we already have the routing in hand and want to share the conn);
         the dispatcher's missing-indexer path remains the entry point for
         per-call ops without explicit routing knowledge. ``WARN`` /
-        ``IGNORE`` INDEX entries are not enqueued here — they're tolerant
-        by design and are still handled by the post-commit dispatcher
-        path on the legacy :meth:`upsert` flow.
+        ``IGNORE`` secondary-index entries are not enqueued here — they're
+        tolerant by design and are still handled by the post-commit
+        dispatcher path on the legacy :meth:`upsert` flow.
 
         Test injection seams (set on the instance, not the constructor):
         ``_test_routing_resolver``, ``_test_driver_registry``,

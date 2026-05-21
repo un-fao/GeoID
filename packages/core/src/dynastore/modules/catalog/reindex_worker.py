@@ -20,9 +20,9 @@
 ReindexWorker — M3.1 scaffold of the role-based-driver refactor.
 
 Consumes ``catalog_metadata_changed`` events emitted by the catalog-tier
-router (M3.0) and dispatches the mutation payload to registered INDEX
-drivers (ES Indexers, vector-DB sinks, …).  The worker is the glue
-between the authoritative store (catalog.catalog_core/_stac
+router (M3.0) and dispatches the mutation payload to the registered
+secondary-index drivers (ES Indexers, vector-DB sinks, …).  The worker is
+the glue between the authoritative store (catalog.catalog_core/_stac
 written by the Primary drivers) and search-tier mirrors.
 
 Scope of M3.1 (this file)
@@ -130,7 +130,8 @@ class _DispatchResult:
 
 
 class ReindexWorker:
-    """Dispatcher for ``catalog_metadata_changed`` events → INDEX drivers.
+    """Dispatcher for ``catalog_metadata_changed`` events → secondary-index
+    drivers.
 
     Stateless by design — every method takes the inputs it needs.  The
     only instance state is the injected ``get_catalog_metadata``
@@ -141,7 +142,7 @@ class ReindexWorker:
     through this worker.  A parallel collection-tier event can be wired
     up by adding a ``COLLECTION_METADATA_CHANGED`` emission in
     :mod:`~dynastore.modules.catalog.collection_router` when
-    INDEX propagation is needed there too.
+    secondary-index propagation is needed there too.
     """
 
     def __init__(
@@ -160,7 +161,8 @@ class ReindexWorker:
                 :func:`_resolve_catalog_indexers` — the production
                 default — is async because it queries
                 ``ConfigsProtocol`` through the 4-tier waterfall and
-                honours per-catalog INDEX overrides.  Tests that don't
+                honours per-catalog secondary-index overrides.  Tests that
+                don't
                 need the waterfall can inject a simple synchronous
                 lambda returning a canned list.
 
@@ -274,7 +276,7 @@ class ReindexWorker:
             )
 
         if not indexers:
-            # No INDEX-role drivers configured — the event still
+            # No secondary-index drivers configured — the event still
             # deserves an ACK so the outbox doesn't accumulate.  A
             # deploy that later registers Indexers will pick up new
             # events from that point forward; the catch-up backfill
@@ -518,7 +520,7 @@ def _apply_sla_policy(
 
 
 # ---------------------------------------------------------------------------
-# Indexer resolution — reads from CatalogRoutingConfig's INDEX operation
+# Indexer resolution — secondary-index WRITE entries on CatalogRoutingConfig
 # ---------------------------------------------------------------------------
 
 
@@ -526,7 +528,11 @@ async def _resolve_catalog_indexers(
     *,
     catalog_id: Optional[str] = None,
 ) -> List[Tuple[OperationDriverEntry, CatalogStore]]:
-    """Return the (entry, driver) pairs configured under INDEX for catalogs.
+    """Return the (entry, driver) pairs that are secondary indexes for catalogs.
+
+    Secondary indexes are not a distinct operation: they are the
+    ``WRITE`` entries flagged ``secondary_index=True`` (selected via
+    :func:`secondary_index_entries`).
 
     Resolution order mirrors the collection-tier router
     (:mod:`dynastore.modules.catalog.collection_router`):
@@ -534,12 +540,13 @@ async def _resolve_catalog_indexers(
     1. If ``ConfigsProtocol`` is registered, read
        ``CatalogRoutingConfig`` for the given ``catalog_id`` through the
        4-tier waterfall (collection > catalog > platform > code).  This
-       is the path operators use to add / override INDEX entries at
-       runtime.
+       is the path operators use to add / override secondary-index
+       entries at runtime.
     2. On lookup failure (``ConfigsProtocol`` unavailable, config-service
        down, catalog_id absent), fall back to the code-level default
-       :class:`CatalogRoutingConfig()` — which today carries no INDEX
-       entries, so the worker becomes a no-op rather than crashing.
+       :class:`CatalogRoutingConfig()` — which today carries no
+       secondary-index entries, so the worker becomes a no-op rather than
+       crashing.
 
     Filters to driver_ids that are actually registered via
     ``get_protocols(CatalogStore)``; unregistered entries are
@@ -581,8 +588,8 @@ async def _resolve_catalog_indexers(
         driver = driver_index.get(entry.driver_ref)
         if driver is None:
             logger.warning(
-                "CatalogRoutingConfig INDEX entry %r is not a registered "
-                "CatalogStore — skipping",
+                "CatalogRoutingConfig secondary-index entry %r is not a "
+                "registered CatalogStore — skipping",
                 entry.driver_ref,
             )
             continue

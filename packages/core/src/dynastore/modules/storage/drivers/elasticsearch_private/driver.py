@@ -90,8 +90,8 @@ class ItemsElasticsearchPrivateDriver(
     # The privacy-cascade validator on the routing configs guarantees the
     # items-private driver is pinned whenever the sibling
     # ``CollectionRoutingConfig`` pins the collection-private driver.
-    # Auto-injecting into every collection's INDEX/SEARCH would silently
-    # bypass that gate.
+    # Auto-injecting into every collection's secondary-index WRITE / SEARCH
+    # entries would silently bypass that gate.
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset()
 
     priority: int = 51
