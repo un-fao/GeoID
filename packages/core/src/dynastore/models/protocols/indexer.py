@@ -23,7 +23,8 @@ Two protocol surfaces:
 * :class:`Indexer` — slim generic surface (``index`` / ``index_bulk``).
   Every concrete indexer (public ES tenant index, private geoid-only ES
   index, vector DB, audit log, …) implements the same shape.  The
-  :class:`IndexDispatcher` walks ``routing.operations[INDEX]`` and calls
+  :class:`IndexDispatcher` walks the secondary-index ``WRITE`` entries
+  (``secondary_index=True``) in ``routing.operations[WRITE]`` and calls
   this surface uniformly; failure policy + outbox + circuit breaker are
   driver-agnostic.
 
@@ -33,10 +34,11 @@ Two protocol surfaces:
 
 Per-tier marker Protocols (``CatalogIndexer``, ``CollectionIndexer``,
 ``AssetIndexer``, ``ItemIndexer``) let drivers opt in to one or more tiers
-they can serve as INDEX-role propagation targets.  Routing-config
+they can serve as secondary-index propagation targets.  Routing-config
 self-registration validators walk these markers per tier to auto-populate
-``operations[INDEX]`` with sensible async defaults.  Both metadata and
-data are indexable — markers are tier-scoped, not metadata-vs-data.
+``operations[WRITE]`` with secondary-index entries (``secondary_index=True``)
+carrying sensible async defaults.  Both metadata and data are indexable —
+markers are tier-scoped, not metadata-vs-data.
 """
 
 from __future__ import annotations
@@ -132,8 +134,9 @@ class Indexer(Protocol):
     Every concrete indexer — public ES tenant index, private geoid-only
     ES index, OpenSearch, vector DB, audit log, future search engine —
     implements this same surface.  Routing config decides which fires
-    per ``(catalog, collection)`` via ``operations[INDEX]``; the
-    :class:`IndexDispatcher` walks the entries and calls this Protocol
+    per ``(catalog, collection)`` via the secondary-index ``WRITE``
+    entries (``secondary_index=True``) in ``operations[WRITE]``; the
+    :class:`IndexDispatcher` walks those entries and calls this Protocol
     uniformly.
 
     Implementations remain free to expose richer per-backend operations
@@ -287,7 +290,8 @@ class CatalogIndexer(Protocol):
 
     A driver opts in by setting ``is_catalog_indexer: ClassVar[bool] = True``.
     Routing-config self-registration validators walk this marker to
-    auto-populate the catalog routing config's ``operations[INDEX]`` with
+    auto-populate the catalog routing config's ``operations[WRITE]`` with
+    a secondary-index entry (``secondary_index=True``),
     ``write_mode='async'``, ``on_failure='warn'``.
     """
 
@@ -299,8 +303,9 @@ class CollectionIndexer(Protocol):
     """Marker — driver indexes collection-tier records.
 
     A driver opts in by setting ``is_collection_indexer: ClassVar[bool] = True``.
-    Auto-registers into the collection routing config's ``operations[INDEX]``
-    with ``write_mode='async'``, ``on_failure='warn'``.
+    Auto-registers into the collection routing config's ``operations[WRITE]``
+    as a secondary-index entry (``secondary_index=True``) with
+    ``write_mode='async'``, ``on_failure='warn'``.
     """
 
     is_collection_indexer: ClassVar[bool]
@@ -317,8 +322,9 @@ class AssetIndexer(Protocol):
     catalog/collection level.
 
     A driver opts in by setting ``is_asset_indexer: ClassVar[bool] = True``.
-    Auto-registers into the asset routing config's ``operations[INDEX]``
-    with ``write_mode='async'``, ``on_failure='warn'``.
+    Auto-registers into the asset routing config's ``operations[WRITE]``
+    as a secondary-index entry (``secondary_index=True``) with
+    ``write_mode='async'``, ``on_failure='warn'``.
 
     Per-tier asset markers
     ----------------------
@@ -379,8 +385,9 @@ class ItemIndexer(Protocol):
     items table; aka record-tier indexer).
 
     A driver opts in by setting ``is_item_indexer: ClassVar[bool] = True``.
-    Auto-registers into the items routing config's ``operations[INDEX]``
-    with ``write_mode='async'``, ``on_failure='warn'``.
+    Auto-registers into the items routing config's ``operations[WRITE]``
+    as a secondary-index entry (``secondary_index=True``) with
+    ``write_mode='async'``, ``on_failure='warn'``.
     """
 
     is_item_indexer: ClassVar[bool]

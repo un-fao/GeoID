@@ -78,7 +78,7 @@ logic, query optimization, PostGIS, and streaming stay in this driver's service 
 
 Items-tier ES driver. Writes to per-tenant index `{prefix}-items-{catalog_id}` with
 `_routing=collection_id`, enrolled in the platform alias `{prefix}-items-public`. Driven by
-`ItemsRoutingConfig.operations[INDEX]` and dispatched async via the outbox.
+the secondary-index `WRITE` entries (`secondary_index=True`) in `ItemsRoutingConfig.operations[WRITE]` and dispatched async via the outbox.
 
 ### `items_elasticsearch_private_driver` (`ItemsElasticsearchPrivateDriver`) — opt-in only
 

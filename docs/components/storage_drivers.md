@@ -188,7 +188,8 @@ Each routing config has an apply handler (`_on_apply_items_routing_config` etc.)
 
 1. Validates every `driver_ref` against the discovery registry for the tier's protocol
    (`CollectionItemsStore`, `CollectionStore`, `AssetStore`, `CatalogStore`).
-2. Auto-registers `*Indexer` drivers under `operations[INDEX]` and `*Store` drivers under
+2. Auto-registers `*Indexer` drivers into `operations[WRITE]` as secondary-index entries
+   (`secondary_index=True`) and `*Store` drivers under
    `operations[SEARCH]` when discoverable but missing from the persisted payload — with
    `source="auto"` so operators can distinguish self-registered defaults from explicit pins.
 3. Calls `ensure_storage(catalog_id, collection_id)` on every referenced driver (idempotent).
@@ -387,9 +388,9 @@ The items driver writes directly with `_routing=collection_id` and is enrolled i
 
 **Capabilities:** `STREAMING`, `SPATIAL_FILTER`, `FULLTEXT`, `SOFT_DELETE`.
 
-**Dispatch:** Driven by the corresponding routing config's `operations[INDEX]`. The
+**Dispatch:** Driven by the secondary-index `WRITE` entries (`secondary_index=True`) in the corresponding routing config's `operations[WRITE]`. The
 `ReindexWorker` / `OutboxDrainTask` dispatches non-fatal entries asynchronously via the per-tenant
-`storage_outbox` table; `on_failure="outbox"` is the standard policy for the public ES INDEX entry.
+`storage_outbox` table; `on_failure="outbox"` is the standard policy for the public ES secondary-index `WRITE` entry.
 
 **Direct programmatic indexing:** `index_item()` / `delete_item()` (and per-tier equivalents)
 remain available for explicit ops calls.

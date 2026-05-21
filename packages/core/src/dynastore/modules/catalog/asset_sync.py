@@ -3,15 +3,15 @@ Asset entity sync — event-driven fan-out to AssetIndexer drivers.
 
 ``AssetEntitySyncSubscriber`` listens for ``CatalogEventType.ASSET_*`` events
 emitted by ``AssetService`` and dispatches the row write/delete to every
-driver registered under ``AssetRoutingConfig.operations[INDEX]`` (auto-
-augmented with discoverable ``AssetIndexer`` implementors such as
-``AssetElasticsearchDriver``).
+driver pinned as a secondary-index ``WRITE`` entry (``secondary_index=True``)
+in ``AssetRoutingConfig.operations[WRITE]`` (auto-augmented with discoverable
+``AssetIndexer`` implementors such as ``AssetElasticsearchDriver``).
 
 This collapses the prior dual-write race where the ES driver received writes
 from both the routing-config fan-out and a private listener block: the row
-goes to the primary WRITE driver synchronously inside ``AssetService``; INDEX
-fan-out happens via this subscriber, fed by the events outbox so failures
-are replayable.
+goes to the primary WRITE driver (``secondary_index=False``) synchronously
+inside ``AssetService``; secondary-index fan-out happens via this subscriber,
+fed by the events outbox so failures are replayable.
 """
 
 import asyncio

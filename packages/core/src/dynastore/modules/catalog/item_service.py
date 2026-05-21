@@ -941,8 +941,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         Single dispatcher call site for items, replacing the per-driver
         ``_on_item_upsert`` event listeners.  Driver-agnostic: ES public,
         ES private, vector DB, audit log — anything implementing the slim
-        :class:`Indexer` Protocol and registered under
-        ``operations[INDEX]``.
+        :class:`Indexer` Protocol and pinned as a secondary-index
+        ``WRITE`` entry (``secondary_index=True``) in ``operations[WRITE]``.
 
         Failure surfaces are decided by routing-config ``on_failure`` per
         entry — ``OUTBOX`` enqueues a durable retry row, ``WARN`` logs,
@@ -1059,8 +1059,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
            ``CollectionItemsStore.write_entities`` on the wrapping conn.
            Any driver failure raises out of the TX, rolling everything
            back.
-        3. **Enqueue outbox rows for ASYNC OUTBOX entries** — every entry
-           under ``operations[INDEX]`` with ``write_mode=ASYNC`` and
+        3. **Enqueue outbox rows for ASYNC OUTBOX entries** — every
+           secondary-index ``WRITE`` entry (``secondary_index=True``) in
+           ``operations[WRITE]`` with ``write_mode=ASYNC`` and
            ``on_failure=OUTBOX`` gets one outbox row per coalesced item,
            via ``OutboxStore.enqueue_bulk(conn, ...)`` on the SAME conn.
            A failed enqueue rolls back the PG write — the central
