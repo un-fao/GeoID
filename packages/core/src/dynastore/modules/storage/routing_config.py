@@ -1312,8 +1312,19 @@ def _self_register_store_drivers(
         if _is_operator_managed(target_ops, op):
             continue
         listed = {entry.driver_ref for entry in target_ops.get(op, [])}
-        for driver_ref in store_driver_index:
+        for driver_ref, driver in store_driver_index.items():
             if driver_ref in listed:
+                continue
+            # Only auto-append a driver into an operation its capabilities
+            # actually support. Some drivers satisfy the tier's *Store
+            # protocol structurally but declare no WRITE/READ capability —
+            # e.g. the diagnostic LogCatalogIndexer (capabilities=frozenset()),
+            # which is an INDEX-role driver discoverable as a CatalogStore.
+            # Without this gate it would be injected here and then rejected by
+            # the capability gate in _validate_routing_entries, making the
+            # config impossible to PUT at all (#1179).
+            driver_caps = getattr(driver, "capabilities", frozenset())
+            if op not in derive_supported_operations(driver_caps):
                 continue
             target_ops.setdefault(op, []).append(
                 OperationDriverEntry(driver_ref=driver_ref, source="auto")

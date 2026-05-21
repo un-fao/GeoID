@@ -6,6 +6,7 @@ operators" antipattern.
 
 from __future__ import annotations
 
+from dynastore.models.protocols.storage_driver import Capability
 from dynastore.modules.storage.routing_config import (
     CatalogRoutingConfig,
     CollectionRoutingConfig,
@@ -17,13 +18,26 @@ from dynastore.modules.storage.routing_config import (
 )
 
 
+class _FakeStore:
+    """A store-driver stand-in declaring capabilities.
+
+    The store auto-append is capability-gated (#1179): a driver is only
+    appended to an operation its capabilities support. Real store drivers
+    declare WRITE/READ; a capability-less stand-in (the default ``object()``
+    used previously) is correctly skipped, so stand-ins must carry caps.
+    """
+
+    def __init__(self, capabilities=frozenset({Capability.WRITE, Capability.READ})):
+        self.capabilities = capabilities
+
+
 def test_collection_self_registers_missing_store_drivers():
     """Empty metadata.operations + 2 installed drivers → both auto-appended
     to WRITE and READ."""
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
-    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
+    metadata_index = {"pg_core_meta": _FakeStore(), "pg_stac_meta": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
@@ -48,7 +62,7 @@ def test_collection_operator_managed_list_locks_out_auto_augment():
         ),
     ]
 
-    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
+    metadata_index = {"pg_core_meta": _FakeStore(), "pg_stac_meta": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     write_entries = {
@@ -73,7 +87,7 @@ def test_collection_no_op_when_all_drivers_already_listed():
         OperationDriverEntry(driver_ref="pg_stac_meta"),
     ]
 
-    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
+    metadata_index = {"pg_core_meta": _FakeStore(), "pg_stac_meta": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     assert len(cfg.operations[Operation.WRITE]) == 2
@@ -85,13 +99,110 @@ def test_catalog_self_registers_missing_drivers():
     cfg = CatalogRoutingConfig()
     cfg.operations.clear()
 
-    metadata_index = {"catalog_pg_core": object(), "catalog_pg_stac": object()}
+    metadata_index = {"catalog_pg_core": _FakeStore(), "catalog_pg_stac": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_ref for e in cfg.operations[Operation.READ]}
     assert write_ids == {"catalog_pg_core", "catalog_pg_stac"}
     assert read_ids == {"catalog_pg_core", "catalog_pg_stac"}
+
+
+def test_capability_less_store_driver_is_not_auto_appended():
+    """#1179: a driver that satisfies the *Store protocol structurally but
+    declares no capabilities (e.g. the diagnostic LogCatalogIndexer, which is
+    discoverable as a CatalogStore) must NOT be auto-appended. Previously it
+    was injected here and then rejected by the capability gate in
+    ``_validate_routing_entries`` — making the routing config impossible to
+    PUT at all (even a no-op round-trip of the default config returned 400).
+    """
+    cfg = CatalogRoutingConfig()
+    cfg.operations.clear()
+
+    index = {
+        "catalog_pg_core": _FakeStore(),
+        "log_catalog_indexer": _FakeStore(capabilities=frozenset()),
+    }
+    _self_register_store_drivers(cfg, index)
+
+    write_ids = {e.driver_ref for e in cfg.operations.get(Operation.WRITE, [])}
+    read_ids = {e.driver_ref for e in cfg.operations.get(Operation.READ, [])}
+    # The real store driver is auto-appended …
+    assert "catalog_pg_core" in write_ids
+    assert "catalog_pg_core" in read_ids
+    # … the capability-less indexer is not.
+    assert "log_catalog_indexer" not in write_ids
+    assert "log_catalog_indexer" not in read_ids
+
+
+def test_partial_capability_store_driver_only_lands_in_supported_ops():
+    """A driver with only WRITE capability auto-appends to WRITE, not READ."""
+    cfg = CatalogRoutingConfig()
+    cfg.operations.clear()
+
+    index = {"write_only": _FakeStore(capabilities=frozenset({Capability.WRITE}))}
+    _self_register_store_drivers(cfg, index)
+
+    write_ids = {e.driver_ref for e in cfg.operations.get(Operation.WRITE, [])}
+    read_ids = {e.driver_ref for e in cfg.operations.get(Operation.READ, [])}
+    assert write_ids == {"write_only"}
+    assert read_ids == set()
+
+
+def test_validate_catalog_routing_handler_tolerates_capability_less_store():
+    """#1179 end-to-end: ``_validate_catalog_routing_config`` must NOT raise when
+    a capability-less store driver (LogCatalogIndexer) is discoverable.
+
+    Before the fix, the un-gated store auto-append injected
+    ``log_catalog_indexer`` into WRITE/READ and the capability gate then raised
+    ``ValueError: ... does not support operation 'WRITE'`` — so even a no-op
+    round-trip PUT of the default catalog routing config returned HTTP 400. This
+    pins the auto-append + capability-gate interaction the live failure exercised.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    from dynastore.models.protocols.entity_store import CatalogStore
+    from dynastore.modules.storage.routing_config import (
+        _validate_catalog_routing_config,
+    )
+
+    # Distinct class names so _to_snake() yields the expected driver_refs.
+    class CatalogPostgresqlDriver:
+        capabilities = frozenset({Capability.WRITE, Capability.READ})
+        supported_hints: frozenset = frozenset()
+
+    class LogCatalogIndexer:  # structurally a CatalogStore, but capability-less
+        capabilities: frozenset = frozenset()
+        supported_hints: frozenset = frozenset()
+
+    pool = [CatalogPostgresqlDriver(), LogCatalogIndexer()]
+
+    cfg = CatalogRoutingConfig()
+    cfg.operations.clear()
+    # source="auto" → the list is NOT operator-managed, so the store
+    # auto-append fires (this is what injected log_catalog_indexer pre-fix).
+    cfg.operations[Operation.WRITE] = [
+        OperationDriverEntry(driver_ref="catalog_postgresql_driver", source="auto"),
+    ]
+    cfg.operations[Operation.READ] = [
+        OperationDriverEntry(driver_ref="catalog_postgresql_driver", source="auto"),
+    ]
+
+    def _fake_get_protocols(proto):
+        return pool if proto is CatalogStore else []
+
+    with patch("dynastore.tools.discovery.get_protocols", _fake_get_protocols):
+        # Must complete without raising (pre-#1179 this raised ValueError).
+        asyncio.run(
+            _validate_catalog_routing_config(cfg, None, None, None)
+        )
+
+    write_ids = {e.driver_ref for e in cfg.operations.get(Operation.WRITE, [])}
+    read_ids = {e.driver_ref for e in cfg.operations.get(Operation.READ, [])}
+    assert "catalog_postgresql_driver" in write_ids
+    assert "log_catalog_indexer" not in write_ids
+    assert "log_catalog_indexer" not in read_ids
 
 
 def test_self_registration_skips_zero_drivers():
@@ -688,7 +799,7 @@ def test_store_driver_helper_marks_entries_as_auto():
     cfg = CollectionRoutingConfig()
     cfg.operations.clear()
 
-    metadata_index = {"pg_core_meta": object()}
+    metadata_index = {"pg_core_meta": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     for op in (Operation.WRITE, Operation.READ):
@@ -1002,7 +1113,7 @@ def test_option_a_store_drivers_helper_locks_per_operation():
     ]
     cfg.operations[Operation.READ] = []  # empty → auto-augmentable
 
-    metadata_index = {"pg_core_meta": object(), "pg_stac_meta": object()}
+    metadata_index = {"pg_core_meta": _FakeStore(), "pg_stac_meta": _FakeStore()}
     _self_register_store_drivers(cfg, metadata_index)
 
     write_refs = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
