@@ -40,9 +40,30 @@ class GcpStorageOpsMixin:
 
     # --- Host interface stubs (provided by GCPModule) ---
     _upload_tickets: Dict[str, Dict[str, Any]]
+    _credentials: Optional[Any]
+    _storage_client: Optional[Any]
 
     def get_bucket_service(self) -> Any: ...
     def get_storage_client(self) -> Any: ...
+
+    def upload_available(self) -> bool:
+        """AssetUploadProtocol upload-readiness signal.
+
+        Returns ``False`` when the GCP module never finished initialising
+        (no usable credentials, or the storage client could not be built —
+        the common on-premise / no-GCS-credentials case). The asset upload
+        router uses this to skip GCS as the upload backend and fall through to
+        a ready backend (e.g. local disk) instead of selecting GCS by
+        registration order and then failing every ``initiate_upload`` with
+        "GCPModule has not been initialized".
+
+        Intentionally distinct from the module-wide ``is_available()``
+        discovery gate, which stays ``True`` so the module remains discoverable
+        as a ``StorageProtocol`` provider (runtime calls then raise a clear
+        RuntimeError instead of silently resolving to None). This only scopes
+        the readiness check to the upload role.
+        """
+        return self._credentials is not None and self._storage_client is not None
 
     # --- StorageProtocol Implementation ---
 

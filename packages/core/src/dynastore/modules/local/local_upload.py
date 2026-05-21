@@ -53,7 +53,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, ClassVar, Dict, Optional
 
 from dynastore.modules.protocols import ModuleProtocol
 
@@ -87,6 +87,21 @@ class LocalUploadModule(ModuleProtocol):
     # should disable local upload but never abort the catalog.
     priority: int = 50
 
+    # ticket_id → {asset_id, catalog_id, collection_id, filename, expires_at, status, asset_id_result}
+    #
+    # Class-level (process-wide) on purpose. The module is instantiated more
+    # than once during startup (e.g. once per lifespan registration pass). Each
+    # instance registers the ``POST /local-upload/{ticket_id}`` route, but
+    # FastAPI serves the FIRST instance's closure while ``register_plugin``
+    # makes the LAST instance the resolved ``AssetUploadProtocol`` driver. With
+    # a per-instance dict, ``initiate_upload`` would stamp the ticket on the
+    # driver instance and the receive route would read a different instance's
+    # empty dict → 404 on every upload. A single shared registry keeps the
+    # initiate and receive paths consistent regardless of which instance owns
+    # each one. (Multi-worker / multi-replica correctness still needs a
+    # persistent store — tracked as a follow-up.)
+    _upload_tickets: ClassVar[Dict[str, Dict[str, Any]]] = {}
+
     def __init__(
         self,
         staging_dir: Optional[str] = None,
@@ -100,8 +115,8 @@ class LocalUploadModule(ModuleProtocol):
             asset_dir
             or os.environ.get("LOCAL_ASSET_DIR", "/tmp/dynastore/assets")
         )
-        # ticket_id → {asset_id, catalog_id, collection_id, filename, expires_at, status, asset_id_result}
-        self._upload_tickets: Dict[str, Dict[str, Any]] = {}
+        # ``_upload_tickets`` is class-level (see the ClassVar above); no
+        # per-instance assignment so all instances in this process share it.
 
     # -------------------------------------------------------------------------
     # Lifespan
@@ -327,6 +342,16 @@ class LocalUploadModule(ModuleProtocol):
     # AssetUploadProtocol implementation
     # -------------------------------------------------------------------------
 
+    def upload_available(self) -> bool:
+        """AssetUploadProtocol upload-readiness signal.
+
+        Local disk is always ready once the module is registered — staging /
+        asset roots are created lazily during ``lifespan`` and on each receive.
+        Always available so the upload router can fall through to it when an
+        event-driven backend (e.g. GCS) reports its upload role unavailable.
+        """
+        return True
+
     async def initiate_upload(
         self,
         catalog_id: str,
@@ -489,23 +514,47 @@ class LocalUploadModule(ModuleProtocol):
         if not assets:
             raise RuntimeError("AssetsProtocol not available for local asset registration.")
 
-        asset_type = asset_def.asset_type if hasattr(asset_def, "asset_type") else AssetTypeEnum.ASSET
-        metadata = dict(asset_def.metadata) if hasattr(asset_def, "metadata") and asset_def.metadata else {}
+        try:
+            size_bytes: Optional[int] = permanent_path.stat().st_size
+        except OSError:
+            size_bytes = None
 
-        asset_base = AssetCreate(
-            asset_id=asset_def.asset_id,
-            filename=filename,
-            uri=uri,
-            asset_type=asset_type,
-            metadata=metadata,
-            owned_by="local",
-        )
-
-        asset = await assets.create_asset(
+        # The REST upload-create flow inserts a born-claimed PENDING row up
+        # front (stamping ``metadata._upload.ticket_id``). Activate that row
+        # in place rather than calling ``create_asset`` — a create would
+        # collide with the pending row via the write-policy identity match,
+        # echo the existing row, and leave it stuck status=pending / uri=NULL
+        # (download then 404s). When no born-claimed row exists (policy path
+        # skipped) ``finalize_pending_upload`` returns None and we fall back
+        # to create_asset.
+        asset = await assets.finalize_pending_upload(
             catalog_id=catalog_id,
-            asset=asset_base,
+            uri=uri,
+            owned_by="local",
+            ticket_id=ticket_id,
+            asset_id=asset_def.asset_id,
+            size_bytes=size_bytes,
             collection_id=collection_id,
         )
+
+        if asset is None:
+            asset_type = asset_def.asset_type if hasattr(asset_def, "asset_type") else AssetTypeEnum.ASSET
+            metadata = dict(asset_def.metadata) if hasattr(asset_def, "metadata") and asset_def.metadata else {}
+
+            asset_base = AssetCreate(
+                asset_id=asset_def.asset_id,
+                filename=filename,
+                uri=uri,
+                asset_type=asset_type,
+                metadata=metadata,
+                owned_by="local",
+            )
+
+            asset = await assets.create_asset(
+                catalog_id=catalog_id,
+                asset=asset_base,
+                collection_id=collection_id,
+            )
 
         ticket["status"] = UploadStatus.COMPLETED
         ticket["asset_id_result"] = asset.asset_id

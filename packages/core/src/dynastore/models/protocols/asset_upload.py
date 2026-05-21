@@ -310,6 +310,31 @@ class AssetUploadProtocol(Protocol):
         """
         ...
 
+    def upload_available(self) -> bool:
+        """Whether this backend can currently serve *uploads*.
+
+        Optional readiness signal consulted by
+        ``modules/storage/router.get_asset_upload_driver`` so an uninitialised
+        backend (e.g. the GCP module with no usable credentials / storage
+        client) does NOT win upload-driver resolution merely by registration
+        order — the router skips backends that report ``False`` and falls
+        through to the next entry (typically local disk).
+
+        Deliberately distinct from the module-wide ``is_available()`` discovery
+        gate (``tools/plugin.ProtocolPlugin.is_available``): a module like GCP
+        is intentionally kept discoverable as a ``StorageProtocol`` provider
+        even when its storage client is missing (so calls raise a clear
+        RuntimeError rather than silently resolving to None). ``is_available``
+        controls *whether the module is discovered at all*; this method scopes
+        the readiness check to the upload role only.
+
+        Implementations that are always ready may omit this method; the router
+        treats a missing ``upload_available`` as available. Returning ``False``
+        is purely a routing hint — it does not deregister the driver, so other
+        code (and other protocols on the same module) is unaffected.
+        """
+        ...
+
     async def get_upload_status(
         self,
         ticket_id: str,

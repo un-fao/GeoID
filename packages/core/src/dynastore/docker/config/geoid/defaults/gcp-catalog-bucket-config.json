@@ -1,0 +1,6 @@
+{
+  "class_key": "gcp_catalog_bucket_config",
+  "value": {
+    "provision_enabled": false
+  }
+}

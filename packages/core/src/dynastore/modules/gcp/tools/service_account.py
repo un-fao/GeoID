@@ -17,7 +17,6 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, Optional, Any
 import requests
 import os
 try:
@@ -32,25 +31,35 @@ logger = logging.getLogger(__name__)
 
 def resolve_gcp_credentials():
     """
-    Intercepts Docker-specific GCP credential paths and maps them to the host.
-    This is useful for local development/testing where .env files might 
-    contain container-specific paths like /dynastore/src/...
+    Map a container-style ``GOOGLE_APPLICATION_CREDENTIALS`` path to the real
+    file on whatever source tree this code runs from.
+
+    Local development carries a container path in ``.env`` (e.g.
+    ``/dynastore/src/dynastore/modules/gcp/<key>.json``) while the key actually
+    lives under the source tree at ``packages/core/src/dynastore/modules/gcp/``.
+    We strip the ``/dynastore/`` prefix and walk up from this file trying each
+    ancestor as the root the relative path hangs off, so resolution works
+    across both the pre-monorepo (``src/...``) and monorepo
+    (``packages/core/src/...``) layouts AND inside the container — instead of
+    assuming a fixed ancestor depth (which silently broke after the monorepo
+    move).
     """
     creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if creds_path and creds_path.startswith("/dynastore/"):
-        relative_path = creds_path.replace("/dynastore/", "", 1)
-        # Resolve relative to the root of the project (parent of 'src/')
-        # We assume this code is in src/dynastore/modules/gcp/tools/service_account.py
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parents[5] # dynastore/src/dynastore/modules/gcp/tools/service_account.py -> dynastore/
-        
-        host_creds_path = str(project_root / relative_path)
-        
-        if os.path.exists(host_creds_path):
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = host_creds_path
-            # logger.info(f"Resolved GCP credentials path to host: {host_creds_path}")
-        else:
-            logger.warning(f"Detected container GCP credentials path but could not resolve host path: {host_creds_path}")
+    if not creds_path or not creds_path.startswith("/dynastore/"):
+        return
+    if os.path.exists(creds_path):
+        return  # already a valid path (e.g. the container mount makes it real)
+
+    relative_path = creds_path.replace("/dynastore/", "", 1)
+    for ancestor in Path(__file__).resolve().parents:
+        candidate = ancestor / relative_path
+        if candidate.exists():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(candidate)
+            return
+    logger.warning(
+        "Detected container GCP credentials path '%s' but could not resolve it "
+        "to a file on disk.", creds_path,
+    )
 
 def get_credentials() -> tuple:
     """

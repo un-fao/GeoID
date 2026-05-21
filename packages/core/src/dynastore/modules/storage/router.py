@@ -546,15 +546,49 @@ async def get_asset_upload_driver(
     impls_by_class = {_to_snake(type(d).__name__): d for d in get_protocols(AssetUploadProtocol)}
     for driver_ref, _on_failure, _write_mode in resolved_ids:
         impl = impls_by_class.get(driver_ref)
-        if impl is not None:
-            return impl
-        logger.warning(
-            "Asset upload driver '%s' configured but not registered; trying "
-            "next entry.", driver_ref,
-        )
+        if impl is None:
+            logger.warning(
+                "Asset upload driver '%s' configured but not registered; trying "
+                "next entry.", driver_ref,
+            )
+            continue
+        if not _upload_driver_available(impl):
+            logger.debug(
+                "Asset upload driver '%s' reports unavailable; skipping and "
+                "trying next entry.", driver_ref,
+            )
+            continue
+        return impl
 
-    # Fallback: first-registered backend (matches legacy get_protocol behaviour).
+    # Fallback: first-registered available backend (matches legacy
+    # get_protocol behaviour, but skips backends that report unavailable so an
+    # uninitialised GCP module doesn't shadow a ready local backend).
+    for impl in get_protocols(AssetUploadProtocol):
+        if _upload_driver_available(impl):
+            return impl
+        logger.debug(
+            "Asset upload driver '%s' reports unavailable; skipping in "
+            "first-registered fallback.", type(impl).__name__,
+        )
     return get_protocol(AssetUploadProtocol)
+
+
+def _upload_driver_available(impl: object) -> bool:
+    """Whether an ``AssetUploadProtocol`` impl is ready to serve uploads.
+
+    Consults the upload-specific ``upload_available()`` hook (distinct from the
+    module-wide ``is_available()`` discovery gate, which is already applied
+    upstream by ``get_protocols``). A missing hook is treated as available (the
+    contract makes it optional). A raising hook is treated as unavailable
+    defensively.
+    """
+    probe = getattr(impl, "upload_available", None)
+    if probe is None:
+        return True
+    try:
+        return bool(probe())
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
