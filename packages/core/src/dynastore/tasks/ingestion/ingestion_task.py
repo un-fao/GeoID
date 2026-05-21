@@ -38,17 +38,16 @@ from dynastore.tools.protocol_helpers import get_engine
 from .definition import INGESTION_PROCESS_DEFINITION
 from dynastore.modules.processes.models import Process, ExecuteRequest, StatusInfo
 
-# Asset SPI imports
-from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
-from dynastore.modules.catalog.asset_service import Asset, AssetTypeEnum
-
 logger = logging.getLogger(__name__)
-class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]], AssetTasksSPI):
+class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]):
     priority: int = 100
     """
     A formal, stateful task responsible for running the data ingestion process.
     It is discovered and executed by the main_task.py entrypoint.
-    It also implements AssetTasksSPI to allow context injection when triggered via Asset Service.
+
+    A plain OGC process: ingestion context (``catalog_id``/``collection_id`` and
+    the nested ``ingestion_request``) is supplied in ``inputs``. GCS event-driven
+    ingestion calls ``processes_module.execute_process`` directly.
     """
     @staticmethod
     def get_definition() -> Process:
@@ -58,51 +57,6 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
     def __init__(self, app_state: object):
         self.app_state = app_state
         logger.info("IngestionTask initialized.")
-
-    # --- AssetTasksSPI Implementation ---
-
-    async def can_run_on_asset(self, asset: Asset) -> bool:
-        # Ingestion generally works on Vectorial assets (CSV, etc) or maybe others in future.
-        # For now, let's allow it if it's VECTORIAL or if we relax this.
-        # VectorialIngestionTask was specific to VECTORIAL.
-        # Let's keep it broad or restrict? The task handles vectors.
-        return asset.asset_type == AssetTypeEnum.VECTORIAL
-
-    async def get_execution_request(self, asset: Asset, execution_request: ExecuteRequest) -> ExecuteRequest:
-        """
-        Injects asset context (catalog, collection, asset code) into the ingestion request inputs.
-        """
-        inputs = execution_request.inputs.copy()
-        
-        # Inject context if missing
-        if "catalog_id" not in inputs:
-            inputs["catalog_id"] = asset.catalog_id
-        if "collection_id" not in inputs:
-            inputs["collection_id"] = asset.collection_id
-
-        # Handle nested ingestion_request
-        ing_req = inputs.get("ingestion_request", {})
-        if not isinstance(ing_req, dict):
-            ing_req = {}
-        
-        # Ensure 'asset' field in ingestion_request
-        ing_asset = ing_req.get("asset", {})
-        if "asset_id" not in ing_asset and "uri" not in ing_asset:
-             ing_asset["asset_id"] = asset.asset_id
-             ing_req["asset"] = ing_asset
-        
-        inputs["ingestion_request"] = ing_req
-        
-        return ExecuteRequest(
-            inputs=inputs,
-            outputs=execution_request.outputs,
-            response=execution_request.response
-        )
-    
-    # Note: run method signature in SPI includes 'asset', but ProcessTaskProtocol does not.
-    # The AssetService uses get_execution_request but triggers the task via standard Process flow (no asset arg).
-    # So we keep the standard run signature. 
-    # If AssetService ever calls run(..., asset=...), we would need to handle it, but currently it doesn't.
 
     async def run(self, payload: TaskPayload[ExecuteRequest]) -> Optional[StatusInfo]:
         """The core execution logic. It parses the payload and calls the main ingestion function."""

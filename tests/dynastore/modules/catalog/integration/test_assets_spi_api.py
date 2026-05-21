@@ -82,10 +82,11 @@ async def test_asset_immutability(sysadmin_in_process_client, app_lifespan, cata
 @pytest.mark.local_only
 @pytest.mark.enable_extensions("processes", "assets")
 @pytest.mark.enable_tasks("gdal")
-async def test_asset_spi_task_discovery(sysadmin_in_process_client, app_lifespan, catalog_obj, catalog_id):
+async def test_gdal_runs_as_ogc_asset_process(sysadmin_in_process_client, app_lifespan, catalog_obj, catalog_id):
     """
-    Verifies that Asset tasks SPI correctly lists and executes tasks.
-    Uses 'gdal' task (mapped to GdalInfoTask) for verification.
+    `gdal` is discoverable and executable as a standard OGC asset-scoped process
+    at ``/processes/catalogs/{cat}/assets/{aid}/processes/gdal[/execution]``,
+    replacing the retired asset-task SPI surface (`/assets/.../tasks/...`).
     """
     from unittest.mock import patch, MagicMock
     from dynastore.modules.concurrency import await_all_background_tasks
@@ -93,7 +94,6 @@ async def test_asset_spi_task_discovery(sysadmin_in_process_client, app_lifespan
     local_api_client = sysadmin_in_process_client
 
     catalogs = get_protocol(CatalogsProtocol)
-    # Create Catalog if not exists
     await catalogs.delete_catalog(catalog_id, force=True)
     await await_all_background_tasks()
     await catalogs.create_catalog(catalog_obj)
@@ -108,49 +108,44 @@ async def test_asset_spi_task_discovery(sysadmin_in_process_client, app_lifespan
         pytest.skip(f"GDAL python bindings not installed: {_e}")
     with patch("dynastore.tasks.gdal.gdalinfo_task.gdal_module") as mock_gdal_module:
         mock_gdal_module.GDAL_AVAILABLE = True
-        mock_gdal_module.get_raster_info = MagicMock(return_value={"driver": "GTiff", "width": 100, "height": 100})
+        mock_gdal_module.get_raster_info = MagicMock(
+            return_value={"driver": "GTiff", "width": 100, "height": 100}
+        )
 
-        # 1. Create RASTER Asset
-        asset_id = "test-asset-spi-gdal"
+        # 1. Create RASTER asset.
+        asset_id = "test-asset-ogc-gdal"
         asset_payload = {
             "asset_id": asset_id,
             "filename": "test.tif",
             "uri": "gs://bucket/test.tif",
             "asset_type": "RASTER",
-            "metadata": {}
+            "metadata": {},
         }
         resp = await local_api_client.post(f"/assets/catalogs/{catalog_id}", json=asset_payload)
         assert resp.status_code == 201
 
-        # 2. SPI Listing
-        resp = await local_api_client.get(f"/assets/catalogs/{catalog_id}/assets/{asset_id}/tasks")
-        assert resp.status_code == 200
-        tasks = resp.json()
+        # 2. Discovery: gdal listed at the asset mount (ASSET-scoped).
+        resp = await local_api_client.get(
+            f"/processes/catalogs/{catalog_id}/assets/{asset_id}/processes"
+        )
+        assert resp.status_code == 200, resp.text
+        listed = resp.json()["processes"]
+        assert any(p["id"] == "gdal" for p in listed), f"Expected 'gdal'. Got: {listed}"
 
-        # Verify 'gdal' task is present
-        assert any(t["id"] == "gdal" for t in tasks), f"Expected 'gdal' task. Got: {tasks}"
-
-        # 4. SPI Execution
-        exec_payload = {
-            "inputs": {}
-        }
-        resp = await local_api_client.post(f"/assets/catalogs/{catalog_id}/assets/{asset_id}/tasks/gdal/execute?caller_id=test_caller&mode=sync-execute", json=exec_payload)
-
-        # In this integration test environment, the 'gs://bucket/test.tif' file likely does not exist.
+        # 3. Execution via the standard OGC route; asset_id injected from path,
+        #    sync selected via the Prefer header.
+        resp = await local_api_client.post(
+            f"/processes/catalogs/{catalog_id}/assets/{asset_id}/processes/gdal/execution",
+            json={"inputs": {}},
+            headers={"Prefer": "respond-sync"},
+        )
+        # 404/422 would mean the route or scope wiring is wrong — hard failures.
+        assert resp.status_code not in (404, 422), resp.text
         if resp.status_code == 400:
-            err_text = resp.text
-            if any(x in err_text for x in ["No such file or directory", "does not exist", "Could not open", "403"]):
-                 logger.info("Task execution failed as expected (File access error). SPI and Task invocation verified.")
-            else:
-                 pytest.fail(f"Task execution failed with unexpected error: {err_text}")
+            # Tolerated only for backend file-access errors (no real bucket in CI).
+            assert any(
+                x in resp.text
+                for x in ["No such file", "does not exist", "Could not open", "403"]
+            ), f"Unexpected 400: {resp.text}"
         else:
-            assert resp.status_code in [212, 201, 200], f"Expected 200/201/212 or 400 (if file missing). Got: {resp.status_code} {resp.text}"
-            exec_result = resp.json()
-            if resp.status_code == 201 or resp.status_code == 202:
-                # Depending on mode, it might be a Task (jobID) or direct result
-                if "jobID" in exec_result:
-                    assert "jobID" in exec_result
-                    assert exec_result["message"] == "Task created successfully"
-                else:
-                    # For sync-execute, check if the expected 'info' is in result
-                    assert "info" in exec_result or "driver" in str(exec_result)
+            assert resp.status_code in (200, 201), resp.text

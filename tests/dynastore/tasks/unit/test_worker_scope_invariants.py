@@ -94,12 +94,12 @@ def test_tiles_preseed_scope_includes_catalog() -> None:
 
 def test_gdal_scope_includes_catalog() -> None:
     """B6 follow-up: GDAL task imports from dynastore.modules.catalog.*
-    (asset_process.py:25, gdalinfo_task.py:32,40); without module_catalog
-    those imports fail at task startup."""
+    (gdalinfo_task.py imports asset_service); without module_catalog those
+    imports fail at task startup."""
     _assert_scope_has_module_catalog(
         "worker_task_gdal",
         "Without it, GDAL task imports from dynastore.modules.catalog.* fail "
-        "at startup (asset_service, asset_tasks_spi).",
+        "at startup (asset_service).",
     )
 
 

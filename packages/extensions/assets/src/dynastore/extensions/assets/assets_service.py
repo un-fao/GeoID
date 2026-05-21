@@ -30,9 +30,8 @@ from fastapi import (
     Path,
     Query,
     Request,
-    BackgroundTasks,
 )
-from pydantic import UUID4, BaseModel, Field, AliasChoices, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
@@ -57,19 +56,15 @@ from dynastore.models.protocols.asset_process import (
     AssetProcessOutput,
     AssetProcessProtocol,
 )
-from dynastore.models.driver_context import DriverContext
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 from dynastore.extensions.tools.exception_handlers import handle_exception
-from fastapi import Depends
-from dynastore.modules.catalog.catalog_module import CatalogModule
 from dynastore.models.query_builder import AssetFilter
 from dynastore.modules.catalog.asset_service import (
     Asset,
     AssetCreate,
     AssetKind,
     AssetStatus,
-    AssetTypeEnum,
     AssetUpdate,
     AssetUploadDefinition,
     AssetReference,
@@ -88,15 +83,7 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
-from dynastore.modules.catalog.asset_tasks_spi import AssetTasksSPI
-from dynastore.modules.processes.models import (
-    ExecuteRequest,
-    StatusInfo,
-    JobControlOptions,
-    Process,
-)
 from contextlib import asynccontextmanager
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -562,34 +549,6 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 204: {"description": "Reference removed successfully."},
                 404: {"description": "Asset or reference not found."},
             },
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/assets/{asset_id}/tasks",
-            self.list_catalog_asset_tasks,
-            methods=["GET"],
-            response_model=List[Process],
-            summary="List Tasks for Catalog Asset",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/assets/{asset_id}/tasks/{task_id}/execute",
-            self.execute_catalog_asset_task,
-            methods=["POST"],
-            status_code=status.HTTP_201_CREATED,
-            summary="Execute Task on Catalog Asset",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/tasks",
-            self.list_collection_asset_tasks,
-            methods=["GET"],
-            response_model=List[Process],
-            summary="List Tasks for Collection Asset",
-        )
-        self.router.add_api_route(
-            "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/tasks/{task_id}/execute",
-            self.execute_collection_asset_task,
-            methods=["POST"],
-            status_code=status.HTTP_201_CREATED,
-            summary="Execute Task on Collection Asset",
         )
         # -----------------------------------------------------------------
         # Parametric asset-process dispatch (see models/protocols/asset_process.py).
@@ -1873,360 +1832,6 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             ref_type=typed_ref_type,
             ref_id=ref_id,
         )
-
-    # =============================================================================
-    #  ASSET TASKS (SPI)
-    # =============================================================================
-
-    @staticmethod
-    async def _get_spi_instance(
-        config: Any, app_state: object
-    ) -> Optional[AssetTasksSPI]:
-        """
-        Resolves an AssetTasksSPI instance from a TaskConfig.
-        If the instance is not already created, it attempts a lightweight instantiation
-        if the task class implements the SPI.
-        """
-        # 1. Check if already instantiated
-        if config.instance and isinstance(config.instance, AssetTasksSPI):
-            return config.instance
-
-        # 2. If not instantiated, check if the class implements the SPI and is not a placeholder
-        cls = config.cls
-        if cls and not getattr(cls, "is_placeholder", False):
-            try:
-                # Use issubclass for explicit inheritance or Protocol check
-                if issubclass(cls, AssetTasksSPI):
-                    logger.debug(
-                        f"Task class '{config.name}' implements AssetTasksSPI. Attempting on-demand instantiation."
-                    )
-                    # Instantiate (mimicking dynastore.tasks.manage_tasks logic)
-                    if cls.__init__ is not object.__init__:
-                        import inspect
-
-                        sig = inspect.signature(cls.__init__)
-                        factory = cast(Any, cls)
-                        if "app_state" in sig.parameters:
-                            instance = factory(app_state=app_state)
-                        else:
-                            instance = factory()
-                    else:
-                        instance = cls()
-
-                    # Note: We don't cache this back to config.instance here to avoid
-                    # side-effects on the global task registry, but we return it for use.
-                    return instance
-            except Exception as e:
-                logger.debug(
-                    f"Could not check or instantiate task class '{config.name}' for SPI: {e}"
-                )
-
-        return None
-
-    @staticmethod
-    async def _get_available_tasks_for_asset(
-        asset: Asset, app_state: object
-    ) -> List[Any]:
-        from dynastore.tasks import get_all_task_configs
-
-        configs = get_all_task_configs()
-
-        available = []
-        logger.info(
-            f"Finding tasks for asset {asset.asset_id} (type: {asset.asset_type})..."
-        )
-
-        for name, config in configs.items():
-            logger.debug(f"Checking task: {name} (module: {config.module_name})")
-
-            # Use the robust instance resolver
-            instance = await AssetService._get_spi_instance(config, app_state)
-
-            if instance:
-                try:
-                    logger.debug(f"Calling can_run_on_asset for task '{name}'...")
-                    if await instance.can_run_on_asset(asset):
-                        logger.info(f"Task '{name}' can run on asset {asset.asset_id}.")
-                        if config.definition:
-                            available.append(config.definition)
-                        else:
-                            # Fallback: try to get it from the instance if missing in config
-                            if hasattr(instance, "get_process_definition"):
-                                available.append(instance.get_process_definition())
-                            else:
-                                logger.warning(
-                                    f"Task '{name}' matched but has no process definition."
-                                )
-                    else:
-                        logger.debug(
-                            f"Task '{name}' cannot run on asset {asset.asset_id}."
-                        )
-                except Exception as e:
-                    logger.error(
-                        f"Error checking SPI for task '{config.name}': {e}",
-                        exc_info=True,
-                    )
-            else:
-                logger.debug(
-                    f"Task '{name}' does not implement AssetTasksSPI implementation (instance: {config.instance is not None})."
-                )
-
-        return available
-
-
-    async def list_catalog_asset_tasks(
-        self,
-        request: Request,
-        catalog_id: str = Path(..., description="The catalog ID"),
-        asset_id: str = Path(..., description="The asset ID"),
-    ):
-        """Lists tasks that can be executed on this catalog-level asset."""
-        try:
-            if self.assets is None:
-                logger.error("self.assets is None! Extension not initialized properly?")
-                raise HTTPException(
-                    status_code=500, detail="AssetService not initialized properly"
-                )
-
-            asset = await self.assets.get_asset(catalog_id=catalog_id, asset_id=asset_id)
-            if not asset:
-                raise HTTPException(status_code=404, detail="Asset not found")
-            return await AssetService._get_available_tasks_for_asset(
-                asset, request.app.state
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.critical(
-                f"UNHANDLED EXCEPTION in list_catalog_asset_tasks: {e}", exc_info=True
-            )
-            raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
-
-
-    async def list_collection_asset_tasks(
-        self,
-        request: Request,
-        catalog_id: str = Path(..., description="The catalog ID"),
-        collection_id: str = Path(..., description="The collection ID"),
-        asset_id: str = Path(..., description="The asset ID"),
-    ):
-        """Lists tasks that can be executed on this collection-level asset."""
-        asset = await self.assets.get_asset(
-            catalog_id=catalog_id, asset_id=asset_id, collection_id=collection_id
-        )
-        if not asset:
-            raise HTTPException(status_code=404, detail="Asset not found")
-        return await AssetService._get_available_tasks_for_asset(
-            asset, request.app.state
-        )
-
-
-    async def execute_catalog_asset_task(
-        self,
-        request: Request,
-        background_tasks: BackgroundTasks,
-        catalog_id: str = Path(..., description="The catalog ID"),
-        asset_id: str = Path(..., description="The asset ID"),
-        task_id: str = Path(
-            ..., description="The task (process) ID", examples=["gdal"]
-        ),
-        mode: Optional[JobControlOptions] = Query(
-            None, description="Execution mode preference."
-        ),
-        execution_request: ExecuteRequest = Body(
-            ...,
-            examples=[
-                {
-                    "inputs": {
-                        "asset_metadata": {"description": "Custom override"},
-                        "other_param": "value",
-                    }
-                }
-            ],
-            description="Task execution parameters. Use 'inputs' to pass arguments or override metadata.",
-        ),
-    ):
-        """Triggers a background task on the specified catalog asset."""
-        asset = await self.assets.get_asset(catalog_id=catalog_id, asset_id=asset_id)
-        if not asset:
-            raise HTTPException(status_code=404, detail="Asset not found")
-
-        principal = getattr(request.state, "principal", None)
-        caller_id_val = principal.id if principal else "nouser"
-        return await AssetService._execute_asset_task(
-            request,
-            background_tasks,
-            asset,
-            task_id,
-            execution_request,
-            str(caller_id_val),
-            mode,
-        )
-
-
-    async def execute_collection_asset_task(
-        self,
-        request: Request,
-        background_tasks: BackgroundTasks,
-        catalog_id: str = Path(..., description="The catalog ID"),
-        collection_id: str = Path(..., description="The collection ID"),
-        asset_id: str = Path(..., description="The asset ID"),
-        task_id: str = Path(
-            ..., description="The task (process) ID", examples=["ingestion"]
-        ),
-        mode: Optional[JobControlOptions] = Query(
-            None, description="Execution mode preference."
-        ),
-        execution_request: ExecuteRequest = Body(
-            ...,
-            examples=[
-                {
-                    "inputs": {
-                        "catalog_id": "target_catalog_id",
-                        "collection_id": "target_collection_id",
-                        "ingestion_request": {
-                            "asset": {"asset_id": "asset_id_example"},
-                            "column_mapping": {
-                                "external_id": "station_id",
-                                "csv_lat_column": "latitude",
-                                "csv_lon_column": "longitude",
-                            },
-                        },
-                    }
-                }
-            ],
-            description="Task execution parameters. Use 'inputs' to pass arguments or override metadata.",
-        ),
-    ):
-        """Triggers a background task on the specified collection asset."""
-        asset = await self.assets.get_asset(
-            catalog_id=catalog_id, asset_id=asset_id, collection_id=collection_id
-        )
-        if not asset:
-            raise HTTPException(status_code=404, detail="Asset not found")
-
-        principal = getattr(request.state, "principal", None)
-        caller_id_val = principal.id if principal else "nouser"
-        return await AssetService._execute_asset_task(
-            request,
-            background_tasks,
-            asset,
-            task_id,
-            execution_request,
-            str(caller_id_val),
-            mode,
-        )
-
-    @staticmethod
-    async def _execute_asset_task(
-        request: Request,
-        background_tasks: BackgroundTasks,
-        asset: Asset,
-        task_id: str,
-        execution_request: ExecuteRequest,
-        caller_id: str,
-        mode: Optional[JobControlOptions] = None,
-    ):
-        # We use the processes_module to execute the process
-        import dynastore.modules.processes.processes_module as processes_module
-
-        # We might need to inject the asset into the execution request inputs if the task expects it
-        # Requirement: "each task through the SPI may accept or not the asset as input for the process"
-        # We'll let the user provide it in 'inputs', or we can automatically inject it if it's not there?
-        # Most likely, the runner of the process will be triggered.
-
-        engine = get_engine()
-        if engine is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Database engine not available.",
-            )
-
-        # SPI Adapter Layer: try to get the task instance to call its specialized adapter if available.
-        from dynastore.tasks import get_all_task_configs
-
-        configs = get_all_task_configs()
-        config = configs.get(task_id)
-
-        task_instance = None
-        if config:
-            task_instance = await AssetService._get_spi_instance(
-                config, request.app.state
-            )
-
-        logger.debug(
-            f"Executing asset task '{task_id}' on asset '{asset.asset_id}'. SPI check starting..."
-        )
-
-        if task_instance:
-            # 1. Initial Guard: Check if the task can run on this specific asset
-            logger.debug(
-                f"Task '{task_id}' implements AssetTasksSPI. Checking compatibility..."
-            )
-            if not await task_instance.can_run_on_asset(asset):
-                logger.warning(
-                    f"Task '{task_id}' rejected asset '{asset.asset_id}' via can_run_on_asset."
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Task '{task_id}' is not compatible with the selected asset (type: {asset.asset_type}).",
-                )
-
-            # 2. Standard Metadata Injection: Always provide a baseline context
-            logger.debug(
-                f"Performing standard metadata injection for task '{task_id}'."
-            )
-
-            # Always attach the asset object to the execution request
-            # execution_request.asset = asset # REMOVED: asset object is no longer part of the DTO
-
-            inputs = execution_request.inputs or {}
-            if isinstance(inputs, dict):
-                inputs.setdefault("asset_uri", str(asset.uri))
-                inputs.setdefault("asset_id", asset.asset_id)
-                # inputs.setdefault("asset_code", asset.asset_id) # Backwards compat
-                inputs.setdefault("catalog_id", asset.catalog_id)
-                inputs.setdefault("collection_id", asset.collection_id)
-                inputs.setdefault("asset_type", asset.asset_type.value)
-                execution_request.inputs = inputs
-
-            # 3. Adaptation Layer: Let the SPI specialized logic further adapt or map fields
-            logger.debug(
-                f"Task '{task_id}' implements AssetTasksSPI. Adapting request..."
-            )
-            execution_request = await task_instance.get_execution_request(
-                asset, execution_request
-            )
-        else:
-            logger.warning(
-                f"Task instance for '{task_id}' not found or doesn't implement SPI. Injection logic skipped."
-            )
-
-        try:
-            # We assume 'task_id' here refers to the OGC Process ID
-            result = await processes_module.execute_process(
-                process_id=task_id,
-                execution_request=execution_request,
-                engine=engine,
-                caller_id=caller_id,
-                preferred_mode=mode,
-                background_tasks=background_tasks,
-            )
-            # Handle result (Task object for async)
-            from dynastore.modules.tasks.models import Task
-
-            if isinstance(result, Task):
-                # Return 201 with Location (we'd need to link to jobs which is in processes extension)
-                # For now, let's return a basic status info
-                return {
-                    "jobID": str(result.task_id),
-                    "status": result.status,
-                    "message": "Task created successfully",
-                }
-            return result
-        except Exception as e:
-            logger.exception(f"Asset task execution failed: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
 
     # =============================================================================
     #  PARAMETRIC ASSET-PROCESS DISPATCH
