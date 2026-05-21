@@ -942,6 +942,149 @@ class AssetService(AssetsProtocol):
             )
         return updated
 
+    async def finalize_pending_upload(
+        self,
+        catalog_id: str,
+        *,
+        uri: str,
+        owned_by: str,
+        ticket_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        size_bytes: Optional[int] = None,
+        content_hash: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        db_resource: Optional[DbResource] = None,
+    ) -> Optional[Asset]:
+        """Transition a born-claimed PENDING upload row to ACTIVE.
+
+        Backend-neutral counterpart to the GCS OBJECT_FINALIZE activator
+        (``modules/gcp/gcp_finalize_activator.activate``): the REST upload-
+        create flow inserts a PENDING ``assets`` row up front (stamping
+        ``metadata._upload.ticket_id``), and the storage backend calls this
+        once the bytes have landed to set ``uri`` / ``owned_by`` /
+        ``size_bytes`` / ``content_hash`` and flip ``status`` to ACTIVE.
+
+        Row selection prefers a match on ``metadata._upload.ticket_id`` (the
+        born-claimed row stamped at initiate time), falling back to
+        ``asset_id``. Returns the activated :class:`Asset`, or ``None`` when no
+        PENDING row matched (e.g. the policy path was skipped and no
+        born-claimed row exists) — callers fall back to ``create_asset`` in
+        that case.
+        """
+        engine = db_resource or self.engine
+        if engine is None:
+            return None
+
+        schema = await self._resolve_schema(catalog_id, engine)
+        if not schema:
+            return None
+
+        select_sql = (
+            f'SELECT asset_id, status, metadata '
+            f'FROM "{schema}".assets '
+            "WHERE catalog_id = :catalog_id "
+            "AND collection_id IS NOT DISTINCT FROM :collection_id "
+            "AND kind = 'physical' "
+            "AND status = 'pending' "
+            "ORDER BY created_at ASC "
+            "FOR UPDATE"
+        )
+        update_sql = (
+            f'UPDATE "{schema}".assets '
+            "SET status = 'active', "
+            "    uri = :uri, "
+            "    owned_by = :owned_by, "
+            "    content_hash = :content_hash, "
+            "    size_bytes = :size_bytes, "
+            "    updated_at = NOW() "
+            "WHERE catalog_id = :catalog_id "
+            "AND collection_id IS NOT DISTINCT FROM :collection_id "
+            "AND asset_id = :asset_id"
+        )
+
+        async with managed_transaction(engine) as conn:
+            rows = await DQLQuery(
+                select_sql, result_handler=ResultHandler.ALL
+            ).execute(conn, catalog_id=catalog_id, collection_id=collection_id)
+            rows = list(rows or [])
+            if not rows:
+                return None
+
+            chosen = None
+            if ticket_id is not None:
+                for row in rows:
+                    if self._row_ticket_id(row) == str(ticket_id):
+                        chosen = row
+                        break
+            if chosen is None and asset_id is not None:
+                for row in rows:
+                    if str(self._row_value(row, "asset_id")) == str(asset_id):
+                        chosen = row
+                        break
+            if chosen is None:
+                # No correlation key matched a born-claimed row — leave the
+                # caller to fall back to create_asset.
+                return None
+
+            chosen_asset_id = self._row_value(chosen, "asset_id")
+            await DQLQuery(
+                update_sql, result_handler=ResultHandler.NONE
+            ).execute(
+                conn,
+                uri=uri,
+                owned_by=owned_by,
+                content_hash=content_hash,
+                size_bytes=size_bytes,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                asset_id=chosen_asset_id,
+            )
+
+        self._invalidate_cache(str(chosen_asset_id), catalog_id, collection_id)
+
+        activated = await self.get_asset(
+            catalog_id=catalog_id,
+            asset_id=str(chosen_asset_id),
+            collection_id=collection_id,
+            db_resource=engine,
+        )
+
+        if activated is not None and self._event_emitter:
+            await self._event_emitter(
+                AssetEventType.ASSET_UPDATED, activated.model_dump(),
+                db_resource=engine,
+            )
+        return activated
+
+    @staticmethod
+    def _row_value(row: Any, key: str) -> Any:
+        """Read a column from a SQLAlchemy Row or a plain dict (test-friendly)."""
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row.get(key)
+        mapping = getattr(row, "_mapping", None)
+        if mapping is not None:
+            return mapping.get(key)
+        return getattr(row, key, None)
+
+    @classmethod
+    def _row_ticket_id(cls, row: Any) -> Optional[str]:
+        """Extract ``metadata._upload.ticket_id`` from a row (dict-or-JSON)."""
+        meta = cls._row_value(row, "metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = None
+        if not isinstance(meta, dict):
+            return None
+        upload = meta.get("_upload")
+        if not isinstance(upload, dict):
+            return None
+        tid = upload.get("ticket_id")
+        return str(tid) if tid is not None else None
+
     def _invalidate_cache(self, asset_id: str, catalog_id: str, collection_id: Optional[str]):
         """Invalidates related cache entries."""
         # Signature of _get_asset_db is (catalog_id, asset_id, collection_id)

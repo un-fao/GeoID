@@ -323,6 +323,7 @@ class TestProtocolCompliance:
         mock = MagicMock()
         for method in [
             "get_asset", "list_assets", "create_asset", "update_asset",
+            "finalize_pending_upload",
             "delete_asset", "delete_assets", "search_assets",
             "ensure_asset_cleanup_trigger",
             "add_asset_reference", "remove_asset_reference", "list_asset_references",
@@ -336,6 +337,7 @@ class TestProtocolCompliance:
         mock.supports_versioning = False
         mock.initiate_upload = AsyncMock()
         mock.get_upload_status = AsyncMock()
+        mock.upload_available = MagicMock(return_value=True)
         return mock
 
     def test_assets_protocol_isinstance(self):

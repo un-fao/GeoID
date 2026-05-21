@@ -258,6 +258,14 @@ class TestGetUploadStatus:
 
 
 class TestCompleteUpload:
+    """Covers the create_asset *fallback* path (no born-claimed PENDING row).
+
+    These tests stub ``finalize_pending_upload`` to return ``None`` so the
+    legacy ``create_asset`` registration runs; the activation path (a PENDING
+    row matched and flipped to ACTIVE) is covered by
+    ``TestFinalizePendingActivation`` below.
+    """
+
     @pytest.mark.asyncio
     async def test_moves_file_to_permanent(self, tmp_path):
         m = _make_module(tmp_path)
@@ -279,6 +287,7 @@ class TestCompleteUpload:
         mock_asset = MagicMock()
         mock_asset.asset_id = "scene_001"
         mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
         mock_assets.create_asset = AsyncMock(return_value=mock_asset)
 
         with patch(
@@ -319,6 +328,7 @@ class TestCompleteUpload:
             return m2
 
         mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
         mock_assets.create_asset = _capture_create
 
         with patch(
@@ -355,6 +365,7 @@ class TestCompleteUpload:
             return m2
 
         mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
         mock_assets.create_asset = _capture
 
         with patch(
@@ -385,6 +396,7 @@ class TestCompleteUpload:
         mock_asset = MagicMock()
         mock_asset.asset_id = "a1"
         mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
         mock_assets.create_asset = AsyncMock(return_value=mock_asset)
 
         with patch(
@@ -416,6 +428,7 @@ class TestCompleteUpload:
         mock_asset = MagicMock()
         mock_asset.asset_id = "a1"
         mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
         mock_assets.create_asset = AsyncMock(return_value=mock_asset)
 
         with patch(
@@ -426,3 +439,156 @@ class TestCompleteUpload:
 
         permanent = m._asset_root / "cat1" / "my_collection" / "f.tif"
         assert permanent.exists()
+
+
+# ---------------------------------------------------------------------------
+# Class-level ticket store (GAP 3) — shared across instances in the process
+# ---------------------------------------------------------------------------
+
+
+class TestSharedTicketStore:
+    """The module is instantiated more than once at startup. The instance that
+    answers ``initiate_upload`` may differ from the one whose route closure
+    answers ``POST /local-upload/{ticket_id}``. A per-instance dict would 404
+    every upload; the registry is class-level so both instances see one store.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_registry(self):
+        LocalUploadModule._upload_tickets.clear()
+        yield
+        LocalUploadModule._upload_tickets.clear()
+
+    def test_registry_is_class_level(self):
+        from typing import get_type_hints  # noqa: F401
+        # The attribute resolves to the same dict object on every instance and
+        # on the class itself.
+        a = LocalUploadModule(staging_dir="/tmp/s", asset_dir="/tmp/a")
+        b = LocalUploadModule(staging_dir="/tmp/s2", asset_dir="/tmp/a2")
+        assert a._upload_tickets is b._upload_tickets
+        assert a._upload_tickets is LocalUploadModule._upload_tickets
+
+    @pytest.mark.asyncio
+    async def test_ticket_from_one_instance_visible_to_another(self, tmp_path):
+        # Instance A is the resolved upload driver; it stores the ticket.
+        instance_a = _make_module(tmp_path / "a")
+        ticket = await instance_a.initiate_upload(
+            catalog_id="cat1",
+            asset_def=_make_asset_def("shared_asset"),
+            filename="f.tif",
+        )
+
+        # Instance B owns the FastAPI route closure. Its receive path reads the
+        # class-level store and must find the ticket A created.
+        instance_b = _make_module(tmp_path / "b")
+        seen = instance_b._upload_tickets.get(ticket.ticket_id)
+        assert seen is not None
+        assert seen["asset_id"] == "shared_asset"
+
+        # And the status endpoint on B resolves it too (no 404).
+        resp = await instance_b.get_upload_status(
+            ticket_id=ticket.ticket_id, catalog_id="cat1",
+        )
+        assert resp.status == UploadStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# Activation path (GAP 3b) — born-claimed PENDING row flips to ACTIVE
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizePendingActivation:
+    """When a born-claimed PENDING row exists, ``_complete_upload`` activates
+    it via ``finalize_pending_upload`` (uri + owned_by=local) instead of
+    colliding through ``create_asset`` — which would leave the row stuck
+    pending with a NULL uri and 404 the download.
+    """
+
+    @pytest.mark.asyncio
+    async def test_activates_existing_pending_row(self, tmp_path):
+        m = _make_module(tmp_path)
+
+        staging_file = tmp_path / "staging" / "t-act" / "f.tif"
+        staging_file.parent.mkdir(parents=True)
+        staging_file.write_bytes(b"BYTES")
+
+        ticket = {
+            "asset_id": "a1",
+            "catalog_id": "cat1",
+            "collection_id": None,
+            "filename": "f.tif",
+            "asset_def": _make_asset_def("a1"),
+            "status": UploadStatus.UPLOADING,
+        }
+
+        activated = MagicMock()
+        activated.asset_id = "a1"
+        activated.uri = "file:///does/not/matter"
+        activated.owned_by = "local"
+
+        captured: dict = {}
+
+        async def _finalize(catalog_id, **kwargs):
+            captured.update(kwargs)
+            captured["catalog_id"] = catalog_id
+            return activated
+
+        mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = _finalize
+        # create_asset MUST NOT be called when activation succeeds.
+        mock_assets.create_asset = AsyncMock(
+            side_effect=AssertionError("create_asset must not run on activation")
+        )
+
+        with patch(
+            "dynastore.tools.discovery.get_protocol",
+            return_value=mock_assets,
+        ):
+            asset = await m._complete_upload("t-act", staging_file, ticket)
+
+        assert asset.asset_id == "a1"
+        assert captured["owned_by"] == "local"
+        assert captured["ticket_id"] == "t-act"
+        assert captured["asset_id"] == "a1"
+        assert captured["uri"].startswith("file:///")
+        # size_bytes is derived from the staged file (5 bytes).
+        assert captured["size_bytes"] == 5
+        assert ticket["status"] == UploadStatus.COMPLETED
+        assert ticket["asset_id_result"] == "a1"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_create_when_no_pending_row(self, tmp_path):
+        m = _make_module(tmp_path)
+
+        staging_file = tmp_path / "staging" / "t-fb" / "f.tif"
+        staging_file.parent.mkdir(parents=True)
+        staging_file.write_bytes(b"x")
+
+        ticket = {
+            "asset_id": "a1",
+            "catalog_id": "cat1",
+            "collection_id": None,
+            "filename": "f.tif",
+            "asset_def": _make_asset_def("a1"),
+            "status": UploadStatus.UPLOADING,
+        }
+
+        created = MagicMock()
+        created.asset_id = "a1"
+
+        mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
+        mock_assets.create_asset = AsyncMock(return_value=created)
+
+        with patch(
+            "dynastore.tools.discovery.get_protocol",
+            return_value=mock_assets,
+        ):
+            asset = await m._complete_upload("t-fb", staging_file, ticket)
+
+        assert asset.asset_id == "a1"
+        mock_assets.create_asset.assert_awaited_once()
+        # The created asset is owned_by=local with a file:// uri.
+        _, kwargs = mock_assets.create_asset.call_args
+        assert kwargs["asset"].owned_by == "local"
+        assert kwargs["asset"].uri.startswith("file:///")

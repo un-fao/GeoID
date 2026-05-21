@@ -181,6 +181,44 @@ class AssetsProtocol(Protocol):
         """
         ...
 
+    async def finalize_pending_upload(
+        self,
+        catalog_id: str,
+        *,
+        uri: str,
+        owned_by: str,
+        ticket_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        size_bytes: Optional[int] = None,
+        content_hash: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> Optional["Asset"]:
+        """
+        Transition a born-claimed PENDING upload row to ACTIVE.
+
+        The upload-create flow inserts a PENDING row up front (stamping
+        ``metadata._upload.ticket_id``); the storage backend calls this once
+        the bytes have landed to set ``uri`` / ``owned_by`` (and optionally
+        ``size_bytes`` / ``content_hash``) and flip the row to ACTIVE. Row
+        selection prefers a ``metadata._upload.ticket_id`` match, falling back
+        to ``asset_id``.
+
+        Args:
+            catalog_id: The catalog owning the asset.
+            uri: Resolved storage URI for the landed blob (e.g. ``file://...``).
+            owned_by: Storage backend identifier (e.g. ``"local"``).
+            ticket_id: Upload ticket id stamped on the born-claimed row.
+            asset_id: Fallback correlation key when no ticket matches.
+            size_bytes: Size of the stored blob, if known.
+            content_hash: Content hash of the stored blob, if known.
+            collection_id: Optional collection scope.
+
+        Returns:
+            The activated Asset, or ``None`` when no PENDING row matched
+            (caller should fall back to ``create_asset``).
+        """
+        ...
+
     async def delete_asset(
         self,
         asset_id: str,
