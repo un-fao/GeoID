@@ -273,7 +273,9 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     #
     # ``validity_field`` is a null-object storage-shape mirror of the SSOT
     # field ``ItemsWritePolicy.validity_field``. The field name IS the toggle:
-    # a path enables the validity column, ``None`` disables it. The PG driver
+    # a non-None value names/enables the validity column, ``None`` disables it.
+    # The value is a column name, NOT a source path for extraction — the
+    # validity-start value comes from ``write_context.valid_from``. The PG driver
     # overlays the policy value onto this field at ``ensure_storage`` time and
     # persists the result, so every read path that loads the collection's
     # sidecar config sees the policy-aligned value (#957/#974).
@@ -283,8 +285,9 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
         default=None,
         description=(
             "Null-object storage-shape mirror of ItemsWritePolicy.validity_field "
-            "(SSOT). Path → validity column enabled; None → disabled. "
-            "Overwritten by the driver at DDL time."
+            "(SSOT). Non-None names/enables the validity column; None → disabled. "
+            "Column name only, not a source path — the validity-start value comes "
+            "from write_context.valid_from. Overwritten by the driver at DDL time."
         ),
     )
 
