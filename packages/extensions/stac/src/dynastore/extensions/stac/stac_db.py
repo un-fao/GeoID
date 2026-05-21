@@ -35,6 +35,7 @@ async def get_stac_items_paginated(
     limit: int,
     offset: int,
     stac_config: Optional[StacPluginConfig] = None,
+    cql_filter: Optional[str] = None,
 ) -> Tuple[list, int]:
     """
     Fetches a paginated list of items for STAC using the optimised QueryOptimizer path.
@@ -42,6 +43,11 @@ async def get_stac_items_paginated(
     Geometries are simplified at the database level based on the StacPluginConfig.
     The total count is derived from COUNT(*) OVER() embedded in the same query,
     so no separate count query is needed.
+
+    ``cql_filter`` is an optional CQL2-Text expression (already combining any
+    explicit ``filter`` and ``?{property}={value}`` shorthand). It is validated
+    and parameter-bound by the shared QueryOptimizer CQL path; an unknown
+    property raises ``ValueError`` (surfaced as 400 by the route handler).
     """
     items_svc = get_protocol(ItemsProtocol)
     if not items_svc:
@@ -55,6 +61,7 @@ async def get_stac_items_paginated(
         limit=limit,
         offset=offset,
         include_total_count=True,
+        cql_filter=cql_filter,
         raw_params={
             "geom_format": "WKB",
             "simplification": simplification,
