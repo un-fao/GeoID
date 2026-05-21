@@ -196,8 +196,8 @@ async def _dispatch_collection_index(
         raise
     except Exception as exc:  # noqa: BLE001 — non-FATAL paths absorb
         logger.warning(
-            "Collection INDEX-hop %s dispatch failed for %s/%s: %s — "
-            "PG mutation stands; ES may be stale until reindex",
+            "Collection secondary-index hop %s dispatch failed for %s/%s: "
+            "%s — PG mutation stands; ES may be stale until reindex",
             op_type, catalog_id, collection_id, exc,
         )
 

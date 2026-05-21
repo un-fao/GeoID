@@ -1577,7 +1577,7 @@ class CatalogService(CatalogsProtocol):
                 physical_schema=physical_schema,
             )
 
-            # Fire the canonical INDEX-side cleanup signal.
+            # Fire the canonical secondary-index cleanup signal.
             await emit_event(
                 CatalogEventType.CATALOG_METADATA_CHANGED,
                 catalog_id=catalog_id,

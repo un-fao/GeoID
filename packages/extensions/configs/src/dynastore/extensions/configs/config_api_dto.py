@@ -69,8 +69,8 @@ class DriverRef(BaseModel):
         "fatal",
         description=(
             "Failure policy: ``fatal`` (raise — default), ``outbox`` "
-            "(defer to drain task; standard for ES INDEX), ``warn`` "
-            "(log + continue), ``ignore``."
+            "(defer to drain task; standard for an ES secondary index), "
+            "``warn`` (log + continue), ``ignore``."
         ),
     )
     write_mode: str = Field("sync", description="Write mode: sync | async.")
@@ -78,10 +78,11 @@ class DriverRef(BaseModel):
         default_factory=list,
         description=(
             "Ordered transformer ``driver_ref``s applied to entities going "
-            "INTO this driver call. Wired hops in this release: ``INDEX``. "
-            "Declaring this on other operations emits a one-time WARN at "
-            "load time. Mirrors ``OperationDriverEntry.input_transformers`` "
-            "(#501); accepted on PUT/PATCH request bodies."
+            "INTO this driver call. Wired hops in this release: ``WRITE`` "
+            "(secondary-index propagation). Declaring this on other "
+            "operations emits a one-time WARN at load time. Mirrors "
+            "``OperationDriverEntry.input_transformers`` (#501); accepted on "
+            "PUT/PATCH request bodies."
         ),
     )
     output_transformers: List[str] = Field(

@@ -138,8 +138,8 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
     """
 
     # OTF analytical/file-export driver — explicit-pin only.  Operators
-    # who want Iceberg as a SEARCH/INDEX target set the routing config
-    # entry by hand (``source: "operator"``).
+    # who want Iceberg as a SEARCH or secondary-index target set the
+    # routing config entry by hand (``source: "operator"``).
     auto_register_for_routing: ClassVar[FrozenSet[str]] = frozenset()
 
     priority: int = 20

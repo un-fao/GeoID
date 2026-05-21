@@ -368,7 +368,8 @@ class CatalogModule(ModuleProtocol):
 
             # M3.1b — register the catalog_metadata_changed → ReindexWorker
             # listener so mutations emitted by ``catalog_router``
-            # propagate to every configured INDEX driver.  Uses the shared
+            # propagate to every configured secondary-index driver.  Uses
+            # the shared
             # ``_consume_shard`` machinery started below (step 6); see
             # ``reindex_listener.py`` for the rationale on listener-over-
             # standalone-consumer.  This registration itself is what causes

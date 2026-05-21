@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class PrivateEntityTransformer:
     """Transforms STAC items into the tenant-feature shape and back.
 
-    On INDEX: builds a tenant-feature doc via
+    On indexing: builds a tenant-feature doc via
     :func:`build_tenant_feature_doc` and then applies
     :func:`simplify_to_fit` to keep the doc within ES's per-document size
     limit. The resulting ``simplification_factor`` and

@@ -80,8 +80,8 @@ class EntityTransformProtocol(Protocol):
         Returns the doc to be written to the indexer's store. Invoked when
         this transformer's ``driver_ref`` appears in an
         :attr:`OperationDriverEntry.input_transformers` tuple — typically
-        the INDEX entry of the target driver. Composes left-to-right with
-        other transformers in the same tuple.
+        the target driver's secondary-index ``WRITE`` entry. Composes
+        left-to-right with other transformers in the same tuple.
         """
         ...
 
