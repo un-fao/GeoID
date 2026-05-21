@@ -372,7 +372,7 @@ async def run_ingestion_task(
                 if geometry is None:
                     geometry = raw.get("geometry")
             else:
-                # Fallback: check if 'geometry' is already present (e.g. GeoJSON/Fiona)
+                # Fallback: check if 'geometry' is already present (e.g. GeoJSON)
                 geometry = raw.get("geometry")
 
             if geometry:
@@ -431,9 +431,9 @@ async def run_ingestion_task(
         # Pluggable source reader.  ``ReaderRegistry.resolve`` picks the
         # highest-priority reader whose ``can_read(uri)`` matches —
         # GdalOsgeoReader (system libgdal, supports Parquet/FGB/SHP/CSV/…)
-        # then FionaReader as a tail fallback.  Solves the
+        # then PyogrioReader as a tail fallback.  Solves the
         # ``CPLE_OpenFailedError: not recognized as being in a supported
-        # file format`` blocker when fiona's bundled libgdal lacks the
+        # file format`` blocker when a PyPI-wheel-bundled libgdal lacks the
         # Arrow/Parquet driver.
         from dynastore.tasks.ingestion.readers import resolve_reader
 

@@ -235,8 +235,8 @@ geospatial_io = [
     "lxml>=6.1.0,<7",
     "pyarrow<19,>=16",
     "numpy==1.26.4",
-    "geopandas>=0.14.0",
-    "fiona>=1.9.4",
+    "geopandas>=1.0",
+    "pyogrio>=0.8",
 ]
 geospatial = ["dynastore[geospatial_io]"]
 db_async = ["dynastore[db_config,db]"]
