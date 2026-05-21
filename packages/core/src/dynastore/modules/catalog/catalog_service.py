@@ -348,7 +348,8 @@ _create_catalog_strict_query = DQLQuery(
 # provisioner is active for the new catalog).
 _set_provisioning_checklist_query = DQLQuery(
     "UPDATE catalog.catalogs "
-    "SET provisioning_status = :status, provisioning_checklist = :checklist::jsonb "
+    "SET provisioning_status = :status, "
+    "provisioning_checklist = CAST(:checklist AS jsonb) "
     "WHERE id = :id;",
     result_handler=ResultHandler.NONE,
 )
@@ -2069,13 +2070,15 @@ class CatalogService(CatalogsProtocol):
 
             if new_status is not None:
                 await DQLQuery(
-                    "UPDATE catalog.catalogs SET provisioning_checklist = :cl::jsonb, "
+                    "UPDATE catalog.catalogs "
+                    "SET provisioning_checklist = CAST(:cl AS jsonb), "
                     "provisioning_status = :st WHERE id = :id;",
                     result_handler=ResultHandler.NONE,
                 ).execute(conn, id=catalog_id, cl=json.dumps(checklist), st=new_status)
             else:
                 await DQLQuery(
-                    "UPDATE catalog.catalogs SET provisioning_checklist = :cl::jsonb "
+                    "UPDATE catalog.catalogs "
+                    "SET provisioning_checklist = CAST(:cl AS jsonb) "
                     "WHERE id = :id;",
                     result_handler=ResultHandler.NONE,
                 ).execute(conn, id=catalog_id, cl=json.dumps(checklist))
