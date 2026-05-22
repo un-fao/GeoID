@@ -25,6 +25,32 @@ def gcp_integration_env():
 
 
 @pytest_asyncio.fixture(autouse=True)
+async def enable_bucket_provisioning(app_lifespan):
+    """Enable GCS bucket provisioning at the platform tier for this suite.
+
+    ``GcpCatalogBucketConfig.provision_enabled`` defaults to ``True`` in code,
+    but the dev/on-prem service config trees seed a platform-tier override of
+    ``provision_enabled=false`` (geoid#1167) so a local catalog becomes ready
+    without a real GCS bucket. That platform row persists in the shared test
+    database, so without this fixture catalog creation would skip the
+    ``gcp_provision_catalog`` enqueue and no bucket would ever be created
+    (geoid#1174). This suite exercises real GCS provisioning against valid
+    credentials, so it must run with provisioning ON — set it explicitly here
+    rather than depending on whatever the shared DB happens to carry.
+    """
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import ConfigsProtocol
+    from dynastore.modules.gcp.gcp_config import GcpCatalogBucketConfig
+
+    configs = get_protocol(ConfigsProtocol)
+    if configs:
+        await configs.set_config(
+            GcpCatalogBucketConfig,
+            GcpCatalogBucketConfig(provision_enabled=True),
+        )
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def disable_managed_eventing(app_lifespan):
     """
     Sets a platform-level GcpEventingConfig with managed eventing DISABLED.
