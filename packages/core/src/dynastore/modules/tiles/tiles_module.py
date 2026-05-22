@@ -972,18 +972,34 @@ async def get_tile_resolution_params(
             simplification_by_zoom = tiles_config.simplification_by_zoom or {}
 
         # 4. Resolve the collection config for sidecar-aware MVT queries from
-        # the SAME tile-capable driver resolved above (Hint.TILES → PG). Going
-        # back through catalogs.get_collection_config() would re-resolve the
-        # driver with a bare get_driver(READ) — no tile hint — and for the
-        # common routing shape (READ[0]=Elasticsearch, READ[1]=PostgreSQL+tiles)
-        # that returns the ES driver config, which carries no sidecars. The
-        # storage-agnostic MVT path then finds no geometry sidecar, skips
-        # ST_AsMVTGeom, and ST_AsMVT fails with "no geometry column found".
-        # The driver that renders the tile MUST supply the config it renders
-        # from.
-        col_config = await driver.get_driver_config(
-            catalog_id, collection_id, db_resource=conn
+        # the SAME tile-capable driver resolved above (Hint.TILES → PG). Two
+        # requirements, both load-bearing — violating either leaves the MVT
+        # transform with no geometry sidecar, so it skips ST_AsMVTGeom and
+        # ST_AsMVT fails with "no geometry column found":
+        #
+        #   * Use THIS driver, not catalogs.get_collection_config(), which
+        #     re-resolves with a bare get_driver(READ) — no tile hint — and for
+        #     the common routing shape (READ[0]=Elasticsearch,
+        #     READ[1]=PostgreSQL+tiles) returns the ES config (no sidecars).
+        #   * Use the EFFECTIVE config. get_driver_config() returns the
+        #     authorable config whose ``sidecars`` defaults to empty (M1b.2);
+        #     the persisted row strips that Computed field, and the MVT query
+        #     composes geometry + property projections from the sidecars. The
+        #     PG driver materialises them via _get_effective_driver_config(),
+        #     mirroring its other read/introspection paths (e.g. field
+        #     discovery). Resolved by attribute so a future non-PG tile driver
+        #     degrades to the authorable config rather than erroring.
+        effective_driver_config = getattr(
+            driver, "_get_effective_driver_config", None
         )
+        if effective_driver_config is not None:
+            col_config = await effective_driver_config(
+                catalog_id, collection_id, db_resource=conn
+            )
+        else:
+            col_config = await driver.get_driver_config(
+                catalog_id, collection_id, db_resource=conn
+            )
 
         return {
             "phys_schema": phys_schema,
