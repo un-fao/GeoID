@@ -13,6 +13,9 @@ Expected behaviour:
 - ``provisioning_status='failed'`` → 409 with delete/recreate hint
 - Catalog absent → 404
 - Unknown status value → 409 (loud, not silent)
+- ``catalog_id`` carrying an unsubstituted ``{{...}}`` template
+  placeholder → 400 with an actionable message, before any catalog
+  lookup (issue #1191)
 """
 
 from __future__ import annotations
@@ -135,3 +138,42 @@ async def test_none_status_defaults_to_ready():
 
     result = await host._require_catalog_ready("cat_null", catalogs_svc=svc)
     assert result is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "templated_id",
+    ["{{m.catalog}}", "{{ m.catalog }}", "prefix-{{catalog_id}}", "x}}"],
+)
+async def test_templated_catalog_id_returns_400_before_lookup(templated_id):
+    """An unsubstituted ``{{...}}`` template placeholder must fail fast with
+    400 + an actionable message, *before* the catalog lookup — otherwise the
+    literal token flows through to the routing resolver as an opaque
+    ``routed-resolve unavailable`` miss (issue #1191)."""
+    host = _Host()
+    svc = MagicMock()
+    # Lookup must never run for a malformed id.
+    svc.get_catalog_model = AsyncMock(side_effect=AssertionError("must not be called"))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await host._require_catalog_ready(templated_id, catalogs_svc=svc)
+
+    assert excinfo.value.status_code == 400
+    detail = excinfo.value.detail.lower()
+    assert "template placeholder" in detail
+    assert "substitute" in detail
+    svc.get_catalog_model.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_normal_catalog_id_still_passes_validation():
+    """A well-formed id is unaffected by the template-placeholder guard and
+    proceeds to the readiness lookup as before."""
+    host = _Host()
+    svc = MagicMock()
+    svc.get_catalog_model = AsyncMock(return_value=_make_catalog("ready"))
+
+    result = await host._require_catalog_ready("fao-asis", catalogs_svc=svc)
+
+    assert result is not None
+    svc.get_catalog_model.assert_awaited_once_with("fao-asis")

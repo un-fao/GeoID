@@ -63,8 +63,21 @@ def validate_sql_identifier(identifier: str) -> str:
     if not identifier:
         raise InvalidIdentifierError("Identifier cannot be empty.")
     
+    # 0. Reject obviously-templated values up front.  A client that issues a
+    #    request against ``/catalogs/{{m.catalog}}/...`` without substituting
+    #    the placeholder otherwise sends the literal token down to the routing
+    #    resolver, where it surfaces as an opaque ``routed-resolve unavailable``
+    #    lookup miss.  Catch it here with an actionable message so the caller
+    #    knows to substitute before issuing the request (see issue #1191).
+    if "{{" in identifier or "}}" in identifier:
+        raise InvalidIdentifierError(
+            f"Identifier '{identifier}' contains an unsubstituted template "
+            "placeholder ('{{...}}'); substitute it with a real value before "
+            "issuing the request."
+        )
+
     identifier_lower = identifier.lower()
-    
+
     # 1. Check length constraint (max 63 characters).
     if len(identifier_lower) > 63:
         raise InvalidIdentifierError("Identifier must be 63 characters or less.")
