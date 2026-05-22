@@ -939,23 +939,6 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 expose=True,
             )
 
-        # 2. Internal geoid Exposure (Optional)
-        if self.config.expose_geoid:
-            fields["geoid"] = FieldDefinition(
-                name="geoid",
-                alias="geoid",
-                title=LocalizedText(en="Internal ID", fr="ID Interne", es="ID Interno"),
-                description=LocalizedText(
-                    en="Internal stable identifier (UUID).",
-                    fr="Identifiant stable interne (UUID).",
-                    es="Identificador estable interno (UUID).",
-                ),
-                sql_expression="h.geoid",
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-                data_type="uuid",
-                expose=True,
-            )
-
         # 3. Validity Mapping (Bi-temporal exposure)
         if self.config.enable_validity:
             # start_datetime mapping
@@ -1471,14 +1454,14 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         context.publish(self.sidecar_id, dict(row))
 
         # 1. Identity Mapping
-        # Hub initialised feature.id = geoid. Override only when the read
-        # policy enables external_id-as-feature-id (default True when no
-        # policy is plumbed through context).
+        # Hub initialised feature.id = geoid — the default id (#1212). Override
+        # with the row's external_id ONLY when a collection explicitly opts in
+        # via read policy; absent a policy the stable geoid id is kept.
         read_policy = context.get("_items_read_policy") if context else None
         use_external_id = (
             read_policy.feature_type.external_id_as_feature_id
             if read_policy is not None
-            else True
+            else False
         )
         if use_external_id and self.config.external_id_field is not None:
             ext_id = row.get(self.config.external_id_field)
@@ -1544,8 +1527,19 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             feature.properties = props
 
         # 3. Time Standardization
-        # Map transaction_time -> created (ISO8601 UTC with 'Z')
-        if "transaction_time" in row and row["transaction_time"] is not None:
+        # Map transaction_time -> created (ISO8601 UTC with 'Z'). Opt-in only:
+        # surfaced solely when the read policy sets feature_type.expose_created
+        # (#1212). By default the response mirrors the input feature 1:1.
+        expose_created = (
+            read_policy.feature_type.expose_created
+            if read_policy is not None
+            else False
+        )
+        if (
+            expose_created
+            and "transaction_time" in row
+            and row["transaction_time"] is not None
+        ):
             from datetime import datetime
 
             tx_time = row["transaction_time"]
@@ -1561,6 +1555,21 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 props["created"] = (
                     tx_time if tx_time.endswith("Z") else tx_time.replace("+00:00", "Z")
                 )
+
+        # 3b. Optionally surface the internal geoid as a ``geoid`` property —
+        # only when external_id is the feature id, so the stable geoid stays
+        # accessible alongside it. When geoid is already the id this is a no-op
+        # (it would merely duplicate the id). Opt-in via the read policy (#1212).
+        if (
+            use_external_id
+            and read_policy is not None
+            and read_policy.feature_type.expose_geoid
+        ):
+            geoid_val = row.get("geoid")
+            if geoid_val is not None:
+                fp = dict(feature.properties) if feature.properties else {}
+                fp["geoid"] = str(geoid_val)
+                feature.properties = fp
 
         # 4. Validity Mapping (if enabled)
         if self.config.enable_validity and "validity" in row:

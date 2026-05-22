@@ -118,7 +118,9 @@ class TestFeatureType:
         ft = FeatureType()
         assert ft.expose == []
         assert ft.failure_mode == "best_effort"
-        assert ft.external_id_as_feature_id is True
+        # geoid is the default feature id; created is opt-in (#1212)
+        assert ft.external_id_as_feature_id is False
+        assert ft.expose_created is False
 
     def test_strict_failure_mode(self) -> None:
         ft = FeatureType(failure_mode="strict")

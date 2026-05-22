@@ -67,17 +67,18 @@ class QueryOptimizer:
         # pre-consumer-aware behaviour for ad-hoc/internal callers.
         self.consumer: ConsumerType = consumer or ConsumerType.GENERIC
         # ``read_policy`` carries the wire-shape contract. ``None`` means
-        # "use defaults" (external_id_as_feature_id=True). Callers thread
-        # the resolved ItemsReadPolicy where they have it.
+        # "use defaults" (external_id_as_feature_id=False → geoid is the id,
+        # #1212). Callers thread the resolved ItemsReadPolicy where they have it.
         self.read_policy: Optional[ItemsReadPolicy] = read_policy
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
 
     def _external_id_as_feature_id(self) -> bool:
-        """Resolve the wire-shape decision from the read policy, defaulting
-        to True when no policy is supplied (preserves pre-policy behaviour)."""
+        """Resolve the wire-shape decision from the read policy, defaulting to
+        False when no policy is supplied — the stable internal ``geoid`` is the
+        feature id unless a collection opts in (#1212)."""
         if self.read_policy is None:
-            return True
+            return False
         return self.read_policy.feature_type.external_id_as_feature_id
 
     def resolve_validity_expression(self) -> Optional[str]:
