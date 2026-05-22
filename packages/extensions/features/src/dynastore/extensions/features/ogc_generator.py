@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from shapely import wkb
 from dynastore.models.protocols import ItemsProtocol
 from dynastore.tools.discovery import get_protocol
+from dynastore.modules.elasticsearch.items_projection import strip_reserved_members
 from dynastore.modules.db_config.tools import map_pg_to_json_type
 from shapely.geometry import shape, mapping
 
@@ -176,7 +177,13 @@ def _db_row_to_ogc_feature(
         geometry_model = TypeAdapter(ogc_models.GeoJSONGeometry).validate_python(geom_dict)
 
     # -- 4. Properties + OGC-specific validity mapping ------------------------
-    properties = dict(item.properties or {})
+    # Strip GeoJSON/STAC structural members (id, geometry, …) that can ride into
+    # stored properties — the PG ``feature_id_expr AS id`` alias via the
+    # attributes sidecar, or the ES write echo returning the in-memory feature
+    # as-is. The canonical id already lives at the feature top level; keeping it
+    # out of properties aligns the POST/PUT echo with the GET read contract that
+    # ``project_item_for_es`` enforces on the index path (#1232).
+    properties = strip_reserved_members(item.properties or {})
 
     _map_validity_to_ogc(properties)
 
