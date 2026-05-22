@@ -86,3 +86,46 @@ def test_legacy_flat_record_geom_still_excluded() -> None:
     )
     assert "geom" not in out["record"]
     assert out["record"]["asset_code"] == "ITAL1_01"
+
+
+def _feature_record_with_top_level_echo() -> dict:
+    """A read-assembled Feature: attributes live under ``properties`` *and* are
+    echoed at the top level via ``feature.__pydantic_extra__`` (the bridge that
+    feeds STAC extension generators). In a report that echo is duplication."""
+    return {
+        "type": "Feature",
+        "id": "1621",
+        "geometry": {"type": "Point", "coordinates": [13.3, 45.6]},
+        "properties": {"CODE": "1621", "NAME": "Friuli", "area": 7845.0},
+        # duplicated at the top level by the read assembly:
+        "CODE": "1621",
+        "NAME": "Friuli",
+        "area": 7845.0,
+    }
+
+
+def test_top_level_attribute_echo_is_deduplicated() -> None:
+    out = _reporter(include_geometry=False)._filter_result_for_reporting(
+        {"status": "SUCCESS", "record": _feature_record_with_top_level_echo()}
+    )
+    rec = out["record"]
+    # attributes survive exactly once, under ``properties``
+    assert rec["properties"] == {"CODE": "1621", "NAME": "Friuli", "area": 7845.0}
+    # ...and are no longer echoed at the Feature top level
+    for attr in ("CODE", "NAME", "area"):
+        assert attr not in rec, f"{attr!r} still duplicated at top level"
+    # canonical GeoJSON structural keys are preserved
+    assert rec["type"] == "Feature"
+    assert rec["id"] == "1621"
+
+
+def test_dedup_preserves_legacy_asset_code_top_level() -> None:
+    """The reporter's own legacy DWH field ``asset_code`` is not a duplicate of
+    ``properties`` and must survive the top-level dedup."""
+    record = _feature_record_with_top_level_echo()
+    record["asset_id"] = "ITAL1_01"
+    out = _reporter(include_geometry=False)._filter_result_for_reporting(
+        {"status": "SUCCESS", "record": record}
+    )
+    assert out["record"]["asset_code"] == "ITAL1_01"
+    assert "CODE" not in out["record"]

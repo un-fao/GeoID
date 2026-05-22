@@ -36,6 +36,28 @@ logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List, Any, Dict
 
+# Canonical GeoJSON/STAC Feature structural keys. The read assembly bridges
+# every sidecar attribute into ``feature.__pydantic_extra__`` (so STAC extension
+# generators can read them) — which means each attribute is serialized BOTH
+# under ``properties`` and echoed at the Feature top level. In a report that
+# echo is pure duplication, so we keep only structural keys plus the reporter's
+# own legacy DWH fields; attributes then appear exactly once, under ``properties``.
+_FEATURE_STRUCTURAL_KEYS = frozenset(
+    {
+        "type",
+        "id",
+        "geometry",
+        "bbox",
+        "properties",
+        "links",
+        "assets",
+        "collection",
+        "stac_version",
+        "stac_extensions",
+    }
+)
+_REPORT_LEGACY_TOP_LEVEL_KEYS = frozenset({"asset_code", "asset_id"})
+
 if TYPE_CHECKING:
     from dynastore.modules.gcp.gcp_module import GCPModule
 
@@ -381,6 +403,17 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             if not self.config.include_bbox:
                 record.pop("bbox", None)
                 record.pop("bbox_coords", None)
+
+            # 4. De-duplicate the top level. Sidecar attributes are echoed at
+            #    the Feature top level (from ``__pydantic_extra__``) as well as
+            #    under ``properties``; keep only structural + legacy DWH keys so
+            #    each attribute is reported once, under ``properties``.
+            allowed_top_level = _FEATURE_STRUCTURAL_KEYS | _REPORT_LEGACY_TOP_LEVEL_KEYS
+            record = {
+                key: value
+                for key, value in record.items()
+                if key in allowed_top_level
+            }
 
             filtered_result["record"] = record
 
