@@ -79,7 +79,7 @@ def test_optimizer_initialization(mock_col_config, mock_registry):
             name="external_id",
             sql_expression="sc_attr.external_id",
             capabilities=[FieldCapability.FILTERABLE],
-            data_type="text",
+            data_type="string",
         )
     }
 
@@ -128,7 +128,7 @@ def test_determine_required_sidecars(mock_col_config, mock_registry):
             name="external_id",
             sql_expression="sc_attr.external_id",
             capabilities=[],
-            data_type="text",
+            data_type="string",
         )
     }
     mock_attr.get_main_geometry_field.return_value = None
@@ -189,7 +189,7 @@ def test_build_optimized_query(mock_col_config, mock_registry):
             name="external_id",
             sql_expression="sc_attr.external_id",
             capabilities=[FieldCapability.FILTERABLE],
-            data_type="text",
+            data_type="string",
         )
     }
     mock_geom.get_join_clause.return_value = (
@@ -203,7 +203,7 @@ def test_build_optimized_query(mock_col_config, mock_registry):
             name="external_id",
             sql_expression="sc_attr.external_id",
             capabilities=[FieldCapability.FILTERABLE],
-            data_type="text",
+            data_type="string",
         )
     }
     mock_attr.get_join_clause.return_value = (
@@ -275,7 +275,7 @@ def test_read_policy_disables_external_id_as_feature_id(mock_col_config, mock_re
     mock_attr.get_queryable_fields.return_value = {
         "external_id": FieldDefinition(
             name="external_id", sql_expression="sc_attr.external_id",
-            capabilities=[FieldCapability.FILTERABLE], data_type="text",
+            capabilities=[FieldCapability.FILTERABLE], data_type="string",
         )
     }
     mock_attr.get_join_clause.return_value = "LEFT JOIN attr_table sc_attr ON h.geoid = sc_attr.geoid"

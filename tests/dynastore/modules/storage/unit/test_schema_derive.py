@@ -10,7 +10,7 @@ def test_empty_fields_returns_none():
 
 
 def test_non_strict_omits_additional_properties():
-    schema = derive_wire_schema({"a": FieldDefinition(name="a", data_type="text")})
+    schema = derive_wire_schema({"a": FieldDefinition(name="a", data_type="string")})
     assert schema is not None
     assert schema["$schema"] == DRAFT
     assert schema["type"] == "object"
@@ -19,7 +19,7 @@ def test_non_strict_omits_additional_properties():
 
 def test_strict_adds_additional_properties_false():
     schema = derive_wire_schema(
-        {"a": FieldDefinition(name="a", data_type="text")}, strict=True
+        {"a": FieldDefinition(name="a", data_type="string")}, strict=True
     )
     assert schema is not None
     assert schema["additionalProperties"] is False
@@ -27,9 +27,9 @@ def test_strict_adds_additional_properties_false():
 
 def test_required_list_uses_dict_keys_and_is_sorted():
     fields = {
-        "zeta": FieldDefinition(name="zeta_field", data_type="text", required=True),
-        "alpha": FieldDefinition(name="alpha_field", data_type="text", required=True),
-        "beta": FieldDefinition(name="beta_field", data_type="text", required=False),
+        "zeta": FieldDefinition(name="zeta_field", data_type="string", required=True),
+        "alpha": FieldDefinition(name="alpha_field", data_type="string", required=True),
+        "beta": FieldDefinition(name="beta_field", data_type="string", required=False),
     }
     schema = derive_wire_schema(fields)
     assert schema is not None
@@ -40,9 +40,9 @@ def test_required_list_uses_dict_keys_and_is_sorted():
 
 def test_data_type_mapping():
     fields = {
-        "s": FieldDefinition(name="s", data_type="text"),
+        "s": FieldDefinition(name="s", data_type="string"),
         "i": FieldDefinition(name="i", data_type="integer"),
-        "f": FieldDefinition(name="f", data_type="float"),
+        "f": FieldDefinition(name="f", data_type="double"),
         "b": FieldDefinition(name="b", data_type="boolean"),
         "t": FieldDefinition(name="t", data_type="timestamp"),
         "g": FieldDefinition(name="g", data_type="geometry"),
@@ -56,10 +56,14 @@ def test_data_type_mapping():
     assert props["g"] == {"type": "object"}
 
 
-def test_unknown_and_case_insensitive_default_to_string():
+def test_derive_is_defensive_against_noncanonical_data_type():
+    # FieldDefinition rejects non-canonical data_type at construction (strict,
+    # no legacy aliases) — so to exercise derive_wire_schema's defensive default
+    # we bypass validation with model_construct. A value it can't map degrades
+    # to {"type": "string"} rather than raising.
     fields = {
-        "u": FieldDefinition(name="u", data_type="something_weird"),
-        "c": FieldDefinition(name="c", data_type="TEXT"),
+        "u": FieldDefinition.model_construct(name="u", data_type="something_weird"),
+        "c": FieldDefinition.model_construct(name="c", data_type="TEXT"),
     }
     props = derive_wire_schema(fields)["properties"]  # type: ignore[index]
     assert props["u"] == {"type": "string"}
@@ -68,9 +72,9 @@ def test_unknown_and_case_insensitive_default_to_string():
 
 def test_validator_pass_through():
     fields = {
-        "name": FieldDefinition(name="name", data_type="text", max_length=50, pattern="^[a-z]+$"),
-        "score": FieldDefinition(name="score", data_type="float", minimum=0.0, maximum=100.0),
-        "kind": FieldDefinition(name="kind", data_type="text", enum=["a", "b", "c"]),
+        "name": FieldDefinition(name="name", data_type="string", max_length=50, pattern="^[a-z]+$"),
+        "score": FieldDefinition(name="score", data_type="double", minimum=0.0, maximum=100.0),
+        "kind": FieldDefinition(name="kind", data_type="string", enum=["a", "b", "c"]),
     }
     props = derive_wire_schema(fields)["properties"]  # type: ignore[index]
     assert props["name"]["maxLength"] == 50
@@ -83,7 +87,7 @@ def test_validator_pass_through():
 def test_field_format_overrides_timestamp_default():
     fields = {
         "ts": FieldDefinition(name="ts", data_type="timestamp", format="date"),
-        "raw": FieldDefinition(name="raw", data_type="text", format="email"),
+        "raw": FieldDefinition(name="raw", data_type="string", format="email"),
     }
     props = derive_wire_schema(fields)["properties"]  # type: ignore[index]
     assert props["ts"]["format"] == "date"
@@ -100,7 +104,7 @@ def test_field_format_overrides_timestamp_default():
 
 
 def test_write_purpose_omits_additional_properties_even_when_strict():
-    fields = {"a": FieldDefinition(name="a", data_type="text")}
+    fields = {"a": FieldDefinition(name="a", data_type="string")}
     schema = derive_wire_schema(fields, strict=True, purpose="write")
     assert schema is not None
     # strict would set additionalProperties=False on the read variant, but the
@@ -111,8 +115,8 @@ def test_write_purpose_omits_additional_properties_even_when_strict():
 
 def test_write_purpose_omits_required():
     fields = {
-        "name": FieldDefinition(name="name", data_type="text", required=True),
-        "score": FieldDefinition(name="score", data_type="float", required=True),
+        "name": FieldDefinition(name="name", data_type="string", required=True),
+        "score": FieldDefinition(name="score", data_type="double", required=True),
     }
     schema = derive_wire_schema(fields, purpose="write")
     assert schema is not None
@@ -123,12 +127,12 @@ def test_write_purpose_omits_required():
 def test_write_purpose_keeps_value_constraints():
     fields = {
         "name": FieldDefinition(
-            name="name", data_type="text", max_length=50, pattern="^[a-z]+$"
+            name="name", data_type="string", max_length=50, pattern="^[a-z]+$"
         ),
         "score": FieldDefinition(
-            name="score", data_type="float", minimum=0.0, maximum=100.0
+            name="score", data_type="double", minimum=0.0, maximum=100.0
         ),
-        "kind": FieldDefinition(name="kind", data_type="text", enum=["a", "b", "c"]),
+        "kind": FieldDefinition(name="kind", data_type="string", enum=["a", "b", "c"]),
     }
     schema = derive_wire_schema(fields, purpose="write")
     assert schema is not None
@@ -146,7 +150,7 @@ def test_write_purpose_returns_none_for_empty_fields():
 
 
 def test_read_purpose_is_default_and_unchanged():
-    fields = {"a": FieldDefinition(name="a", data_type="text", required=True)}
+    fields = {"a": FieldDefinition(name="a", data_type="string", required=True)}
     default = derive_wire_schema(fields, strict=True)
     explicit_read = derive_wire_schema(fields, strict=True, purpose="read")
     assert default == explicit_read

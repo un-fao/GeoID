@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, Mapping, Optional
 
-from dynastore.models.field_types import canonical_data_type
 from dynastore.models.protocols.field_definition import FieldCapability, FieldDefinition
 from dynastore.modules.storage.errors import (
     RequiredFieldMissingError,
@@ -206,8 +205,11 @@ def bridge_schema_to_attribute_sidecar(
             has_column_cap = bool(set(fd.capabilities or []) & _COLUMN_CAPS)
             if not (materialize_all or has_column_cap):
                 continue  # Rule 4 — no trigger; field stays in JSONB
+        # ``data_type`` is already canonical (validated on FieldDefinition);
+        # tolerant lookup so a bypassed/unknown value degrades to TEXT rather
+        # than raising deep in DDL generation.
         pg_name = _DATA_TYPE_TO_PG_NAME.get(
-            canonical_data_type(fd.data_type), "TEXT"
+            (fd.data_type or "").lower(), "TEXT"
         )
         try:
             pg_type = PostgresType(pg_name)

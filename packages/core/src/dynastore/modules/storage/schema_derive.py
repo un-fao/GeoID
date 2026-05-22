@@ -7,7 +7,6 @@ of truth for both write-validation and the produced feature shape.
 
 from typing import Dict, Literal, Optional
 
-from dynastore.models.field_types import canonical_data_type
 from dynastore.models.protocols.field_definition import FieldDefinition
 
 # Canonical data_type (see ``dynastore.models.field_types``) -> JSON-Schema
@@ -65,9 +64,10 @@ def derive_wire_schema(
     properties: Dict[str, dict] = {}
     required = []
     for key, fd in fields.items():
-        # Parametrized geometry (e.g. "geometry(Point,4326)") canonicalizes to a
-        # lowercased form, so collapse any geometry variant to the base key.
-        dt = canonical_data_type(fd.data_type)
+        # ``data_type`` is already canonical (validated on FieldDefinition);
+        # tolerant lookup here. Parametrized geometry ("geometry(point,4326)")
+        # collapses to the base key; unknown/bypassed values default to string.
+        dt = (fd.data_type or "").lower()
         if dt.startswith("geometry"):
             dt = "geometry"
         prop = dict(_TYPE_MAP.get(dt, {"type": "string"}))

@@ -1248,7 +1248,7 @@ class ItemsSchema(PluginConfig):
     instances, e.g.::
 
         ItemsSchema(
-            fields={"name": FieldDefinition(data_type="text")},
+            fields={"name": FieldDefinition(data_type="string")},
             constraints=[
                 RequiredConstraint(field="name"),
                 UniqueConstraint(field="name"),

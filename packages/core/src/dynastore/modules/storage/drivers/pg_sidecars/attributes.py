@@ -36,6 +36,7 @@ from dynastore.modules.db_config.query_executor import DbResource, DDLQuery, DQL
 from dynastore.models.protocols import ConfigsProtocol, AssetsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config.tools import map_pg_to_json_type
+from dynastore.modules.storage.field_constraints import pg_native_to_canonical
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
@@ -266,7 +267,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
                     FieldCapability.SORTABLE,
                     FieldCapability.GROUPABLE,
                 ],
-                data_type="text",
+                data_type="string",
                 expose=False,  # Mapped to Feature.id, not exposed as property
                 title="External ID",
                 description="External identifier",
@@ -298,7 +299,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
                     name=attr.name,
                     sql_expression=f"{alias}.{attr.name}",
                     capabilities=caps,
-                    data_type=attr.type.value.lower(),
+                    data_type=pg_native_to_canonical(attr.type.value),
                     expose=not is_storage_only,  # Storage-only fields not in Feature output
                     title=getattr(attr, "title", attr.name),
                     description=getattr(attr, "description", None),
@@ -906,7 +907,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     FieldCapability.GROUPABLE,
                     FieldCapability.INDEXED,
                 ],
-                data_type="text",
+                data_type="string",
                 aggregations=["count", "array_agg"],
                 expose=True,
             )
@@ -933,7 +934,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     FieldCapability.GROUPABLE,
                     FieldCapability.INDEXED,
                 ],
-                data_type="text",
+                data_type="string",
                 aggregations=["count", "array_agg"],
                 expose=True,
             )
@@ -971,7 +972,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 ),
                 sql_expression=f"lower({alias}.validity)",
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-                data_type="timestamptz",
+                data_type="timestamp",
                 expose=True,
             )
             # end_datetime mapping
@@ -988,7 +989,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 ),
                 sql_expression=f"upper({alias}.validity)",
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-                data_type="timestamptz",
+                data_type="timestamp",
                 expose=True,
             )
             # validity range mapping
@@ -1006,7 +1007,9 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 ),
                 sql_expression=f"{alias}.validity",
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-                data_type="tstzrange",
+                # No canonical range type; the validity range is exposed as a
+                # timestamp field (precise bounds carried by start/end_datetime).
+                data_type="timestamp",
                 expose=True,
             )
 
@@ -1025,7 +1028,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             ),
             sql_expression="h.transaction_time",
             capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-            data_type="timestamptz",
+            data_type="timestamp",
             expose=True,
         )
 
@@ -1061,7 +1064,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     name=attr.name,
                     sql_expression=f"{alias}.{attr.name}",
                     capabilities=caps,
-                    data_type=attr.type.value,
+                    data_type=pg_native_to_canonical(attr.type.value),
                     aggregations=aggs,
                     transformations=transforms,
                     expose=True,  # Standard attributes exposed by default
@@ -1106,7 +1109,7 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
 
         # Determine SQL expression
         sql_expr = None
-        data_type = "text"  # JSONB extraction defaults to text unless cast
+        data_type = "string"  # JSONB extraction defaults to string unless cast
         if field_name == self.config.jsonb_column_name:
             # The blob column itself — return the whole JSONB, not a sub-key.
             # Mirrors ``resolve_query_path``.

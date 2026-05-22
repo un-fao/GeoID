@@ -858,17 +858,21 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             return []
 
         # Map PG types to driver-agnostic type strings
+        # information_schema type name -> canonical data_type
+        # (see ``dynastore.models.field_types``). No range canonical -> tstzrange
+        # collapses to timestamp; arrays collapse to jsonb.
         pg_type_map = {
-            "integer": "integer", "bigint": "integer", "smallint": "integer",
-            "numeric": "numeric", "real": "numeric", "double precision": "numeric",
+            "integer": "integer", "bigint": "bigint", "smallint": "integer",
+            "numeric": "numeric", "real": "double", "double precision": "double",
             "boolean": "boolean",
             "character varying": "string", "text": "string", "character": "string",
-            "uuid": "string", "varchar": "string",
-            "timestamp with time zone": "datetime", "timestamp without time zone": "datetime",
-            "date": "datetime", "time with time zone": "datetime",
-            "tstzrange": "datetime",
-            "jsonb": "json", "json": "json",
-            "ARRAY": "array",
+            "uuid": "uuid", "varchar": "string",
+            "timestamp with time zone": "timestamp", "timestamp without time zone": "timestamp",
+            "date": "date", "time with time zone": "time", "time without time zone": "time",
+            "tstzrange": "timestamp",
+            "jsonb": "jsonb", "json": "jsonb",
+            "bytea": "binary",
+            "ARRAY": "jsonb",
             "USER-DEFINED": "geometry",
         }
 
@@ -906,7 +910,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                 if col_name in internal_cols:
                     continue
                 data_type = row.get("data_type", "unknown")
-                mapped = pg_type_map.get(data_type, "unknown")
+                mapped = pg_type_map.get(data_type, "string")
                 if mapped == "geometry":
                     mapped = "geometry"
                 fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
@@ -926,7 +930,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                         if col_name in internal_cols or col_name == "attributes":
                             continue
                         data_type = row.get("data_type", "unknown")
-                        mapped = pg_type_map.get(data_type, "unknown")
+                        mapped = pg_type_map.get(data_type, "string")
                         fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
 
                     # Also extract keys from JSONB attributes column via sample
