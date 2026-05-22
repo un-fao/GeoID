@@ -68,6 +68,59 @@ async def test_lookup_by_external_id_returns_empty_when_protocol_missing(monkeyp
 
 
 # ---------------------------------------------------------------------------
+# geometry normalization — search_items returns Feature objects whose .geometry
+# is a geojson_pydantic model, but GeoidResult.geometry is a plain dict. The
+# helper must normalize the model to a GeoJSON dict so the contract validates.
+# ---------------------------------------------------------------------------
+
+
+def test_feature_to_dict_normalizes_geojson_pydantic_geometry_to_dict():
+    """A Feature whose .geometry is a geojson_pydantic model must become a plain
+    GeoJSON dict so GeoidResult (geometry: Dict[str, Any]) validates."""
+    from geojson_pydantic.geometries import Polygon
+
+    from dynastore.extensions.geoid.lookup_models import GeoidResult
+    from dynastore.extensions.geoid.lookup_service import _feature_to_dict
+
+    poly = Polygon(
+        type="Polygon",
+        coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]],
+    )
+    feature = SimpleNamespace(
+        id="11111111-1111-1111-1111-111111111111",
+        geometry=poly,
+        bbox=None,
+        properties={"external_id": "ext-1"},
+    )
+
+    row = _feature_to_dict(feature, "cat", "col")
+
+    assert isinstance(row["geometry"], dict), "geometry must be a plain dict"
+    assert row["geometry"]["type"] == "Polygon"
+    assert "bbox" not in row["geometry"], "null bbox should be dropped from geometry"
+    # The customer-facing contract model must accept the normalized row.
+    result = GeoidResult(**row)
+    assert result.geometry is not None
+    assert result.geometry["type"] == "Polygon"
+
+
+def test_feature_to_dict_passes_through_dict_geometry_unchanged():
+    """A geometry that is already a plain dict must be returned unchanged."""
+    from dynastore.extensions.geoid.lookup_service import _feature_to_dict
+
+    geom = {"type": "Point", "coordinates": [12.49, 41.89]}
+    feature = SimpleNamespace(
+        id="22222222-2222-2222-2222-222222222222",
+        geometry=geom,
+        bbox=None,
+        properties={},
+    )
+
+    row = _feature_to_dict(feature, "cat", "col")
+    assert row["geometry"] == geom
+
+
+# ---------------------------------------------------------------------------
 # #975 — pre-filter UUID-parseable inputs; surface malformed ones via WARN log.
 # ---------------------------------------------------------------------------
 

@@ -76,6 +76,30 @@ def _partition_uuid_inputs(geoids: List[str]) -> Tuple[List[str], List[str]]:
     return valid, invalid
 
 
+def _normalize_geometry(geometry: Any) -> Optional[Dict[str, Any]]:
+    """Coerce a feature geometry into a plain GeoJSON dict.
+
+    ``ItemsProtocol.search_items`` returns Feature objects whose ``geometry`` is
+    a ``geojson_pydantic`` model (e.g. ``Polygon``), but ``GeoidResult.geometry``
+    is typed ``Dict[str, Any]``. Passing the model through unchanged makes
+    pydantic raise ``dict_type``. Normalize the common shapes:
+
+    * ``None``                       → ``None``
+    * plain ``dict``                 → unchanged
+    * pydantic model (``model_dump``) → ``model_dump(mode="json", exclude_none=True)``
+    * shapely geom (``__geo_interface__``) → its mapping
+
+    Anything else is returned as-is so the contract validator surfaces it.
+    """
+    if geometry is None or isinstance(geometry, dict):
+        return geometry
+    if hasattr(geometry, "model_dump"):  # pydantic model (e.g. geojson_pydantic)
+        return geometry.model_dump(mode="json", exclude_none=True)
+    if hasattr(geometry, "__geo_interface__"):  # shapely / GeoJSON-like object
+        return dict(geometry.__geo_interface__)
+    return geometry
+
+
 def _feature_to_dict(feature: Any, catalog_id: str, collection_id: str) -> Dict[str, Any]:
     """Convert a Feature object returned by ItemsProtocol into a GeoidResult-shaped dict."""
     props: Dict[str, Any] = {}
@@ -100,6 +124,7 @@ def _feature_to_dict(feature: Any, catalog_id: str, collection_id: str) -> Dict[
     geometry = getattr(feature, "geometry", None)
     if geometry is None and isinstance(feature, dict):
         geometry = feature.get("geometry")
+    geometry = _normalize_geometry(geometry)
 
     bbox = getattr(feature, "bbox", None)
     if bbox is None and isinstance(feature, dict):
