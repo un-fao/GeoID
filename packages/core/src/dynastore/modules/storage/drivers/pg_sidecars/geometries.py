@@ -257,8 +257,8 @@ class GeometriesSidecar(SidecarProtocol):
         Returns JSON Schema for geometry contribution to Feature.
 
         Auto-derived to the well-known GeoJSON geometry shape; the
-        user-data wire shape SSOT lives on ``ItemsWritePolicy.resolved_schema``
-        and overlays sidecar fragments at the service layer (#976).
+        user-data wire shape is derived from ``ItemsSchema`` (the SSOT) and
+        overlays sidecar fragments at the service layer (#976).
         """
         return {"geometry": {"type": "object", "description": "GeoJSON geometry"}}
 

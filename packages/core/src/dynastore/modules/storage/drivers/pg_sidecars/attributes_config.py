@@ -210,15 +210,16 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     )
 
     # ``feature_type_schema`` was retired in #976: the wire shape of Feature
-    # ``properties`` is now the SSOT on ``ItemsWritePolicy.resolved_schema`` (see PR
-    # #961 phase 2). Sidecars derive their schema fragments from their own
-    # storage columns and the policy overlays the user-data ``properties``.
+    # ``properties`` is derived from ``ItemsSchema`` (the SSOT) at read time
+    # (see PR #961 phase 2). Sidecars derive their schema fragments from their
+    # own storage columns and the derived schema overlays the user-data
+    # ``properties``.
 
     # Identity Columns — null-object pattern
     #
-    # ``require_external_id`` (behavior) lives exclusively on
-    # ``ItemsWritePolicy`` (config key ``items_write_policy``).  The sidecar
-    # reads it at write time via ``processing_context["_items_write_policy"]``.
+    # A missing external_id that is a declared required field is rejected by the
+    # normal required-field check plus NOT NULL columns — there is no separate
+    # sidecar-level require flag.
     #
     # ``external_id_field`` and ``asset_id_field`` are storage-shape overlay
     # fields using a null-object pattern: a non-None string value names the PG

@@ -41,7 +41,6 @@ from dynastore.modules.storage.drivers.pg_sidecars.base import (
     SidecarProtocol,
     SidecarConfig,
     FeaturePipelineContext,
-    ValidationResult,
     FieldDefinition,
     FieldCapability,
 )
@@ -110,19 +109,6 @@ def _resolve_external_id_field(context: Dict[str, Any]) -> Optional[str]:
     return cast(Optional[str], getter()) if callable(getter) else None
 
 
-def _resolve_require_external_id(context: Dict[str, Any]) -> bool:
-    """Read "external_id is required" from ``ItemsWritePolicy`` on context.
-
-    Sources from the policy's JSON Schema ``required`` list via
-    :meth:`ItemsWritePolicy.external_id_required`.
-    """
-    policy = context.get("_items_write_policy") if context else None
-    if policy is None:
-        return False
-    getter = getattr(policy, "external_id_required", None)
-    return bool(getter()) if callable(getter) else False
-
-
 class FeatureAttributeSidecar(SidecarProtocol):
     """
     Sidecar for feature attributes and identity.
@@ -131,10 +117,11 @@ class FeatureAttributeSidecar(SidecarProtocol):
     - Identity: external_id, asset_id (optional)
     - Attributes: Relational columns or JSONB document
 
-    Identity field-name binding and require-flag live on
-    ``ItemsWritePolicy`` and reach the sidecar via
-    ``processing_context["_items_write_policy"]`` — see the module-level
-    ``_resolve_external_id_field`` / ``_resolve_require_external_id`` helpers.
+    Identity field-name binding lives on ``ItemsWritePolicy`` and reaches the
+    sidecar via ``processing_context["_items_write_policy"]`` — see the
+    module-level ``_resolve_external_id_field`` helper. A missing external_id
+    that is a declared required field is rejected by the normal required-field
+    check plus NOT NULL columns, not by a sidecar-level guard.
     """
 
     def __init__(
@@ -320,7 +307,7 @@ class FeatureAttributeSidecar(SidecarProtocol):
         Returns JSON Schema for Feature properties contribution.
 
         Auto-derived from this sidecar's ``attribute_schema``; the user-data
-        wire shape SSOT lives on ``ItemsWritePolicy.resolved_schema`` and overlays
+        wire shape is derived from ``ItemsSchema`` (the SSOT) and overlays
         this fragment at the service layer (#976).
         """
         schema: Dict[str, Any] = {}
@@ -2043,43 +2030,6 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                 val = props.get(path)
 
         return val
-
-    def validate_insert(
-        self, feature: Dict[str, Any], context: Dict[str, Any]
-    ) -> ValidationResult:
-        """
-        Processes business rules for feature acceptance.
-
-        Identity field-name and require-flag come from the active
-        ``ItemsWritePolicy`` on the context. With no policy on context
-        (legacy / test paths) the row is accepted — extraction simply
-        won't happen at ``prepare_upsert_payload`` either.
-        """
-        field_path = _resolve_external_id_field(context)
-        if not _resolve_require_external_id(context):
-            return ValidationResult(valid=True)
-
-        if not field_path:
-            return ValidationResult(
-                valid=False,
-                error=(
-                    "ItemsWritePolicy schema marks external_id required but no "
-                    "ComputedField(kind=EXTERNAL_ID, name=…) is configured — "
-                    "nothing to extract"
-                ),
-            )
-
-        external_id = self._extract_value(feature, field_path)
-        if not external_id:
-            logger.warning(
-                "Feature rejected: external_id missing for field '%s'", field_path,
-            )
-            return ValidationResult(
-                valid=False,
-                error=f"Missing required external_id field: '{field_path}'",
-            )
-
-        return ValidationResult(valid=True)
 
     async def expire_version(
         self,

@@ -708,8 +708,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # does not assert (value constraints only — unknown-key and required
         # checks are owned by other write-path mechanisms). The validation
         # schema is derived directly from ``ItemsSchema`` here, mirroring the
-        # read path in ``get_collection_schema``; ``ItemsWritePolicy.resolved_schema``
-        # is derived/read-only and forbidden from being authored.
+        # read path in ``get_collection_schema``; ``ItemsSchema`` is the single
+        # source of truth for the wire shape.
         schema_validator = None
         validation_configs = get_protocol(ConfigsProtocol)
         if validation_configs is not None:
@@ -1664,12 +1664,13 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         """
         Returns the composed JSON Schema for the collection's Feature output.
 
-        The user-data wire shape (``properties``) is sourced from
-        ``ItemsWritePolicy.resolved_schema`` when declared (#976). Sidecars contribute
-        cross-cutting fragments (``geometry``, STAC ``stac_extensions``/
-        ``assets``, item-metadata ``title``/``description``/``keywords``)
-        which are overlaid on the policy's ``properties``. When no policy
-        schema is declared the sidecar aggregation is the sole source.
+        The user-data wire shape (``properties``) is derived from
+        ``ItemsSchema`` — the single source of truth — via ``derive_wire_schema``.
+        Sidecars contribute cross-cutting fragments (``geometry``, STAC
+        ``stac_extensions``/``assets``, item-metadata ``title``/``description``/
+        ``keywords``) which are overlaid on the derived ``properties``. When the
+        collection declares no fields (blob) the sidecar aggregation is the sole
+        source.
         """
         col_config = await self._get_collection_config(
             catalog_id, collection_id, db_resource=db_resource
@@ -1684,18 +1685,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         configs = get_protocol(ConfigsProtocol)
         policy_schema: Optional[Dict[str, Any]] = None
         if configs is not None:
-            try:
-                wp = await configs.get_config(
-                    ItemsWritePolicy,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                )
-            except Exception:
-                wp = None
-            if isinstance(wp, ItemsWritePolicy) and isinstance(wp.resolved_schema, dict) and wp.resolved_schema:
-                policy_schema = wp.resolved_schema
-
-        if policy_schema is None and configs is not None:
             # Derive the wire schema from items_schema (the SSOT). When the
             # collection declares no fields (blob), the sidecar aggregation
             # remains the sole source.
@@ -1718,9 +1707,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         if policy_schema is None:
             return sidecar_schema
 
-        # Overlay: policy.resolved_schema.properties is the SSOT for user data;
+        # Overlay: the derived schema's properties are the SSOT for user data;
         # sidecar contributions (stac_extensions, title, etc.) fill in
-        # any cross-cutting fields the policy doesn't declare.
+        # any cross-cutting fields the schema doesn't declare.
         policy_props = policy_schema.get("properties", {}) if isinstance(policy_schema.get("properties"), dict) else {}
         sidecar_props = sidecar_schema.get("properties", {}) if isinstance(sidecar_schema.get("properties"), dict) else {}
         merged_props = {**sidecar_props, **policy_props}

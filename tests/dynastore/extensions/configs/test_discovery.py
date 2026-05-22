@@ -119,10 +119,12 @@ class TestGetConfigSchema:
         assert "compute" not in props
         assert "derive" in props
         assert "identity" in props
-        # ``schema`` was renamed to ``resolved_schema`` (it shadowed the
-        # inherited Pydantic ``BaseModel.schema``); still derived/read-only.
+        # The derived wire-schema field was dropped (#1164): it was never
+        # populated on the read path and the wire schema is derived from
+        # ``ItemsSchema`` in ``get_collection_schema``. Neither the original
+        # ``schema`` nor the renamed ``resolved_schema`` survives.
         assert "schema" not in props
-        assert "resolved_schema" in props
+        assert "resolved_schema" not in props
 
     @pytest.mark.asyncio
     async def test_items_write_policy_schema_has_on_conflict(self, service):
