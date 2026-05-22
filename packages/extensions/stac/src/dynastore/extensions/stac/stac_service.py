@@ -1237,9 +1237,14 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             stac_config = await self._get_stac_config(
                 search_request.catalog_id, db_resource=conn
             )
-            rows, count, aggregations = await search_items(
-                conn, search_request, stac_config
-            )
+            try:
+                rows, count, aggregations = await search_items(
+                    conn, search_request, stac_config
+                )
+            except ValueError as exc:
+                # Invalid filter (e.g. unknown queryable property) — surface as a
+                # 400 instead of a 500, matching the ``/items`` filter path.
+                raise HTTPException(status_code=400, detail=str(exc))
 
         from dynastore.models.shared_models import OutputFormatEnum
         if f in (OutputFormatEnum.GEOPARQUET, "geoparquet", "parquet"):
