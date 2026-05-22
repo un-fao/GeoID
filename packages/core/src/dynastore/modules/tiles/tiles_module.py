@@ -971,9 +971,18 @@ async def get_tile_resolution_params(
         if isinstance(tiles_config, TilesConfig):
             simplification_by_zoom = tiles_config.simplification_by_zoom or {}
 
-        # 4. Resolve Collection Config (for sidecar-aware queries)
-        col_config = await catalogs.get_collection_config(
-            catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
+        # 4. Resolve the collection config for sidecar-aware MVT queries from
+        # the SAME tile-capable driver resolved above (Hint.TILES → PG). Going
+        # back through catalogs.get_collection_config() would re-resolve the
+        # driver with a bare get_driver(READ) — no tile hint — and for the
+        # common routing shape (READ[0]=Elasticsearch, READ[1]=PostgreSQL+tiles)
+        # that returns the ES driver config, which carries no sidecars. The
+        # storage-agnostic MVT path then finds no geometry sidecar, skips
+        # ST_AsMVTGeom, and ST_AsMVT fails with "no geometry column found".
+        # The driver that renders the tile MUST supply the config it renders
+        # from.
+        col_config = await driver.get_driver_config(
+            catalog_id, collection_id, db_resource=conn
         )
 
         return {

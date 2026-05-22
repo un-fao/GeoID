@@ -103,6 +103,70 @@ async def test_get_tile_resolution_params_routes_with_tiles_hint():
 
 
 @pytest.mark.asyncio
+async def test_tile_resolution_col_config_comes_from_tile_capable_driver():
+    """col_config for MVT must come from the tile-capable (PG) driver itself.
+
+    Regression (#1213): get_tile_resolution_params resolved the PG driver with
+    Hint.TILES for location/SRID, but sourced ``col_config`` via
+    ``catalogs.get_collection_config`` — a bare get_driver(READ) with NO tile
+    hint. For the default routing shape (READ[0]=Elasticsearch,
+    READ[1]=PostgreSQL+tiles) that returns the ES driver config, which has no
+    ``sidecars``. The storage-agnostic MVT path (#1205) then finds no geometry
+    sidecar, skips ST_AsMVTGeom, and ST_AsMVT 500s with "no geometry column
+    found". The config must come from the driver that renders the tile.
+    """
+    tiles_module.get_tile_resolution_params.cache_clear()
+
+    # PG (tile-capable) driver: resolves location AND owns the sidecar-bearing
+    # config the MVT query needs.
+    pg_config = SimpleNamespace(sidecars=["geometries", "attributes"])
+    fake_pg_driver = AsyncMock()
+    fake_pg_driver.location = AsyncMock(
+        return_value=SimpleNamespace(
+            identifiers={"schema": "cat1_data", "table": "col1"}
+        )
+    )
+    fake_pg_driver.get_driver_config = AsyncMock(return_value=pg_config)
+
+    # The hint-less re-resolution path. In prod this returns the ES driver
+    # config (no sidecars); if the code under test calls it, col_config loses
+    # its sidecars and the assertion below fails.
+    es_config = SimpleNamespace(sidecars=[])
+    fake_catalogs = SimpleNamespace(
+        configs=AsyncMock(get_config=AsyncMock(return_value=None),
+                          set_config=AsyncMock(return_value=None)),
+        get_collection_config=AsyncMock(return_value=es_config),
+    )
+
+    get_driver_mock = AsyncMock(return_value=fake_pg_driver)
+
+    fake_driver_ctx = lambda **kw: kw  # noqa: E731 — local stub
+    with (
+        patch.object(tiles_module, "_get_engine", return_value=AsyncMock()),
+        patch("dynastore.modules.tiles.tiles_module.managed_transaction") as mt,
+        patch("dynastore.modules.tiles.tiles_module.get_protocol",
+              return_value=fake_catalogs),
+        patch("dynastore.modules.storage.router.get_driver", new=get_driver_mock),
+        patch.object(tiles_module, "get_collection_source_srid",
+                     new=AsyncMock(return_value=4326)),
+        patch.object(tiles_module, "DriverContext", new=fake_driver_ctx),
+    ):
+        mt.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mt.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        meta = await tiles_module.get_tile_resolution_params("cat1", "col1")
+
+    # col_config must be the tile-capable driver's sidecar-bearing config …
+    assert meta.get("col_config") is pg_config, (
+        "col_config must come from the tile-capable (PG) driver, carrying "
+        f"sidecars; got {meta.get('col_config')!r}"
+    )
+    fake_pg_driver.get_driver_config.assert_awaited_once()
+    # … and the hint-less re-resolution must NOT be used.
+    fake_catalogs.get_collection_config.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_collection_source_srid_routes_with_tiles_hint():
     """get_collection_source_srid must call get_driver with hint=Hint.TILES.
 
