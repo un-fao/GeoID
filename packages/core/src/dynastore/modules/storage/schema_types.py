@@ -165,7 +165,8 @@ class OgcFeaturesSchemaExtension:
         violations: List[SchemaViolation] = []
         for fname, fdef in schema.fields.items():
             dt = getattr(fdef, "data_type", None)
-            if "geom" in fname.lower() and dt and dt.lower() not in {"geometry", "geojson", "point", "polygon", "linestring"}:
+            # Canonical geometry is ``geometry`` or parametrized ``geometry(...)``.
+            if "geom" in fname.lower() and dt and not dt.lower().startswith("geometry"):
                 violations.append(
                     SchemaViolation(
                         extension="OgcFeaturesSchemaExtension",

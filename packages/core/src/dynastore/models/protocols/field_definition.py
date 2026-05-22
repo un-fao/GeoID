@@ -48,8 +48,9 @@ class FieldDefinition(BaseModel):
     capabilities: List[FieldCapability] = []
     # Canonical, GDAL-rooted type vocabulary (see ``dynastore.models.field_types``):
     # string / integer / bigint / double / numeric / boolean / date / time /
-    # timestamp / binary / jsonb / uuid / geometry. Historical aliases (text,
-    # int, float, datetime, json, …) are normalized to canonical on assignment.
+    # timestamp / binary / jsonb / uuid / geometry. Strict: a non-canonical value
+    # raises on assignment — there is no legacy alias layer (text/int/float/… are
+    # rejected, not silently rewritten).
     data_type: str
     # Optional OGR-style refinement of ``data_type`` — boolean / int16 / float32
     # / json / uuid. Carries the gdalinfo subtype so it is not flattened away.

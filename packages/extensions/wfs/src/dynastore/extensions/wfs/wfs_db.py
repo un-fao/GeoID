@@ -31,7 +31,7 @@ from sqlalchemy import (
     DateTime,
     JSON,
 )
-from sqlalchemy.dialects.postgresql import UUID, TSTZRANGE  # Use specific type for UUID
+from sqlalchemy.dialects.postgresql import UUID  # Use specific type for UUID
 from pydantic import create_model, StrictInt, StrictFloat, StrictBool, StrictStr
 from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.modules.db_config import shared_queries
@@ -63,29 +63,30 @@ logger = logging.getLogger(__name__)
 
 
 def _map_protocol_type_to_sqlalchemy(proto_type: str) -> Any:
-    """Maps protocol data types to SQLAlchemy types."""
-    proto_type = proto_type.lower()
-    if proto_type == "geometry":
+    """Map a canonical ``data_type`` (see ``dynastore.models.field_types``) to a
+    SQLAlchemy type for WFS DescribeFeatureType / GML XSD generation.
+
+    Inputs are the canonical vocabulary only — there is no legacy alias layer.
+    ``date``/``time``/``timestamp`` all surface as ``xs:dateTime`` (GML has no
+    finer split here); ``binary`` surfaces as text (base64 in the GML body).
+    """
+    pt = (proto_type or "").lower()
+    if pt.startswith("geometry"):
         return Geometry
-    if proto_type in ("text", "varchar", "string"):
-        return String
-    if proto_type in ("integer", "int", "bigint", "smallint"):
-        return Integer
-    if proto_type in ("float", "double", "numeric", "double precision", "real"):
-        return Float
-    if proto_type == "boolean":
-        return Boolean
-    if proto_type in ("datetime", "timestamp", "timestamptz"):
-        return DateTime
-    if proto_type == "uuid":
-        return UUID
-    if proto_type == "date":
-        return DateTime
-    if proto_type == "jsonb":
-        return JSON
-    if proto_type == "tstzrange":
-        return TSTZRANGE
-    return String  # Fallback
+    return {
+        "string": String,
+        "uuid": UUID,
+        "integer": Integer,
+        "bigint": Integer,
+        "double": Float,
+        "numeric": Float,
+        "boolean": Boolean,
+        "date": DateTime,
+        "time": DateTime,
+        "timestamp": DateTime,
+        "binary": String,
+        "jsonb": JSON,
+    }.get(pt, String)  # Fallback
 
 
 # 1. New query to get both column name and data type

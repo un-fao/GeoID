@@ -44,12 +44,12 @@ if TYPE_CHECKING:
 
 
 # Canonical ``data_type`` (see ``dynastore.models.field_types``) -> PG type name.
-# Keyed on canonical tokens only; the lookup normalizes its input first, so
-# historical aliases (text/int/float/datetime/json/…) resolve here too. The
-# (type, subtype) refinement is intentionally not used yet — Boolean/JSON/UUID
-# subtypes already promote their base type to boolean/jsonb/uuid upstream, and
-# Int16/Float32 stay INTEGER/FLOAT (a safe widening) until subtype-aware
-# narrowing (SMALLINT/REAL) is wired.
+# Keyed on canonical tokens only; inputs are already canonical (validated on
+# FieldDefinition), and the lookup defaults to TEXT for any value that bypassed
+# validation rather than raising mid-DDL. The (type, subtype) refinement is
+# intentionally not used yet — Boolean/JSON/UUID subtypes already promote their
+# base type to boolean/jsonb/uuid upstream, and Int16/Float32 stay INTEGER/FLOAT
+# (a safe widening) until subtype-aware narrowing (SMALLINT/REAL) is wired.
 _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
     "string": "TEXT",
     "integer": "INTEGER",
