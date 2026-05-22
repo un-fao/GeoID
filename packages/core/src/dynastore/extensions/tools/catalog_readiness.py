@@ -35,6 +35,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 
 from dynastore.models.protocols import CatalogsProtocol
+from dynastore.tools.db import InvalidIdentifierError, validate_sql_identifier
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,20 @@ async def require_catalog_ready(
 
     Raises:
 
+    - ``HTTPException(400)``  — ``catalog_id`` is malformed, e.g. it still
+      carries an unsubstituted ``{{...}}`` template placeholder (issue #1191).
+      Caught here so the request fails fast with an actionable message instead
+      of flowing through to the routing resolver as an opaque lookup miss.
     - ``HTTPException(404)``  — catalog doesn't exist
     - ``HTTPException(409)``  — provisioning still in flight
       (``'provisioning'``) or terminally failed (``'failed'``).  The
       detail explains which and points at the recovery path.
     """
+    try:
+        validate_sql_identifier(catalog_id)
+    except InvalidIdentifierError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     svc = catalogs_svc if catalogs_svc is not None else get_protocol(CatalogsProtocol)
     if svc is None:
         # No CatalogsProtocol implementor — the service can't enforce
