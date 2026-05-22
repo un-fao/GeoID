@@ -66,12 +66,12 @@ class ItemIntrospectionProtocol(Protocol):
         """
         Return the composed JSON Schema for the collection's Feature output.
 
-        User-data ``properties`` are sourced from ``ItemsWritePolicy.resolved_schema``
-        when declared (#976); sidecars contribute cross-cutting fragments
-        (``geometry``, STAC ``stac_extensions``/``assets``, item-metadata
-        ``title``/``description``/``keywords``) which are overlaid on the
-        policy's ``properties``. Falls back to pure sidecar aggregation when
-        no policy schema is declared.
+        User-data ``properties`` are derived from ``ItemsSchema`` (the single
+        source of truth) at read time; sidecars contribute cross-cutting
+        fragments (``geometry``, STAC ``stac_extensions``/``assets``,
+        item-metadata ``title``/``description``/``keywords``) which are overlaid
+        on the derived ``properties``. Falls back to pure sidecar aggregation
+        when the collection declares no fields.
         """
         ...
 

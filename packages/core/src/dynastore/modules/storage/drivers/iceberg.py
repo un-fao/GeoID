@@ -488,12 +488,6 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
         ext_id_path = policy.external_id_path()
         for row in rows:
             ext_id = self._extract_external_id(row, ext_id_path)
-            if policy.external_id_required() and not ext_id:
-                logger.warning(
-                    "Iceberg write_entities: external_id required but missing — skipped"
-                )
-                rows = [r for r in rows if self._extract_external_id(r, ext_id_path)]
-                break
             if ext_id:
                 row["_external_id"] = ext_id
             if asset_id is not None:

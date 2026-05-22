@@ -8,11 +8,11 @@
 
 """Write-time value-constraint validation derived from ``ItemsSchema``.
 
-At rest, ``ItemsWritePolicy.resolved_schema`` is derived/read-only and forbidden from
-being authored (``_forbid_authored_wire_schema``), so it is always ``None``.
-The write path therefore derives its value-constraint validator directly from
+The write path derives its value-constraint validator directly from
 ``ItemsSchema`` — the single source of truth — mirroring the read path in
-``ItemService.get_collection_schema``.
+``ItemService.get_collection_schema``. The wire schema is never carried on
+``ItemsWritePolicy`` (the inert ``resolved_schema`` projection was removed in
+#1164).
 
 These tests pin the two pure helpers that the ``ItemService.upsert`` write
 region uses (``_build_write_validator`` + ``_validate_feature_properties``) so
@@ -203,3 +203,30 @@ def test_missing_required_passes_value_validator_but_is_caught_by_required_check
     with pytest.raises(Exception) as exc:
         check_required(schema.fields, [feature])
     assert "name" in str(exc.value)
+
+
+def test_required_external_id_missing_or_empty_is_rejected_by_required_check() -> None:
+    """Behavior preserved after #1164 removed the inert ``external_id_required``
+    guard: an external_id that is a declared required field, when missing OR an
+    empty string, is still rejected via the normal ``check_required`` path
+    (which treats ``""`` as missing). This is the case the old guard claimed to
+    own — ``check_required`` plus NOT NULL columns already cover it.
+    """
+    schema = ItemsSchema(
+        fields={
+            "code": FieldDefinition(name="code", data_type="text", required=True),
+        }
+    )
+
+    # Missing entirely.
+    with pytest.raises(Exception) as missing_exc:
+        check_required(schema.fields, [{"properties": {}}])
+    assert "code" in str(missing_exc.value)
+
+    # Present but empty string — must also be rejected.
+    with pytest.raises(Exception) as empty_exc:
+        check_required(schema.fields, [{"properties": {"code": ""}}])
+    assert "code" in str(empty_exc.value)
+
+    # A real value passes.
+    check_required(schema.fields, [{"properties": {"code": "TG0309"}}])

@@ -1,5 +1,5 @@
-"""Phase 1–3 feature-config skeleton: compute presets, derived/forbidden wire
-schema, and expose cross-validation."""
+"""Phase 1–3 feature-config skeleton: compute presets and expose
+cross-validation."""
 
 import asyncio
 
@@ -15,7 +15,6 @@ from dynastore.modules.storage.computed_fields import (
 from dynastore.modules.storage.driver_config import (
     ItemsSchema,
     ItemsWritePolicy,
-    _forbid_authored_wire_schema,
 )
 from dynastore.modules.storage.read_policy import (
     ItemsReadPolicy,
@@ -39,16 +38,6 @@ class TestComputePresetValidator:
     def test_unknown_preset_rejected(self) -> None:
         with pytest.raises(ValueError, match="unknown compute preset"):
             ItemsWritePolicy(derive="not_a_preset")
-
-
-class TestForbidAuthoredWireSchema:
-    def test_raises_when_authored(self) -> None:
-        wp = ItemsWritePolicy(resolved_schema={"type": "object"})
-        with pytest.raises(ValueError, match="derived"):
-            asyncio.run(_forbid_authored_wire_schema(wp, "cat", "col", None))
-
-    def test_passes_when_none(self) -> None:
-        asyncio.run(_forbid_authored_wire_schema(ItemsWritePolicy(), "cat", "col", None))
 
 
 def _fake_configs(wp: ItemsWritePolicy, schema: ItemsSchema):

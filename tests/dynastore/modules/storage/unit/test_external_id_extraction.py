@@ -5,21 +5,20 @@ attribute (e.g. ``ADM2_PCODE``) the extracted ``external_id`` was empty in DB,
 because ``_extract_value`` only fell back to ``properties`` when the path
 literally contained ``id`` or ``asset_id``. GDAL features arrive as
 ``{"properties": {...}, "geometry": ...}`` so the lookup at the root layer
-missed every user-defined field, and ``require_external_id`` silently passed
-because ``"" is None`` is false.
+missed every user-defined field.
 
-Phase 2 of #957/#950: ``external_id_field`` / ``require_external_id`` were
-folded into :attr:`ItemsWritePolicy.compute` (a ComputedField of kind
-EXTERNAL_ID whose ``name`` is the source path) and the JSON Schema's
-``required`` list respectively. The sidecar still receives the policy on
-``context["_items_write_policy"]``; only the surface shape changed.
+The ``external_id_field`` knob was folded into
+:attr:`ItemsWritePolicy.derive` (a ComputedField of kind EXTERNAL_ID whose
+``name`` is the source path). The sidecar still receives the policy on
+``context["_items_write_policy"]``; this module covers the still-live
+``_extract_value`` resolution. The separate require-external-id guard layer
+was removed in #1164 (it never fired in production — the wire schema's
+``required`` list was never populated on the policy); a missing/empty
+external_id that is a declared required field is now rejected by the normal
+required-field check plus NOT NULL columns.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-
-from dynastore.modules.storage import DeriveSpec
-from dynastore.modules.storage.driver_config import ItemsWritePolicy
 from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
     FeatureAttributeSidecar,
 )
@@ -30,36 +29,6 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
 
 def _sidecar() -> FeatureAttributeSidecar:
     return FeatureAttributeSidecar(FeatureAttributeSidecarConfig())
-
-
-def _ctx(
-    *,
-    external_id_field: Optional[str] = None,
-    require_external_id: bool = False,
-) -> dict:
-    """Build a sidecar context with a phase-2 ItemsWritePolicy.
-
-    ``external_id_field`` becomes ``DeriveSpec(external_id=path)``;
-    ``require_external_id`` is expressed via the JSON Schema's ``required``
-    list keyed on the leaf segment of the path.
-    """
-    kwargs: Dict[str, Any] = {}
-    if external_id_field is not None:
-        kwargs["derive"] = DeriveSpec(external_id=external_id_field)
-    if require_external_id and external_id_field is not None:
-        leaf = external_id_field.split(".")[-1]
-        kwargs["resolved_schema"] = {
-            "type": "object",
-            "required": [leaf],
-            "properties": {leaf: {"type": "string"}},
-        }
-    elif require_external_id:
-        # Path missing — still flag required so the validator sees the
-        # "required but no path" combination.
-        kwargs["resolved_schema"] = {"type": "object", "required": ["external_id"]}
-        kwargs["derive"] = DeriveSpec(external_id="external_id")
-    policy = ItemsWritePolicy(**kwargs)
-    return {"_items_write_policy": policy}
 
 
 class TestExtractValuePropertiesFallback:
@@ -102,59 +71,3 @@ class TestExtractValuePropertiesFallback:
     def test_no_properties_bag_returns_none(self):
         sidecar = _sidecar()
         assert sidecar._extract_value({"geometry": None}, "ADM2_PCODE") is None
-
-
-class TestValidateInsertReadsPolicyFromContext:
-    """The sidecar's `validate_insert` MUST consult the `ItemsWritePolicy`
-    on context, not any sidecar-config field. This is the contract that
-    fixes #488 — operator PUTs `items_write_policy.{external_id_field,
-    require_external_id}` and those values reach validation."""
-
-    def test_no_policy_accepts(self):
-        sidecar = _sidecar()
-        result = sidecar.validate_insert({"properties": {}}, context={})
-        assert result.valid is True
-
-    def test_policy_without_require_accepts_empty(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field="ADM2_PCODE", require_external_id=False)
-        result = sidecar.validate_insert({"properties": {}}, context=ctx)
-        assert result.valid is True
-
-    def test_rejects_when_extraction_yields_none(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field="ADM2_PCODE", require_external_id=True)
-        result = sidecar.validate_insert({"properties": {}}, context=ctx)
-        assert result.valid is False
-
-    def test_rejects_when_extraction_yields_empty_string(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field="ADM2_PCODE", require_external_id=True)
-        result = sidecar.validate_insert(
-            {"properties": {"ADM2_PCODE": ""}}, context=ctx
-        )
-        assert result.valid is False
-
-    def test_accepts_when_field_resolves_via_properties(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field="ADM2_PCODE", require_external_id=True)
-        result = sidecar.validate_insert(
-            {"properties": {"ADM2_PCODE": "TG0309"}}, context=ctx
-        )
-        assert result.valid is True
-
-    def test_accepts_when_field_resolves_top_level(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field="my_key", require_external_id=True)
-        result = sidecar.validate_insert(
-            {"my_key": "K1", "properties": {}}, context=ctx
-        )
-        assert result.valid is True
-
-    def test_require_without_field_path_rejects(self):
-        sidecar = _sidecar()
-        ctx = _ctx(external_id_field=None, require_external_id=True)
-        result = sidecar.validate_insert(
-            {"properties": {"ADM2_PCODE": "TG0309"}}, context=ctx
-        )
-        assert result.valid is False

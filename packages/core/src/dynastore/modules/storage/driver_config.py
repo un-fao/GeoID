@@ -323,14 +323,9 @@ class ItemsWritePolicy(PluginConfig):
             ItemsWritePolicy, catalog_id=catalog_id, collection_id=collection_id
         )
 
-    Four irreducible concerns, plus three posture flags. See
+    Three irreducible concerns, plus three posture flags. See
     ``docs/architecture/items-policy-consolidation-957-950.md``:
 
-    - :attr:`resolved_schema` — DERIVED, read-only wire JSON-Schema for ``properties``,
-      built from ``items_schema`` at read time (see ``get_collection_schema``)
-      and surfaced for the OpenAPI body schema and admin-UI form. Authoring a
-      non-null value is rejected at config-save; ``items_schema`` is the single
-      source of truth for field types/constraints.
     - :attr:`derive` — the per-row derivations grouped into homogeneous
       buckets (:class:`DeriveSpec`): ``external_id`` (a dotted source path),
       ``content_hashes``, ``spatial_cells``, ``geometry_stats`` and
@@ -343,6 +338,13 @@ class ItemsWritePolicy(PluginConfig):
     - :attr:`geometries` — per-row geometry transform / validation block
       (SRID, fix, simplify, allow-list, geometry-hash version gate). Runs
       before the :attr:`derive` derivations.
+
+    The wire JSON-Schema for feature ``properties`` is NOT carried on this
+    policy. It is derived from ``ItemsSchema`` at read time inside
+    ``ItemService.get_collection_schema`` (via ``derive_wire_schema``);
+    ``items_schema`` is the single source of truth for field
+    types/constraints, and required-ness is enforced on the write path by the
+    normal required-field check plus NOT NULL columns.
 
     Posture flags: :attr:`on_conflict`, :attr:`on_asset_conflict`,
     :attr:`validity` (null-object :class:`ValiditySpec`; :attr:`enable_validity`
@@ -436,21 +438,6 @@ class ItemsWritePolicy(PluginConfig):
             "``refuse_asset`` rejects the entire asset batch if any single "
             "entity conflicts — useful for re-upload idempotency where partial "
             "overlap should fail the whole asset."
-        ),
-    )
-    resolved_schema: Computed[Optional[Dict[str, Any]]] = Field(
-        default=None,
-        description=(
-            "DERIVED, read-only. The wire JSON-Schema (Draft 2020-12) for "
-            "feature ``properties`` is derived from ``items_schema`` at read "
-            "time (see ``get_collection_schema``) and surfaced here. ``Computed`` "
-            "marks it read-only on the wire AND opts it into the config-write "
-            "strip (``restore_system_assigned_fields``), so any caller value on "
-            "the external path is discarded; the ``_forbid_authored_wire_schema`` "
-            "validate handler additionally rejects an authored value as "
-            "defense-in-depth. ``items_schema`` is the single source of truth for "
-            "field types/constraints, and ``strict_unknown_fields`` drives "
-            "``additionalProperties: false``."
         ),
     )
     derive: Immutable[DeriveSpec] = Field(
@@ -690,20 +677,6 @@ class ItemsWritePolicy(PluginConfig):
         # ``name`` on EXTERNAL_ID is the source path (no leading "properties."
         # collapse — that's resolved at extraction time).
         return cf.name or None
-
-    def external_id_required(self) -> bool:
-        """True iff the JSON Schema declares the external-id property required.
-
-        Reads the leaf segment of :meth:`external_id_path` and checks the
-        top-level ``required`` list on :attr:`resolved_schema`. With no schema
-        or no external_id_path, this returns False.
-        """
-        path = self.external_id_path()
-        if not path or not isinstance(self.resolved_schema, dict):
-            return False
-        leaf = path.split(".")[-1]
-        required = self.resolved_schema.get("required") or []
-        return leaf in required
 
 
 # ---------------------------------------------------------------------------
@@ -1407,31 +1380,6 @@ async def _validate_write_policy(
 
 
 ItemsWritePolicy.register_validate_handler(_validate_write_policy)
-
-
-async def _forbid_authored_wire_schema(
-    config: PluginConfig,
-    catalog_id: "Optional[str]",
-    collection_id: "Optional[str]",
-    db_resource: "Optional[Any]",
-) -> None:
-    """Reject an authored ``ItemsWritePolicy.resolved_schema``.
-
-    The wire JSON-Schema is derived from ``ItemsSchema`` at read time
-    (see ``ItemService.get_collection_schema``); it must never be authored
-    or stored. ``items_schema`` is the single source of truth.
-    """
-    if not isinstance(config, ItemsWritePolicy):
-        return
-    if config.resolved_schema is not None:
-        raise ValueError(
-            "ItemsWritePolicy.resolved_schema is derived from the items schema and must "
-            "not be authored; remove this field "
-            f"({catalog_id or '-'}/{collection_id or '-'})."
-        )
-
-
-ItemsWritePolicy.register_validate_handler(_forbid_authored_wire_schema)
 
 
 # ---------------------------------------------------------------------------

@@ -480,12 +480,6 @@ class ItemsElasticsearchDriver(
 
             # Resolve external_id from the configured ComputedField path.
             external_id = self._extract_external_id_from_doc(stac_doc, policy.external_id_path())
-            if policy.external_id_required() and not external_id:
-                logger.warning(
-                    "ES write_entities: external_id required but missing for item in %s/%s — skipped",
-                    catalog_id, collection_id,
-                )
-                continue
 
             # Attach tracking fields to ES document _source.
             if asset_id is not None:

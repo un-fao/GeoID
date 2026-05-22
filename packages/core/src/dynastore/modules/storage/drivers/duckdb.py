@@ -476,11 +476,6 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                             ctx.get("external_id_override")
                             or self._extract_external_id(row, ext_id_path)
                         )
-                        if policy.external_id_required() and not ext_id:
-                            raise ValueError(
-                                f"DuckDB write_entities: external_id required but missing "
-                                f"(field='{ext_id_path}')"
-                            )
 
                         on_conflict = policy.on_conflict
                         if on_conflict == WriteConflictPolicy.REFUSE and ext_id:
