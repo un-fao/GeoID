@@ -47,7 +47,7 @@ async def test_post_item_rejects_unknown_field_with_422(
 
     schema_body = {
         "fields": {
-            "road_id": {"name": "road_id", "data_type": "text"},
+            "road_id": {"name": "road_id", "data_type": "string"},
             "lanes": {"name": "lanes", "data_type": "integer"},
         },
         "strict_unknown_fields": True,

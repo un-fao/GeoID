@@ -43,26 +43,73 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import ItemsSchema
 
 
+# Canonical ``data_type`` (see ``dynastore.models.field_types``) -> PG type name.
+# Keyed on canonical tokens only; inputs are already canonical (validated on
+# FieldDefinition), and the lookup defaults to TEXT for any value that bypassed
+# validation rather than raising mid-DDL. The (type, subtype) refinement is
+# intentionally not used yet — Boolean/JSON/UUID subtypes already promote their
+# base type to boolean/jsonb/uuid upstream, and Int16/Float32 stay INTEGER/FLOAT
+# (a safe widening) until subtype-aware narrowing (SMALLINT/REAL) is wired.
 _DATA_TYPE_TO_PG_NAME: Dict[str, str] = {
-    "text": "TEXT",
     "string": "TEXT",
-    "varchar": "VARCHAR(255)",
     "integer": "INTEGER",
-    "int": "INTEGER",
     "bigint": "BIGINT",
-    "float": "FLOAT",
-    "double": "FLOAT",
+    "double": "FLOAT",       # PG FLOAT == float8 == double precision
     "numeric": "NUMERIC",
-    "decimal": "NUMERIC",
     "boolean": "BOOLEAN",
-    "bool": "BOOLEAN",
-    "timestamp": "TIMESTAMPTZ",
-    "timestamptz": "TIMESTAMPTZ",
     "date": "DATE",
+    "time": "TIME",
+    "timestamp": "TIMESTAMPTZ",
+    "binary": "BYTEA",
     "jsonb": "JSONB",
-    "json": "JSONB",
     "uuid": "UUID",
 }
+
+
+def pg_native_to_canonical(pg_type: str) -> str:
+    """Map a PostgreSQL native type name to the canonical ``data_type``.
+
+    Accepts both ``PostgresType`` enum values (``TEXT``, ``TIMESTAMPTZ``,
+    ``VARCHAR(255)``, ``BYTEA`` …) and ``information_schema`` spellings
+    (``character varying``, ``timestamp with time zone``, ``double precision``,
+    ``USER-DEFINED`` …). This is the PG driver's own native → canonical map; the
+    canonical → native direction lives in ``_DATA_TYPE_TO_PG_NAME``. There is no
+    canonical range type, so ``*range`` collapses to ``timestamp`` (the precise
+    bounds are exposed separately as start/end fields); arrays collapse to
+    ``jsonb`` (consistent with OGR list types).
+    """
+    t = (pg_type or "").strip().lower()
+    if not t:
+        return "string"
+    if "geometry" in t or "geography" in t or t == "user-defined":
+        return "geometry"
+    if "range" in t:               # tstzrange / tsrange / daterange
+        return "timestamp"
+    if "timestamp" in t:
+        return "timestamp"
+    if t.startswith("date"):
+        return "date"
+    if t.startswith("time"):       # time / time with time zone
+        return "time"
+    if "bigint" in t or t in ("int8", "bigserial"):
+        return "bigint"
+    if t == "int" or any(k in t for k in ("smallint", "integer", "int4", "int2", "serial", "tinyint")):
+        return "integer"
+    if any(k in t for k in ("double", "real", "float")):
+        return "double"
+    if "numeric" in t or "decimal" in t:
+        return "numeric"
+    if "bool" in t:
+        return "boolean"
+    if "uuid" in t:
+        return "uuid"
+    if "json" in t:
+        return "jsonb"
+    if "bytea" in t or "binary" in t:
+        return "binary"
+    if "array" in t or t.endswith("[]"):
+        return "jsonb"
+    return "string"
 
 
 def bridge_schema_to_attribute_sidecar(
@@ -158,8 +205,11 @@ def bridge_schema_to_attribute_sidecar(
             has_column_cap = bool(set(fd.capabilities or []) & _COLUMN_CAPS)
             if not (materialize_all or has_column_cap):
                 continue  # Rule 4 — no trigger; field stays in JSONB
+        # ``data_type`` is already canonical (validated on FieldDefinition);
+        # tolerant lookup so a bypassed/unknown value degrades to TEXT rather
+        # than raising deep in DDL generation.
         pg_name = _DATA_TYPE_TO_PG_NAME.get(
-            (fd.data_type or "text").lower(), "TEXT"
+            (fd.data_type or "").lower(), "TEXT"
         )
         try:
             pg_type = PostgresType(pg_name)

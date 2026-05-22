@@ -53,7 +53,7 @@ class TestExposeValidation:
 
     def test_rejects_unknown_name(self, monkeypatch) -> None:
         wp = ItemsWritePolicy(derive=DeriveSpec(geometry_stats=[GeometryStat(stat=ComputedKind.AREA)]))
-        schema = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="text")})
+        schema = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="string")})
         monkeypatch.setattr(
             "dynastore.tools.discovery.get_protocol",
             lambda _p: _fake_configs(wp, schema),
@@ -64,7 +64,7 @@ class TestExposeValidation:
 
     def test_accepts_computed_and_declared(self, monkeypatch) -> None:
         wp = ItemsWritePolicy(derive=DeriveSpec(geometry_stats=[GeometryStat(stat=ComputedKind.AREA)]))
-        schema = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="text")})
+        schema = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="string")})
         monkeypatch.setattr(
             "dynastore.tools.discovery.get_protocol",
             lambda _p: _fake_configs(wp, schema),

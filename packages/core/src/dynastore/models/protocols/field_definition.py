@@ -14,8 +14,9 @@ use it to build OGC/STAC responses.
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from dynastore.models.field_types import canonical_data_type, normalize_subtype
 from dynastore.models.localization import LocalizedText
 
 
@@ -45,7 +46,15 @@ class FieldDefinition(BaseModel):
     title: Optional[Union[str, Dict[str, str], LocalizedText]] = None
     description: Optional[Union[str, Dict[str, str], LocalizedText]] = None
     capabilities: List[FieldCapability] = []
-    data_type: str  # "geometry", "text", "integer", "jsonb", "float", "boolean", "timestamp", etc.
+    # Canonical, GDAL-rooted type vocabulary (see ``dynastore.models.field_types``):
+    # string / integer / bigint / double / numeric / boolean / date / time /
+    # timestamp / binary / jsonb / uuid / geometry. Strict: a non-canonical value
+    # raises on assignment — there is no legacy alias layer (text/int/float/… are
+    # rejected, not silently rewritten).
+    data_type: str
+    # Optional OGR-style refinement of ``data_type`` — boolean / int16 / float32
+    # / json / uuid. Carries the gdalinfo subtype so it is not flattened away.
+    subtype: Optional[str] = None
     sql_expression: str = ""  # Driver-specific SQL expression for the field (e.g. "h.geom", "a.asset_id").
     expose: bool = True  # Whether to expose in public APIs (OGC, STAC)
     required: bool = False  # Reject feature if value is null/missing
@@ -60,6 +69,19 @@ class FieldDefinition(BaseModel):
     format: Optional[str] = None
     # None = driver decides from capabilities; True = force a native column; False = force JSONB.
     materialize: Optional[bool] = None
+
+    @field_validator("data_type")
+    @classmethod
+    def _validate_data_type(cls, v: str) -> str:
+        # Strict canonical vocabulary — every FieldDefinition, regardless of
+        # which driver/reader built it, holds the same token for a given logical
+        # type. Non-canonical values raise (no legacy alias fallback).
+        return canonical_data_type(v)
+
+    @field_validator("subtype")
+    @classmethod
+    def _normalize_subtype(cls, v: Optional[str]) -> Optional[str]:
+        return normalize_subtype(v)
 
     def supports_aggregation(self, agg_func: str) -> bool:
         if self.aggregations is None or "*" in (self.aggregations or []):

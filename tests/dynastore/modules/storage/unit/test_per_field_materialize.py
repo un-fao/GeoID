@@ -32,7 +32,7 @@ from dynastore.modules.storage.field_constraints import bridge_schema_to_attribu
 
 def _fd(
     *,
-    data_type: str = "text",
+    data_type: str = "string",
     required: bool = False,
     unique: bool = False,
     materialize: bool | None = None,

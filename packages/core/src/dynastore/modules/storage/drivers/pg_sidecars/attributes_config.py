@@ -59,6 +59,8 @@ class PostgresType(str, Enum):
     BOOLEAN = "BOOLEAN"
     TIMESTAMPTZ = "TIMESTAMPTZ"
     DATE = "DATE"
+    TIME = "TIME"
+    BYTEA = "BYTEA"
     JSONB = "JSONB"
     UUID = "UUID"
 

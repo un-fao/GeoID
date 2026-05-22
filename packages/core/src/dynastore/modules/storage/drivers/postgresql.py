@@ -849,6 +849,10 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         )
         from dynastore.modules.db_config import shared_queries
         from dynastore.models.protocols.field_definition import FieldDefinition as ProtocolFieldDefinition
+        # Single source of truth for PG-native -> canonical data_type; handles
+        # information_schema spellings (``character varying``, ``USER-DEFINED``,
+        # ``ARRAY`` …). No separate per-driver map (see #1216).
+        from dynastore.modules.storage.field_constraints import pg_native_to_canonical
 
         schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
         table = await self.resolve_physical_table(
@@ -856,21 +860,6 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         )
         if not table:
             return []
-
-        # Map PG types to driver-agnostic type strings
-        pg_type_map = {
-            "integer": "integer", "bigint": "integer", "smallint": "integer",
-            "numeric": "numeric", "real": "numeric", "double precision": "numeric",
-            "boolean": "boolean",
-            "character varying": "string", "text": "string", "character": "string",
-            "uuid": "string", "varchar": "string",
-            "timestamp with time zone": "datetime", "timestamp without time zone": "datetime",
-            "date": "datetime", "time with time zone": "datetime",
-            "tstzrange": "datetime",
-            "jsonb": "json", "json": "json",
-            "ARRAY": "array",
-            "USER-DEFINED": "geometry",
-        }
 
         query_sql = """
             SELECT column_name, data_type, udt_name
@@ -905,10 +894,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                 col_name = row["column_name"]
                 if col_name in internal_cols:
                     continue
-                data_type = row.get("data_type", "unknown")
-                mapped = pg_type_map.get(data_type, "unknown")
-                if mapped == "geometry":
-                    mapped = "geometry"
+                mapped = pg_native_to_canonical(row.get("data_type", ""))
                 fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
 
             # Add sidecar attribute fields if available
@@ -925,8 +911,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
                         col_name = row["column_name"]
                         if col_name in internal_cols or col_name == "attributes":
                             continue
-                        data_type = row.get("data_type", "unknown")
-                        mapped = pg_type_map.get(data_type, "unknown")
+                        mapped = pg_native_to_canonical(row.get("data_type", ""))
                         fields.append(ProtocolFieldDefinition(name=col_name, data_type=mapped))
 
                     # Also extract keys from JSONB attributes column via sample

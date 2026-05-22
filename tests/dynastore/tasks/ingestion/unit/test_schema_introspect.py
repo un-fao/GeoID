@@ -1,6 +1,6 @@
 """Tests for ``extract_ogr_schema`` — derives a ItemsSchema from a vector source.
 
-Covers the OGR-type → ItemsSchema-data_type mapping, layer
+Covers the OGR-type → canonical-data_type mapping (incl. OGR subtypes), layer
 selection, the always-present geometry field, and error handling.
 Mocks ``gdal.OpenEx`` + the OGR layer/field-defn objects so the tests
 don't need actual GDAL files.
@@ -15,20 +15,24 @@ import pytest
 
 pytest.importorskip("osgeo")  # whole module is gated on libgdal availability
 
-from dynastore.tasks.ingestion.schema_introspect import (
+from osgeo import ogr  # noqa: E402
+
+from dynastore.tasks.ingestion.schema_introspect import (  # noqa: E402
     _map_ogr_type,
     extract_ogr_schema,
 )
 
 
-def _mock_field_defn(name: str, ogr_type_name: str) -> MagicMock:
+def _mock_field_defn(
+    name: str, ogr_type_name: str, subtype: int = ogr.OFSTNone,
+) -> MagicMock:
     fd = MagicMock()
     fd.GetName.return_value = name
     # Carry the type name on GetType() so the GetFieldTypeName patch below
     # can be a stable identity lambda — avoids brittle call-count math when
-    # extract_ogr_schema invokes GetFieldTypeName more than once per field
-    # (it currently does: once for type mapping, once for the description).
+    # extract_ogr_schema invokes GetFieldTypeName more than once per field.
     fd.GetType.return_value = ogr_type_name
+    fd.GetSubType.return_value = subtype
     return fd
 
 
@@ -59,28 +63,29 @@ def _mock_dataset(layers: list[MagicMock]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _map_ogr_type — covers every entry in the mapping table
+# _map_ogr_type — covers every base OGR type (canonical, no subtype)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "ogr_type_name, expected",
     [
-        ("Integer",    "integer"),
-        ("Integer64",  "bigint"),
-        ("Real",       "float"),
-        ("String",     "text"),
-        ("Date",       "date"),
-        ("Time",       "text"),
-        ("DateTime",   "timestamp"),
-        ("Binary",     "text"),
-        ("IntegerList",   "jsonb"),
-        ("Integer64List", "jsonb"),
-        ("RealList",      "jsonb"),
-        ("StringList",    "jsonb"),
+        ("Integer",       ("integer", None)),
+        ("Integer64",     ("bigint", None)),
+        ("Real",          ("double", None)),
+        ("String",        ("string", None)),
+        ("Date",          ("date", None)),
+        ("Time",          ("time", None)),
+        ("DateTime",      ("timestamp", None)),
+        ("Binary",        ("binary", None)),
+        ("IntegerList",   ("jsonb", None)),
+        ("Integer64List", ("jsonb", None)),
+        ("RealList",      ("jsonb", None)),
+        ("StringList",    ("jsonb", None)),
     ],
 )
-def test_ogr_type_mapping(ogr_type_name: str, expected: str) -> None:
+def test_ogr_type_mapping(ogr_type_name: str, expected: tuple) -> None:
     fd = MagicMock()
+    fd.GetSubType.return_value = ogr.OFSTNone
     with patch(
         "dynastore.tasks.ingestion.schema_introspect.ogr.GetFieldTypeName",
         return_value=ogr_type_name,
@@ -88,15 +93,42 @@ def test_ogr_type_mapping(ogr_type_name: str, expected: str) -> None:
         assert _map_ogr_type(fd) == expected
 
 
-def test_unknown_ogr_type_falls_back_to_text() -> None:
-    """An OGR type the table doesn't know defaults to ``text``
+# ---------------------------------------------------------------------------
+# _map_ogr_type — OGR subtypes (Boolean/JSON/UUID promote the base type;
+# Int16/Float32 keep their base but record the subtype)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "ogr_type_name, ogr_subtype, expected",
+    [
+        ("Integer", ogr.OFSTBoolean, ("boolean", "boolean")),
+        ("Integer", ogr.OFSTInt16,   ("integer", "int16")),
+        ("Real",    ogr.OFSTFloat32, ("double", "float32")),
+        ("String",  ogr.OFSTJSON,    ("jsonb", "json")),
+        ("String",  ogr.OFSTUUID,    ("uuid", "uuid")),
+    ],
+)
+def test_ogr_subtype_mapping(ogr_type_name, ogr_subtype, expected) -> None:
+    fd = MagicMock()
+    fd.GetSubType.return_value = ogr_subtype
+    with patch(
+        "dynastore.tasks.ingestion.schema_introspect.ogr.GetFieldTypeName",
+        return_value=ogr_type_name,
+    ):
+        # uses the real ogr.GetFieldSubTypeName for the subtype label
+        assert _map_ogr_type(fd) == expected
+
+
+def test_unknown_ogr_type_falls_back_to_string() -> None:
+    """An OGR type the table doesn't know defaults to ``string``
     (safe choice — every backend can store text)."""
     fd = MagicMock()
+    fd.GetSubType.return_value = ogr.OFSTNone
     with patch(
         "dynastore.tasks.ingestion.schema_introspect.ogr.GetFieldTypeName",
         return_value="SomeNewOGRType",
     ):
-        assert _map_ogr_type(fd) == "text"
+        assert _map_ogr_type(fd) == ("string", None)
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +153,27 @@ def test_extract_schema_yields_geometry_first_then_fields() -> None:
 
     assert list(out.keys()) == ["geometry", "road_id", "lanes"]
     assert out["geometry"].data_type == "geometry"
-    assert out["road_id"].data_type == "text"
+    assert out["road_id"].data_type == "string"
     assert out["lanes"].data_type == "integer"
+
+
+def test_extract_schema_records_subtype() -> None:
+    layer = _mock_layer([("is_paved", "Integer")])
+    # promote the single field to an OGR Boolean subtype
+    layer.GetLayerDefn().GetFieldDefn(0).GetSubType.return_value = ogr.OFSTBoolean
+    ds = _mock_dataset([layer])
+
+    with patch(
+        "dynastore.tasks.ingestion.schema_introspect.gdal.OpenEx",
+        return_value=ds,
+    ), patch(
+        "dynastore.tasks.ingestion.schema_introspect.ogr.GetFieldTypeName",
+        side_effect=lambda t: t,
+    ):
+        out = extract_ogr_schema("/tmp/roads.shp")
+
+    assert out["is_paved"].data_type == "boolean"
+    assert out["is_paved"].subtype == "boolean"
 
 
 def test_extract_schema_picks_first_layer_when_layer_name_none() -> None:

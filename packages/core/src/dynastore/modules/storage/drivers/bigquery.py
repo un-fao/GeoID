@@ -363,13 +363,16 @@ def _make_bq_client(
 
 
 def _bq_field_to_field_definition(f) -> FieldDefinition:
-    bq_to_stac = {
-        "STRING": "string", "INTEGER": "int64", "INT64": "int64",
-        "FLOAT": "float64", "FLOAT64": "float64", "BOOL": "bool",
-        "BOOLEAN": "bool", "TIMESTAMP": "timestamp", "DATE": "date",
+    # BigQuery native type -> canonical data_type (see ``dynastore.models.field_types``).
+    bq_to_canonical = {
+        "STRING": "string", "INTEGER": "bigint", "INT64": "bigint",
+        "FLOAT": "double", "FLOAT64": "double", "NUMERIC": "numeric",
+        "BIGNUMERIC": "numeric", "BOOL": "boolean", "BOOLEAN": "boolean",
+        "TIMESTAMP": "timestamp", "DATETIME": "timestamp", "DATE": "date",
+        "TIME": "time", "BYTES": "binary", "JSON": "jsonb",
         "GEOGRAPHY": "geometry",
     }
-    dtype = bq_to_stac.get(f.field_type.upper(), "string")
+    dtype = bq_to_canonical.get(f.field_type.upper(), "string")
     return FieldDefinition(
         name=f.name,
         data_type=dtype,

@@ -22,7 +22,7 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
 )
 
 
-def _field(data_type: str = "text", required: bool = False, unique: bool = False):
+def _field(data_type: str = "string", required: bool = False, unique: bool = False):
     fd = MagicMock()
     fd.data_type = data_type
     fd.required = required
@@ -75,9 +75,9 @@ def test_materialize_all_lifts_every_field() -> None:
     schema = MagicMock()
     schema.materialize_fields_as_columns = True
     schema.fields = {
-        "road_id":  _field(data_type="text"),
+        "road_id":  _field(data_type="string"),
         "lanes":    _field(data_type="integer"),
-        "highway":  _field(data_type="text"),
+        "highway":  _field(data_type="string"),
     }
 
     bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
@@ -90,7 +90,7 @@ def test_materialize_all_preserves_pg_types() -> None:
     schema.materialize_fields_as_columns = True
     schema.fields = {
         "lanes":    _field(data_type="integer"),
-        "name":     _field(data_type="text"),
+        "name":     _field(data_type="string"),
         "active":   _field(data_type="boolean"),
     }
 
@@ -107,7 +107,7 @@ def test_materialize_all_combines_with_constraints() -> None:
     schema.materialize_fields_as_columns = True
     schema.fields = {
         "id":       _field(required=True, unique=True),
-        "label":    _field(data_type="text"),  # plain
+        "label":    _field(data_type="string"),  # plain
     }
 
     bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
@@ -126,7 +126,7 @@ def test_materialize_all_existing_entries_kept() -> None:
     schema = MagicMock()
     schema.materialize_fields_as_columns = True
     schema.fields = {
-        "existing":  _field(data_type="text"),
+        "existing":  _field(data_type="string"),
         "new_field": _field(data_type="integer"),
     }
     sidecar = FeatureAttributeSidecarConfig(

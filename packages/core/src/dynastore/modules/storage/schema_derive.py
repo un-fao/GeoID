@@ -9,30 +9,22 @@ from typing import Dict, Literal, Optional
 
 from dynastore.models.protocols.field_definition import FieldDefinition
 
-# Lowercase data_type -> JSON-Schema property fragment.
+# Canonical data_type (see ``dynastore.models.field_types``) -> JSON-Schema
+# property fragment. Keyed on canonical tokens; lookups normalize first.
 _TYPE_MAP: Dict[str, dict] = {
-    "text": {"type": "string"},
-    "varchar": {"type": "string"},
-    "varchar_255": {"type": "string"},
     "string": {"type": "string"},
-    "uuid": {"type": "string"},
+    "uuid": {"type": "string", "format": "uuid"},
     "integer": {"type": "integer"},
-    "int": {"type": "integer"},
     "bigint": {"type": "integer"},
-    "float": {"type": "number"},
-    "numeric": {"type": "number"},
-    "number": {"type": "number"},
     "double": {"type": "number"},
+    "numeric": {"type": "number"},
     "boolean": {"type": "boolean"},
-    "bool": {"type": "boolean"},
     "timestamp": {"type": "string", "format": "date-time"},
-    "timestamptz": {"type": "string", "format": "date-time"},
-    "datetime": {"type": "string", "format": "date-time"},
     "date": {"type": "string", "format": "date"},
+    "time": {"type": "string", "format": "time"},
+    "binary": {"type": "string", "contentEncoding": "base64"},
     "geometry": {"type": "object"},
-    "json": {"type": "object"},
     "jsonb": {"type": "object"},
-    "object": {"type": "object"},
 }
 
 
@@ -72,7 +64,13 @@ def derive_wire_schema(
     properties: Dict[str, dict] = {}
     required = []
     for key, fd in fields.items():
-        prop = dict(_TYPE_MAP.get((fd.data_type or "").lower(), {"type": "string"}))
+        # ``data_type`` is already canonical (validated on FieldDefinition);
+        # tolerant lookup here. Parametrized geometry ("geometry(point,4326)")
+        # collapses to the base key; unknown/bypassed values default to string.
+        dt = (fd.data_type or "").lower()
+        if dt.startswith("geometry"):
+            dt = "geometry"
+        prop = dict(_TYPE_MAP.get(dt, {"type": "string"}))
 
         if fd.max_length is not None:
             prop["maxLength"] = fd.max_length

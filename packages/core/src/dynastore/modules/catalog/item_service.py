@@ -1582,11 +1582,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     hub_cols = col_config.get_column_definitions()
                     for name in hub_cols.keys():
                         if name not in fields:
-                            # Infer simple type from SQL def
+                            # Infer canonical data_type from the SQL def
+                            # (see ``dynastore.models.field_types``).
                             sql_type = hub_cols[name].upper()
                             d_type = "string"
                             if "TIMESTAMP" in sql_type:
-                                d_type = "datetime"
+                                d_type = "timestamp"
                             elif "UUID" in sql_type:
                                 d_type = "uuid"
 
@@ -1610,6 +1611,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # Use a transaction for introspection
         async with managed_transaction(db_resource or self.engine) as conn:
             from dynastore.modules.db_config.tools import _get_table_columns_query
+            # Single source of truth for PG-native -> canonical data_type (#1216).
+            from dynastore.modules.storage.field_constraints import pg_native_to_canonical
 
             rows = await _get_table_columns_query.execute(
                 conn, schema=schema, table=table
@@ -1621,28 +1624,11 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 if col_name in fields:
                     continue
 
-                dtype = str(row.data_type).lower()
+                # ``udt_name`` carries the concrete type for USER-DEFINED columns
+                # (e.g. ``geometry``); prefer it so PostGIS columns canonicalize.
                 udt = str(row.udt_name).lower()
-
-                # Normalize type name
-                if dtype == "user-defined" and udt in ("geometry", "geography"):
-                    dtype = "geometry"
-                elif dtype in ("character varying", "character", "text"):
-                    dtype = "string"
-                elif dtype in ("integer", "smallint", "bigint"):
-                    dtype = "integer"
-                elif dtype in ("double precision", "real", "numeric"):
-                    dtype = "float"
-                elif dtype.startswith("timestamp"):
-                    dtype = "datetime"
-                elif dtype == "boolean":
-                    dtype = "boolean"
-                elif dtype == "jsonb":
-                    dtype = "jsonb"
-                elif dtype == "uuid":
-                    dtype = "uuid"
-                elif dtype == "tstzrange":
-                    dtype = "tstzrange"
+                raw = str(row.data_type).lower()
+                dtype = pg_native_to_canonical(udt if raw == "user-defined" else raw)
 
                 # Simple object mocking FieldDefinition for introspection-only columns
                 # We don't know the alias here, so we assume column name

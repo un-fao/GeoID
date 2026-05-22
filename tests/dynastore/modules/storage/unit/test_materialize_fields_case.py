@@ -34,22 +34,22 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
 
 # Exact field set from the user's issue-#719 comment (post-PR-#725 recurrence).
 _USER_FIELDS: Dict[str, Dict[str, str]] = {
-    "Shape_Leng": {"name": "Shape_Leng", "data_type": "float"},
-    "Shape_Area": {"name": "Shape_Area", "data_type": "float"},
-    "ADM2_FR":    {"name": "ADM2_FR",    "data_type": "text"},
-    "ADM2_PCODE": {"name": "ADM2_PCODE", "data_type": "text"},
-    "ADM2_REF":   {"name": "ADM2_REF",   "data_type": "text"},
-    "ADM2ALT1FR": {"name": "ADM2ALT1FR", "data_type": "text"},
-    "ADM2ALT2FR": {"name": "ADM2ALT2FR", "data_type": "text"},
-    "ADM1_FR":    {"name": "ADM1_FR",    "data_type": "text"},
-    "ADM1_PCODE": {"name": "ADM1_PCODE", "data_type": "text"},
-    "ADM0_FR":    {"name": "ADM0_FR",    "data_type": "text"},
-    "ADM0_PCODE": {"name": "ADM0_PCODE", "data_type": "text"},
+    "Shape_Leng": {"name": "Shape_Leng", "data_type": "double"},
+    "Shape_Area": {"name": "Shape_Area", "data_type": "double"},
+    "ADM2_FR":    {"name": "ADM2_FR",    "data_type": "string"},
+    "ADM2_PCODE": {"name": "ADM2_PCODE", "data_type": "string"},
+    "ADM2_REF":   {"name": "ADM2_REF",   "data_type": "string"},
+    "ADM2ALT1FR": {"name": "ADM2ALT1FR", "data_type": "string"},
+    "ADM2ALT2FR": {"name": "ADM2ALT2FR", "data_type": "string"},
+    "ADM1_FR":    {"name": "ADM1_FR",    "data_type": "string"},
+    "ADM1_PCODE": {"name": "ADM1_PCODE", "data_type": "string"},
+    "ADM0_FR":    {"name": "ADM0_FR",    "data_type": "string"},
+    "ADM0_PCODE": {"name": "ADM0_PCODE", "data_type": "string"},
     "date":       {"name": "date",       "data_type": "date"},
     "validOn":    {"name": "validOn",    "data_type": "date"},
     "validTo":    {"name": "validTo",    "data_type": "date"},
     "Area":       {"name": "Area",       "data_type": "integer"},
-    "F_":         {"name": "F_",         "data_type": "float"},
+    "F_":         {"name": "F_",         "data_type": "double"},
 }
 
 

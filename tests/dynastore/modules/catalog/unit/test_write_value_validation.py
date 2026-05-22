@@ -68,7 +68,7 @@ def test_validator_omits_required_and_additional_properties() -> None:
     schema = ItemsSchema(
         fields={
             "name": FieldDefinition(
-                name="name", data_type="text", required=True, max_length=5
+                name="name", data_type="string", required=True, max_length=5
             ),
         }
     )
@@ -84,7 +84,7 @@ def test_validator_omits_required_and_additional_properties() -> None:
 def test_validator_omits_additional_properties_even_when_strict() -> None:
     """``strict_unknown_fields`` must NOT leak into the write validator."""
     schema = ItemsSchema(
-        fields={"name": FieldDefinition(name="name", data_type="text")},
+        fields={"name": FieldDefinition(name="name", data_type="string")},
         strict_unknown_fields=True,
     )
     validator = _build_write_validator(schema)
@@ -107,7 +107,7 @@ def test_none_validator_is_noop() -> None:
 
 def test_accepts_valid_properties() -> None:
     validator = _validator(
-        name=FieldDefinition(name="name", data_type="text", max_length=5),
+        name=FieldDefinition(name="name", data_type="string", max_length=5),
         count=FieldDefinition(name="count", data_type="integer", minimum=0),
     )
     _validate_feature_properties(validator, {"properties": {"name": "abc", "count": 3}})
@@ -115,7 +115,7 @@ def test_accepts_valid_properties() -> None:
 
 def test_rejects_maxlength_violation() -> None:
     validator = _validator(
-        name=FieldDefinition(name="name", data_type="text", max_length=3),
+        name=FieldDefinition(name="name", data_type="string", max_length=3),
     )
     with pytest.raises(ValueError, match="violate the items schema") as exc:
         _validate_feature_properties(validator, {"properties": {"name": "toolong"}})
@@ -133,7 +133,7 @@ def test_rejects_wrong_type() -> None:
 
 def test_rejects_enum_miss() -> None:
     validator = _validator(
-        kind=FieldDefinition(name="kind", data_type="text", enum=["a", "b"]),
+        kind=FieldDefinition(name="kind", data_type="string", enum=["a", "b"]),
     )
     with pytest.raises(ValueError, match="violate the items schema") as exc:
         _validate_feature_properties(validator, {"properties": {"kind": "z"}})
@@ -142,7 +142,7 @@ def test_rejects_enum_miss() -> None:
 
 def test_rejects_minimum_violation() -> None:
     validator = _validator(
-        score=FieldDefinition(name="score", data_type="float", minimum=0.0),
+        score=FieldDefinition(name="score", data_type="double", minimum=0.0),
     )
     with pytest.raises(ValueError, match="violate the items schema"):
         _validate_feature_properties(validator, {"properties": {"score": -1.0}})
@@ -155,7 +155,7 @@ def test_missing_properties_bag_is_tolerated() -> None:
     concern, which the write validator deliberately does not own.
     """
     validator = _validator(
-        name=FieldDefinition(name="name", data_type="text", max_length=3),
+        name=FieldDefinition(name="name", data_type="string", max_length=3),
     )
     _validate_feature_properties(validator, {"id": "f1"})
 
@@ -170,7 +170,7 @@ def test_unknown_key_passes_value_validator_but_is_caught_by_strict_check() -> N
     ``additionalProperties``); it is rejected exactly once by the dedicated
     strict-unknown-fields check."""
     schema = ItemsSchema(
-        fields={"name": FieldDefinition(name="name", data_type="text")},
+        fields={"name": FieldDefinition(name="name", data_type="string")},
         strict_unknown_fields=True,
     )
     validator = _build_write_validator(schema)
@@ -191,7 +191,7 @@ def test_missing_required_passes_value_validator_but_is_caught_by_required_check
     ``required`` in the derived schema); the dedicated ``check_required``
     fallback owns that rejection."""
     schema = ItemsSchema(
-        fields={"name": FieldDefinition(name="name", data_type="text", required=True)},
+        fields={"name": FieldDefinition(name="name", data_type="string", required=True)},
     )
     validator = _build_write_validator(schema)
     feature = {"properties": {}}
@@ -214,7 +214,7 @@ def test_required_external_id_missing_or_empty_is_rejected_by_required_check() -
     """
     schema = ItemsSchema(
         fields={
-            "code": FieldDefinition(name="code", data_type="text", required=True),
+            "code": FieldDefinition(name="code", data_type="string", required=True),
         }
     )
 

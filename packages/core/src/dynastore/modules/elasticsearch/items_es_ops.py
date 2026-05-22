@@ -208,17 +208,18 @@ async def es_aggregate(
     return resp.get("aggregations", {}).get("_agg")
 
 
-# Map ES type → (data_type, capability list) — kept loose so callers don't
-# have to import ProtocolFieldDefinition / FieldCapability eagerly.
+# ES type → canonical data_type (see ``dynastore.models.field_types``). ES has
+# no date-only type — its ``date`` is an instant → ``timestamp``; ``object`` /
+# ``nested`` map to ``jsonb`` (no canonical object type).
 _ES_TYPE_TO_DATA_TYPE = {
-    "text": "string", "keyword": "string",
-    "long": "integer", "integer": "integer", "short": "integer", "byte": "integer",
-    "float": "numeric", "double": "numeric", "half_float": "numeric", "scaled_float": "numeric",
-    "date": "datetime", "date_nanos": "datetime",
-    "boolean": "boolean",
+    "text": "string", "keyword": "string", "ip": "string",
+    "long": "bigint", "unsigned_long": "bigint",
+    "integer": "integer", "short": "integer", "byte": "integer",
+    "float": "double", "double": "double", "half_float": "double", "scaled_float": "double",
+    "date": "timestamp", "date_nanos": "timestamp",
+    "boolean": "boolean", "binary": "binary",
     "geo_point": "geometry", "geo_shape": "geometry",
-    "object": "object", "nested": "object",
-    "ip": "string",
+    "object": "jsonb", "nested": "jsonb",
 }
 
 

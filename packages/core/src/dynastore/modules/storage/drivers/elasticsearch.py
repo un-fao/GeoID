@@ -710,23 +710,28 @@ class ItemsElasticsearchDriver(
         if entity_level != "item" or not collection_id:
             return {}
 
+        _NUM = [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]
         es_type_map = {
             "text": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
             "keyword": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.GROUPABLE],
-            "long": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
-            "integer": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
-            "float": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
-            "double": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE],
+            "long": _NUM, "integer": _NUM, "short": _NUM, "byte": _NUM,
+            "unsigned_long": _NUM,
+            "float": _NUM, "double": _NUM, "half_float": _NUM, "scaled_float": _NUM,
             "date": [FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
             "boolean": [FieldCapability.FILTERABLE],
+            "binary": [],
             "geo_point": [FieldCapability.SPATIAL],
             "geo_shape": [FieldCapability.SPATIAL],
         }
+        # ES type -> canonical data_type (see ``dynastore.models.field_types``).
+        # ES has no date-only type; its "date" is an instant -> "timestamp".
         data_type_map = {
-            "text": "string", "keyword": "string",
-            "long": "integer", "integer": "integer",
-            "float": "numeric", "double": "numeric",
-            "date": "datetime", "boolean": "boolean",
+            "text": "string", "keyword": "string", "ip": "string",
+            "long": "bigint", "unsigned_long": "bigint",
+            "integer": "integer", "short": "integer", "byte": "integer",
+            "float": "double", "double": "double",
+            "half_float": "double", "scaled_float": "double",
+            "date": "timestamp", "boolean": "boolean", "binary": "binary",
             "geo_point": "geometry", "geo_shape": "geometry",
         }
 

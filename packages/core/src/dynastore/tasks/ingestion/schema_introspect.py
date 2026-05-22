@@ -9,10 +9,13 @@
 
 Reads a vector source (Shapefile, GeoPackage, GeoJSON, Parquet, …) via
 the system OGR bindings and walks ``layer.GetLayerDefn()`` to extract
-field names + native OGR types. Maps each OGR type to the
-``ItemsSchema``-compatible string used by ``FieldDefinition.data_type``
-(``text``, ``integer``, ``float``, ``boolean``, ``date``, ``timestamp``,
-``jsonb``, ``geometry``).
+field names + native OGR types/subtypes. Each OGR type is mapped to the
+canonical ``FieldDefinition.data_type`` vocabulary via the single source of
+truth in :mod:`dynastore.models.field_types` (``string``, ``integer``,
+``bigint``, ``double``, ``boolean``, ``date``, ``time``, ``timestamp``,
+``binary``, ``jsonb``, ``uuid``, ``geometry``), with the OGR subtype
+(``boolean``/``int16``/``float32``/``json``/``uuid``) preserved on
+``FieldDefinition.subtype``.
 
 The output dict is suitable to PATCH directly into ``ItemsSchema.fields``
 (class_key ``"items_schema"``)::
@@ -35,11 +38,12 @@ without libgdal). Same rationale as in
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Hard import — gates this module on services with module_gdal in scope.
 from osgeo import ogr, gdal  # noqa: F401
 
+from dynastore.models.field_types import ogr_to_canonical
 from dynastore.models.protocols.field_definition import FieldDefinition
 
 logger = logging.getLogger(__name__)
@@ -50,58 +54,33 @@ gdal.UseExceptions()
 
 
 # ---------------------------------------------------------------------------
-# OGR field type → ItemsSchema data_type mapping
+# OGR field type → canonical data_type mapping
 # ---------------------------------------------------------------------------
 #
-# OGR field types are integer constants (ogr.OFT*); we map them to the
-# string vocabulary used by ``ItemsSchema.fields[*].data_type``.
-# The PG driver's ``_DATA_TYPE_TO_PG_NAME`` table at
-# ``modules/storage/field_constraints.py:35`` knows how to lift these
-# into native PG columns once ``materialize_fields_as_columns=True``.
-
-_OGR_TYPE_NAME_TO_DATA_TYPE: Dict[str, str] = {
-    "Integer": "integer",
-    "Integer64": "bigint",
-    "Real": "float",
-    "String": "text",
-    "Date": "date",
-    "Time": "text",        # OGR time has no PG-native equiv we care about
-    "DateTime": "timestamp",
-    "Binary": "text",      # base64-stringified at write time
-    "IntegerList": "jsonb",
-    "Integer64List": "jsonb",
-    "RealList": "jsonb",
-    "StringList": "jsonb",
-}
+# The OGR → canonical mapping is the SSOT in ``dynastore.models.field_types``
+# (GDAL is the canonical *source* of geospatial field types). Here we only read
+# the OGR type/subtype names off each field and delegate the mapping, so the
+# vocabulary stays consistent with every storage driver.
 
 
 def _ogr_field_type_name(field_defn: Any) -> str:
-    """Return the human-readable OGR type name (``Integer`` / ``String`` / …).
-
-    OGR exposes both ``GetType()`` (an int constant) and
-    ``GetFieldTypeName(...)`` (the human label). We use the label so the
-    mapping table stays readable + decoupled from the OGR enum's value
-    drift across libgdal versions.
-    """
+    """Return the human-readable OGR type name (``Integer`` / ``String`` / …)."""
     return ogr.GetFieldTypeName(field_defn.GetType())
 
 
-def _map_ogr_type(field_defn: Any) -> str:
-    """Map an ``ogr.FieldDefn`` to the ``ItemsSchema.data_type`` vocabulary.
+def _ogr_field_subtype_name(field_defn: Any) -> Optional[str]:
+    """Return the OGR subtype label (``Boolean``/``Int16``/…) or ``None``."""
+    sub = field_defn.GetSubType()
+    if sub == ogr.OFSTNone:
+        return None
+    return ogr.GetFieldSubTypeName(sub)
 
-    Falls back to ``"text"`` for unrecognised types — safe choice because
-    every backend can store text. Logs a debug line so the operator can
-    spot type-mapping gaps.
-    """
-    name = _ogr_field_type_name(field_defn)
-    mapped = _OGR_TYPE_NAME_TO_DATA_TYPE.get(name)
-    if mapped is None:
-        logger.debug(
-            "extract_ogr_schema: OGR field type %r has no mapping — "
-            "defaulting to 'text'.", name,
-        )
-        return "text"
-    return mapped
+
+def _map_ogr_type(field_defn: Any) -> Tuple[str, Optional[str]]:
+    """Map an ``ogr.FieldDefn`` to canonical ``(data_type, subtype)``."""
+    return ogr_to_canonical(
+        _ogr_field_type_name(field_defn), _ogr_field_subtype_name(field_defn)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +141,16 @@ def extract_ogr_schema(
         for i in range(layer_defn.GetFieldCount()):
             fd = layer_defn.GetFieldDefn(i)
             fname = fd.GetName()
+            data_type, subtype = _map_ogr_type(fd)
+            type_name = _ogr_field_type_name(fd)
+            sub_name = _ogr_field_subtype_name(fd)
             out[fname] = FieldDefinition(
                 name=fname,
-                data_type=_map_ogr_type(fd),
+                data_type=data_type,
+                subtype=subtype,
                 description=(
-                    f"Auto-derived from OGR field {fname!r} "
-                    f"(OGR type: {_ogr_field_type_name(fd)})."
+                    f"Auto-derived from OGR field {fname!r} (OGR type: "
+                    f"{type_name}{f', subtype: {sub_name}' if sub_name else ''})."
                 ),
             )
 

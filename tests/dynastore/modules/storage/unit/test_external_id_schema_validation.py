@@ -31,8 +31,8 @@ def _wp(ext_id: str) -> ItemsWritePolicy:
     return ItemsWritePolicy(derive=DeriveSpec(external_id=ext_id))
 
 
-_SCHEMA_WITH = ItemsSchema(fields={"code": FieldDefinition(name="code", data_type="text")})
-_SCHEMA_WITHOUT = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="text")})
+_SCHEMA_WITH = ItemsSchema(fields={"code": FieldDefinition(name="code", data_type="string")})
+_SCHEMA_WITHOUT = ItemsSchema(fields={"name": FieldDefinition(name="name", data_type="string")})
 _SCHEMA_EMPTY = ItemsSchema(fields={})
 
 

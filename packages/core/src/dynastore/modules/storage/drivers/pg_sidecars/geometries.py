@@ -175,7 +175,7 @@ class GeometriesSidecar(SidecarProtocol):
         if field.kind == ComputedKind.CENTROID:
             return "geometry"
         if field.kind == ComputedKind.BBOX:
-            return "array"
+            return "jsonb"  # bbox is an array of coordinates; no canonical array type
         if field.kind in self._INTEGER_KINDS:
             return "integer"
         return "numeric"
@@ -237,7 +237,7 @@ class GeometriesSidecar(SidecarProtocol):
                 name="bbox",
                 sql_expression=f"{alias}.{self.config.bbox_column}",
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SPATIAL],
-                data_type="box2d",
+                data_type="geometry",
                 expose=False,  # Query-only by default
                 title="Bounding Box",
                 description="Geometry bounding box",
@@ -935,7 +935,7 @@ class GeometriesSidecar(SidecarProtocol):
             ),
             sql_expression="h.transaction_time",
             capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
-            data_type="timestamptz",
+            data_type="timestamp",
         )
 
         return fields
