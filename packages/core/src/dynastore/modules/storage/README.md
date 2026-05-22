@@ -129,7 +129,7 @@ Built-in presets (in `presets/`):
 | `private_catalog` | catalog | PG-only catalog/collection envelopes + per-tenant private ES indexer on the items tier. No audience opt-ins; the `private_deny_{catalog_id}` policy blocks anonymous reads on item URL patterns. |
 | `defaults_postgres` | platform | Platform-wide PG-first routing defaults for catalog/collection/items. No indexers, no audience opt-ins — a safe baseline new catalogs inherit before any override. |
 | `private_collection` | collection | Per-collection private items routing override (pins `items_elasticsearch_private_driver` on one collection). |
-| `geoid` (extension) | catalog | Composes `private_catalog` and adds `CatalogLookupAudience.is_public=True` + `CollectionWriteAudience.allow_anonymous_create=True` — flagship FAO GeoID profile: private storage, anonymous lookup + intake. Registered by `dynastore.extensions.geoid` on import. |
+| `geoid` (extension) | catalog | Composes `private_catalog` and adds `CatalogLookupAudience.is_public=True` — flagship FAO GeoID profile: private storage, anonymous lookup-only (resolve by geoid / external_id, no enumeration, no anonymous insert). Lookup-only mode and anonymous create cannot coexist (deny-precedence), so this profile carries no write audience; intake catalogs use `is_public=False` + per-collection `allow_anonymous_create`. Registered by `dynastore.extensions.geoid` on import. |
 
 Operator API:
 
