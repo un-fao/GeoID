@@ -194,6 +194,58 @@ def _parse_collection_sort_sql(sortby: Optional[str], lang: Optional[str] = None
     raise ValueError(f"Invalid sort field: {field!r}")
 
 
+def _es_hits_to_features(
+    raw_features: list,
+    cat_id: str,
+    cids: list,
+) -> list:
+    """Turn ES search hits into read-contract Features.
+
+    The ES dispatch returns plain dicts in the indexed ``_source`` shape:
+    unknown attributes nested under ``properties.extras`` (Tier-3 projection),
+    internal ``_*`` tracking fields and leaked echo keys at the top level
+    (which would surface via the ``extra="allow"`` Feature model), and possibly
+    an empty ``{}`` geometry. :func:`unproject_item_from_es` restores the
+    GeoJSON/STAC read contract so STAC ``/search`` returns the same shape as
+    GET items and the PostgreSQL path (#1247).
+
+    The platform search serializer
+    (``stac_generator.create_search_results_collection``) reads
+    ``feature.properties["_catalog_id"]`` / ``["_collection_id"]`` — injected by
+    the PG path — so those are mirrored here. The collection hint prefers the
+    indexed top-level ``collection`` and falls back to the sole requested
+    collection when only one is in scope.
+    """
+    from dynastore.models.shared_models import Feature
+    from dynastore.modules.elasticsearch.items_projection import (
+        unproject_item_from_es,
+    )
+
+    features: list = []
+    for raw in raw_features:
+        if isinstance(raw, Feature):
+            features.append(raw)
+            continue
+        clean = unproject_item_from_es(raw) if isinstance(raw, dict) else raw
+        try:
+            feat = Feature.model_validate(clean)
+        except Exception as exc:
+            logger.warning(
+                "STAC search → ES dispatch: skipping malformed hit (catalog=%s): %s",
+                cat_id, exc,
+            )
+            continue
+        if feat.properties is None:
+            feat.properties = {}
+        feat.properties.setdefault("_catalog_id", cat_id)
+        coll_id = clean.get("collection") if isinstance(clean, dict) else None
+        if not coll_id and len(cids) == 1:
+            coll_id = cids[0]
+        feat.properties.setdefault("_collection_id", coll_id or "")
+        features.append(feat)
+    return features
+
+
 async def _maybe_dispatch_to_es_search(
     cat_id: str,
     search_request: "ItemSearchRequest",
@@ -261,35 +313,10 @@ async def _maybe_dispatch_to_es_search(
         )
         return None  # fall back to PG path on error
 
-    # ItemSearchProtocol returns plain dicts (STAC Item JSON shape from ES
-    # _source). The downstream serializer (stac_generator.create_search_results_collection)
-    # operates on Feature pydantic instances and reads `feature.properties["_catalog_id"]` /
-    # `["_collection_id"]` — injected by the PG path at search.py:882-883. Mirror that
-    # shape here so the ES fast path returns the same contract as PG.
-    from dynastore.models.shared_models import Feature
-    features: list = []
-    for raw in result.features:
-        if isinstance(raw, Feature):
-            features.append(raw)
-            continue
-        try:
-            feat = Feature.model_validate(raw)
-        except Exception as exc:
-            logger.warning(
-                "STAC search → ES dispatch: skipping malformed hit (catalog=%s): %s",
-                cat_id, exc,
-            )
-            continue
-        if feat.properties is None:
-            feat.properties = {}
-        feat.properties.setdefault("_catalog_id", cat_id)
-        # ES indexed doc carries top-level `collection`; fall back to first
-        # requested collection when only one is in scope.
-        coll_id = raw.get("collection") if isinstance(raw, dict) else None
-        if not coll_id and len(cids) == 1:
-            coll_id = cids[0]
-        feat.properties.setdefault("_collection_id", coll_id or "")
-        features.append(feat)
+    # ItemSearchProtocol returns plain dicts (the raw ES ``_source`` shape).
+    # Reconstruct the read contract and inject the serializer's catalog/collection
+    # hints — see :func:`_es_hits_to_features`.
+    features = _es_hits_to_features(result.features, cat_id, cids)
     return features, result.total, None
 
 
