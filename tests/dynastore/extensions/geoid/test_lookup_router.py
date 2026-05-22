@@ -31,7 +31,7 @@ def app(monkeypatch):
         fake_lookup_by_geoids,
     )
     monkeypatch.setattr(
-        "dynastore.extensions.geoid.lookup_router.lookup_by_external_id_across_collections",
+        "dynastore.extensions.geoid.lookup_router.lookup_by_external_id",
         fake_lookup_by_external_id,
     )
     a = FastAPI()
@@ -52,26 +52,28 @@ def test_items_search_by_geoid(app):
     app.state._fake_external_id.assert_not_awaited()
 
 
-def test_items_search_by_external_id(app):
+def test_items_search_external_id_without_collection_id_rejected(app):
+    # external_id is not globally unique → a bare external_id (no collection_id)
+    # would be a cross-collection scan, disallowed by the public lookup contract
+    # (un-fao/GeoID#1204 R2). It must be a 400, and the resolver is never reached.
     with TestClient(app) as c:
         r = c.post("/search/catalogs/cat/items-search", json={"external_id": "ext-1"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["results"][0]["external_id"] == "ext-1"
-    # collection_id defaults to None → cross-collection resolution.
-    call = app.state._fake_external_id.call_args
-    assert call.kwargs["collection_id"] is None
+    assert r.status_code == 400
+    app.state._fake_external_id.assert_not_awaited()
 
 
-def test_items_search_by_external_id_narrowed_to_collection(app):
+def test_items_search_by_external_id_with_collection(app):
     with TestClient(app) as c:
         r = c.post(
             "/search/catalogs/cat/items-search",
             json={"external_id": "ext-1", "collection_id": "col"},
         )
     assert r.status_code == 200
+    body = r.json()
+    assert body["results"][0]["external_id"] == "ext-1"
+    # Resolved within the named collection only (positional call).
     call = app.state._fake_external_id.call_args
-    assert call.kwargs["collection_id"] == "col"
+    assert call.args == ("cat", "col", "ext-1")
 
 
 def test_items_search_rejects_both_geoid_and_external_id(app):

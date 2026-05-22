@@ -16,27 +16,30 @@ class ItemsSearchBody(BaseModel):
     Resolve an item within the path catalog by **exactly one** of:
 
     * ``geoid`` — the platform-assigned id; resolved across all collections of
-      the catalog (geoid is unique within a catalog).
-    * ``external_id`` — the tenant's own id; resolved across all collections of
-      the catalog unless ``collection_id`` narrows it to one. ``external_id``
-      is not globally unique, so a cross-collection resolution may return more
-      than one row.
+      the catalog (geoid is unique within a catalog), so ``collection_id`` is
+      not needed.
+    * ``external_id`` — the tenant's own id; resolved **within a single named
+      ``collection_id``**, which is required when ``external_id`` is supplied.
+      external_id is not globally unique, so resolving it without a collection
+      would mean a cross-collection scan — disallowed here to keep the public
+      lookup a targeted, single-collection resolve (un-fao/GeoID#1204 R2).
 
-    Supplying both ``geoid`` and ``external_id``, or neither, is a 400 — the
-    route enforces the xor at the handler.
+    Supplying both ``geoid`` and ``external_id``, neither, or ``external_id``
+    without ``collection_id`` is a 400 — the route enforces these at the
+    handler.
     """
     geoid: Optional[str] = Field(
         None, description="Platform-assigned geoid to resolve (xor external_id).",
     )
     external_id: Optional[str] = Field(
-        None, description="Tenant's own item id to resolve (xor geoid).",
+        None,
+        description="Tenant's own item id to resolve (xor geoid); requires collection_id.",
     )
     collection_id: Optional[str] = Field(
         None,
         description=(
-            "Optional: narrow an external_id resolution to a single collection. "
-            "When omitted, external_id is resolved across all collections of the "
-            "catalog. Ignored when geoid is supplied."
+            "The collection that owns the external_id. Required when external_id "
+            "is supplied; ignored when geoid is supplied."
         ),
     )
     limit: int = Field(
