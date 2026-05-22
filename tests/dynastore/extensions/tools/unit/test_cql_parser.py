@@ -75,3 +75,66 @@ def test_parse_cql_filter_empty():
     """Test that empty or None filter returns empty SQL."""
     assert parse_cql_filter(None) == ("", {})
     assert parse_cql_filter("") == ("", {})
+
+
+def test_parse_cql_filter_single_quoted_value():
+    """A plain single-quoted string literal binds as a parameter (#1141)."""
+    cql = "good_prop = 'PK001'"
+    mapping = {"good_prop": column("good_prop")}
+    sql, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    assert "good_prop" in sql
+    assert "PK001" in params.values()
+
+
+def test_parse_cql_filter_escaped_embedded_single_quote():
+    """A value containing an embedded quote (CQL2-Text ``''`` escape) parses.
+
+    Refs #1141: the bundled pygeofilter grammar tokenises ``'O''Brien'`` as two
+    separate string literals and 400s. ``parse_cql_filter`` must accept the
+    spec-compliant doubled-quote escape and bind the *unescaped* value
+    (``O'Brien``) as a parameter.
+    """
+    cql = "good_prop = 'O''Brien'"
+    mapping = {"good_prop": column("good_prop")}
+    sql, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    assert "good_prop" in sql
+    # The single quote is restored in the bound value (not the doubled escape).
+    assert "O'Brien" in params.values()
+    assert "O''Brien" not in params.values()
+
+
+def test_parse_cql_filter_escaped_quote_at_boundaries():
+    """Doubled quotes at the start/end of a value also round-trip (#1141)."""
+    cql = "good_prop = '''PK'''"  # CQL2-Text for the value: 'PK'
+    mapping = {"good_prop": column("good_prop")}
+    sql, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    assert "good_prop" in sql
+    assert "'PK'" in params.values()
+
+
+def test_parse_cql_filter_escaped_quote_multiple_clauses():
+    """Doubled quotes survive across an AND of two equality clauses (#1141)."""
+    cql = "owner = 'O''Hara' AND author = 'D''Angelo'"
+    mapping = {"owner": column("owner"), "author": column("author")}
+    sql, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    bound = set(params.values())
+    assert "O'Hara" in bound
+    assert "D'Angelo" in bound
+
+
+def test_parse_cql_filter_escaped_quote_in_in_list():
+    """Doubled quotes round-trip inside an ``IN (...)`` value list (#1141)."""
+    cql = "owner IN ('O''Hara', 'plain')"
+    mapping = {"owner": column("owner")}
+    sql, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    bound = set(params.values())
+    assert "O'Hara" in bound
+    assert "plain" in bound
+
+
+def test_parse_cql_filter_plain_value_unaffected_by_quote_handling():
+    """Values with no embedded quote are bound verbatim (no regression)."""
+    cql = "owner = 'PK001'"
+    mapping = {"owner": column("owner")}
+    _, params = parse_cql_filter(cql, field_mapping=mapping, parser_type="cql2")
+    assert "PK001" in params.values()

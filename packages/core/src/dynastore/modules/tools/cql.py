@@ -25,6 +25,103 @@ from sqlalchemy.sql import column as sql_column
 
 logger = logging.getLogger(__name__)
 
+# CQL2-Text escapes a single quote inside a string literal by doubling it
+# (``'O''Brien'`` → ``O'Brien``). The bundled pygeofilter (0.3.3) lark grammar
+# uses a non-greedy ``SINGLE_QUOTED: "'" /.*?/ "'"`` terminal and does NOT
+# implement that escape: it tokenises ``'O''Brien'`` as the two separate
+# literals ``'O'`` and ``'Brien'`` and raises ``UnexpectedToken`` (HTTP 400).
+#
+# To accept the spec-compliant escape without forking the grammar, the doubled
+# quote is replaced with this sentinel before the text reaches the parser, then
+# the sentinel is restored to a single quote in the parsed string literals
+# (:func:`_restore_escaped_quotes`). The sentinel uses control characters that
+# cannot appear in a CQL identifier or pass through unescaped from a quoted
+# literal, and any pre-existing occurrence in the input is stripped first.
+_QUOTE_ESCAPE_SENTINEL = "\x00\x01CQLQUOTE\x01\x00"
+
+
+def _preprocess_cql2_text_quotes(cql_text: str) -> str:
+    """Make CQL2-Text doubled-quote escapes parseable by the bundled grammar.
+
+    Scans the text tracking string-literal boundaries and replaces each ``''``
+    *inside* a literal (the CQL2-Text escape for a literal single quote) with
+    :data:`_QUOTE_ESCAPE_SENTINEL`, leaving the opening/closing delimiters
+    intact. The grammar then sees one well-formed string literal instead of two
+    (or a stray quote), and the sentinel is undone after parsing by
+    :func:`_restore_escaped_quotes`.
+
+    A run of single quotes is interpreted per CQL2: the first quote opens the
+    literal, and from there each ``''`` is an escaped quote until a lone ``'``
+    closes it. This handles odd boundary runs like ``'''PK'''`` (value
+    ``'PK'``) correctly, where a blind ``''`` replacement would leave a stray
+    delimiter outside the literal.
+    """
+    # Defensively drop any pre-existing sentinel so a crafted value cannot
+    # smuggle a literal quote past the round-trip.
+    text_in = cql_text.replace(_QUOTE_ESCAPE_SENTINEL, "")
+    out: list[str] = []
+    i = 0
+    n = len(text_in)
+    in_literal = False
+    while i < n:
+        ch = text_in[i]
+        if ch != "'":
+            out.append(ch)
+            i += 1
+            continue
+        # ``ch`` is a single quote.
+        if not in_literal:
+            # Opening delimiter.
+            in_literal = True
+            out.append("'")
+            i += 1
+            continue
+        # Inside a literal: a doubled quote is an escape, a lone quote closes.
+        if i + 1 < n and text_in[i + 1] == "'":
+            out.append(_QUOTE_ESCAPE_SENTINEL)
+            i += 2
+        else:
+            in_literal = False
+            out.append("'")
+            i += 1
+    return "".join(out)
+
+
+def _restore_escaped_quotes(node: Any) -> None:
+    """Restore sentinel-escaped single quotes in a parsed pygeofilter AST.
+
+    Walks the AST in place, replacing :data:`_QUOTE_ESCAPE_SENTINEL` with a
+    single quote in every string literal value (``str`` fields and ``str``
+    members of list/tuple fields such as ``In.sub_nodes``). The unescaped value
+    is what reaches the SQL bind parameter, so matching is exact and
+    injection-safe (the value is never interpolated into SQL text).
+    """
+    if node is None or isinstance(node, (str, bytes, int, float, bool)):
+        return
+    # dataclass-style AST nodes expose their children via ``__dict__``.
+    fields = getattr(node, "__dict__", None)
+    if not fields:
+        return
+    for name, value in list(fields.items()):
+        if isinstance(value, str):
+            if _QUOTE_ESCAPE_SENTINEL in value:
+                setattr(node, name, value.replace(_QUOTE_ESCAPE_SENTINEL, "'"))
+        elif isinstance(value, (list, tuple)):
+            restored = [
+                item.replace(_QUOTE_ESCAPE_SENTINEL, "'")
+                if isinstance(item, str)
+                else item
+                for item in value
+            ]
+            for item in restored:
+                _restore_escaped_quotes(item)
+            if isinstance(value, list):
+                value[:] = restored
+            else:
+                setattr(node, name, tuple(restored))
+        else:
+            _restore_escaped_quotes(value)
+
 # Optional dependency for safe CQL2/ECQL parsing.
 # TYPE_CHECKING branch pins the imports as non-Optional for pyright; at runtime
 # the try/except installs real modules or raises ImportError from the public
@@ -122,7 +219,11 @@ def parse_cql_filter(
     try:
         # 1. Parse into AST
         if parser_type.lower() == 'cql2':
-            ast = parse_cql2_text(cql_text)
+            # The bundled pygeofilter grammar rejects the CQL2-Text ``''``
+            # escape for an embedded single quote; pre-substitute it with a
+            # sentinel, parse, then restore the literal quote in the AST.
+            ast = parse_cql2_text(_preprocess_cql2_text_quotes(cql_text))
+            _restore_escaped_quotes(ast)
         elif parser_type.lower() == 'ecql':
             ast = parse_ecql(cql_text)
         else:
