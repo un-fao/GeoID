@@ -103,39 +103,52 @@ async def test_get_tile_resolution_params_routes_with_tiles_hint():
 
 
 @pytest.mark.asyncio
-async def test_tile_resolution_col_config_comes_from_tile_capable_driver():
-    """col_config for MVT must come from the tile-capable (PG) driver itself.
+async def test_tile_resolution_col_config_carries_effective_sidecars():
+    """col_config for MVT must carry EFFECTIVE sidecars from the tile driver.
 
-    Regression (#1213): get_tile_resolution_params resolved the PG driver with
-    Hint.TILES for location/SRID, but sourced ``col_config`` via
-    ``catalogs.get_collection_config`` — a bare get_driver(READ) with NO tile
-    hint. For the default routing shape (READ[0]=Elasticsearch,
-    READ[1]=PostgreSQL+tiles) that returns the ES driver config, which has no
-    ``sidecars``. The storage-agnostic MVT path (#1205) then finds no geometry
-    sidecar, skips ST_AsMVTGeom, and ST_AsMVT 500s with "no geometry column
-    found". The config must come from the driver that renders the tile.
+    Regression (#1213). Two failure modes, both producing
+    ``ST_AsMVT … "no geometry column found"`` because the MVT transform finds
+    no geometry sidecar and skips ST_AsMVTGeom:
+
+    1. Sourcing col_config via ``catalogs.get_collection_config`` re-resolves
+       the driver with a bare get_driver(READ) — no tile hint — and for the
+       default routing shape (READ[0]=Elasticsearch, READ[1]=PostgreSQL+tiles)
+       returns the ES config (no sidecars).
+    2. Sourcing it via ``driver.get_driver_config`` returns the *authorable*
+       config, whose ``sidecars`` defaults to empty (M1b.2); the persisted row
+       strips that Computed field. Only ``_get_effective_driver_config``
+       materialises the sidecars the MVT query composes from.
+
+    The fix uses the tile-capable driver's ``_get_effective_driver_config``.
+    This test pins both: get_driver_config returns EMPTY sidecars (realistic),
+    the effective variant returns populated sidecars, and the resolved
+    col_config must be the populated one.
     """
     tiles_module.get_tile_resolution_params.cache_clear()
 
-    # PG (tile-capable) driver: resolves location AND owns the sidecar-bearing
-    # config the MVT query needs.
-    pg_config = SimpleNamespace(sidecars=["geometries", "attributes"])
+    # get_driver_config returns the authorable config — sidecars empty.
+    authorable_config = SimpleNamespace(sidecars=[])
+    # _get_effective_driver_config materialises the real sidecars.
+    effective_config = SimpleNamespace(sidecars=["geometries", "attributes"])
+
     fake_pg_driver = AsyncMock()
     fake_pg_driver.location = AsyncMock(
         return_value=SimpleNamespace(
             identifiers={"schema": "cat1_data", "table": "col1"}
         )
     )
-    fake_pg_driver.get_driver_config = AsyncMock(return_value=pg_config)
+    fake_pg_driver.get_driver_config = AsyncMock(return_value=authorable_config)
+    fake_pg_driver._get_effective_driver_config = AsyncMock(
+        return_value=effective_config
+    )
 
-    # The hint-less re-resolution path. In prod this returns the ES driver
-    # config (no sidecars); if the code under test calls it, col_config loses
-    # its sidecars and the assertion below fails.
-    es_config = SimpleNamespace(sidecars=[])
+    # Hint-less re-resolution path; must NOT be used (would yield ES config).
     fake_catalogs = SimpleNamespace(
         configs=AsyncMock(get_config=AsyncMock(return_value=None),
                           set_config=AsyncMock(return_value=None)),
-        get_collection_config=AsyncMock(return_value=es_config),
+        get_collection_config=AsyncMock(
+            return_value=SimpleNamespace(sidecars=[])
+        ),
     )
 
     get_driver_mock = AsyncMock(return_value=fake_pg_driver)
@@ -156,12 +169,13 @@ async def test_tile_resolution_col_config_comes_from_tile_capable_driver():
 
         meta = await tiles_module.get_tile_resolution_params("cat1", "col1")
 
-    # col_config must be the tile-capable driver's sidecar-bearing config …
-    assert meta.get("col_config") is pg_config, (
-        "col_config must come from the tile-capable (PG) driver, carrying "
-        f"sidecars; got {meta.get('col_config')!r}"
+    # col_config must be the EFFECTIVE config (non-empty sidecars) …
+    assert meta.get("col_config") is effective_config, (
+        "col_config must carry effective sidecars from the tile-capable "
+        f"driver; got {meta.get('col_config')!r}"
     )
-    fake_pg_driver.get_driver_config.assert_awaited_once()
+    assert meta["col_config"].sidecars, "effective sidecars must be non-empty"
+    fake_pg_driver._get_effective_driver_config.assert_awaited_once()
     # … and the hint-less re-resolution must NOT be used.
     fake_catalogs.get_collection_config.assert_not_called()
 
