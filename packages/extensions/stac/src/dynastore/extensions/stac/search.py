@@ -145,17 +145,26 @@ def _filter_to_cql2_json(
     }
 
 
-def _build_cql2_field_mapping(table_columns: set) -> Dict[str, Any]:
-    """Build a field_mapping dict for pygeofilter from JSONB attributes columns.
+def _build_cql2_field_mapping(optimizer: QueryOptimizer) -> Dict[str, Any]:
+    """Build a storage-mode-aware field_mapping for the CQL2 parser.
 
-    Maps property names to ``attributes->>'field'`` SQL text expressions,
-    which is the standard JSONB accessor pattern for STAC attributes.
+    Mirrors the ``/items`` path (``item_query._apply_query_transformations``):
+    each declared queryable resolves to ``literal_column(field_def.sql_expression)``
+    so pygeofilter emits a real bound-parameter comparison against the correct
+    physical column — ``sc_attributes."col"`` for COLUMNAR storage, the JSONB
+    accessor for JSONB storage — instead of a hard-coded ``attributes->>'col'``
+    that is wrong for COLUMNAR collections (declared queryables are physical
+    columns post #1065/#1074). A ``text()`` TextClause has no comparison
+    operators and silently collapses every predicate to an always-false ``1=0``;
+    ``literal_column`` does not.
+
+    Property names are validated against this mapping's keys by ``parse_cql_filter``
+    (unknown → ``ValueError`` → HTTP 400) and values are bound as parameters.
     """
-    from sqlalchemy import text
+    from sqlalchemy import literal_column
     return {
-        col: text(f"attributes->>'{col}'")
-        for col in table_columns
-        if _SAFE_ATTRIBUTE_FIELD_RE.match(col)
+        name: literal_column(field_def.sql_expression)
+        for name, field_def in optimizer.get_all_queryable_fields().items()
     }
 
 _COLLECTION_SORT_ALIASES: dict = {"code": "id", "label": "title"}
@@ -183,37 +192,6 @@ def _parse_collection_sort_sql(sortby: Optional[str], lang: Optional[str] = None
     if _SAFE_ATTRIBUTE_FIELD_RE.match(field):
         return f"(extra_metadata->>'{field}') {direction}"
     raise ValueError(f"Invalid sort field: {field!r}")
-
-
-def _build_attribute_filter_sql(filt: AttributeFilter, params: dict) -> str:
-    if not _SAFE_ATTRIBUTE_FIELD_RE.match(filt.field):
-        raise ValueError(
-            f"Invalid attribute field name '{filt.field}': "
-            "must start with a letter or underscore and contain only alphanumeric characters and underscores."
-        )
-    op: FilterOperator = (
-        filt.operator if isinstance(filt.operator, FilterOperator)
-        else FilterOperator.from_str(str(filt.operator))
-    )
-    sql_op = op.to_sql()
-    type_cast = "::numeric" if op.needs_numeric_cast else ""
-    param_name = f"filter_{filt.field}_{op.value}"
-    field_accessor = f"attributes->>'{filt.field}'"
-    params[param_name] = filt.value
-    return f"({field_accessor}{type_cast} {sql_op} :{param_name})"
-
-
-def _build_complex_filter_sql(query_filter: QueryFilter, params: dict) -> str:
-    if not query_filter.args:
-        return ""
-    op_sql = f" {query_filter.op.upper()} "
-    conditions = []
-    for arg in query_filter.args:
-        if isinstance(arg, QueryFilter):
-            conditions.append(_build_complex_filter_sql(arg, params))
-        else:
-            conditions.append(_build_attribute_filter_sql(arg, params))
-    return f"({op_sql.join(filter(None, conditions))})"
 
 
 async def _maybe_dispatch_to_es_search(
@@ -403,25 +381,29 @@ async def search_items(
     )
 
     if search_request.filter:
-        cql_filter_sql = None
-        try:
-            from dynastore.modules.tools.cql import parse_cql2_json_filter
-            cql2_json = _filter_to_cql2_json(search_request.filter)
-            field_mapping = _build_cql2_field_mapping(table_columns)
-            cql_where, cql_params = parse_cql2_json_filter(
-                cql2_json, field_mapping=field_mapping,
-            )
-            if cql_where:
-                cql_filter_sql = f"({cql_where})"
-                params.update(cql_params)
-        except Exception as e:
-            logger.warning(f"CQL2-JSON filter path failed, falling back to legacy: {e}")
-            if isinstance(search_request.filter, QueryFilter):
-                cql_filter_sql = _build_complex_filter_sql(search_request.filter, params)
-            elif isinstance(search_request.filter, AttributeFilter):
-                cql_filter_sql = _build_attribute_filter_sql(search_request.filter, params)
-        if cql_filter_sql:
-            where_sql += f" AND {cql_filter_sql}"
+        from dynastore.modules.tools.cql import parse_cql2_json_filter
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+
+        cql2_json = _filter_to_cql2_json(search_request.filter)
+        # Resolve queryables storage-mode-aware via the QueryOptimizer, exactly
+        # as the ``/items`` path does, so an attribute filter binds to the
+        # correct physical column — ``sc_attributes."col"`` for COLUMNAR storage
+        # or the JSONB accessor for JSONB storage. The first target collection's
+        # config drives the mapping, consistent with the column resolution above
+        # (``get_columns_with_conn`` also resolves ``target_collections[0]``).
+        # An unknown property raises ``ValueError`` here, surfaced as HTTP 400 by
+        # the route handler — never silently ignored, never matched against a
+        # non-existent JSONB accessor.
+        filter_optimizer = QueryOptimizer(
+            collection_configs[target_collections[0]], consumer=ConsumerType.STAC
+        )
+        field_mapping = _build_cql2_field_mapping(filter_optimizer)
+        cql_where, cql_params = parse_cql2_json_filter(
+            cql2_json, field_mapping=field_mapping,
+        )
+        if cql_where:
+            where_sql += f" AND ({cql_where})"
+            params.update(cql_params)
 
     if hierarchy_sql:
         where_sql += f" AND {hierarchy_sql}"

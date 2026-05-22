@@ -282,3 +282,71 @@ async def test_features_attribute_filter_matches_only(
     r = await sysadmin_in_process_client.get(base, params={ATTR: "PK001"})
     assert r.status_code == 200, r.text
     assert sorted(_feature_pcodes(r.json()["features"])) == ["PK001", "PK001"]
+
+
+# ---------------------------------------------------------------------------
+# STAC POST /search  (#1141 storage-mode-aware filter — Refs #1043)
+# ---------------------------------------------------------------------------
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_stac_search_post_attribute_filter_matches_only(
+    sysadmin_in_process_client: AsyncClient, catalog_id, collection_id
+):
+    """``POST /search`` equality on a declared COLUMNAR attribute column returns
+    only matching items.
+
+    Regression: ``search.py`` previously mapped attributes to a hard-coded
+    ``text("attributes->>'col'")`` JSONB accessor — a ``TextClause`` that
+    collapses the predicate to ``1=0`` and an accessor that is wrong for COLUMNAR
+    storage — so this returned either everything or nothing. The fix resolves
+    queryables storage-mode-aware via the QueryOptimizer (``sc_attributes."col"``)
+    with text()-safe bound parameters, sharing the ``/items`` CQL pipeline.
+    """
+    await _create_collection_with_attribute_schema(catalog_id, collection_id)
+    await _ingest_items(sysadmin_in_process_client, catalog_id, collection_id)
+
+    search = f"/stac/catalogs/{catalog_id}/search"
+
+    # Equality on a value held by a single item.
+    r = await sysadmin_in_process_client.post(
+        search,
+        json={
+            "collections": [collection_id],
+            "filter": {"field": ATTR, "operator": "eq", "value": "PK002"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert _feature_pcodes(r.json()["features"]) == ["PK002"]
+
+    # A value shared by two items returns exactly those two.
+    r = await sysadmin_in_process_client.post(
+        search,
+        json={
+            "collections": [collection_id],
+            "filter": {"field": ATTR, "operator": "eq", "value": "PK001"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert sorted(_feature_pcodes(r.json()["features"])) == ["PK001", "PK001"]
+
+
+@MARKER
+@pytest.mark.asyncio
+async def test_stac_search_post_unknown_property_rejected(
+    sysadmin_in_process_client: AsyncClient, catalog_id, collection_id
+):
+    """``POST /search`` with a filter on an undeclared property is rejected with
+    HTTP 400 — not a 500, and never silently ignored."""
+    await _create_collection_with_attribute_schema(catalog_id, collection_id)
+    await _ingest_items(sysadmin_in_process_client, catalog_id, collection_id)
+
+    r = await sysadmin_in_process_client.post(
+        f"/stac/catalogs/{catalog_id}/search",
+        json={
+            "collections": [collection_id],
+            "filter": {"field": "no_such_column", "operator": "eq", "value": "x"},
+        },
+    )
+    assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"

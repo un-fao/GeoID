@@ -18,12 +18,60 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
+import re
 from typing import Dict, Any, Tuple, Optional, Set, Union, TYPE_CHECKING
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql import column as sql_column
 
 logger = logging.getLogger(__name__)
+
+# A SQLAlchemy ``text()`` placeholder name is matched by a ``\w``-only scanner,
+# so a bind-parameter name containing any other character cannot be round-tripped
+# when the compiled WHERE fragment is later executed via ``text(sql)``.
+_SAFE_PARAM_NAME_RE = re.compile(r"^\w+$")
+
+
+def _sanitize_bind_param_names(
+    where: str, params: Dict[str, Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """Rename bind-parameter names that are not ``text()``-safe.
+
+    pygeofilter derives each bind-parameter name from the mapped column
+    expression, so a queryable that resolves to a quoted or dotted expression —
+    a COLUMNAR attribute column ``sc_attributes."col"`` or a JSONB accessor
+    ``attributes->>'col'`` — yields a name like ``sc_attributes_"col"_1`` that
+    still contains the quote / ``->>`` characters. Both the ``/items`` stream
+    path and the STAC ``POST /search`` path later wrap the fragment in
+    ``text(sql)``, whose ``:name`` scanner stops at the first non-word character
+    and truncates the placeholder, so binding fails ("A value is required for
+    bind parameter ...").
+
+    Rewrite every unsafe placeholder in ``where`` and its ``params`` key to a
+    synthetic ``cqlp_N`` name. Already-safe names (the common case) are returned
+    untouched. The replacement matches a whole ``:name`` token (trailing
+    word-boundary guard) so an IN-list expansion whose names differ only in a
+    trailing digit (``..._1`` vs ``..._10``) is never partially rewritten, and
+    each ``cqlp_N`` is checked against the names already in use so it cannot
+    collide with an existing safe parameter.
+    """
+    unsafe = [k for k in params if not _SAFE_PARAM_NAME_RE.match(k)]
+    if not unsafe:
+        return where, params
+    new_params = {k: v for k, v in params.items() if _SAFE_PARAM_NAME_RE.match(k)}
+    used = set(new_params)
+    idx = 0
+    # Longest first so a name that is a textual prefix of another is rewritten
+    # before the shorter one is processed.
+    for key in sorted(unsafe, key=len, reverse=True):
+        while f"cqlp_{idx}" in used:
+            idx += 1
+        safe = f"cqlp_{idx}"
+        used.add(safe)
+        idx += 1
+        where = re.sub(rf":{re.escape(key)}(?!\w)", f":{safe}", where)
+        new_params[safe] = params[key]
+    return where, new_params
 
 # CQL2-Text escapes a single quote inside a string literal by doubling it
 # (``'O''Brien'`` → ``O'Brien``). The bundled pygeofilter (0.3.3) lark grammar
@@ -273,8 +321,8 @@ def parse_cql_filter(
         compiled = sql_expr.compile(
             compile_kwargs={"render_postcompile": True}
         )
-        
-        return str(compiled), compiled.params
+
+        return _sanitize_bind_param_names(str(compiled), dict(compiled.params))
 
     except Exception as e:
         # Wrap generic errors into ValueError so callers can handle them as "Bad Request"
@@ -351,7 +399,7 @@ def parse_cql2_json_filter(
             compile_kwargs={"render_postcompile": True}
         )
 
-        return str(compiled), compiled.params
+        return _sanitize_bind_param_names(str(compiled), dict(compiled.params))
 
     except Exception as e:
         if isinstance(e, ValueError):
