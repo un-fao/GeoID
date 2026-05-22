@@ -76,3 +76,34 @@ def test_renamed_geometry_column_selected_for_non_mvt():
     )
     req = _mixin()._build_base_query_request({"geom_format": "WKB"}, cfg)
     assert "the_geom" in _fields(req)
+
+
+def test_cql_filter_deferred_to_transform_path_not_parsed_with_null_mapping():
+    """A ``cql_filter`` in params must be carried on ``QueryRequest.cql_filter``
+    so ``_apply_query_transformations`` resolves it against the real
+    field_mapping (built from the collection's queryable fields). The base
+    builder must NOT pre-parse it with ``field_mapping=None`` — that raises
+    "field_mapping is required for SQL conversion" and, on the tiles/MVT path,
+    silently drops the whole collection from the tile (empty 204). This is the
+    per-``asset_id`` tile-filter regression.
+    """
+    cfg = SimpleNamespace(
+        sidecars=[
+            GeometriesSidecarConfig(),
+            FeatureAttributeSidecarConfig(
+                attribute_schema=[
+                    AttributeSchemaEntry(name="CODE", type=PostgresType.TEXT),
+                ],
+                asset_id_field="asset_id",
+                index_asset_id=True,
+            ),
+        ]
+    )
+    req = _mixin()._build_base_query_request(
+        {"geom_format": "MVT", "cql_filter": "asset_id='ITAL1_01'"}, cfg
+    )
+    # Carried through untouched — the transform path owns CQL→SQL conversion.
+    assert req.cql_filter == "asset_id='ITAL1_01'"
+    # And it must NOT have been baked into raw_where here (that only happens
+    # in the transform path, with the proper field_mapping).
+    assert not req.raw_where
