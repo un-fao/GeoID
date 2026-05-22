@@ -126,6 +126,6 @@ async def test_describe_feature_type_missing_table(
     assert r.status_code == 200
     assert "application/xsd" in r.headers["content-type"]
     assert f'name="{collection_id}"' in r.text
-    # 'geoid' is internal and not exposed by default in sidecar config (expose_geoid=False)
-    # WFS exposes 'id' as the standard identifier.
+    # 'geoid' is internal and not surfaced as a property; WFS exposes 'id' as
+    # the standard identifier (the id itself defaults to the geoid — #1212).
     assert 'name="id"' in r.text

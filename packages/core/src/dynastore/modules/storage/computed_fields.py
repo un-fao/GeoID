@@ -658,14 +658,23 @@ class FeatureType(BaseModel):
     bare feature with the missing enriched fields silently absent;
     ``strict`` raises. ``external_id_as_feature_id`` controls whether a
     row's ``external_id`` (stored by the attributes sidecar) overrides the
-    default ``feature.id`` (``geoid``); purely a wire-shape decision.
+    default ``feature.id`` (``geoid``); purely a wire-shape decision and
+    **off by default** — the stable internal ``geoid`` is the id unless a
+    collection explicitly opts in. ``expose_created`` surfaces the storage
+    ``transaction_time`` as a ``created`` property; also **off by default**
+    so the read response mirrors the input feature 1:1 (only the id is
+    replaced by the geoid). ``expose_geoid`` optionally surfaces the internal
+    geoid as a ``geoid`` property — useful only when ``external_id`` is the id
+    (otherwise the id already is the geoid); a no-op in the default shape.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     expose: List[str] = Field(default_factory=list)
     failure_mode: Literal["strict", "best_effort"] = "best_effort"
-    external_id_as_feature_id: bool = True
+    external_id_as_feature_id: bool = False
+    expose_created: bool = False
+    expose_geoid: bool = False
 
 
 __all__ = [

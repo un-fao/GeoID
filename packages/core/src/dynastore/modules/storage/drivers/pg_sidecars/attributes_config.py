@@ -241,14 +241,12 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     index_external_id: bool = Field(
         default=True, description="Create unique index on external_id"
     )
-    # ``external_id_as_feature_id`` lives on ``ItemsReadPolicy.feature_type``
-    # (wire-shape decision, not a storage knob). The sidecar's
-    # ``provides_feature_id`` property advertises capability only — the
-    # policy decides whether to surface ``external_id`` as ``feature.id``.
-    expose_geoid: bool = Field(
-        default=False,
-        description="Add geoid to feature properties if external_id is not unique",
-    )
+    # geoid/external_id *exposure* is a read-shape decision and lives on
+    # ``ItemsReadPolicy.feature_type`` (``external_id_as_feature_id``,
+    # ``expose_created``), NOT on this storage sidecar. The sidecar's
+    # ``provides_feature_id`` property advertises capability only — the policy
+    # decides whether to surface ``external_id`` as ``feature.id``. (The former
+    # storage-side ``expose_geoid`` knob was removed in #1212.)
 
     asset_id_field: Optional[str] = Field(
         default="asset_id",

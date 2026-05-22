@@ -35,7 +35,8 @@ class TestItemsReadPolicyShape:
         p = ItemsReadPolicy()
         assert p.feature_type.failure_mode == "best_effort"
         assert p.feature_type.expose == []
-        assert p.feature_type.external_id_as_feature_id is True
+        # geoid is the default feature id (#1212)
+        assert p.feature_type.external_id_as_feature_id is False
 
     def test_output_transformers_not_a_field(self) -> None:
         # Transformer wiring lives on the routing config (#950), not here.

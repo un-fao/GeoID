@@ -39,7 +39,6 @@ def mock_col_config():
                 sidecar_type="attributes",
                 storage_mode=AttributeStorageMode.JSONB,
                 index_external_id=True,
-                expose_geoid=False,
                 index_asset_id=True,
                 validity_column="valid_from",
                 attribute_schema=None,
@@ -247,9 +246,10 @@ def test_build_optimized_query(mock_col_config, mock_registry):
 
 
 def test_read_policy_disables_external_id_as_feature_id(mock_col_config, mock_registry):
-    """When ItemsReadPolicy.feature_type.external_id_as_feature_id is False,
-    QueryOptimizer must NOT alias the sidecar's external_id as ``id`` —
-    feature.id reverts to h.geoid regardless of sidecar capability."""
+    """By default (and when external_id_as_feature_id is False) QueryOptimizer
+    must NOT alias the sidecar's external_id as ``id`` — feature.id is h.geoid
+    regardless of sidecar capability; the external_id alias appears only when a
+    collection opts in (#1212)."""
     from dynastore.modules.storage.read_policy import ItemsReadPolicy
     from dynastore.modules.storage.computed_fields import FeatureType
 
@@ -298,19 +298,19 @@ def test_read_policy_disables_external_id_as_feature_id(mock_col_config, mock_re
         raw_where=None, include_total_count=False,
     )
 
-    # Default (no policy) — external_id IS aliased as id
+    # Default (no policy) — geoid IS the id; external_id is NOT aliased (#1212)
     optimizer = QueryOptimizer(mock_col_config)
     sql_default, _ = optimizer.build_optimized_query(req, "schema", "table")
-    assert "COALESCE(sc_attributes.external_id, h.geoid::text) AS id" in sql_default
+    assert "COALESCE(sc_attributes.external_id" not in sql_default
+    assert "h.geoid AS id" in sql_default
 
-    # Policy disables — external_id is NOT aliased; falls back to h.geoid
+    # Policy opts in — external_id IS aliased as id
     policy = ItemsReadPolicy(
-        feature_type=FeatureType(external_id_as_feature_id=False)
+        feature_type=FeatureType(external_id_as_feature_id=True)
     )
-    optimizer_off = QueryOptimizer(mock_col_config, read_policy=policy)
-    sql_off, _ = optimizer_off.build_optimized_query(req, "schema", "table")
-    assert "COALESCE(sc_attributes.external_id" not in sql_off
-    assert "h.geoid AS id" in sql_off
+    optimizer_on = QueryOptimizer(mock_col_config, read_policy=policy)
+    sql_on, _ = optimizer_on.build_optimized_query(req, "schema", "table")
+    assert "COALESCE(sc_attributes.external_id, h.geoid::text) AS id" in sql_on
 
 
 def test_map_row_to_feature_forwards_read_policy(mock_col_config) -> None:
