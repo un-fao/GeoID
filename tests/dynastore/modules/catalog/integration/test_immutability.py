@@ -320,6 +320,80 @@ async def test_catalog_config_frozen_once_collection_exists(
 
 
 @pytest.mark.asyncio
+async def test_first_write_collection_override_frozen_1198(
+    app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
+):
+    """#1198: a FIRST-TIME collection-tier override of an Immutable shape field
+    on a MATERIALIZED collection is frozen — even though no collection-tier row
+    exists yet to compare against.
+
+    Pre-fix bug: the materialization gate only ran when a stored row already
+    existed at the tier (``current_config is not None``). A first-time override
+    inherits its effective value from the catalog tier, so ``current_config``
+    was ``None`` and the freeze was skipped — letting a divergent shape slip
+    past for an already-materialized collection (re-opening #1079 via the
+    collection tier). Approach A compares the incoming override against the
+    inherited baseline, restricted to the fields the caller explicitly set.
+    """
+    import asyncio
+
+    catalogs = get_protocol(CatalogsProtocol)
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await asyncio.sleep(2)
+    await catalogs.create_catalog(catalog_obj)
+    await catalogs.create_collection(catalog_id, collection_obj)
+
+    config_manager = get_protocol(ConfigsProtocol)
+
+    # 1. CATALOG-tier baseline policy (inherited by the collection, no
+    #    collection-tier row).
+    baseline = ItemsWritePolicy(validity=ValiditySpec(start_from="context"))
+    await config_manager.set_config(
+        ItemsWritePolicy, _pin_all(baseline),
+        catalog_id=catalog_id, check_immutability=False,
+    )
+
+    # 2. Materialise the collection (one item) so the gate engages.
+    from dynastore.extensions.features.ogc_models import FeatureDefinition
+
+    await catalogs.upsert(
+        catalog_id, collection_id,
+        FeatureDefinition(
+            type="Feature", id=f"fw1198_seed_{catalog_id[:8]}",
+            geometry={"type": "Point", "coordinates": [12.5, 41.9]},
+            properties={"name": "seed"},
+        ),
+    )
+
+    # 3. FIRST-TIME collection override that changes the Immutable ``validity``
+    #    shape relative to the inherited catalog value → frozen (#1198).
+    diverging = ItemsWritePolicy(
+        validity=ValiditySpec(start_from="properties.start_date")
+    )
+    with pytest.raises(ImmutableConfigError) as ei:
+        await config_manager.set_config(
+            ItemsWritePolicy, _pin_all(diverging),
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
+    assert "validity" in str(ei.value)
+
+    # 4. Positive control: a first-time override changing ONLY a Mutable knob
+    #    (on_conflict), leaving the inherited shape intact, is still allowed.
+    mutable_only = ItemsWritePolicy(
+        validity=ValiditySpec(start_from="context"),  # == inherited, unchanged
+        on_conflict=WriteConflictPolicy.REFUSE_RETURN,
+    )
+    await config_manager.set_config(  # must NOT raise
+        ItemsWritePolicy, _pin_all(mutable_only),
+        catalog_id=catalog_id, collection_id=collection_id,
+    )
+    persisted = await config_manager.get_config(
+        ItemsWritePolicy, catalog_id, collection_id,
+    )
+    assert persisted.on_conflict == WriteConflictPolicy.REFUSE_RETURN
+
+
+@pytest.mark.asyncio
 async def test_config_deletion(
     app_lifespan, catalog_obj, catalog_id, collection_obj, collection_id
 ):
