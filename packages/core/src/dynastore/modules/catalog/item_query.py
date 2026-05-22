@@ -382,21 +382,16 @@ class ItemQueryMixin:
             raw_params=params.get("raw_params", {}),
         )
 
-        # CQL Filter
+        # CQL Filter — carry it through on the QueryRequest. The actual
+        # CQL→SQL conversion happens in ``_apply_query_transformations``,
+        # which builds the field_mapping from the collection's queryable
+        # fields (``get_all_queryable_fields``). Pre-parsing here with
+        # ``field_mapping=None`` raised "field_mapping is required for SQL
+        # conversion" and, on the tiles/MVT path, that exception dropped the
+        # whole collection from the tile (empty 204) — breaking every CQL2
+        # tile filter, e.g. per-``asset_id`` rendering.
         if params.get("cql_filter"):
-            from dynastore.modules.tools.cql import parse_cql_filter
-
-            cql_where_str, cql_params = parse_cql_filter(
-                params["cql_filter"], field_mapping=None, parser_type="ecql"
-            )
-            if cql_where_str:
-                if query_req.raw_where:
-                    query_req.raw_where = (
-                        f"({query_req.raw_where}) AND ({cql_where_str})"
-                    )
-                else:
-                    query_req.raw_where = cql_where_str
-                query_req.raw_params.update(cql_params)
+            query_req.cql_filter = params["cql_filter"]
 
         return query_req
 
