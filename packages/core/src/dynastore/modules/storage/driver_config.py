@@ -1324,23 +1324,25 @@ async def _validate_write_policy(
     collection_id: "Optional[str]",
     db_resource: "Optional[Any]",
 ) -> None:
-    """Cross-validate the EXTERNAL_ID ComputedField path against ItemsSchema.fields.
+    """Cross-validate the EXTERNAL_ID source path against ItemsSchema.fields.
 
-    If a ``ComputedField(kind=EXTERNAL_ID)`` declares a ``name`` and an
-    ``ItemsSchema`` exists at the same scope, the referenced field must
-    appear in ``ItemsSchema.fields``.
+    The ``external_id`` source path's leaf must reference a field declared in
+    the resolved ``ItemsSchema`` at the same scope (or the system fields
+    ``geoid`` / ``id``). Enforced consistently at **every** scope where a
+    schema is resolvable — catalog and collection alike — so a policy can
+    never name an undeclared field at one tier while being rejected at
+    another. The check is skipped only when no schema is configured yet at
+    the scope (nothing to validate against) or when ``external_id`` is unset.
 
-    Path "geoid" or "id" is always accepted (system fields). If
-    ``ItemsSchema`` is not yet configured, validation is skipped.
+    Resolution is via the config waterfall, so a collection inherits the
+    catalog (and platform) schema. The leaf is taken from the dotted path
+    (``properties.code`` → ``code``).
     """
     if not isinstance(config, ItemsWritePolicy):
         return
     ext_id = config.external_id_path()
     if not ext_id or ext_id in _ALWAYS_VALID_EXTERNAL_ID_FIELDS:
         return
-
-    if not (catalog_id and collection_id):
-        return  # only validate at collection scope
 
     # Extract leaf field name from dot-path (e.g. "properties.code" → "code")
     field_key = ext_id.split(".")[-1]
@@ -1360,15 +1362,20 @@ async def _validate_write_policy(
         )
         defined_fields = getattr(schema, "fields", {})
         if not defined_fields:
-            return  # no fields defined yet — skip validation
+            return  # no schema defined yet at this scope — nothing to check
 
         if field_key not in defined_fields:
+            scope = (
+                f"{catalog_id}/{collection_id}"
+                if collection_id
+                else (catalog_id or "platform")
+            )
             raise ValueError(
-                f"ItemsWritePolicy ComputedField(kind=EXTERNAL_ID, name='{ext_id}') "
-                f"(field key: '{field_key}') is not defined in ItemsSchema.fields "
-                f"for {catalog_id}/{collection_id}. "
-                f"Defined fields: {sorted(defined_fields)}. "
-                f"Set 'geoid' or 'id' to use system identity fields without schema restriction."
+                f"ItemsWritePolicy external_id path '{ext_id}' "
+                f"(field key: '{field_key}') is not declared in ItemsSchema.fields "
+                f"for {scope}. Declared fields: {sorted(defined_fields)}. "
+                f"Declare '{field_key}' in items_schema, or set external_id to "
+                f"'geoid' / 'id' to use a system identity field."
             )
     except ValueError:
         raise
