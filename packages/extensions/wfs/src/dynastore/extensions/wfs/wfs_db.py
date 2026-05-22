@@ -71,7 +71,7 @@ def _map_protocol_type_to_sqlalchemy(proto_type: str) -> Any:
         return String
     if proto_type in ("integer", "int", "bigint", "smallint"):
         return Integer
-    if proto_type in ("float", "numeric", "double precision", "real"):
+    if proto_type in ("float", "double", "numeric", "double precision", "real"):
         return Float
     if proto_type == "boolean":
         return Boolean

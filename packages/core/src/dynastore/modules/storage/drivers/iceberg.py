@@ -623,16 +623,22 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
         if entity_level != "item" or not collection_id:
             return {}
 
+        # Native Iceberg type (substring-matched, lowercased) -> canonical
+        # data_type (see ``dynastore.models.field_types``). No bare "time" key —
+        # it is a substring of "timestamp"/"timestamptz".
         iceberg_type_map = {
             "boolean": ("boolean", [FieldCapability.FILTERABLE]),
             "int": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "long": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "float": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "double": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "long": ("bigint", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "float": ("double", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "double": ("double", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "decimal": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
             "string": ("string", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
-            "date": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
-            "timestamp": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
-            "timestamptz": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "uuid": ("uuid", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "binary": ("binary", []),
+            "date": ("date", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "timestamptz": ("timestamp", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "timestamp": ("timestamp", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
         }
 
         try:

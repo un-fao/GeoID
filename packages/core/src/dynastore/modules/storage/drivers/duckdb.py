@@ -610,20 +610,25 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
             FieldCapability,
         )
 
+        # Native DuckDB type (substring-matched, uppercased) -> canonical
+        # data_type (see ``dynastore.models.field_types``). Substring keys mean
+        # order does not matter here only because every temporal key resolves to
+        # the same family — do NOT add a bare "TIME" key ("TIME" is a substring
+        # of "TIMESTAMP").
         duckdb_type_map = {
             "VARCHAR": ("string", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "BIGINT": ("bigint", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
             "INTEGER": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "BIGINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
             "SMALLINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
             "TINYINT": ("integer", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "FLOAT": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
-            "DOUBLE": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "DECIMAL": ("numeric", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "FLOAT": ("double", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
+            "DOUBLE": ("double", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE, FieldCapability.AGGREGATABLE]),
             "BOOLEAN": ("boolean", [FieldCapability.FILTERABLE]),
-            "DATE": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
-            "TIMESTAMP": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
-            "TIMESTAMP WITH TIME ZONE": ("datetime", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "TIMESTAMP": ("timestamp", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
+            "DATE": ("date", [FieldCapability.FILTERABLE, FieldCapability.SORTABLE]),
             "GEOMETRY": ("geometry", [FieldCapability.SPATIAL]),
-            "BLOB": ("unknown", []),
+            "BLOB": ("binary", []),
         }
 
         with _borrow_conn() as conn:
