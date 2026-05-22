@@ -1153,12 +1153,17 @@ class CatalogService(CatalogsProtocol):
         """Get catalog model from database."""
         async with managed_transaction(self.engine) as conn:
             result = await _get_catalog_query.execute(conn, id=catalog_id)
-            router_metadata = await self._resolve_catalog_router_metadata(
-                catalog_id, db_resource=conn,
-            )
-            return self._unpack_catalog_row(
-                result, router_metadata=router_metadata,
-            )
+        # Release the ``catalog.catalogs`` AccessShareLock before the router
+        # fan-out.  ``_resolve_catalog_router_metadata`` reaches every
+        # registered domain driver, some of which are network-bound (e.g.
+        # Elasticsearch); holding this read transaction open across that I/O
+        # leaves the backend ``idle in transaction`` and convoys a DDL
+        # ``AccessExclusive`` waiter, which froze the platform (#1233/#1234).
+        # The fan-out runs on its own connection (``db_resource=None``).
+        router_metadata = await self._resolve_catalog_router_metadata(catalog_id)
+        return self._unpack_catalog_row(
+            result, router_metadata=router_metadata,
+        )
 
     async def get_catalog_model(
         self, catalog_id: str, ctx: Optional["DriverContext"] = None
@@ -1168,12 +1173,16 @@ class CatalogService(CatalogsProtocol):
         if db_resource:
             async with managed_transaction(db_resource) as conn:
                 result = await _get_catalog_query.execute(conn, id=catalog_id)
-                router_metadata = await self._resolve_catalog_router_metadata(
-                    catalog_id, db_resource=conn,
-                )
-                catalog = self._unpack_catalog_row(
-                    result, router_metadata=router_metadata,
-                )
+            # Keep the router fan-out (network-bound driver I/O) out of the
+            # catalog.catalogs read transaction so it can't be held
+            # idle-in-transaction across that I/O (#1234); see
+            # _get_catalog_model_db.  The fan-out reads on its own connection.
+            router_metadata = await self._resolve_catalog_router_metadata(
+                catalog_id,
+            )
+            catalog = self._unpack_catalog_row(
+                result, router_metadata=router_metadata,
+            )
         else:
             catalog = await _catalog_model_cache(self, catalog_id)
 
@@ -1425,58 +1434,48 @@ class CatalogService(CatalogsProtocol):
                 query = DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS)
                 results = await query.execute(conn, limit=limit, offset=offset, q=f"%{q}%")
                 
-            # M2.4 — overlay router-supplied metadata per-row.  Each row
-            # carries a catalog_id we look up through the router; the
-            # merged envelope wins over the legacy catalog.catalogs
-            # columns.
-            #
-            # Why a sequential loop and not ``asyncio.gather``: the
-            # router's per-driver reads share ``conn`` (we pass
-            # ``db_resource=conn`` so reads see the caller's transaction
-            # snapshot).  asyncpg enforces one in-flight statement per
-            # connection — concurrent statements on the same connection
-            # raise ``InterfaceError: another operation is in progress``.
-            # A ``gather`` that *looks* parallel is actually either
-            # (a) racy on the shared cursor, or (b) silently serialised
-            # by the wire lock.  Explicit sequential iteration documents
-            # the real execution shape.
-            #
-            # For a list of N catalogs × M domain drivers that's still
-            # N×M sequential round-trips.  Batch-friendly refactoring
-            # (single SELECT joining the split tables) is a latency
-            # optimisation deferred to M3+.  Until then, log a warning
-            # when the page × driver product gets large enough that
-            # operators will notice the latency — makes the degradation
-            # observable instead of silent.
-            router_drivers_count = len(self._list_catalog_store_driver_types())
-            expected_roundtrips = len(results) * max(router_drivers_count, 1)
-            if expected_roundtrips >= _LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD:
-                logger.warning(
-                    "list_catalogs will issue ~%d sequential SQL "
-                    "round-trips (%d rows × %d domain drivers). "
-                    "Consider reducing ``limit`` or adopting the "
-                    "batched JOIN query planned for M3+.",
-                    expected_roundtrips, len(results), router_drivers_count,
-                )
+        # M2.4 — overlay router-supplied metadata per-row.  Each row carries
+        # a catalog_id we look up through the router; the merged envelope wins
+        # over the legacy catalog.catalogs columns.
+        #
+        # The fan-out runs OUTSIDE the read transaction above: holding the
+        # ``catalog.catalogs`` AccessShareLock across N×M driver round-trips
+        # (some network-bound) is the list-path twin of the single-row
+        # idle-in-transaction leak fixed in #1234.  Each per-row fan-out reads
+        # on its own connection (``db_resource=None``).
+        #
+        # The loop stays sequential for now (it was previously forced
+        # sequential by sharing one connection; with per-driver connections a
+        # future ``asyncio.gather`` is possible).  For a page of N catalogs ×
+        # M domain drivers that is N×M round-trips; warn when the product gets
+        # large enough that operators will notice the latency.
+        router_drivers_count = len(self._list_catalog_store_driver_types())
+        expected_roundtrips = len(results) * max(router_drivers_count, 1)
+        if expected_roundtrips >= _LIST_CATALOGS_ROUNDTRIP_WARN_THRESHOLD:
+            logger.warning(
+                "list_catalogs will issue ~%d sequential SQL "
+                "round-trips (%d rows × %d domain drivers). "
+                "Consider reducing ``limit`` or adopting the "
+                "batched JOIN query planned for M3+.",
+                expected_roundtrips, len(results), router_drivers_count,
+            )
 
-            models: List[Catalog] = []
-            for r in results:
-                row_id = (
-                    r._mapping["id"] if hasattr(r, "_mapping") else r["id"]
-                ) if r else None
-                router_metadata = (
-                    await self._resolve_catalog_router_metadata(
-                        row_id, db_resource=conn,
-                    )
-                    if row_id is not None
-                    else None
-                )
-                model = self._unpack_catalog_row(
-                    r, router_metadata=router_metadata,
-                )
-                if model is not None:
-                    models.append(model)
-            return models
+        models: List[Catalog] = []
+        for r in results:
+            row_id = (
+                r._mapping["id"] if hasattr(r, "_mapping") else r["id"]
+            ) if r else None
+            router_metadata = (
+                await self._resolve_catalog_router_metadata(row_id)
+                if row_id is not None
+                else None
+            )
+            model = self._unpack_catalog_row(
+                r, router_metadata=router_metadata,
+            )
+            if model is not None:
+                models.append(model)
+        return models
 
     async def search_catalogs(
         self,
