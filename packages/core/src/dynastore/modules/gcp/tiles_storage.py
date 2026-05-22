@@ -19,7 +19,7 @@ import tempfile
 from typing import Optional, Any, Dict
 from dynastore.tools.cache import cached, cache_clear
 from datetime import timedelta
-from dynastore.modules.tiles.tiles_module import TileStorageProtocol, TileArchiveStorageProtocol
+from dynastore.modules.tiles.tiles_module import TileStorageProtocol, TileArchiveStorageProtocol, read_pmtiles_tile
 from dynastore.modules.tiles.tiles_config import TilesCachingConfig
 from dynastore.modules.concurrency import run_in_thread
 from dynastore.models.protocols import StorageProtocol, CloudStorageClientProtocol, CloudIdentityProtocol
@@ -297,20 +297,20 @@ class StorageBackedTileArchive(TileArchiveStorageProtocol):
         return await self._get_storage().file_exists(path)
 
     async def get_tile_from_archive(self, catalog_id: str, collection_id: str, tms_id: str, z: int, x: int, y: int) -> Optional[bytes]:
-        try:
-            from apmtiles import AsyncPMTilesReader  # type: ignore[import]
-        except ImportError:
-            logger.error("apmtiles not installed; cannot read PMTiles archives.")
-            return None
         path = await self._archive_path(catalog_id, collection_id, tms_id)
         if not path:
             return None
         storage = self._get_storage()
-        async def _range_read(offset: int, length: int) -> bytes:
+
+        async def _range_read(offset: int, length: int) -> Optional[bytes]:
             return await storage.download_bytes_range(path, offset, length)
+
+        # Same header -> directory -> tile traversal as the PG archive reader
+        # (#1241): range-read the object-storage PMTiles directly via the
+        # ``pmtiles`` primitives, with no dependency on an external reader
+        # package, so a single-tile read never pulls the whole archive.
         try:
-            reader = AsyncPMTilesReader(_range_read)
-            return await reader.get_tile(z, x, y)
+            return await read_pmtiles_tile(_range_read, z, x, y)
         except Exception as exc:
             logger.warning("Failed reading tile %d/%d/%d from PMTiles %s: %s", z, x, y, path, exc)
             return None

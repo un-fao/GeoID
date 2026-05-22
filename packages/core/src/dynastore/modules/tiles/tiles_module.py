@@ -19,7 +19,17 @@
 import logging
 import hashlib
 from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any, Protocol, BinaryIO, runtime_checkable
+from typing import (
+    Optional,
+    List,
+    Dict,
+    Any,
+    Protocol,
+    BinaryIO,
+    Awaitable,
+    Callable,
+    runtime_checkable,
+)
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules import (
@@ -1179,6 +1189,58 @@ async def ensure_pmtiles_archive_storage_exists(conn: DbResource, schema: str) -
     await DDLQuery(_PMTILES_ARCHIVE_STORAGE_DDL.format(schema=schema)).execute(conn)
 
 
+async def read_pmtiles_tile(
+    range_read: Callable[[int, int], Awaitable[Optional[bytes]]],
+    z: int,
+    x: int,
+    y: int,
+) -> Optional[bytes]:
+    """Resolve a single tile from a PMTiles archive using only range reads.
+
+    ``range_read(offset, length)`` returns those bytes from the archive (or
+    ``None``/empty when the archive is absent). The header (127 bytes), the
+    directory entries actually walked and the tile itself are the only reads, so
+    serving one tile never materialises the whole archive. This is the single
+    traversal shared by every archive backend — the PG BYTEA reader and the
+    object-storage reader (#1206, #1241) — built on the ``pmtiles``
+    deserialization primitives rather than a backend-specific reader package.
+
+    Returns the tile bytes, or ``None`` if the archive or the tile is absent.
+    """
+    from pmtiles.tile import (
+        deserialize_directory,
+        deserialize_header,
+        find_tile,
+        zxy_to_tileid,
+    )
+
+    header_bytes = await range_read(0, 127)
+    if not header_bytes:
+        return None
+    header = deserialize_header(header_bytes)
+    tile_id = zxy_to_tileid(z, x, y)
+    dir_offset = header["root_offset"]
+    dir_length = header["root_length"]
+    # PMTiles caps directory nesting at one root + leaf levels; the spec's
+    # reference reader bounds the walk at depth 4.
+    for _ in range(4):
+        dir_bytes = await range_read(dir_offset, dir_length)
+        if not dir_bytes:
+            return None
+        entry = find_tile(deserialize_directory(dir_bytes), tile_id)
+        if entry is None:
+            return None
+        if entry.run_length == 0:
+            # Leaf-directory pointer — descend and resolve again.
+            dir_offset = header["leaf_directory_offset"] + entry.offset
+            dir_length = entry.length
+            continue
+        return await range_read(
+            header["tile_data_offset"] + entry.offset, entry.length
+        )
+    return None
+
+
 class PGTileArchive(TileArchiveStorageProtocol):
     """PG BYTEA archive store. On-premise fallback only.
 
@@ -1288,48 +1350,15 @@ class PGTileArchive(TileArchiveStorageProtocol):
         x: int,
         y: int,
     ) -> Optional[bytes]:
-        from pmtiles.tile import (
-            deserialize_directory,
-            deserialize_header,
-            find_tile,
-            zxy_to_tileid,
-        )
-
         schema = await self._get_schema(catalog_id)
-        try:
-            header_bytes = await self._read_archive_range(
-                schema, collection_id, tms_id, 0, 127
+
+        async def _range_read(offset: int, length: int) -> Optional[bytes]:
+            return await self._read_archive_range(
+                schema, collection_id, tms_id, offset, length
             )
-            if not header_bytes:
-                return None
-            header = deserialize_header(header_bytes)
-            tile_id = zxy_to_tileid(z, x, y)
-            dir_offset = header["root_offset"]
-            dir_length = header["root_length"]
-            # PMTiles caps directory nesting at one root + leaf levels; the
-            # spec's reference reader bounds the walk at depth 4.
-            for _ in range(4):
-                dir_bytes = await self._read_archive_range(
-                    schema, collection_id, tms_id, dir_offset, dir_length
-                )
-                if not dir_bytes:
-                    return None
-                entry = find_tile(deserialize_directory(dir_bytes), tile_id)
-                if entry is None:
-                    return None
-                if entry.run_length == 0:
-                    # Leaf-directory pointer — descend and resolve again.
-                    dir_offset = header["leaf_directory_offset"] + entry.offset
-                    dir_length = entry.length
-                    continue
-                return await self._read_archive_range(
-                    schema,
-                    collection_id,
-                    tms_id,
-                    header["tile_data_offset"] + entry.offset,
-                    entry.length,
-                )
-            return None
+
+        try:
+            return await read_pmtiles_tile(_range_read, z, x, y)
         except Exception as exc:
             if "42P01" in str(exc):  # archive table not provisioned yet
                 return None
