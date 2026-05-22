@@ -137,11 +137,14 @@ def test_apply_unknown_preset_returns_404(_patched_protocols):
 
 
 def test_apply_geoid_preset_flows_audience_configs_through_set_config(_patched_protocols):
-    """Geoid preset emits two audience configs in addition to the three
-    routing tiers. Pin that the apply loop walks the audience dict and
-    invokes ``set_config`` for each — otherwise the operator-PUT path
-    silently skips the anonymous opt-ins and the catalog ships with a
-    private-only posture.
+    """Geoid preset emits one audience config (lookup-only) in addition to
+    the three routing tiers. Pin that the apply loop walks the audience dict
+    and invokes ``set_config`` for it — otherwise the operator-PUT path
+    silently skips the anonymous lookup opt-in and the catalog ships with a
+    private-only posture (no anonymous lookup).
+
+    The preset must NOT emit ``collection_write_audience``: lookup-only mode
+    cannot coexist with anonymous create (un-fao/GeoID#1204).
     """
     # Geoid preset must be registered (extension auto-registers on import).
     import dynastore.extensions.geoid  # noqa: F401
@@ -159,17 +162,16 @@ def test_apply_geoid_preset_flows_audience_configs_through_set_config(_patched_p
         "collection_template",
         "items_template",
         "audience:catalog_lookup_audience",
-        "audience:collection_write_audience",
     ]
 
     classes = [call.args[0] for call in _patched_protocols.set_config.await_args_list]
     assert CatalogLookupAudience in classes
-    assert CollectionWriteAudience in classes
+    assert CollectionWriteAudience not in classes
 
-    # All audience set_config calls must scope to the catalog tier.
+    # The audience set_config call must scope to the catalog tier.
     audience_calls = [
         c for c in _patched_protocols.set_config.await_args_list
-        if c.args[0] in (CatalogLookupAudience, CollectionWriteAudience)
+        if c.args[0] is CatalogLookupAudience
     ]
     for call in audience_calls:
         assert call.kwargs["catalog_id"] == "cat-fao"
@@ -286,9 +288,9 @@ def test_delete_after_apply_round_trip_clears_all_slots(
 def test_delete_geoid_preset_walks_audiences_leaf_first(
     _patched_protocols_with_persistence,
 ):
-    """Geoid preset emits audience configs in addition to the three
-    routing tiers. Rollback must also unapply the audiences and they
-    must trail the routing tiers in the response."""
+    """Geoid preset emits one audience config in addition to the three
+    routing tiers. Rollback must also unapply the audience and it must
+    trail the routing tiers in the response."""
     import dynastore.extensions.geoid  # noqa: F401
 
     client = TestClient(_app())
@@ -306,7 +308,6 @@ def test_delete_geoid_preset_walks_audiences_leaf_first(
     ]
     assert set(deleted[3:]) == {
         "audience:catalog_lookup_audience",
-        "audience:collection_write_audience",
     }
     assert _patched_protocols_with_persistence._store == {}
 
