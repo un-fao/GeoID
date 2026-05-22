@@ -504,6 +504,47 @@ class ConfigService(ConfigsProtocol):
             self.engine, self._get_catalog_manager(), catalog_id, SNAPSHOT_REF_KEY
         )
 
+    async def _enforce_first_write_against_inherited(
+        self,
+        cls: Type[PluginConfig],
+        config: PluginConfig,
+        catalog_id: str,
+        collection_id: Optional[str],
+        conn: DbResource,
+    ) -> None:
+        """#1198: enforce immutability on a first write at a tier.
+
+        When a tier (catalog or collection) has no stored row yet for ``cls``,
+        the resource's effective value is *inherited* from a parent tier and may
+        already be materialized (e.g. a catalog default baked into a collection's
+        physical columns on its first item write). The plain materialization gate
+        is skipped in that case (``current_config is None``), which let a
+        first-time override introduce a divergent Immutable shape — re-opening
+        #1079 via the collection tier.
+
+        Resolve the inherited baseline via the waterfall (``get_config`` with the
+        current tier's row still absent → parent-tier-effective) and enforce
+        immutability against it, restricted to the fields the caller explicitly
+        sent so a partial override does not raise false positives on Immutable
+        fields a parent tier customized but the caller never touched.
+        """
+        set_fields = set(getattr(config, "__pydantic_fields_set__", set()) or set())
+        if not set_fields:
+            return
+        inherited = await self.get_config(
+            cls,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            ctx=DriverContext(db_resource=conn),
+        )
+        if inherited is None:
+            return
+        await enforce_config_immutability(
+            inherited, config,
+            catalog_id=catalog_id, collection_id=collection_id, conn=conn,
+            restrict_to_fields=set_fields,
+        )
+
     async def _set_catalog_config(
         self,
         catalog_id: str,
@@ -548,6 +589,14 @@ class ConfigService(ConfigsProtocol):
                     await enforce_config_immutability(
                         current_config, config,
                         catalog_id=catalog_id, collection_id=None, conn=conn,
+                    )
+                else:
+                    # #1198: first write at this tier — compare against the
+                    # inherited (parent-tier) baseline so a divergent override
+                    # cannot slip past the freeze on an already-materialized
+                    # resource.
+                    await self._enforce_first_write_against_inherited(
+                        cls, config, catalog_id, None, conn,
                     )
 
             # Phase 2 — validate (pre-persist).
@@ -642,6 +691,14 @@ class ConfigService(ConfigsProtocol):
                     await enforce_config_immutability(
                         current_config, config,
                         catalog_id=catalog_id, collection_id=collection_id, conn=conn,
+                    )
+                else:
+                    # #1198: first write at this tier — compare against the
+                    # inherited (catalog/platform) baseline so a divergent
+                    # override cannot slip past the freeze on an already-
+                    # materialized collection.
+                    await self._enforce_first_write_against_inherited(
+                        cls, config, catalog_id, collection_id, conn,
                     )
 
             # Phase 2 — validate (pre-persist).

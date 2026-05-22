@@ -44,6 +44,7 @@ from typing import (
     Any,
     Dict,
     Optional,
+    Set,
     Tuple,
     Type,
     Union,
@@ -351,6 +352,7 @@ async def enforce_config_immutability(
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
     conn: Any = None,
+    restrict_to_fields: Optional[Set[str]] = None,
 ) -> None:
     """Reject Immutable / WriteOnce field mutations.
 
@@ -368,6 +370,14 @@ async def enforce_config_immutability(
     Machine-assigned ``Computed`` fields (``physical_table``) are handled
     upstream by ``restore_system_assigned_fields`` (caller value discarded
     before this runs), so no caller can reach a divergence here.
+
+    ``restrict_to_fields`` (#1198): when set, only these field names are
+    compared. The first-write-at-tier path passes the caller's explicitly-set
+    fields (``__pydantic_fields_set__``) so a partial override compared against
+    an *inherited* baseline cannot raise false positives on Immutable fields a
+    parent tier customized but the caller never touched. ``None`` (default)
+    compares every field — the behaviour for an update against a stored row at
+    the same tier.
     """
     if current_config is None:
         return
@@ -377,6 +387,8 @@ async def enforce_config_immutability(
 
     materialized = await is_materialized(model_class, catalog_id, collection_id, conn)
     for field_name, field_info in model_class.model_fields.items():
+        if restrict_to_fields is not None and field_name not in restrict_to_fields:
+            continue
         current_val = getattr(current_config, field_name)
         new_val = getattr(new_config, field_name)
         if is_write_once_field(field_info):
