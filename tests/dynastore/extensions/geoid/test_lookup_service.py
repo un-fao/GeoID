@@ -68,6 +68,65 @@ async def test_lookup_by_external_id_returns_empty_when_protocol_missing(monkeyp
 
 
 # ---------------------------------------------------------------------------
+# #1210 — cross-collection external_id resolution for POST .../items-search.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_external_id_across_collections_with_collection_delegates(monkeypatch):
+    """A given collection_id short-circuits to a single per-collection lookup —
+    no collection enumeration."""
+    from dynastore.extensions.geoid import lookup_service as svc
+
+    primitive = AsyncMock(return_value=[{"geoid": "g", "catalog_id": "cat", "collection_id": "col"}])
+    monkeypatch.setattr(svc, "lookup_by_external_id", primitive)
+    # list_collections must NOT be reached on the narrowed path.
+    monkeypatch.setattr(svc, "get_protocol", lambda _p: pytest.fail("should not resolve protocols"))
+
+    rows = await svc.lookup_by_external_id_across_collections(
+        "cat", "ext-1", collection_id="col", limit=5,
+    )
+    assert rows == [{"geoid": "g", "catalog_id": "cat", "collection_id": "col"}]
+    primitive.assert_awaited_once_with("cat", "col", "ext-1", limit=5)
+
+
+@pytest.mark.asyncio
+async def test_external_id_across_collections_enumerates_and_aggregates(monkeypatch):
+    """No collection_id → enumerate the catalog's collections and aggregate hits
+    across them (external_id is not globally unique)."""
+    from dynastore.extensions.geoid import lookup_service as svc
+
+    fake_catalogs = MagicMock()
+    fake_catalogs.list_collections = AsyncMock(
+        return_value=[SimpleNamespace(id="col-a"), SimpleNamespace(id="col-b")]
+    )
+    monkeypatch.setattr(svc, "get_protocol", lambda _p: fake_catalogs)
+
+    async def fake_primitive(catalog_id, collection_id, external_id, limit=1):
+        # col-a has a hit, col-b does not.
+        if collection_id == "col-a":
+            return [{"geoid": "ga", "catalog_id": catalog_id, "collection_id": "col-a",
+                     "external_id": external_id}]
+        return []
+
+    monkeypatch.setattr(svc, "lookup_by_external_id", fake_primitive)
+
+    rows = await svc.lookup_by_external_id_across_collections("cat", "ext-1", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["collection_id"] == "col-a"
+    assert rows[0]["external_id"] == "ext-1"
+
+
+@pytest.mark.asyncio
+async def test_external_id_across_collections_returns_empty_when_protocol_missing(monkeypatch):
+    from dynastore.extensions.geoid import lookup_service as svc
+
+    monkeypatch.setattr(svc, "get_protocol", lambda _p: None)
+    rows = await svc.lookup_by_external_id_across_collections("cat", "ext-1", limit=10)
+    assert rows == []
+
+
+# ---------------------------------------------------------------------------
 # #975 — pre-filter UUID-parseable inputs; surface malformed ones via WARN log.
 # ---------------------------------------------------------------------------
 

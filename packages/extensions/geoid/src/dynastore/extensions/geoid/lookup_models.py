@@ -1,44 +1,51 @@
-"""Pydantic models for the geoid-extension lookup routes.
+"""Pydantic models for the geoid-extension item-search route.
 
 These shapes are part of the customer-facing contract for
-``/search/catalogs/{catalog_id}/geoid`` (PG-backed). They previously lived
-in the search extension as a re-export indirection; they were moved here
-when the geoid lookup routes stopped depending on Elasticsearch.
+``POST /search/catalogs/{catalog_id}/items-search`` (PG-backed). The route
+resolves an item within a catalog by exactly one of ``geoid`` or
+``external_id`` and returns a :class:`GeoidCollection`.
 """
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 
-class GeoidSearchBody(BaseModel):
-    """Body for tenant-scoped lookup against the per-tenant feature index.
+class ItemsSearchBody(BaseModel):
+    """Body for ``POST /search/catalogs/{catalog_id}/items-search`` (#1210).
 
-    Either ``geoids`` (lookup across collections of the catalog) or the
-    pair ``(external_id, collection_id)`` (resolve a tenant's own item id
-    within a known collection) must be supplied. ``external_id`` alone is
-    rejected to prevent enumeration across collections.
+    Resolve an item within the path catalog by **exactly one** of:
+
+    * ``geoid`` — the platform-assigned id; resolved across all collections of
+      the catalog (geoid is unique within a catalog).
+    * ``external_id`` — the tenant's own id; resolved across all collections of
+      the catalog unless ``collection_id`` narrows it to one. ``external_id``
+      is not globally unique, so a cross-collection resolution may return more
+      than one row.
+
+    Supplying both ``geoid`` and ``external_id``, or neither, is a 400 — the
+    route enforces the xor at the handler.
     """
-    geoids: Optional[List[str]] = Field(
-        None, min_length=1, description="One or more geoid values to look up.",
-    )
-    catalog_id: Optional[str] = Field(
-        None,
-        description=(
-            "Tenant identifier. Required at the service layer; the path "
-            "variant `/catalogs/{catalog_id}/geoid` injects this for you."
-        ),
+    geoid: Optional[str] = Field(
+        None, description="Platform-assigned geoid to resolve (xor external_id).",
     )
     external_id: Optional[str] = Field(
-        None, description="Tenant's own item id (must be paired with collection_id).",
+        None, description="Tenant's own item id to resolve (xor geoid).",
     )
     collection_id: Optional[str] = Field(
-        None, description="Required when external_id is supplied.",
+        None,
+        description=(
+            "Optional: narrow an external_id resolution to a single collection. "
+            "When omitted, external_id is resolved across all collections of the "
+            "catalog. Ignored when geoid is supplied."
+        ),
     )
-    limit: int = Field(100, ge=1, le=10_000, description="Maximum number of results to return.")
+    limit: int = Field(
+        10, ge=1, le=10_000, description="Maximum number of results to return.",
+    )
 
 
 class GeoidResult(BaseModel):
-    """A single result from the per-tenant feature index."""
+    """A single resolved item."""
     geoid: str
     catalog_id: str
     collection_id: str
@@ -51,10 +58,10 @@ class GeoidResult(BaseModel):
 
 
 class GeoidCollection(BaseModel):
-    """Collection of geoid lookup results."""
+    """Collection of resolved items."""
     type: str = "GeoidCollection"
     results: List[GeoidResult] = Field(default_factory=list)
     numberReturned: Optional[int] = None
 
 
-__all__ = ["GeoidCollection", "GeoidResult", "GeoidSearchBody"]
+__all__ = ["GeoidCollection", "GeoidResult", "ItemsSearchBody"]
