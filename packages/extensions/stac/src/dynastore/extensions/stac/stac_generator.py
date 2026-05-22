@@ -33,6 +33,7 @@ from fastapi import HTTPException, Request, status
 from shapely import wkb
 from shapely.geometry import mapping, shape
 from dynastore.modules.db_config.query_executor import managed_transaction
+from dynastore.modules.elasticsearch.items_projection import strip_reserved_members
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 import dynastore.modules.db_config.shared_queries as shared_queries
 from dynastore.extensions.tools.url import (
@@ -847,7 +848,13 @@ async def create_item_from_feature(
     geometry = feature.geometry.model_dump() if feature.geometry else None
 
     # 6. Datetimes handling
-    properties = feature.properties or {}
+    # Strip GeoJSON/STAC structural members (id, geometry, …) that can ride into
+    # stored properties (the PG ``feature_id_expr AS id`` alias via the
+    # attributes sidecar, or an ES write echo). pystac stores ``properties``
+    # verbatim, so a leaked ``id`` would surface in the STAC echo; the canonical
+    # identity already lives at ``feature.id`` (-> ``item.id``). Keeps the
+    # POST/PUT echo aligned with the GET read contract (#1232).
+    properties = strip_reserved_members(feature.properties or {})
 
     # Resolve i18n dicts in properties down to a single string for the
     # requested language. Internal storage keeps Internationalized fields

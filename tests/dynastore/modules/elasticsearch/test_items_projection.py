@@ -21,6 +21,7 @@ from dynastore.modules.elasticsearch.items_projection import (
     build_known_fields,
     project_item_for_es,
     resolve_es_field_path,
+    strip_reserved_members,
 )
 from dynastore.modules.elasticsearch.mappings import (
     COMMON_PROPERTIES,
@@ -121,6 +122,56 @@ def test_project_item_for_es_drops_all_reserved_members_from_properties() -> Non
     }
     out = project_item_for_es(doc, known)
     assert out["properties"] == {"datetime": "2026-05-17T00:00:00Z"}
+
+
+# --- #1232: strip_reserved_members is the shared boundary helper used by the
+# POST/PUT echo and raw-row read fallback (ogc_generator._db_row_to_ogc_feature)
+# so the create response matches the GET read contract for both PG and ES.
+
+
+def test_strip_reserved_members_drops_leaked_id() -> None:
+    out = strip_reserved_members(
+        {"datetime": "2026-05-17T00:00:00Z", "id": "019e507b-64c9-72a1"}
+    )
+    assert out == {"datetime": "2026-05-17T00:00:00Z"}
+
+
+def test_strip_reserved_members_drops_all_reserved_members() -> None:
+    out = strip_reserved_members(
+        {
+            "datetime": "2026-05-17T00:00:00Z",
+            "id": "feat-3",
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+            "bbox": [0, 0, 0, 0],
+            "links": [],
+            "assets": {},
+            "collection": "col",
+            "stac_version": "1.0.0",
+            "stac_extensions": [],
+        }
+    )
+    assert out == {"datetime": "2026-05-17T00:00:00Z"}
+
+
+def test_strip_reserved_members_preserves_geoid_property() -> None:
+    # expose_geoid surfaces a ``geoid`` property (not a reserved member) — it
+    # must survive the strip; only structural identity (``id``) is removed.
+    out = strip_reserved_members(
+        {"datetime": "2026-05-17T00:00:00Z", "geoid": "019e507b", "id": "019e507b"}
+    )
+    assert out == {"datetime": "2026-05-17T00:00:00Z", "geoid": "019e507b"}
+
+
+def test_strip_reserved_members_returns_fresh_dict() -> None:
+    src = {"datetime": "2026-05-17T00:00:00Z", "id": "x"}
+    out = strip_reserved_members(src)
+    assert out is not src
+    assert "id" in src  # input not mutated
+
+
+def test_strip_reserved_members_passthrough_non_dict() -> None:
+    assert strip_reserved_members(None) is None  # type: ignore[arg-type]
 
 
 # --- b -----------------------------------------------------------------

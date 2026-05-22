@@ -381,6 +381,26 @@ _RESERVED_MEMBER_KEYS = frozenset({
 })
 
 
+def strip_reserved_members(properties: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of *properties* with GeoJSON/STAC structural members removed.
+
+    The members in :data:`_RESERVED_MEMBER_KEYS` (``id``, ``type``,
+    ``geometry``, …) are item-level identity and must never live inside
+    ``properties``. The create/update echo and the raw-row read fallback both
+    assemble response properties straight from stored data, which can still
+    carry an ``id``: on Postgres the ``feature_id_expr AS id`` alias rides in
+    via the attributes sidecar, and on Elasticsearch the write echo returns the
+    in-memory feature as-is. Stripping here keeps the POST/PUT echo aligned with
+    the GET contract that :func:`project_item_for_es` already enforces on the
+    read/index path (#1232). Exposure knobs are unaffected: ``expose_geoid``
+    adds a ``geoid`` property (not reserved, preserved) and ``created`` is gated
+    separately.
+    """
+    if not isinstance(properties, dict):
+        return properties
+    return {k: v for k, v in properties.items() if k not in _RESERVED_MEMBER_KEYS}
+
+
 def project_item_for_es(doc: Dict[str, Any], known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Reshape an item doc so unknown ``properties`` keys move to ``properties.extras``.
 
