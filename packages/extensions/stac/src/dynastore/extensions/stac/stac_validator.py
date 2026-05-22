@@ -39,6 +39,11 @@ from dynastore.models.localization import _is_valid_lang_key
 logger = logging.getLogger(__name__)
 
 
+# Property lanes whose contents are opaque user/extension data and must never
+# be reinterpreted as localized fields by the i18n coercion below.
+_OPAQUE_PROPERTY_KEYS = frozenset({"extras"})
+
+
 def _coerce_for_stac_validation(value: Any, lang: str = "en") -> Any:
     """Recursively coerce an internal payload into the shape STAC validators expect.
 
@@ -65,7 +70,19 @@ def _coerce_for_stac_validation(value: Any, lang: str = "en") -> Any:
                 or next(iter(value.values()), None)
             )
             return _coerce_for_stac_validation(picked, lang)
-        return {k: _coerce_for_stac_validation(v, lang) for k, v in value.items()}
+        # ``extras`` is the opaque per-catalog dynamic lane for unknown /
+        # extension properties (see ``items_projection``). Its contents are
+        # arbitrary user data, not localized fields, so they must pass through
+        # verbatim. The i18n detector above keys off a shape-only language
+        # regex, and common property keys (``id`` → Indonesian, ``it``, ``no``,
+        # …) collide with it — flattening ``extras`` would silently rewrite
+        # ``{"id": "..."}`` to a bare string and diverge from the Features
+        # endpoint, which returns the dict as-is (#1212).
+        return {
+            k: v if k in _OPAQUE_PROPERTY_KEYS
+            else _coerce_for_stac_validation(v, lang)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_coerce_for_stac_validation(v, lang) for v in value]
     if hasattr(value, "isoformat"):

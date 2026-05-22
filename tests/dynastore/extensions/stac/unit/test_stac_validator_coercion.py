@@ -72,6 +72,36 @@ def test_coerce_empty_dict_is_not_treated_as_i18n():
     assert _coerce_for_stac_validation({}) == {}
 
 
+# --- #1212: the ``extras`` lane is opaque user/extension data and must not be
+# flattened. The i18n detector keys off a shape-only language regex
+# (``^[a-z]{2}(-..)?$``), so a property object like ``{"id": "..."}`` (``id`` is
+# also ISO-639-1 Indonesian) was being mistaken for a localized field and
+# collapsed to a bare string — diverging the STAC item GET from the Features one,
+# which returns the dict verbatim. Coercion must leave ``extras`` alone.
+
+
+def test_coerce_does_not_flatten_extras_lane():
+    payload = {"datetime": "2024-01-15T00:00:00Z", "extras": {"id": "feat-1"}}
+    out = _coerce_for_stac_validation(payload)
+    assert out["extras"] == {"id": "feat-1"}
+
+
+def test_coerce_preserves_extras_with_two_letter_keys():
+    # Every key here matches the language-shape regex (id/it/no) yet this is
+    # arbitrary user data, not a localized field.
+    payload = {"extras": {"id": "A", "it": "B", "no": "C"}}
+    out = _coerce_for_stac_validation(payload)
+    assert out["extras"] == {"id": "A", "it": "B", "no": "C"}
+
+
+def test_coerce_still_flattens_real_i18n_outside_extras():
+    # Regression guard: genuine localized fields are still collapsed.
+    payload = {"title": {"en": "Title", "it": "Titolo"}, "extras": {"id": "x"}}
+    out = _coerce_for_stac_validation(payload, lang="en")
+    assert out["title"] == "Title"
+    assert out["extras"] == {"id": "x"}
+
+
 def _minimal_collection() -> dict:
     """Builds a STAC Collection dict that exercises both reported failure
     modes: i18n dicts on ``links[].title`` + ``providers[].name`` and a
