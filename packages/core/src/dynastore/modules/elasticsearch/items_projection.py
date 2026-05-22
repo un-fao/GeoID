@@ -365,6 +365,22 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
     return build_known_fields(cfg)
 
 
+# GeoJSON / STAC top-level member names. These identify or structure the item
+# and must never appear inside ``properties``; if one leaks in it is dropped by
+# the projection rather than wrapped into the ``extras`` lane (#1212).
+_RESERVED_MEMBER_KEYS = frozenset({
+    "id",
+    "type",
+    "geometry",
+    "bbox",
+    "links",
+    "assets",
+    "collection",
+    "stac_version",
+    "stac_extensions",
+})
+
+
 def project_item_for_es(doc: Dict[str, Any], known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Reshape an item doc so unknown ``properties`` keys move to ``properties.extras``.
 
@@ -392,6 +408,14 @@ def project_item_for_es(doc: Dict[str, Any], known_fields: Dict[str, Dict[str, A
     new_props: Dict[str, Any] = {}
     extras: Dict[str, Any] = {}
     for k, v in props.items():
+        if k in _RESERVED_MEMBER_KEYS:
+            # GeoJSON/STAC structural members are item-level identity, never
+            # user properties. If one leaks into ``properties`` (e.g. the input
+            # feature's top-level ``id`` preserved as ``properties.id``) drop it
+            # rather than routing it into ``extras`` — otherwise it surfaces as
+            # ``extras: {"id": ...}`` on read and diverges across endpoints
+            # (#1212). The canonical value already lives at the doc top level.
+            continue
         if k == "extras":
             if isinstance(v, dict):
                 extras.update(v)

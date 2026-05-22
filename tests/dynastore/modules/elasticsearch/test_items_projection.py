@@ -85,6 +85,44 @@ def test_project_item_for_es_passthrough_when_no_properties() -> None:
     assert out == doc
 
 
+# --- #1212: GeoJSON/STAC structural members are item-level identity, never user
+# properties. When one leaks into ``properties`` (e.g. the input feature's
+# top-level ``id`` preserved as ``properties.id``) it must be dropped, not routed
+# into ``extras`` — otherwise it surfaces as ``extras: {"id": ...}`` on read and
+# the STAC endpoint mis-coerces it to a bare string.
+
+
+def test_project_item_for_es_drops_leaked_reserved_id_from_properties() -> None:
+    known = build_known_fields()
+    doc = {
+        "id": "feat-1",
+        "type": "Feature",
+        "properties": {"datetime": "2026-05-17T00:00:00Z", "id": "feat-1"},
+    }
+    out = project_item_for_es(doc, known)
+    assert out["properties"] == {"datetime": "2026-05-17T00:00:00Z"}
+    assert "extras" not in out["properties"]
+    # Top-level identity is untouched.
+    assert out["id"] == "feat-1"
+
+
+def test_project_item_for_es_drops_all_reserved_members_from_properties() -> None:
+    known = build_known_fields()
+    doc = {
+        "id": "feat-2",
+        "properties": {
+            "datetime": "2026-05-17T00:00:00Z",
+            "id": "feat-2",
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+            "bbox": [0, 0, 0, 0],
+            "collection": "col",
+        },
+    }
+    out = project_item_for_es(doc, known)
+    assert out["properties"] == {"datetime": "2026-05-17T00:00:00Z"}
+
+
 # --- b -----------------------------------------------------------------
 
 
