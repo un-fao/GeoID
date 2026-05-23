@@ -42,7 +42,7 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_static
 from .policies import stac_policies, stac_role_bindings
 from dynastore.extensions.tools.db import get_async_engine
-from dynastore.extensions.tools.exception_handlers import handle_exception
+from dynastore.extensions.tools.exception_handlers import handle_or_raise
 from dynastore.modules.db_config.query_executor import (
     managed_transaction,
     ResultHandler,
@@ -528,15 +528,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 content=localized_data, status_code=status.HTTP_201_CREATED
             )
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="Catalog",
                 resource_id=definition.id,
                 operation="STAC Catalog creation",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def create_stac_collection(
         self,
@@ -569,15 +566,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 content=localized_data, status_code=status.HTTP_201_CREATED
             )
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="Collection",
                 resource_id=f"{catalog_id}:{request_body.id}",
                 operation="STAC Collection creation",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def replace_stac_catalog(
         self,
@@ -983,15 +977,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             logger.error(f"Validation error in add_stac_item: {e}", exc_info=True)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="STAC Item",
                 resource_id=f"{catalog_id}:{collection_id}",
                 operation="STAC Item creation",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
         if rejections:
             return self._build_rejection_response(accepted_rows, rejections, batch_size)
@@ -1001,7 +992,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         # Single-item path: render a full STAC Item response.
         # NOTE: the write transaction has already committed at this point.
-        # Rendering failures are surfaced via handle_exception but do NOT
+        # Rendering failures are surfaced via handle_or_raise but do NOT
         # roll back the written item — it is safely in PG and the OUTBOX.
         try:
             new_row = accepted_rows[0]
@@ -1028,15 +1019,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         except HTTPException:
             raise
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="STAC Item",
                 resource_id=f"{catalog_id}:{collection_id}",
                 operation="STAC Item response rendering",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def update_stac_item(
         self,
@@ -1130,15 +1118,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="STAC Item",
                 resource_id=f"{catalog_id}:{collection_id}:{item_id}",
                 operation="STAC Item update",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def delete_stac_item(
         self,
