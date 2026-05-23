@@ -79,6 +79,27 @@ async def _create_collection_with_attribute_schema(
     catalogs = get_protocol(CatalogsProtocol)
     await catalogs.ensure_catalog_exists(catalog_id)
 
+    # STAC items require a ``datetime``. Enable validity at the CATALOG tier —
+    # the ``ItemsWritePolicy.validity`` SSOT, overlaid onto the attributes
+    # sidecar at ``ensure_storage`` — BEFORE the collection materialises, so the
+    # item's ``properties.datetime`` is routed into the validity range and
+    # round-trips back as ``start_datetime``. Without a temporal sink a COLUMNAR
+    # collection drops ``datetime`` on write (#1253). ``validity`` is an
+    # Immutable shape field, so it must be set before the first collection arms
+    # the materialization freeze.
+    from dynastore.models.protocols import ConfigsProtocol
+    from dynastore.modules.storage.driver_config import ItemsWritePolicy
+    from dynastore.modules.storage.validity import ValiditySpec
+
+    configs = get_protocol(ConfigsProtocol)
+    write_policy = ItemsWritePolicy(validity=ValiditySpec(start_from="context"))
+    await configs.set_config(
+        ItemsWritePolicy,
+        ItemsWritePolicy.model_validate(write_policy.model_dump()),
+        catalog_id=catalog_id,
+        check_immutability=False,
+    )
+
     attr_sidecar = FeatureAttributeSidecarConfig(
         storage_mode=AttributeStorageMode.COLUMNAR,
         attribute_schema=[

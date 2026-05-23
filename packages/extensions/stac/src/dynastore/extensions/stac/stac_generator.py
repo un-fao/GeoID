@@ -785,6 +785,48 @@ def apply_hierarchy_links(
 
 
 
+def resolve_item_datetime(properties: Dict[str, Any]) -> Optional[datetime]:
+    """Resolve a STAC item's primary datetime from feature properties.
+
+    STAC requires every item to carry a ``datetime``. Resolution order, most
+    specific first: ``datetime`` → ``start_datetime`` → ``valid_from`` →
+    ``created`` → ``transaction_time``. ``start_datetime`` is how a validity
+    backed temporal column round-trips — ``lower(validity)`` is projected back
+    as ``start_datetime`` on read — and ``created`` / ``transaction_time`` carry
+    the ingestion timestamp.
+
+    Returns a timezone-aware ``datetime`` (naive values are assumed UTC), or
+    ``None`` when no parseable temporal value is present. A ``None`` result is
+    the #1253 trigger: a COLUMNAR collection without a validity sink drops the
+    item's datetime on write, so the stored row echoes back with no temporal
+    field. The caller stamps an ingestion-timestamp fallback in that case so the
+    echo stays valid STAC instead of 500-ing; enabling validity on the
+    collection preserves the item's own datetime.
+    """
+    for dt_field in (
+        "datetime",
+        "start_datetime",
+        "valid_from",
+        "created",
+        "transaction_time",
+    ):
+        val = properties.get(dt_field)
+        if not val:
+            continue
+        try:
+            dt = (
+                val
+                if isinstance(val, datetime)
+                else datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+            )
+        except (ValueError, TypeError):
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
+
+
 async def create_item_from_feature(
     request: Request,
     catalog_id: str,
@@ -867,25 +909,23 @@ async def create_item_from_feature(
         from .stac_validator import _coerce_for_stac_validation
         properties = _coerce_for_stac_validation(properties, lang=lang)
 
-    item_dt = None
+    item_dt = resolve_item_datetime(properties)
+    if item_dt is None:
+        # STAC requires a datetime. A COLUMNAR collection without a validity
+        # sink drops the item's datetime on write (#1253), so the echoed row
+        # carries no temporal value. Rather than 500 on an invalid item, stamp
+        # the ingestion timestamp; enabling validity on the collection routes
+        # the item's own datetime into the validity range and preserves it.
+        item_dt = datetime.now(timezone.utc)
+        logger.warning(
+            "STAC item '%s' (%s/%s) has no stored temporal value; using the "
+            "ingestion timestamp as datetime. Enable validity on the collection "
+            "to preserve item datetimes (#1253).",
+            getattr(feature, "id", None),
+            catalog_id,
+            collection_id,
+        )
 
-    # Resolve primary datetime: prefer 'datetime', then 'start_datetime', then 'valid_from', then 'created'
-    for dt_field in ["datetime", "start_datetime", "valid_from", "created"]:
-        val = properties.get(dt_field)
-        if val:
-            try:
-                if isinstance(val, datetime):
-                    item_dt = val
-                else:
-                    item_dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
-                # Ensure it's timezone aware for pystac
-                if item_dt.tzinfo is None:
-                    item_dt = item_dt.replace(tzinfo=timezone.utc)
-                break
-            except (ValueError, TypeError):
-                continue
-
-    # PySTAC Requirement: If datetime is None, both start_datetime and end_datetime should be present if possible.
     # 7. Create PySTAC Item
     item = pystac.Item(
         id=str(feature.id) if feature.id is not None else "",
