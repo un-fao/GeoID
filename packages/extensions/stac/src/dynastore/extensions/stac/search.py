@@ -167,6 +167,71 @@ def _build_cql2_field_mapping(optimizer: QueryOptimizer) -> Dict[str, Any]:
         for name, field_def in optimizer.get_all_queryable_fields().items()
     }
 
+async def _translate_filter_to_es(
+    cat_id: str,
+    cids: List[str],
+    filt: Union[AttributeFilter, QueryFilter],
+    driver: Any,
+) -> Optional[Dict[str, Any]]:
+    """Translate a STAC search ``filter`` to an Elasticsearch Query DSL clause.
+
+    Reuses the same queryables SSOT the PostgreSQL path uses
+    (``QueryOptimizer.get_all_queryable_fields`` via the collection's
+    ``ItemsPostgresqlDriverConfig`` — the config waterfall is driver-agnostic),
+    builds the ES field mapping (``build_es_field_mapping``; private flat doc vs
+    public extras-bucket selected from the driver's ``TENANT_ISOLATED``
+    capability), converts the filter to CQL2-JSON, parses it to a pygeofilter
+    AST, and emits a plain ES clause via the shared translator.
+
+    Returns ``None`` (→ caller falls back to the PG path, unchanged behaviour)
+    on ANY failure: missing config/protocols, an unknown queryable property, or
+    an unsupported operator. The first scoped collection drives the mapping,
+    consistent with the PG path (``collection_configs[target_collections[0]]``).
+    """
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.models.protocols.storage_driver import Capability
+        from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+        from dynastore.modules.storage.drivers.es_common import (
+            build_es_field_mapping,
+            cql_ast_to_es_query,
+        )
+        from dynastore.models.driver_context import DriverContext
+        from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return None
+        col_config = await configs.get_config(
+            ItemsPostgresqlDriverConfig,
+            catalog_id=cat_id,
+            collection_id=cids[0],
+            ctx=DriverContext(db_resource=None),
+        )
+        if col_config is None:
+            return None
+
+        optimizer = QueryOptimizer(col_config, consumer=ConsumerType.STAC)
+        private = Capability.TENANT_ISOLATED in getattr(
+            driver, "capabilities", frozenset()
+        )
+        field_mapping = build_es_field_mapping(
+            optimizer.get_all_queryable_fields(), private=private,
+        )
+
+        cql2_json = _filter_to_cql2_json(filt)
+        ast_node = parse_cql2_json(cql2_json)
+        return cql_ast_to_es_query(ast_node, field_mapping)
+    except Exception as exc:
+        logger.debug(
+            "STAC search → CQL2-ES translation skipped (catalog=%s, "
+            "collections=%s): %s — falling back to PG path.",
+            cat_id, cids, exc,
+        )
+        return None
+
+
 _COLLECTION_SORT_ALIASES: dict = {"code": "id", "label": "title"}
 _COLLECTION_DIRECT_SORT_COLUMNS = frozenset({"id", "catalog_id"})
 
@@ -240,31 +305,38 @@ async def _maybe_dispatch_to_es_search(
     Returns ``None`` (caller falls back to the PostgreSQL ``QueryOptimizer``
     path) when the dispatch is not applicable:
 
-    * a CQL2 ``filter`` is present (no CQL2→search-backend translator yet);
     * no collections are scoped;
     * the collections resolve to mixed drivers (can't serve in one query);
     * the resolved driver is a read-primary fallback (PostgreSQL, advertising
       ``Capability.QUERY_FALLBACK_SOURCE``) — i.e. the catalog has no
       dedicated search backend, the routing-aware "fall back to READ" case;
-    * the resolved driver is not an ES items driver (no ``is_es_items_driver``).
+    * the resolved driver is not an ES items driver (no ``is_es_items_driver``);
+    * a CQL2 ``filter`` is present but the resolved driver does not advertise
+      ``supports_cql_es``, or the filter cannot be translated to ES Query DSL
+      (unknown queryable property, unsupported operator) — the CQL path then
+      defers to the PG ``QueryOptimizer`` exactly as before.
 
     Closes the user-visible part of #222 (ES-routed collections returned 0
     items because every search unconditionally built raw PG SQL) and the
     driver-coupling reported on #989 (the fast path hardcoded the public ES
-    class and resolved ``Operation.READ`` instead of ``SEARCH``).
+    class and resolved ``Operation.READ`` instead of ``SEARCH``). A CQL2
+    ``filter`` is now translated to ES Query DSL (shared CQL2→ES translator,
+    queryables SSOT field mapping) and served by the ES driver too, instead of
+    forcing the PG path.
     """
-    # Only basic structural filters are routed to a search backend today;
-    # CQL2 filters continue to the PG path (no CQL2→backend translator yet).
-    if search_request.filter is not None:
-        return None
-
     cids = search_request.collections or []
     if not cids:
         return None
 
     from dynastore.modules.storage.router import get_items_search_driver
+    from dynastore.modules.storage.hints import Hint
     from dynastore.models.protocols.storage_driver import Capability
     from dynastore.models.query_builder import QueryRequest
+
+    has_filter = search_request.filter is not None
+    # Prefer the attribute-capable ES driver when a filter is present so the
+    # router resolves the driver that advertises ``ATTRIBUTE_FILTER``.
+    search_hints = frozenset({Hint.ATTRIBUTE_FILTER}) if has_filter else frozenset()
 
     # Resolve the items SEARCH driver per collection. All collections must
     # resolve to the same driver class to be served in a single query;
@@ -272,7 +344,7 @@ async def _maybe_dispatch_to_es_search(
     driver: Any = None
     for cid in cids:
         try:
-            resolved = await get_items_search_driver(cat_id, cid)
+            resolved = await get_items_search_driver(cat_id, cid, hints=search_hints)
         except Exception:
             return None
         candidate = resolved.driver
@@ -294,6 +366,20 @@ async def _maybe_dispatch_to_es_search(
     if not getattr(driver, "is_es_items_driver", False):
         return None
 
+    # CQL2 filter → ES Query DSL. Only proceed when the driver advertises
+    # CQL-ES support AND the filter translates; otherwise PG fallback. The
+    # field mapping reuses the same ``QueryOptimizer`` queryables SSOT the PG
+    # path uses (``_build_cql2_field_mapping``).
+    es_filter: Optional[Dict[str, Any]] = None
+    if search_request.filter is not None:
+        if not getattr(driver, "supports_cql_es", False):
+            return None
+        es_filter = await _translate_filter_to_es(
+            cat_id, cids, search_request.filter, driver,
+        )
+        if es_filter is None:
+            return None  # untranslatable → PG fallback
+
     # Multi-collection search: carry the collection set on the request so the
     # driver scopes via its terms filter and queries all shards. cids[0] is the
     # representative positional (the index is per-catalog, not per-collection).
@@ -305,6 +391,7 @@ async def _maybe_dispatch_to_es_search(
         datetime=search_request.datetime,
         limit=search_request.limit,
         offset=search_request.offset,
+        es_filter=es_filter,
     )
 
     try:

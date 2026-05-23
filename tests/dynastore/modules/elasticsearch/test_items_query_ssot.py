@@ -25,6 +25,8 @@ import pytest
 from dynastore.extensions.search.search_models import SearchBody
 from dynastore.extensions.search.search_service import _build_item_query
 from dynastore.modules.elasticsearch.items_query import (
+    PRIVATE_ENVELOPE_FIELDS,
+    PUBLIC_ENVELOPE_FIELDS,
     build_items_query,
     parse_datetime_filter,
 )
@@ -77,6 +79,55 @@ def test_build_items_query_matches_legacy_builder(fields):
         datetime=body.datetime,
     )
     assert got == expected, f"DSL drift for {fields!r}: {got!r} != {expected!r}"
+
+
+def _flatten(body: dict) -> list:
+    bool_ = body.get("bool", {})
+    return list(bool_.get("must", [])) + list(bool_.get("filter", []))
+
+
+def test_public_envelope_fields_are_the_default():
+    """The default field mapping uses the public per-catalog (STAC) shape."""
+    public = build_items_query(
+        ids=["a"], geoid=["g"], external_id=["x"], collections=["c"],
+    )
+    default = build_items_query(
+        ids=["a"], geoid=["g"], external_id=["x"], collections=["c"],
+        fields=PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert public == default
+    clauses = _flatten(public)
+    assert {"terms": {"id": ["a"]}} in clauses          # ids → id
+    assert {"terms": {"id": ["g"]}} in clauses          # geoid → id (public)
+    assert {"terms": {"_external_id": ["x"]}} in clauses  # external_id → _external_id
+    assert {"terms": {"collection": ["c"]}} in clauses    # collection
+
+
+def test_private_envelope_fields_target_canonical_names():
+    """The tenant-private index uses canonical envelope field names so a
+    structural query addresses ``collection_id`` / ``geoid`` / ``external_id``
+    instead of the public ``collection`` / ``id`` / ``_external_id`` — without
+    which every private structural search silently matches zero docs."""
+    q = build_items_query(
+        ids=["a"], geoid=["g"], external_id=["x"], collections=["c"],
+        fields=PRIVATE_ENVELOPE_FIELDS,
+    )
+    clauses = _flatten(q)
+    assert {"terms": {"geoid": ["a"]}} in clauses         # ids → geoid
+    assert {"terms": {"geoid": ["g"]}} in clauses         # geoid → geoid
+    assert {"terms": {"external_id": ["x"]}} in clauses   # external_id (un-prefixed)
+    assert {"terms": {"collection_id": ["c"]}} in clauses  # collection_id
+    # the public names must NOT leak into a private query
+    assert {"terms": {"collection": ["c"]}} not in clauses
+    assert {"terms": {"_external_id": ["x"]}} not in clauses
+
+
+def test_private_freetext_boosts_geoid_not_id():
+    """Free-text ``q`` boosts the index's id field — ``geoid`` on private."""
+    q = build_items_query(q="wheat", fields=PRIVATE_ENVELOPE_FIELDS)
+    mm = q["bool"]["must"][0]["multi_match"]
+    assert "geoid^3" in mm["fields"]
+    assert "id^3" not in mm["fields"]
 
 
 @pytest.mark.parametrize(

@@ -45,6 +45,7 @@ TENANT_FEATURE_MAPPING: Dict[str, Any] = {
         "catalog_id":            {"type": "keyword"},
         "collection_id":         {"type": "keyword"},
         "external_id":           {"type": "keyword"},
+        "asset_id":              {"type": "keyword"},
         "geometry":              {"type": "geo_shape"},
         "bbox":                  {"type": "float"},
         "simplification_factor": {"type": "float"},

@@ -393,8 +393,17 @@ async def run_ingestion_task(
                     if val is not None:
                         feature["properties"][item.map_to] = val
             else:
+                # Geometry / CSV source columns are consumed into the feature
+                # geometry and must not leak into the attribute set. The
+                # external_id *source* field is deliberately NOT reserved: unlike
+                # the geometry sources it is a genuine attribute — it backs its
+                # own materialised column and the write policy's
+                # ``derive.external_id`` reads it from ``properties`` at write
+                # time — so stripping it here would null both that column and the
+                # derived external_id. This is the ``"all"`` counterpart of
+                # listing the external_id field explicitly in ``attribute_mapping``
+                # (which already keeps it), so the two source modes now agree.
                 reserved = {
-                    mapping.external_id,
                     mapping.csv_lat_column,
                     mapping.csv_lon_column,
                     mapping.csv_elevation_column,

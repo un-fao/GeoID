@@ -47,6 +47,7 @@ class _FakeEsItemsDriver:
     """
 
     is_es_items_driver = True
+    supports_cql_es = True
     capabilities = frozenset({Capability.READ})
 
     def __init__(self, features: List[Feature], total: int):
@@ -226,11 +227,83 @@ async def test_dispatch_declines_for_non_es_driver(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_declines_when_cql_filter_present(monkeypatch):
+async def test_cql_filter_no_longer_forces_pg_when_driver_supports_cql(monkeypatch):
+    """A translatable CQL filter on a CQL-ES-capable driver is served by ES.
+
+    The translated clause is threaded onto the driver's ``QueryRequest.es_filter``
+    (instead of unconditionally declining to the PostgreSQL path).
+    """
+    drv = _FakeEsItemsDriver(features=[_feat("hit", "c1")], total=1)
+    _patch_resolver(monkeypatch, lambda cid: drv)
+
+    # Isolate the dispatch wiring: stub the CQL→ES translation so the test does
+    # not need a live ConfigsProtocol / QueryOptimizer. The point under test is
+    # that a present-and-translatable filter no longer forces the PG fallback and
+    # the clause reaches the driver request.
+    import dynastore.extensions.stac.search as _search
+
+    sentinel_clause = {"term": {"properties.cloud_cover": 10}}
+
+    async def _fake_translate(cat_id, cids, filt, driver):
+        return sentinel_clause
+
+    monkeypatch.setattr(_search, "_translate_filter_to_es", _fake_translate)
+
+    out = await _maybe_dispatch_to_es_search(
+        "cat-x",
+        _SearchRequest(
+            collections=["c1"],
+            filter=_search.AttributeFilter(field="cloud_cover", operator="eq", value=10),
+        ),
+    )
+
+    assert out is not None, "CQL filter must NOT force the PG path anymore"
+    assert drv.read_calls, "the ES driver must have served the search"
+    req = drv.read_calls[0]["request"]
+    assert req.es_filter == sentinel_clause
+
+
+@pytest.mark.asyncio
+async def test_cql_filter_declines_when_driver_lacks_cql_support(monkeypatch):
+    """An ES driver without ``supports_cql_es`` still falls back to PG."""
+
+    class _NoCqlEsDriver(_FakeEsItemsDriver):
+        supports_cql_es = False
+
+    drv = _NoCqlEsDriver(features=[], total=0)
+    _patch_resolver(monkeypatch, lambda cid: drv)
+
+    import dynastore.extensions.stac.search as _search
+
+    out = await _maybe_dispatch_to_es_search(
+        "cat-x",
+        _SearchRequest(
+            collections=["c1"],
+            filter=_search.AttributeFilter(field="x", operator="eq", value=1),
+        ),
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_cql_filter_declines_when_untranslatable(monkeypatch):
+    """A filter that cannot be translated (e.g. unknown property) → PG path."""
     drv = _FakeEsItemsDriver(features=[], total=0)
     _patch_resolver(monkeypatch, lambda cid: drv)
+
+    import dynastore.extensions.stac.search as _search
+
+    async def _fake_translate(cat_id, cids, filt, driver):
+        return None  # untranslatable
+
+    monkeypatch.setattr(_search, "_translate_filter_to_es", _fake_translate)
+
     out = await _maybe_dispatch_to_es_search(
-        "cat-x", _SearchRequest(collections=["c1"], filter={"op": "=", "args": []})
+        "cat-x",
+        _SearchRequest(
+            collections=["c1"],
+            filter=_search.AttributeFilter(field="x", operator="eq", value=1),
+        ),
     )
     assert out is None
 

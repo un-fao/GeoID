@@ -126,6 +126,7 @@ def test_apply_private_catalog_preset_includes_only_routing_no_audiences(_patche
         "catalog_routing",
         "collection_template",
         "items_template",
+        "asset_template",
     ]
 
 
@@ -161,6 +162,7 @@ def test_apply_geoid_preset_flows_audience_configs_through_set_config(_patched_p
         "catalog_routing",
         "collection_template",
         "items_template",
+        "asset_template",
         "audience:catalog_lookup_audience",
     ]
 
@@ -300,13 +302,15 @@ def test_delete_geoid_preset_walks_audiences_leaf_first(
     del_resp = client.delete("/admin/catalogs/cat-fao/presets/geoid")
     assert del_resp.status_code == 200, del_resp.text
     deleted = del_resp.json()["deleted"]
-    # Routing tiers leaf-first, then audiences in bundle order.
-    assert deleted[:3] == [
+    # Routing tiers leaf-first (items + asset share the leaf priority and
+    # keep insertion order), then audiences in bundle order.
+    assert deleted[:4] == [
         "items_template",
+        "asset_template",
         "collection_template",
         "catalog_routing",
     ]
-    assert set(deleted[3:]) == {
+    assert set(deleted[4:]) == {
         "audience:catalog_lookup_audience",
     }
     assert _patched_protocols_with_persistence._store == {}

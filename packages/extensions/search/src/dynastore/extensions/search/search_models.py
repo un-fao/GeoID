@@ -5,12 +5,15 @@ Catalog/collection keyword search has been retired from the public router
 and its bodies/response models (CatalogSearchBody, GenericCollection)
 were removed along with the endpoints.
 """
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SearchBody(BaseModel):
     """STAC API Item Search request body (POST /search)."""
+
+    # Accept both ``filter_lang`` and the STAC/OGC wire spelling ``filter-lang``.
+    model_config = ConfigDict(populate_by_name=True)
 
     q: Optional[str] = Field(
         None,
@@ -82,6 +85,25 @@ class SearchBody(BaseModel):
             "Hint: driver_ref of a SEARCH entry pinned in the catalog/collection's "
             "ItemsRoutingConfig.operations[SEARCH]. When omitted (or unknown), the "
             "first entry's driver is used. Unknown hints warn-and-fall-back to default."
+        ),
+    )
+    filter: Optional[Union[Dict[str, Any], str]] = Field(
+        None,
+        description=(
+            "CQL2 filter, ANDed with the other parameters. A JSON object is read "
+            "as cql2-json; a string as cql2-text. Property names resolve against "
+            "the collection's queryables (the same source of truth the items "
+            "schema and write policy expose). It is translated to the resolved "
+            "search backend's native query (Elasticsearch Query DSL). An unknown "
+            "queryable property or an unsupported operator is rejected with 400."
+        ),
+    )
+    filter_lang: Optional[str] = Field(
+        "cql2-json",
+        alias="filter-lang",
+        description=(
+            "Filter language for ``filter``: 'cql2-json' (default) or 'cql2-text'. "
+            "Inferred from the ``filter`` JSON/string type when omitted."
         ),
     )
 

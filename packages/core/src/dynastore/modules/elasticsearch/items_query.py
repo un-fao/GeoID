@@ -31,7 +31,45 @@ models.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+
+
+@dataclass(frozen=True)
+class EnvelopeFields:
+    """Names of the system-envelope fields a structural items query filters on.
+
+    The two ES item drivers write the same logical envelope under *different*
+    field names: the public per-catalog index uses STAC-flavoured names
+    (``collection``, ``id``, ``_external_id``) while the tenant-private index
+    uses the canonical names (``collection_id``, ``geoid``, ``external_id``).
+    A structural query must address whichever shape the resolved index carries,
+    so :func:`build_items_query` takes one of these mappings instead of
+    hard-coding a single shape (the D1 "reconcile public/private envelope"
+    divergence — until both shapes converge this keeps the SSOT honest for both
+    indexes).
+
+    ``geoid`` and ``item_id`` are distinct because publicly the STAC item ``id``
+    *is* the geoid (one field), whereas the private doc keeps a dedicated
+    ``geoid`` keyword.
+    """
+
+    collection: str = "collection"
+    item_id: str = "id"
+    geoid: str = "id"
+    external_id: str = "_external_id"
+
+
+#: Public per-catalog items index field names (STAC-flavoured) — the default.
+PUBLIC_ENVELOPE_FIELDS = EnvelopeFields()
+
+#: Tenant-private items index field names (canonical envelope).
+PRIVATE_ENVELOPE_FIELDS = EnvelopeFields(
+    collection="collection_id",
+    item_id="geoid",
+    geoid="geoid",
+    external_id="external_id",
+)
 
 
 def parse_sort(
@@ -105,6 +143,7 @@ def build_items_query(
     bbox: Optional[Sequence[float]] = None,
     intersects: Optional[Dict[str, Any]] = None,
     datetime: Optional[str] = None,
+    fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
 ) -> Dict[str, Any]:
     """Build an Elasticsearch items query DSL from structural search params.
 
@@ -133,7 +172,7 @@ def build_items_query(
                 "query": q,
                 "type": "best_fields",
                 "fields": [
-                    "id^3",
+                    f"{fields.item_id}^3",
                     "title.*^2",
                     "properties.title.*^2",
                     "description.*",
@@ -149,23 +188,25 @@ def build_items_query(
         })
 
     if ids:
-        filter_.append({"terms": {"id": ids}})
+        filter_.append({"terms": {fields.item_id: ids}})
 
     if geoid:
-        # In this stack the STAC Item ``id`` IS the geoid — the canonical
+        # In the public index the STAC Item ``id`` IS the geoid — the canonical
         # identifier the platform mints and the only field reliably indexed at
-        # the root for every item. ``properties.geoid`` and root ``geoid`` are
-        # reserved-but-unwritten in the public items mapping (#819).
-        filter_.append({"terms": {"id": geoid}})
+        # the root for every item (``properties.geoid`` and root ``geoid`` are
+        # reserved-but-unwritten in the public items mapping, #819). The private
+        # index keeps a dedicated root ``geoid`` keyword, so ``fields.geoid``
+        # selects the right one per index shape.
+        filter_.append({"terms": {fields.geoid: geoid}})
 
     if external_id:
-        # ``_external_id`` is the internal mirror written by the items driver
-        # (ItemsElasticsearchDriver._extract_external_id_from_doc); it is the
-        # only reliably-indexed external_id field across writers.
-        filter_.append({"terms": {"_external_id": external_id}})
+        # Public: ``_external_id`` is the internal mirror written by the items
+        # driver (ItemsElasticsearchDriver._extract_external_id_from_doc).
+        # Private: the doc carries an un-prefixed ``external_id`` root keyword.
+        filter_.append({"terms": {fields.external_id: external_id}})
 
     if collections:
-        filter_.append({"terms": {"collection": collections}})
+        filter_.append({"terms": {fields.collection: collections}})
 
     if bbox:
         lon_min, lat_min, lon_max, lat_max = bbox[:4]

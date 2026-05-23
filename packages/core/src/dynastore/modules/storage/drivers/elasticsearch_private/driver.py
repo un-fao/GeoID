@@ -42,6 +42,10 @@ from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
+from dynastore.modules.elasticsearch.items_query import (
+    PRIVATE_ENVELOPE_FIELDS,
+    EnvelopeFields,
+)
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.driver_config import (
     ItemsElasticsearchPrivateDriverConfig,
@@ -126,6 +130,11 @@ class ItemsElasticsearchPrivateDriver(
     })
 
     # ``is_available`` / ``_get_client`` inherited from ``_ElasticsearchBase``.
+
+    # The private doc carries the canonical envelope names (``collection_id`` /
+    # ``geoid`` / ``external_id``) instead of the public STAC-flavoured ones, so
+    # structural queries built by the shared SSOT must address that shape.
+    _envelope_fields: ClassVar[EnvelopeFields] = PRIVATE_ENVELOPE_FIELDS
 
     def _items_index_name(self, catalog_id: str) -> str:
         """Private per-tenant index ``{prefix}-{catalog_id}-private-items``.
@@ -214,6 +223,12 @@ class ItemsElasticsearchPrivateDriver(
             catalog_id, collection_id, db_resource=db_resource,
         )
 
+        # Ingestion-context asset identity (mirrors the public driver's
+        # ``_asset_id`` tracking field) — projected onto the private doc as
+        # a top-level ``asset_id`` keyword for the WRITE path.
+        ctx = context or {}
+        asset_id = ctx.get("asset_id")
+
         if not await es.indices.exists(index=index_name):
             try:
                 await es.indices.create(
@@ -234,6 +249,7 @@ class ItemsElasticsearchPrivateDriver(
                 continue
             doc = build_tenant_feature_doc(
                 item, catalog_id=catalog_id, collection_id=collection_id,
+                asset_id=asset_id,
             )
             doc, factor, mode = maybe_simplify_for_es(
                 doc, simplify=simplify_geometry,
@@ -261,39 +277,84 @@ class ItemsElasticsearchPrivateDriver(
         db_resource: Optional[Any] = None,
     ) -> AsyncIterator[Feature]:
 
-        if not entity_ids:
-            return
-
         index_name = self._items_index_name(catalog_id)
         es = self._get_client()
 
         if not await es.indices.exists(index=index_name):
             return
 
-        for geoid in entity_ids:
+        # --- by-id lookup (geoid token retrieval) -------------------------
+        if entity_ids:
+            for geoid in entity_ids:
+                try:
+                    resp = await es.get(index=index_name, id=geoid)
+                    yield self._private_source_to_feature(
+                        resp["_source"], catalog_id, collection_id, geoid,
+                    )
+                except Exception:
+                    pass
+            return
+
+        # --- structural search (routed via Operation.SEARCH) --------------
+        # The private index is not sharded by collection, so reuse the shared
+        # ``_build_read_search_body``. Passing ``self._envelope_fields`` makes it
+        # scope via the canonical ``collection_id`` term (the private doc shape)
+        # and fold any pre-translated CQL2→ES ``request.es_filter`` in via
+        # ``_query_request_to_es``. ``_collection_routing`` returns ``None`` for
+        # the private index, so the resulting ``routing`` param is harmless.
+        if request is None:
+            return
+        body, params = self._build_read_search_body(
+            collection_id, request, limit, offset, self._envelope_fields,
+        )
+        params.pop("routing", None)  # private index is not collection-routed
+        try:
+            resp = await es.search(index=index_name, body=body, params=params)
+        except Exception as e:
+            logger.warning(
+                "ItemsElasticsearchPrivateDriver: search failed for %s/%s: %s",
+                catalog_id, collection_id, e,
+            )
+            return
+        for hit in resp.get("hits", {}).get("hits", []):
             try:
-                resp = await es.get(index=index_name, id=geoid)
-                source = resp["_source"]
-                props = dict(source.get("properties") or {})
-                # Surface tenant-feature bookkeeping in properties so callers
-                # can detect simplification without a separate API.
-                if "external_id" in source:
-                    props["external_id"] = source["external_id"]
-                if "simplification_factor" in source:
-                    props["simplification_factor"] = source["simplification_factor"]
-                if "simplification_mode" in source:
-                    props["simplification_mode"] = source["simplification_mode"]
-                props["catalog_id"] = source.get("catalog_id", catalog_id)
-                props["collection_id"] = source.get("collection_id", collection_id)
-                yield Feature(
-                    type="Feature",
-                    id=source.get("geoid", geoid),
-                    geometry=source.get("geometry"),
-                    properties=props,
-                    bbox=source.get("bbox"),  # type: ignore[call-arg]
+                src = hit["_source"]
+                yield self._private_source_to_feature(
+                    src, catalog_id, collection_id, src.get("geoid"),
                 )
             except Exception:
                 pass
+
+    @staticmethod
+    def _private_source_to_feature(
+        source: Dict[str, Any],
+        catalog_id: str,
+        collection_id: str,
+        fallback_id: Any,
+    ) -> Feature:
+        """Reconstruct a :class:`Feature` from a private tenant doc ``_source``.
+
+        Surfaces tenant-feature bookkeeping (``external_id`` and the
+        simplification markers) in ``properties`` so callers can detect
+        simplification without a separate API — shared by the by-id lookup and
+        the structural-search read paths.
+        """
+        props = dict(source.get("properties") or {})
+        if "external_id" in source:
+            props["external_id"] = source["external_id"]
+        if "simplification_factor" in source:
+            props["simplification_factor"] = source["simplification_factor"]
+        if "simplification_mode" in source:
+            props["simplification_mode"] = source["simplification_mode"]
+        props["catalog_id"] = source.get("catalog_id", catalog_id)
+        props["collection_id"] = source.get("collection_id", collection_id)
+        return Feature(
+            type="Feature",
+            id=source.get("geoid", fallback_id),
+            geometry=source.get("geometry"),
+            properties=props,
+            bbox=source.get("bbox"),  # type: ignore[call-arg]
+        )
 
     async def delete_entities(
         self,

@@ -48,6 +48,7 @@ from typing import (
 
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.modules.storage.routing_config import (
+    AssetRoutingConfig,
     CatalogRoutingConfig,
     CollectionRoutingConfig,
     ItemsRoutingConfig,
@@ -118,12 +119,13 @@ class PresetBundle:
     * **Generic** — ``PresetBundle(entries=(PresetBundleEntry(...), ...))``
       — the canonical form going forward.
     * **Legacy tier-fields** — ``PresetBundle(catalog_routing=...,
-      collection_template=..., items_template=..., audience_configs={...})``
-      — equivalent to the pre-#972 surface; lifted into ``entries`` at
-      construction with the documented apply/rollback ordering. The
-      tier-field accessors stay as read-only properties so existing test
-      assertions (``bundle.catalog_routing`` / ``bundle.items_template``
-      / ``bundle.audience_configs``) keep working.
+      collection_template=..., items_template=..., asset_template=...,
+      audience_configs={...})`` — equivalent to the pre-#972 surface;
+      lifted into ``entries`` at construction with the documented
+      apply/rollback ordering. The tier-field accessors stay as read-only
+      properties so existing test assertions (``bundle.catalog_routing`` /
+      ``bundle.items_template`` / ``bundle.asset_template`` /
+      ``bundle.audience_configs``) keep working.
 
     The two construction paths cannot be mixed in a single call.
     """
@@ -133,6 +135,7 @@ class PresetBundle:
     catalog_routing: Optional[CatalogRoutingConfig] = None
     collection_template: Optional[CollectionRoutingConfig] = None
     items_template: Optional[ItemsRoutingConfig] = None
+    asset_template: Optional[AssetRoutingConfig] = None
     audience_configs: Dict[str, PluginConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -140,6 +143,7 @@ class PresetBundle:
             self.catalog_routing is not None
             or self.collection_template is not None
             or self.items_template is not None
+            or self.asset_template is not None
             or bool(self.audience_configs)
         )
         if self.entries and legacy_supplied:
@@ -155,6 +159,7 @@ class PresetBundle:
         self.catalog_routing = self._first_instance(CatalogRoutingConfig)
         self.collection_template = self._first_instance(CollectionRoutingConfig)
         self.items_template = self._first_instance(ItemsRoutingConfig)
+        self.asset_template = self._first_instance(AssetRoutingConfig)
         self.audience_configs = {
             e.slot[len("audience:"):]: e.instance
             for e in self.entries
@@ -188,6 +193,16 @@ class PresetBundle:
                 slot="items_template",
                 config_cls=ItemsRoutingConfig,
                 instance=self.items_template,
+                rollback_priority=10,
+            ))
+        if self.asset_template is not None:
+            # Asset routing is an independent leaf tier (no cascade
+            # dependency on the catalog/collection envelopes), so it
+            # unapplies at the leaf priority alongside items_template.
+            out.append(PresetBundleEntry(
+                slot="asset_template",
+                config_cls=AssetRoutingConfig,
+                instance=self.asset_template,
                 rollback_priority=10,
             ))
         for plugin_name, cfg in self.audience_configs.items():
