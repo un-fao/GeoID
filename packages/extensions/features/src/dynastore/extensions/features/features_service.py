@@ -47,7 +47,6 @@ from contextlib import asynccontextmanager
 import asyncio
 from dynastore.models.protocols import (
     CatalogsProtocol,
-    StorageProtocol,
     ConfigsProtocol,
     ItemsProtocol,
     CRSProtocol,
@@ -169,7 +168,6 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         super().__init__()
         self.app = app
         self.router = APIRouter(prefix="/features", tags=["OGC API - Features"])
-        self._storage_protocol: Optional[StorageProtocol] = None
         self._register_routes()
 
     def contribute(self, ref):
@@ -346,12 +344,6 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
 
     def register_policies(self):
         register_features_policies()
-
-    async def _get_storage_service(self) -> Optional[StorageProtocol]:
-        """Helper to get the storage service protocol (Features-specific)."""
-        if self._storage_protocol is None:
-            self._storage_protocol = get_protocol(StorageProtocol)
-        return self._storage_protocol
 
     async def _resolve_crs_srid(
         self, conn: DbResource, catalog_id: str, crs_uri: Optional[str]

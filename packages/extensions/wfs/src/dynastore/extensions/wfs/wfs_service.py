@@ -19,7 +19,6 @@
 # dynastore/extensions/wfs/wfs_service.py
 import asyncio
 
-from dynastore.tools.discovery import get_protocol
 from dynastore.models.driver_context import DriverContext
 from ...tools.features import Feature, FeatureCollection
 import logging
@@ -35,11 +34,7 @@ from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.db_config.exceptions import TableNotFoundError, SchemaNotFoundError
 
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
-from dynastore.tools.discovery import get_protocol
-from dynastore.models.protocols import (
-    StorageProtocol,
-    ItemsProtocol,
-)
+from dynastore.models.protocols import ItemsProtocol
 from . import wfs_generator, wfs_db
 from .wfs_models import WFSException
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -125,12 +120,6 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
 
     router: Optional[APIRouter] = APIRouter(prefix="/wfs", tags=["OGC WFS 2.0"])
 
-    async def _get_storage_service(self) -> Optional[StorageProtocol]:
-        """Helper to get the storage service protocol."""
-        if self._storage_protocol is None:
-            self._storage_protocol = get_protocol(StorageProtocol)
-        return self._storage_protocol
-
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         """Lifecycle hook."""
@@ -179,9 +168,7 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
         self.app = app
-        # Catalogs/configs accessors are provided by OGCServiceMixin; only the
-        # WFS-specific storage accessor is memoised locally.
-        self._storage_protocol: Optional[StorageProtocol] = None
+        # Catalogs/configs/storage accessors are provided by OGCServiceMixin.
         """Initializes the service and registers its dual API route structure."""
         self._register_routes()
 
