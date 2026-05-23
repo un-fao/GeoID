@@ -85,14 +85,53 @@ def _build_pg_only_collection_routing() -> Any:
     )
 
 
+def _build_pg_only_asset_routing() -> Any:
+    """PG-only asset routing — no public ES asset index for private catalogs.
+
+    Without an explicit asset routing pin, assets inherit the platform
+    default which augments WRITE/READ with the public
+    ``asset_elasticsearch_driver``, leaking private assets into public
+    search. Pinning PG-only WRITE/READ keeps assets out of the public
+    index. The UPLOAD operation is intentionally omitted: it is
+    auto-augmented at validation time from discoverable
+    ``AssetUploadProtocol`` impls (see ``AssetRoutingConfig._self_register_drivers``),
+    so we do not hardcode an upload driver here.
+    """
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        FailurePolicy,
+        Operation,
+        OperationDriverEntry,
+    )
+
+    return AssetRoutingConfig(
+        operations={
+            Operation.WRITE: [
+                OperationDriverEntry(
+                    driver_ref="asset_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(
+                    driver_ref="asset_postgresql_driver",
+                    on_failure=FailurePolicy.FATAL,
+                ),
+            ],
+        },
+    )
+
+
 class PrivateCatalogPreset:
     """PG-only envelopes + per-tenant private ES on the items tier.
 
     Catalog and collection envelopes are stored in PostgreSQL only — no
-    ES private index at those tiers. Items are indexed in the per-tenant
-    private ES index (``{prefix}-{catalog_id}-private-items``). The
-    items-private driver installs the catalog-wide DENY policy
-    (``private_deny_{catalog_id}``) blocking public read access.
+    ES private index at those tiers. Assets are stored PG-only as well so
+    they never reach the public asset Elasticsearch index. Items are
+    indexed in the per-tenant private ES index
+    (``{prefix}-{catalog_id}-private-items``). The items-private driver
+    installs the catalog-wide DENY policy (``private_deny_{catalog_id}``)
+    blocking public read access.
     """
 
     name = "private_catalog"
@@ -111,5 +150,6 @@ class PrivateCatalogPreset:
             catalog_routing=_build_pg_only_catalog_routing(),
             collection_template=_build_pg_only_collection_routing(),
             items_template=_build_private_items_routing(),
+            asset_template=_build_pg_only_asset_routing(),
             audience_configs={},
         )

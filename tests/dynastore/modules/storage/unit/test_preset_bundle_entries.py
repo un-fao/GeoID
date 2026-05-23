@@ -20,6 +20,7 @@ from dynastore.modules.storage.presets import (
     PresetBundleEntry,
 )
 from dynastore.modules.storage.routing_config import (
+    AssetRoutingConfig,
     CatalogRoutingConfig,
     CollectionRoutingConfig,
     ItemsRoutingConfig,
@@ -53,6 +54,49 @@ def test_legacy_constructor_lifts_to_entries():
         "collection_template",
         "items_template",
         "audience:my_aud",
+    ]
+
+
+def test_legacy_constructor_lifts_asset_template():
+    """The ``asset_template`` legacy field lifts into ``entries`` after the
+    items template (independent leaf tier) and is exposed via the
+    read-only accessor (Part B)."""
+    cat = CatalogRoutingConfig(operations={})
+    coll = CollectionRoutingConfig(operations={})
+    items = ItemsRoutingConfig(operations={})
+    asset = AssetRoutingConfig(operations={})
+
+    bundle = PresetBundle(
+        catalog_routing=cat,
+        collection_template=coll,
+        items_template=items,
+        asset_template=asset,
+    )
+    slots = [e.slot for e in bundle.iter_apply()]
+    assert slots == [
+        "catalog_routing",
+        "collection_template",
+        "items_template",
+        "asset_template",
+    ]
+    assert bundle.asset_template is asset
+
+
+def test_asset_template_rollback_is_leaf_first():
+    """``asset_template`` unapplies at the leaf priority (alongside
+    ``items_template``), before the collection/catalog envelopes."""
+    bundle = PresetBundle(
+        catalog_routing=CatalogRoutingConfig(operations={}),
+        collection_template=CollectionRoutingConfig(operations={}),
+        items_template=ItemsRoutingConfig(operations={}),
+        asset_template=AssetRoutingConfig(operations={}),
+    )
+    slots = [e.slot for e in bundle.iter_rollback()]
+    assert slots == [
+        "items_template",
+        "asset_template",
+        "collection_template",
+        "catalog_routing",
     ]
 
 

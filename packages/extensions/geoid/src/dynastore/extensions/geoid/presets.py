@@ -73,6 +73,7 @@ class GeoidPreset:
             catalog_routing=base.catalog_routing,
             collection_template=base.collection_template,
             items_template=base.items_template,
+            asset_template=base.asset_template,
             audience_configs={
                 "catalog_lookup_audience": CatalogLookupAudience(is_public=True),
             },

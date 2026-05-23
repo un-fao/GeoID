@@ -48,6 +48,11 @@ def geometry_field_definition(
     return FieldDefinition(
         name=GEOMETRY_FIELD_NAME,
         data_type="geometry",
+        # Geometry is never an attribute column — it is owned by the geometry
+        # sidecar / driver. Self-document that here so the derived schema can't be
+        # materialised as a TEXT column (defense in depth alongside the bridge's
+        # geometry skip in ``field_constraints.bridge_schema_to_attribute_sidecar``).
+        materialize=False,
         description=f"Feature geometry (derived from OGR layer geometry column){suffix}.",
     )
 

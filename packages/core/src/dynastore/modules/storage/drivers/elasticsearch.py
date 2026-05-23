@@ -373,6 +373,13 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
     # import) via ``getattr(driver, "is_es_items_driver", False)``.
     is_es_items_driver: ClassVar[bool] = True
 
+    # Both ES items drivers can serve a pre-translated CQL2 filter
+    # (``QueryRequest.es_filter``) through ``_query_request_to_es`` — so the
+    # STAC ``/search`` dispatch may translate a CQL2 ``filter`` to ES DSL and
+    # route it here instead of falling back to PostgreSQL. Gated by the STAC
+    # dispatch via ``getattr(driver, "supports_cql_es", False)``.
+    supports_cql_es: ClassVar[bool] = True
+
     # ------------------------------------------------------------------
     # Override seams
     # ------------------------------------------------------------------
@@ -545,16 +552,26 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
                         }
                     })
 
-        if not extra_must:
-            return {"query": inner}
+        if extra_must:
+            # Fold attribute predicates into the structural bool. A ``match_all``
+            # (no structural dims) collapses to just the attribute musts.
+            if "bool" in inner:
+                bool_body = dict(inner["bool"])
+                bool_body["must"] = list(bool_body.get("must", [])) + extra_must
+                inner = {"bool": bool_body}
+            else:
+                inner = {"bool": {"must": extra_must}}
 
-        # Fold attribute predicates into the structural bool. A ``match_all``
-        # (no structural dims) collapses to just the attribute musts.
-        if "bool" in inner:
-            bool_body = dict(inner["bool"])
-            bool_body["must"] = list(bool_body.get("must", [])) + extra_must
-            return {"query": {"bool": bool_body}}
-        return {"query": {"bool": {"must": extra_must}}}
+        # Fold a pre-translated CQL2→ES filter clause (set by the STAC
+        # ``/search`` dispatch) into the query body via the shared merge helper.
+        # AND-ed into ``bool.filter`` so it composes with the structural dims and
+        # attribute predicates above; a ``match_all`` base collapses to it.
+        es_filter = getattr(request, "es_filter", None)
+        if es_filter:
+            from dynastore.modules.storage.drivers.es_common import merge_es_filter
+            inner = merge_es_filter(inner, es_filter)
+
+        return {"query": inner}
 
     @staticmethod
     def _build_read_search_body(

@@ -26,6 +26,7 @@ def test_geoid_bundle_inherits_private_catalog_routing():
     assert geoid.catalog_routing == priv.catalog_routing
     assert geoid.collection_template == priv.collection_template
     assert geoid.items_template == priv.items_template
+    assert geoid.asset_template == priv.asset_template
 
 
 def test_geoid_items_routing_is_private():
@@ -50,6 +51,19 @@ def test_geoid_catalog_collection_routing_pg_only():
         for e in entries
     ]
     assert "collection_elasticsearch_private_driver" not in coll_refs
+
+
+def test_geoid_asset_routing_is_pg_only():
+    """Assets must be PG-only for the geoid flagship profile too — they
+    must not inherit the public asset ES driver and leak into search."""
+    bundle = get_preset("geoid").build("cat-fao")
+    asset_refs = [
+        e.driver_ref
+        for entries in bundle.asset_template.operations.values()
+        for e in entries
+    ]
+    assert "asset_postgresql_driver" in asset_refs
+    assert "asset_elasticsearch_driver" not in asset_refs
 
 
 def test_geoid_audience_configs_open_anonymous_lookup_only():

@@ -270,6 +270,18 @@ class QueryRequest(BaseModel):
     cql_filter: Optional[str] = Field(
         default=None, description="A raw CQL2 filter string to be parsed and validated."
     )
+    es_filter: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "[INTERNAL] Pre-translated Elasticsearch Query DSL clause (a single "
+            "``term``/``range``/``bool``/``geo_shape`` dict) to AND into the ES "
+            "query body. Set server-side by the STAC ``/search`` dispatch from a "
+            "CQL2 ``filter`` via the shared CQL2→ES translator; ``None`` (default) "
+            "means no change. Ignored by non-ES drivers."
+        ),
+        json_schema_extra={"x-internal": True},
+        exclude=True,
+    )
     include_total_count: bool = Field(
         default=False, description="If True, includes COUNT(*) OVER() as _total_count."
     )

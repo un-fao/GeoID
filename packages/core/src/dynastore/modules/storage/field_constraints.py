@@ -137,6 +137,14 @@ def bridge_schema_to_attribute_sidecar(
 
     changed = False
     for name, fd in schema.fields.items():
+        # Geometry is owned by the geometry sidecar / driver, never an attribute
+        # column. It is neither a constraint column nor a materialized column, so
+        # it must be skipped before any column-synthesis decision (and before the
+        # existing-entry overlay) — regardless of capabilities or the schema-level
+        # ``materialize_fields_as_columns`` flag. The tolerant ``startswith``
+        # mirrors the geometry/geography check at the top of this module.
+        if (fd.data_type or "").lower().startswith("geometry"):
+            continue
         has_constraint = bool(fd.required or fd.unique)
         entry = existing.get(name)
         if entry is not None:

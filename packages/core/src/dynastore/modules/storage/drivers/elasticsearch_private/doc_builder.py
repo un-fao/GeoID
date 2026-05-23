@@ -32,6 +32,7 @@ def build_tenant_feature_doc(
     catalog_id: str,
     collection_id: str,
     external_id: Any = None,
+    asset_id: Any = None,
 ) -> Dict[str, Any]:
     """Build a ``TENANT_FEATURE_MAPPING``-shaped doc from a Feature/dict.
 
@@ -40,6 +41,12 @@ def build_tenant_feature_doc(
     ``bbox`` from the GeoJSON shape, and copies any non-internal
     ``properties`` (keys starting with ``_`` are skipped — those are
     internal tracking fields like ``_external_id``).
+
+    ``asset_id`` is the ingestion-context asset identity (mirrors the
+    public driver's ``_asset_id`` tracking field). It is projected as a
+    top-level ``asset_id`` keyword — written unprefixed so the ``_``-strip
+    above does not drop it — falling back to the source's ``_asset_id``
+    when not supplied explicitly.
     """
     if hasattr(item, "model_dump"):
         src = item.model_dump(by_alias=True, exclude_none=True)
@@ -61,6 +68,10 @@ def build_tenant_feature_doc(
     ext = external_id if external_id is not None else src.get("_external_id")
     if ext is not None:
         doc["external_id"] = str(ext)
+
+    aid = asset_id if asset_id is not None else src.get("_asset_id")
+    if aid is not None:
+        doc["asset_id"] = str(aid)
 
     geom = src.get("geometry")
     if geom is not None:

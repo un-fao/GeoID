@@ -122,3 +122,35 @@ def test_structural_and_attribute_filters_combine():
     clauses = _clauses(body)
     assert {"terms": {"collection": ["c1"]}} in clauses
     assert {"term": {"properties.x": 7}} in clauses
+
+
+def test_es_filter_folds_into_match_all_body():
+    # A pre-translated CQL2→ES clause on an otherwise-empty request becomes the
+    # whole query (match_all collapses to the clause via merge_es_filter).
+    clause = {"range": {"properties.cloud_cover": {"lt": 10}}}
+    body = _to_es(QueryRequest(es_filter=clause))
+    assert body == {"query": clause}
+
+
+def test_es_filter_anded_into_structural_bool():
+    clause = {"term": {"properties.adm2_pcode": "ET01"}}
+    body = _to_es(QueryRequest(collections=["c1"], es_filter=clause))
+    # Structural dims build a bool with a terms-collection filter; the CQL clause
+    # is AND-ed into that same bool's filter list.
+    assert clause in _filter_clauses(body)
+    assert {"terms": {"collection": ["c1"]}} in _filter_clauses(body)
+
+
+def test_es_filter_combines_with_attribute_predicate():
+    clause = {"range": {"properties.n": {"gte": 1}}}
+    body = _to_es(
+        QueryRequest(
+            collections=["c1"],
+            filters=[FilterCondition(field="properties.x", operator="eq", value=7)],
+            es_filter=clause,
+        )
+    )
+    bool_body = body["query"]["bool"]
+    # attribute predicate stays in must; CQL clause folds into filter
+    assert {"term": {"properties.x": 7}} in bool_body.get("must", [])
+    assert clause in bool_body.get("filter", [])

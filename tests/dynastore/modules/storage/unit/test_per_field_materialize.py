@@ -246,6 +246,66 @@ class TestMixedSchema:
 
 
 # ---------------------------------------------------------------------------
+# Geometry is never an attribute column — it is owned by the geometry sidecar /
+# driver, so the bridge must skip it regardless of capabilities or
+# ``materialize_fields_as_columns``. (Materialising it as a TEXT column breaks
+# ingestion.)
+# ---------------------------------------------------------------------------
+
+class TestGeometryNeverColumn:
+    def test_geometry_skipped_with_materialize_all_and_caps(self) -> None:
+        """geometry-typed field + materialize_all + filterable/indexed → NOT a column."""
+        schema = _schema(
+            {
+                "geometry": _fd(
+                    data_type="geometry",
+                    capabilities=[FieldCapability.FILTERABLE, FieldCapability.INDEXED],
+                ),
+                "name": _fd(data_type="string"),
+                "lanes": _fd(data_type="integer"),
+            },
+            materialize_all=True,
+        )
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        names = _names(bridged)
+        assert "geometry" not in names, (
+            "geometry must never be synthesised as an attribute column"
+        )
+        # The real attribute fields ARE present.
+        assert "name" in names
+        assert "lanes" in names
+
+    def test_geometry_skipped_even_with_constraint(self) -> None:
+        """A constraint on a geometry field still does not lift it to a column."""
+        schema = _schema(
+            {"geometry": _fd(data_type="geometry", required=True, unique=True)}
+        )
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        assert "geometry" not in _names(bridged)
+
+    def test_geography_data_type_also_skipped(self) -> None:
+        """Tolerant prefix match: ``geometry``-prefixed canonical types skip too."""
+        schema = _schema(
+            {"geom": _fd(data_type="geometry", materialize=True)},
+            materialize_all=True,
+        )
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        assert "geom" not in _names(bridged)
+
+    def test_existing_geometry_entry_not_overlaid(self) -> None:
+        """A pre-existing geometry entry is skipped before the overlay branch."""
+        sidecar = FeatureAttributeSidecarConfig(
+            attribute_schema=[
+                AttributeSchemaEntry(name="geometry", type=PostgresType.TEXT, nullable=True)
+            ]
+        )
+        schema = _schema({"geometry": _fd(data_type="geometry", required=True)})
+        bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
+        # No geometry-driven change → identity sidecar returned unchanged.
+        assert bridged is sidecar
+
+
+# ---------------------------------------------------------------------------
 # Overlay path — existing AttributeSchemaEntry updates remain intact
 # ---------------------------------------------------------------------------
 
