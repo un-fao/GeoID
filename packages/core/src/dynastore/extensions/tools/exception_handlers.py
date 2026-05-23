@@ -643,6 +643,33 @@ def handle_exception(
     )
 
 
+def handle_or_raise(
+    exception: Exception,
+    resource_name: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    operation: Optional[str] = None,
+) -> Response:
+    """Handle an exception, raising HTTPExceptions and returning Response bodies.
+
+    Convenience wrapper over :func:`handle_exception` for the common service
+    ``except`` block: an ``HTTPException`` result is raised (so FastAPI's
+    handlers map it), while a ``Response`` result (e.g. a structured error body)
+    is returned to the client. Use as the block's final statement::
+
+        except Exception as e:
+            return handle_or_raise(e, resource_name="Catalog", operation="create")
+    """
+    result = handle_exception(
+        exception,
+        resource_name=resource_name,
+        resource_id=resource_id,
+        operation=operation,
+    )
+    if isinstance(result, HTTPException):
+        raise result
+    return result
+
+
 class GlobalExceptionHandlingMiddleware(BaseHTTPMiddleware):
     """
     A middleware that wraps the entire application stack to catch any unhandled

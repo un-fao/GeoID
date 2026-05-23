@@ -41,7 +41,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
-from dynastore.extensions.tools.exception_handlers import handle_exception
+from dynastore.extensions.tools.exception_handlers import handle_or_raise
 from dynastore.models.localization import LocalizedText
 from contextlib import asynccontextmanager
 import asyncio
@@ -454,15 +454,12 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 status_code=status.HTTP_201_CREATED,
             )
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="Catalog",
                 resource_id=definition.id,
                 operation="OGC Features Catalog creation",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def get_catalog(
         self, catalog_id: str, request: Request, language: str = Depends(get_language)
@@ -687,15 +684,12 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 status_code=status.HTTP_201_CREATED,
             )
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="Collection",
                 resource_id=f"{catalog_id}:{collection_def.id}",
                 operation="OGC Features Collection creation",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def get_collection(
         self,
@@ -1067,15 +1061,12 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 links=links,
             )
         except Exception as e:
-            _exc = handle_exception(
+            return handle_or_raise(
                 e,
                 resource_name="Features",
                 resource_id=f"{catalog_id}:{collection_id}",
                 operation="get items",
             )
-            if isinstance(_exc, HTTPException):
-                raise _exc
-            return _exc
 
     async def get_item(
         self,
