@@ -697,6 +697,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 await self._dispatch_index_upsert(
                     catalog_id, collection_id, results,
                     db_resource=db_resource or self.engine,
+                    processing_context=processing_context,
                 )
 
             # Emit events for non-indexer subscribers (audit, telemetry).
@@ -1074,6 +1075,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             await self._dispatch_index_upsert(
                 catalog_id, collection_id, results,
                 db_resource=engine,
+                processing_context=processing_context,
             )
 
         # ── Post-commit: emit events for non-indexer subscribers ──────
@@ -1112,6 +1114,44 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
     # Index dispatcher fan-out — replaces ES event-driven listeners
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_by_path(doc: Dict[str, Any], field_path: Optional[str]) -> Any:
+        """Read a dotted ``field_path`` (e.g. ``properties.CODE``) out of a doc."""
+        if not field_path:
+            return None
+        node: Any = doc
+        for part in field_path.split("."):
+            if not isinstance(node, dict):
+                return None
+            node = node.get(part)
+            if node is None:
+                return None
+        return node
+
+    async def _resolve_external_id_path(
+        self, catalog_id: str, collection_id: str,
+    ) -> Optional[str]:
+        """Resolve the ``ItemsWritePolicy.external_id_path`` for a collection."""
+        from dynastore.modules.storage.driver_config import ItemsWritePolicy
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return None
+        try:
+            policy = await configs.get_config(
+                ItemsWritePolicy,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+        except Exception:
+            return None
+        getter = getattr(policy, "external_id_path", None)
+        try:
+            path = getter() if callable(getter) else None
+        except Exception:
+            return None
+        return str(path) if path else None
+
     async def _dispatch_index_upsert(
         self,
         catalog_id: str,
@@ -1119,6 +1159,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         results: List["Feature"],
         *,
         db_resource: Optional[DbResource] = None,
+        processing_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Fan items out to every configured Indexer for the collection.
 
@@ -1141,6 +1182,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         round-trip).  Non-OUTBOX policies (FATAL, WARN, IGNORE) are
         unaffected by the wrapping TX since they don't write to the outbox
         table.
+
+        Identity tracking fields (``_external_id`` derived per-item from the
+        write policy's ``external_id_path``; ``_asset_id`` from the ingestion
+        ``processing_context``) are stamped onto the index *payload only* — not
+        the API-returned Feature — so every indexer (the public projection and
+        the tenant-private doc builder both read ``_external_id`` / ``_asset_id``)
+        carries the canonical envelope identity. The ES read path strips these
+        internal ``_*`` fields, so they never surface to clients.
         """
         if not results:
             return
@@ -1150,13 +1199,29 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             get_index_dispatcher,
         )
 
+        external_id_path = await self._resolve_external_id_path(
+            catalog_id, collection_id,
+        )
+        asset_id = (processing_context or {}).get("asset_id")
+
+        def _stamp_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
+            if external_id_path:
+                ext = self._extract_by_path(payload, external_id_path)
+                if ext is not None:
+                    payload["_external_id"] = str(ext)
+            if asset_id is not None:
+                payload.setdefault("_asset_id", str(asset_id))
+            return payload
+
         dispatcher = get_index_dispatcher()
         ops = [
             IndexOp(
                 op_type="upsert",
                 entity_type="item",
                 entity_id=str(r.id) if r.id else "",
-                payload=r.model_dump(by_alias=True, exclude_none=True),
+                payload=_stamp_identity(
+                    r.model_dump(by_alias=True, exclude_none=True)
+                ),
             )
             for r in results
             if r.id is not None

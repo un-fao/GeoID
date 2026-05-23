@@ -38,15 +38,22 @@ logger = logging.getLogger(__name__)
 # module-level shims preserve the historical ``search_service`` import surface
 # (consumed by ``test_search_item_filters`` and ``test_items_projection``).
 from dynastore.modules.elasticsearch.items_query import (  # noqa: E402
+    PUBLIC_ENVELOPE_FIELDS,
+    EnvelopeFields,
     build_items_query as _build_items_query,
     parse_sort as _parse_sort,
 )
 
 
-def _build_item_query(body: SearchBody) -> Dict[str, Any]:
+def _build_item_query(
+    body: SearchBody, fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
+) -> Dict[str, Any]:
     """Build an Elasticsearch query DSL from a STAC SearchBody.
 
-    Thin adapter over the core :func:`build_items_query` SSOT.
+    Thin adapter over the core :func:`build_items_query` SSOT. ``fields``
+    selects the envelope field names of the resolved index so a query against
+    the tenant-private index addresses its canonical ``collection_id`` /
+    ``geoid`` / ``external_id`` shape rather than the public one.
     """
     return _build_items_query(
         q=body.q,
@@ -57,6 +64,7 @@ def _build_item_query(body: SearchBody) -> Dict[str, Any]:
         bbox=body.bbox,
         intersects=body.intersects,
         datetime=body.datetime,
+        fields=fields,
     )
 
 
@@ -127,6 +135,93 @@ class SearchService(ExtensionProtocol):
         await ensure_public_alias_exists()
         yield
 
+    async def _translate_cql_filter(
+        self, body: SearchBody, index: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Translate ``body.filter`` (CQL2) to an Elasticsearch query clause.
+
+        Reuses the shared queryables SSOT (``QueryOptimizer.get_all_queryable_fields``
+        via the collection's ``ItemsPostgresqlDriverConfig`` — the config waterfall
+        is driver-agnostic) to build the ES field mapping, then converts the CQL2
+        filter to a pygeofilter AST and emits a plain ES clause through the shared
+        translator. Private vs public field mapping is selected from the resolved
+        index (the per-tenant private index ends in ``-private-items``).
+
+        Returns ``None`` when there is no filter. Raises ``HTTPException(400)`` when
+        a filter is present but cannot be honoured (no single catalog+collection
+        scope, unknown queryable property, or unsupported operator) — unlike the
+        STAC ``/search`` path this REST endpoint queries Elasticsearch directly and
+        has no PostgreSQL fallback, so silently dropping the filter (returning the
+        unfiltered set) would be wrong.
+        """
+        if body.filter is None:
+            return None
+
+        from fastapi import HTTPException
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+        from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+        from dynastore.modules.storage.drivers.es_common import (
+            build_es_field_mapping,
+            cql_ast_to_es_query,
+            UntranslatableFilterError,
+        )
+        from dynastore.models.driver_context import DriverContext
+        from dynastore.tools.discovery import get_protocol
+        from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
+        from pygeofilter.parsers.cql2_text import parse as parse_cql2_text
+
+        cols = body.collections or []
+        if not body.catalog_id or len(cols) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A CQL2 'filter' requires the search to be scoped to a single "
+                    "catalog and a single collection (its queryables define the "
+                    "field mapping)."
+                ),
+            )
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            raise HTTPException(status_code=400, detail="Configs protocol unavailable for filter resolution.")
+        col_config = await configs.get_config(
+            ItemsPostgresqlDriverConfig,
+            catalog_id=body.catalog_id,
+            collection_id=cols[0],
+            ctx=DriverContext(db_resource=None),
+        )
+        if col_config is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No items config for catalog '{body.catalog_id}', collection '{cols[0]}'.",
+            )
+
+        optimizer = QueryOptimizer(col_config, consumer=ConsumerType.STAC)
+        private = str(index).endswith("-private-items")
+        field_mapping = build_es_field_mapping(
+            optimizer.get_all_queryable_fields(), private=private,
+        )
+
+        use_text = (
+            isinstance(body.filter, str)
+            or (body.filter_lang or "").lower() == "cql2-text"
+        )
+        try:
+            ast_node = (
+                parse_cql2_text(body.filter)
+                if use_text and isinstance(body.filter, str)
+                else parse_cql2_json(body.filter)
+            )
+            return cql_ast_to_es_query(ast_node, field_mapping)
+        except UntranslatableFilterError as exc:
+            raise HTTPException(status_code=400, detail=f"Unsupported filter: {exc}")
+        except HTTPException:
+            raise
+        except Exception as exc:  # malformed CQL2, parse failure
+            raise HTTPException(status_code=400, detail=f"Invalid CQL2 filter: {exc}")
+
     async def search_items(
         self,
         body: SearchBody,
@@ -146,7 +241,29 @@ class SearchService(ExtensionProtocol):
         # as missing on non-declaring catalogs).
         sort_known = await resolve_catalog_known_fields(body.catalog_id)
         sort = _parse_sort(body.sortby, sort_known)
-        query = _build_item_query(body)
+
+        # The tenant-private index carries the canonical envelope names
+        # (``collection_id`` / ``geoid`` / ``external_id``); the public index
+        # uses the STAC-flavoured shape. Address whichever the resolved index
+        # uses so structural filters (collections, ids, external_id) actually
+        # match — same private-index detection the CQL translator uses below.
+        from dynastore.modules.elasticsearch.items_query import (
+            PRIVATE_ENVELOPE_FIELDS,
+            PUBLIC_ENVELOPE_FIELDS,
+        )
+        envelope_fields = (
+            PRIVATE_ENVELOPE_FIELDS
+            if str(index).endswith("-private-items")
+            else PUBLIC_ENVELOPE_FIELDS
+        )
+        query = _build_item_query(body, envelope_fields)
+
+        # CQL2 ``filter`` → ES Query DSL, ANDed into the structural query.
+        # Raises 400 when present-but-untranslatable (no PG fallback on this path).
+        es_clause = await self._translate_cql_filter(body, index)
+        if es_clause is not None:
+            from dynastore.modules.storage.drivers.es_common import merge_es_filter
+            query = merge_es_filter(query, es_clause)
 
         es_body: Dict[str, Any] = {
             "query": query,
@@ -291,13 +408,40 @@ class SearchService(ExtensionProtocol):
             "status": "queued",
         }
 
+    def _resolve_items_driver_by_ref(self, driver_ref: str) -> Any:
+        """Resolve a live items ES driver instance by its ``driver_ref``.
+
+        Both ES item drivers (the public per-catalog driver and the
+        tenant-private driver) subclass ``_ItemsElasticsearchBase`` and derive
+        their ``driver_ref`` from ``_to_snake(type(self).__name__)``. Returns
+        ``None`` when no registered driver matches the ref.
+        """
+        from dynastore.modules.storage.drivers.elasticsearch import (
+            _ItemsElasticsearchBase,
+        )
+        from dynastore.tools.discovery import get_protocols
+        from dynastore.tools.typed_store.base import _to_snake
+
+        for d in get_protocols(_ItemsElasticsearchBase):
+            if _to_snake(type(d).__name__) == driver_ref:
+                return d
+        return None
+
     async def _resolve_items_index(
         self,
         catalog_id: Optional[str],
         collections: Optional[List[str]],
         driver_hint: Optional[str],
     ) -> str:
-        """Resolve the ES index/alias to query for an items SEARCH."""
+        """Resolve the ES index/alias to query for an items SEARCH.
+
+        When a catalog pins ``Operation.SEARCH`` to a specific items ES driver
+        (e.g. the tenant-private driver), the index queried must be that
+        driver's own index — not the public per-catalog index. Both ES item
+        drivers expose the same ``_items_index_name`` seam, so resolve the
+        pinned driver instance and ask it. A cross-catalog / unscoped query
+        (or a missing pin) falls back to the public per-catalog index / alias.
+        """
         from dynastore.modules.elasticsearch.client import get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
             get_public_items_alias,
@@ -307,10 +451,21 @@ class SearchService(ExtensionProtocol):
         driver_ref = await self._resolve_items_search_driver_ref(
             catalog_id, collections, driver_hint,
         )
-        if driver_ref:
-            logger.debug(
-                "SearchService: routing items SEARCH via driver_ref=%s "
-                "(catalog=%s, collections=%s)",
+
+        if catalog_id and driver_ref:
+            driver = self._resolve_items_driver_by_ref(driver_ref)
+            if driver is not None:
+                index = driver._items_index_name(catalog_id)
+                logger.debug(
+                    "SearchService: routing items SEARCH via driver_ref=%s "
+                    "index=%s (catalog=%s, collections=%s)",
+                    driver_ref, index, catalog_id, collections,
+                )
+                return index
+            logger.warning(
+                "SearchService: SEARCH driver_ref=%s did not resolve to a live "
+                "items ES driver; falling back to the public index "
+                "(catalog=%s, collections=%s).",
                 driver_ref, catalog_id, collections,
             )
 

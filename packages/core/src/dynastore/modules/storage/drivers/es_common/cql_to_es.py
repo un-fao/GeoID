@@ -338,6 +338,18 @@ _ENVELOPE_FIELD_PATHS: Dict[str, str] = {
 # to the top-level ``geometry`` field regardless of its declared name.
 _GEOMETRY_DATA_TYPE_PREFIX = "geometry"
 
+# Canonical string ``data_type`` values whose dynamically-mapped ES field is an
+# analyzed ``text`` field with a ``.keyword`` sub-field (the Elasticsearch
+# default for a string under a ``dynamic: true`` object — see the private
+# tenant ``properties`` sub-tree and the public ``extras`` bucket). CQL2 exact
+# matches (``=`` / ``<>`` / ``in`` / ``like``) must target ``.keyword`` or the
+# ``term`` query misses the analyzed (lower-cased / tokenized) token. Numeric,
+# temporal and boolean dynamic fields are queried directly. Envelope fields with
+# an explicit ``keyword`` mapping (external_id, asset_id, …) are resolved before
+# this and never need the suffix.
+_KEYWORD_SUBFIELD_DATA_TYPES = frozenset({"string", "uuid"})
+_KEYWORD_SUBFIELD = ".keyword"
+
 
 def build_es_field_mapping(
     queryable_fields: Dict[str, "Any"],
@@ -378,16 +390,24 @@ def build_es_field_mapping(
             mapping[name] = _ENVELOPE_FIELD_PATHS[name]
             continue
 
+        # Strings under a dynamic ``properties`` sub-tree need the ``.keyword``
+        # sub-field for exact CQL matches; numeric / temporal / boolean don't.
+        suffix = (
+            _KEYWORD_SUBFIELD
+            if data_type in _KEYWORD_SUBFIELD_DATA_TYPES
+            else ""
+        )
+
         if private:
             # Private tenant doc: every attribute lives under ``properties.*``.
-            mapping[name] = f"properties.{name}"
+            mapping[name] = f"properties.{name}{suffix}"
         else:
             # Public doc: known queryables are flat under ``properties``;
             # extension/unknown fields land in the ``extras`` bucket.
             if bool(getattr(field_def, "expose", True)):
-                mapping[name] = f"properties.{name}"
+                mapping[name] = f"properties.{name}{suffix}"
             else:
-                mapping[name] = f"properties.extras.{name}"
+                mapping[name] = f"properties.extras.{name}{suffix}"
 
     return mapping
 

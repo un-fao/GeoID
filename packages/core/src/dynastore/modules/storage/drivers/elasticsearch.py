@@ -67,6 +67,10 @@ from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import AssetFilter, QueryRequest
+from dynastore.modules.elasticsearch.items_query import (
+    PUBLIC_ENVELOPE_FIELDS,
+    EnvelopeFields,
+)
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.tools.asset_filters import build_es_query
 from dynastore.modules.storage.driver_config import (
@@ -380,6 +384,13 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
     # dispatch via ``getattr(driver, "supports_cql_es", False)``.
     supports_cql_es: ClassVar[bool] = True
 
+    # System-envelope field names this driver's index carries. The structural
+    # query SSOT (``build_items_query``) addresses whichever shape the resolved
+    # index uses; the public per-catalog index uses the STAC-flavoured default,
+    # the private driver overrides with the canonical names (see
+    # ``items_query.EnvelopeFields``).
+    _envelope_fields: ClassVar[EnvelopeFields] = PUBLIC_ENVELOPE_FIELDS
+
     # ------------------------------------------------------------------
     # Override seams
     # ------------------------------------------------------------------
@@ -428,7 +439,7 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         # ``es_count_items`` adds its own collection scope, so it wants the
         # inner query only (a double envelope is a malformed count body).
         inner = (
-            self._query_request_to_es(request).get("query")
+            self._query_request_to_es(request, self._envelope_fields).get("query")
             if request is not None
             else None
         )
@@ -479,7 +490,11 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         es = get_client()
         if es is None:
             return None
-        query = self._query_request_to_es(request) if request is not None else None
+        query = (
+            self._query_request_to_es(request, self._envelope_fields)
+            if request is not None
+            else None
+        )
         return await es_aggregate(
             es,
             self._items_index_name(catalog_id),
@@ -506,7 +521,10 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         return await es_introspect_mapping(es, self._items_index_name(catalog_id))
 
     @staticmethod
-    def _query_request_to_es(request: QueryRequest) -> dict:
+    def _query_request_to_es(
+        request: QueryRequest,
+        fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
+    ) -> dict:
         """Convert a QueryRequest to an ES query body.
 
         Structural dimensions (``item_ids``, ``collections``, ``bbox``,
@@ -516,6 +534,11 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         search path used to build. Any remaining attribute predicates carried on
         ``filters`` (``eq`` / ``like`` / a legacy ``bbox`` condition) are merged
         as additional ``must`` clauses.
+
+        ``fields`` selects the system-envelope field names of the resolved
+        index (callers pass ``self._envelope_fields`` so the private index's
+        ``collection_id`` / ``geoid`` / ``external_id`` are addressed instead
+        of the public ``collection`` / ``id`` / ``_external_id``).
         """
         from dynastore.modules.elasticsearch.items_query import build_items_query
 
@@ -525,6 +548,7 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             bbox=request.bbox,
             intersects=request.intersects,
             datetime=request.datetime,
+            fields=fields,
         )
 
         extra_must: list = []
@@ -579,18 +603,20 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         request: Optional[QueryRequest],
         limit: int,
         offset: int,
+        fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
     ) -> tuple:
         """Build the ``(body, params)`` for a streaming items search.
 
         Single-collection (the common ``/items`` browse): force a
-        ``{"term": {"collection": …}}`` filter and route to that collection's
-        shard. Multi-collection (``request.collections`` set, e.g. STAC
-        ``/search`` across collections): the ``build_items_query`` SSOT already
-        scopes via a ``{"terms": {"collection": […]}}`` filter, so query all
-        shards with no single-collection routing.
+        ``{"term": {<collection-field>: …}}`` filter and route to that
+        collection's shard. Multi-collection (``request.collections`` set, e.g.
+        STAC ``/search`` across collections): the ``build_items_query`` SSOT
+        already scopes via a ``terms`` filter, so query all shards with no
+        single-collection routing. ``fields`` selects the index's envelope
+        field names (see :meth:`_query_request_to_es`).
         """
         base = (
-            _ItemsElasticsearchBase._query_request_to_es(request)
+            _ItemsElasticsearchBase._query_request_to_es(request, fields)
             if request
             else {"query": {"match_all": {}}}
         )
@@ -603,7 +629,7 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             # Multi-collection: scoping is already in base_query's terms filter.
             return {"query": base_query}, params
 
-        collection_filter = {"term": {"collection": collection_id}}
+        collection_filter = {"term": {fields.collection: collection_id}}
         body = {
             "query": {
                 "bool": {
@@ -1167,7 +1193,7 @@ class ItemsElasticsearchDriver(
             # Single-collection scopes+routes to one collection's shard;
             # multi-collection (request.collections) queries all shards.
             body, params = self._build_read_search_body(
-                collection_id, request, limit, offset,
+                collection_id, request, limit, offset, self._envelope_fields,
             )
             try:
                 resp = await es.search(

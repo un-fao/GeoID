@@ -42,6 +42,10 @@ from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
 from dynastore.models.protocols.typed_driver import TypedDriver
 from dynastore.models.query_builder import QueryRequest
+from dynastore.modules.elasticsearch.items_query import (
+    PRIVATE_ENVELOPE_FIELDS,
+    EnvelopeFields,
+)
 from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.driver_config import (
     ItemsElasticsearchPrivateDriverConfig,
@@ -126,6 +130,11 @@ class ItemsElasticsearchPrivateDriver(
     })
 
     # ``is_available`` / ``_get_client`` inherited from ``_ElasticsearchBase``.
+
+    # The private doc carries the canonical envelope names (``collection_id`` /
+    # ``geoid`` / ``external_id``) instead of the public STAC-flavoured ones, so
+    # structural queries built by the shared SSOT must address that shape.
+    _envelope_fields: ClassVar[EnvelopeFields] = PRIVATE_ENVELOPE_FIELDS
 
     def _items_index_name(self, catalog_id: str) -> str:
         """Private per-tenant index ``{prefix}-{catalog_id}-private-items``.
@@ -288,14 +297,15 @@ class ItemsElasticsearchPrivateDriver(
 
         # --- structural search (routed via Operation.SEARCH) --------------
         # The private index is not sharded by collection, so reuse the shared
-        # ``_build_read_search_body`` (it scopes via a ``collection`` term/terms
-        # filter and folds any pre-translated CQL2→ES ``request.es_filter`` in
-        # via ``_query_request_to_es``). ``_collection_routing`` returns ``None``
-        # for the private index, so the resulting ``routing`` param is harmless.
+        # ``_build_read_search_body``. Passing ``self._envelope_fields`` makes it
+        # scope via the canonical ``collection_id`` term (the private doc shape)
+        # and fold any pre-translated CQL2→ES ``request.es_filter`` in via
+        # ``_query_request_to_es``. ``_collection_routing`` returns ``None`` for
+        # the private index, so the resulting ``routing`` param is harmless.
         if request is None:
             return
         body, params = self._build_read_search_body(
-            collection_id, request, limit, offset,
+            collection_id, request, limit, offset, self._envelope_fields,
         )
         params.pop("routing", None)  # private index is not collection-routed
         try:

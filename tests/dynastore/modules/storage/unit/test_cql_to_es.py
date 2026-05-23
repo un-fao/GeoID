@@ -193,7 +193,10 @@ def test_mapping_envelope_fields():
 def test_mapping_private_flat_properties():
     fields = {"adm2_pcode": _fd("adm2_pcode"), "pop": _fd("pop", data_type="integer")}
     m = build_es_field_mapping(fields, private=True)
-    assert m["adm2_pcode"] == "properties.adm2_pcode"
+    # String attribute → ``.keyword`` sub-field (dynamic ES default maps strings
+    # as analyzed ``text`` + ``keyword``; exact CQL match needs the sub-field).
+    assert m["adm2_pcode"] == "properties.adm2_pcode.keyword"
+    # Numeric attribute → queried directly, no ``.keyword``.
     assert m["pop"] == "properties.pop"
 
 
@@ -203,9 +206,26 @@ def test_mapping_public_known_vs_extras():
         "hidden": _fd("hidden", expose=False),
     }
     m = build_es_field_mapping(fields, private=False)
-    # exposed → flat properties; not-exposed → extras bucket
-    assert m["known"] == "properties.known"
-    assert m["hidden"] == "properties.extras.hidden"
+    # exposed → flat properties; not-exposed → extras bucket; both string →
+    # ``.keyword`` sub-field for exact match.
+    assert m["known"] == "properties.known.keyword"
+    assert m["hidden"] == "properties.extras.hidden.keyword"
+
+
+def test_mapping_keyword_subfield_only_for_strings():
+    fields = {
+        "code": _fd("code", data_type="string"),
+        "uid": _fd("uid", data_type="uuid"),
+        "count": _fd("count", data_type="integer"),
+        "ts": _fd("ts", data_type="timestamp"),
+        "flag": _fd("flag", data_type="boolean"),
+    }
+    m = build_es_field_mapping(fields, private=True)
+    assert m["code"] == "properties.code.keyword"
+    assert m["uid"] == "properties.uid.keyword"
+    assert m["count"] == "properties.count"
+    assert m["ts"] == "properties.ts"
+    assert m["flag"] == "properties.flag"
 
 
 def test_mapping_public_geometry_and_envelope_unaffected_by_expose():

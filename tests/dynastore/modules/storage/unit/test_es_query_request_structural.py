@@ -112,6 +112,37 @@ def test_read_body_limit_offset_from_request_override_args():
     assert params["from"] == "10"
 
 
+def test_private_envelope_scopes_on_collection_id():
+    """With the private envelope mapping the streaming read path scopes via the
+    canonical ``collection_id`` term (the tenant-private doc shape) — addressing
+    ``collection`` here would match zero private docs."""
+    from dynastore.modules.elasticsearch.items_query import PRIVATE_ENVELOPE_FIELDS
+
+    # single-collection forced term
+    body, _ = _ItemsElasticsearchBase._build_read_search_body(
+        "col1", QueryRequest(), 100, 0, PRIVATE_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"collection_id": "col1"}} in _filter_clauses(body)
+    assert {"term": {"collection": "col1"}} not in _filter_clauses(body)
+
+    # multi-collection terms via the SSOT
+    req = QueryRequest(collections=["c1", "c2"])
+    body, _ = _ItemsElasticsearchBase._build_read_search_body(
+        "c1", req, 100, 0, PRIVATE_ENVELOPE_FIELDS,
+    )
+    assert {"terms": {"collection_id": ["c1", "c2"]}} in _filter_clauses(body)
+
+
+def test_private_envelope_query_request_uses_canonical_external_id():
+    from dynastore.modules.elasticsearch.items_query import PRIVATE_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(item_ids=["g1"]), PRIVATE_ENVELOPE_FIELDS,
+    )
+    assert {"terms": {"geoid": ["g1"]}} in _clauses(body)
+    assert {"terms": {"id": ["g1"]}} not in _clauses(body)
+
+
 def test_structural_and_attribute_filters_combine():
     body = _to_es(
         QueryRequest(
