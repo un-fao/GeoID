@@ -22,6 +22,8 @@ from typing import Optional, List, Dict, Any, Tuple, Union, cast
 
 import logging
 
+from dynastore.extensions.tools.ondemand_cache import ondemand_cache_lookup
+
 import pygeofilter as _pygeofilter_scope_gate  # noqa: F401  # SCOPE gate: extension_features requires pygeofilter
 _ = _pygeofilter_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
 
@@ -899,36 +901,16 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         assert isinstance(_pc, FeaturesPluginConfig)
         plugin_config: FeaturesPluginConfig = _pc
 
-        cache_key = None
-        if plugin_config.cache_on_demand and storage_svc:
-            import hashlib
-
-            # Generate a stable cache key based on sorted parameters
-            params = dict(request.query_params)
-            cache_params = {
-                k: v
-                for k, v in params.items()
-                if k not in ("_", "access_token", "token")
-            }
-            param_str = "&".join(f"{k}={v}" for k, v in sorted(cache_params.items()))
-            cache_key_hash = hashlib.md5(param_str.encode()).hexdigest()
-
-            bucket_name = await storage_svc.get_storage_identifier(catalog_id)
-            if bucket_name:
-                cache_key = f"gs://{bucket_name}/features_cache/{cache_key_hash}"
-
-                if await storage_svc.file_exists(cache_key):
-                    logger.info(f"Features Cache HIT: {cache_key}")
-                    import tempfile
-
-                    with tempfile.NamedTemporaryFile() as tmp:
-                        await storage_svc.download_file(cache_key, tmp.name)
-                        tmp.seek(0)
-                        cached_data = tmp.read()
-
-                    return Response(
-                        content=cached_data, media_type="application/geo+json"
-                    )
+        if plugin_config.cache_on_demand:
+            cached = await ondemand_cache_lookup(
+                storage_svc,
+                cache_prefix="features_cache",
+                catalog_id=catalog_id,
+                params=dict(request.query_params),
+                media_type="application/geo+json",
+            )
+            if cached is not None:
+                return cached
 
         try:
             # --- Argument Parsing & SRID Resolution ---
