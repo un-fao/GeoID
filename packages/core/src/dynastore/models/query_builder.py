@@ -228,8 +228,9 @@ class QueryRequest(BaseModel):
     # --- Structural search dimensions (driver-agnostic) ---
     # Honored by the streaming read/count path of every items driver: ES routes
     # them through ``build_items_query``; PG through its query optimizer. These
-    # are the canonical home for the params the retired materialized
-    # ``search_items_struct`` used to take as kwargs.
+    # are the canonical, driver-agnostic home for the structural search params
+    # (collections / bbox / intersects / datetime) the item-listing endpoints
+    # carry — replacing the per-call kwargs of the old materialized search path.
     collections: Optional[List[str]] = Field(
         default=None,
         description="Restrict results to these collection ids (multi-collection search).",
