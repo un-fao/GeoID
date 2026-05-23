@@ -140,7 +140,9 @@ async def get_search_items_scoped(
         token=token,
         driver=driver,
     )
-    return await _get_search_service().search_items(body, base_url=_base_url(request))
+    return await _get_search_service().search_items(
+        body, base_url=_base_url(request), scoped=True,
+    )
 
 
 @router.post(
@@ -153,7 +155,9 @@ async def post_search_items_scoped(
     request: Request, catalog_id: str, body: SearchBody,
 ) -> ItemCollection:
     body = body.model_copy(update={"catalog_id": catalog_id})
-    return await _get_search_service().search_items(body, base_url=_base_url(request))
+    return await _get_search_service().search_items(
+        body, base_url=_base_url(request), scoped=True,
+    )
 
 
 # ---------------------------------------------------------------------------

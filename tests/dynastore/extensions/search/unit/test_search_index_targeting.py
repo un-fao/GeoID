@@ -87,3 +87,46 @@ async def test_search_items_uses_allow_no_indices(monkeypatch):
     await svc.search_items(SearchBody(catalog_id=None, limit=10))
 
     assert captured["kwargs"].get("allow_no_indices") is True
+
+
+# ---------------------------------------------------------------------------
+# Privacy: the unscoped public ``/search`` must never resolve a catalog's
+# private items index, even when the catalog pins a private SEARCH driver and
+# the request carries a ``catalog_id`` in the body. Only the catalog-scoped
+# route family (``scoped=True``) may follow the private pin. Regression for the
+# leak where ``POST /search {"catalog_id": <private cat>}`` returned the
+# tenant-private items through the cross-tenant discovery surface.
+# ---------------------------------------------------------------------------
+
+
+def _service_with_private_pin(monkeypatch):
+    """SearchService whose catalog 'acme'/'c' pins a private SEARCH driver
+    resolving to ``test-acme-private-items``."""
+    svc = _service()
+
+    async def _pinned(catalog_id, collections, driver_hint):
+        return "items_elasticsearch_private_driver"
+
+    class _FakePrivateDriver:
+        def _items_index_name(self, catalog_id: str) -> str:
+            return f"test-{catalog_id}-private-items"
+
+    monkeypatch.setattr(svc, "_resolve_items_search_driver_ref", _pinned)
+    monkeypatch.setattr(
+        svc, "_resolve_items_driver_by_ref", lambda ref: _FakePrivateDriver(),
+    )
+    return svc
+
+
+async def test_scoped_search_follows_private_pin(monkeypatch):
+    svc = _service_with_private_pin(monkeypatch)
+    index = await svc._resolve_items_index("acme", ["c"], None, scoped=True)
+    assert index == "test-acme-private-items"
+
+
+async def test_unscoped_search_ignores_private_pin(monkeypatch):
+    svc = _service_with_private_pin(monkeypatch)
+    # Same catalog + collection, but reached through the unscoped public route:
+    # the private pin MUST be ignored and the public per-catalog index used.
+    index = await svc._resolve_items_index("acme", ["c"], None, scoped=False)
+    assert index == "test-acme-items"
