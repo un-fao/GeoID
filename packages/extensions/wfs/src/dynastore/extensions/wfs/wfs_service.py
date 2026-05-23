@@ -37,9 +37,7 @@ from dynastore.modules.db_config.exceptions import TableNotFoundError, SchemaNot
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import (
-    CatalogsProtocol,
     StorageProtocol,
-    ConfigsProtocol,
     ItemsProtocol,
 )
 from . import wfs_generator, wfs_db
@@ -50,6 +48,8 @@ from dynastore.extensions.tools.exception_handlers import (
     register_extension_handler,
 )
 from .wfs_config import WFSPluginConfig
+from dynastore.extensions.tools.ondemand_cache import ondemand_cache_lookup
+from dynastore.extensions.ogc_base import OGCServiceMixin
 
 # --- Refactoring Step ---
 # Import the centralized formatting tools.
@@ -113,7 +113,7 @@ format_map = {
     "application/gml+xml": OutputFormatEnum.GML,
     "application/gml+xml; version=3.2": OutputFormatEnum.GML,
 }
-class WFSService(ExtensionProtocol):
+class WFSService(ExtensionProtocol, OGCServiceMixin):
     priority: int = 100
     """
     Provides a comprehensive OGC Web Feature Service (WFS) 2.0 interface. This
@@ -125,33 +125,11 @@ class WFSService(ExtensionProtocol):
 
     router: Optional[APIRouter] = APIRouter(prefix="/wfs", tags=["OGC WFS 2.0"])
 
-    async def _get_catalogs_service(self) -> CatalogsProtocol:
-        """Helper to get the catalogs service protocol."""
-        if self._catalogs_protocol is None:
-            svc = get_protocol(CatalogsProtocol)
-            if not svc:
-                raise HTTPException(
-                    status_code=500, detail="Catalogs service not available."
-                )
-            self._catalogs_protocol = svc
-        return self._catalogs_protocol
-
     async def _get_storage_service(self) -> Optional[StorageProtocol]:
         """Helper to get the storage service protocol."""
         if self._storage_protocol is None:
             self._storage_protocol = get_protocol(StorageProtocol)
         return self._storage_protocol
-
-    async def _get_configs_service(self) -> ConfigsProtocol:
-        """Helper to get the configs service protocol."""
-        if self._configs_protocol is None:
-            svc = get_protocol(ConfigsProtocol)
-            if not svc:
-                raise HTTPException(
-                    status_code=500, detail="Configs service not available."
-                )
-            self._configs_protocol = svc
-        return self._configs_protocol
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -201,9 +179,9 @@ class WFSService(ExtensionProtocol):
     def __init__(self, app: Optional[FastAPI] = None):
         super().__init__()
         self.app = app
-        self._catalogs_protocol: Optional[CatalogsProtocol] = None
+        # Catalogs/configs accessors are provided by OGCServiceMixin; only the
+        # WFS-specific storage accessor is memoised locally.
         self._storage_protocol: Optional[StorageProtocol] = None
-        self._configs_protocol: Optional[ConfigsProtocol] = None
         """Initializes the service and registers its dual API route structure."""
         self._register_routes()
 
@@ -510,34 +488,16 @@ class WFSService(ExtensionProtocol):
             WFSPluginConfig, catalog_id=catalog_id_from_path, ctx=DriverContext(db_resource=conn
         )))
 
-        cache_key = None
-        if plugin_config.cache_on_demand and storage_svc:
-            import hashlib
-
-            # Generate a stable cache key based on sorted parameters
-            cache_params = {
-                k: v
-                for k, v in params.items()
-                if k not in ("_", "access_token", "token")
-            }
-            param_str = "&".join(f"{k}={v}" for k, v in sorted(cache_params.items()))
-            cache_key_hash = hashlib.md5(param_str.encode()).hexdigest()
-
-            catalog_id = catalog_id_from_path or "global"
-            bucket_name = await storage_svc.get_storage_identifier(catalog_id)
-            if bucket_name:
-                cache_key = f"gs://{bucket_name}/wfs_cache/{cache_key_hash}"
-
-                if await storage_svc.file_exists(cache_key):
-                    logger.info(f"WFS Cache HIT: {cache_key}")
-                    import tempfile
-
-                    with tempfile.NamedTemporaryFile() as tmp:
-                        await storage_svc.download_file(cache_key, tmp.name)
-                        tmp.seek(0)
-                        cached_data = tmp.read()
-
-                    return Response(content=cached_data, media_type=normalized_format)
+        if plugin_config.cache_on_demand:
+            cached = await ondemand_cache_lookup(
+                storage_svc,
+                cache_prefix="wfs_cache",
+                catalog_id=catalog_id_from_path or "global",
+                params=params,
+                media_type=normalized_format,
+            )
+            if cached is not None:
+                return cached
 
         try:
             schema_prefix, collection_id = typename.split(":")
