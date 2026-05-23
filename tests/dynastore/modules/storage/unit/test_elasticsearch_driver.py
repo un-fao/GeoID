@@ -325,6 +325,47 @@ class TestDataSideOpsRouteThroughSeam:
         assert kwargs["routing"] is None
         assert kwargs["collection"] == "col1"
 
+    @pytest.mark.asyncio
+    async def test_count_request_passes_inner_query_not_enveloped(self):
+        from dynastore.models.query_builder import QueryRequest
+        driver = ItemsElasticsearchDriver()
+        es = MagicMock()
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.items_es_ops.es_count_items",
+            new=AsyncMock(return_value=1),
+        ) as mock_count:
+            await driver.count_entities(
+                "cat1", "col1", request=QueryRequest(item_ids=["x"]),
+            )
+        _, kwargs = mock_count.call_args
+        # es_count_items wants the INNER query (it adds its own scope); a
+        # double-enveloped {"query": {...}} would be a malformed count body.
+        q = kwargs["query"]
+        assert "query" not in q, f"query was double-enveloped: {q}"
+        assert "bool" in q or "match_all" in q
+
+    @pytest.mark.asyncio
+    async def test_count_multi_collection_omits_single_scope_and_routing(self):
+        from dynastore.models.query_builder import QueryRequest
+        driver = ItemsElasticsearchDriver()
+        es = MagicMock()
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.items_es_ops.es_count_items",
+            new=AsyncMock(return_value=9),
+        ) as mock_count:
+            await driver.count_entities(
+                "cat1", "col1", request=QueryRequest(collections=["c1", "c2"]),
+            )
+        _, kwargs = mock_count.call_args
+        # Multi-collection: scoping is in the query's terms filter, so the
+        # single-collection scope + routing must be dropped.
+        assert kwargs["collection"] is None
+        assert kwargs["routing"] is None
+
 
 class TestQueryRequestToEs:
     def test_empty_request(self):

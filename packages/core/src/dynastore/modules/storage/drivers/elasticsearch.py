@@ -516,13 +516,23 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         es = get_client()
         if es is None:
             return 0
-        query = self._query_request_to_es(request) if request is not None else None
+        # ``_query_request_to_es`` returns an enveloped ``{"query": ...}``;
+        # ``es_count_items`` adds its own collection scope, so it wants the
+        # inner query only (a double envelope is a malformed count body).
+        inner = (
+            self._query_request_to_es(request).get("query")
+            if request is not None
+            else None
+        )
+        # Multi-collection: scoping is carried by the query's terms filter, so
+        # drop the single-collection scope + routing (mirrors read_entities).
+        multi = bool(request is not None and request.collections)
         return await es_count_items(
             es,
             self._items_index_name(catalog_id),
-            query=query,
-            collection=collection_id,
-            routing=self._collection_routing(collection_id),
+            query=inner,
+            collection=None if multi else collection_id,
+            routing=None if multi else self._collection_routing(collection_id),
         )
 
     async def compute_extents(
