@@ -589,29 +589,61 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
 
     @staticmethod
     def _query_request_to_es(request: QueryRequest) -> dict:
-        """Convert a QueryRequest to an ES query body."""
-        must: list = []
+        """Convert a QueryRequest to an ES query body.
+
+        Structural dimensions (``item_ids``, ``collections``, ``bbox``,
+        ``intersects``, ``datetime``) are translated by the shared
+        :func:`~dynastore.modules.elasticsearch.items_query.build_items_query`
+        SSOT so the streaming read/count path produces exactly the same DSL the
+        search path used to build. Any remaining attribute predicates carried on
+        ``filters`` (``eq`` / ``like`` / a legacy ``bbox`` condition) are merged
+        as additional ``must`` clauses.
+        """
+        from dynastore.modules.elasticsearch.items_query import build_items_query
+
+        inner = build_items_query(
+            ids=request.item_ids,
+            collections=request.collections,
+            bbox=request.bbox,
+            intersects=request.intersects,
+            datetime=request.datetime,
+        )
+
+        extra_must: list = []
         for f in request.filters:
             op = f.operator if isinstance(f.operator, str) else f.operator.value
-            if op == "bbox" and f.field == "geometry":
+            if op in ("eq", "="):
+                extra_must.append({"term": {f.field: f.value}})
+            elif op in ("like", "ilike"):
+                extra_must.append({"wildcard": {f.field: f.value}})
+            elif op in ("bbox", "&&") and f.field == "geometry":
                 coords = f.value
                 if isinstance(coords, (list, tuple)) and len(coords) >= 4:
-                    must.append({
-                        "geo_bounding_box": {
+                    extra_must.append({
+                        "geo_shape": {
                             "geometry": {
-                                "top_left": {"lon": coords[0], "lat": coords[3]},
-                                "bottom_right": {"lon": coords[2], "lat": coords[1]},
+                                "shape": {
+                                    "type": "envelope",
+                                    "coordinates": [
+                                        [coords[0], coords[3]],
+                                        [coords[2], coords[1]],
+                                    ],
+                                },
+                                "relation": "intersects",
                             }
                         }
                     })
-            elif op in ("eq", "="):
-                must.append({"term": {f.field: f.value}})
-            elif op in ("like", "ilike"):
-                must.append({"wildcard": {f.field: f.value}})
 
-        if not must:
-            return {"query": {"match_all": {}}}
-        return {"query": {"bool": {"must": must}}}
+        if not extra_must:
+            return {"query": inner}
+
+        # Fold attribute predicates into the structural bool. A ``match_all``
+        # (no structural dims) collapses to just the attribute musts.
+        if "bool" in inner:
+            bool_body = dict(inner["bool"])
+            bool_body["must"] = list(bool_body.get("must", [])) + extra_must
+            return {"query": {"bool": bool_body}}
+        return {"query": {"bool": {"must": extra_must}}}
 
 
 # ---------------------------------------------------------------------------

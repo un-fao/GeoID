@@ -354,7 +354,12 @@ class TestQueryRequestToEs:
         )
         result = ItemsElasticsearchDriver._query_request_to_es(request)
         geo_filter = result["query"]["bool"]["must"][0]
-        assert "geo_bounding_box" in geo_filter
+        # A legacy ``bbox`` FilterCondition now renders as the same
+        # ``geo_shape`` envelope the build_items_query SSOT emits, so the
+        # streaming read/count path and the structural search agree on one
+        # spatial DSL.
+        assert "geo_shape" in geo_filter
+        assert geo_filter["geo_shape"]["geometry"]["shape"]["type"] == "envelope"
 
     def test_like_filter(self):
         from dynastore.models.query_builder import QueryRequest, FilterCondition
