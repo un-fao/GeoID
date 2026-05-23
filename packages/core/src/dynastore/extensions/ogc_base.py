@@ -47,7 +47,11 @@ from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.driver_context import DriverContext
-from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.models.protocols import (
+    CatalogsProtocol,
+    ConfigsProtocol,
+    StorageProtocol,
+)
 from dynastore.models.shared_models import Link
 from dynastore.tools.discovery import get_protocol
 
@@ -103,6 +107,7 @@ class OGCServiceMixin:
     # --- Cached protocol references (per-instance) ---
     _ogc_catalogs_protocol: Optional[CatalogsProtocol] = None
     _ogc_configs_protocol: Optional[ConfigsProtocol] = None
+    _ogc_storage_protocol: Optional[StorageProtocol] = None
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
@@ -134,6 +139,16 @@ class OGCServiceMixin:
                 )
             self._ogc_configs_protocol = svc
         return cast(ConfigsProtocol, self._ogc_configs_protocol)
+
+    async def _get_storage_service(self) -> Optional[StorageProtocol]:
+        """Return the storage service protocol, or ``None`` if unavailable.
+
+        Storage is optional (e.g. metadata-only deployments), so callers must
+        handle ``None``. The reference is cached once resolved.
+        """
+        if self._ogc_storage_protocol is None:
+            self._ogc_storage_protocol = get_protocol(StorageProtocol)
+        return self._ogc_storage_protocol
 
     # ------------------------------------------------------------------
     # Shared config / item access helpers

@@ -29,10 +29,7 @@ from fastapi.responses import Response, HTMLResponse
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.models.driver_context import DriverContext
 from sqlalchemy import text
-from dynastore.models.protocols import (
-    ConfigsProtocol,
-    StorageProtocol,
-)
+from dynastore.models.protocols import ConfigsProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.models.protocols.authorization import IamRolesConfig
 
@@ -276,10 +273,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
         # prepend so STAC-specific 422 wins over the generic ValidationExceptionHandler
         register_handler(STACValidationExceptionHandler(), prepend=True)
-
-    async def _get_storage_service(self) -> Optional[StorageProtocol]:
-        """Helper to get the storage service protocol."""
-        return get_protocol(StorageProtocol)
 
     def _register_routes(self):
         """Registers routes using a declarative route table."""

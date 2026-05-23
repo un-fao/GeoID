@@ -177,3 +177,44 @@ async def test_get_plugin_config_defaults_when_service_unavailable():
 
     out = await svc._get_plugin_config(_Cfg, "cat")
     assert isinstance(out, _Cfg)
+
+
+# ---------------------------------------------------------------------------
+# OGCServiceMixin._get_storage_service
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_storage_service_resolves_and_caches(monkeypatch):
+    """Resolves StorageProtocol once and caches the result for reuse."""
+    import dynastore.extensions.ogc_base as ogc_base
+    from dynastore.models.protocols import StorageProtocol
+
+    sentinel = object()
+    requested = []
+
+    def _fake_get_protocol(proto):
+        requested.append(proto)
+        return sentinel
+
+    monkeypatch.setattr(ogc_base, "get_protocol", _fake_get_protocol)
+
+    svc = _Svc()
+    first = await svc._get_storage_service()
+    second = await svc._get_storage_service()
+
+    assert first is sentinel
+    assert second is sentinel
+    # Resolved exactly once (cached) and asked for the storage protocol.
+    assert requested == [StorageProtocol]
+
+
+@pytest.mark.asyncio
+async def test_get_storage_service_returns_none_when_unavailable(monkeypatch):
+    """Storage is optional — an unavailable service yields None, not an error."""
+    import dynastore.extensions.ogc_base as ogc_base
+
+    monkeypatch.setattr(ogc_base, "get_protocol", lambda proto: None)
+
+    svc = _Svc()
+    assert await svc._get_storage_service() is None
