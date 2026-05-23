@@ -226,13 +226,29 @@ class SearchService(ExtensionProtocol):
         self,
         body: SearchBody,
         base_url: str = "",
+        *,
+        scoped: bool = False,
     ) -> ItemCollection:
-        """Search STAC Items."""
+        """Search STAC Items.
+
+        ``scoped`` distinguishes the two route families that share this
+        method. The catalog-scoped routes (``/search/catalogs/{cat}``) pass
+        ``scoped=True`` and may resolve a catalog's pinned SEARCH driver —
+        including a tenant-private items driver — so the datamanager reads
+        its own private index. The unscoped public discovery routes
+        (``/search``) pass ``scoped=False``: even when a ``catalog_id`` is
+        supplied in the body they must only ever address the public per-catalog
+        index / platform alias, never a catalog's private index. Honouring the
+        private SEARCH pin on the public endpoint would surface private items
+        through the cross-tenant discovery surface.
+        """
         from dynastore.modules.elasticsearch.items_projection import (
             resolve_catalog_known_fields,
         )
 
-        index = await self._resolve_items_index(body.catalog_id, body.collections, body.driver)
+        index = await self._resolve_items_index(
+            body.catalog_id, body.collections, body.driver, scoped=scoped,
+        )
         # When the request scopes to a single catalog, resolve that
         # catalog's full Tier-1 ∪ Tier-2 known-fields so sort on a
         # Tier-2 field hits the explicit ``properties.<key>`` path
@@ -432,6 +448,8 @@ class SearchService(ExtensionProtocol):
         catalog_id: Optional[str],
         collections: Optional[List[str]],
         driver_hint: Optional[str],
+        *,
+        scoped: bool = False,
     ) -> str:
         """Resolve the ES index/alias to query for an items SEARCH.
 
@@ -441,6 +459,14 @@ class SearchService(ExtensionProtocol):
         drivers expose the same ``_items_index_name`` seam, so resolve the
         pinned driver instance and ask it. A cross-catalog / unscoped query
         (or a missing pin) falls back to the public per-catalog index / alias.
+
+        The pinned-driver resolution is honoured **only** for the catalog-scoped
+        route family (``scoped=True``). The unscoped public discovery routes
+        (``scoped=False``) must never address a catalog's private items index,
+        even when a ``catalog_id`` is supplied — a private SEARCH pin would
+        otherwise leak tenant-private items through the public ``/search``
+        surface. Unscoped requests therefore always resolve the public
+        per-catalog index (when scoped to one catalog) or the platform alias.
         """
         from dynastore.modules.elasticsearch.client import get_index_prefix
         from dynastore.modules.elasticsearch.mappings import (
@@ -448,8 +474,12 @@ class SearchService(ExtensionProtocol):
             get_tenant_items_index,
         )
 
-        driver_ref = await self._resolve_items_search_driver_ref(
-            catalog_id, collections, driver_hint,
+        driver_ref = (
+            await self._resolve_items_search_driver_ref(
+                catalog_id, collections, driver_hint,
+            )
+            if scoped
+            else None
         )
 
         if catalog_id and driver_ref:
