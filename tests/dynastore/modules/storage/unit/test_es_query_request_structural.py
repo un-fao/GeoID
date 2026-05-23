@@ -83,6 +83,35 @@ def test_empty_request_is_match_all():
     assert body == {"query": {"match_all": {}}}
 
 
+def _filter_clauses(body: dict) -> list:
+    return list(body.get("query", {}).get("bool", {}).get("filter", []))
+
+
+def test_read_body_single_collection_forces_term_and_routing():
+    body, params = _ItemsElasticsearchBase._build_read_search_body("col1", QueryRequest(), 100, 0)
+    assert params["routing"] == "col1"
+    assert {"term": {"collection": "col1"}} in _filter_clauses(body)
+
+
+def test_read_body_multi_collection_no_forced_term_no_routing():
+    req = QueryRequest(collections=["c1", "c2"])
+    body, params = _ItemsElasticsearchBase._build_read_search_body("c1", req, 100, 0)
+    # Multi-collection queries all shards: no single-collection routing.
+    assert "routing" not in params
+    # Scoping comes from the terms filter (build_items_query), not a forced
+    # single-collection term clause.
+    assert {"term": {"collection": "c1"}} not in _filter_clauses(body)
+    assert {"terms": {"collection": ["c1", "c2"]}} in _filter_clauses(body)
+
+
+def test_read_body_limit_offset_from_request_override_args():
+    body, params = _ItemsElasticsearchBase._build_read_search_body(
+        "c1", QueryRequest(limit=5, offset=10), 100, 0
+    )
+    assert params["size"] == "5"
+    assert params["from"] == "10"
+
+
 def test_structural_and_attribute_filters_combine():
     body = _to_es(
         QueryRequest(

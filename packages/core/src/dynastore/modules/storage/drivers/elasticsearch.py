@@ -645,6 +645,48 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             return {"query": {"bool": bool_body}}
         return {"query": {"bool": {"must": extra_must}}}
 
+    @staticmethod
+    def _build_read_search_body(
+        collection_id: str,
+        request: Optional[QueryRequest],
+        limit: int,
+        offset: int,
+    ) -> tuple:
+        """Build the ``(body, params)`` for a streaming items search.
+
+        Single-collection (the common ``/items`` browse): force a
+        ``{"term": {"collection": …}}`` filter and route to that collection's
+        shard. Multi-collection (``request.collections`` set, e.g. STAC
+        ``/search`` across collections): the ``build_items_query`` SSOT already
+        scopes via a ``{"terms": {"collection": […]}}`` filter, so query all
+        shards with no single-collection routing.
+        """
+        base = (
+            _ItemsElasticsearchBase._query_request_to_es(request)
+            if request
+            else {"query": {"match_all": {}}}
+        )
+        base_query = base.get("query", {"match_all": {}})
+        size = limit if request is None or request.limit is None else request.limit
+        from_ = offset if request is None or request.offset is None else request.offset
+        params: Dict[str, Any] = {"size": str(size), "from": str(from_)}
+
+        if request is not None and request.collections:
+            # Multi-collection: scoping is already in base_query's terms filter.
+            return {"query": base_query}, params
+
+        collection_filter = {"term": {"collection": collection_id}}
+        body = {
+            "query": {
+                "bool": {
+                    "must": [base_query],
+                    "filter": [collection_filter],
+                }
+            }
+        }
+        params["routing"] = collection_id
+        return body, params
+
 
 # ---------------------------------------------------------------------------
 # ItemsElasticsearchDriver — public STAC items index
@@ -1194,29 +1236,16 @@ class ItemsElasticsearchDriver(
                 except Exception:
                     pass
         else:
-            base = self._query_request_to_es(request) if request else {"query": {"match_all": {}}}
-            # Always scope by collection so a tenant-wide index returns
-            # only this collection's hits.
-            collection_filter = {"term": {"collection": collection_id}}
-            base_query = base.get("query", {"match_all": {}})
-            scoped_query = {
-                "bool": {
-                    "must": [base_query],
-                    "filter": [collection_filter],
-                }
-            }
-            size = limit if request is None or request.limit is None else request.limit
-            from_ = offset if request is None or request.offset is None else request.offset
-
+            # Single-collection scopes+routes to one collection's shard;
+            # multi-collection (request.collections) queries all shards.
+            body, params = self._build_read_search_body(
+                collection_id, request, limit, offset,
+            )
             try:
                 resp = await es.search(
                     index=index_name,
-                    body={"query": scoped_query},
-                    params={
-                        "routing": collection_id,
-                        "size": str(size),
-                        "from": str(from_),
-                    },
+                    body=body,
+                    params=params,
                 )
                 for hit in resp.get("hits", {}).get("hits", []):
                     try:
