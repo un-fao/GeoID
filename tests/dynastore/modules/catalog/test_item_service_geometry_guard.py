@@ -151,6 +151,92 @@ async def test_reject_identifies_offending_item_id():
     assert "toobig" in str(exc.value)
 
 
+class _StubCtx:
+    """Minimal DriverContext stand-in: carries the ``extensions`` dict the
+    guard drains per-item rejections into (the same channel ``_ingest_items``
+    seeds as ``ctx.extensions["_rejections"]``)."""
+
+    def __init__(self, seed_rejections: bool = True):
+        self.extensions = {"_rejections": []} if seed_rejections else {}
+        self.db_resource = None
+
+
+@pytest.mark.asyncio
+async def test_bulk_oversized_drained_to_rejections_not_raised():
+    """#1260: in a BULK ingest with a rejection channel, an oversized geometry
+    is reported per-item via the ``_rejections`` out-list (→ 207) rather than
+    raising and killing the whole batch. The good items survive."""
+    svc = ItemService()
+    ctx = _StubCtx()
+    items = [
+        {"id": "ok", "type": "Feature", "geometry": _small_geometry(), "properties": {}},
+        {"id": "toobig", "type": "Feature", "geometry": _big_geometry(), "properties": {}},
+    ]
+    remaining = await svc._enforce_es_geometry_size_limit(
+        "cat1", "col1", items, [_pg_resolved(), _es_resolved(simplify_geometry=False)],
+        ctx=ctx, is_single=False,
+    )
+    # The good item survives; the oversized one is dropped from the write set.
+    remaining_ids = [it["id"] for it in remaining]
+    assert remaining_ids == ["ok"]
+    # The oversized item is recorded as a per-item rejection.
+    sink = ctx.extensions["_rejections"]
+    assert len(sink) == 1
+    rej = sink[0]
+    assert rej["external_id"] == "toobig"
+    assert "10" in rej["message"]
+
+
+@pytest.mark.asyncio
+async def test_single_oversized_still_raises_even_with_sink():
+    """A single-item ingest must keep its hard 4xx reject (ValueError), even
+    when a rejection channel is present."""
+    svc = ItemService()
+    ctx = _StubCtx()
+    items = [{"id": "big", "type": "Feature", "geometry": _big_geometry(), "properties": {}}]
+    with pytest.raises(ValueError):
+        await svc._enforce_es_geometry_size_limit(
+            "cat1", "col1", items, [_es_resolved(simplify_geometry=False)],
+            ctx=ctx, is_single=True,
+        )
+    assert ctx.extensions["_rejections"] == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_oversized_without_sink_still_raises():
+    """A bulk call with no rejection channel (direct service use) keeps the
+    fail-the-batch behavior — there is nowhere to deliver a per-item report."""
+    svc = ItemService()
+    ctx = _StubCtx(seed_rejections=False)
+    items = [
+        {"id": "ok", "type": "Feature", "geometry": _small_geometry(), "properties": {}},
+        {"id": "toobig", "type": "Feature", "geometry": _big_geometry(), "properties": {}},
+    ]
+    with pytest.raises(ValueError):
+        await svc._enforce_es_geometry_size_limit(
+            "cat1", "col1", items, [_es_resolved(simplify_geometry=False)],
+            ctx=ctx, is_single=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_bulk_all_oversized_drains_all_and_returns_empty():
+    """When every item in a bulk is oversized, all are reported and the write
+    set is emptied (the caller then returns a 207 with no accepted items)."""
+    svc = ItemService()
+    ctx = _StubCtx()
+    items = [
+        {"id": "a", "type": "Feature", "geometry": _big_geometry(), "properties": {}},
+        {"id": "b", "type": "Feature", "geometry": _big_geometry(), "properties": {}},
+    ]
+    remaining = await svc._enforce_es_geometry_size_limit(
+        "cat1", "col1", items, [_es_resolved(simplify_geometry=False)],
+        ctx=ctx, is_single=False,
+    )
+    assert remaining == []
+    assert {r["external_id"] for r in ctx.extensions["_rejections"]} == {"a", "b"}
+
+
 @pytest.mark.asyncio
 async def test_works_with_feature_model_geometry():
     """The guard reads geometry off Pydantic Feature models too."""
