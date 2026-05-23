@@ -463,7 +463,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         resolved_drivers: List[Any],
         *,
         db_resource: Optional[DbResource] = None,
-    ) -> None:
+        ctx: Optional[DriverContext] = None,
+        is_single: bool = True,
+    ) -> List[Any]:
         """Pre-write 10 MB geometry guard for ES-backed collections (#1248).
 
         ES is an async secondary: the PG primary commits before the ES write
@@ -471,9 +473,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         oversized geometry MUST happen BEFORE any driver write. When the
         resolved WRITE routing includes an ES items secondary whose
         ``simplify_geometry`` is disabled, an item whose geometry serializes
-        above ``DEFAULT_MAX_BYTES`` (10 MB) rejects the whole ingest with a
-        422-shaped ``ValueError`` before anything is written to ANY driver
-        (primary included).
+        above ``DEFAULT_MAX_BYTES`` (10 MB) is rejected before anything is
+        written to ANY driver (primary included).
+
+        How the rejection is delivered depends on the ingest shape (#1260):
+
+        * **Single-item** ingest (``is_single``), or any call without a
+          ``_rejections`` out-list on *ctx*: raise a 422-shaped ``ValueError``
+          that fails the request — there is no per-item channel to report into.
+        * **Bulk** ingest with a rejection channel: drain each oversized item
+          into ``ctx.extensions["_rejections"]`` (the same out-list the PG
+          per-row path uses; ``_ingest_items`` turns it into a 207
+          ``IngestionReport``) and drop it from the returned write set, so the
+          good items in the batch are still accepted.
+
+        Returns the items that may proceed to the write path (the input list
+        unchanged when nothing is dropped).
 
         No reject when no ES items secondary is routed (e.g. a PG-only
         catalog) — PG handles large geometries fine; the 10 MB ceiling is an
@@ -506,8 +521,29 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             break
 
         if not guarded:
-            return
+            return items_list
 
+        def _reason(item_id: Any, size: int) -> str:
+            return (
+                f"Item '{item_id}' geometry is {size} bytes, exceeding the "
+                f"{DEFAULT_MAX_BYTES}-byte (10 MB) Elasticsearch "
+                f"per-document limit. The collection routes an Elasticsearch "
+                f"items index with geometry simplification disabled, so the "
+                f"item is rejected before any write. Reduce the geometry "
+                f"resolution, or enable 'simplify_geometry' on the "
+                f"Elasticsearch items driver to index a simplified copy."
+            )
+
+        # The per-item rejection out-list, when the caller seeded one
+        # (``_ingest_items`` does for every HTTP ingest). ``None`` for direct
+        # service calls with no 207 channel.
+        sink = None
+        if ctx is not None and isinstance(getattr(ctx, "extensions", None), dict):
+            seeded = ctx.extensions.get("_rejections")
+            if isinstance(seeded, list):
+                sink = seeded
+
+        kept: List[Any] = []
         for item in items_list:
             if isinstance(item, dict):
                 geometry = item.get("geometry")
@@ -516,16 +552,27 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 geometry = getattr(item, "geometry", None)
                 item_id = getattr(item, "id", None)
             size = geometry_geojson_size(geometry)
-            if size > DEFAULT_MAX_BYTES:
-                raise ValueError(
-                    f"Item '{item_id}' geometry is {size} bytes, exceeding the "
-                    f"{DEFAULT_MAX_BYTES}-byte (10 MB) Elasticsearch "
-                    f"per-document limit. The collection routes an Elasticsearch "
-                    f"items index with geometry simplification disabled, so the "
-                    f"item is rejected before any write. Reduce the geometry "
-                    f"resolution, or enable 'simplify_geometry' on the "
-                    f"Elasticsearch items driver to index a simplified copy."
-                )
+            if size <= DEFAULT_MAX_BYTES:
+                kept.append(item)
+                continue
+
+            # Single-item ingest, or no 207 channel: fail the request.
+            if is_single or sink is None:
+                raise ValueError(_reason(item_id, size))
+
+            # Bulk with a channel: report this item and drop it; keep the rest.
+            sink.append(
+                {
+                    "geoid": None,
+                    "external_id": str(item_id) if item_id is not None else None,
+                    "sidecar_id": "geometries",
+                    "matcher": None,
+                    "reason": "geometry_too_large",
+                    "message": _reason(item_id, size),
+                }
+            )
+
+        return kept
 
     async def upsert(
         self,
@@ -599,10 +646,19 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # rejected with HTTP 422 before any driver write — the PG primary row
         # is never created (ES is an async secondary; rejecting post-commit
         # would leave PG and ES inconsistent).
-        await self._enforce_es_geometry_size_limit(
+        # Bulk ingests deliver an oversized geometry as a per-item 207
+        # rejection (the returned list drops it); single-item ingests still
+        # fail with a 4xx (#1260).
+        items_list = await self._enforce_es_geometry_size_limit(
             catalog_id, collection_id, items_list, resolved_drivers,
-            db_resource=db_resource,
+            db_resource=db_resource, ctx=ctx, is_single=is_single,
         )
+        if not items_list:
+            # Every item in the bulk was drained as an oversized-geometry
+            # rejection (single-item oversized raises above, so this is only
+            # reachable for bulk). Skip the no-op primary write; the seeded
+            # ``_rejections`` out-list already carries the per-item 207 report.
+            return []
 
         from dynastore.models.protocols.storage_driver import Capability
         if primary is not None and Capability.QUERY_FALLBACK_SOURCE not in primary.driver.capabilities:
