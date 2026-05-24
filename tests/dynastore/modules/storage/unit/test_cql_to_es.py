@@ -10,10 +10,14 @@ from __future__ import annotations
 import pytest
 from pygeofilter.parsers.cql2_json import parse as parse_cql2_json
 
-from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.field_definition import (
+    FieldCapability,
+    FieldDefinition,
+)
 from dynastore.modules.storage.drivers.es_common.cql_to_es import (
     UntranslatableFilterError,
     build_es_field_mapping,
+    build_es_fulltext_mapping,
     cql_ast_to_es_query,
     merge_es_filter,
 )
@@ -236,6 +240,79 @@ def test_mapping_public_geometry_and_envelope_unaffected_by_expose():
     m = build_es_field_mapping(fields, private=False)
     assert m["geom"] == "geometry"
     assert m["external_id"] == "external_id"
+
+
+# --------------------------------------------------------------------------- #
+# FULLTEXT capability (#1291): LIKE on a FULLTEXT field → analyzed ``match``
+# over the ``.text`` sub-field; everything else keeps the ``wildcard`` behaviour.
+# --------------------------------------------------------------------------- #
+
+def _ft_fd(name, *, fulltext, data_type="string", expose=True):
+    caps = [FieldCapability.FILTERABLE]
+    if fulltext:
+        caps.append(FieldCapability.FULLTEXT)
+    return FieldDefinition(
+        name=name, data_type=data_type, capabilities=caps, expose=expose
+    )
+
+
+def test_fulltext_mapping_only_lists_fulltext_strings():
+    fields = {
+        "title": _ft_fd("title", fulltext=True),
+        "code": _ft_fd("code", fulltext=False),
+        "pop": _ft_fd("pop", fulltext=True, data_type="integer"),  # non-string skipped
+    }
+    ft = build_es_fulltext_mapping(fields, private=True)
+    assert ft == {"title": "properties.title.text"}
+    # The exact-match mapping is unchanged for all of them (no regression).
+    exact = build_es_field_mapping(fields, private=True)
+    assert exact["title"] == "properties.title.keyword"
+    assert exact["code"] == "properties.code.keyword"
+
+
+def test_fulltext_mapping_public_extras_for_unexposed():
+    fields = {"notes": _ft_fd("notes", fulltext=True, expose=False)}
+    ft = build_es_fulltext_mapping(fields, private=False)
+    assert ft == {"notes": "properties.extras.notes.text"}
+
+
+def test_like_on_fulltext_field_uses_match():
+    field_map = {"title": "properties.title.keyword"}
+    fulltext_map = {"title": "properties.title.text"}
+    node = {"op": "like", "args": [{"property": "title"}, "%annual report%"]}
+    q = cql_ast_to_es_query(parse_cql2_json(node), field_map, fulltext_map)
+    assert q == {"match": {"properties.title.text": "annual report"}}
+
+
+def test_like_on_fulltext_field_negated():
+    field_map = {"title": "properties.title.keyword"}
+    fulltext_map = {"title": "properties.title.text"}
+    node = {"op": "not", "args": [
+        {"op": "like", "args": [{"property": "title"}, "%draft%"]}
+    ]}
+    q = cql_ast_to_es_query(parse_cql2_json(node), field_map, fulltext_map)
+    assert q == {"bool": {"must_not": [{"match": {"properties.title.text": "draft"}}]}}
+
+
+def test_like_without_fulltext_map_keeps_wildcard():
+    """No fulltext mapping → historical ``wildcard`` behaviour, unchanged."""
+    field_map = {"title": "properties.title.keyword"}
+    node = {"op": "like", "args": [{"property": "title"}, "%foo%"]}
+    q = cql_ast_to_es_query(parse_cql2_json(node), field_map)
+    assert q == {
+        "wildcard": {"properties.title.keyword": {"value": "*foo*", "case_insensitive": False}}
+    }
+
+
+def test_like_on_non_fulltext_field_keeps_wildcard_even_with_map():
+    """A field absent from the fulltext map still uses ``wildcard``."""
+    field_map = {"code": "properties.code.keyword", "title": "properties.title.keyword"}
+    fulltext_map = {"title": "properties.title.text"}
+    node = {"op": "like", "args": [{"property": "code"}, "%X%"]}
+    q = cql_ast_to_es_query(parse_cql2_json(node), field_map, fulltext_map)
+    assert q == {
+        "wildcard": {"properties.code.keyword": {"value": "*X*", "case_insensitive": False}}
+    }
 
 
 # --------------------------------------------------------------------------- #

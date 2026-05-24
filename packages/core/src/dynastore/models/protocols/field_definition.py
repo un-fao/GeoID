@@ -21,14 +21,39 @@ from dynastore.models.localization import LocalizedText
 
 
 class FieldCapability(str, Enum):
-    """Capabilities a field can have — driver-agnostic."""
+    """Capabilities a field can have — driver-agnostic.
 
-    FILTERABLE = "filterable"       # Can be used in WHERE / CQL2 filter
-    SORTABLE = "sortable"           # Can be used in ORDER BY / sortby
-    GROUPABLE = "groupable"         # Can be used in GROUP BY
-    AGGREGATABLE = "aggregatable"   # Can be aggregated (SUM, COUNT, etc.)
-    SPATIAL = "spatial"             # Spatial operations available
-    INDEXED = "indexed"             # Has a backing index (informational)
+    Two kinds of member live here:
+
+    * **Authorable intents** — what a config author *asks for*. ``FILTERABLE``,
+      ``SORTABLE``, ``GROUPABLE``, ``AGGREGATABLE``, ``SPATIAL`` and
+      ``FULLTEXT`` are declared by the author (or inferred by a reader from the
+      native type) to say "this field should support predicate X".
+    * **Driver-reported introspection** — what a driver *observes* after it has
+      built storage. ``INDEXED`` is the only such member: it means the backing
+      store has a physical index on the field. It is **never** an authoring
+      knob — an author does not set ``INDEXED`` to request that an index be
+      built. The portable way to ask for fast filtering/sorting is
+      :attr:`FieldAccess.FAST` (#1293); the driver then decides whether to
+      build an index and reports ``INDEXED`` back through ``get_entity_fields``.
+
+    ``FILTERABLE`` vs ``FULLTEXT`` is a deliberate split (#1291):
+
+    * ``FILTERABLE`` = exact-match / keyword predicate. A CQL2 ``=`` resolves to
+      an Elasticsearch ``term`` over the ``.keyword`` sub-field; on PostgreSQL it
+      is an equality predicate over a column / JSONB path.
+    * ``FULLTEXT`` = analyzed free-text search. The field is offered for an
+      Elasticsearch ``match`` over an analyzed ``.text`` (per-locale analyzer)
+      field. It is additive: a field can be both ``FILTERABLE`` and ``FULLTEXT``.
+    """
+
+    FILTERABLE = "filterable"       # Authorable: exact-match / keyword predicate (WHERE / CQL2 `=`)
+    SORTABLE = "sortable"           # Authorable: can be used in ORDER BY / sortby
+    GROUPABLE = "groupable"         # Authorable: can be used in GROUP BY
+    AGGREGATABLE = "aggregatable"   # Authorable: can be aggregated (SUM, COUNT, etc.)
+    SPATIAL = "spatial"             # Authorable: spatial operations available
+    FULLTEXT = "fulltext"           # Authorable: analyzed free-text search (ES `match`), distinct from FILTERABLE
+    INDEXED = "indexed"             # Driver-REPORTED only: storage has a backing index (NOT an authoring knob — use FieldAccess.FAST)
 
 
 class FieldAccess(str, Enum):

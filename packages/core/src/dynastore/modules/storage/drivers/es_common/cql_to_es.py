@@ -103,6 +103,32 @@ def _like_to_wildcard(
     return value
 
 
+def _like_to_match_text(
+    value: str, wildcard: str, single_char: str, escape_char: str = "\\"
+) -> str:
+    """Strip CQL ``LIKE`` wildcards to a plain free-text string for ES ``match``.
+
+    FULLTEXT fields (#1291) are searched with an analyzed ``match`` query, which
+    tokenises rather than glob-matches. The CQL ``%``/``_`` wildcards (or
+    whatever ``wildcard``/``single_char`` the filter declares) carry no meaning
+    to ``match``, so they are removed; an escaped wildcard becomes its literal
+    character. The analyzer handles tokenisation and case-folding from there.
+    """
+    x_wildcard = re.escape(wildcard)
+    x_single_char = re.escape(single_char)
+    if escape_char == "\\":
+        x_escape_char = "\\\\\\\\"
+    else:
+        x_escape_char = re.escape(escape_char)
+    # Drop non-escaped wildcard / single-char markers.
+    value = re.sub(f"(?<!{x_escape_char}){x_wildcard}", " ", value)
+    value = re.sub(f"(?<!{x_escape_char}){x_single_char}", " ", value)
+    # Unescape escaped wildcard / single-char back to their literal form.
+    value = value.replace(f"{escape_char}{wildcard}", wildcard)
+    value = value.replace(f"{escape_char}{single_char}", single_char)
+    return value.strip()
+
+
 class _CqlToEsEvaluator(Evaluator):
     """Evaluates a pygeofilter AST into a plain ES Query DSL ``dict``.
 
@@ -124,8 +150,16 @@ class _CqlToEsEvaluator(Evaluator):
       envelope.
     """
 
-    def __init__(self, field_mapping: Dict[str, str]):
+    def __init__(
+        self,
+        field_mapping: Dict[str, str],
+        fulltext_mapping: Optional[Dict[str, str]] = None,
+    ):
         self.field_mapping = field_mapping
+        # Name → analyzed ``.text`` path for FULLTEXT-capable fields (#1291).
+        # Consulted only by the ``Like`` handler; empty/None preserves the
+        # historical ``wildcard`` behaviour for every field.
+        self.fulltext_mapping = fulltext_mapping or {}
 
     # --- logical -----------------------------------------------------------
 
@@ -170,11 +204,30 @@ class _CqlToEsEvaluator(Evaluator):
 
     @handle(ast.Like)
     def like(self, node: ast.Like, lhs):
+        # FULLTEXT fields (#1291): a field that declares analyzed free-text
+        # search is queried with an ES ``match`` over its analyzed ``.text``
+        # sub-field instead of a ``wildcard`` over the exact ``.keyword`` path.
+        # ``match`` runs the same analyzer used at index time, so a LIKE against
+        # an analyzed field finds tokenised matches rather than failing on the
+        # raw keyword. Every non-FULLTEXT field keeps the historical ``wildcard``
+        # behaviour unchanged.
+        attr_name = getattr(getattr(node, "lhs", None), "name", None)
+        fulltext_path = self.fulltext_mapping.get(attr_name) if attr_name else None
+        if fulltext_path is not None:
+            # Strip the LIKE wildcards/escapes for the free-text query string;
+            # ``match`` tokenises rather than glob-matches.
+            query_text = _like_to_match_text(
+                node.pattern, node.wildcard, node.singlechar, node.escapechar
+            )
+            q: Dict[str, Any] = {"match": {fulltext_path: query_text}}
+            if node.not_:
+                return {"bool": {"must_not": [q]}}
+            return q
         pattern = _like_to_wildcard(
             node.pattern, node.wildcard, node.singlechar, node.escapechar
         )
         expr: Dict[str, Any] = {"value": pattern, "case_insensitive": node.nocase}
-        q: Dict[str, Any] = {"wildcard": {lhs: expr}}
+        q = {"wildcard": {lhs: expr}}
         if node.not_:
             return {"bool": {"must_not": [q]}}
         return q
@@ -307,7 +360,11 @@ class _CqlToEsEvaluator(Evaluator):
         )
 
 
-def cql_ast_to_es_query(node: Any, field_mapping: Dict[str, str]) -> Dict[str, Any]:
+def cql_ast_to_es_query(
+    node: Any,
+    field_mapping: Dict[str, str],
+    fulltext_mapping: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Translate a pygeofilter CQL2 AST node to an ES Query DSL ``dict``.
 
     ``field_mapping`` maps each queryable property name to its ES field path
@@ -315,10 +372,15 @@ def cql_ast_to_es_query(node: Any, field_mapping: Dict[str, str]) -> Dict[str, A
     translator does not cover — raises :class:`UntranslatableFilterError`, which
     the caller treats as "untranslatable" and falls back to PostgreSQL.
 
+    ``fulltext_mapping`` (optional; see :func:`build_es_fulltext_mapping`) maps
+    FULLTEXT-capable string fields to their analyzed ``.text`` path. When a
+    ``LIKE`` targets such a field the translator emits an analyzed ``match``
+    query instead of a ``wildcard``; omitting it preserves today's behaviour.
+
     The returned dict is a single ES query clause (e.g. ``{"term": {...}}`` or a
     ``{"bool": {...}}`` composite) suitable for :func:`merge_es_filter`.
     """
-    return _CqlToEsEvaluator(field_mapping).evaluate(node)
+    return _CqlToEsEvaluator(field_mapping, fulltext_mapping).evaluate(node)
 
 
 # Envelope (top-level doc) fields that are NOT nested under ``properties``.
@@ -349,6 +411,20 @@ _GEOMETRY_DATA_TYPE_PREFIX = "geometry"
 # this and never need the suffix.
 _KEYWORD_SUBFIELD_DATA_TYPES = frozenset({"string", "uuid"})
 _KEYWORD_SUBFIELD = ".keyword"
+# Analyzed free-text sub-field. A field declaring ``FieldCapability.FULLTEXT``
+# (#1291) is offered this ``.text`` path for an ES ``match`` query — analyzed,
+# tokenised free-text search — distinct from the exact ``.keyword`` path that the
+# default string mapping (``{"type": "keyword", "fields": {"text": ...}}``) and
+# the localized-text blocks already emit alongside the keyword.
+_FULLTEXT_SUBFIELD = ".text"
+
+
+def _has_fulltext(field_def: "Any") -> bool:
+    """True when a field declares the authorable ``FULLTEXT`` capability."""
+    from dynastore.models.protocols.field_definition import FieldCapability
+
+    caps = getattr(field_def, "capabilities", None) or []
+    return FieldCapability.FULLTEXT in caps
 
 
 def build_es_field_mapping(
@@ -409,6 +485,46 @@ def build_es_field_mapping(
             else:
                 mapping[name] = f"properties.extras.{name}{suffix}"
 
+    return mapping
+
+
+def build_es_fulltext_mapping(
+    queryable_fields: Dict[str, "Any"],
+    *,
+    private: bool,
+) -> Dict[str, str]:
+    """Map FULLTEXT-capable string fields to their analyzed ``.text`` ES path.
+
+    Companion to :func:`build_es_field_mapping` (#1291). It returns ONLY the
+    fields that declare :attr:`FieldCapability.FULLTEXT` and whose ``data_type``
+    is a string — those are the fields for which an analyzed free-text ``match``
+    query is a first-class capability. Every other field is omitted, so a caller
+    that joins this map with the exact-match mapping leaves non-FULLTEXT fields
+    on their existing ``.keyword`` path (no behaviour change for them).
+
+    The resolved path is the same base path the exact mapping uses, with the
+    keyword suffix swapped for ``.text`` — the analyzed sub-field that the string
+    dynamic template and the localized-text blocks already emit. Geometry and
+    explicit envelope fields are skipped (they are never free-text).
+    """
+    mapping: Dict[str, str] = {}
+    for name, field_def in queryable_fields.items():
+        if not _has_fulltext(field_def):
+            continue
+        data_type = str(getattr(field_def, "data_type", "") or "").lower()
+        # Free-text only makes sense for string fields. Geometry / envelope /
+        # numeric / temporal fields are not analyzed text even if mis-tagged.
+        if data_type not in _KEYWORD_SUBFIELD_DATA_TYPES:
+            continue
+        if name in _ENVELOPE_FIELD_PATHS:
+            continue
+        if private:
+            mapping[name] = f"properties.{name}{_FULLTEXT_SUBFIELD}"
+        else:
+            if bool(getattr(field_def, "expose", True)):
+                mapping[name] = f"properties.{name}{_FULLTEXT_SUBFIELD}"
+            else:
+                mapping[name] = f"properties.extras.{name}{_FULLTEXT_SUBFIELD}"
     return mapping
 
 

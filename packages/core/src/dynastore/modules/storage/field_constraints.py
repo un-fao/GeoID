@@ -96,6 +96,63 @@ def pg_native_to_canonical(pg_type: str) -> str:
     return "string"
 
 
+# Column-implying capabilities for the AUTO access rule (Rule 4/5). FILTERABLE,
+# SORTABLE and INDEXED benefit from a native PG column; GROUPABLE / AGGREGATABLE
+# / SPATIAL / FULLTEXT do not (see the precedence comment below). INDEXED stays
+# here deliberately (#1291) — it is driver-REPORTED, not authored, but an AUTO
+# field that already carries it should keep materialising to a column to preserve
+# the #1293 behaviour exactly. Authors request a fast column via FieldAccess.FAST.
+_COLUMN_CAPS: "frozenset[FieldCapability]" = frozenset({
+    FieldCapability.FILTERABLE,
+    FieldCapability.SORTABLE,
+    FieldCapability.INDEXED,
+})
+
+
+def schema_field_materializes_as_column(
+    fd: FieldDefinition,
+    *,
+    default_access: FieldAccess = FieldAccess.AUTO,
+) -> bool:
+    """Decide whether a schema field becomes a native (sidecar) column.
+
+    This is the single column-synthesis precedence used by both the PG bridge
+    (:func:`bridge_schema_to_attribute_sidecar`) and the driver-agnostic
+    projection (:func:`...field_projection.materialize_feature_fields`). It does
+    NOT decide PG-specific layout — only the portable "is this field
+    materialised/queryable as a first-class column" question (#1291).
+
+    Geometry is never an attribute column (it is owned by the geometry sidecar /
+    driver) and returns ``False`` regardless of access/capabilities.
+
+    Precedence (first match wins):
+
+    1. Hard constraint (``required`` or ``unique``) → column (a NOT-NULL /
+       UNIQUE constraint cannot live inside a JSONB blob).
+    2. Effective access ``FAST`` → column.
+    3. Effective access ``COMPACT`` → JSONB (no column).
+    4/5. Effective access ``AUTO`` → column iff the field declares a
+       column-implying capability (:data:`_COLUMN_CAPS`); else JSONB.
+
+    ``Effective access`` = the field's own ``access`` unless it is AUTO, in which
+    case ``default_access`` (the schema-wide intent) applies.
+    """
+    if (fd.data_type or "").lower().startswith("geometry"):
+        return False
+    if bool(fd.required or fd.unique):
+        return True  # Rule 1
+    field_access = getattr(fd, "access", FieldAccess.AUTO)
+    effective_access = (
+        field_access if field_access != FieldAccess.AUTO else default_access
+    )
+    if effective_access == FieldAccess.FAST:
+        return True  # Rule 2
+    if effective_access == FieldAccess.COMPACT:
+        return False  # Rule 3
+    # Rule 4/5 — AUTO: capability-driven.
+    return bool(set(fd.capabilities or []) & _COLUMN_CAPS)
+
+
 def bridge_schema_to_attribute_sidecar(
     schema: "Optional[ItemsSchema]",
     sidecar: "FeatureAttributeSidecarConfig",
@@ -146,7 +203,6 @@ def bridge_schema_to_attribute_sidecar(
         # geometry/geography check at the top of this module.
         if (fd.data_type or "").lower().startswith("geometry"):
             continue
-        has_constraint = bool(fd.required or fd.unique)
         entry = existing.get(name)
         if entry is not None:
             new_nullable = not fd.required if fd.required else entry.nullable
@@ -167,51 +223,16 @@ def bridge_schema_to_attribute_sidecar(
                 )
                 changed = True
             continue
-        # Decide whether to synthesise a native column for this field. This is
-        # how the PG driver honours the driver-agnostic ``FieldAccess`` intent
-        # (#1291): FAST → column, COMPACT → JSONB, AUTO → driver decides.
-        #
-        # Precedence (evaluated in order; first matching rule wins):
-        #
-        # Rule 1 — Hard DB constraint: unique=True or required=True forces a
-        #   column regardless of access intent. A UNIQUE / NOT-NULL constraint
-        #   cannot be enforced inside a JSONB blob.
-        #
-        # Rule 2 — effective access is FAST: optimise for query access → COLUMN.
-        #
-        # Rule 3 — effective access is COMPACT: minimise storage → JSONB. This
-        #   beats capability-driven lifting. Rule 1 was already checked above, so
-        #   COMPACT here is only reached when there is no hard constraint.
-        #
-        # Rule 4/5 — effective access is AUTO (the PG driver decides from context):
-        #   COLUMN if the field declares a capability that benefits from a native
-        #   column (FILTERABLE, SORTABLE, or INDEXED); otherwise it stays in JSONB.
-        #
-        # ``Effective access`` = the field's own ``access`` unless it is AUTO, in
-        # which case the schema-wide ``default_access`` applies. Column-implying
-        # capabilities are FILTERABLE, SORTABLE, INDEXED; GROUPABLE / AGGREGATABLE
-        # / SPATIAL do not mandate a native column because each can be satisfied
-        # via functional JSONB indexes.
-        _COLUMN_CAPS = frozenset({
-            FieldCapability.FILTERABLE,
-            FieldCapability.SORTABLE,
-            FieldCapability.INDEXED,
-        })
-        field_access = getattr(fd, "access", FieldAccess.AUTO)
-        effective_access = (
-            field_access if field_access != FieldAccess.AUTO else schema_default_access
-        )
-        if has_constraint:
-            pass  # Rule 1 — fall through to synthesis
-        elif effective_access == FieldAccess.FAST:
-            pass  # Rule 2 — optimise for access → column
-        elif effective_access == FieldAccess.COMPACT:
-            continue  # Rule 3 — minimise storage → skip column synthesis
-        else:
-            # Rule 4/5 — AUTO; PG driver decides from the declared capabilities
-            has_column_cap = bool(set(fd.capabilities or []) & _COLUMN_CAPS)
-            if not has_column_cap:
-                continue  # Rule 4 — no trigger; field stays in JSONB
+        # Decide whether to synthesise a native column for this field. The
+        # precedence (hard constraint → FAST → COMPACT → AUTO+capability) is the
+        # single :func:`schema_field_materializes_as_column` rule, shared with the
+        # driver-agnostic projection so PG never re-derives it (#1291). Geometry
+        # is already filtered out above; the predicate reads ``required``/
+        # ``unique`` itself for the hard-constraint rule.
+        if not schema_field_materializes_as_column(
+            fd, default_access=schema_default_access
+        ):
+            continue  # field stays in JSONB
         # ``data_type`` is already canonical (validated on FieldDefinition);
         # tolerant lookup so a bypassed/unknown value degrades to TEXT rather
         # than raising deep in DDL generation.
