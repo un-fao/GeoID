@@ -231,6 +231,53 @@ class TileBucketPreseedStorage(TileStorageProtocol):
             cache_clear(self.check_tile_exists)
         return result
 
+    async def delete_tile(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        z: int,
+        x: int,
+        y: int,
+        format: str,
+    ) -> bool:
+        """Delete a single cached tile blob (idempotent mark-stale)."""
+        storage_provider = self._get_storage_provider()
+        bucket_name = await storage_provider.get_storage_identifier(catalog_id)
+        if not bucket_name:
+            return True  # No bucket → nothing to invalidate; idempotent success.
+
+        cfg = await _load_caching_config()
+        blob_path = _build_blob_path(
+            cfg.key_prefix, collection_id, tms_id, z, x, y, format
+        )
+        client_provider = self._get_client_provider()
+        storage_client = client_provider.get_storage_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+
+        def _delete() -> None:
+            # ``if_generation_match`` is not used — a plain delete is
+            # idempotent enough for mark-stale; a missing blob raises NotFound
+            # which we swallow.
+            try:
+                blob.delete()
+            except Exception as exc:  # google.cloud.exceptions.NotFound etc.
+                if "404" in str(exc) or "NotFound" in type(exc).__name__:
+                    return
+                raise
+
+        try:
+            await run_in_thread(_delete)
+            cache_clear(self.check_tile_exists)
+            return True
+        except Exception as exc:
+            logger.error(
+                "tile_cache: failed to delete blob %s in bucket %s: %s",
+                blob_path, bucket_name, exc,
+            )
+            return False
+
     async def delete_storage_for_catalog(self, catalog_id: str):
         """Deletes all tile storage for a catalog."""
         storage_provider = self._get_storage_provider()

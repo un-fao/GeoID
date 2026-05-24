@@ -30,7 +30,7 @@ from typing import (
     Callable,
     runtime_checkable,
 )
-from dynastore.tools.cache import cached
+from dynastore.tools.cache import cached, cache_invalidate
 from dynastore.models.driver_context import DriverContext
 from dynastore.modules import (
     ModuleProtocol,
@@ -249,6 +249,26 @@ class TileStorageProtocol(Protocol):
         self, catalog_id: str, collection_id: str
     ) -> int:
         """Deletes all tiles for a given collection and returns the number of deleted records."""
+        ...
+
+    async def delete_tile(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        z: int,
+        x: int,
+        y: int,
+        format: str,
+    ) -> bool:
+        """Delete (invalidate / mark-stale) a single cached tile.
+
+        Idempotent: deleting an absent tile is a no-op success. This is the
+        per-tile invalidation primitive used by the write-reactive tile-cache
+        sync (#1292) and by the read-path ``refresh_cache`` flag. The next
+        read of the tile repopulates lazily from fresh data. Returns ``True``
+        when the call completed (whether or not a row/blob existed).
+        """
         ...
 
     async def delete_storage_for_catalog(self, catalog_id: str):
@@ -508,6 +528,51 @@ class TilePGPreseedStorage(TileStorageProtocol):
                 exc_info=True,
             )
             raise e
+
+    async def delete_tile(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        tms_id: str,
+        z: int,
+        x: int,
+        y: int,
+        format: str,
+    ) -> bool:
+        """Delete a single cached tile row (idempotent mark-stale)."""
+        schema = await self._get_schema(catalog_id)
+        query_str = f"""
+            DELETE FROM "{schema}".preseeded_tiles
+            WHERE collection_id=:collection_id AND tms_id=:tms_id
+              AND z=:z AND x=:x AND y=:y AND format=:format;
+        """
+        try:
+            async with managed_transaction(self.engine) as conn:
+                await DQLQuery(
+                    query_str, result_handler=ResultHandler.ROWCOUNT
+                ).execute(
+                    conn,
+                    collection_id=collection_id,
+                    tms_id=tms_id,
+                    z=z,
+                    x=x,
+                    y=y,
+                    format=format,
+                )
+            # The existence-probe cache may now be stale for this tile.
+            cache_invalidate(
+                self.check_tile_exists,
+                catalog_id, collection_id, tms_id, z, x, y, format,
+            )
+            return True
+        except Exception as e:
+            if "UndefinedTableError" in str(type(e).__name__) or "42P01" in str(e):
+                return True  # No table → nothing to invalidate; idempotent success.
+            logger.error(
+                "Error deleting tile %s/%s/%s/%s/%s/%s.%s: %s",
+                catalog_id, collection_id, tms_id, z, x, y, format, e,
+            )
+            return False
 
     async def delete_storage_for_catalog(self, catalog_id: str):
         """Drops the catalog-specific preseeded_tiles table."""
