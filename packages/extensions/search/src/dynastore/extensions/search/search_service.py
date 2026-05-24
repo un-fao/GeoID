@@ -45,6 +45,23 @@ from dynastore.modules.elasticsearch.items_query import (  # noqa: E402
 )
 
 
+def _index_is_canonical(index: Any) -> bool:
+    """True when the resolved index carries the canonical envelope shape.
+
+    Both the tenant-private index (``-private-items``) and the standardized
+    envelope index (``-envelope-items``, the row-level-ABAC driver, #1285)
+    store the canonical identity names (``collection_id`` / ``geoid`` /
+    ``external_id``) at the document root — as opposed to the public per-catalog
+    index's STAC-flavoured shape (``collection`` / ``id`` / ``_external_id``).
+    Structural-field and CQL2 field mapping select the field shape from this
+    single predicate so both canonical indexes are addressed consistently. The
+    public path is unchanged (neither suffix matches the public per-catalog
+    index / platform alias).
+    """
+    name = str(index)
+    return name.endswith("-private-items") or name.endswith("-envelope-items")
+
+
 def _build_item_query(
     body: SearchBody, fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
 ) -> Dict[str, Any]:
@@ -144,8 +161,10 @@ class SearchService(ExtensionProtocol):
         via the collection's ``ItemsPostgresqlDriverConfig`` — the config waterfall
         is driver-agnostic) to build the ES field mapping, then converts the CQL2
         filter to a pygeofilter AST and emits a plain ES clause through the shared
-        translator. Private vs public field mapping is selected from the resolved
-        index (the per-tenant private index ends in ``-private-items``).
+        translator. Canonical vs public field mapping is selected from the
+        resolved index (the per-tenant private index ends in ``-private-items``
+        and the standardized envelope index ends in ``-envelope-items``; both
+        carry the canonical shape — see :func:`_index_is_canonical`).
 
         Returns ``None`` when there is no filter. Raises ``HTTPException(400)`` when
         a filter is present but cannot be honoured (no single catalog+collection
@@ -200,7 +219,11 @@ class SearchService(ExtensionProtocol):
             )
 
         optimizer = QueryOptimizer(col_config, consumer=ConsumerType.STAC)
-        private = str(index).endswith("-private-items")
+        # Both the private and the standardized envelope index carry the
+        # canonical field shape; the CQL→ES field mapping must address that
+        # shape for either (#1285). The public per-catalog index keeps the
+        # STAC-flavoured mapping.
+        private = _index_is_canonical(index)
         queryable_fields = optimizer.get_all_queryable_fields()
         field_mapping = build_es_field_mapping(queryable_fields, private=private)
         fulltext_mapping = build_es_fulltext_mapping(queryable_fields, private=private)
@@ -229,6 +252,8 @@ class SearchService(ExtensionProtocol):
         base_url: str = "",
         *,
         scoped: bool = False,
+        principals: Optional[List[str]] = None,
+        principal: Optional[Any] = None,
     ) -> ItemCollection:
         """Search STAC Items.
 
@@ -242,6 +267,19 @@ class SearchService(ExtensionProtocol):
         index / platform alias, never a catalog's private index. Honouring the
         private SEARCH pin on the public endpoint would surface private items
         through the cross-tenant discovery surface.
+
+        ``principals`` / ``principal`` carry the caller's identity (set by the
+        IAM middleware on ``request.state`` and threaded in by the router).
+        They are consumed ONLY when the resolved SEARCH driver opts in to
+        row-level ABAC (``applies_access_filter=True`` — the standardized
+        envelope driver, #1285): in that case the caller's read scope is
+        compiled to a neutral ``AccessFilter`` and ANDed into the ES query so
+        the driver returns only documents the principal may read. For every
+        other driver no filter is compiled and the query is byte-for-byte what
+        it was before — existing search behaviour is unchanged. The list models
+        anonymous as the middleware does (a single anonymous-role principal),
+        so an unauthenticated caller still gets the correct public-only scope
+        rather than skipping the filter (which would leak).
         """
         from dynastore.modules.elasticsearch.items_projection import (
             resolve_catalog_known_fields,
@@ -259,18 +297,19 @@ class SearchService(ExtensionProtocol):
         sort_known = await resolve_catalog_known_fields(body.catalog_id)
         sort = _parse_sort(body.sortby, sort_known)
 
-        # The tenant-private index carries the canonical envelope names
-        # (``collection_id`` / ``geoid`` / ``external_id``); the public index
-        # uses the STAC-flavoured shape. Address whichever the resolved index
-        # uses so structural filters (collections, ids, external_id) actually
-        # match — same private-index detection the CQL translator uses below.
+        # The tenant-private index and the standardized envelope index both
+        # carry the canonical envelope names (``collection_id`` / ``geoid`` /
+        # ``external_id``); the public index uses the STAC-flavoured shape.
+        # Address whichever the resolved index uses so structural filters
+        # (collections, ids, external_id) actually match — same canonical-index
+        # detection the CQL translator uses below (``_index_is_canonical``).
         from dynastore.modules.elasticsearch.items_query import (
             PRIVATE_ENVELOPE_FIELDS,
             PUBLIC_ENVELOPE_FIELDS,
         )
         envelope_fields = (
             PRIVATE_ENVELOPE_FIELDS
-            if str(index).endswith("-private-items")
+            if _index_is_canonical(index)
             else PUBLIC_ENVELOPE_FIELDS
         )
         query = _build_item_query(body, envelope_fields)
@@ -281,6 +320,26 @@ class SearchService(ExtensionProtocol):
         if es_clause is not None:
             from dynastore.modules.storage.drivers.es_common import merge_es_filter
             query = merge_es_filter(query, es_clause)
+
+        # Row-level ABAC (#1285): when — and ONLY when — the resolved SEARCH
+        # driver opts in (``applies_access_filter=True``, the standardized
+        # envelope driver), compile the caller's read scope to a neutral
+        # ``AccessFilter`` and AND it into the query so the driver returns only
+        # documents the principal may read. The filter is compiled even for
+        # anonymous callers (the router threads the middleware's anonymous
+        # principals list) so the public-only scope is enforced rather than
+        # skipped — skipping would be a leak. For every other driver this block
+        # is a no-op and the query is exactly what it was before.
+        query = await self._apply_access_filter(
+            query,
+            index=index,
+            catalog_id=body.catalog_id,
+            collections=body.collections,
+            driver_hint=body.driver,
+            scoped=scoped,
+            principals=principals,
+            principal=principal,
+        )
 
         es_body: Dict[str, Any] = {
             "query": query,
@@ -443,6 +502,86 @@ class SearchService(ExtensionProtocol):
             if _to_snake(type(d).__name__) == driver_ref:
                 return d
         return None
+
+    async def _resolve_search_driver_instance(
+        self,
+        catalog_id: Optional[str],
+        collections: Optional[List[str]],
+        driver_hint: Optional[str],
+        *,
+        scoped: bool,
+    ) -> Any:
+        """Resolve the live SEARCH driver instance for this request, or ``None``.
+
+        Mirrors the pin resolution in :meth:`_resolve_items_index`: only the
+        catalog-scoped route family (``scoped=True``) honours a per-collection
+        ``ItemsRoutingConfig.operations[SEARCH]`` pin, so an unscoped public
+        request never resolves a pinned (e.g. row-level-ABAC) driver — it falls
+        through to the public per-catalog index with no driver instance. Used
+        purely to read the driver's ``applies_access_filter`` marker; index
+        resolution itself stays in :meth:`_resolve_items_index`.
+        """
+        if not scoped:
+            return None
+        driver_ref = await self._resolve_items_search_driver_ref(
+            catalog_id, collections, driver_hint,
+        )
+        if not driver_ref:
+            return None
+        return self._resolve_items_driver_by_ref(driver_ref)
+
+    async def _apply_access_filter(
+        self,
+        query: Dict[str, Any],
+        *,
+        index: str,
+        catalog_id: Optional[str],
+        collections: Optional[List[str]],
+        driver_hint: Optional[str],
+        scoped: bool,
+        principals: Optional[List[str]],
+        principal: Optional[Any],
+    ) -> Dict[str, Any]:
+        """AND the caller's compiled read scope into ``query`` — gated by driver.
+
+        Returns ``query`` unchanged unless the resolved SEARCH driver opts in to
+        row-level ABAC (``applies_access_filter=True``). When it does, the
+        caller's read scope is compiled to a neutral ``AccessFilter`` via
+        ``get_protocol(PermissionProtocol).compile_read_filter`` and translated
+        to an ES clause that is ANDed into ``query``. The compile happens for
+        anonymous callers too (the middleware models anonymous as a single
+        anonymous-role principal) so the public-only scope is enforced, never
+        skipped. The IAM module is reached ONLY through the neutral
+        ``PermissionProtocol`` + ``AccessFilter`` contract — no IAM import here.
+        """
+        driver = await self._resolve_search_driver_instance(
+            catalog_id, collections, driver_hint, scoped=scoped,
+        )
+        if not getattr(driver, "applies_access_filter", False):
+            return query
+
+        from dynastore.modules.storage.drivers.elasticsearch_envelope.access_translate import (
+            access_filter_to_es,
+        )
+        from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+            compile_read_access_filter,
+        )
+        from dynastore.modules.storage.drivers.es_common import merge_es_filter
+
+        # Single source of truth for the read-scope compilation, shared with the
+        # STAC fast path so the two enforcement paths cannot drift. Fails closed
+        # (deny-everything) when no PermissionProtocol is registered.
+        access_filter = await compile_read_access_filter(
+            catalog_id=catalog_id,
+            collections=collections,
+            principals=principals,
+            principal=principal,
+        )
+        clause = access_filter_to_es(access_filter)
+        if clause is None:
+            # ``allow_all`` with no deny — no row-level restriction to apply.
+            return query
+        return merge_es_filter(query, clause)
 
     async def _resolve_items_index(
         self,

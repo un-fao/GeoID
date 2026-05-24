@@ -329,6 +329,9 @@ def _inject_search_hints(
 async def _maybe_dispatch_to_es_search(
     cat_id: str,
     search_request: "ItemSearchRequest",
+    *,
+    principals: Optional[List[str]] = None,
+    principal: Optional[Any] = None,
 ) -> Optional[Tuple[list, int, Optional[Dict[str, Any]]]]:
     """Dispatch a structural search to the catalog's routing-pinned items
     SEARCH driver, when one is configured and search-capable.
@@ -434,6 +437,24 @@ async def _maybe_dispatch_to_es_search(
         es_filter=es_filter,
     )
 
+    # Row-level ABAC: when the resolved driver opts in (the standardized
+    # envelope driver, ``applies_access_filter=True``), compile the caller's
+    # read scope and put it on the request so the driver AND-s it into the
+    # query. The driver itself fails closed when this is absent, so forgetting
+    # it here can only under-return, never leak; setting it makes the search
+    # return the documents the principal may actually read.
+    if getattr(driver, "applies_access_filter", False):
+        from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+            compile_read_access_filter,
+        )
+
+        request.access_filter = await compile_read_access_filter(
+            catalog_id=cat_id,
+            collections=cids,
+            principals=principals,
+            principal=principal,
+        )
+
     try:
         # read_entities streams read-contract Features (O(1) memory); the page
         # is bounded by ``limit`` so materializing it for the response is fine.
@@ -463,6 +484,9 @@ async def search_items(
     stac_config: StacPluginConfig,
     hierarchy_sql: Optional[str] = None,
     hierarchy_params: Optional[Dict[str, Any]] = None,
+    *,
+    principals: Optional[List[str]] = None,
+    principal: Optional[Any] = None,
 ) -> Tuple[list, int, Optional[Dict[str, Any]]]:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -479,7 +503,7 @@ async def search_items(
     # (PostgreSQL ``QUERY_FALLBACK_SOURCE``) catalogs fall through to the
     # QueryOptimizer SQL path below. See :func:`_maybe_dispatch_to_es_search`.
     search_dispatch_result = await _maybe_dispatch_to_es_search(
-        cat_id, search_request,
+        cat_id, search_request, principals=principals, principal=principal,
     )
     if search_dispatch_result is not None:
         return search_dispatch_result

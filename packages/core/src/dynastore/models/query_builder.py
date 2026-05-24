@@ -282,6 +282,20 @@ class QueryRequest(BaseModel):
         json_schema_extra={"x-internal": True},
         exclude=True,
     )
+    access_filter: Optional[Any] = Field(
+        default=None,
+        description=(
+            "[INTERNAL] A compiled "
+            "``dynastore.models.protocols.access_filter.AccessFilter`` carrying "
+            "the document-level read scope for the calling principal. Set "
+            "server-side from ``compile_read_filter`` and AND-ed into the query "
+            "by drivers that implement row-level ABAC; ``None`` (default) means "
+            "no row-level restriction is applied at the driver. Typed ``Any`` to "
+            "keep this neutral model free of an authz import."
+        ),
+        json_schema_extra={"x-internal": True},
+        exclude=True,
+    )
     include_total_count: bool = Field(
         default=False, description="If True, includes COUNT(*) OVER() as _total_count."
     )

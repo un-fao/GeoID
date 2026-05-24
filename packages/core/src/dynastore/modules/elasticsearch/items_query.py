@@ -71,6 +71,20 @@ PRIVATE_ENVELOPE_FIELDS = EnvelopeFields(
     external_id="external_id",
 )
 
+#: Canonical envelope-driver field names. The standardized items index carries
+#: the canonical identity envelope (``collection_id`` / ``geoid`` /
+#: ``external_id``) at the document root — the same shape as the private index —
+#: so structural queries address those names. Kept as a distinct constant from
+#: ``PRIVATE_ENVELOPE_FIELDS`` because the envelope driver is its own index
+#: shape (it adds a typed access envelope) and the two may diverge independently
+#: as the standardized index evolves.
+ENVELOPE_FIELDS = EnvelopeFields(
+    collection="collection_id",
+    item_id="geoid",
+    geoid="geoid",
+    external_id="external_id",
+)
+
 
 def parse_sort(
     sortby: Optional[str],

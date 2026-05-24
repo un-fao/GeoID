@@ -1064,6 +1064,60 @@ class ItemsElasticsearchPrivateDriverConfig(CollectionDriverConfig):
     )
 
 
+class ItemsElasticsearchEnvelopeDriverConfig(CollectionDriverConfig):
+    """Standardized-envelope Elasticsearch driver config.
+
+    Pairs with
+    :class:`~dynastore.modules.storage.drivers.elasticsearch_envelope.driver.ItemsElasticsearchEnvelopeDriver`,
+    which writes the full feature (geometry + properties + identity) plus a
+    canonical *access envelope* (``visibility`` / ``owner`` /
+    ``grant_subjects``) into a per-tenant index named
+    ``{index_prefix}-{catalog_id}-envelope-items`` (catalog-scoped, shared
+    across all collections of a catalog). The access envelope backs the
+    row-level ABAC filter the driver ANDs into every search.
+
+    Unlike the private driver, this config does NOT manage DENY policies —
+    document-level scoping is performed by translating the neutral
+    ``AccessFilter`` into an ES clause at query time.
+
+    :attr:`mapping` is the Tier-2 overlay (mirrors the public config) so
+    operators can type extra tenant attributes. ``simplify_geometry`` shares
+    the same opt-in semantics as the other ES item drivers (#1248).
+    """
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "collection", "items", "drivers")
+    _freeze_at: ClassVar[Optional[str]] = "collection"
+
+    required_engine_class: ClassVar[str] = "elasticsearch_engine"
+
+    model_config = ConfigDict(extra="allow")
+
+    capabilities: ClassVar[FrozenSet[str]] = frozenset({DriverCapability.ASYNC})
+    mapping: Mutable[Dict[str, Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description=(
+            "Tier-2 known-fields overlay: ``{stac_field: {ES field-type "
+            "definition}}``. Merged with the platform Tier-1 set at "
+            "index-create time. Additive only — keys cannot collide with "
+            "Tier 1 at a different type (rejected by validate_tier_2). "
+            "Snapshot at index-create; live edits take effect on next "
+            "index rebuild (ES does not allow tightening a live mapping)."
+        ),
+    )
+    # Issue #1248: exact geometry by default — see
+    # ``ItemsElasticsearchDriverConfig.simplify_geometry`` for the full
+    # rationale. The envelope driver shares the same opt-in semantics.
+    simplify_geometry: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "When True, oversized geometries are simplified to fit the "
+            "Elasticsearch 10 MB per-document limit before indexing "
+            "(lossy). When False (default), exact geometry is indexed and "
+            "items whose geometry exceeds 10 MB are rejected with HTTP 422 "
+            "before any write."
+        ),
+    )
+
+
 class ItemsDuckdbDriverConfig(CollectionDriverConfig):
     """DuckDB collection driver config.
 

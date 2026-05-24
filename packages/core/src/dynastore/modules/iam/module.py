@@ -358,6 +358,25 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             custom_policies=custom_policies,
         )
 
+    async def compile_read_filter(
+        self,
+        principals: List[str],
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        *,
+        principal: Optional[Principal] = None,
+    ) -> Any:
+        if self._policy_service is None:
+            # Fail closed: no engine ⟹ no documents are visible via search.
+            from dynastore.models.protocols.access_filter import AccessFilter
+            return AccessFilter.deny_everything()
+        return await self._policy_service.compile_read_filter(
+            principals,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            principal=principal,
+        )
+
     async def evaluate_policy_statements(
         self, policy: Any, method: str, path: str, request_context: Any = None,
     ) -> bool:

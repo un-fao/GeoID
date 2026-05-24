@@ -1153,8 +1153,14 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 search_request.catalog_id, db_resource=conn
             )
             try:
+                from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+                    principals_from_request_state,
+                )
+
+                _principals, _principal = principals_from_request_state(request)
                 rows, count, aggregations = await search_items(
-                    conn, search_request, stac_config
+                    conn, search_request, stac_config,
+                    principals=_principals, principal=_principal,
                 )
             except ValueError as exc:
                 # Invalid filter (e.g. unknown queryable property) — surface as a

@@ -52,6 +52,10 @@ class SearchProtocol(Protocol):
         self,
         body: SearchBody,
         base_url: str = "",
+        *,
+        scoped: bool = False,
+        principals: Optional[list[str]] = None,
+        principal: Optional[Any] = None,
     ) -> ItemCollection:
         """
         Search STAC items.
@@ -61,6 +65,21 @@ class SearchProtocol(Protocol):
                   ids, geoid, external_id, collections, sortby, limit, token,
                   driver).
             base_url: Base URL for constructing pagination links.
+            scoped: ``True`` for the catalog-scoped route family
+                  (``/search/catalogs/{cat}``), which may follow a catalog's
+                  pinned SEARCH driver (private / row-level-ABAC index);
+                  ``False`` for the unscoped public discovery routes, which
+                  must only ever address the public index / platform alias.
+            principals: The caller's flat principals list (set by the IAM
+                  middleware on ``request.state`` and threaded in by the
+                  router). Consumed ONLY by an access-aware SEARCH driver to
+                  compile a row-level read filter (#1285); ignored by every
+                  other driver. Anonymous is modelled as a non-empty list (the
+                  anonymous role) so the public-only scope is enforced, never
+                  skipped.
+            principal: The resolved ``Principal`` object (or ``None`` for
+                  anonymous), passed to ``compile_read_filter`` for ABAC
+                  attribute conditions. Same consumption rule as ``principals``.
 
         Returns:
             STAC ``ItemCollection`` with ``features``, ``links``,

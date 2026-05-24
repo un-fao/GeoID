@@ -1,0 +1,97 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+"""Shared read-scope compilation for the access-controlled envelope index.
+
+Every search entry point that dispatches to the envelope driver (the STAC
+``/search`` fast path and the search extension's ``/search`` family) must
+derive the SAME row-level read scope for a given principal. Keeping that single
+piece of security logic in one place — rather than re-implementing it per entry
+point — is what stops the two paths from drifting (a looser path is a leak).
+
+The function reaches the authorization engine ONLY through the neutral
+``PermissionProtocol`` + ``AccessFilter`` contract via ``get_protocol`` — it
+imports nothing from the IAM module, so the storage layer stays decoupled from
+authz internals.
+
+Fail-closed: when no ``PermissionProtocol`` is registered (an access-aware
+driver in a deployment with no authz engine) the result is
+``AccessFilter.deny_everything()`` — never an unfiltered scan.
+"""
+from __future__ import annotations
+
+from typing import Any, List, Optional, Tuple
+
+__all__ = ["compile_read_access_filter", "principals_from_request_state"]
+
+
+def principals_from_request_state(request: Any) -> Tuple[List[str], Optional[Any]]:
+    """Derive ``(principals, principal)`` from IAM-middleware request state.
+
+    ``IamMiddleware`` populates ``request.state.principal`` (a ``Principal`` or
+    ``None`` for anonymous), ``request.state.principal_id`` and
+    ``request.state.principal_role``. This reproduces the exact flat principals
+    list the middleware passes to ``evaluate_access``
+    (``[principal_id] + principal_role``) so a compiled read scope matches the
+    request-time authorization decision. The middleware models anonymous as the
+    configured anonymous role, so an unauthenticated caller still yields a
+    non-empty list (public-only scope), never an empty one.
+    """
+    state = getattr(request, "state", None)
+    principal = getattr(state, "principal", None)
+    principal_id = getattr(state, "principal_id", None)
+    principal_role = getattr(state, "principal_role", None)
+    principals: List[str] = []
+    if principal_id:
+        principals.append(principal_id)
+    if isinstance(principal_role, list):
+        principals.extend(principal_role)
+    elif principal_role:
+        principals.append(principal_role)
+    return principals, principal
+
+
+async def compile_read_access_filter(
+    *,
+    catalog_id: Optional[str],
+    collections: Optional[List[str]],
+    principals: Optional[List[str]],
+    principal: Optional[Any],
+) -> "Any":
+    """Compile the caller's read scope to a neutral ``AccessFilter``.
+
+    Returns ``AccessFilter.deny_everything()`` when no ``PermissionProtocol`` is
+    registered (fail-closed). A search spanning exactly one collection is
+    compiled at collection scope so collection-level grants pin precisely;
+    a multi-collection search is compiled at catalog scope (the envelope index
+    is per-catalog and tenant-isolated, so catalog-level visibility/ownership is
+    the dominant model — per-collection differential grants across a
+    multi-collection query are a documented follow-up).
+    """
+    from dynastore.models.protocols.policies import PermissionProtocol
+    from dynastore.models.protocols.access_filter import AccessFilter
+    from dynastore.tools.discovery import get_protocol
+
+    perms = get_protocol(PermissionProtocol)
+    if perms is None:
+        return AccessFilter.deny_everything()
+
+    single_collection = (
+        collections[0] if collections and len(collections) == 1 else None
+    )
+    return await perms.compile_read_filter(
+        principals or [],
+        catalog_id=catalog_id,
+        collection_id=single_collection,
+        principal=principal,
+    )
