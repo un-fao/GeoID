@@ -27,6 +27,7 @@ ES field paths.
 from dynastore.modules.storage.drivers.es_common.cql_to_es import (
     UntranslatableFilterError,
     build_es_field_mapping,
+    build_es_fulltext_mapping,
     cql_ast_to_es_query,
     merge_es_filter,
 )
@@ -34,6 +35,7 @@ from dynastore.modules.storage.drivers.es_common.cql_to_es import (
 __all__ = [
     "UntranslatableFilterError",
     "build_es_field_mapping",
+    "build_es_fulltext_mapping",
     "cql_ast_to_es_query",
     "merge_es_filter",
 ]

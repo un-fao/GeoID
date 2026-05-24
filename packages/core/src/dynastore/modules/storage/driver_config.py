@@ -1302,6 +1302,20 @@ class ItemsSchema(PluginConfig):
     _freeze_at: ClassVar[Optional[str]] = "collection"
 
 
+    version: Mutable[int] = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Explicit schema-shape version (#1291). An authorable, in-payload "
+            "discriminator that travels with the frozen schema (``_freeze_at="
+            "'collection'``), complementing the implicit class-name ``class_key`` "
+            "and the structural ``schema_id`` hash. Informational today: it is "
+            "available for future migration logic but drives no auto-migration. "
+            "A version bump is itself a schema-shape change, so it is gated by the "
+            "same collection freeze as ``fields`` — bump it BEFORE the first "
+            "collection materialises, never after."
+        ),
+    )
     level: Mutable[_EntityLevel] = _EntityLevel.ITEM
     fields: Mutable[Dict[str, _FieldDefinition]] = Field(default_factory=dict)
     exclude_fields: Mutable[Optional[List[str]]] = None

@@ -195,6 +195,7 @@ async def _translate_filter_to_es(
         from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
         from dynastore.modules.storage.drivers.es_common import (
             build_es_field_mapping,
+            build_es_fulltext_mapping,
             cql_ast_to_es_query,
         )
         from dynastore.models.driver_context import DriverContext
@@ -216,13 +217,13 @@ async def _translate_filter_to_es(
         private = Capability.TENANT_ISOLATED in getattr(
             driver, "capabilities", frozenset()
         )
-        field_mapping = build_es_field_mapping(
-            optimizer.get_all_queryable_fields(), private=private,
-        )
+        queryable_fields = optimizer.get_all_queryable_fields()
+        field_mapping = build_es_field_mapping(queryable_fields, private=private)
+        fulltext_mapping = build_es_fulltext_mapping(queryable_fields, private=private)
 
         cql2_json = _filter_to_cql2_json(filt)
         ast_node = parse_cql2_json(cql2_json)
-        return cql_ast_to_es_query(ast_node, field_mapping)
+        return cql_ast_to_es_query(ast_node, field_mapping, fulltext_mapping)
     except Exception as exc:
         logger.debug(
             "STAC search → CQL2-ES translation skipped (catalog=%s, "

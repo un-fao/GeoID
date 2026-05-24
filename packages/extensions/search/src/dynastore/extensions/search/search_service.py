@@ -164,6 +164,7 @@ class SearchService(ExtensionProtocol):
         from dynastore.modules.catalog.query_optimizer import QueryOptimizer
         from dynastore.modules.storage.drivers.es_common import (
             build_es_field_mapping,
+            build_es_fulltext_mapping,
             cql_ast_to_es_query,
             UntranslatableFilterError,
         )
@@ -200,9 +201,9 @@ class SearchService(ExtensionProtocol):
 
         optimizer = QueryOptimizer(col_config, consumer=ConsumerType.STAC)
         private = str(index).endswith("-private-items")
-        field_mapping = build_es_field_mapping(
-            optimizer.get_all_queryable_fields(), private=private,
-        )
+        queryable_fields = optimizer.get_all_queryable_fields()
+        field_mapping = build_es_field_mapping(queryable_fields, private=private)
+        fulltext_mapping = build_es_fulltext_mapping(queryable_fields, private=private)
 
         use_text = (
             isinstance(body.filter, str)
@@ -214,7 +215,7 @@ class SearchService(ExtensionProtocol):
                 if use_text and isinstance(body.filter, str)
                 else parse_cql2_json(body.filter)
             )
-            return cql_ast_to_es_query(ast_node, field_mapping)
+            return cql_ast_to_es_query(ast_node, field_mapping, fulltext_mapping)
         except UntranslatableFilterError as exc:
             raise HTTPException(status_code=400, detail=f"Unsupported filter: {exc}")
         except HTTPException:
