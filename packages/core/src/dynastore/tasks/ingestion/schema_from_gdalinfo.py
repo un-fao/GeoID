@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from dynastore.models.field_types import ogr_to_canonical
-from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.field_definition import FieldAccess, FieldDefinition
 
 # The conventional key for the geometry column in a derived schema. Declared
 # unconditionally (an OGR layer has one geometry column or none); downstream
@@ -49,10 +49,10 @@ def geometry_field_definition(
         name=GEOMETRY_FIELD_NAME,
         data_type="geometry",
         # Geometry is never an attribute column — it is owned by the geometry
-        # sidecar / driver. Self-document that here so the derived schema can't be
-        # materialised as a TEXT column (defense in depth alongside the bridge's
+        # sidecar / driver. COMPACT self-documents that the derived schema must not
+        # be lifted into a TEXT column (defense in depth alongside the bridge's
         # geometry skip in ``field_constraints.bridge_schema_to_attribute_sidecar``).
-        materialize=False,
+        access=FieldAccess.COMPACT,
         description=f"Feature geometry (derived from OGR layer geometry column){suffix}.",
     )
 

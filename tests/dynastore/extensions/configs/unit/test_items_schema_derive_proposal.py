@@ -19,7 +19,7 @@ from dynastore.extensions.configs.service import (
 )
 from dynastore.models.protocols import AssetsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
-from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.field_definition import FieldAccess, FieldDefinition
 from dynastore.modules.storage.driver_config import ItemsSchema
 
 _GDALINFO = {
@@ -88,7 +88,7 @@ async def _run(svc, ctx, *, asset_id="a1", layer=None):
 async def test_happy_path_merges_and_preserves_tuning() -> None:
     # Admin already tuned "name" (forced column) at the collection.
     current = ItemsSchema(fields={
-        "name": FieldDefinition(name="name", data_type="string", materialize=True),
+        "name": FieldDefinition(name="name", data_type="string", access=FieldAccess.FAST),
     })
     svc, ctx = _service(
         current_schema=current,
@@ -106,7 +106,7 @@ async def test_happy_path_merges_and_preserves_tuning() -> None:
     assert fields["osm_id"]["data_type"] == "bigint"
     assert fields["is_paved"]["data_type"] == "boolean"
     # admin tuning preserved on the pre-existing field
-    assert fields["name"]["materialize"] is True
+    assert fields["name"]["access"] == FieldAccess.FAST
     assert fields["name"]["data_type"] == "string"
 
     summary = out["summary"]
@@ -118,7 +118,7 @@ async def test_happy_path_merges_and_preserves_tuning() -> None:
 @pytest.mark.asyncio
 async def test_existing_field_not_in_asset_is_preserved() -> None:
     current = ItemsSchema(fields={
-        "legacy": FieldDefinition(name="legacy", data_type="string", materialize=True),
+        "legacy": FieldDefinition(name="legacy", data_type="string", access=FieldAccess.FAST),
     })
     svc, ctx = _service(
         current_schema=current,
@@ -127,7 +127,7 @@ async def test_existing_field_not_in_asset_is_preserved() -> None:
     )
     out = await _run(svc, ctx)
     assert "legacy" in out["fields"]
-    assert out["fields"]["legacy"]["materialize"] is True
+    assert out["fields"]["legacy"]["access"] == FieldAccess.FAST
     assert out["summary"]["preserved"] == ["legacy"]
 
 

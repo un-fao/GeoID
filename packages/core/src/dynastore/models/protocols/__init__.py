@@ -119,6 +119,7 @@ from dynastore.models.protocols.bounds_source import (
 )
 from dynastore.models.protocols.field_definition import (
     FieldCapability,
+    FieldAccess,
     FieldDefinition,
     EntityLevel,
     FeatureTypeDefinition,
@@ -206,6 +207,7 @@ __all__ = [
     "RoleAdminProtocol",
     "PrincipalAdminProtocol",
     "FieldCapability",
+    "FieldAccess",
     "FieldDefinition",
     "EntityLevel",
     "FeatureTypeDefinition",

@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.models.protocols.field_definition import FieldCapability, FieldDefinition
+from dynastore.models.protocols.field_definition import (
+    FieldAccess,
+    FieldCapability,
+    FieldDefinition,
+)
 from dynastore.tasks.ingestion.schema_from_gdalinfo import (
     derive_schema_from_gdalinfo,
     field_definition_from_ogr_names,
@@ -183,7 +187,7 @@ def test_merge_preserves_admin_tuning_and_updates_type() -> None:
     # Admin tuned "lanes": forced a column, FILTERABLE, required, custom title.
     current = {
         "lanes": FieldDefinition(
-            name="lanes", data_type="string", materialize=True, required=True,
+            name="lanes", data_type="string", access=FieldAccess.FAST, required=True,
             capabilities=[FieldCapability.FILTERABLE], title="Lane count",
             description="hand-written",
         ),
@@ -194,7 +198,7 @@ def test_merge_preserves_admin_tuning_and_updates_type() -> None:
 
     out = merged["lanes"]
     assert out.data_type == "integer"          # taken from derivation
-    assert out.materialize is True             # admin tuning preserved
+    assert out.access == FieldAccess.FAST             # admin tuning preserved
     assert out.required is True
     assert out.capabilities == [FieldCapability.FILTERABLE]
     assert out.title == "Lane count"
@@ -203,22 +207,22 @@ def test_merge_preserves_admin_tuning_and_updates_type() -> None:
 
 
 def test_merge_same_type_is_unchanged() -> None:
-    current = {"name": FieldDefinition(name="name", data_type="string", materialize=True)}
+    current = {"name": FieldDefinition(name="name", data_type="string", access=FieldAccess.FAST)}
     derived = {"name": field_definition_from_ogr_names("name", "String")}
     merged, summary = merge_derived_fields(current, derived)
     assert summary["unchanged"] == ["name"]
     assert summary["updated"] == []
-    assert merged["name"].materialize is True
+    assert merged["name"].access == FieldAccess.FAST
 
 
 def test_merge_keeps_fields_absent_from_asset() -> None:
     current = {
-        "legacy": FieldDefinition(name="legacy", data_type="string", materialize=True),
+        "legacy": FieldDefinition(name="legacy", data_type="string", access=FieldAccess.FAST),
     }
     derived = {"new_col": field_definition_from_ogr_names("new_col", "Integer")}
     merged, summary = merge_derived_fields(current, derived)
     assert "legacy" in merged                 # never auto-dropped
-    assert merged["legacy"].materialize is True
+    assert merged["legacy"].access == FieldAccess.FAST
     assert summary["preserved"] == ["legacy"]
     assert summary["added"] == ["new_col"]
 

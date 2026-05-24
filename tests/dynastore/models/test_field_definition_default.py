@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.field_definition import FieldAccess, FieldDefinition
 
 
 # ---------------------------------------------------------------------------
@@ -74,3 +74,38 @@ def test_default_rejected_on_type_mismatch(data_type: str, value) -> None:
 def test_default_rejected_on_geometry() -> None:
     with pytest.raises(ValueError, match="geometry"):
         FieldDefinition(name="geom", data_type="geometry", default="POINT(0 0)")
+
+
+# ---------------------------------------------------------------------------
+# #1291 — driver-agnostic access intent + sql_expression is driver-internal
+# ---------------------------------------------------------------------------
+
+def test_access_defaults_to_auto() -> None:
+    """A field that doesn't declare an access intent defers to the driver (AUTO)."""
+    fd = FieldDefinition(name="f", data_type="string")
+    assert fd.access is FieldAccess.AUTO
+
+
+@pytest.mark.parametrize("intent", [FieldAccess.AUTO, FieldAccess.FAST, FieldAccess.COMPACT])
+def test_access_round_trips(intent: FieldAccess) -> None:
+    fd = FieldDefinition(name="f", data_type="string", access=intent)
+    assert fd.access is intent
+    # str-enum: the value is the portable wire token.
+    assert FieldDefinition(name="f", data_type="string", access=intent.value).access is intent
+
+
+def test_sql_expression_excluded_from_dump() -> None:
+    """``sql_expression`` is a driver-computed read-projection detail: drivers can
+    still populate it in-process, but it never serialises into config / API output
+    (and so can't be smuggled in as author-supplied raw SQL — cf. #1135)."""
+    fd = FieldDefinition(name="f", data_type="string", sql_expression="sc.col")
+    # Attribute access still works for the in-process read path…
+    assert fd.sql_expression == "sc.col"
+    # …but it is excluded from every serialised form, so it never lands in stored
+    # config or leaks into API/queryables output.
+    assert "sql_expression" not in fd.model_dump()
+    assert "sql_expression" not in fd.model_dump(mode="json")
+    # In the JSON schema it survives only as a read-only marker (drivers populate
+    # it; authors can't meaningfully set it).
+    props = FieldDefinition.model_json_schema()["properties"]
+    assert props["sql_expression"].get("readOnly") is True

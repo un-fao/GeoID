@@ -4,7 +4,7 @@
 fix on the columnar attributes sidecar. A user reported the same
 ``UndefinedColumn: column "Area" of relation ... does not exist`` AFTER #725
 deployed (a fresh table ``t_fqjbxehc_attributes``) — this test reproduces the
-user's exact config through the ``materialize_fields_as_columns`` bridge path
+user's exact config through the ``default_access=FAST`` bridge path
 (the one ItemsSchema PUT travels) and asserts the generated DDL quotes every
 mixed-case column AND that the INSERT a writer would emit references those
 columns by the same quoted name.
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from dynastore.models.protocols.field_definition import FieldDefinition
+from dynastore.models.protocols.field_definition import FieldAccess, FieldDefinition
 from dynastore.modules.storage.driver_config import ItemsSchema
 from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     FeatureAttributeSidecarConfig,
@@ -58,7 +58,7 @@ def _build_schema_and_sidecar() -> tuple[ItemsSchema, FeatureAttributeSidecarCon
         fields={k: FieldDefinition(**v) for k, v in _USER_FIELDS.items()},
         allow_app_level_enforcement=True,
         strict_unknown_fields=True,
-        materialize_fields_as_columns=True,
+        default_access=FieldAccess.FAST,
     )
     return schema, FeatureAttributeSidecarConfig(attribute_schema=[])
 
@@ -68,7 +68,7 @@ def test_bridge_materialises_every_user_field_with_preserved_case() -> None:
     bridged = bridge_schema_to_attribute_sidecar(schema, sidecar_cfg)
     names: List[str] = [a.name for a in bridged.attribute_schema]
     assert set(names) == set(_USER_FIELDS), (
-        f"materialize_fields_as_columns should lift EVERY declared field; "
+        f"default_access=FAST should lift EVERY declared field; "
         f"missing: {set(_USER_FIELDS) - set(names)}; "
         f"extra: {set(names) - set(_USER_FIELDS)}"
     )

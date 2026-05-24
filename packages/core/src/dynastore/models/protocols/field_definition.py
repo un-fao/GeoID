@@ -14,7 +14,7 @@ use it to build OGC/STAC responses.
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dynastore.models.field_types import canonical_data_type, normalize_subtype
 from dynastore.models.localization import LocalizedText
@@ -29,6 +29,25 @@ class FieldCapability(str, Enum):
     AGGREGATABLE = "aggregatable"   # Can be aggregated (SUM, COUNT, etc.)
     SPATIAL = "spatial"             # Spatial operations available
     INDEXED = "indexed"             # Has a backing index (informational)
+
+
+class FieldAccess(str, Enum):
+    """How aggressively a field should be optimised for query access — driver-agnostic.
+
+    The *intent* is portable; the *mechanism* stays with the driver. ``FAST`` asks the
+    driver to optimise the field for filtering/sorting — PostgreSQL lifts it to a native
+    sidecar column with an index, Elasticsearch maps a typed/keyword field, a
+    Parquet/GeoParquet driver emits column statistics plus a bloom filter, Iceberg adds a
+    sort field, a GDAL/GeoPackage driver adds an attribute index. ``COMPACT`` asks the
+    driver to minimise storage instead — PostgreSQL keeps the value in the JSONB
+    properties blob. ``AUTO`` (the default) lets the driver decide from the field's
+    declared :class:`FieldCapability` set. This replaces the former PostgreSQL-specific
+    ``materialize`` boolean (#1291).
+    """
+
+    AUTO = "auto"
+    FAST = "fast"
+    COMPACT = "compact"
 
 
 class FieldDefinition(BaseModel):
@@ -55,7 +74,13 @@ class FieldDefinition(BaseModel):
     # Optional OGR-style refinement of ``data_type`` — boolean / int16 / float32
     # / json / uuid. Carries the gdalinfo subtype so it is not flattened away.
     subtype: Optional[str] = None
-    sql_expression: str = ""  # Driver-specific SQL expression for the field (e.g. "h.geom", "a.asset_id").
+    # Driver-computed read-projection detail (e.g. "h.geom", "a.asset_id"). NOT
+    # author-facing: it means nothing to ES/Iceberg/DuckDB/BigQuery/Parquet/GDAL and
+    # would be a raw-SQL injection seam if author-settable (same class of footgun as
+    # ``physical_table``, #1135). Drivers populate it when they build queryable-field
+    # maps; it is ``exclude``d from serialization and marked read-only so it never
+    # enters the author config or leaks into API/queryables responses (#1291).
+    sql_expression: str = Field(default="", exclude=True, json_schema_extra={"readOnly": True})
     expose: bool = True  # Whether to expose in public APIs (OGC, STAC)
     required: bool = False  # Reject feature if value is null/missing
     unique: bool = False    # Value must be unique within the collection
@@ -67,13 +92,16 @@ class FieldDefinition(BaseModel):
     enum: Optional[List[Any]] = None
     pattern: Optional[str] = None
     format: Optional[str] = None
-    # None = driver decides from capabilities; True = force a native column; False = force JSONB.
-    materialize: Optional[bool] = None
-    # Optional default value for the field. When the field is materialised as a
-    # native column it becomes the column DEFAULT (and back-fills missing values
-    # on write); on JSONB-stored fields it has no effect. The value's Python type
-    # must match ``data_type`` (validated below). This is the SSOT counterpart of
-    # ``AttributeSchemaEntry.default``.
+    # Driver-agnostic access intent — how aggressively to optimise this field for
+    # query access (see :class:`FieldAccess`). The driver picks the mechanism; AUTO
+    # defers to the declared ``capabilities``. Replaces the former PG-specific
+    # ``materialize`` boolean (#1291).
+    access: FieldAccess = FieldAccess.AUTO
+    # Optional default value: the value to use when the field is missing on write.
+    # The driver decides how to apply it — a native column DEFAULT, inject-on-write
+    # into the stored properties, or ignore it if the backend can't express defaults.
+    # Independent of ``access`` (#1291). The value's Python type must match
+    # ``data_type`` (validated below). SSOT counterpart of ``AttributeSchemaEntry.default``.
     default: Optional[Any] = None
 
     @field_validator("data_type")
