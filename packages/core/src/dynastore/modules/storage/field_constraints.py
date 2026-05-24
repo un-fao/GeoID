@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, Mapping, Optional
 
 from dynastore.models.field_types import CANONICAL_TO_PG_DDL
-from dynastore.models.protocols.field_definition import FieldCapability, FieldDefinition
+from dynastore.models.protocols.field_definition import FieldAccess, FieldCapability, FieldDefinition
 from dynastore.modules.storage.errors import (
     RequiredFieldMissingError,
     UniqueConstraintViolationError,
@@ -129,20 +129,21 @@ def bridge_schema_to_attribute_sidecar(
         existing[entry.name] = entry
         order.append(entry.name)
 
-    # PR-C: ``materialize_fields_as_columns`` opts into lifting EVERY
-    # declared field as a sidecar column, regardless of constraint. Default
-    # False keeps the historical "constraints-only" behaviour so sparse
-    # schemas don't widen tables unintentionally.
-    materialize_all = bool(getattr(schema, "materialize_fields_as_columns", False))
+    # Schema-wide default access intent (#1291). A field that leaves its own
+    # ``access`` at AUTO inherits this. ``default_access=FAST`` is the portable
+    # successor of the old ``materialize_fields_as_columns=True`` — lift every
+    # field into a native column. AUTO keeps the historical "constraints + queryable
+    # capabilities only" behaviour so sparse schemas don't widen tables unintentionally.
+    schema_default_access = getattr(schema, "default_access", FieldAccess.AUTO)
 
     changed = False
     for name, fd in schema.fields.items():
         # Geometry is owned by the geometry sidecar / driver, never an attribute
-        # column. It is neither a constraint column nor a materialized column, so
-        # it must be skipped before any column-synthesis decision (and before the
-        # existing-entry overlay) — regardless of capabilities or the schema-level
-        # ``materialize_fields_as_columns`` flag. The tolerant ``startswith``
-        # mirrors the geometry/geography check at the top of this module.
+        # column. It is neither a constraint column nor an attribute column, so it
+        # must be skipped before any column-synthesis decision (and before the
+        # existing-entry overlay) — regardless of capabilities or the schema-wide
+        # ``default_access`` intent. The tolerant ``startswith`` mirrors the
+        # geometry/geography check at the top of this module.
         if (fd.data_type or "").lower().startswith("geometry"):
             continue
         has_constraint = bool(fd.required or fd.unique)
@@ -166,46 +167,50 @@ def bridge_schema_to_attribute_sidecar(
                 )
                 changed = True
             continue
-        # Decide whether to synthesise a native column for this field.
+        # Decide whether to synthesise a native column for this field. This is
+        # how the PG driver honours the driver-agnostic ``FieldAccess`` intent
+        # (#1291): FAST → column, COMPACT → JSONB, AUTO → driver decides.
         #
         # Precedence (evaluated in order; first matching rule wins):
         #
         # Rule 1 — Hard DB constraint: unique=True or required=True forces a
-        #   column regardless of ``fd.materialize``.  A UNIQUE / NOT-NULL
-        #   constraint cannot be enforced inside a JSONB blob.
+        #   column regardless of access intent. A UNIQUE / NOT-NULL constraint
+        #   cannot be enforced inside a JSONB blob.
         #
-        # Rule 2 — ``fd.materialize is True``: explicit opt-in → COLUMN.
+        # Rule 2 — effective access is FAST: optimise for query access → COLUMN.
         #
-        # Rule 3 — ``fd.materialize is False``: explicit opt-out → JSONB.
-        #   This beats capability-driven lifting *and* the schema-level
-        #   ``materialize_fields_as_columns`` flag.  Rule 1 was already
-        #   checked above, so False here is only reached when there is no
-        #   hard constraint.
+        # Rule 3 — effective access is COMPACT: minimise storage → JSONB. This
+        #   beats capability-driven lifting. Rule 1 was already checked above, so
+        #   COMPACT here is only reached when there is no hard constraint.
         #
-        # Rule 4/5 — ``fd.materialize is None`` (driver decides):
-        #   COLUMN if the schema flag ``materialize_fields_as_columns`` is
-        #   set OR the field declares a capability that benefits from a
-        #   native column (FILTERABLE, SORTABLE, or INDEXED).
-        #   Otherwise the field stays in JSONB.
+        # Rule 4/5 — effective access is AUTO (the PG driver decides from context):
+        #   COLUMN if the field declares a capability that benefits from a native
+        #   column (FILTERABLE, SORTABLE, or INDEXED); otherwise it stays in JSONB.
         #
-        # Column-implying capabilities: FILTERABLE, SORTABLE, INDEXED.
-        # GROUPABLE / AGGREGATABLE / SPATIAL do not mandate a native column
-        # because each can be satisfied via functional JSONB indexes.
+        # ``Effective access`` = the field's own ``access`` unless it is AUTO, in
+        # which case the schema-wide ``default_access`` applies. Column-implying
+        # capabilities are FILTERABLE, SORTABLE, INDEXED; GROUPABLE / AGGREGATABLE
+        # / SPATIAL do not mandate a native column because each can be satisfied
+        # via functional JSONB indexes.
         _COLUMN_CAPS = frozenset({
             FieldCapability.FILTERABLE,
             FieldCapability.SORTABLE,
             FieldCapability.INDEXED,
         })
+        field_access = getattr(fd, "access", FieldAccess.AUTO)
+        effective_access = (
+            field_access if field_access != FieldAccess.AUTO else schema_default_access
+        )
         if has_constraint:
             pass  # Rule 1 — fall through to synthesis
-        elif fd.materialize is True:
-            pass  # Rule 2 — explicit opt-in
-        elif fd.materialize is False:
-            continue  # Rule 3 — explicit opt-out; skip column synthesis
+        elif effective_access == FieldAccess.FAST:
+            pass  # Rule 2 — optimise for access → column
+        elif effective_access == FieldAccess.COMPACT:
+            continue  # Rule 3 — minimise storage → skip column synthesis
         else:
-            # Rule 4/5 — materialize is None; driver decides from context
+            # Rule 4/5 — AUTO; PG driver decides from the declared capabilities
             has_column_cap = bool(set(fd.capabilities or []) & _COLUMN_CAPS)
-            if not (materialize_all or has_column_cap):
+            if not has_column_cap:
                 continue  # Rule 4 — no trigger; field stays in JSONB
         # ``data_type`` is already canonical (validated on FieldDefinition);
         # tolerant lookup so a bypassed/unknown value degrades to TEXT rather

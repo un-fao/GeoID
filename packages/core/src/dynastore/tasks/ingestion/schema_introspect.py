@@ -25,7 +25,7 @@ The output dict is suitable to PATCH directly into ``ItemsSchema.fields``
         catalog_id, collection_id,
         {"items_schema": {"fields": derived,
                                "strict_unknown_fields": True,
-                               "materialize_fields_as_columns": True}},
+                               "default_access": "fast"}},
     )
 
 Hard-imports ``osgeo`` at module load time. When SCOPE excludes

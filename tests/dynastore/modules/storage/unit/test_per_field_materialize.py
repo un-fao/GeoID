@@ -3,10 +3,10 @@
 Covers the five-rule precedence in ``bridge_schema_to_attribute_sidecar``:
 
   Rule 1 — hard constraint (unique + required): COLUMN regardless of ``materialize``
-  Rule 2 — ``materialize=True``:  COLUMN
-  Rule 3 — ``materialize=False``: JSONB (do NOT lift), even when capabilities present
-  Rule 4 — ``materialize=None``, no capabilities → JSONB (unless materialize_all)
-  Rule 5 — ``materialize=None``, column-implying capability → COLUMN
+  Rule 2 — ``access=FieldAccess.FAST``:  COLUMN
+  Rule 3 — ``access=FieldAccess.COMPACT``: JSONB (do NOT lift), even when capabilities present
+  Rule 4 — ``access=FieldAccess.AUTO``, no capabilities → JSONB (unless materialize_all)
+  Rule 5 — ``access=FieldAccess.AUTO``, column-implying capability → COLUMN
 
 The existing ``AttributeSchemaEntry`` overlay path is checked separately to
 confirm the constraint-update logic remains intact when per-field materialize
@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.models.protocols.field_definition import FieldCapability, FieldDefinition
+from dynastore.models.protocols.field_definition import (
+    FieldAccess,
+    FieldCapability,
+    FieldDefinition,
+)
 from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
     AttributeSchemaEntry,
     FeatureAttributeSidecarConfig,
@@ -35,7 +39,7 @@ def _fd(
     data_type: str = "string",
     required: bool = False,
     unique: bool = False,
-    materialize: bool | None = None,
+    access: FieldAccess = FieldAccess.AUTO,
     capabilities: list[FieldCapability] | None = None,
 ) -> FieldDefinition:
     return FieldDefinition(
@@ -43,17 +47,21 @@ def _fd(
         data_type=data_type,
         required=required,
         unique=unique,
-        materialize=materialize,
+        access=access,
         capabilities=capabilities or [],
     )
 
 
 def _schema(fields: dict, *, materialize_all: bool = False):
-    """Lightweight stand-in for ItemsSchema with only the attrs we need."""
+    """Lightweight stand-in for ItemsSchema with only the attrs we need.
+
+    ``materialize_all`` is the test-local shorthand for the schema-wide
+    ``default_access=FAST`` intent (the successor of ``materialize_fields_as_columns``).
+    """
     from unittest.mock import MagicMock
     s = MagicMock()
     s.fields = fields
-    s.materialize_fields_as_columns = materialize_all
+    s.default_access = FieldAccess.FAST if materialize_all else FieldAccess.AUTO
     return s
 
 
@@ -72,10 +80,10 @@ def _names(sidecar: FeatureAttributeSidecarConfig) -> set[str]:
 class TestRule1HardConstraint:
     def test_unique_and_required_lifts_even_when_materialize_false(self) -> None:
         """unique+required = hard DB constraint → must be a column."""
-        schema = _schema({"col": _fd(required=True, unique=True, materialize=False)})
+        schema = _schema({"col": _fd(required=True, unique=True, access=FieldAccess.COMPACT)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged), (
-            "Rule 1: unique+required field must become a column even with materialize=False"
+            "Rule 1: unique+required field must become a column even with access=FieldAccess.COMPACT"
         )
 
     def test_unique_required_overrides_no_capabilities(self) -> None:
@@ -97,50 +105,50 @@ class TestRule1HardConstraint:
 
 
 # ---------------------------------------------------------------------------
-# Rule 2 — materialize=True forces a COLUMN (no constraint needed)
+# Rule 2 — access=FieldAccess.FAST forces a COLUMN (no constraint needed)
 # ---------------------------------------------------------------------------
 
 class TestRule2MaterializeTrue:
     def test_plain_field_with_materialize_true_lifts(self) -> None:
-        schema = _schema({"col": _fd(materialize=True)})
+        schema = _schema({"col": _fd(access=FieldAccess.FAST)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged)
 
     def test_materialize_true_no_capabilities_still_lifts(self) -> None:
-        schema = _schema({"col": _fd(materialize=True, capabilities=[])})
+        schema = _schema({"col": _fd(access=FieldAccess.FAST, capabilities=[])})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged)
 
     def test_materialize_true_with_constraint_lifts(self) -> None:
-        """Redundant but harmless: constraint + materialize=True → COLUMN."""
-        schema = _schema({"col": _fd(required=True, materialize=True)})
+        """Redundant but harmless: constraint + access=FieldAccess.FAST → COLUMN."""
+        schema = _schema({"col": _fd(required=True, access=FieldAccess.FAST)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged)
 
 
 # ---------------------------------------------------------------------------
-# Rule 3 — materialize=False suppresses capability-driven lifting
+# Rule 3 — access=FieldAccess.COMPACT suppresses capability-driven lifting
 # ---------------------------------------------------------------------------
 
 class TestRule3MaterializeFalse:
     def test_materialize_false_no_constraint_stays_jsonb(self) -> None:
-        schema = _schema({"col": _fd(materialize=False)})
+        schema = _schema({"col": _fd(access=FieldAccess.COMPACT)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged), (
-            "Rule 3: materialize=False must suppress column synthesis"
+            "Rule 3: access=FieldAccess.COMPACT must suppress column synthesis"
         )
 
     def test_materialize_false_with_filterable_still_stays_jsonb(self) -> None:
         """Explicit false beats capability-driven lifting."""
         schema = _schema({
-            "col": _fd(materialize=False, capabilities=[FieldCapability.FILTERABLE])
+            "col": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE])
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged)
 
     def test_materialize_false_with_sortable_still_stays_jsonb(self) -> None:
         schema = _schema({
-            "col": _fd(materialize=False, capabilities=[FieldCapability.SORTABLE])
+            "col": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.SORTABLE])
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged)
@@ -148,7 +156,7 @@ class TestRule3MaterializeFalse:
     def test_materialize_false_multiple_caps_still_stays_jsonb(self) -> None:
         schema = _schema({
             "col": _fd(
-                materialize=False,
+                access=FieldAccess.COMPACT,
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE,
                                FieldCapability.INDEXED],
             )
@@ -158,38 +166,38 @@ class TestRule3MaterializeFalse:
 
     def test_materialize_false_with_materialize_all_still_stays_jsonb(self) -> None:
         """Per-field False beats schema-level materialize_all."""
-        schema = _schema({"col": _fd(materialize=False)}, materialize_all=True)
+        schema = _schema({"col": _fd(access=FieldAccess.COMPACT)}, materialize_all=True)
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged)
 
 
 # ---------------------------------------------------------------------------
-# Rule 4 — materialize=None, no column-implying capability → JSONB
+# Rule 4 — access=FieldAccess.AUTO, no column-implying capability → JSONB
 # ---------------------------------------------------------------------------
 
 class TestRule4NoneNoCapability:
     def test_plain_field_materialize_none_stays_jsonb(self) -> None:
-        schema = _schema({"col": _fd(materialize=None)})
+        schema = _schema({"col": _fd(access=FieldAccess.AUTO)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged)
 
     def test_none_with_groupable_stays_jsonb(self) -> None:
         """GROUPABLE alone does not imply a native column."""
         schema = _schema({
-            "col": _fd(materialize=None, capabilities=[FieldCapability.GROUPABLE])
+            "col": _fd(access=FieldAccess.AUTO, capabilities=[FieldCapability.GROUPABLE])
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" not in _names(bridged)
 
     def test_none_materialize_all_true_lifts(self) -> None:
         """materialize_all=True + None → schema-level opt-in lifts the field."""
-        schema = _schema({"col": _fd(materialize=None)}, materialize_all=True)
+        schema = _schema({"col": _fd(access=FieldAccess.AUTO)}, materialize_all=True)
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged)
 
 
 # ---------------------------------------------------------------------------
-# Rule 5 — materialize=None + column-implying capability → COLUMN
+# Rule 5 — access=FieldAccess.AUTO + column-implying capability → COLUMN
 # ---------------------------------------------------------------------------
 
 class TestRule5NoneWithCapability:
@@ -200,16 +208,16 @@ class TestRule5NoneWithCapability:
     ])
     def test_none_column_implying_capability_lifts(self, cap: FieldCapability) -> None:
         """Each column-implying capability independently triggers synthesis."""
-        schema = _schema({"col": _fd(materialize=None, capabilities=[cap])})
+        schema = _schema({"col": _fd(access=FieldAccess.AUTO, capabilities=[cap])})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged), (
-            f"Rule 5: capability {cap!r} should trigger column synthesis when materialize=None"
+            f"Rule 5: capability {cap!r} should trigger column synthesis when access=FieldAccess.AUTO"
         )
 
     def test_none_multiple_column_caps_lifts(self) -> None:
         schema = _schema({
             "col": _fd(
-                materialize=None,
+                access=FieldAccess.AUTO,
                 capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
             )
         })
@@ -226,15 +234,15 @@ class TestMixedSchema:
         """Validate all rules apply correctly within a single schema pass."""
         schema = _schema({
             # Rule 1: constraint → COLUMN
-            "constrained": _fd(required=True, unique=True, materialize=False),
+            "constrained": _fd(required=True, unique=True, access=FieldAccess.COMPACT),
             # Rule 2: explicit True → COLUMN
-            "forced":       _fd(materialize=True),
+            "forced":       _fd(access=FieldAccess.FAST),
             # Rule 3: explicit False → JSONB even with cap
-            "suppressed":   _fd(materialize=False, capabilities=[FieldCapability.FILTERABLE]),
+            "suppressed":   _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE]),
             # Rule 4: None + no cap → JSONB
-            "plain_none":   _fd(materialize=None),
+            "plain_none":   _fd(access=FieldAccess.AUTO),
             # Rule 5: None + FILTERABLE → COLUMN
-            "cap_none":     _fd(materialize=None, capabilities=[FieldCapability.FILTERABLE]),
+            "cap_none":     _fd(access=FieldAccess.AUTO, capabilities=[FieldCapability.FILTERABLE]),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         names = _names(bridged)
@@ -286,7 +294,7 @@ class TestGeometryNeverColumn:
     def test_geography_data_type_also_skipped(self) -> None:
         """Tolerant prefix match: ``geometry``-prefixed canonical types skip too."""
         schema = _schema(
-            {"geom": _fd(data_type="geometry", materialize=True)},
+            {"geom": _fd(data_type="geometry", access=FieldAccess.FAST)},
             materialize_all=True,
         )
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
@@ -317,10 +325,10 @@ class TestExistingEntryOverlay:
                 AttributeSchemaEntry(name="col", type=PostgresType.TEXT, nullable=True)
             ]
         )
-        schema = _schema({"col": _fd(required=True, materialize=False)})
+        schema = _schema({"col": _fd(required=True, access=FieldAccess.COMPACT)})
         bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
         by_name = {e.name: e for e in bridged.attribute_schema}
-        # Overlay must set nullable=False even though materialize=False
+        # Overlay must set nullable=False even though access=FieldAccess.COMPACT
         assert by_name["col"].nullable is False
 
     def test_existing_entry_overlay_respects_unique(self) -> None:
@@ -329,7 +337,7 @@ class TestExistingEntryOverlay:
                 AttributeSchemaEntry(name="col", type=PostgresType.TEXT, unique=False)
             ]
         )
-        schema = _schema({"col": _fd(unique=True, materialize=None)})
+        schema = _schema({"col": _fd(unique=True, access=FieldAccess.AUTO)})
         bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
         by_name = {e.name: e for e in bridged.attribute_schema}
         assert by_name["col"].unique is True

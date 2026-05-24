@@ -1,17 +1,20 @@
-"""Tests for ``ItemsSchema.materialize_fields_as_columns``.
+"""Tests for the schema-wide ``ItemsSchema.default_access`` intent (#1291).
 
-Default (False): the bridge lifts only fields carrying required/unique
-constraints — plain fields stay in JSONB properties.
+Default (AUTO): the bridge lifts only fields carrying required/unique
+constraints (or a column-implying capability) — plain fields stay in JSONB
+properties.
 
-When True: ALL declared fields get an AttributeSchemaEntry → native PG
+When FAST: ALL declared fields get an AttributeSchemaEntry → native PG
 column, enabling per-field indexes, ANALYZE statistics, and column-store
-query plans.
+query plans. This is the portable successor of the former
+``materialize_fields_as_columns=True`` flag.
 """
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from dynastore.models.protocols.field_definition import FieldAccess
 from dynastore.modules.storage.field_constraints import (
     bridge_schema_to_attribute_sidecar,
 )
@@ -29,6 +32,9 @@ def _field(data_type: str = "string", required: bool = False, unique: bool = Fal
     fd.unique = unique
     fd.default = default
     fd.description = None
+    # Explicit AUTO so the bridge's per-field/schema-default resolution sees a real
+    # FieldAccess (a bare MagicMock attribute would never equal AUTO).
+    fd.access = FieldAccess.AUTO
     return fd
 
 
@@ -43,7 +49,7 @@ def _empty_sidecar() -> FeatureAttributeSidecarConfig:
 
 def test_default_only_constrained_fields_lifted() -> None:
     schema = MagicMock()
-    schema.materialize_fields_as_columns = False
+    schema.default_access = FieldAccess.AUTO
     schema.fields = {
         "constrained": _field(required=True),
         "plain":       _field(),  # no required, no unique → stays in JSONB
@@ -57,7 +63,7 @@ def test_default_only_constrained_fields_lifted() -> None:
 def test_default_no_change_when_all_plain() -> None:
     """Schema with only plain fields produces no sidecar entries."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = False
+    schema.default_access = FieldAccess.AUTO
     schema.fields = {
         "a": _field(),
         "b": _field(),
@@ -69,12 +75,12 @@ def test_default_no_change_when_all_plain() -> None:
 
 
 # ---------------------------------------------------------------------------
-# materialize_fields_as_columns=True — every declared field lifts
+# default_access=FAST — every declared field lifts
 # ---------------------------------------------------------------------------
 
 def test_materialize_all_lifts_every_field() -> None:
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {
         "road_id":  _field(data_type="string"),
         "lanes":    _field(data_type="integer"),
@@ -88,7 +94,7 @@ def test_materialize_all_lifts_every_field() -> None:
 
 def test_materialize_all_preserves_pg_types() -> None:
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {
         "lanes":    _field(data_type="integer"),
         "name":     _field(data_type="string"),
@@ -105,7 +111,7 @@ def test_materialize_all_preserves_pg_types() -> None:
 def test_materialize_all_combines_with_constraints() -> None:
     """Constrained + plain fields ALL get lifted; constraints carry through."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {
         "id":       _field(required=True, unique=True),
         "label":    _field(data_type="string"),  # plain
@@ -125,7 +131,7 @@ def test_materialize_all_combines_with_constraints() -> None:
 def test_materialize_all_existing_entries_kept() -> None:
     """Pre-existing AttributeSchemaEntry stays; new fields are added on top."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {
         "existing":  _field(data_type="string"),
         "new_field": _field(data_type="integer"),
@@ -147,7 +153,7 @@ def test_materialize_all_existing_entries_kept() -> None:
 
 def test_materialize_all_with_empty_fields_no_op() -> None:
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {}
     sidecar = _empty_sidecar()
     bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
@@ -156,7 +162,7 @@ def test_materialize_all_with_empty_fields_no_op() -> None:
 
 def test_materialize_all_unknown_data_type_falls_back_to_text() -> None:
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {"weird": _field(data_type="some_alien_type")}
     bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
     by_name = {e.name: e for e in bridged.attribute_schema}
@@ -170,7 +176,7 @@ def test_materialize_all_unknown_data_type_falls_back_to_text() -> None:
 def test_default_threads_into_new_entry() -> None:
     """A field's ``default`` reaches the synthesised AttributeSchemaEntry."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {"status": _field(data_type="string", default="active")}
     bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
     by_name = {e.name: e for e in bridged.attribute_schema}
@@ -182,7 +188,7 @@ def test_default_threads_into_new_entry() -> None:
 def test_default_overlays_existing_entry_when_field_declares_one() -> None:
     """SSOT field default wins over an existing entry's silence."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {"n": _field(data_type="integer", default=7)}
     sidecar = FeatureAttributeSidecarConfig(
         attribute_schema=[AttributeSchemaEntry(name="n", type=PostgresType.INTEGER)]
@@ -195,7 +201,7 @@ def test_default_overlays_existing_entry_when_field_declares_one() -> None:
 def test_existing_entry_default_preserved_when_field_silent() -> None:
     """A field that declares no default leaves the entry's own default intact."""
     schema = MagicMock()
-    schema.materialize_fields_as_columns = True
+    schema.default_access = FieldAccess.FAST
     schema.fields = {"n": _field(data_type="integer", default=None)}
     sidecar = FeatureAttributeSidecarConfig(
         attribute_schema=[

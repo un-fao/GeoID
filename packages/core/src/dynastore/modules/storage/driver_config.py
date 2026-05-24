@@ -1274,6 +1274,7 @@ class AssetElasticsearchDriverConfig(AssetDriverConfig):
 from dynastore.models.protocols.field_definition import (  # noqa: E402
     FieldDefinition as _FieldDefinition,
     EntityLevel as _EntityLevel,
+    FieldAccess as _FieldAccess,
 )
 
 
@@ -1327,17 +1328,17 @@ class ItemsSchema(PluginConfig):
             "current open-schema behavior."
         ),
     )
-    materialize_fields_as_columns: Mutable[bool] = Field(
-        default=False,
+    default_access: Mutable[_FieldAccess] = Field(
+        default=_FieldAccess.AUTO,
         description=(
-            "When True, every field declared in ``fields`` is lifted into a "
-            "native column on the PG attributes sidecar — even when the "
-            "field carries no required/unique constraint. Enables per-field "
-            "indexes, ANALYZE statistics, and column-store query plans. "
-            "Default False keeps the historical behaviour of lifting only "
-            "constrained fields (plain fields stay in the JSONB properties "
-            "blob). Opt-in because materialising every field widens the "
-            "table and increases write IO for sparse schemas."
+            "Schema-wide default access intent for fields that leave their own "
+            "``access`` at AUTO. AUTO (the default) lets each driver decide from "
+            "the field's declared capabilities — the portable equivalent of the "
+            "historical 'lift only constrained/queryable fields' behaviour. FAST "
+            "asks the driver to optimise every field for query access (PostgreSQL "
+            "lifts each into a native sidecar column with an index; other drivers "
+            "use their own mechanism). COMPACT asks the driver to minimise storage. "
+            "Replaces the former PG-specific ``materialize_fields_as_columns`` flag (#1291)."
         ),
     )
     constraints: Mutable[List[Any]] = Field(
