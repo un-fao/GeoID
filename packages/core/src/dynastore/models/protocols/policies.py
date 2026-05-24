@@ -20,12 +20,23 @@ from pydantic import BaseModel, Field
 #   from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
 from dynastore.models.auth import Condition, Policy, Principal  # Policy, Principal, Condition canonical home
 from dynastore.models.auth_models import Role               # Role canonical home
+# Neutral read-scope projection — see access_filter.py. Re-exported here so a
+# consumer needs ONE import alongside PermissionProtocol and never has to reach
+# into the IAM module to translate an access decision.
+from dynastore.models.protocols.access_filter import (
+    AccessClause,
+    AccessFilter,
+    FieldPredicate,
+)
 
 __all__ = [
     "PermissionProtocol",
     "Policy",
     "Role",
     "Principal",
+    "AccessFilter",
+    "AccessClause",
+    "FieldPredicate",
     # Wire-schema DTOs for the role/principal/policy management surface.
     # Single canonical home so non-admin consumers (SDK, IAM CLI, other
     # extensions) do not have to import through the admin extension.
@@ -168,6 +179,39 @@ class PermissionProtocol(Protocol):
         schema: Optional[str] = None,
         force: bool = False,
     ) -> None: ...
+
+    async def compile_read_filter(
+        self,
+        principals: List[str],
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        *,
+        principal: Optional[Principal] = None,
+    ) -> "AccessFilter":
+        """Compile the read scope for ``principals`` into a neutral filter.
+
+        This is the document-level-security (row-level ABAC) companion to
+        :meth:`evaluate_access`. Where ``evaluate_access`` answers "may this
+        principal read *this one* resource", ``compile_read_filter`` answers
+        "*which* documents in this catalog/collection may this principal read",
+        as an :class:`AccessFilter` a storage driver can translate to a native
+        predicate (ES ``bool``, SQL ``WHERE``, ...) WITHOUT importing the IAM
+        module.
+
+        The result MUST be an equal-or-stricter projection of
+        ``evaluate_access`` (deny-precedence preserved; ALLOW → OR branches,
+        DENY → negated branches). Conditions that cannot be expressed as an
+        index predicate are dropped from the ALLOW side (fail-closed: the
+        document is hidden from search but still reachable by a direct GET that
+        runs the full engine) and :attr:`AccessFilter.uncompilable` is set. When
+        no ALLOW can be compiled the result is
+        :meth:`AccessFilter.deny_everything`.
+
+        ``principals`` carries the same role/subject strings ``evaluate_access``
+        takes; ``principal`` (optional) supplies ABAC attributes and
+        per-principal ``custom_policies`` for compiling attribute conditions.
+        """
+        ...
 
     # --- Extension injection points ---
 

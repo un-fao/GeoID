@@ -384,6 +384,14 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
     # dispatch via ``getattr(driver, "supports_cql_es", False)``.
     supports_cql_es: ClassVar[bool] = True
 
+    # Row-level ABAC opt-in marker. ``False`` here means the search dispatch
+    # never compiles a ``compile_read_filter`` for this driver and never sets
+    # ``QueryRequest.access_filter`` — so the public and private ES item
+    # drivers (and every non-envelope driver) behave exactly as before. The
+    # standardized envelope driver overrides this to ``True`` to opt in to
+    # document-level read scoping (#1285).
+    applies_access_filter: ClassVar[bool] = False
+
     # System-envelope field names this driver's index carries. The structural
     # query SSOT (``build_items_query``) addresses whichever shape the resolved
     # index uses; the public per-catalog index uses the STAC-flavoured default,

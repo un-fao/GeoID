@@ -1170,6 +1170,92 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             return None
         return str(path) if path else None
 
+    async def _resolve_access_envelope(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        processing_context: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the access-envelope stamping values for an index dispatch.
+
+        Ship-first slice of the row-level-ABAC write seam (#1285). Returns the
+        ``{_visibility, _owner, _grant_subjects}`` values to stamp onto the
+        index payload, or ``None`` when the collection does NOT route to an
+        access-aware driver (the envelope driver, ``applies_access_filter=True``)
+        — in which case nothing is stamped and every other driver's stored doc
+        is byte-for-byte what it was before. Gating on the resolved WRITE driver
+        is what keeps the stamping provably harmless: the public projection
+        leaves top-level ``_*`` keys in the stored ``_source`` (it only reshapes
+        ``properties``), so stamping unconditionally could leak access fields
+        into public docs — gating prevents that.
+
+        Sources (conservative — this is the ship-first slice, not a grant-graph
+        resolver):
+
+        * ``_owner``          ← the creating principal's subject id from the
+          write/processing context (``owner`` / ``principal_id`` /
+          ``subject_id``), else ``None`` (omitted).
+        * ``_visibility``     ← the catalog's ``CatalogLookupAudience.is_public``
+          (``"public"`` when True, ``"private"`` when False). Defaults to
+          ``"private"`` when the config is unavailable — the envelope index is
+          tenant-isolated, so the safe default is the closed one.
+        * ``_grant_subjects`` ← an empty list for this slice. Follow-up seam: a
+          real grant-resolution engine fills this from the collection's grants.
+        """
+        if not await self._collection_uses_access_aware_driver(
+            catalog_id, collection_id,
+        ):
+            return None
+
+        pc = processing_context or {}
+        owner = pc.get("owner") or pc.get("principal_id") or pc.get("subject_id")
+
+        visibility = "private"  # closed default for the tenant-isolated index
+        try:
+            from dynastore.modules.iam.audience_configs import CatalogLookupAudience
+
+            configs = get_protocol(ConfigsProtocol)
+            if configs is not None:
+                audience = await configs.get_config(
+                    CatalogLookupAudience, catalog_id=catalog_id,
+                )
+                if audience is not None and getattr(audience, "is_public", False):
+                    visibility = "public"
+        except Exception:
+            # Missing/unavailable audience config → keep the closed default.
+            pass
+
+        return {
+            "_visibility": visibility,
+            "_owner": str(owner) if owner is not None else None,
+            # Follow-up seam (#1285): empty until a grant-resolution engine
+            # populates per-document grant subjects.
+            "_grant_subjects": [],
+        }
+
+    async def _collection_uses_access_aware_driver(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> bool:
+        """True when any WRITE driver for the collection opts in to row-level ABAC.
+
+        Reads the resolved ``ItemsRoutingConfig.operations[WRITE]`` drivers and
+        checks each driver class for ``applies_access_filter=True`` (the
+        standardized envelope driver). Returns ``False`` on any resolution
+        error so a misconfigured collection never gets access fields stamped.
+        """
+        try:
+            from dynastore.modules.storage.router import get_write_drivers
+
+            resolved = await get_write_drivers(catalog_id, collection_id)
+        except Exception:
+            return False
+        return any(
+            getattr(type(r.driver), "applies_access_filter", False)
+            for r in resolved
+        )
+
     async def _dispatch_index_upsert(
         self,
         catalog_id: str,
@@ -1222,6 +1308,16 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         )
         asset_id = (processing_context or {}).get("asset_id")
 
+        # Access-envelope stamping seam (#1285): resolve once per dispatch. This
+        # is ``None`` unless the collection routes WRITE to an access-aware
+        # driver, so non-envelope collections stamp nothing and their stored
+        # docs are unchanged. ``_visibility`` / ``_owner`` / ``_grant_subjects``
+        # are read by ``build_envelope_feature_doc`` to populate the typed
+        # access fields the read filter matches on.
+        access_envelope = await self._resolve_access_envelope(
+            catalog_id, collection_id, processing_context,
+        )
+
         def _stamp_identity(payload: Dict[str, Any]) -> Dict[str, Any]:
             if external_id_path:
                 ext = self._extract_by_path(payload, external_id_path)
@@ -1229,6 +1325,16 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     payload["_external_id"] = str(ext)
             if asset_id is not None:
                 payload.setdefault("_asset_id", str(asset_id))
+            if access_envelope is not None:
+                # Stamp only the access fields with a resolved value; ``_owner``
+                # may be ``None`` (no principal in context) — omit it then so the
+                # doc builder simply does not set ``owner``.
+                payload.setdefault("_visibility", access_envelope["_visibility"])
+                if access_envelope["_owner"] is not None:
+                    payload.setdefault("_owner", access_envelope["_owner"])
+                payload.setdefault(
+                    "_grant_subjects", access_envelope["_grant_subjects"],
+                )
             return payload
 
         dispatcher = get_index_dispatcher()

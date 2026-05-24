@@ -51,6 +51,35 @@ def _split_csv(value: Optional[str]) -> Optional[list[str]]:
     return [v.strip() for v in value.split(",")] if value else None
 
 
+def _principals_from_request(request: Request) -> tuple[list[str], Any]:
+    """Derive ``(principals, principal)`` from IAM-middleware request state.
+
+    The ``IamMiddleware`` populates ``request.state.principal`` (a ``Principal``
+    or ``None`` for anonymous), ``request.state.principal_id`` and
+    ``request.state.principal_role``. This reproduces exactly the flat
+    principals list the middleware passes to ``evaluate_access``
+    (``[principal_id] + principal_role``) so the search path's
+    ``compile_read_filter`` scope matches the request-time authorization. The
+    middleware models anonymous as the configured anonymous role, so an
+    unauthenticated caller still yields a non-empty list (public-only scope),
+    never an empty one (which would compile to deny-everything or be skipped).
+    These values are consumed only by an access-aware SEARCH driver; for every
+    other driver they are ignored.
+    """
+    state = getattr(request, "state", None)
+    principal = getattr(state, "principal", None)
+    principal_id = getattr(state, "principal_id", None)
+    principal_role = getattr(state, "principal_role", None)
+    principals: list[str] = []
+    if principal_id:
+        principals.append(principal_id)
+    if isinstance(principal_role, list):
+        principals.extend(principal_role)
+    elif principal_role:
+        principals.append(principal_role)
+    return principals, principal
+
+
 # ---------------------------------------------------------------------------
 # Item Search – unscoped (GET/POST /search)
 # ---------------------------------------------------------------------------
@@ -88,7 +117,11 @@ async def get_search(
         token=token,
         driver=driver,
     )
-    return await _get_search_service().search_items(body, base_url=_base_url(request))
+    principals, principal = _principals_from_request(request)
+    return await _get_search_service().search_items(
+        body, base_url=_base_url(request),
+        principals=principals, principal=principal,
+    )
 
 
 @router.post(
@@ -98,7 +131,11 @@ async def get_search(
     response_model_exclude_none=True,
 )
 async def post_search(request: Request, body: SearchBody) -> ItemCollection:
-    return await _get_search_service().search_items(body, base_url=_base_url(request))
+    principals, principal = _principals_from_request(request)
+    return await _get_search_service().search_items(
+        body, base_url=_base_url(request),
+        principals=principals, principal=principal,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +177,10 @@ async def get_search_items_scoped(
         token=token,
         driver=driver,
     )
+    principals, principal = _principals_from_request(request)
     return await _get_search_service().search_items(
         body, base_url=_base_url(request), scoped=True,
+        principals=principals, principal=principal,
     )
 
 
@@ -155,8 +194,10 @@ async def post_search_items_scoped(
     request: Request, catalog_id: str, body: SearchBody,
 ) -> ItemCollection:
     body = body.model_copy(update={"catalog_id": catalog_id})
+    principals, principal = _principals_from_request(request)
     return await _get_search_service().search_items(
         body, base_url=_base_url(request), scoped=True,
+        principals=principals, principal=principal,
     )
 
 

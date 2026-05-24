@@ -17,13 +17,20 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import re
+import enum
 import logging
 import uuid
 import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Any, Dict, cast
 from uuid import UUID
 from dynastore.tools.cache import cached
 from dynastore.modules.db_config.exceptions import TableNotFoundError
+from dynastore.models.protocols.access_filter import (
+    AccessClause,
+    AccessFilter,
+    FieldPredicate,
+)
 import json
 
 _SAFE_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
@@ -37,7 +44,7 @@ def _validate_schema_name(schema: str) -> str:
 
 from dynastore.models.protocols.authorization import IamRolesConfig
 
-from .models import PolicyBundle, Policy, Condition, Role, Principal
+from .models import PolicyBundle, Policy, Condition, Role, Principal  # noqa: F401
 from .policy_storage import AbstractPolicyStorage
 from .iam_storage import AbstractIamStorage
 from .postgres_policy_storage import PostgresPolicyStorage
@@ -651,24 +658,32 @@ class PolicyService:
 
         return has_allow_match
 
-    async def evaluate_access(
+    async def _resolve_effective_policies(
         self,
         principals: List[str],
-        path: str,
-        method: str,
-        request_context: Any = None,
+        schema: str,
         catalog_id: Optional[str] = None,
         custom_policies: Optional[List[Policy]] = None,
-    ) -> Tuple[bool, str]:
-        """
-        The central Zero-Trust evaluation engine.
-        Returns (is_allowed, reason).
-        """
-        schema = await self._resolve_schema(catalog_id)
-        logger.debug(
-            f"EVAL: Evaluating access for {principals} on {method} {path} (schema: {schema})"
-        )
+    ) -> List[Policy]:
+        """Resolve the full policy set for ``principals`` in one read scope.
 
+        Single source of truth for which policies apply to a principal, so
+        ``evaluate_access`` (single-resource decision) and
+        ``compile_read_filter`` (document-level read scope) can never drift
+        on policy resolution.
+
+        Resolution order, identical to the historical inline block:
+          1. Roles named by ``principals`` are looked up in the global
+             ``iam`` schema and (when distinct) the catalog ``schema``;
+             their policy ids are unioned.
+          2. Each id is fetched from the catalog schema, falling back to
+             the global schema.
+          3. ``custom_policies`` attached to the principal are appended.
+
+        ``schema`` is the value already resolved by
+        :meth:`_resolve_schema` for ``catalog_id`` — passed in so callers
+        that need the schema for other purposes resolve it once.
+        """
         # 1. Fetch all roles matching any of the principals to resolve policy IDs
         # Always check the global "iam" schema first for roles
         all_policy_ids = set()
@@ -699,7 +714,7 @@ class PolicyService:
                         )
 
         # 2. Fetch all unique policies from both global and catalog-specific schemas
-        effective_policies = []
+        effective_policies: List[Policy] = []
         for pid in all_policy_ids:
             # Try to get policy from catalog schema first, then fall back to global
             pol = await self.get_policy(pid, catalog_id=catalog_id)
@@ -712,6 +727,33 @@ class PolicyService:
         # 3. Include custom policies directly attached to the principal
         if custom_policies:
             effective_policies.extend(custom_policies)
+
+        return effective_policies
+
+    async def evaluate_access(
+        self,
+        principals: List[str],
+        path: str,
+        method: str,
+        request_context: Any = None,
+        catalog_id: Optional[str] = None,
+        custom_policies: Optional[List[Policy]] = None,
+    ) -> Tuple[bool, str]:
+        """
+        The central Zero-Trust evaluation engine.
+        Returns (is_allowed, reason).
+        """
+        schema = await self._resolve_schema(catalog_id)
+        logger.debug(
+            f"EVAL: Evaluating access for {principals} on {method} {path} (schema: {schema})"
+        )
+
+        effective_policies = await self._resolve_effective_policies(
+            principals=principals,
+            schema=schema,
+            catalog_id=catalog_id,
+            custom_policies=custom_policies,
+        )
 
         logger.debug(
             f"EVAL: Total effective policies to check: {len(effective_policies)}"
@@ -818,6 +860,134 @@ class PolicyService:
             logger.info(f"EVAL: ALLOWED by {winner.id} (priority={winner.priority})")
         return True, f"Allowed by policy {winner.id}"
 
+    async def compile_read_filter(
+        self,
+        principals: List[str],
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        *,
+        principal: Optional[Principal] = None,
+    ) -> AccessFilter:
+        """Project this principal's read scope into a neutral AccessFilter.
+
+        Document-level-security companion to :meth:`evaluate_access`. Same
+        policy set (via :meth:`_resolve_effective_policies`), projected into
+        an :class:`AccessFilter` a storage driver translates to a native
+        predicate without importing IAM.
+
+        Safety contract (proved by the drift-guard property test): the
+        result is an **equal-or-stricter** projection of ``evaluate_access``.
+        Deny-precedence is preserved *structurally*: ALLOW policies become
+        OR clauses (``allow``), DENY policies become negated clauses
+        (``deny``) that a driver applies as ``must_not`` and therefore win
+        over any ALLOW — no re-ranking needed.
+
+        Fail-closed rules:
+          * An ALLOW grant whose condition the compiler cannot express as an
+            index predicate is **dropped** (it does not contribute) and
+            ``uncompilable`` is set. Under-returning is the safe direction —
+            the document is hidden from search but still reachable by a
+            direct GET that runs the full engine.
+          * A relevant DENY grant with an uncompilable condition CANNOT be
+            dropped (dropping a DENY would widen access). It forces a full
+            :meth:`AccessFilter.deny_everything` — over-denying is safe.
+          * When no ALLOW compiles and the principal is not an unconditional
+            super-admin, the result is :meth:`AccessFilter.deny_everything`.
+        """
+        schema = await self._resolve_schema(catalog_id)
+        effective_policies = await self._resolve_effective_policies(
+            principals=principals,
+            schema=schema,
+            catalog_id=catalog_id,
+            custom_policies=(principal.custom_policies or None) if principal else None,
+        )
+
+        # Representative read path for the requested scope. Reusing the
+        # policy's own ``matches_resource`` regex matcher (the exact matcher
+        # ``evaluate_access`` uses) keeps relevance resolution drift-free —
+        # we never re-implement resource matching here.
+        probe_paths = _read_scope_probe_paths(catalog_id, collection_id)
+
+        attributes = principal.attributes if principal else {}
+
+        allow_clauses: List[AccessClause] = []
+        deny_clauses: List[AccessClause] = []
+        uncompilable = False
+        allow_all = False
+
+        for pol in effective_policies:
+            # Relevance: a READ-family action AND a resource pattern that can
+            # match a read in this scope. Anything outside the read scope is
+            # irrelevant to the filter and is skipped.
+            if not _policy_has_read_action(pol, is_deny=pol.effect == "DENY"):
+                continue
+            if not _policy_matches_read_scope(pol, probe_paths):
+                continue
+
+            result = _compile_conditions(pol.conditions, attributes)
+
+            if pol.effect == "DENY":
+                if result.outcome is _Outcome.UNCOMPILABLE:
+                    # A relevant DENY we cannot express → fully fail closed.
+                    # Dropping it would let an ALLOW leak documents the engine
+                    # would deny.
+                    return AccessFilter.deny_everything(uncompilable=True)
+                if result.outcome is _Outcome.UNSATISFIABLE:
+                    # The DENY's own gate is false for this principal, exactly
+                    # as ``evaluate_access`` would skip it → no exclusion.
+                    continue
+                # SATISFIED or PREDICATES → the DENY applies. A SATISFIED gate
+                # yields a scope-only clause (deny everything in scope); an
+                # empty clause at platform scope denies everything.
+                deny_clauses.append(
+                    _scope_clause(list(result.predicates), catalog_id, collection_id)
+                )
+                continue
+
+            # ALLOW
+            if result.outcome is _Outcome.UNCOMPILABLE:
+                # Drop the grant; record that the filter is now stricter than
+                # the engine so callers/telemetry know search may under-return.
+                uncompilable = True
+                continue
+            if result.outcome is _Outcome.UNSATISFIABLE:
+                # The ALLOW's gate is false for this principal → the grant never
+                # fires, exactly as the engine. NOT "uncompilable": we evaluated
+                # the gate, it simply does not hold, so this is not an
+                # under-return relative to the engine.
+                continue
+
+            scope_preds = _scope_predicates(catalog_id, collection_id)
+            if not result.predicates and not scope_preds:
+                # Unconditional ALLOW spanning the whole read scope (e.g. a
+                # platform super-admin: action ``.*`` + resource ``.*`` + no
+                # compilable-and-satisfied conditions, called with no
+                # catalog/collection pin). Record it but KEEP scanning: a DENY
+                # still wins by deny-precedence, so we must not short-circuit
+                # and drop the deny clauses.
+                allow_all = True
+                continue
+            allow_clauses.append(
+                _scope_clause(list(result.predicates), catalog_id, collection_id)
+            )
+
+        if allow_all:
+            # Unconditional allow, minus any applicable DENY (deny-precedence
+            # preserved structurally as ``must_not``).
+            return AccessFilter(
+                allow_all=True,
+                deny=tuple(deny_clauses),
+                uncompilable=uncompilable,
+            )
+        if not allow_clauses:
+            # Nothing could be allowed (deny-by-default, every ALLOW gate was
+            # false, or every ALLOW was dropped as uncompilable).
+            return AccessFilter.deny_everything(uncompilable=uncompilable)
+
+        return AccessFilter.from_clauses(
+            allow_clauses, deny_clauses, uncompilable=uncompilable
+        )
+
     async def _evaluate_condition(self, condition: Condition, context: Any) -> bool:
         """
         Resolves the appropriate handler and evaluates the condition.
@@ -825,3 +995,361 @@ class PolicyService:
         from .conditions import evaluate_condition
 
         return await evaluate_condition(condition, context)
+
+
+# --- compile_read_filter support ----------------------------------------- #
+#
+# Pure, side-effect-free helpers that translate a Policy's actions /
+# resources / conditions into AccessFilter pieces. Kept module-level (not
+# methods) so they are trivially unit-testable and carry no service state.
+
+# Action patterns that count as a READ-family verb for document scope. A
+# policy that does not admit at least one of these on its action list is
+# irrelevant to a read filter. ``.*`` (the wildcard normalised from ``*``)
+# admits everything, so a super-admin's ``["*"]`` qualifies.
+_READ_ACTIONS: Tuple[str, ...] = ("GET", "SEARCH", "READ")
+
+
+def _policy_has_read_action(pol: Policy, *, is_deny: bool = False) -> bool:
+    """True when the policy's action patterns admit a READ-family verb.
+
+    Reuses the policy's own compiled action matcher so the verb test is the
+    same one ``evaluate_access`` applies — no separate matching logic to
+    drift from the engine.
+
+    ``is_deny`` widens the probe to include ``POST`` for DENY policies only.
+    ``POST`` is the verb a STAC ``/search`` read uses, but it is *also* the
+    create verb — so a ``POST``-only ALLOW must NOT be mistaken for a read
+    grant (that would widen read access = leak), while a ``POST``-only DENY
+    covering an item-read path MUST still be honoured (dropping it would widen
+    access). Considering ``POST`` for DENY only keeps the filter
+    equal-or-stricter in both directions.
+    """
+    # ``not pol.actions`` mirrors evaluate_access's "no actions ⟹ matches".
+    if not pol.actions:
+        return True
+    verbs = (_READ_ACTIONS + ("POST",)) if is_deny else _READ_ACTIONS
+    return any(pol.matches_action(verb) for verb in verbs)
+
+
+def _read_scope_probe_paths(
+    catalog_id: Optional[str], collection_id: Optional[str]
+) -> Tuple[str, ...]:
+    """Representative read URLs for the requested scope.
+
+    A policy is relevant to the read scope when its resource pattern matches
+    at least one of these. We probe the canonical per-catalog read surfaces
+    (STAC + OGC Features item reads) plus the platform-tier item search, so
+    a policy scoped to any of them is recognised. When no catalog is given
+    we probe the platform-tier search root and the bare root, which a
+    ``.*`` super-admin resource still matches.
+    """
+    if catalog_id is None:
+        return ("/", "/search")
+    cat = catalog_id
+    if collection_id:
+        col = collection_id
+        return (
+            f"/stac/catalogs/{cat}/collections/{col}/items",
+            f"/stac/catalogs/{cat}/collections/{col}/items/_probe_",
+            f"/features/catalogs/{cat}/collections/{col}/items",
+            f"/search/catalogs/{cat}/items-search",
+            f"/search/catalogs/{cat}",
+        )
+    # Catalog-wide read scope: also probe a representative collection-item
+    # read path so a policy scoped to ``.../collections/{col}/items`` (the
+    # common item-read grant) is recognised as relevant to a catalog-wide
+    # read. ``_probe_`` is a placeholder collection/item id that the
+    # per-segment ``[^/]+`` patterns match.
+    return (
+        f"/stac/catalogs/{cat}",
+        f"/stac/catalogs/{cat}/collections",
+        f"/stac/catalogs/{cat}/collections/_probe_/items",
+        f"/stac/catalogs/{cat}/collections/_probe_/items/_probe_",
+        f"/features/catalogs/{cat}",
+        f"/features/catalogs/{cat}/collections/_probe_/items",
+        f"/search/catalogs/{cat}/items-search",
+        f"/search/catalogs/{cat}",
+    )
+
+
+def _policy_matches_read_scope(pol: Policy, probe_paths: Tuple[str, ...]) -> bool:
+    """True when the policy's resource regex matches any probe path.
+
+    Uses ``Policy.matches_resource`` — the same start-anchored regex matcher
+    ``evaluate_access`` uses — so relevance can never diverge from the
+    engine's notion of "this policy applies to this path".
+    """
+    return any(pol.matches_resource(p) for p in probe_paths)
+
+
+# Condition handler types the compiler can express as a static document
+# predicate (or compose). Everything not in this map is treated as
+# uncompilable (depends on request state, time, counters, or a DB round-trip
+# at eval time) and forces the fail-closed path. See the condition handlers
+# in ``conditions.py`` / ``audience_handlers.py``.
+_LOGICAL_TYPES: Tuple[str, ...] = ("and", "or", "not")
+
+
+class _Outcome(enum.Enum):
+    """How a single condition (or an AND/OR of them) projects onto documents.
+
+    The distinction that closes the leak: a ``match`` on a principal attribute
+    is *document-independent* — it is true or false for THIS principal
+    regardless of any document. Such a gate must be evaluated at compile time
+    (SATISFIED / UNSATISFIABLE), never folded into a per-document field
+    predicate. Only conditions that genuinely constrain a document field (e.g.
+    ``catalog_lookup_public_allowed`` → ``visibility``) yield PREDICATES.
+    """
+
+    #: Provably TRUE for this principal regardless of document — no predicate.
+    SATISFIED = "satisfied"
+    #: Provably FALSE for this principal regardless of document — drop the
+    #: grant (the engine would also deny it; not an under-return).
+    UNSATISFIABLE = "unsatisfiable"
+    #: Maps to one or more per-document index predicates.
+    PREDICATES = "predicates"
+    #: Cannot be evaluated at compile time (request-time / stateful input) —
+    #: drop the ALLOW + flag, or fully deny for a DENY (fail-closed).
+    UNCOMPILABLE = "uncompilable"
+
+
+@dataclass(frozen=True)
+class _CondResult:
+    outcome: "_Outcome"
+    predicates: Tuple[FieldPredicate, ...] = ()
+
+
+_SATISFIED = _CondResult(_Outcome.SATISFIED)
+_UNSATISFIABLE = _CondResult(_Outcome.UNSATISFIABLE)
+_UNCOMPILABLE = _CondResult(_Outcome.UNCOMPILABLE)
+
+
+def _predicate_result(preds: List[FieldPredicate]) -> _CondResult:
+    """A PREDICATES result, collapsing to SATISFIED when no predicate remains."""
+    t = tuple(preds)
+    return _CondResult(_Outcome.PREDICATES, t) if t else _SATISFIED
+
+
+def _compile_conditions(
+    conditions: List[Condition], attributes: Dict[str, Any]
+) -> _CondResult:
+    """Compile a policy's condition list (an implicit AND) for this principal.
+
+    ``evaluate_access`` requires EVERY condition to pass, so this is an AND:
+      * any child UNSATISFIABLE ⟹ the whole grant is dead → UNSATISFIABLE
+        (drop, NOT flagged uncompilable — the engine denies it too);
+      * else any child UNCOMPILABLE ⟹ UNCOMPILABLE (drop ALLOW + flag / fully
+        deny for DENY);
+      * SATISFIED children contribute nothing; PREDICATES children accumulate
+        into one conjunctive clause.
+    """
+    predicates: List[FieldPredicate] = []
+    saw_uncompilable = False
+    for cond in conditions:
+        r = _compile_condition(cond, attributes)
+        if r.outcome is _Outcome.UNSATISFIABLE:
+            return _UNSATISFIABLE
+        if r.outcome is _Outcome.UNCOMPILABLE:
+            saw_uncompilable = True
+            continue
+        if r.outcome is _Outcome.PREDICATES:
+            predicates.extend(r.predicates)
+        # SATISFIED contributes nothing.
+    if saw_uncompilable:
+        return _UNCOMPILABLE
+    return _predicate_result(predicates)
+
+
+def _compile_condition(
+    cond: Condition, attributes: Dict[str, Any]
+) -> _CondResult:
+    """Compile a single condition for this principal (tri-/quad-state).
+
+    Compilable cases:
+      * ``catalog_lookup_public_allowed`` → PREDICATES ``visibility IN
+        ("public",)``. The handler admits only when the catalog is public; on
+        the document plane that is exactly "the document is public" — a
+        faithful, equal-or-stricter projection.
+      * ``match`` (AttributeMatchHandler) — a *principal gate*, evaluated at
+        compile time to SATISFIED / UNSATISFIABLE (see
+        :func:`_compile_attribute_match`). It NEVER becomes a per-document
+        predicate, because the handler compares a principal/request value to a
+        static value and never reads the document.
+      * ``and`` / ``or`` composed of children. ``and`` is the implicit-AND of
+        :func:`_compile_conditions`; ``or`` is SATISFIED if any branch is
+        SATISFIED, UNSATISFIABLE if all branches are, and otherwise only
+        expressible as a single-field value union (else UNCOMPILABLE).
+
+    Everything else (``not``, rate_limit, max_count, time_window, expiration,
+    query_match, lookup_only_search, filter, catalog_membership_required,
+    catalog_admin_required, max_token_ttl, collection_write_anonymous_allowed,
+    unknown types) is UNCOMPILABLE.
+    """
+    ctype = cond.type
+    config = cond.config or {}
+
+    if ctype == "catalog_lookup_public_allowed":
+        return _CondResult(
+            _Outcome.PREDICATES, (FieldPredicate("visibility", ("public",)),)
+        )
+
+    if ctype == "match":
+        return _compile_attribute_match(config, attributes)
+
+    if ctype == "and":
+        children = [Condition(**c) for c in (config.get("conditions") or [])]
+        return _compile_conditions(children, attributes)
+
+    if ctype == "or":
+        return _compile_or(config, attributes)
+
+    # ``not`` and every stateful / request-time condition: uncompilable.
+    return _UNCOMPILABLE
+
+
+def _compile_or(config: Dict[str, Any], attributes: Dict[str, Any]) -> _CondResult:
+    """Compile an ``or`` of conditions, mirroring LogicalOrHandler.
+
+    LogicalOrHandler returns True if ANY branch is true (and True for an empty
+    list). So: any SATISFIED branch ⟹ SATISFIED; UNSATISFIABLE branches never
+    contribute and are ignored; if every branch is UNSATISFIABLE ⟹
+    UNSATISFIABLE. A disjunction of per-document predicates is only expressible
+    as one conjunctive clause when every predicate branch constrains the SAME
+    field (values unioned); any branch we cannot compile (or a heterogeneous
+    field) means an unknown branch could independently satisfy the OR, so we
+    fail closed (UNCOMPILABLE).
+    """
+    children_cfg = config.get("conditions") or []
+    if not children_cfg:
+        return _SATISFIED
+    field_name: Optional[str] = None
+    values: List[str] = []
+    saw_uncompilable = False
+    saw_predicate = False
+    for child_cfg in children_cfg:
+        r = _compile_condition(Condition(**child_cfg), attributes)
+        if r.outcome is _Outcome.SATISFIED:
+            return _SATISFIED
+        if r.outcome is _Outcome.UNSATISFIABLE:
+            continue
+        if r.outcome is _Outcome.UNCOMPILABLE or len(r.predicates) != 1:
+            saw_uncompilable = True
+            continue
+        p = r.predicates[0]
+        if field_name is None:
+            field_name = p.field
+        elif field_name != p.field:
+            saw_uncompilable = True
+            continue
+        saw_predicate = True
+        values.extend(p.values)
+    if saw_uncompilable:
+        return _UNCOMPILABLE
+    if not saw_predicate:
+        # Every branch was UNSATISFIABLE ⟹ the OR can never be true.
+        return _UNSATISFIABLE
+    assert field_name is not None
+    return _CondResult(
+        _Outcome.PREDICATES,
+        (FieldPredicate(field_name, tuple(dict.fromkeys(values))),),
+    )
+
+
+def _compile_attribute_match(
+    config: Dict[str, Any], attributes: Dict[str, Any]
+) -> _CondResult:
+    """Compile a ``match`` condition — a principal gate, never a doc predicate.
+
+    ``AttributeMatchHandler`` compares a SOURCE value to a static ``value``;
+    the source is one of ``principal.attributes.<k>``, ``principal.id``, or a
+    request-time input (``query.*`` / ``header.*`` / ``path`` / ``method`` /
+    ``extras.*``). It NEVER reads the document, so the result is
+    document-independent.
+
+    Only ``principal.attributes.<k>`` is resolvable from the principal alone at
+    compile time. We resolve it and apply the SAME comparison the handler uses
+    (see ``_match_compare``) to decide SATISFIED vs UNSATISFIABLE. Folding the
+    principal's value into a ``<k> IN (...)`` document predicate — as an earlier
+    version did — is a leak: it admits documents whose field happens to equal
+    the principal's value even when the principal fails the gate. Any other
+    source is request-time / not known here → UNCOMPILABLE (fail-closed).
+    """
+    attr_path = config.get("attribute")
+    if not attr_path:
+        # Mirrors AttributeMatchHandler: a missing attribute path passes.
+        return _SATISFIED
+    if not isinstance(attr_path, str):
+        return _UNCOMPILABLE
+    prefix = "principal.attributes."
+    if not attr_path.startswith(prefix):
+        # principal.id / query.* / header.* / path / method / extras.* — not
+        # resolvable from the principal's attributes alone at compile time.
+        return _UNCOMPILABLE
+
+    key = attr_path[len(prefix):]
+    actual = attributes.get(key)
+    if actual is None:
+        # Handler returns False when the source value is absent.
+        return _UNSATISFIABLE
+    operator = config.get("operator", "eq")
+    expected = config.get("value")
+    return _SATISFIED if _match_compare(actual, operator, expected) else _UNSATISFIABLE
+
+
+def _match_compare(actual: Any, operator: str, expected: Any) -> bool:
+    """Exact mirror of ``AttributeMatchHandler._compare`` (conditions.py).
+
+    Kept byte-for-byte equivalent so a compile-time evaluation of a principal
+    gate can never disagree with the runtime engine.
+    """
+    if operator == "eq":
+        return str(actual) == str(expected)
+    if operator == "neq":
+        return str(actual) != str(expected)
+    if operator == "contains":
+        return str(expected) in str(actual)
+    if operator == "regex":
+        return bool(re.match(str(expected), str(actual)))
+    if operator == "gt":
+        try:
+            return float(actual) > float(expected)
+        except Exception:
+            return False
+    if operator == "lt":
+        try:
+            return float(actual) < float(expected)
+        except Exception:
+            return False
+    if operator == "in":
+        if isinstance(expected, list):
+            return actual in expected
+        return actual in str(expected).split(",")
+    return False
+
+
+def _scope_predicates(
+    catalog_id: Optional[str], collection_id: Optional[str]
+) -> List[FieldPredicate]:
+    """Predicates pinning a clause to the requested catalog / collection.
+
+    When the caller asks for a specific catalog (and optionally collection),
+    every compiled clause is constrained to it so the filter never admits a
+    document from another tenant. With no catalog pin the scope is the
+    platform plane and no structural pin is added.
+    """
+    preds: List[FieldPredicate] = []
+    if catalog_id is not None:
+        preds.append(FieldPredicate("catalog_id", (catalog_id,)))
+    if collection_id is not None:
+        preds.append(FieldPredicate("collection_id", (collection_id,)))
+    return preds
+
+
+def _scope_clause(
+    predicates: List[FieldPredicate],
+    catalog_id: Optional[str],
+    collection_id: Optional[str],
+) -> AccessClause:
+    """Build a clause = condition predicates AND the scope pin predicates."""
+    return AccessClause(tuple(_scope_predicates(catalog_id, collection_id) + predicates))
