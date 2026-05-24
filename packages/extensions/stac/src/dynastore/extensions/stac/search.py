@@ -167,6 +167,45 @@ def _build_cql2_field_mapping(optimizer: QueryOptimizer) -> Dict[str, Any]:
         for name, field_def in optimizer.get_all_queryable_fields().items()
     }
 
+
+def _attributes_hydration_projection(attr_sidecar_config: Any) -> Tuple[str, bool]:
+    """Return ``(sql, is_columnar)`` for the hydration ``attributes`` projection.
+
+    Takes the attributes sidecar **config** (as produced by ``driver_sidecars``)
+    and wraps it in the runtime sidecar to reuse its storage-mode resolution.
+
+    The hydration is a ``UNION ALL`` across collections, so every fragment must
+    expose the same ``attributes`` column shape. JSONB sidecars keep all
+    properties in a single blob column (``jsonb_column_name``, default
+    ``attributes``), projected directly. COLUMNAR sidecars store each declared
+    property as its own physical column and have **no** ``attributes`` column —
+    referencing ``s.attributes`` there raises ``UndefinedColumnError`` — so the
+    blob is rebuilt with ``jsonb_build_object`` over the declared property
+    columns (identity/stat columns are excluded by ``get_property_field_names``),
+    keeping the UNION-ALL shape uniform. A COLUMNAR sidecar with no declared
+    properties yields an empty object, matching the JSONB empty-blob shape.
+
+    ``is_columnar`` is returned so the row mapper can splat the rebuilt blob back
+    into individual row keys: the COLUMNAR attribute mapper reads ``row[col]``,
+    not the blob, so the reconstructed values must be exposed under their column
+    names for properties to populate.
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
+        FeatureAttributeSidecar,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeStorageMode,
+    )
+
+    sidecar = FeatureAttributeSidecar(attr_sidecar_config)
+    if sidecar.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
+        names = sidecar.get_property_field_names()
+        if not names:
+            return "'{}'::jsonb", True
+        pairs = ", ".join(f"'{n}', s.\"{n}\"" for n in names)
+        return f"jsonb_build_object({pairs})", True
+    return f's."{attr_sidecar_config.jsonb_column_name}"', False
+
 async def _translate_filter_to_es(
     cat_id: str,
     cids: List[str],
@@ -595,6 +634,15 @@ async def search_items(
     # column? Mirrors ``ItemsWritePolicy.enable_validity`` (#974). When False,
     # the column does not exist and the hydration SELECT must not reference it.
     collection_validity_enabled: dict = {}
+    # Per-collection SQL projection that yields the feature-properties blob as
+    # ``attributes``. JSONB sidecars project the blob column directly; COLUMNAR
+    # sidecars have no ``attributes`` column, so the blob is reconstructed from
+    # the declared property columns. Defaults to the JSONB shape.
+    collection_attr_projection: dict = {}
+    # Collections whose attributes sidecar is COLUMNAR: their rebuilt ``attributes``
+    # blob must be splatted into individual row keys before mapping, because the
+    # COLUMNAR attribute mapper reads ``row[col]`` rather than the blob.
+    collection_attr_columnar: set = set()
 
     for collection_id in target_collections:
         config = collection_configs[collection_id]
@@ -827,6 +875,12 @@ async def search_items(
                     collection_validity_enabled[collection_id] = bool(
                         getattr(sc, "enable_validity", False)
                     )
+                    _attr_proj, _attr_is_columnar = (
+                        _attributes_hydration_projection(sc)
+                    )
+                    collection_attr_projection[collection_id] = _attr_proj
+                    if _attr_is_columnar:
+                        collection_attr_columnar.add(collection_id)
                 elif stype in ["geometries", "geometry"]:
                     has_geom_sidecar = True
                 elif stype == "item_metadata":
@@ -944,11 +998,14 @@ async def search_items(
                     ", h.transaction_time as valid_from"
                     ", null::timestamptz as valid_to"
                 )
+            # COLUMNAR attribute sidecars have no ``attributes`` blob column;
+            # reconstruct it from the declared property columns (#1253 follow-up).
+            attr_select = collection_attr_projection.get(coll_id, "s.attributes")
             select_parts.append(
                 ", COALESCE(s.external_id, h.geoid::text) as id"
                 ", s.external_id"
                 f"{validity_select}"
-                ", s.attributes, s.asset_id"
+                f", {attr_select} as attributes, s.asset_id"
             )
             joins.append(f'LEFT JOIN "{phys_schema}"."{s_tab}" s ON h.geoid = s.geoid')
         else:
@@ -1049,6 +1106,15 @@ async def search_items(
                 item_data["geom"] = item_data.pop("simplified_geom")
             else:
                 item_data["geom"] = None
+
+            # COLUMNAR collections: the attribute mapper reads ``row[col]`` per
+            # declared column, not the rebuilt ``attributes`` blob. Splat the
+            # blob's keys back onto the row so properties populate (#1253 follow-up).
+            if item_data["collection_id"] in collection_attr_columnar:
+                _attrs = item_data.get("attributes")
+                if isinstance(_attrs, dict):
+                    for _k, _v in _attrs.items():
+                        item_data.setdefault(_k, _v)
 
             if items_svc:
                 col_config = collection_configs.get(item_data["collection_id"])

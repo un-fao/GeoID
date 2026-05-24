@@ -31,7 +31,11 @@ from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
 from dynastore.modules.tools.cql import parse_cql2_json_filter
-from dynastore.extensions.stac.search import _build_cql2_field_mapping
+from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+from dynastore.extensions.stac.search import (
+    _build_cql2_field_mapping,
+    _attributes_hydration_projection,
+)
 
 
 def _columnar_optimizer() -> QueryOptimizer:
@@ -71,3 +75,50 @@ def test_unknown_property_is_rejected():
             {"op": "=", "args": [{"property": "no_such_col"}, "x"]},
             field_mapping=mapping,
         )
+
+
+# --- Hydration projection (Refs #1253): the search UNION-ALL hydration must not
+# project a bare ``s.attributes`` column, which does not exist for COLUMNAR
+# sidecar storage and raises ``UndefinedColumnError``. ------------------------
+
+
+def _attr_sidecar(cfg: ItemsPostgresqlDriverConfig):
+    for sc in driver_sidecars(cfg):
+        if getattr(sc, "sidecar_type", "") in ("attributes", "feature_attributes"):
+            return sc
+    raise AssertionError("config has no attributes sidecar")
+
+
+def test_columnar_hydration_rebuilds_attributes_from_columns():
+    cfg = ItemsPostgresqlDriverConfig(
+        sidecars=[
+            GeometriesSidecarConfig(),
+            FeatureAttributeSidecarConfig(
+                storage_mode=AttributeStorageMode.COLUMNAR,
+                attribute_schema=[
+                    AttributeSchemaEntry(name="adm2_pcode", type=PostgresType.TEXT),
+                    AttributeSchemaEntry(name="pop", type=PostgresType.INTEGER),
+                ],
+            ),
+        ]
+    )
+    proj, is_columnar = _attributes_hydration_projection(_attr_sidecar(cfg))
+    # The bare blob column is never referenced for COLUMNAR storage.
+    assert is_columnar is True
+    assert "s.attributes" not in proj
+    assert proj.startswith("jsonb_build_object(")
+    assert "'adm2_pcode', s.\"adm2_pcode\"" in proj
+    assert "'pop', s.\"pop\"" in proj
+
+
+def test_jsonb_hydration_projects_blob_column_unchanged():
+    cfg = ItemsPostgresqlDriverConfig(
+        sidecars=[
+            GeometriesSidecarConfig(),
+            FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB),
+        ]
+    )
+    proj, is_columnar = _attributes_hydration_projection(_attr_sidecar(cfg))
+    # JSONB storage projects the blob column directly (default name ``attributes``).
+    assert is_columnar is False
+    assert proj == 's."attributes"'
