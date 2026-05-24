@@ -149,6 +149,9 @@ class DBConfigModule(ModuleProtocol):
         async with AsyncExitStack() as stack:
             # 1. Platform configuration
             app_state.db_config = DBConfig()
+            # Make a dangerously-small connection pool LOUD and SAFE before any
+            # engine is built from this config (dynastore #320).
+            app_state.db_config.validate_pool_sizing()
             
             # 2. Platform Config Manager (Plugin)
             # Read engine directly from app_state to avoid circular dependency via get_engine(),

@@ -22,6 +22,20 @@ import dynastore.tools.class_tools as class_tools
 
 logger = logging.getLogger(__name__)
 
+# Smallest pool floor we consider safe under concurrent load. The review-env
+# outage (dynastore #320) ran with ``DB_POOL_MIN_SIZE=2``: with only two base
+# connections and an overflow exhausted by 3+ concurrent requests, surplus
+# requests queued and timed out ("QueuePool limit of size 2 overflow 3
+# reached, connection timed out, timeout 60.00"), cascading into engine-snapshot
+# retry exhaustion and sustained 100% memory. A handful of base connections is
+# the minimum that lets a few concurrent requests proceed without convoying.
+SAFE_POOL_MIN_FLOOR: int = 5
+
+# Smallest total pool capacity (base size + overflow) we consider safe. Even
+# with a healthy ``pool_min_size`` a tiny ``DB_POOL_MAX_SIZE`` caps the total
+# connections, so the floor is enforced on the effective total as well.
+SAFE_POOL_TOTAL_FLOOR: int = 5
+
 
 class DBConfig:
     database_url: str = os.getenv(
@@ -68,6 +82,49 @@ class DBConfig:
     idle_in_transaction_session_timeout: str = os.getenv(
         "DB_IDLE_IN_TRANSACTION_TIMEOUT", "30s"
     )
+
+    def validate_pool_sizing(self) -> None:
+        """Make a dangerously-small pool LOUD and SAFE at startup.
+
+        The review-env outage (dynastore #320) was triggered by an env override
+        ``DB_POOL_MIN_SIZE=2`` — well below the code default of 5. With only two
+        base connections, 3+ concurrent requests exhausted the overflow and
+        queued until they timed out ("QueuePool limit of size 2 overflow 3
+        reached, connection timed out, timeout 60.00"), cascading into engine
+        snapshot retry exhaustion and 100% memory / container restarts.
+
+        This guard emits a clear WARNING naming the offending env var and the
+        risk, then clamps ``pool_min_size`` / ``pool_max_size`` up to a safe
+        floor so a misconfigured tiny value can never silently strangle the
+        service. Called once from the module lifespan after the config is built.
+        """
+        if self.pool_min_size < SAFE_POOL_MIN_FLOOR:
+            logger.warning(
+                "DB_POOL_MIN_SIZE (%d) is below the safe floor of %d; under "
+                "concurrent load a pool this small queues surplus requests "
+                "until they hit QueuePool timeouts (dynastore #320). Clamping "
+                "pool_min_size up to %d — raise DB_POOL_MIN_SIZE in the "
+                "environment to silence this.",
+                self.pool_min_size,
+                SAFE_POOL_MIN_FLOOR,
+                SAFE_POOL_MIN_FLOOR,
+            )
+            self.pool_min_size = SAFE_POOL_MIN_FLOOR
+
+        # Effective total capacity an engine may open = pool_size + overflow.
+        # Even with a healthy min, a tiny DB_POOL_MAX_SIZE caps the total.
+        if self.pool_max_size < SAFE_POOL_TOTAL_FLOOR:
+            logger.warning(
+                "DB_POOL_MAX_SIZE (%d) is below the safe floor of %d; the total "
+                "connections an engine can open is capped this low, which risks "
+                "QueuePool timeouts under concurrent load (dynastore #320). "
+                "Clamping pool_max_size up to %d — raise DB_POOL_MAX_SIZE in "
+                "the environment to silence this.",
+                self.pool_max_size,
+                SAFE_POOL_TOTAL_FLOOR,
+                SAFE_POOL_TOTAL_FLOOR,
+            )
+            self.pool_max_size = SAFE_POOL_TOTAL_FLOOR
 
     @property
     def pool_max_overflow(self) -> int:
