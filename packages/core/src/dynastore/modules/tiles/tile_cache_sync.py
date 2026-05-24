@@ -67,6 +67,13 @@ logger = logging.getLogger(__name__)
 # indexing documents.
 TILE_CACHE_DRIVER_ID = "tile_cache_invalidator"
 
+# Tile formats the read/render path serves and caches. ``tiles_service`` caches
+# under each of these (format is part of the tile primary key / object key), so
+# invalidation MUST drop every one — dropping only ``mvt`` would leave a stale
+# ``pbf`` of the same coordinate cached. Keep in sync with the format whitelist
+# in ``extensions/tiles/tiles_service.py`` (``["mvt", "pbf"]``).
+SERVED_TILE_FORMATS: Tuple[str, ...] = ("mvt", "pbf")
+
 # Hard ceiling on tiles enqueued per coalesced batch. A continent-scale or
 # scattered-multipolygon bbox at high zoom can cover tens of thousands of
 # tiles; clamping the served zoom range downward keeps a single edit (or a
@@ -76,8 +83,10 @@ TILE_CACHE_DRIVER_ID = "tile_cache_invalidator"
 # read anyway).
 DEFAULT_MAX_TILES_PER_BATCH = 4096
 
-# WGS84 world bbox — used to clamp degenerate / world-spanning bboxes.
-_WORLD_BBOX: "TileBBox" = (-180.0, -85.06, 180.0, 85.06)
+# WGS84 world bbox — used to clamp degenerate / world-spanning bboxes. The
+# latitude bound is the Web Mercator validity limit (±85.0511287798°), beyond
+# which morecantile rejects/garbles coordinates.
+_WORLD_BBOX: "TileBBox" = (-180.0, -85.0511287798, 180.0, 85.0511287798)
 
 
 # A WGS84 bbox: (west, south, east, north).
@@ -121,14 +130,16 @@ PHASE2_PRIOR_BBOX_EXTENSION_POINT = (
 
 
 def feature_bbox(feature: Any) -> Optional[TileBBox]:
-    """Read the canonical bbox envelope off a Feature without loading geometry.
+    """Read the canonical bbox envelope off a Feature without any I/O.
 
-    Prefers the explicit ``bbox`` field (``[w, s, e, n]``). Falls back to a
-    cheap bounds scan of the geometry coordinates ONLY for small inline
-    geometries already in memory — large geometries are expected to carry a
-    materialized ``bbox`` from the write policy, so this fallback never pulls
-    a big geometry into the cache process (it operates on what's already on
-    the object). Returns ``None`` when no bbox is derivable.
+    Prefers the explicit ``bbox`` field (``[w, s, e, n]``). When that is
+    absent, falls back to a cheap bounds scan of the geometry coordinates
+    ALREADY on the object — it never re-reads geometry from storage. Large
+    geometries are expected to carry a materialized ``bbox`` from the write
+    policy, so the common path is the field read; the coordinate scan only
+    fires for inline geometries with no bbox, and operates purely on
+    in-memory coords (no DB, no network). Returns ``None`` when no bbox is
+    derivable.
     """
     bbox = getattr(feature, "bbox", None)
     if bbox is None and isinstance(feature, dict):
@@ -357,7 +368,10 @@ def coverage_for_features(
 async def is_tile_cache_active(catalog_id: str, collection_id: str) -> bool:
     """True when write-reactive invalidation should run for this collection.
 
-    Capability-gated (issue #1292): ON when BOTH
+    Capability-gated (issue #1292): ON when ALL of
+      (0) the L2 cache is enabled — ``TilesCachingConfig.cache_enabled`` is
+          ``True`` (when ``False`` nothing is cached, so there is nothing to
+          invalidate and no obligation should be enqueued), and
       (1) a tile reader is configured — a ``TileStorageProtocol`` provider is
           registered (PG cache table or bucket), and
       (2) the backing store is usable — verified via ``verify_cache_store``.
@@ -368,6 +382,22 @@ async def is_tile_cache_active(catalog_id: str, collection_id: str) -> bool:
     """
     from dynastore.modules import get_protocol
     from dynastore.modules.tiles.tiles_module import TileStorageProtocol
+
+    # (0) L2 cache off → nothing is being cached, so no invalidation
+    # obligation is warranted. Resolve tolerantly (defaults to enabled).
+    try:
+        from dynastore.modules.gcp.tiles_storage import _load_caching_config
+
+        cfg = await _load_caching_config()
+        if not getattr(cfg, "cache_enabled", True):
+            logger.debug(
+                "tile_cache: L2 cache disabled for %s/%s — "
+                "write-reactive invalidation off",
+                catalog_id, collection_id,
+            )
+            return False
+    except Exception:  # noqa: BLE001 — never let config lookup break a write
+        pass
 
     provider = get_protocol(TileStorageProtocol)
     if provider is None:
@@ -490,9 +520,14 @@ async def enqueue_tile_invalidations(
 ) -> int:
     """Coalesce a batch's affected tiles and enqueue ONE OUTBOX obligation.
 
-    Atomic with the caller's write transaction: ``conn`` must be the same
-    connection as the data write so a failed enqueue rolls the write back
-    (the OUTBOX guarantee, mirroring the secondary indexer).
+    ``conn`` is forwarded to ``outbox.enqueue_bulk``. Phase 1 callers pass
+    ``None``: the enqueue runs AFTER the data write is already committed, so
+    there is nothing to be atomic with, and ``PgOutboxStore`` then acquires
+    its OWN raw asyncpg connection and sets ``search_path`` to the tenant
+    schema (mirroring ``IndexDispatcher._enqueue_outbox_record``). A non-None
+    ``conn`` MUST be a raw asyncpg connection with ``search_path`` already
+    pinned — a SQLAlchemy connection has no ``copy_records_to_table`` and would
+    fail; the worst case of the self-managed path is one stale tile read.
 
     Returns the number of tiles marked for invalidation (0 when the
     participant is inactive, no bbox is derivable, or coverage is empty).
@@ -542,7 +577,9 @@ async def enqueue_tile_invalidations(
             driver_id=TILE_CACHE_DRIVER_ID,
             driver_instance_id=inst,
             collection_id=collection_id,
-            op="upsert",
+            # Semantically a mark-stale / delete of the cached tiles, not an
+            # upsert of an entity. ``delete`` is the accurate op for the drain.
+            op="delete",
             item_id=None,
             payload=_encode_tile_payload(coverage.tiles),
             idempotency_key=str(op_id),

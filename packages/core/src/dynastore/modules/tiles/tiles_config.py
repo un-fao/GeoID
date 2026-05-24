@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 from typing import ClassVar, Dict, List, Optional, Tuple
-from pydantic import Field, BaseModel
+from pydantic import Field
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin

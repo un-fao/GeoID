@@ -1313,8 +1313,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         NEW bbox makes stale (across the served zoom range, coalesced + capped)
         and enqueue ONE durable OUTBOX obligation. A background drain
         (``TileCacheBulkIndexer``) then deletes those tiles so the next read
-        repopulates lazily. The enqueue rides its own wrapping TX so it is
-        atomic with the obligation, mirroring ``_dispatch_index_upsert``.
+        repopulates lazily.
+
+        Both call sites run this AFTER the data write has committed (the
+        feature rows are already durable). There is therefore nothing to be
+        atomic with, so — unlike ``_dispatch_index_upsert`` — we do NOT wrap a
+        ``managed_transaction`` and hand a SQLAlchemy connection to the outbox.
+        That would break: ``PgOutboxStore.enqueue_bulk`` with a non-None conn
+        calls the RAW ``asyncpg.copy_records_to_table``, which a SQLAlchemy
+        ``AsyncConnection`` does not implement, and the table lives in the
+        per-tenant schema that ``managed_transaction`` never sets on the
+        ``search_path``. Instead we pass ``conn=None`` so the store acquires
+        its OWN raw asyncpg connection and pins ``search_path`` itself, exactly
+        as the dispatcher's missing-indexer path does
+        (``IndexDispatcher._enqueue_outbox_record`` → ``enqueue_bulk(None, …)``).
+        The worst case of a self-managed enqueue here is one stale tile read,
+        which the lazy re-render immediately repairs.
 
         Capability-gated and degrade-safe inside ``enqueue_tile_invalidations``
         — it is a no-op when no tile reader / cache store is present, and never
@@ -1329,20 +1343,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             enqueue_tile_invalidations,
         )
 
-        engine = db_resource or self.engine
         try:
-            if engine is None:
-                # No engine — enqueue with its own pool conn (still durable;
-                # not joined to the data write, acceptable for an invalidation
-                # obligation whose worst case is a one-read-stale tile).
-                await enqueue_tile_invalidations(
-                    None, catalog_id, collection_id, results,
-                )
-                return
-            async with managed_transaction(engine) as conn:
-                await enqueue_tile_invalidations(
-                    conn, catalog_id, collection_id, results,
-                )
+            # Self-managed enqueue: conn=None lets PgOutboxStore acquire its
+            # own raw asyncpg conn + set search_path. The data write is
+            # already committed at both call sites, so no wrapping TX is
+            # needed (and a SQLAlchemy conn would be the wrong type anyway).
+            await enqueue_tile_invalidations(
+                None, catalog_id, collection_id, results,
+            )
         except Exception as exc:  # noqa: BLE001 — invalidation never breaks a write
             logger.warning(
                 "tile_cache: invalidation dispatch failed for %s/%s: %s",

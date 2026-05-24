@@ -79,3 +79,76 @@ async def test_delete_tile_reports_failure_without_raising():
         ok = await storage.delete_tile("cat", "col", "WebMercatorQuad", 5, 1, 2, "mvt")
         # A genuine error → False (let the drain retry), never raises.
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# delete_tile_variants — #1292 SHOULD-FIX 2 (formats) + 3 (cache-id suffix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_tile_variants_matches_all_cache_id_shapes_and_formats():
+    """The DELETE must catch bare, @hash, and multi-collection cache ids across
+    every served format in a single statement."""
+    storage = _make_storage()
+    with patch(
+        "dynastore.modules.tiles.tiles_module.managed_transaction"
+    ) as mtx, patch(
+        "dynastore.modules.tiles.tiles_module.DQLQuery"
+    ) as MockDQL, patch(
+        "dynastore.modules.tiles.tiles_module.cache_invalidate"
+    ):
+        mtx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockDQL.return_value.execute = AsyncMock(return_value=3)
+
+        ok = await storage.delete_tile_variants(
+            "cat", "region6", "WebMercatorQuad", 5, 1, 2, ["mvt", "pbf"],
+        )
+        assert ok is True
+
+        sql = MockDQL.call_args.args[0]
+        assert "DELETE FROM" in sql and "preseeded_tiles" in sql
+        # Format set matched via ANY(...), not a single hardcoded "mvt".
+        assert "format = ANY(:formats)" in sql
+        # Exact + parameterized (@hash) + multi-collection positions.
+        for marker in (":cid", ":p_param", ":p_head", ":p_tail", ":p_tail_hash", ":p_mid"):
+            assert marker in sql
+
+        kwargs = MockDQL.return_value.execute.call_args.kwargs
+        assert kwargs["formats"] == ["mvt", "pbf"]
+        assert kwargs["cid"] == "region6"
+        assert kwargs["p_param"] == "region6@%"
+        assert kwargs["p_head"] == "region6,%"
+        assert kwargs["p_tail"] == "%,region6"
+        assert kwargs["p_tail_hash"] == "%,region6@%"
+        assert kwargs["p_mid"] == "%,region6,%"
+
+
+@pytest.mark.asyncio
+async def test_delete_tile_variants_idempotent_when_table_absent():
+    storage = _make_storage()
+    with patch(
+        "dynastore.modules.tiles.tiles_module.managed_transaction"
+    ) as mtx, patch(
+        "dynastore.modules.tiles.tiles_module.DQLQuery"
+    ) as MockDQL:
+        mtx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockDQL.return_value.execute = AsyncMock(
+            side_effect=Exception("relation does not exist (42P01)")
+        )
+        ok = await storage.delete_tile_variants(
+            "cat", "col", "WebMercatorQuad", 5, 1, 2, ["mvt", "pbf"],
+        )
+        assert ok is True  # missing table → idempotent success
+
+
+@pytest.mark.asyncio
+async def test_delete_tile_variants_noop_on_empty_formats():
+    storage = _make_storage()
+    # No DB call at all when there are no formats to invalidate.
+    ok = await storage.delete_tile_variants(
+        "cat", "col", "WebMercatorQuad", 5, 1, 2, [],
+    )
+    assert ok is True

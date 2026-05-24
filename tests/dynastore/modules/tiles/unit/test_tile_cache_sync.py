@@ -188,9 +188,15 @@ def test_decode_skips_malformed_entries():
 
 
 class _FakeProvider:
+    """Fake reader/store implementing the coordinate-variant primitive (#1292).
+
+    Records each coordinate-variant delete (all served formats in one call).
+    """
+
     def __init__(self, *, exists_raises: bool = False) -> None:
         self.exists_raises = exists_raises
-        self.deleted: List[Tuple] = []
+        self.deleted: List[Tuple] = []          # per-format delete_tile calls
+        self.variant_calls: List[Tuple] = []    # delete_tile_variants calls
 
     async def check_tile_exists(self, *args, **kwargs) -> bool:
         if self.exists_raises:
@@ -201,8 +207,27 @@ class _FakeProvider:
         self.deleted.append((catalog_id, collection_id, tms_id, z, x, y, fmt))
         return True
 
+    async def delete_tile_variants(
+        self, catalog_id, collection_id, tms_id, z, x, y, formats,
+    ) -> bool:
+        self.variant_calls.append(
+            (catalog_id, collection_id, tms_id, z, x, y, tuple(formats))
+        )
+        return True
+
     async def delete_tiles_for_collection(self, catalog_id, collection_id) -> int:
         return 0
+
+
+class _LegacyProvider:
+    """Provider WITHOUT the variant primitive — exercises the drain fallback."""
+
+    def __init__(self) -> None:
+        self.deleted: List[Tuple] = []
+
+    async def delete_tile(self, catalog_id, collection_id, tms_id, z, x, y, fmt) -> bool:
+        self.deleted.append((catalog_id, collection_id, tms_id, z, x, y, fmt))
+        return True
 
 
 @pytest.mark.asyncio
@@ -257,13 +282,14 @@ async def test_enqueue_builds_single_coalesced_row(monkeypatch):
     monkeypatch.setattr(tcs, "_resolve_tile_extent", _extent)
 
     outbox = _FakeOutbox()
-    sentinel_conn = object()
     feats = [
         {"id": "a", "bbox": [12.0, 41.0, 13.0, 42.0]},
         {"id": "b", "bbox": [12.5, 41.5, 13.5, 42.5]},
     ]
+    # Phase 1: the write is already committed, so the hook passes conn=None —
+    # PgOutboxStore acquires its own raw asyncpg conn and sets search_path.
     n = await tcs.enqueue_tile_invalidations(
-        sentinel_conn, "cat", "col", feats, outbox=outbox,
+        None, "cat", "col", feats, outbox=outbox,
     )
     assert n > 0
     # ONE coalesced outbox row for the whole batch — not one per feature/tile.
@@ -271,8 +297,10 @@ async def test_enqueue_builds_single_coalesced_row(monkeypatch):
     rec = outbox.rows[0]
     assert rec.driver_id == TILE_CACHE_DRIVER_ID
     assert rec.collection_id == "col"
-    # Enqueued on the caller's connection (atomic with the write txn).
-    assert outbox.conns == [sentinel_conn]
+    # Semantically a mark-stale / delete, not an entity upsert.
+    assert rec.op == "delete"
+    # Self-managed enqueue: forwarded conn is None (PgOutboxStore owns it).
+    assert outbox.conns == [None]
     # Payload carries the coalesced tile set.
     decoded = decode_tile_payload(rec.payload)
     assert len(decoded) == n
@@ -314,6 +342,135 @@ async def test_enqueue_never_raises_on_outbox_error(monkeypatch):
 
 
 # ===========================================================================
+# Contract test against the REAL PgOutboxStore (no MagicMock outbox)
+#
+# The blocker passed unit tests precisely because the outbox was a fake. These
+# drive the genuine ``PgOutboxStore.enqueue_bulk`` method/shape so a regression
+# (passing a non-None SQLAlchemy conn, or a wrong column/record shape) fails
+# here instead of silently in prod.
+# ===========================================================================
+
+
+class _FakeRawConn:
+    """Stand-in for a raw asyncpg connection.
+
+    Implements ``copy_records_to_table`` (the asyncpg bulk-COPY method
+    ``PgOutboxStore.enqueue_bulk`` requires) and ``execute`` (used by
+    ``_ensure_search_path`` on pool conns). A SQLAlchemy ``AsyncConnection`` has
+    NEITHER — which is exactly why the blocker silently failed when handed one.
+    """
+
+    def __init__(self) -> None:
+        self.copied: List[Any] = []
+        self.executed: List[str] = []
+
+    async def copy_records_to_table(self, table, *, records, columns):
+        self.copied.append((table, list(records), list(columns)))
+
+    async def execute(self, sql, *args):
+        self.executed.append(sql)
+
+
+class _SqlAlchemyLikeConn:
+    """A conn WITHOUT ``copy_records_to_table`` — like a SQLAlchemy conn.
+
+    Used to prove that handing such a conn to ``PgOutboxStore.enqueue_bulk``
+    blows up (AttributeError) — i.e. the original blocker. The hook must never
+    do this; it passes conn=None.
+    """
+
+    async def execute(self, sql, *args):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_real_pg_outbox_enqueue_with_conn_none_uses_own_conn():
+    """conn=None → store acquires its OWN raw conn and COPYs the single row."""
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+
+    raw = _FakeRawConn()
+    store = PgOutboxStore(single_conn=raw)
+
+    provider = _FakeProvider()
+    import dynastore.modules as _mods
+    import importlib
+
+    tile_cache_sync = importlib.import_module(
+        "dynastore.modules.tiles.tile_cache_sync"
+    )
+    # Resolve the provider + a fixed extent without DB.
+    feats = [{"id": "a", "bbox": [12.0, 41.0, 13.0, 42.0]}]
+    import pytest as _pytest  # noqa: F401  (kept for symmetry)
+
+    async def _extent(_cat, _col):
+        return ["WebMercatorQuad"], 0, 3
+
+    # monkeypatch via setattr on the module objects directly (no fixture here).
+    _orig_get = _mods.get_protocol
+    _orig_extent = tile_cache_sync._resolve_tile_extent
+    _mods.get_protocol = lambda *_a, **_k: provider  # type: ignore[assignment]
+    tile_cache_sync._resolve_tile_extent = _extent  # type: ignore[assignment]
+    try:
+        n = await tile_cache_sync.enqueue_tile_invalidations(
+            None, "cat", "col", feats, outbox=store,
+        )
+    finally:
+        _mods.get_protocol = _orig_get  # type: ignore[assignment]
+        tile_cache_sync._resolve_tile_extent = _orig_extent  # type: ignore[assignment]
+
+    assert n > 0
+    # Exactly one COPY into storage_outbox with the canonical column list.
+    assert len(raw.copied) == 1
+    table, records, columns = raw.copied[0]
+    assert table == "storage_outbox"
+    assert columns == [
+        "op_id", "driver_id", "driver_instance_id", "collection_id",
+        "op", "item_id", "payload", "idempotency_key",
+    ]
+    # ONE coalesced row; op is the delete/mark-stale op; driver pinned.
+    assert len(records) == 1
+    row = records[0]
+    # Column order: (op_id, driver_id, driver_instance_id, collection_id,
+    #                op, item_id, payload, idempotency_key)
+    assert row[1] == "tile_cache_invalidator"
+    assert row[3] == "col"
+    assert row[4] == "delete"
+    assert row[5] is None  # item_id
+
+
+@pytest.mark.asyncio
+async def test_real_pg_outbox_enqueue_rejects_sqlalchemy_like_conn():
+    """A non-None SQLAlchemy-style conn has no copy_records_to_table → raises.
+
+    This is the blocker's failure mode. The hook must pass conn=None; if a
+    future change reintroduces a wrapping TX and hands a SQLAlchemy conn, the
+    real store will raise here. (``enqueue_tile_invalidations`` swallows it and
+    returns 0 — never breaking the write — but a coverage of 0 is the symptom.)
+    """
+    from dynastore.modules.storage.pg_outbox import PgOutboxStore
+    from dynastore.models.protocols.indexing import OutboxRecord
+    from dynastore.tools.identifiers import generate_uuidv7
+
+    bad_conn = _SqlAlchemyLikeConn()
+    store = PgOutboxStore(single_conn=object())  # store's own conn unused here
+    op_id = generate_uuidv7()
+    rec = OutboxRecord(
+        op_id=op_id,
+        driver_id="tile_cache_invalidator",
+        driver_instance_id="inst",
+        collection_id="col",
+        op="delete",
+        item_id=None,
+        payload={"tiles": []},
+        idempotency_key=str(op_id),
+    )
+    # Passing a non-None conn that lacks copy_records_to_table must raise —
+    # exactly the silent blocker if it reaches the swallowing caller.
+    with pytest.raises(AttributeError):
+        await store.enqueue_bulk(bad_conn, catalog_id="cat", rows=[rec])
+
+
+# ===========================================================================
 # Drain-side TileCacheBulkIndexer — with a fake provider
 # ===========================================================================
 
@@ -348,7 +505,57 @@ async def test_indexer_deletes_tiles_and_passes():
     result = await indexer.index_bulk([op])
     assert result.passed == [op.op_id]
     assert result.transient == [] and result.poison == []
-    assert len(provider.deleted) == 2
+    # One coordinate-variant delete per tile (each drops all served formats +
+    # all cache-id variants in a single call).
+    assert len(provider.variant_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_indexer_invalidates_all_served_formats():
+    """Drain must drop BOTH mvt and pbf for each coordinate (#1292 SHOULD-FIX 2).
+
+    The read/render path caches both formats; invalidating only mvt would leave
+    a stale pbf. The variant primitive receives the full served-format set.
+    """
+    from dynastore.tasks.outbox_drain.tile_cache_indexer_adapter import (
+        TileCacheBulkIndexer,
+    )
+    from dynastore.modules.tiles.tile_cache_sync import SERVED_TILE_FORMATS
+
+    assert set(SERVED_TILE_FORMATS) == {"mvt", "pbf"}
+
+    provider = _FakeProvider()
+    indexer = TileCacheBulkIndexer(provider=provider)
+    op = _make_op({("WebMercatorQuad", 5, 1, 2)})
+    result = await indexer.index_bulk([op])
+    assert result.passed == [op.op_id]
+    assert len(provider.variant_calls) == 1
+    (_cat, _col, _tms, _z, _x, _y, formats) = provider.variant_calls[0]
+    # Every served format is invalidated for the coordinate.
+    assert set(formats) == set(SERVED_TILE_FORMATS)
+
+
+@pytest.mark.asyncio
+async def test_indexer_legacy_fallback_deletes_each_format():
+    """A provider without the variant primitive still drops every served format.
+
+    The legacy fallback can only match the bare collection id (not @hash /
+    multi-collection variants), but it MUST at least iterate all served formats.
+    """
+    from dynastore.tasks.outbox_drain.tile_cache_indexer_adapter import (
+        TileCacheBulkIndexer,
+    )
+    from dynastore.modules.tiles.tile_cache_sync import SERVED_TILE_FORMATS
+
+    provider = _LegacyProvider()
+    indexer = TileCacheBulkIndexer(provider=provider)
+    op = _make_op({("WebMercatorQuad", 5, 1, 2)})
+    result = await indexer.index_bulk([op])
+    assert result.passed == [op.op_id]
+    # One delete_tile per served format for the single coordinate.
+    deleted_formats = {d[6] for d in provider.deleted}
+    assert deleted_formats == set(SERVED_TILE_FORMATS)
+    assert len(provider.deleted) == len(SERVED_TILE_FORMATS)
 
 
 @pytest.mark.asyncio
@@ -360,7 +567,7 @@ async def test_indexer_idempotent_on_absent_tiles():
     )
 
     class _AbsentProvider(_FakeProvider):
-        async def delete_tile(self, *a, **k) -> bool:
+        async def delete_tile_variants(self, *a, **k) -> bool:
             return True  # absent tile delete = no-op success
 
     indexer = TileCacheBulkIndexer(provider=_AbsentProvider())
@@ -392,7 +599,7 @@ async def test_indexer_retries_on_store_error():
     )
 
     class _BoomProvider(_FakeProvider):
-        async def delete_tile(self, *a, **k) -> bool:
+        async def delete_tile_variants(self, *a, **k) -> bool:
             raise RuntimeError("store hiccup")
 
     indexer = TileCacheBulkIndexer(provider=_BoomProvider())

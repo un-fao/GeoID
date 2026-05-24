@@ -58,7 +58,10 @@ class TileCacheBulkIndexer:
         return get_protocol(TileStorageProtocol)
 
     async def index_bulk(self, ops: Sequence[IndexableOp]) -> BulkIndexResult:
-        from dynastore.modules.tiles.tile_cache_sync import decode_tile_payload
+        from dynastore.modules.tiles.tile_cache_sync import (
+            SERVED_TILE_FORMATS,
+            decode_tile_payload,
+        )
 
         passed: List[UUID] = []
         transient: List[Tuple[UUID, str]] = []
@@ -78,14 +81,43 @@ class TileCacheBulkIndexer:
                 poison=[],
             )
 
+        # Prefer the coordinate-level primitive: it drops EVERY cached variant
+        # of a coordinate — all served formats (mvt + pbf) and every
+        # effective_cache_id (bare collection, ``@hash`` parameterized,
+        # multi-collection comma-joined). The per-format ``delete_tile`` only
+        # matches the bare collection id, so suffixed / multi-collection tiles
+        # would survive an edit (#1292). Fall back to it for providers that
+        # don't implement the variant primitive yet.
+        delete_variants = getattr(provider, "delete_tile_variants", None)
         delete_tile = getattr(provider, "delete_tile", None)
-        if delete_tile is None:
-            reason = "TileStorageProtocol has no delete_tile"
+        if delete_variants is None and delete_tile is None:
+            reason = "TileStorageProtocol has no delete_tile / delete_tile_variants"
             return BulkIndexResult(
                 passed=[],
                 transient=[(op.op_id, reason) for op in ops],
                 poison=[],
             )
+
+        async def _delete_coord(tms_id: str, z: int, x: int, y: int) -> bool:
+            if delete_variants is not None:
+                ok = await delete_variants(
+                    op.catalog_id, op.collection_id, tms_id, z, x, y,
+                    SERVED_TILE_FORMATS,
+                )
+                return ok is not False
+            # Legacy fallback: delete every served format under the bare
+            # collection id (cache-id-suffixed variants are not reachable here).
+            # ``delete_tile`` is non-None here — the guard above returns early
+            # only when BOTH primitives are absent.
+            assert delete_tile is not None
+            all_ok = True
+            for fmt in SERVED_TILE_FORMATS:
+                ok = await delete_tile(
+                    op.catalog_id, op.collection_id, tms_id, z, x, y, fmt,
+                )
+                if ok is False:
+                    all_ok = False
+            return all_ok
 
         for op in ops:
             tiles = decode_tile_payload(op.payload)
@@ -96,10 +128,7 @@ class TileCacheBulkIndexer:
             try:
                 all_ok = True
                 for (tms_id, z, x, y) in tiles:
-                    ok = await delete_tile(
-                        op.catalog_id, op.collection_id, tms_id, z, x, y, "mvt",
-                    )
-                    if ok is False:
+                    if not await _delete_coord(tms_id, z, x, y):
                         all_ok = False
                 if all_ok:
                     passed.append(op.op_id)
