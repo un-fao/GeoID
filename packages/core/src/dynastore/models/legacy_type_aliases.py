@@ -28,6 +28,9 @@ depends on it.**
 
 Every alias target here is itself a canonical token, so a normalized result is
 always a member of ``CANONICAL_DATA_TYPES``.
+
+These spellings are the "Deprecated" column in ``docs/components/field-types.md``
+(e.g. ``real`` -> ``double``); update that doc when this table changes.
 """
 from __future__ import annotations
 
