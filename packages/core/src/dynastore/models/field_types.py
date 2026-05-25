@@ -37,6 +37,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional, Tuple
 
+# TEMPORARY legacy-alias compatibility — delete this import with the module.
+from dynastore.models.legacy_type_aliases import normalize_legacy_data_type
+
 
 class DataType(str, Enum):
     """The canonical, GDAL-rooted field type vocabulary for ``data_type``."""
@@ -69,9 +72,10 @@ class DataSubtype(str, Enum):
 CANONICAL_DATA_TYPES = frozenset(t.value for t in DataType)
 CANONICAL_SUBTYPES = frozenset(s.value for s in DataSubtype)
 
-# GDAL raster band data types (GDT_*), lowercased — reserved for coverage /
-# STAC-raster expression (not yet wired into materialization). Kept here so the
-# vocabulary is complete and discoverable in one place.
+# GDAL raster band data types (GDT_*), lowercased — the SSOT vocabulary for a
+# raster band's type, consumed by STAC-raster / coverage expression via
+# :func:`canonical_band_type`. Kept here so the vocabulary is complete and
+# discoverable in one place.
 GDAL_BAND_TYPES = frozenset({
     "byte", "int8", "uint16", "int16", "uint32", "int32",
     "uint64", "int64", "float32", "float64",
@@ -87,7 +91,11 @@ def canonical_data_type(value: Optional[str]) -> str:
       returned lowercased — callers rely on the ``"geometry"`` prefix and an
       embedded SRID, so it must survive unchanged apart from case.
     - A canonical token (case-insensitive) is returned lowercased.
-    - Anything else raises ``ValueError`` — there is no legacy alias fallback.
+    - A legacy/SQL spelling (``text``, ``int``, ``datetime`` …) is normalized to
+      its canonical token via the temporary, separately-kept alias table
+      (:mod:`dynastore.models.legacy_type_aliases`) — a compatibility window that
+      is deleted once configs migrate.
+    - Anything else raises ``ValueError``.
     """
     if value is None:
         return DataType.STRING.value
@@ -99,6 +107,10 @@ def canonical_data_type(value: Optional[str]) -> str:
         return low
     if low in CANONICAL_DATA_TYPES:
         return low
+    # TEMPORARY legacy-alias fallback — delete with the module once migrated.
+    aliased = normalize_legacy_data_type(low)
+    if aliased is not None:
+        return aliased
     raise ValueError(
         f"Unknown data_type {value!r}; expected one of "
         f"{sorted(CANONICAL_DATA_TYPES)} or a parametrized 'geometry(...)'."
@@ -113,6 +125,27 @@ def normalize_subtype(value: Optional[str]) -> Optional[str]:
     if not low or low == "none":
         return None
     return low if low in CANONICAL_SUBTYPES else None
+
+
+def canonical_band_type(value: Optional[str]) -> str:
+    """Validate / canonicalize a raster band type against :data:`GDAL_BAND_TYPES`.
+
+    GDAL emits capitalized band names (``"Byte"``, ``"Float32"``); they are
+    accepted case-insensitively and returned in the lowercased canonical form
+    (``"byte"``, ``"float32"``) — so the existing capitalized names keep working
+    while the full GDAL set (including ``int8`` / ``int64`` / ``uint64``) is
+    covered. Raises ``ValueError`` for anything outside the vocabulary; consumers
+    that must degrade (e.g. STAC mapping) catch it rather than failing the call.
+    """
+    if value is None:
+        raise ValueError("band type is required")
+    low = value.strip().lower()
+    if low in GDAL_BAND_TYPES:
+        return low
+    raise ValueError(
+        f"Unknown raster band type {value!r}; expected one of "
+        f"{sorted(GDAL_BAND_TYPES)}."
+    )
 
 
 # ---------------------------------------------------------------------------

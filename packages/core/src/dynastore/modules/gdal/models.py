@@ -16,8 +16,10 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Dict, Any, Optional, Tuple, Union
+
+from dynastore.models.field_types import GDAL_BAND_TYPES
 
 # --- Vector Info Models (from ogrinfo) ---
 
@@ -73,7 +75,14 @@ class Band(BaseModel):
     """Describes a single band within a raster dataset."""
     band: int
     block: Tuple[int, int]
-    type: str
+    type: str = Field(
+        description=(
+            "GDAL raster band data type, as emitted by gdalinfo (e.g. ``Byte``, "
+            "``Float32``). Canonical (lowercased) values: "
+            + ", ".join(sorted(GDAL_BAND_TYPES))
+            + "."
+        ),
+    )
     colorInterpretation: str
     description: Optional[str] = None
     noDataValue: Optional[Union[int, float]] = None

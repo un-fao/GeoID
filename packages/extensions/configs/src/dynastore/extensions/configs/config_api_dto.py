@@ -27,9 +27,8 @@ Provenance + HATEOAS edit affordances live INLINE on each plugin leaf:
   "source": <originating_tier>, "docs": {field: description}}``;
   ``schema`` swaps ``docs`` for ``json_schema``.  ``?meta=none``
   omits ``_meta`` entirely so the payload is safe to copy verbatim
-  into a PATCH body (#946 reversed the #665-slice-3 always-on
-  contract once #918's ``extra="forbid"`` made round-trips 422 on
-  the envelope keys).
+  into a PATCH body (the envelope keys would otherwise be rejected with
+  422 by the strict ``extra="forbid"`` validation on round-trip).
 - ``_links`` — per-leaf HATEOAS edit affordances pointing at the active
   scope's per-plugin CRUD endpoint and at the registry's JSON Schema
   entry.  Emitted by default (``?links=minimal``); opt-out with
@@ -81,7 +80,7 @@ class DriverRef(BaseModel):
             "INTO this driver call. Wired hops in this release: ``WRITE`` "
             "(secondary-index propagation). Declaring this on other "
             "operations emits a one-time WARN at load time. Mirrors "
-            "``OperationDriverEntry.input_transformers`` (#501); accepted on "
+            "``OperationDriverEntry.input_transformers``; accepted on "
             "PUT/PATCH request bodies."
         ),
     )
@@ -90,14 +89,14 @@ class DriverRef(BaseModel):
         description=(
             "Ordered transformer ``driver_ref``s applied to entities coming "
             "OUT of this driver call. Wired hops in this release: ``SEARCH``. "
-            "Mirrors ``OperationDriverEntry.output_transformers`` (#501)."
+            "Mirrors ``OperationDriverEntry.output_transformers``."
         ),
     )
     meta: Dict[str, Any] = Field(
         default_factory=dict,
         serialization_alias="_meta",
         description=(
-            "Response-only provenance block, mirroring the post-#518 inline "
+            "Response-only provenance block, mirroring the inline "
             "``_meta`` pattern used on plugin leaves.  Carries ``source`` "
             "(``operator`` | ``auto``) and ``tier`` (``platform`` | "
             "``catalog`` | ``collection``) of the active composed scope.  "

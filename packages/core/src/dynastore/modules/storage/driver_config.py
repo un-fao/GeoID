@@ -366,7 +366,7 @@ class ItemsWritePolicy(PluginConfig):
     values come from, never a physical column name (each driver owns its own
     storage layout).
 
-    Materialisation freeze (#1079): the fields that bake into a collection's
+    Materialisation freeze: the fields that bake into a collection's
     stored shape or identity — :attr:`derive`, :attr:`identity`,
     :attr:`geometries`, :attr:`validity` — are ``Immutable``. The
     materialization-gated enforcer leaves them freely editable until the first
@@ -475,7 +475,7 @@ class ItemsWritePolicy(PluginConfig):
             "standalone ``GeometriesSidecarConfig.geohash_precision`` knob is "
             "gone, so the stored precision can never diverge from the identity "
             "axis). "
-            "Immutable once a collection is materialised (#1079): the derived "
+            "Immutable once a collection is materialised: the derived "
             "columns and identity axis are baked into existing rows, so "
             "changing this after data lands would silently diverge the shape "
             "of already-materialised collections. Tune it before the first "
@@ -505,7 +505,7 @@ class ItemsWritePolicy(PluginConfig):
             "operators replace the list to express geometry-hash dedup, "
             "composite identity, etc. Every name must resolve to a ``derive`` "
             "output (``external_id`` is always available). Immutable once a "
-            "collection is materialised (#1079): identity determines how new "
+            "collection is materialised: identity determines how new "
             "writes dedupe against existing rows, so changing it after data "
             "lands would apply different identity semantics to old vs new "
             "rows. Set it before the first collection is created."
@@ -530,7 +530,8 @@ class ItemsWritePolicy(PluginConfig):
             "entirely. ``ValiditySpec.column`` NAMES the ``tstzrange`` storage "
             "column (a COLUMN NAME, NOT a source path — the PG driver overlays "
             "it onto the attributes sidecar at ``ensure_storage`` to name and "
-            "gate the column), resolving the #1126 confusion. The validity "
+            "gate the column), resolving the column-name-vs-source-path "
+            "confusion. The validity "
             "VALUES come from ``ValiditySpec.start_from`` / ``end_from``: "
             "``\"context\"`` reads ``write_context.valid_from`` / "
             "``valid_to`` (the default for start), any other string is a dotted "
@@ -539,7 +540,7 @@ class ItemsWritePolicy(PluginConfig):
             "open upper bound — the bounds are fully independent). Required "
             "(non-None) for ``NEW_VERSION`` semantics — "
             "when ``None``, ``on_conflict=NEW_VERSION`` falls back to "
-            "``UPDATE``. Immutable once a collection is materialised (#1079): "
+            "``UPDATE``. Immutable once a collection is materialised: "
             "the column is a physical temporal column, so changing it after the "
             "column exists would orphan the old column and diverge existing "
             "collections. Set it before the first collection is created."
@@ -564,8 +565,8 @@ class ItemsWritePolicy(PluginConfig):
             "co-located on ``GeometriesSidecarConfig`` next to DDL fields; "
             "moved here so operators tune write behaviour from a single "
             "policy plugin while the sidecar config remains "
-            "storage-shape-only. Immutable once a collection is materialised "
-            "(#1079): SRID / simplification / geometry-hash settings shape the "
+            "storage-shape-only. Immutable once a collection is materialised: "
+            "SRID / simplification / geometry-hash settings shape the "
             "stored geometry, so changing them after rows land would diverge "
             "the geometry of existing collections from the new default. Tune "
             "it before the first collection is created."
@@ -1410,7 +1411,7 @@ class ItemsSchema(PluginConfig):
         default=1,
         ge=1,
         description=(
-            "Explicit schema-shape version (#1291). An authorable, in-payload "
+            "Explicit schema-shape version. An authorable, in-payload "
             "discriminator that travels with the frozen schema (``_freeze_at="
             "'collection'``), complementing the implicit class-name ``class_key`` "
             "and the structural ``schema_id`` hash. Informational today: it is "
@@ -1456,7 +1457,7 @@ class ItemsSchema(PluginConfig):
             "asks the driver to optimise every field for query access (PostgreSQL "
             "lifts each into a native sidecar column with an index; other drivers "
             "use their own mechanism). COMPACT asks the driver to minimise storage. "
-            "Replaces the former PG-specific ``materialize_fields_as_columns`` flag (#1291)."
+            "Replaces the former PG-specific ``materialize_fields_as_columns`` flag."
         ),
     )
     constraints: Mutable[List[Any]] = Field(

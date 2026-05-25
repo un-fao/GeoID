@@ -24,6 +24,8 @@ import pystac
 from pystac.extensions.eo import Band as EOBand, EOExtension
 from pystac.extensions.raster import DataType, RasterBand, RasterExtension
 
+from dynastore.models.field_types import canonical_band_type
+
 logger = logging.getLogger(__name__)
 
 PROJECTION_EXT = "https://stac-extensions.github.io/projection/v1.1.0/schema.json"
@@ -31,18 +33,27 @@ RASTER_EXT = "https://stac-extensions.github.io/raster/v1.1.0/schema.json"
 EO_EXT = "https://stac-extensions.github.io/eo/v1.1.0/schema.json"
 TABLE_EXT = "https://stac-extensions.github.io/table/v1.2.0/schema.json"
 
+# Canonical GDAL band type (lowercased, the ``GDAL_BAND_TYPES`` SSOT) -> STAC
+# raster DataType. Complete over the whole GDAL set — including int8 / int64 /
+# uint64, which the previous capitalized-key map dropped to ``None`` — so a band
+# type never silently disappears from the STAC raster expression. The capitalized
+# GDAL names that gdalinfo emits ("Byte", "Float32") resolve through
+# :func:`canonical_band_type`, so existing blobs keep mapping unchanged.
 GDAL_TO_STAC_DTYPE: dict[str, DataType] = {
-    "Byte": DataType.UINT8,
-    "UInt16": DataType.UINT16,
-    "Int16": DataType.INT16,
-    "UInt32": DataType.UINT32,
-    "Int32": DataType.INT32,
-    "Float32": DataType.FLOAT32,
-    "Float64": DataType.FLOAT64,
-    "CInt16": DataType.CINT16,
-    "CInt32": DataType.CINT32,
-    "CFloat32": DataType.CFLOAT32,
-    "CFloat64": DataType.CFLOAT64,
+    "byte": DataType.UINT8,
+    "int8": DataType.INT8,
+    "uint16": DataType.UINT16,
+    "int16": DataType.INT16,
+    "uint32": DataType.UINT32,
+    "int32": DataType.INT32,
+    "uint64": DataType.UINT64,
+    "int64": DataType.INT64,
+    "float32": DataType.FLOAT32,
+    "float64": DataType.FLOAT64,
+    "cint16": DataType.CINT16,
+    "cint32": DataType.CINT32,
+    "cfloat32": DataType.CFLOAT32,
+    "cfloat64": DataType.CFLOAT64,
 }
 
 OGR_TO_STAC_TABLE_TYPE = {
@@ -142,7 +153,15 @@ def _raster_to_fields(gdal_info: Dict[str, Any]) -> StacFields:
         out.extensions.append(RASTER_EXT)
         out.extensions.append(EO_EXT)
         for b in bands:
-            stac_dt = GDAL_TO_STAC_DTYPE.get(b.get("type", ""))
+            # Normalize the gdalinfo band name ("Byte", "Float32") to its
+            # canonical GDAL token before the SSOT-keyed lookup; an unrecognized
+            # band type degrades to ``None`` (no data_type on the raster band)
+            # rather than failing the whole metadata mapping.
+            try:
+                band_key = canonical_band_type(b.get("type"))
+            except ValueError:
+                band_key = ""
+            stac_dt = GDAL_TO_STAC_DTYPE.get(band_key)
             out.raster_bands.append(
                 RasterBand.create(nodata=b.get("noDataValue"), data_type=stac_dt)
             )

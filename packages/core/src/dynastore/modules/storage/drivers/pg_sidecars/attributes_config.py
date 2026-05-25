@@ -28,6 +28,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, field_validator, model_validator
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarConfig, SidecarConfigRegistry
 from dynastore.modules.storage.computed_fields import ComputedField
+from dynastore.models.field_types import CANONICAL_TO_PG_DDL, canonical_data_type
 from dynastore.tools.db import validate_column_identifier
 
 
@@ -79,7 +80,16 @@ class AttributeSchemaEntry(BaseModel):
     """Enhanced schema definition for a single attribute."""
 
     name: str = Field(..., description="Attribute name (column name or JSON key)")
-    type: PostgresType = Field(default=PostgresType.TEXT, description="PostgreSQL data type")
+    type: PostgresType = Field(
+        default=PostgresType.TEXT,
+        description=(
+            "Physical PostgreSQL column type (the enumerated values). A canonical "
+            "``data_type`` token (string, integer, bigint, double, numeric, "
+            "boolean, date, time, timestamp, binary, jsonb, uuid) — or a legacy "
+            "SQL spelling — is also accepted and normalized to the matching "
+            "PostgreSQL type."
+        ),
+    )
 
     # Indexing control (B-Tree recommended for numeric/text at scale)
     index: AttributeIndexType = Field(
@@ -104,6 +114,34 @@ class AttributeSchemaEntry(BaseModel):
 
     # Metadata
     description: Optional[str] = Field(default=None, description="Human-readable description")
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, v: Any) -> Any:
+        """Accept the canonical ``data_type`` vocabulary on the PG attribute type.
+
+        A value that is already a PostgreSQL type name (``TEXT``, ``INTEGER``,
+        ``VARCHAR(255)`` …, any case) is taken as-is, so existing configs keep
+        working. Anything else is treated as a ``data_type`` token —
+        canonicalized (which folds the temporary legacy aliases like
+        ``text``/``int``/``datetime``) and mapped to its PostgreSQL type via the
+        SSOT ``CANONICAL_TO_PG_DDL`` bridge. So both the old physical names and
+        the new canonical/GDAL vocabulary resolve to one ``PostgresType``.
+        Unknown values fall through to the enum and raise the normal error.
+        """
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        pg_values = {pt.value for pt in PostgresType}
+        if s in pg_values:
+            return s
+        if s.upper() in pg_values:
+            return s.upper()
+        try:
+            canonical = canonical_data_type(s)
+        except ValueError:
+            return v  # not a known type token — let the enum raise
+        return CANONICAL_TO_PG_DDL.get(canonical, v)
 
     @field_validator("name")
     @classmethod
