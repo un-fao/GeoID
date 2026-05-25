@@ -287,6 +287,61 @@ CREATE_USAGE_COUNTERS_TABLE = DDLQuery("""
 """)
 
 
+# Hash-partitioned variant of the durable usage-counter sink (#1344).
+#
+# At extreme scale the flat ``usage_counters`` table becomes a write
+# hot-spot for the lifetime-quota write-through and the rate-window flush.
+# Partitioning by HASH(principal_key) spreads writes across N child tables
+# while keeping the PK and the expiry index intact (PG cascades the index
+# to every partition). ``principal_key`` is part of the PK, so it is a
+# valid partition key.
+#
+# Applied ONLY on a fresh schema (the table must not already exist as a
+# flat table) and ONLY in the platform ``iam`` schema where the counter
+# driver actually reads/writes. Converting an existing flat table is a
+# destructive operation reserved for the cleanup migration. The partition
+# count is read at schema-init from ``IAM_USAGE_COUNTER_HASH_PARTITIONS``
+# (see ``IamScaleConfig.usage_counter_hash_partitions``).
+CREATE_USAGE_COUNTERS_TABLE_HASH = DDLQuery("""
+    CREATE TABLE IF NOT EXISTS {schema}.usage_counters (
+        policy_id      VARCHAR(128) NOT NULL,
+        principal_key  VARCHAR(256) NOT NULL,
+        window_start   TIMESTAMPTZ NOT NULL,
+        count          BIGINT NOT NULL DEFAULT 0,
+        last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at     TIMESTAMPTZ,
+        PRIMARY KEY (policy_id, principal_key, window_start)
+    ) PARTITION BY HASH (principal_key);
+    CREATE INDEX IF NOT EXISTS idx_usage_counters_expiry
+        ON {schema}.usage_counters (expires_at) WHERE expires_at IS NOT NULL;
+""")
+
+
+def build_usage_counters_steps(hash_partitions: int) -> "list[DDLQuery]":
+    """Return the DDL steps that create the ``usage_counters`` sink.
+
+    ``hash_partitions <= 1`` → the historical flat table (single step).
+    ``> 1`` → the HASH-partitioned parent plus one ``PARTITION OF`` child
+    per modulus bucket. All steps are ``IF NOT EXISTS`` so re-running on a
+    warm DB is a no-op (and the surrounding ``DDLBatch`` sentinel skips
+    them entirely once the table exists).
+    """
+    if hash_partitions <= 1:
+        return [CREATE_USAGE_COUNTERS_TABLE]
+    steps: "list[DDLQuery]" = [CREATE_USAGE_COUNTERS_TABLE_HASH]
+    for remainder in range(hash_partitions):
+        steps.append(
+            DDLQuery(
+                f"CREATE TABLE IF NOT EXISTS "
+                f"{{schema}}.usage_counters_p{remainder} "
+                f"PARTITION OF {{schema}}.usage_counters "
+                f"FOR VALUES WITH (MODULUS {hash_partitions}, "
+                f"REMAINDER {remainder});"
+            )
+        )
+    return steps
+
+
 # SSOT for "what counts as an expired usage-counter row". Consumed by
 # both the in-process `PostgresUsageCounter.reap_expired` driver method
 # AND the plpgsql `prune_expired_rows_iam` function body that pg_cron

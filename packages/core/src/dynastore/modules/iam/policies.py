@@ -666,6 +666,7 @@ class PolicyService:
         custom_policies: Optional[List[Policy]] = None,
         principal_id: Optional[UUID] = None,
         collection_id: Optional[str] = None,
+        request_context: Any = None,
     ) -> List[Policy]:
         """Resolve the full policy set for ``principals`` in one read scope.
 
@@ -802,6 +803,19 @@ class PolicyService:
                     if pol:
                         effective_policies.append(pol)
                         seen_ids.add(pol.id)
+                # Per-binding quota / rate-limit (#1344). Every in-scope
+                # ALLOW grant may carry a ``quota`` JSONB; turn it (or the
+                # configured ``IamScaleConfig`` default) into rate_limit /
+                # max_count conditions and stash them on the request context
+                # so the middleware enforces them in its condition step
+                # (with the right 429 / Retry-After / X-RateLimit headers).
+                # The counter namespace is the grant id, so two grants that
+                # differ only by ``resource_ref`` never share a bucket.
+                # Skipped when there is no request_context (compile_read_filter
+                # — search read-filtering does not enforce quota).
+                extras = getattr(request_context, "extras", None)
+                if isinstance(extras, dict) and grant_rows:
+                    await self._collect_grant_quota_conditions(grant_rows, extras)
             except Exception:
                 logger.warning(
                     "EVAL: resource-scoped grant resolution failed for "
@@ -813,6 +827,54 @@ class PolicyService:
                 )
 
         return effective_policies
+
+    async def _collect_grant_quota_conditions(
+        self, grant_rows: List[Dict[str, Any]], extras: Dict[str, Any]
+    ) -> None:
+        """Synthesize per-binding quota conditions from resolved grant rows.
+
+        Appends ``rate_limit`` / ``max_count`` :class:`Condition` objects to
+        ``extras['_grant_quota_conditions']`` (consumed by the middleware
+        condition step) and registers their counter namespace in
+        ``extras['_policy_id_by_config_id']``. DENY grants impose no quota.
+        Fully defensive: a malformed ``quota`` on one grant is skipped, not
+        fatal — the surrounding step-4 ``try`` keeps the whole resolution
+        fail-closed.
+        """
+        from .scale_config import (
+            get_iam_scale_config,
+            quota_namespace,
+            quota_to_conditions,
+        )
+
+        has_quota = any(r.get("quota") for r in grant_rows)
+        scale = await get_iam_scale_config()
+        default_rl = scale.default_rate_limit
+        default_q = scale.default_quota
+        if not has_quota and default_rl is None and default_q is None:
+            return
+
+        sink: List[Condition] = extras.setdefault("_grant_quota_conditions", [])
+        ns_map: Dict[int, str] = extras.setdefault("_policy_id_by_config_id", {})
+        for row in grant_rows:
+            if str(row.get("effect") or "allow").lower() == "deny":
+                continue
+            raw = row.get("quota")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (ValueError, TypeError):
+                    raw = None
+            quota = raw if isinstance(raw, dict) else None
+            conds, mapping = quota_to_conditions(
+                quota,
+                quota_namespace(row.get("id")),
+                default_rate_limit=default_rl,
+                default_quota=default_q,
+            )
+            if conds:
+                sink.extend(conds)
+                ns_map.update(mapping)
 
     async def evaluate_access(
         self,
@@ -846,6 +908,7 @@ class PolicyService:
             custom_policies=custom_policies,
             principal_id=principal_id,
             collection_id=collection_id,
+            request_context=request_context,
         )
 
         logger.debug(
