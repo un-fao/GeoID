@@ -23,6 +23,8 @@ import asyncio
 import itertools
 from typing import Optional
 
+from dateutil import parser as _dateutil_parser
+
 from dynastore.modules.catalog.asset_service import Asset, VirtualAssetCreate
 from dynastore.modules.catalog.models import CoreAssetReferenceType
 
@@ -38,6 +40,60 @@ from dynastore.tasks.tools import initialize_reporters
 from .operations import initialize_operations, run_pre_operations, run_post_operations
 
 logger = logging.getLogger(__name__)
+
+
+# Canonical items-schema data types that denote a temporal value. A property
+# declared as one of these is coerced from common string representations to a
+# canonical ISO-8601 string during ingestion — see ``apply_temporal_coercion``.
+_TEMPORAL_DATA_TYPES = frozenset({"date", "time", "timestamp"})
+
+
+def _coerce_temporal_value(value, data_type: str):
+    """Best-effort coercion of a single value to canonical ISO-8601.
+
+    The typed write path already accepts ISO-8601 strings for ``date`` /
+    ``time`` / ``timestamp`` columns, but not arbitrary formats (e.g.
+    ``31/12/2024`` or ``Jan 31 2024``). This normalises a parseable string to
+    the ISO form the write path accepts.
+
+    Only strings are touched; a value that is already a non-string (e.g. a
+    reader-decoded ``datetime``) or that cannot be parsed is returned
+    unchanged. An unparseable value then falls through to the typed write,
+    which rejects just that row via the 207 IngestionReport rather than
+    failing the whole batch. Ambiguous numeric formats (``01/02/2024``) follow
+    ``dateutil``'s month-first default; an explicit per-field format hint is a
+    separate follow-up.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    try:
+        parsed = _dateutil_parser.parse(text)
+    except (ValueError, OverflowError, TypeError):
+        return value
+    if data_type == "date":
+        return parsed.date().isoformat()
+    if data_type == "time":
+        return parsed.time().isoformat()
+    return parsed.isoformat()
+
+
+def apply_temporal_coercion(properties: dict, temporal_fields: dict) -> dict:
+    """Coerce every schema-declared temporal property in ``properties`` in place.
+
+    ``temporal_fields`` maps a field name to its canonical temporal
+    ``data_type``. Properties not named there are left untouched, so this is a
+    no-op for collections whose items-schema declares no temporal field.
+    Returns ``properties`` for call-site convenience.
+    """
+    if not temporal_fields:
+        return properties
+    for name, data_type in temporal_fields.items():
+        if name in properties:
+            properties[name] = _coerce_temporal_value(properties[name], data_type)
+    return properties
 
 
 def _enrich_report_record(record, generated: dict):
@@ -258,6 +314,36 @@ async def run_ingestion_task(
         ingestion_config = await catalog_module.configs.get_config(
             IngestionPluginConfig, catalog_id, collection_id
         )
+
+        # --- Resolve temporal fields for string -> ISO-8601 coercion (#1333) ---
+        # A property whose items-schema field is declared date/time/timestamp is
+        # normalised from common date string formats to canonical ISO-8601 at
+        # ingestion time, since the typed write path accepts ISO-8601 but not
+        # arbitrary formats. A resolution failure (or a schema with no temporal
+        # field) simply degrades to "no coercion".
+        temporal_fields: dict = {}
+        try:
+            from dynastore.modules.storage.driver_config import ItemsSchema
+
+            items_schema = await catalog_module.configs.get_config(
+                ItemsSchema, catalog_id, collection_id
+            )
+            if items_schema and items_schema.fields:
+                temporal_fields = {
+                    name: fdef.data_type
+                    for name, fdef in items_schema.fields.items()
+                    if getattr(fdef, "data_type", None) in _TEMPORAL_DATA_TYPES
+                }
+        except Exception as exc:
+            logger.debug(
+                "Task '%s': items-schema temporal resolution skipped (%s)",
+                task_id, exc,
+            )
+        if temporal_fields:
+            logger.info(
+                "Task '%s': temporal coercion active for fields: %s",
+                task_id, sorted(temporal_fields),
+            )
 
         # Initialize Operations
         pre_ops = initialize_operations(
@@ -498,6 +584,11 @@ async def run_ingestion_task(
                         and k not in feature["properties"]
                     ):
                         feature["properties"][k] = v
+
+            # 3b. Coerce schema-declared temporal properties (date/time/timestamp)
+            # from common string formats to canonical ISO-8601 (#1333). No-op
+            # when the items-schema declares no temporal field.
+            apply_temporal_coercion(feature["properties"], temporal_fields)
 
             # 4. Temporal
             valid_from = _get_raw_val(request.time_validity_start_column)
