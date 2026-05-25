@@ -274,15 +274,17 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # mis-provisioned prod never silently serves un-coordinated
             # counters. Defaults to off, so dev / test / single-node keep the
             # PG fallback unchanged.
-            from dynastore.modules.iam.scale_config import get_iam_scale_config
+            from dynastore.modules.iam.scale_config import (
+                valkey_required_at_startup,
+            )
 
-            scale = await get_iam_scale_config()
-            if scale.valkey_required:
+            if await valkey_required_at_startup():
                 raise RuntimeError(
-                    "IamScaleConfig.valkey_required is set but no "
+                    "Valkey is required (IAM_VALKEY_REQUIRED / "
+                    "IamScaleConfig.valkey_required) but no "
                     "CountingCacheBackend (Valkey) is active; refusing to "
                     "start on the per-pod PG counter fallback. Provision "
-                    "Valkey or clear valkey_required."
+                    "Valkey or clear the requirement."
                 )
             register_plugin(pg_counter)
             stack.callback(unregister_plugin, pg_counter)

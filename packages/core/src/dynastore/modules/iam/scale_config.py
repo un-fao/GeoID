@@ -52,6 +52,7 @@ __all__ = [
     "quota_namespace",
     "quota_to_conditions",
     "usage_counter_hash_partitions",
+    "valkey_required_at_startup",
 ]
 
 
@@ -70,6 +71,24 @@ async def get_iam_scale_config() -> IamScaleConfig:
             "IamScaleConfig unavailable; using defaults", exc_info=True
         )
         return IamScaleConfig()
+
+
+async def valkey_required_at_startup() -> bool:
+    """Whether Valkey is mandatory, resolved at IAM module startup.
+
+    Reads ``IAM_VALKEY_REQUIRED`` first: the startup guard runs inside the
+    IAM lifespan, before the ``platform_configs`` table is reliably
+    provisioned on a cold first boot — so a persisted-config read would
+    silently return the default (``False``) and bypass the guard on the
+    exact mis-provisioned prod pod it exists to catch. The env var is the
+    authoritative source at startup; the persisted
+    :attr:`IamScaleConfig.valkey_required` is the fallback (and the
+    Configuration-Hub-visible mirror) when the env var is unset.
+    """
+    env_val = os.environ.get("IAM_VALKEY_REQUIRED")
+    if env_val is not None:
+        return env_val.strip().lower() in ("1", "true", "yes", "on")
+    return (await get_iam_scale_config()).valkey_required
 
 
 def usage_counter_hash_partitions() -> int:

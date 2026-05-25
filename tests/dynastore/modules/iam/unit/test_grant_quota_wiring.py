@@ -34,6 +34,7 @@ from dynastore.modules.iam.scale_config import (
     quota_namespace,
     quota_to_conditions,
     usage_counter_hash_partitions,
+    valkey_required_at_startup,
 )
 
 
@@ -203,6 +204,20 @@ def test_build_usage_counters_steps_shapes() -> None:
     assert len(build_usage_counters_steps(4)) == 5  # parent + 4 partitions
 
 
+@pytest.mark.asyncio
+async def test_valkey_required_env_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The startup guard reads IAM_VALKEY_REQUIRED first so a cold boot (no
+    platform_configs yet) can still enforce the requirement in prod."""
+    monkeypatch.setenv("IAM_VALKEY_REQUIRED", "true")
+    assert await valkey_required_at_startup() is True
+    monkeypatch.setenv("IAM_VALKEY_REQUIRED", "0")
+    assert await valkey_required_at_startup() is False
+    # Unset → falls back to the (default False) persisted config; no
+    # PlatformConfigsProtocol registered in this unit context → defaults.
+    monkeypatch.delenv("IAM_VALKEY_REQUIRED", raising=False)
+    assert await valkey_required_at_startup() is False
+
+
 # --- resolver wiring pins -----------------------------------------------------
 
 
@@ -268,6 +283,23 @@ async def test_distinct_grants_get_distinct_namespaces() -> None:
     await _call(svc, ctx, collection_id=_COLL_A, principal_id=uuid4())
     ns_map = ctx.extras.get("_policy_id_by_config_id") or {}
     assert set(ns_map.values()) == {"grant:g-1", "grant:g-2"}
+
+
+@pytest.mark.asyncio
+async def test_repeat_resolution_does_not_duplicate_conditions() -> None:
+    """A second resolution on the same request context must not append a
+    grant's quota conditions twice (would double-increment the counter)."""
+    storage = _FakeIamStorage(
+        grants=[_grant("g-1", "editor", quota={"rate_limit": {"limit": 5, "window_seconds": 60}})],
+        roles={"editor": _role("editor", ["allow_pol"])},
+    )
+    svc = _service(storage, {"allow_pol": _allow_policy("allow_pol")})
+    ctx = _Ctx()
+    pid = uuid4()
+    await _call(svc, ctx, collection_id=_COLL_A, principal_id=pid)
+    await _call(svc, ctx, collection_id=_COLL_A, principal_id=pid)
+    conds = ctx.extras.get("_grant_quota_conditions") or []
+    assert len(conds) == 1, "grant quota conditions must be deduped per grant id"
 
 
 @pytest.mark.asyncio

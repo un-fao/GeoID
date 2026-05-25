@@ -327,7 +327,10 @@ class IamScaleConfig(PluginConfig):
             "counters must run on the shared atomic backend, not the "
             "per-pod PG fallback. Production sets this true; dev / test / "
             "single-node deployments leave it false so the standalone PG "
-            "counter driver continues to serve."
+            "counter driver continues to serve. The startup guard reads the "
+            "``IAM_VALKEY_REQUIRED`` env var first (the persisted config is "
+            "not reliably readable that early on a cold boot); this field is "
+            "the fallback and the Configuration-Hub-visible mirror."
         ),
     )
     usage_counter_hash_partitions: Immutable[int] = Field(

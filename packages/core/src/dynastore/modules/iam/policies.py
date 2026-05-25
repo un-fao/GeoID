@@ -856,9 +856,18 @@ class PolicyService:
 
         sink: List[Condition] = extras.setdefault("_grant_quota_conditions", [])
         ns_map: Dict[int, str] = extras.setdefault("_policy_id_by_config_id", {})
+        # Idempotency: dedup per grant id so a second resolution pass on the
+        # same request context (a retry, a future double evaluate_access) can
+        # never append a grant's conditions twice and double-increment its
+        # counter.
+        seen: set = extras.setdefault("_grant_quota_seen_ids", set())
         for row in grant_rows:
             if str(row.get("effect") or "allow").lower() == "deny":
                 continue
+            grant_id = row.get("id")
+            if grant_id in seen:
+                continue
+            seen.add(grant_id)
             raw = row.get("quota")
             if isinstance(raw, str):
                 try:
@@ -868,7 +877,7 @@ class PolicyService:
             quota = raw if isinstance(raw, dict) else None
             conds, mapping = quota_to_conditions(
                 quota,
-                quota_namespace(row.get("id")),
+                quota_namespace(grant_id),
                 default_rate_limit=default_rl,
                 default_quota=default_q,
             )
