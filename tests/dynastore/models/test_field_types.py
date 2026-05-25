@@ -1,8 +1,9 @@
 """Unit tests for the canonical field-type vocabulary (``dynastore.models.field_types``).
 
-Pins: the strict canonical set, the (no-legacy) rejection of unknown tokens,
-parametrized-geometry passthrough, OGR (type, subtype) mapping incl. subtype
-promotion, and the ``FieldDefinition`` validator wiring.
+Pins: the strict canonical set, the temporary legacy-alias normalization layer
+and rejection of truly-unknown tokens, parametrized-geometry passthrough, OGR
+(type, subtype) mapping incl. subtype promotion, the raster band vocabulary, and
+the ``FieldDefinition`` validator wiring.
 """
 
 from __future__ import annotations
@@ -14,12 +15,15 @@ from dynastore.models.field_types import (
     CANONICAL_SUBTYPES,
     CANONICAL_TO_JSON_SCHEMA,
     CANONICAL_TO_PG_DDL,
+    GDAL_BAND_TYPES,
     DataSubtype,
     DataType,
+    canonical_band_type,
     canonical_data_type,
     normalize_subtype,
     ogr_to_canonical,
 )
+from dynastore.models.legacy_type_aliases import LEGACY_DATA_TYPE_ALIASES
 from dynastore.models.protocols.field_definition import FieldDefinition
 
 
@@ -47,11 +51,58 @@ def test_parametrized_geometry_preserved_lowercased() -> None:
     assert canonical_data_type("geometry").startswith("geometry")
 
 
-@pytest.mark.parametrize("bad", ["text", "float", "int", "datetime", "json", "number", "tstzrange", "box2d", "varchar"])
-def test_legacy_aliases_are_rejected(bad: str) -> None:
-    # No backward-compatibility layer: legacy spellings raise, not silently map.
+@pytest.mark.parametrize("alias,expected", [
+    ("text", "string"), ("varchar", "string"), ("char", "string"),
+    ("int", "integer"), ("int4", "integer"), ("smallint", "integer"),
+    ("int8", "bigint"), ("long", "bigint"),
+    ("float", "double"), ("real", "double"), ("double precision", "double"),
+    ("decimal", "numeric"), ("number", "numeric"),
+    ("bool", "boolean"),
+    ("datetime", "timestamp"), ("timestamptz", "timestamp"),
+    ("json", "jsonb"), ("guid", "uuid"), ("bytea", "binary"), ("blob", "binary"),
+])
+def test_legacy_aliases_normalize(alias: str, expected: str) -> None:
+    # TEMPORARY compatibility window: legacy/SQL spellings normalize to canonical
+    # (case-insensitively) so pre-canonical configs keep validating.
+    assert canonical_data_type(alias) == expected
+    assert canonical_data_type(alias.upper()) == expected
+    assert expected in CANONICAL_DATA_TYPES
+
+
+def test_alias_targets_are_all_canonical() -> None:
+    # Every alias must resolve to a real canonical token (no dangling targets).
+    assert set(LEGACY_DATA_TYPE_ALIASES.values()) <= CANONICAL_DATA_TYPES
+    # date/time stay distinct — only zoned/`datetime` spellings fold to timestamp.
+    assert "date" not in LEGACY_DATA_TYPE_ALIASES
+    assert "time" not in LEGACY_DATA_TYPE_ALIASES
+
+
+@pytest.mark.parametrize("bad", ["tstzrange", "box2d", "frobnicate", "varcharish"])
+def test_truly_unknown_tokens_are_rejected(bad: str) -> None:
+    # The alias layer is a closed table — anything not canonical and not a known
+    # alias still raises (no silent fallthrough).
     with pytest.raises(ValueError):
         canonical_data_type(bad)
+
+
+@pytest.mark.parametrize("gdal,canon", [
+    ("Byte", "byte"), ("Float32", "float32"), ("UInt16", "uint16"),
+    ("Int16", "int16"), ("Int8", "int8"), ("Int64", "int64"),
+    ("UInt64", "uint64"), ("CFloat64", "cfloat64"),
+])
+def test_canonical_band_type_normalizes_gdal_names(gdal: str, canon: str) -> None:
+    # GDAL's capitalized band names (old) and the lowercased canonical forms
+    # (new int8/int64/uint64 included) both resolve to the SSOT token.
+    assert canonical_band_type(gdal) == canon
+    assert canonical_band_type(canon) == canon
+    assert canon in GDAL_BAND_TYPES
+
+
+def test_canonical_band_type_rejects_unknown() -> None:
+    with pytest.raises(ValueError):
+        canonical_band_type("Float128")
+    with pytest.raises(ValueError):
+        canonical_band_type(None)
 
 
 def test_normalize_subtype() -> None:
@@ -103,8 +154,10 @@ def test_field_definition_validator_strict() -> None:
     assert fd.subtype is None
     fd2 = FieldDefinition(name="b", data_type="boolean", subtype="Boolean")
     assert (fd2.data_type, fd2.subtype) == ("boolean", "boolean")
+    # Legacy alias normalizes (temporary compat); truly-unknown still raises.
+    assert FieldDefinition(name="legacy", data_type="text").data_type == "string"
     with pytest.raises(ValueError):
-        FieldDefinition(name="bad", data_type="text")
+        FieldDefinition(name="bad", data_type="tstzrange")
 
 
 def test_field_definition_geometry_param_preserved() -> None:
