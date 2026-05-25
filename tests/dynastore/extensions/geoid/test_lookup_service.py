@@ -414,3 +414,90 @@ async def test_driver_geoid_lookup_reads_across_collections(monkeypatch):
     driver.read_entities.assert_called_once()
     call_kwargs = driver.read_entities.call_args.kwargs
     assert call_kwargs["entity_ids"] == [good]
+
+
+# ---------------------------------------------------------------------------
+# #1327 — cross-collection geoid lookup must report the matched item's TRUE
+# collection. A per-catalog (not per-collection) index — e.g. the private ES
+# driver — resolves a by-id read regardless of which collection the lookup is
+# iterating, so the result must take collection_id from the matched feature's
+# own membership, not from the loop's collection.
+# ---------------------------------------------------------------------------
+
+
+def test_feature_to_dict_prefers_feature_collection_over_passed_default():
+    """When the feature carries its own collection membership (e.g. the private
+    ES doc surfaces ``properties['collection_id']``), the result must use that
+    true collection — not the caller-supplied default (#1327)."""
+    from dynastore.extensions.geoid.lookup_service import _feature_to_dict
+
+    feature = SimpleNamespace(
+        id="019e5e74-7d6d-7f1d-9856-2eb14bf23d5b",
+        geometry={"type": "Point", "coordinates": [70.0, 30.0]},
+        bbox=None,
+        properties={"collection_id": "pak_col", "external_id": "PAK_01"},
+    )
+
+    # The caller passes a DIFFERENT collection (the one being iterated).
+    row = _feature_to_dict(feature, "geoid_demo_2027", "italy_col")
+
+    assert row["collection_id"] == "pak_col"
+    # The redundant envelope key must not leak back into properties.
+    assert (row["properties"] or {}).get("collection_id") is None
+
+
+def test_feature_to_dict_falls_back_to_passed_collection_when_absent():
+    """When the feature carries no collection membership, the caller-supplied
+    collection is used as the default (unchanged behaviour)."""
+    from dynastore.extensions.geoid.lookup_service import _feature_to_dict
+
+    feature = SimpleNamespace(
+        id="88888888-8888-8888-8888-888888888888",
+        geometry={"type": "Point", "coordinates": [0, 0]},
+        bbox=None,
+        properties={"external_id": "ext-x"},
+    )
+
+    row = _feature_to_dict(feature, "cat", "only_col")
+    assert row["collection_id"] == "only_col"
+
+
+@pytest.mark.asyncio
+async def test_driver_geoid_lookup_reports_true_collection_for_shared_index(
+    monkeypatch,
+):
+    """#1327 repro: a per-catalog shared index resolves a by-id read on the
+    FIRST collection iterated, but the result must report the geoid's TRUE
+    collection taken from the matched feature, not the iterated collection."""
+    from dynastore.extensions.geoid import lookup_service as svc
+
+    pak_geoid = "019e5e74-7d6d-7f1d-9856-2eb14bf23d5b"
+
+    # The private-driver feature surfaces its true membership in properties.
+    matched = MagicMock()
+    matched.id = pak_geoid
+    matched.geometry = {"type": "Point", "coordinates": [70.0, 30.0]}
+    matched.bbox = None
+    matched.properties = {"collection_id": "pak_col", "external_id": "PAK_01"}
+
+    async def _aiter(*_a, **_k):
+        # Shared per-catalog index: the doc resolves by id regardless of the
+        # collection the caller scopes to.
+        yield matched
+
+    driver = _es_index_driver()
+    driver.read_entities = MagicMock(side_effect=lambda *a, **k: _aiter())
+
+    fake_catalogs = MagicMock()
+    # italy_col is iterated FIRST — the bug stamped this collection.
+    fake_catalogs.list_collections = AsyncMock(
+        return_value=[SimpleNamespace(id="italy_col"), SimpleNamespace(id="pak_col")]
+    )
+    monkeypatch.setattr(svc, "get_protocol", lambda _p: fake_catalogs)
+
+    rows = await svc._driver_geoid_lookup(
+        driver, "geoid_demo_2027", [pak_geoid], limit=10
+    )
+    assert len(rows) == 1
+    assert rows[0]["geoid"] == pak_geoid
+    assert rows[0]["collection_id"] == "pak_col"
