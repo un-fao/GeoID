@@ -781,8 +781,18 @@ async def _resolve_catalog_schema(catalog_id: str, conn: AsyncConnection) -> str
 
 async def _get_job_internal(job_id: uuid.UUID, catalog_id: str, conn: AsyncConnection):
     schema = await _resolve_catalog_schema(catalog_id, conn)
-    task = await tasks_module.get_task(conn, job_id, schema=schema)
-    if not task:
+    # Uncached read: a job's terminal status is written by a SEPARATE Cloud Run
+    # worker container (``update_task``), whose in-process ``get_task`` cache
+    # invalidation cannot reach this API instance. The cached ``get_task`` would
+    # therefore pin the job at its creation-time status (e.g. ACTIVE/running)
+    # for the whole cache TTL, so the scoped status/results routes that the OGC
+    # POST advertises via ``Location`` would never observe completion. The
+    # unscoped route already uses the uncached helper for exactly this reason
+    # (see :func:`get_job_status`). Resolve the catalog schema first for
+    # existence + scoping, then read uncached and verify the task belongs to
+    # this catalog's schema (task_id is a globally-unique UUIDv7).
+    task = await tasks_module.get_task_by_id_unscoped(conn, job_id)
+    if not task or task.schema_name != schema:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job '{job_id}' not found in schema '{schema}'.",

@@ -202,22 +202,37 @@ class ItemDistributedMixin(_Host):
             if write_policy
             else [ResolvedIdentityRule(match_on=[ComputedField(kind=ComputedKind.EXTERNAL_ID)])]
         )
-        if on_conflict != WriteConflictPolicy.NEW_VERSION:
-            for rule in rules:
-                rec = await _resolve_rule(
-                    rule, conn, phys_schema, phys_table, processing_context, sidecars,
+        # Identity resolution runs for EVERY conflict policy — NEW_VERSION
+        # included. NEW_VERSION always inserts a fresh geoid regardless of a
+        # match, but the archive step still needs the matched row to close the
+        # prior version's validity upper bound (close_on_new_version). Skipping
+        # resolution here left ``active_rec`` None, so the archive never fired
+        # and re-ingests produced overlapping, never-closed versions.
+        for rule in rules:
+            rec = await _resolve_rule(
+                rule, conn, phys_schema, phys_table, processing_context, sidecars,
+            )
+            if rec:
+                active_rec = rec
+                matched_rule = rule
+                kinds = ",".join(str(cf.kind) for cf in rule.match_on)
+                logger.info(
+                    f"DISTRIBUTED UPSERT: found active record "
+                    f"geoid={rec.get('geoid')} (rule.match_on=[{kinds}])"
                 )
-                if rec:
-                    active_rec = rec
-                    matched_rule = rule
-                    kinds = ",".join(str(cf.kind) for cf in rule.match_on)
-                    logger.info(
-                        f"DISTRIBUTED UPSERT: found active record "
-                        f"geoid={rec.get('geoid')} (rule.match_on=[{kinds}])"
-                    )
-                    break
+                break
 
         effective_on_conflict = _select_effective_on_conflict(write_policy, matched_rule)
+
+        # NEW_VERSION needs a temporal-validity window to archive the prior row
+        # (close its upper bound). Without a ValiditySpec there is no closable
+        # bound, so degrade to UPDATE rather than silently appending an
+        # un-closeable duplicate — the documented fallback on
+        # ``ItemsWritePolicy.validity``.
+        if effective_on_conflict == WriteConflictPolicy.NEW_VERSION and (
+            write_policy is None or not write_policy.enable_validity
+        ):
+            effective_on_conflict = WriteConflictPolicy.UPDATE
 
         # 1.6 Batch-level collision guard.
         # Uses active_rec from identity resolution — if a duplicate was found
@@ -287,9 +302,31 @@ class ItemDistributedMixin(_Host):
         # 2. Execution Path
         if not active_rec or effective_on_conflict == WriteConflictPolicy.NEW_VERSION:
             if active_rec and effective_on_conflict == WriteConflictPolicy.NEW_VERSION:
-                # Archive the existing version before inserting
-                expire_at = hub_payload.get("valid_from") or datetime.now(timezone.utc)
+                # Archive the existing version before inserting. The close-point
+                # MUST equal the incoming version's validity start so the
+                # temporal history stays contiguous (no gap/overlap). The new
+                # version's ``valid_from`` is resolved from the write context
+                # (``processing_context``), so the archived row's upper bound
+                # must read the same source — falling back to the hub payload
+                # and finally ingestion time.
+                expire_at = (
+                    processing_context.get("valid_from")
+                    or hub_payload.get("valid_from")
+                    or datetime.now(timezone.utc)
+                )
                 for sidecar in sidecars:
+                    # Only archive sidecars that actually carry a validity
+                    # column. Calling expire_version on a validity-less sidecar
+                    # runs an UPDATE that errors and aborts the whole
+                    # transaction — the failed statement poisons it even when
+                    # the Python exception is caught, so the next sidecar's
+                    # expire then fails with InFailedSQLTransactionError. The
+                    # attributes sidecar is the validity SSOT and exposes
+                    # ``enable_validity``; other sidecars opt in the same way.
+                    if not getattr(
+                        getattr(sidecar, "config", None), "enable_validity", False
+                    ):
+                        continue
                     await sidecar.expire_version(
                         conn,
                         phys_schema,
