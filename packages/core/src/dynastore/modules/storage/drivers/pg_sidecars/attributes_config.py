@@ -80,7 +80,16 @@ class AttributeSchemaEntry(BaseModel):
     """Enhanced schema definition for a single attribute."""
 
     name: str = Field(..., description="Attribute name (column name or JSON key)")
-    type: PostgresType = Field(default=PostgresType.TEXT, description="PostgreSQL data type")
+    type: PostgresType = Field(
+        default=PostgresType.TEXT,
+        description=(
+            "Physical PostgreSQL column type (the enumerated values). A canonical "
+            "``data_type`` token (string, integer, bigint, double, numeric, "
+            "boolean, date, time, timestamp, binary, jsonb, uuid) — or a legacy "
+            "SQL spelling — is also accepted and normalized to the matching "
+            "PostgreSQL type."
+        ),
+    )
 
     # Indexing control (B-Tree recommended for numeric/text at scale)
     index: AttributeIndexType = Field(

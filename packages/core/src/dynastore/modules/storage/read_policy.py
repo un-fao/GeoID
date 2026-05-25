@@ -26,11 +26,11 @@ read path consumes it (``ItemService`` / ``QueryOptimizer``) to surface
 ``feature_type.expose`` computed values and honour
 ``external_id_as_feature_id``.
 
-Transformer *wiring* is NOT here: per #950 the ordered transformer chain
+Transformer *wiring* is NOT here: the ordered transformer chain
 lives on the routing config (``OperationDriverEntry.output_transformers``).
 ``ItemsReadPolicy`` owns the read *shape* only.
 
-Collection-scoped only (see [[feedback_items_policies_collection_scoped_only]]).
+Collection-scoped only.
 """
 
 import logging
@@ -55,7 +55,7 @@ class ItemsReadPolicy(PluginConfig):
     The response ``properties`` are derived from ``items_schema`` plus the
     exposed computed fields.
 
-    Transformer wiring is intentionally absent: per #950 the ordered
+    Transformer wiring is intentionally absent: the ordered
     transformer chain lives on the routing config
     (``OperationDriverEntry.output_transformers``), not here — this policy
     owns the read *shape* only.

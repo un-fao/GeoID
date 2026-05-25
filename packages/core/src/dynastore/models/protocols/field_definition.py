@@ -16,7 +16,12 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from dynastore.models.field_types import canonical_data_type, normalize_subtype
+from dynastore.models.field_types import (
+    CANONICAL_DATA_TYPES,
+    CANONICAL_SUBTYPES,
+    canonical_data_type,
+    normalize_subtype,
+)
 from dynastore.models.localization import LocalizedText
 
 
@@ -34,10 +39,10 @@ class FieldCapability(str, Enum):
       store has a physical index on the field. It is **never** an authoring
       knob — an author does not set ``INDEXED`` to request that an index be
       built. The portable way to ask for fast filtering/sorting is
-      :attr:`FieldAccess.FAST` (#1293); the driver then decides whether to
+      :attr:`FieldAccess.FAST`; the driver then decides whether to
       build an index and reports ``INDEXED`` back through ``get_entity_fields``.
 
-    ``FILTERABLE`` vs ``FULLTEXT`` is a deliberate split (#1291):
+    ``FILTERABLE`` vs ``FULLTEXT`` is a deliberate split:
 
     * ``FILTERABLE`` = exact-match / keyword predicate. A CQL2 ``=`` resolves to
       an Elasticsearch ``term`` over the ``.keyword`` sub-field; on PostgreSQL it
@@ -66,8 +71,7 @@ class FieldAccess(str, Enum):
     sort field, a GDAL/GeoPackage driver adds an attribute index. ``COMPACT`` asks the
     driver to minimise storage instead — PostgreSQL keeps the value in the JSONB
     properties blob. ``AUTO`` (the default) lets the driver decide from the field's
-    declared :class:`FieldCapability` set. This replaces the former PostgreSQL-specific
-    ``materialize`` boolean (#1291).
+    declared :class:`FieldCapability` set.
     """
 
     AUTO = "auto"
@@ -90,15 +94,28 @@ class FieldDefinition(BaseModel):
     title: Optional[Union[str, Dict[str, str], LocalizedText]] = None
     description: Optional[Union[str, Dict[str, str], LocalizedText]] = None
     capabilities: List[FieldCapability] = []
-    # Canonical, GDAL-rooted type vocabulary (see ``dynastore.models.field_types``):
-    # string / integer / bigint / double / numeric / boolean / date / time /
-    # timestamp / binary / jsonb / uuid / geometry. Strict: a non-canonical value
-    # raises on assignment — there is no legacy alias layer (text/int/float/… are
-    # rejected, not silently rewritten).
-    data_type: str
-    # Optional OGR-style refinement of ``data_type`` — boolean / int16 / float32
-    # / json / uuid. Carries the gdalinfo subtype so it is not flattened away.
-    subtype: Optional[str] = None
+    data_type: str = Field(
+        description=(
+            "Canonical, GDAL-rooted field type. One of: "
+            + ", ".join(sorted(CANONICAL_DATA_TYPES))
+            + "; or a parametrized geometry such as ``geometry(Point,4326)``. "
+            "Legacy SQL spellings (e.g. text, int, float, datetime, json, bool) "
+            "are accepted and normalized to the canonical token during a "
+            "temporary migration window."
+        ),
+        json_schema_extra={
+            "examples": ["string", "integer", "timestamp", "geometry(Point,4326)"],
+        },
+    )
+    subtype: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional OGR-style refinement of ``data_type``, carrying the "
+            "gdalinfo subtype so it is not flattened away. One of: "
+            + ", ".join(sorted(CANONICAL_SUBTYPES))
+            + "."
+        ),
+    )
     # Driver-computed read-projection detail (e.g. "h.geom", "a.asset_id"). NOT
     # author-facing: it means nothing to ES/Iceberg/DuckDB/BigQuery/Parquet/GDAL and
     # would be a raw-SQL injection seam if author-settable (same class of footgun as
@@ -132,9 +149,10 @@ class FieldDefinition(BaseModel):
     @field_validator("data_type")
     @classmethod
     def _validate_data_type(cls, v: str) -> str:
-        # Strict canonical vocabulary — every FieldDefinition, regardless of
-        # which driver/reader built it, holds the same token for a given logical
-        # type. Non-canonical values raise (no legacy alias fallback).
+        # Canonical vocabulary — every FieldDefinition, regardless of which
+        # driver/reader built it, holds the same token for a given logical type.
+        # Legacy spellings normalize to canonical (temporary window); truly
+        # unknown values raise.
         return canonical_data_type(v)
 
     @field_validator("subtype")
