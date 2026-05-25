@@ -48,29 +48,28 @@ class ProcessScope(str, Enum):
     Declares the target resource scope a process is defined against.
 
     The scope determines:
-      - which URL path(s) are legal for execution;
-      - which path parameters (catalog_id, collection_id, asset_id) are required;
+      - which URL path is legal for execution (one mount per scope);
+      - which path parameters (catalog_id, collection_id) are required;
       - the DB schema where the task row is persisted;
       - the authorization subject (platform vs tenant-scoped).
 
     Values:
-      - PLATFORM:   system-wide; sysadmin only. No catalog / collection / asset
-                    in the URL. Task rows live in ``public``.
+      - PLATFORM:   system-wide; sysadmin only. No catalog / collection in the
+                    URL. Task rows live in ``public``.
       - CATALOG:    targets a single catalog. Requires ``catalog_id`` in URL.
                     Task rows live in the tenant schema.
       - COLLECTION: targets a single collection. Requires ``catalog_id`` +
                     ``collection_id`` in URL. Task rows live in the tenant schema.
-      - ASSET:      targets a single asset (e.g. gdalinfo). Executed at the
-                    asset mount ``/catalogs/{c}[/collections/{col}]/assets/{a}
-                    /processes/{id}/execution``; ``catalog_id``/``collection_id``
-                    /``asset_id`` are taken from the URL path and injected into
-                    ``inputs`` so the task resolves the asset itself.
+
+    Processes that operate on an asset (e.g. ``gdal``) declare CATALOG and/or
+    COLLECTION scope and take the ``asset_id`` as a regular ``inputs`` value:
+    POST it to the catalog mount for a catalog-level asset, or to the collection
+    mount for a collection-level asset.
     """
 
     PLATFORM = "platform"
     CATALOG = "catalog"
     COLLECTION = "collection"
-    ASSET = "asset"
 
 
 class ProcessTypology(BaseModel):
@@ -108,7 +107,7 @@ class ProcessUrlTemplate(BaseModel):
         ...,
         description=(
             "Fully-qualified URL when IDs are resolved, else a template with "
-            "`{catalog_id}` / `{collection_id}` / `{asset_id}` placeholders."
+            "`{catalog_id}` / `{collection_id}` placeholders."
         ),
     )
     rel: str = "execute"

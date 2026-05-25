@@ -109,7 +109,8 @@ class GdalModule(ModuleProtocol):
             )
 
         # ``gdal`` is exposed as a standard OGC process via the task's
-        # definition.py and executed at the asset mount in OGC API - Processes
-        # (``/catalogs/.../assets/{aid}/processes/gdal/execution``). No bespoke
-        # asset-process wrapper to register here.
+        # definition.py and executed at the catalog/collection mount in OGC API
+        # - Processes (``/catalogs/{c}[/collections/{col}]/processes/gdal/
+        # execution`` with ``asset_id`` in the body). No bespoke asset-process
+        # wrapper to register here.
         yield
