@@ -23,6 +23,8 @@ column must be numeric, not ``INTERVAL``.
 Regression for the live ingest failure:
 ``column "centroid" is of type geometry but expression is of type numeric[]``.
 """
+from types import SimpleNamespace
+
 from shapely import wkb as shp_wkb
 from shapely.geometry import Polygon
 
@@ -174,3 +176,97 @@ def test_geometry_value_columns_includes_renamed_centroid_and_3d():
     assert "my_centroid" in cols
     assert "centroid_3d" in cols
     assert "area" not in cols
+
+
+# ---------------------------------------------------------------------------
+# read-for-exposure projection: a COLUMNAR centroid must surface as a clean
+# coordinate array (matching the JSONB centroid), NOT raw EWKB. Regression for
+# the exposed-columnar-centroid-as-binary gap.
+# ---------------------------------------------------------------------------
+
+
+def _columnar_centroid_sidecar(centroid_type=None, name=None):
+    return GeometriesSidecar(
+        GeometriesSidecarConfig(
+            compute_fields_overlay=[
+                ComputedField(
+                    kind=ComputedKind.CENTROID,
+                    storage_mode=StatisticStorageMode.COLUMNAR,
+                    centroid_type=centroid_type,
+                    name=name,
+                )
+            ]
+        )
+    )
+
+
+def _centroid_select_expr(fields, key="centroid"):
+    matches = [f for f in fields if f.endswith(f" as {key}")]
+    assert matches, f"no projection aliased ' as {key}' in {fields}"
+    return matches[0]
+
+
+def _select_request(*select_fields):
+    """Minimal QueryRequest stand-in for selective-mode get_select_fields."""
+    return SimpleNamespace(
+        select=[SimpleNamespace(field=f) for f in select_fields],
+        filters=[],
+        sort=[],
+    )
+
+
+def test_columnar_centroid_select_projects_coordinate_array_not_ewkb():
+    """get_select_fields must project a COLUMNAR centroid as ARRAY[ST_X, ST_Y].
+
+    The old projection used ``ST_AsEWKB`` which surfaced raw binary in the
+    feature property; the fixed one yields a ``double precision[]`` that asyncpg
+    decodes to ``[x, y]`` — matching the JSONB centroid.
+    """
+    sidecar = _columnar_centroid_sidecar()
+    expr = _centroid_select_expr(sidecar.get_select_fields(request=None))
+    assert "ST_AsEWKB" not in expr
+    assert "ARRAY[" in expr
+    assert "ST_X(" in expr and "ST_Y(" in expr
+    assert "ST_Z(" not in expr  # 2D POINT: no Z component
+
+
+def test_columnar_centroid_select_is_null_guarded():
+    """A missing centroid stays NULL, not ``[null, null]``."""
+    sidecar = _columnar_centroid_sidecar()
+    expr = _centroid_select_expr(sidecar.get_select_fields(request=None))
+    assert "CASE WHEN" in expr and "IS NULL" in expr
+
+
+def test_columnar_centroid_pointz_select_includes_z():
+    """A POINTZ centroid column projects the third coordinate."""
+    sidecar = _columnar_centroid_sidecar(centroid_type="POINTZ")
+    expr = _centroid_select_expr(sidecar.get_select_fields(request=None))
+    assert "ST_Z(" in expr
+    assert "ST_AsEWKB" not in expr
+
+
+def test_columnar_centroid_select_honours_renamed_column():
+    sidecar = _columnar_centroid_sidecar(name="my_centroid")
+    expr = _centroid_select_expr(
+        sidecar.get_select_fields(request=None), key="my_centroid"
+    )
+    assert "my_centroid" in expr
+    assert "ST_AsEWKB" not in expr
+
+
+def test_columnar_centroid_selective_read_projects_array():
+    """The selective (API) read path also yields the coordinate array."""
+    sidecar = _columnar_centroid_sidecar()
+    fields = sidecar.get_select_fields(request=_select_request("centroid"))
+    expr = _centroid_select_expr(fields)
+    assert "ST_AsEWKB" not in expr
+    assert "ARRAY[" in expr and "ST_X(" in expr
+
+
+def test_geom_projection_unchanged():
+    """The fix is centroid-only: geom still reads as GeoJSON."""
+    sidecar = _columnar_centroid_sidecar()
+    geom = _centroid_select_expr(
+        sidecar.get_select_fields(request=_select_request()), key="geom"
+    )
+    assert "ST_AsGeoJSON" in geom

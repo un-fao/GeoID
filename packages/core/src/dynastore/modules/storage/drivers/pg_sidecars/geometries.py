@@ -201,6 +201,29 @@ class GeometriesSidecar(SidecarProtocol):
             return "integer"
         return "numeric"
 
+    def _centroid_select_field(self, field: ComputedField, alias: str) -> str:
+        """SELECT projection for a COLUMNAR ``centroid`` read.
+
+        The centroid is stored in a ``GEOMETRY(POINT[Z], srid)`` column, but
+        for output it must surface as a clean coordinate, not raw EWKB. We
+        project a native ``double precision[]`` (``ARRAY[ST_X, ST_Y]``); asyncpg
+        decodes it to a Python ``[x, y]`` list, so the exposed value matches the
+        JSONB-stored centroid (``tools/geospatial`` emits ``[x, y]``) and is
+        independent of the storage mode — toggling ``store: columnar`` <->
+        ``store: jsonb`` no longer changes the property shape. The raw geometry
+        column is still referenced unchanged for spatial filtering via the
+        FieldDefinition ``sql_expression``, so only the read-for-output value
+        changes here. NULL centroids stay NULL rather than ``[null, null]``.
+        """
+        col = f"{alias}.{field.resolved_name}"
+        coords = f"ST_X({col}), ST_Y({col})"
+        if (field.centroid_type or "POINT") == "POINTZ":
+            coords = f"{coords}, ST_Z({col})"
+        return (
+            f"CASE WHEN {col} IS NULL THEN NULL "
+            f"ELSE ARRAY[{coords}] END as {field.resolved_name}"
+        )
+
     @property
     def sidecar_id(self) -> str:
         return "geometries"
@@ -634,7 +657,7 @@ class GeometriesSidecar(SidecarProtocol):
                 if key not in all_needed and "*" not in requested:
                     continue
                 if f.kind == ComputedKind.CENTROID:
-                    fields.append(f"ST_AsEWKB({alias}.{key}) as {key}")
+                    fields.append(self._centroid_select_field(f, alias))
                 else:
                     fields.append(f"{alias}.{key}")
             if self._has_jsonb_stats() and (
@@ -663,7 +686,7 @@ class GeometriesSidecar(SidecarProtocol):
             for f in self._columnar_fields():
                 key = f.resolved_name
                 if f.kind == ComputedKind.CENTROID:
-                    fields.append(f"ST_AsEWKB({alias}.{key}) as {key}")
+                    fields.append(self._centroid_select_field(f, alias))
                 else:
                     fields.append(f"{alias}.{key}")
             if self._has_jsonb_stats():
