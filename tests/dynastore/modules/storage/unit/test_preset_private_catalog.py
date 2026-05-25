@@ -88,3 +88,67 @@ def test_private_catalog_asset_routing_has_write_and_read():
     ops = bundle.asset_template.operations
     assert Operation.WRITE in ops
     assert Operation.READ in ops
+
+
+# ── #1102 item 1 / #1047: stay PG-only even when ES drivers are discoverable ──
+# The catalog/collection PG-only assertions above pass trivially in unit
+# isolation because no ES driver is registered. The nightly *full* run, where an
+# ES catalog/collection driver IS discoverable, exposed the real leak: with no
+# operator-pinned SEARCH op, ``_self_register_searchers_into`` auto-appends the
+# discoverable ES driver (it declares ``auto_register_for_routing`` ⊇ {SEARCH})
+# to a freshly-created SEARCH op — routing a *private* catalog/collection's
+# tier search at the public ES index. These tests reproduce that condition
+# deterministically by making an ES driver discoverable, and assert the private
+# preset never grows an ES hop in ANY operation.
+
+
+def _patch_es_drivers_discoverable(monkeypatch):
+    """Make a catalog + collection ES driver discoverable to the routing-config
+    self-register helpers, simulating the nightly full-run registry state."""
+    import dynastore.tools.discovery as discovery
+    from dynastore.modules.storage.routing_config import Operation
+
+    class CatalogElasticsearchDriver:  # __name__ → catalog_elasticsearch_driver
+        auto_register_for_routing = frozenset({Operation.SEARCH, Operation.WRITE})
+
+    class CollectionElasticsearchDriver:  # → collection_elasticsearch_driver
+        auto_register_for_routing = frozenset({Operation.SEARCH, Operation.WRITE})
+
+    catalog_es = CatalogElasticsearchDriver()
+    collection_es = CollectionElasticsearchDriver()
+
+    def fake_get_protocols(marker):
+        name = getattr(marker, "__name__", "")
+        if name in ("CatalogIndexer", "CatalogStore"):
+            return [catalog_es]
+        if name in ("CollectionIndexer", "CollectionStore"):
+            return [collection_es]
+        return []
+
+    monkeypatch.setattr(discovery, "get_protocols", fake_get_protocols)
+
+
+def test_private_catalog_catalog_routing_pg_only_under_es_pollution(monkeypatch):
+    _patch_es_drivers_discoverable(monkeypatch)
+    bundle = get_preset("private_catalog").build("cat-priv")
+    cat_refs = [
+        e.driver_ref
+        for entries in bundle.catalog_routing.operations.values()
+        for e in entries
+    ]
+    assert "catalog_postgresql_driver" in cat_refs
+    assert "catalog_elasticsearch_driver" not in cat_refs
+    assert "catalog_elasticsearch_private_driver" not in cat_refs
+
+
+def test_private_catalog_collection_routing_pg_only_under_es_pollution(monkeypatch):
+    _patch_es_drivers_discoverable(monkeypatch)
+    bundle = get_preset("private_catalog").build("cat-priv")
+    coll_refs = [
+        e.driver_ref
+        for entries in bundle.collection_template.operations.values()
+        for e in entries
+    ]
+    assert "collection_postgresql_driver" in coll_refs
+    assert "collection_elasticsearch_driver" not in coll_refs
+    assert "collection_elasticsearch_private_driver" not in coll_refs
