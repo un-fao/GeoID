@@ -1153,7 +1153,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 search_request.catalog_id, db_resource=conn
             )
             try:
-                from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+                from dynastore.modules.storage.access_scope import (
                     principals_from_request_state,
                 )
 

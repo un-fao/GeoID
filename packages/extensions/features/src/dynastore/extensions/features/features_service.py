@@ -958,6 +958,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                     limit=limit,
                     offset=offset,
                     has_complex_filter=False,
+                    request=request,
                 )
 
             request_obj = parse_ogc_query_request(

@@ -444,7 +444,7 @@ async def _maybe_dispatch_to_es_search(
     # it here can only under-return, never leak; setting it makes the search
     # return the documents the principal may actually read.
     if getattr(driver, "applies_access_filter", False):
-        from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+        from dynastore.modules.storage.access_scope import (
             compile_read_access_filter,
         )
 

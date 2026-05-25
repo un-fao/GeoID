@@ -85,6 +85,7 @@ async def maybe_dispatch_items_to_search_driver(
     limit: int = 10,
     offset: int = 0,
     has_complex_filter: bool = False,
+    request: Optional[Request] = None,
 ) -> Optional[QueryResponse]:
     """Dispatch an OGC ``/items`` listing to the collection's routing-pinned
     items SEARCH driver, when one is configured and search-capable.
@@ -115,6 +116,16 @@ async def maybe_dispatch_items_to_search_driver(
     objects and whose ``total_count`` carries the backend ``numberMatched`` —
     so paging links stay correct (unlike the ``read_entities`` browse path,
     which cannot report a total).
+
+    Row-level ABAC: when the resolved driver opts in (the standardized envelope
+    driver, ``applies_access_filter=True``) and the Starlette ``request`` is
+    supplied, the caller's read scope is compiled from request state via the
+    shared :func:`compile_read_access_filter` and set on the dispatched
+    ``QueryRequest`` — the same single piece of security logic the STAC
+    ``/search`` fast path and the search extension use, so the enforcement paths
+    cannot drift. The envelope driver fails closed when the filter is absent, so
+    an un-wired caller can only under-return, never leak; a non-envelope driver
+    ignores the field, so this is behaviour-neutral for existing catalogs.
     """
     # Only basic structural filters are routed to a search backend today;
     # CQL2 / attribute-shorthand filters continue to the PG path.
@@ -150,7 +161,7 @@ async def maybe_dispatch_items_to_search_driver(
 
     # Single-collection /items: leave ``collections`` unset so the driver keeps
     # its routed single-collection fast path; the positional collection scopes.
-    request = QueryRequest(
+    query_request = QueryRequest(
         item_ids=ids,
         bbox=bbox,
         intersects=intersects,
@@ -159,15 +170,35 @@ async def maybe_dispatch_items_to_search_driver(
         offset=offset,
     )
 
+    # Row-level ABAC: an access-aware driver (the envelope driver) AND-s a
+    # compiled read scope into its query and fails closed without one. Compile
+    # the caller's scope from request state through the shared helper — the same
+    # one STAC ``/search`` and the search extension use — so the OGC ``/items``
+    # entry points enforce exactly what those paths do. Guarded on the driver
+    # marker, so it is a no-op for ordinary ES/PG drivers.
+    if request is not None and getattr(driver, "applies_access_filter", False):
+        from dynastore.modules.storage.access_scope import (
+            compile_read_access_filter,
+            principals_from_request_state,
+        )
+
+        principals, principal = principals_from_request_state(request)
+        query_request.access_filter = await compile_read_access_filter(
+            catalog_id=catalog_id,
+            collections=[collection_id],
+            principals=principals,
+            principal=principal,
+        )
+
     try:
         # ``read_entities`` streams read-contract Features (O(1) memory);
         # ``count_entities`` supplies numberMatched so paging links stay correct.
         items = driver.read_entities(
             catalog_id, collection_id,
-            request=request, limit=limit, offset=offset,
+            request=query_request, limit=limit, offset=offset,
         )
         total = await driver.count_entities(
-            catalog_id, collection_id, request=request,
+            catalog_id, collection_id, request=query_request,
         )
     except Exception as exc:  # noqa: BLE001 — degrade to PG path, never 500
         logger.warning(
