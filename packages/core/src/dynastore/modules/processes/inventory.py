@@ -28,8 +28,8 @@ from dynastore.tools.discovery import get_protocols
 logger = logging.getLogger(__name__)
 
 
-# Parametric URL templates per scope. Post-realignment the ASSET template
-# follows the OGC `/processes/{process_id}/execution` convention.
+# Parametric URL templates per scope. One mount per scope; asset-targeting
+# processes declare CATALOG/COLLECTION and carry ``asset_id`` in the body.
 _SCOPE_TEMPLATES = {
     models.ProcessScope.PLATFORM:
         "/processes/{process_id}/execution",
@@ -38,9 +38,6 @@ _SCOPE_TEMPLATES = {
     models.ProcessScope.COLLECTION:
         "/catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
-    models.ProcessScope.ASSET:
-        "/catalogs/{catalog_id}/collections/{collection_id}"
-        "/assets/{asset_id}/processes/{process_id}/execution",
 }
 
 # Runner -> execution location. Anything not listed defaults to "in_process".
@@ -68,7 +65,6 @@ def build_url_templates(
     *,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
 ) -> List[models.ProcessUrlTemplate]:
     """Return one ``ProcessUrlTemplate`` per declared scope on ``process``."""
     templates: List[models.ProcessUrlTemplate] = []
@@ -78,7 +74,6 @@ def build_url_templates(
             raw,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            asset_id=asset_id,
             process_id=process.id,
         )
         templates.append(
@@ -173,7 +168,6 @@ async def build_process_inventory_entries(
     *,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
     scope_filter: Optional[Set[models.ProcessScope]] = None,
     runner_filter: Optional[Set[str]] = None,
     include_typology: bool = True,
@@ -181,7 +175,7 @@ async def build_process_inventory_entries(
     """Build the enriched process list used by ``GET /processes`` + siblings.
 
     - Queries all ``ProcessRegistryProtocol`` implementations (dedup by id),
-      including ASSET-scoped processes such as ``gdal``.
+      including asset-targeting processes such as ``gdal``.
     - Applies scope + runner filters.
     - Sets ``typologies`` / ``url_templates`` when ``include_typology=True``;
       leaves them empty otherwise (strict-OGC payload).
@@ -208,7 +202,6 @@ async def build_process_inventory_entries(
             process,
             catalog_id=catalog_id,
             collection_id=collection_id,
-            asset_id=asset_id,
         )
 
         summary_dict = process.model_dump(by_alias=True)

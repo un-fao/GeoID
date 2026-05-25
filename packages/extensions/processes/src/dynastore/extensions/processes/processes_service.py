@@ -88,22 +88,16 @@ router: APIRouter = APIRouter(prefix="/processes", tags=["OGC API - Processes"])
 _PLATFORM_ALLOWED_SCOPES = frozenset({models.ProcessScope.PLATFORM})
 _CATALOG_ALLOWED_SCOPES = frozenset({models.ProcessScope.CATALOG})
 _COLLECTION_ALLOWED_SCOPES = frozenset({models.ProcessScope.COLLECTION})
-# ASSET-scoped processes (e.g. ``gdal``) execute at the asset mount:
-# ``/catalogs/{c}[/collections/{col}]/assets/{a}/processes/{id}/execution``.
-# The ``asset_id`` is injected from the URL path into ``inputs`` so the task
-# resolves the asset (and its URI) itself — no bespoke per-asset dispatcher
-# is needed. This is the standard OGC API - Processes home for asset work,
-# replacing the asset-service parametric process surface.
-_ASSET_ALLOWED_SCOPES = frozenset({models.ProcessScope.ASSET})
+# Processes that operate on an asset (e.g. ``gdal``) declare CATALOG and/or
+# COLLECTION scope and take ``asset_id`` as a regular ``inputs`` value. They
+# execute at the catalog mount for a catalog-level asset or the collection
+# mount for a collection-level asset — no bespoke per-asset URL surface.
 
 
 def _allowed_scopes_for(
     catalog_id: Optional[str],
     collection_id: Optional[str],
-    asset_id: Optional[str] = None,
 ) -> frozenset:
-    if asset_id:
-        return _ASSET_ALLOWED_SCOPES
     if catalog_id and collection_id:
         return _COLLECTION_ALLOWED_SCOPES
     if catalog_id:
@@ -119,9 +113,6 @@ _SCOPE_URL_HINTS = {
     models.ProcessScope.COLLECTION:
         "POST /catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
-    models.ProcessScope.ASSET:
-        "POST /catalogs/{catalog_id}/collections/{collection_id}"
-        "/assets/{asset_id}/processes/{process_id}/execution",
 }
 
 # Templated paths advertised via HATEOAS `rel=execute` links on
@@ -135,9 +126,6 @@ _SCOPE_URL_TEMPLATES = {
     models.ProcessScope.COLLECTION:
         "/catalogs/{catalog_id}/collections/{collection_id}"
         "/processes/{process_id}/execution",
-    models.ProcessScope.ASSET:
-        "/catalogs/{catalog_id}/collections/{collection_id}"
-        "/assets/{asset_id}/processes/{process_id}/execution",
 }
 
 # OGC link relation for "execute this process"
@@ -150,7 +138,6 @@ def _build_execution_links(
     request: Request,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
 ) -> List[models.Link]:
     """
     Return HATEOAS ``rel=execute`` links for a process.
@@ -177,31 +164,6 @@ def _build_execution_links(
                 "templated": templated,
             }
         )
-
-    if asset_id and catalog_id and collection_id:
-        href = str(
-            request.url_for(
-                "execute_process_asset_collection",
-                catalog_id=catalog_id,
-                collection_id=collection_id,
-                asset_id=asset_id,
-                process_id=process.id,
-            )
-        )
-        links.append(_link(href, title="Execute on this asset", templated=False))
-        return links
-
-    if asset_id and catalog_id:
-        href = str(
-            request.url_for(
-                "execute_process_asset_catalog",
-                catalog_id=catalog_id,
-                asset_id=asset_id,
-                process_id=process.id,
-            )
-        )
-        links.append(_link(href, title="Execute on this asset", templated=False))
-        return links
 
     if catalog_id and collection_id:
         href = str(
@@ -246,18 +208,17 @@ def _validate_process_scope_or_raise(
     process: models.Process,
     catalog_id: Optional[str],
     collection_id: Optional[str],
-    asset_id: Optional[str] = None,
 ) -> None:
     """
     Reject execution requests that route a process through a URL whose scope
     isn't in the process definition's declared ``scopes``.
 
-    A process may declare multiple scopes (e.g. a backup that runs at catalog
-    or collection level): the request is accepted if ANY declared scope is
-    legal at the resolved URL mount. Fails fast with 400 *before* any task
-    row is written or event emitted.
+    A process may declare multiple scopes (e.g. an asset-targeting process such
+    as ``gdal`` that runs at catalog or collection level): the request is
+    accepted if ANY declared scope is legal at the resolved URL mount. Fails
+    fast with 400 *before* any task row is written or event emitted.
     """
-    allowed = _allowed_scopes_for(catalog_id, collection_id, asset_id)
+    allowed = _allowed_scopes_for(catalog_id, collection_id)
     if any(s in allowed for s in process.scopes):
         return
 
@@ -276,21 +237,20 @@ def _inject_path_into_inputs(
     execution_request: models.ExecuteRequest,
     catalog_id: Optional[str],
     collection_id: Optional[str],
-    asset_id: Optional[str] = None,
 ) -> models.ExecuteRequest:
     """
-    Copy URL path identifiers into ``execution_request.inputs`` so task
-    implementations can read them uniformly (without each task having to
-    know how it was invoked).
+    Copy URL path identifiers (``catalog_id`` / ``collection_id``) into
+    ``execution_request.inputs`` so task implementations can read them
+    uniformly. ``asset_id`` is a regular body input — it is not in the URL
+    path and is left untouched here.
 
     If the client included a conflicting value in the body, reject with 400 —
-    the URL path is the only source of truth for target identifiers.
+    the URL path is the only source of truth for the target catalog/collection.
     """
     inputs = dict(execution_request.inputs or {})
     for key, value in (
         ("catalog_id", catalog_id),
         ("collection_id", collection_id),
-        ("asset_id", asset_id),
     ):
         if value is None:
             continue
@@ -326,7 +286,6 @@ async def _render_process_list(
     request: Request,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
     scope_param: Optional[str] = None,
     runner_param: Optional[str] = None,
     typology: bool = True,
@@ -353,7 +312,7 @@ async def _render_process_list(
     if scope_filter is None and scope_param is None:
         # No explicit scope filter — preserve the pre-existing URL-natural narrowing
         # so strict OGC clients that don't know about `scope` see exactly today's list.
-        scope_filter = set(_allowed_scopes_for(catalog_id, collection_id, asset_id))
+        scope_filter = set(_allowed_scopes_for(catalog_id, collection_id))
 
     entries = await build_process_inventory_entries(
         request,
@@ -385,10 +344,8 @@ async def _render_process_list(
                 request,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
-                asset_id=asset_id,
             )
             if process is not None
-            and (asset_id is not None or models.ProcessScope.ASSET not in entry.scopes)
             else []
         )
         summary_dict = entry.model_dump(by_alias=True)
@@ -405,7 +362,7 @@ async def _render_process_list(
 
 async def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Process]:
     """Like ``_lookup_process_or_404`` but returns ``None`` for synthesised
-    entries (asset processes) that don't live in the OGC registry."""
+    entries that don't live in the OGC registry."""
     for registry in get_protocols(ProcessRegistryProtocol):
         process = await registry.get_process(process_id)
         if process:
@@ -433,7 +390,7 @@ async def list_processes(
         default="all",
         description=(
             "Comma-separated scopes to include: `platform`, `catalog`, "
-            "`collection`, `asset`, or `all` (default). Non-OGC filter."
+            "`collection`, or `all` (default). Non-OGC filter."
         ),
     ),
     typology: bool = Query(
@@ -446,7 +403,7 @@ async def list_processes(
     runner: Optional[str] = Query(
         default=None,
         description=(
-            "Comma-separated runner_type filter (e.g. `gcp_cloud_run,asset_process`)."
+            "Comma-separated runner_type filter (e.g. `gcp_cloud_run,sync`)."
         ),
     ),
 ):
@@ -504,56 +461,6 @@ async def list_processes_collection(
         request,
         catalog_id=catalog_id,
         collection_id=collection_id,
-        scope_param=scope,
-        runner_param=runner,
-        typology=typology,
-    )
-
-
-@router.get(
-    "/catalogs/{catalog_id}/assets/{asset_id}/processes",
-    response_model=models.ProcessList,
-    name="list_processes_asset_catalog",
-)
-async def list_processes_asset_catalog(
-    catalog_id: str,
-    asset_id: str,
-    request: Request,
-    scope: Optional[str] = Query(default=None),
-    typology: bool = Query(default=True),
-    runner: Optional[str] = Query(default=None),
-):
-    """Lists asset-scoped processes runnable on a catalog-level asset."""
-    return await _render_process_list(
-        request,
-        catalog_id=catalog_id,
-        asset_id=asset_id,
-        scope_param=scope,
-        runner_param=runner,
-        typology=typology,
-    )
-
-
-@router.get(
-    "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}/processes",
-    response_model=models.ProcessList,
-    name="list_processes_asset_collection",
-)
-async def list_processes_asset_collection(
-    catalog_id: str,
-    collection_id: str,
-    asset_id: str,
-    request: Request,
-    scope: Optional[str] = Query(default=None),
-    typology: bool = Query(default=True),
-    runner: Optional[str] = Query(default=None),
-):
-    """Lists asset-scoped processes runnable on a collection-level asset."""
-    return await _render_process_list(
-        request,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        asset_id=asset_id,
         scope_param=scope,
         runner_param=runner,
         typology=typology,
@@ -660,7 +567,11 @@ async def execute_process_catalog(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """Executes a catalog-scoped process."""
+    """Executes a catalog-scoped process.
+
+    Asset-targeting processes (e.g. ``gdal``) run here too when the asset is
+    catalog-level: pass the ``asset_id`` in ``inputs``.
+    """
     process = await _lookup_process_or_404(process_id)
     _validate_process_scope_or_raise(process, catalog_id=catalog_id, collection_id=None)
     execution_request = _inject_path_into_inputs(
@@ -703,123 +614,17 @@ async def execute_process_collection(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """Executes a collection- or asset-scoped process."""
+    """Executes a collection-scoped process.
+
+    Asset-targeting processes (e.g. ``gdal``) run here too when the asset is
+    collection-level: pass the ``asset_id`` in ``inputs``.
+    """
     process = await _lookup_process_or_404(process_id)
     _validate_process_scope_or_raise(
         process, catalog_id=catalog_id, collection_id=collection_id
     )
     execution_request = _inject_path_into_inputs(
         execution_request, catalog_id=catalog_id, collection_id=collection_id
-    )
-
-    principal = getattr(request.state, "principal", None)
-    caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    engine = get_async_engine(request)
-    preferred_mode = _get_preferred_mode(request)
-    result = None
-    try:
-        result = await processes_module.execute_process(
-            process_id=process_id,
-            execution_request=execution_request,
-            engine=engine,
-            caller_id=caller_id,
-            preferred_mode=preferred_mode,
-            background_tasks=background_tasks,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-        )
-    except Exception as e:
-        _handle_execution_exception(process_id, e)
-
-    return _handle_execution_result(result, request)
-
-
-@router.post(
-    "/catalogs/{catalog_id}/assets/{asset_id}/processes/{process_id}/execution",
-    status_code=status.HTTP_201_CREATED,
-    response_model=Union[models.StatusInfo, Any],
-    name="execute_process_asset_catalog",
-)
-async def execute_process_asset_catalog(
-    catalog_id: str,
-    asset_id: str,
-    process_id: str,
-    execution_request: models.ExecuteRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """Executes an asset-scoped process on a catalog-level asset.
-
-    ``asset_id`` is taken from the URL path and injected into ``inputs``; the
-    process resolves the asset (and its URI) itself. Sync vs async follows the
-    standard ``Prefer: respond-async``/``respond-sync`` negotiation.
-    """
-    process = await _lookup_process_or_404(process_id)
-    _validate_process_scope_or_raise(
-        process, catalog_id=catalog_id, collection_id=None, asset_id=asset_id
-    )
-    execution_request = _inject_path_into_inputs(
-        execution_request,
-        catalog_id=catalog_id,
-        collection_id=None,
-        asset_id=asset_id,
-    )
-
-    principal = getattr(request.state, "principal", None)
-    caller_id = str(principal.id) if principal else SYSTEM_USER_ID
-    engine = get_async_engine(request)
-    preferred_mode = _get_preferred_mode(request)
-    result = None
-    try:
-        result = await processes_module.execute_process(
-            process_id=process_id,
-            execution_request=execution_request,
-            engine=engine,
-            caller_id=caller_id,
-            preferred_mode=preferred_mode,
-            background_tasks=background_tasks,
-            catalog_id=catalog_id,
-        )
-    except Exception as e:
-        _handle_execution_exception(process_id, e)
-
-    return _handle_execution_result(result, request)
-
-
-@router.post(
-    "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}"
-    "/processes/{process_id}/execution",
-    status_code=status.HTTP_201_CREATED,
-    response_model=Union[models.StatusInfo, Any],
-    name="execute_process_asset_collection",
-)
-async def execute_process_asset_collection(
-    catalog_id: str,
-    collection_id: str,
-    asset_id: str,
-    process_id: str,
-    execution_request: models.ExecuteRequest,
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """Executes an asset-scoped process on a collection-level asset.
-
-    ``asset_id`` is taken from the URL path and injected into ``inputs``; the
-    process resolves the asset (and its URI) itself. Sync vs async follows the
-    standard ``Prefer: respond-async``/``respond-sync`` negotiation.
-    """
-    process = await _lookup_process_or_404(process_id)
-    _validate_process_scope_or_raise(
-        process,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        asset_id=asset_id,
-    )
-    execution_request = _inject_path_into_inputs(
-        execution_request,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        asset_id=asset_id,
     )
 
     principal = getattr(request.state, "principal", None)

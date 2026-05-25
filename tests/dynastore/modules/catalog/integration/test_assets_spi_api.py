@@ -84,9 +84,10 @@ async def test_asset_immutability(sysadmin_in_process_client, app_lifespan, cata
 @pytest.mark.enable_tasks("gdal")
 async def test_gdal_runs_as_ogc_asset_process(sysadmin_in_process_client, app_lifespan, catalog_obj, catalog_id):
     """
-    `gdal` is discoverable and executable as a standard OGC asset-scoped process
-    at ``/processes/catalogs/{cat}/assets/{aid}/processes/gdal[/execution]``,
-    replacing the retired asset-task SPI surface (`/assets/.../tasks/...`).
+    `gdal` is discoverable and executable as a standard OGC process at the
+    catalog mount ``/processes/catalogs/{cat}/processes/gdal[/execution]``, with
+    the target ``asset_id`` supplied in the request body ``inputs`` — replacing
+    the retired asset-task SPI surface (`/assets/.../tasks/...`).
     """
     from unittest.mock import patch, MagicMock
     from dynastore.modules.concurrency import await_all_background_tasks
@@ -124,19 +125,19 @@ async def test_gdal_runs_as_ogc_asset_process(sysadmin_in_process_client, app_li
         resp = await local_api_client.post(f"/assets/catalogs/{catalog_id}", json=asset_payload)
         assert resp.status_code == 201
 
-        # 2. Discovery: gdal listed at the asset mount (ASSET-scoped).
+        # 2. Discovery: gdal listed at the catalog mount (CATALOG-scoped).
         resp = await local_api_client.get(
-            f"/processes/catalogs/{catalog_id}/assets/{asset_id}/processes"
+            f"/processes/catalogs/{catalog_id}/processes"
         )
         assert resp.status_code == 200, resp.text
         listed = resp.json()["processes"]
         assert any(p["id"] == "gdal" for p in listed), f"Expected 'gdal'. Got: {listed}"
 
-        # 3. Execution via the standard OGC route; asset_id injected from path,
-        #    sync selected via the Prefer header.
+        # 3. Execution via the standard OGC route; asset_id supplied in the body
+        #    inputs, sync selected via the Prefer header.
         resp = await local_api_client.post(
-            f"/processes/catalogs/{catalog_id}/assets/{asset_id}/processes/gdal/execution",
-            json={"inputs": {}},
+            f"/processes/catalogs/{catalog_id}/processes/gdal/execution",
+            json={"inputs": {"asset_id": asset_id}},
             headers={"Prefer": "respond-sync"},
         )
         # 404/422 would mean the route or scope wiring is wrong — hard failures.

@@ -26,7 +26,7 @@ def _process(job_control):
         id="gdal",
         title="GDAL Info",
         version="1.0.0",
-        scopes=[models.ProcessScope.ASSET],
+        scopes=[models.ProcessScope.CATALOG, models.ProcessScope.COLLECTION],
         jobControlOptions=job_control,
         inputs={},
         outputs={},

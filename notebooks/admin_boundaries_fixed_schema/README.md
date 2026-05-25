@@ -65,8 +65,8 @@ a `**Gap A/B/C**` markdown cell at the relevant step:
   The platform's contract is that every HTTP surface is an OGC conformance
   class; bootstrapping a fixed schema is a composition of two existing
   surfaces (issue #473, PR #477). Step 0b in `walkthrough.ipynb` shows the
-  full sequence: `POST .../assets/{id}/processes/gdal/execution`
-  (OGC API - Processes) → local OGR→Postgres type map →
+  full sequence: `POST .../processes/gdal/execution` with `{"inputs":
+  {"asset_id": "..."}}` (OGC API - Processes) → local OGR→Postgres type map →
   `GET`/`PUT /configs/.../plugins/items_postgresql_driver` (PluginConfig API).
   The PluginConfig PUT works at either **collection scope**
   (`/configs/catalogs/{cat}/collections/{col}/plugins/{plugin_id}`, used in

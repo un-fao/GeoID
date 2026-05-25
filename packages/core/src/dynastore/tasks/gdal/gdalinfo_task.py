@@ -78,9 +78,9 @@ class GdalInfoTask(TaskProtocol):
         collection_id = inputs.get("collection_id")
 
         # Locator-driven contract: callers supply identifiers only; the task
-        # resolves the asset (and its URI) itself. When invoked at a scoped OGC
-        # endpoint the path identifiers are already injected into ``inputs``;
-        # direct callers pass them in the request body.
+        # resolves the asset (and its URI) itself. ``asset_id`` comes from the
+        # request body; ``catalog_id``/``collection_id`` are injected from the
+        # URL path of the catalog/collection execution mount.
         if not asset_id or not catalog_id:
             raise ValueError(
                 "GdalInfoTask requires 'asset_id' and 'catalog_id' in inputs."

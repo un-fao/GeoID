@@ -27,14 +27,14 @@ GDALINFO_PROCESS_DEFINITION = Process(
     title="GDAL Info Task",
     description=(
         "Calculates GDAL/OGR information for an asset and enriches its metadata. "
-        "Targets a single asset identified by the locators in ``inputs`` "
-        "(``asset_id`` plus ``catalog_id``; ``collection_id`` when the asset is "
-        "collection-scoped). When invoked at a scoped URL the path identifiers "
-        "are injected into ``inputs`` automatically. The task resolves the "
+        "Targets a single asset identified by ``asset_id`` in ``inputs``. Run it "
+        "at the catalog mount for a catalog-level asset, or the collection mount "
+        "for a collection-level asset; ``catalog_id`` (and ``collection_id`` at "
+        "the collection mount) are taken from the URL path. The task resolves the "
         "asset's URI itself — callers do not supply it."
     ),
     version="1.0.0",
-    scopes=[ProcessScope.ASSET],
+    scopes=[ProcessScope.CATALOG, ProcessScope.COLLECTION],
     jobControlOptions=[
         JobControlOptions.SYNC_EXECUTE,
         JobControlOptions.ASYNC_EXECUTE,
@@ -48,16 +48,15 @@ GDALINFO_PROCESS_DEFINITION = Process(
         "catalog_id": ProcessInput(
             title="Catalog ID",
             description=(
-                "Catalog owning the asset (required). Injected from the URL path "
-                "when executed at a scoped endpoint."
+                "Catalog owning the asset (required). Taken from the URL path."
             ),
             schema={"type": "string"},
         ),
         "collection_id": ProcessInput(
             title="Collection ID",
             description=(
-                "Collection owning the asset, when collection-scoped. Injected "
-                "from the URL path when executed at a collection/asset endpoint."
+                "Collection owning the asset, when collection-level. Taken from "
+                "the URL path at the collection mount."
             ),
             schema={"type": ["string", "null"]},
         ),
