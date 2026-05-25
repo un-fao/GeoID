@@ -129,3 +129,76 @@ def test_dedup_preserves_legacy_asset_code_top_level() -> None:
     )
     assert out["record"]["asset_code"] == "ITAL1_01"
     assert "CODE" not in out["record"]
+
+
+def _enriched_record() -> dict:
+    """A report record after ingestion enrichment: identity stamped at the top
+    level and the generated statistics merged into ``properties``."""
+    return {
+        "type": "Feature",
+        "id": "geoid-1621",
+        "geometry": {"type": "Point", "coordinates": [13.3, 45.6]},
+        "properties": {"NAME": "Friuli", "area": 7845.0, "perimeter": 412.3},
+        "geoid": "geoid-1621",
+        "external_id": "1621",
+        "asset_id": "ITAL1_01",
+    }
+
+
+def test_identity_keys_kept_at_top_level_by_default() -> None:
+    out = _reporter(include_geometry=False)._filter_result_for_reporting(
+        {"status": "SUCCESS", "record": _enriched_record()}
+    )
+    rec = out["record"]
+    assert rec["geoid"] == "geoid-1621"
+    assert rec["external_id"] == "1621"
+    assert rec["asset_id"] == "ITAL1_01"
+    assert rec["asset_code"] == "ITAL1_01"  # legacy alias still synthesised
+
+
+def test_generated_statistics_survive_under_properties() -> None:
+    out = _reporter(include_geometry=False)._filter_result_for_reporting(
+        {"status": "SUCCESS", "record": _enriched_record()}
+    )
+    assert out["record"]["properties"] == {
+        "NAME": "Friuli",
+        "area": 7845.0,
+        "perimeter": 412.3,
+    }
+
+
+def test_include_geoid_false_suppresses_geoid() -> None:
+    out = _reporter(
+        include_geometry=False, include_geoid=False
+    )._filter_result_for_reporting({"status": "SUCCESS", "record": _enriched_record()})
+    rec = out["record"]
+    assert "geoid" not in rec
+    assert rec["external_id"] == "1621"  # others unaffected
+
+
+def test_include_external_id_false_suppresses_external_id() -> None:
+    out = _reporter(
+        include_geometry=False, include_external_id=False
+    )._filter_result_for_reporting({"status": "SUCCESS", "record": _enriched_record()})
+    rec = out["record"]
+    assert "external_id" not in rec
+    assert rec["geoid"] == "geoid-1621"
+
+
+def test_include_asset_id_false_suppresses_asset_id_and_legacy_alias() -> None:
+    out = _reporter(
+        include_geometry=False, include_asset_id=False
+    )._filter_result_for_reporting({"status": "SUCCESS", "record": _enriched_record()})
+    rec = out["record"]
+    assert "asset_id" not in rec
+    assert "asset_code" not in rec
+    assert rec["geoid"] == "geoid-1621"
+
+
+def test_reported_attributes_allow_list_still_filters_statistics() -> None:
+    """The attribute allow-list governs the merged statistics too — a stat not
+    on the list is dropped, exactly like a regular attribute."""
+    out = _reporter(
+        include_geometry=False, reported_attributes=["NAME", "area"]
+    )._filter_result_for_reporting({"status": "SUCCESS", "record": _enriched_record()})
+    assert out["record"]["properties"] == {"NAME": "Friuli", "area": 7845.0}

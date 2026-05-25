@@ -124,6 +124,44 @@ def _validate_feature_properties(validator: Any, raw_item: Dict[str, Any]) -> No
         raise ValueError(f"Feature properties violate the items schema: {msg}")
 
 
+def _collect_generated_stats(
+    sidecar_payloads: Dict[str, Dict[str, Any]],
+    stat_names: set,
+) -> Dict[str, Any]:
+    """Flatten every statistic a write generated for one item.
+
+    Sidecars stash computed statistics in two shapes: shared JSONB blobs
+    (``geom_stats`` / ``place_stats`` / ``attribute_stats`` — pure stat
+    containers by construction) and their own typed COLUMNAR columns keyed by
+    the :attr:`ComputedField.resolved_name`. The geometries sidecar leaves its
+    blob a ``dict``; the attributes sidecar ``json.dumps`` its blob — handle
+    both. ``stat_names`` is the COLUMNAR allow-list (resolved-names of stored
+    statistic fields from the write policy) so non-stat payload keys — the WKB
+    geometry, ``geom_type``, spatial indices, identity columns — never leak in.
+
+    Pure function: the in-memory companion to the read-side expose loop, used
+    to surface the *full* computed set to the ingestion audit report without a
+    permissive read-policy or any protocol change.
+    """
+    flat: Dict[str, Any] = {}
+    for sc_payload in sidecar_payloads.values():
+        if not isinstance(sc_payload, dict):
+            continue
+        for blob_key in ("geom_stats", "place_stats", "attribute_stats"):
+            blob = sc_payload.get(blob_key)
+            if isinstance(blob, str):
+                try:
+                    blob = json.loads(blob)
+                except (ValueError, TypeError):
+                    blob = None
+            if isinstance(blob, dict):
+                flat.update(blob)
+        for name in stat_names:
+            if name in sc_payload:
+                flat[name] = sc_payload[name]
+    return flat
+
+
 # --- Specialized Queries for ItemService ---
 
 
@@ -1026,6 +1064,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # attribute-only collections can raise it).
         chunk_size = collection_config.ingest_chunk_size
         write_results: List[Dict[str, Any]] = []
+        # Per-item generated info for the ingestion audit report, built 1:1
+        # with ``write_results`` (and therefore with the ``results`` read-back
+        # below). Carries the persisted geoid, the source external_id, the
+        # asset_id, and every computed statistic — the full set, including
+        # statistics the collection's read policy does not ``expose``. Surfaced
+        # to the caller via ``ctx.extensions`` (the ``_rejections`` escape-hatch
+        # precedent), so no protocol / read-policy / new-method change is
+        # needed. ``stat_names`` is the COLUMNAR allow-list: stored statistic
+        # fields from the write policy (the SSOT for computed fields).
+        from dynastore.modules.storage.computed_fields import _STATISTIC_STORAGE_KINDS
+        stat_names = {
+            cf.resolved_name
+            for cf in (getattr(items_write_policy, "compute", None) or [])
+            if getattr(cf, "kind", None) in _STATISTIC_STORAGE_KINDS
+            and getattr(cf, "storage_mode", None) is not None
+        }
+        generated_stats: List[Dict[str, Any]] = []
         # Per-row rejection collector. SidecarRejectedError is raised by the
         # distributed upsert's acceptance check BEFORE any DB writes for the
         # offending item, so catching it inside the chunk loop does not poison
@@ -1068,6 +1123,21 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                             f"Failed to upsert item. Geoid: {plan['geoid']}"
                         )
                     write_results.append(new_row)
+                    # Built in lockstep with write_results so it stays aligned
+                    # with the order-preserving read-back below. The geoid is
+                    # the persisted one (an identity match updates an existing
+                    # row, whose geoid differs from the freshly minted plan
+                    # geoid); external_id / asset_id were stamped onto the
+                    # shared item_context by the sidecars during Phase 2.
+                    item_ctx = plan["item_context"]
+                    generated_stats.append({
+                        "geoid": new_row.get("geoid", plan["geoid"]),
+                        "external_id": item_ctx.get("external_id"),
+                        "asset_id": item_ctx.get("asset_id"),
+                        "stats": _collect_generated_stats(
+                            plan["sidecar_payloads"], stat_names
+                        ),
+                    })
 
         # Hand rejections to the caller via the typed DriverContext escape
         # hatch. The OGC mixin seeds an empty list before the call and drains
@@ -1087,6 +1157,17 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 read_conn, phys_schema, phys_table, result_geoids, col_config,
                 catalog_id=catalog_id, collection_id=collection_id,
             )
+
+        # Publish per-item generated info (geoid / external_id / asset_id and
+        # every computed statistic) to the caller via the typed DriverContext
+        # escape hatch — the same mechanism as ``_rejections`` above. The list
+        # is aligned 1:1 with the returned ``results`` (both follow
+        # ``write_results`` order). The ingestion task drains this to enrich its
+        # audit report with the full computed set; every other caller ignores
+        # it. Guarded by length so a read-back that drops a row degrades to no
+        # enrichment rather than mis-zipped stats.
+        if ctx is not None and generated_stats and len(generated_stats) == len(results):
+            ctx.extensions["_generated_stats"] = generated_stats
 
         # ── Post-commit: fan-out to secondary drivers ──────────────────
         if results:

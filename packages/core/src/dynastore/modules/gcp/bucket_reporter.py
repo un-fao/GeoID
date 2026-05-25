@@ -87,6 +87,21 @@ class GcsDetailedReporterConfig(BaseModel):
         default=None,
         description="A list of attribute keys to include in the report. If None, all attributes are included.",
     )
+    include_geoid: Optional[bool] = Field(
+        default=None,
+        description="Include the generated `geoid` at the record top level. "
+        "None/True = include when the ingestion produced one; False = suppress.",
+    )
+    include_external_id: Optional[bool] = Field(
+        default=None,
+        description="Include the source `external_id` at the record top level. "
+        "None/True = include when the ingestion produced one; False = suppress.",
+    )
+    include_asset_id: Optional[bool] = Field(
+        default=None,
+        description="Include the `asset_id` (and its legacy `asset_code` alias) "
+        "at the record top level. None/True = include when present; False = suppress.",
+    )
     report_content: Literal["ALL", "ONLY_SUCCESS", "ONLY_FAILURE"] = Field(
         default="ALL",
         description="Determines which records to include in the detailed report based on their outcome.",
@@ -385,10 +400,12 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         if isinstance(record, dict):
             record = dict(record)
 
-            # legacy dwh contract: surface asset_id as asset_code
-            asset_id = record.get("asset_id")
-            if asset_id:
-                record["asset_code"] = str(asset_id)
+            # legacy dwh contract: surface asset_id as asset_code (skipped when
+            # asset_id is suppressed so the alias doesn't smuggle it back in).
+            if self.config.include_asset_id is not False:
+                asset_id = record.get("asset_id")
+                if asset_id:
+                    record["asset_code"] = str(asset_id)
 
             # 1. Attribute allow-list — applies to the GeoJSON ``properties``
             #    bag and the legacy flat ``attributes`` bag alike.
@@ -414,8 +431,20 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             # 4. De-duplicate the top level. Sidecar attributes are echoed at
             #    the Feature top level (from ``__pydantic_extra__``) as well as
             #    under ``properties``; keep only structural + legacy DWH keys so
-            #    each attribute is reported once, under ``properties``.
-            allowed_top_level = _FEATURE_STRUCTURAL_KEYS | _REPORT_LEGACY_TOP_LEVEL_KEYS
+            #    each attribute is reported once, under ``properties``. The
+            #    ingestion-stamped identity keys (geoid / external_id / asset_id)
+            #    are admitted on top, each suppressible via its ``include_*`` flag
+            #    (default None = include when the ingestion produced it).
+            allowed_top_level = set(_FEATURE_STRUCTURAL_KEYS) | set(
+                _REPORT_LEGACY_TOP_LEVEL_KEYS
+            )
+            if self.config.include_geoid is not False:
+                allowed_top_level.add("geoid")
+            if self.config.include_external_id is not False:
+                allowed_top_level.add("external_id")
+            if self.config.include_asset_id is False:
+                allowed_top_level.discard("asset_id")
+                allowed_top_level.discard("asset_code")
             record = {
                 key: value
                 for key, value in record.items()
