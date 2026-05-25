@@ -21,6 +21,7 @@ import time
 import jwt
 import logging
 from typing import Any, Awaitable, Callable, List, Optional
+from uuid import UUID
 
 from dynastore.tools.discovery import get_protocol
 
@@ -264,6 +265,19 @@ class IamMiddleware(BaseHTTPMiddleware):
                 except ValueError:
                     pass
 
+        # Collection scope extraction (mirrors catalog_id above). Used to
+        # resolve collection-scoped grants in the policy evaluation step.
+        collection_id = getattr(request.state, "collection_id", None)
+        if not collection_id and "/collections/" in path:
+            parts = path.split("/")
+            try:
+                idx = parts.index("collections")
+                if idx + 1 < len(parts) and parts[idx + 1]:
+                    collection_id = parts[idx + 1]
+                    request.state.collection_id = collection_id
+            except ValueError:
+                pass
+
         # Resolve physical schema
         schema = await self._iam_manager.resolve_schema(catalog_id)  # type: ignore[union-attr,attr-defined]
 
@@ -308,6 +322,21 @@ class IamMiddleware(BaseHTTPMiddleware):
         # post-authentication object rather than the ``None`` snapshot
         # captured before ``authenticate_and_get_role`` ran.
         context_extras["principal_obj"] = principal_obj
+
+        # Principal UUID for resource-scoped grant resolution. ``Principal.id``
+        # is ``Optional[Union[UUID, str]]``; coerce a str to UUID, and fall
+        # back to None for anonymous callers or malformed ids (grant
+        # resolution is then skipped, preserving prior behaviour).
+        principal_uuid: Optional[UUID] = None
+        if principal_obj is not None and getattr(principal_obj, "id", None) is not None:
+            _pid = principal_obj.id
+            if isinstance(_pid, UUID):
+                principal_uuid = _pid
+            else:
+                try:
+                    principal_uuid = UUID(str(_pid))
+                except (ValueError, TypeError, AttributeError):
+                    principal_uuid = None
 
         request.state.principal_role = principal_role
         request.state.principal = principal_obj
@@ -394,6 +423,8 @@ class IamMiddleware(BaseHTTPMiddleware):
             method=method,
             request_context=ctx,
             catalog_id=catalog_id,
+            principal_id=principal_uuid,
+            collection_id=collection_id,
         )
         allowed_by_global, reason = result if result is not None else (True, "")
         if not allowed_by_global:

@@ -169,6 +169,8 @@ class PermissionProtocol(Protocol):
         request_context: Any = None,
         catalog_id: Optional[str] = None,
         custom_policies: Optional[List["Policy"]] = None,
+        principal_id: Optional[Any] = None,
+        collection_id: Optional[str] = None,
     ) -> Tuple[bool, str]: ...
 
     async def provision_default_policies(
@@ -186,6 +188,7 @@ class PermissionProtocol(Protocol):
         collection_id: Optional[str] = None,
         *,
         principal: Optional[Principal] = None,
+        principal_id: Optional[Any] = None,
     ) -> "AccessFilter":
         """Compile the read scope for ``principals`` into a neutral filter.
 

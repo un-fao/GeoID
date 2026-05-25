@@ -20,6 +20,7 @@
 
 import asyncio
 import logging
+from uuid import UUID
 from contextlib import AsyncExitStack, asynccontextmanager
 
 # Distribution-presence SCOPE gate (#1003).
@@ -346,6 +347,8 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         request_context: Any = None,
         catalog_id: Optional[str] = None,
         custom_policies: Optional[List[Any]] = None,
+        principal_id: Optional[UUID] = None,
+        collection_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
         if self._policy_service is None:
             return False, "PolicyService not initialized"
@@ -356,6 +359,8 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             request_context=request_context,
             catalog_id=catalog_id,
             custom_policies=custom_policies,
+            principal_id=principal_id,
+            collection_id=collection_id,
         )
 
     async def compile_read_filter(
@@ -365,6 +370,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         collection_id: Optional[str] = None,
         *,
         principal: Optional[Principal] = None,
+        principal_id: Optional[UUID] = None,
     ) -> Any:
         if self._policy_service is None:
             # Fail closed: no engine ⟹ no documents are visible via search.
@@ -375,6 +381,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             catalog_id=catalog_id,
             collection_id=collection_id,
             principal=principal,
+            principal_id=principal_id,
         )
 
     async def evaluate_policy_statements(
