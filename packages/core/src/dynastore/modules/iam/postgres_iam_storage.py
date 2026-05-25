@@ -120,6 +120,16 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         # platform table; older dev DBs (created before the counter table
         # landed) re-run the idempotent CREATE TABLE IF NOT EXISTS batch
         # to pick it up. Existing tables are no-ops on warm DBs.
+        # usage_counters sink: flat by default; HASH-partitioned by
+        # principal_key on a fresh platform schema when the operator opts in
+        # via IAM_USAGE_COUNTER_HASH_PARTITIONS (#1344). Partitioning only
+        # in the ``iam`` schema (where the counter driver reads/writes) and
+        # only on a fresh table — the sentinel below skips the whole batch
+        # once the table exists, so existing flat tables stay flat.
+        from .scale_config import usage_counter_hash_partitions
+
+        _hash_parts = usage_counter_hash_partitions() if schema == "iam" else 1
+        _usage_counter_steps = build_usage_counters_steps(_hash_parts)
         await DDLBatch(
             sentinel=CREATE_USAGE_COUNTERS_TABLE,
             steps=[
@@ -131,7 +141,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 CREATE_REFRESH_TOKENS_TABLE,
                 CREATE_POLICIES_TABLE,
                 CREATE_AUDIT_LOG_TABLE,
-                CREATE_USAGE_COUNTERS_TABLE,
+                *_usage_counter_steps,
             ],
         ).execute(conn, schema=schema)
 

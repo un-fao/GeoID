@@ -440,6 +440,17 @@ class IamMiddleware(BaseHTTPMiddleware):
 
         request.state.policy_allowed = True
 
+        # Per-binding quota / rate-limit (#1344). ``evaluate_access`` resolved
+        # the in-scope grants for this principal and stashed any quota /
+        # rate-limit conditions (with their per-grant counter namespace already
+        # registered in ``_policy_id_by_config_id``) onto ``ctx.extras``.
+        # Fold them into the condition set so they enforce alongside the
+        # principal-policy conditions below, producing the same 429 /
+        # Retry-After / X-RateLimit response shape.
+        grant_quota_conditions = ctx.extras.get("_grant_quota_conditions")
+        if grant_quota_conditions:
+            all_conditions.extend(grant_quota_conditions)
+
         # 5. Evaluate All Accumulated Conditions (from Key and Principal)
         rate_limit_headers: dict = {}
         if all_conditions:

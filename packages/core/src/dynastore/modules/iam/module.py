@@ -268,6 +268,24 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             active = None
 
         if not isinstance(active, CountingCacheBackend):
+            # Valkey-mandatory deployments (#1344) refuse to fall back to the
+            # per-pod PG counter — cross-pod rate-limit / quota correctness
+            # requires the shared atomic backend. Fail fast and loud so a
+            # mis-provisioned prod never silently serves un-coordinated
+            # counters. Defaults to off, so dev / test / single-node keep the
+            # PG fallback unchanged.
+            from dynastore.modules.iam.scale_config import (
+                valkey_required_at_startup,
+            )
+
+            if await valkey_required_at_startup():
+                raise RuntimeError(
+                    "Valkey is required (IAM_VALKEY_REQUIRED / "
+                    "IamScaleConfig.valkey_required) but no "
+                    "CountingCacheBackend (Valkey) is active; refusing to "
+                    "start on the per-pod PG counter fallback. Provision "
+                    "Valkey or clear the requirement."
+                )
             register_plugin(pg_counter)
             stack.callback(unregister_plugin, pg_counter)
             logger.info(

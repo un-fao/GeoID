@@ -20,12 +20,12 @@ fails closed on privileged checks.
 """
 
 from enum import Enum
-from typing import ClassVar, List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Any, ClassVar, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
 
 from dynastore.models.protocols.authorization_context import SecurityContext
-from dynastore.models.mutability import Mutable
+from dynastore.models.mutability import Immutable, Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 
 
@@ -295,6 +295,75 @@ class IamRolesConfig(PluginConfig):
                 f"role(s): {missing_admin}"
             )
         return self
+
+
+class IamScaleConfig(PluginConfig):
+    """Runtime-editable IAM scale knobs (counter / quota tier).
+
+    Introduced for the per-binding quota + Valkey-mandatory counter work
+    (#1344). The zero-DB hot-path knobs (token TTL, power-user threshold,
+    compiled-rule cache TTL, denylist) are added by #1343 onto this same
+    class — only fields that are actually consumed are declared here so
+    the Configuration Hub never surfaces a dead knob.
+
+    Every field is read per-request via ``get_iam_scale_config`` so a
+    runtime PATCH applies on the next request without a redeploy, except
+    ``usage_counter_hash_partitions`` which is structural: it shapes the
+    ``iam.usage_counters`` table at provisioning time and is read at
+    schema-init from the ``IAM_USAGE_COUNTER_HASH_PARTITIONS`` env var
+    (the persisted config row is not yet readable that early in boot).
+    The field is kept here for visibility and so a future migration can
+    repartition an existing flat table; converting an already-flat table
+    is out of scope (needs the cleanup migration).
+    """
+
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "iam", "scale")
+
+    valkey_required: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "When true, the IAM module refuses to start unless a "
+            "CountingCacheBackend (Valkey) is active — rate-limit / quota "
+            "counters must run on the shared atomic backend, not the "
+            "per-pod PG fallback. Production sets this true; dev / test / "
+            "single-node deployments leave it false so the standalone PG "
+            "counter driver continues to serve. The startup guard reads the "
+            "``IAM_VALKEY_REQUIRED`` env var first (the persisted config is "
+            "not reliably readable that early on a cold boot); this field is "
+            "the fallback and the Configuration-Hub-visible mirror."
+        ),
+    )
+    usage_counter_hash_partitions: Immutable[int] = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Number of HASH partitions for the durable ``iam.usage_counters`` "
+            "flush sink, keyed by ``principal_key``. 1 (default) keeps the "
+            "current flat table. Values > 1 only take effect on a FRESH "
+            "table (read at schema-init from the "
+            "``IAM_USAGE_COUNTER_HASH_PARTITIONS`` env var); repartitioning "
+            "an existing flat table requires a migration."
+        ),
+    )
+    default_rate_limit: Mutable[Optional[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Fallback per-binding rate-limit applied to a grant that "
+            "carries no ``quota.rate_limit`` of its own. Shape mirrors the "
+            "``rate_limit`` condition config, e.g. "
+            "``{\"limit\": 100, \"window_seconds\": 60, \"scope\": "
+            "\"principal\"}``. None (default) = no implicit rate-limit."
+        ),
+    )
+    default_quota: Mutable[Optional[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Fallback per-binding lifetime quota applied to a grant that "
+            "carries no ``quota.max_count`` of its own. Shape mirrors the "
+            "``max_count`` condition config, e.g. ``{\"limit\": 100000, "
+            "\"scope\": \"principal\"}``. None (default) = no implicit quota."
+        ),
+    )
 
 
 @runtime_checkable
