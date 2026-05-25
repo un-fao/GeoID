@@ -375,22 +375,46 @@ class StacVirtualMixin(_Host):
 
             # Build request for asset items
             # We assume 'asset_id' is a queryable field in the sidecars (attributes or stac_metadata)
+            asset_filter = FilterCondition(field="asset_id", operator="=", value=asset_id)
             query_req = QueryRequest(
-                filters=[
-                    FilterCondition(field="asset_id", operator="=", value=asset_id)
-                ],
+                filters=[asset_filter],
                 limit=limit,
                 offset=offset,
                 include_total_count=True,
             )
 
-            # Fetch features using ItemService.stream_items to get QueryResponse
-            from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
-            query_res = await items_svc.stream_items(
-                catalog_id, collection_id, request=query_req,
-                ctx=DriverContext(db_resource=conn) if conn is not None else None,
-                consumer=ConsumerType.STAC,
+            # ── Routing-aware items SEARCH-driver dispatch (#1047, #1311) ─────
+            # Mirror the OGC Features / Records ``/items`` paths: resolve the
+            # items SEARCH driver via routing and dispatch the structural query
+            # (the ``asset_id`` equality threads through ``filters``) to that
+            # driver's streaming ``read_entities`` + ``count_entities`` contract.
+            # The helper threads the HTTP ``request`` so an access-aware envelope
+            # driver gets the caller's compiled read scope (fail-closed). It
+            # returns ``None`` — and we fall through to the PG ``stream_items``
+            # path below unchanged — for a read-primary (PG) driver, a non-ES
+            # items driver, or any dispatch error.
+            from dynastore.extensions.tools.query import (
+                maybe_dispatch_items_to_search_driver,
             )
+            from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+
+            query_res = await maybe_dispatch_items_to_search_driver(
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                filters=[asset_filter],
+                limit=limit,
+                offset=offset,
+                has_complex_filter=False,
+                request=request,
+            )
+
+            # Fetch features using ItemService.stream_items to get QueryResponse
+            if query_res is None:
+                query_res = await items_svc.stream_items(
+                    catalog_id, collection_id, request=query_req,
+                    ctx=DriverContext(db_resource=conn) if conn is not None else None,
+                    consumer=ConsumerType.STAC,
+                )
 
             total_count = query_res.total_count or 0
 
@@ -867,6 +891,14 @@ class StacVirtualMixin(_Host):
         """
         Virtual View: Returns items filtered by hierarchy rule.
         If parent_value is provided, filters to children of that parent.
+
+        Row-level ABAC note (#1311): this view runs a raw SQL hierarchy query
+        directly against PostgreSQL (``stac_hierarchy_queries``), with no
+        storage-driver dispatch seam, so the compiled access filter cannot be
+        threaded here without a deeper refactor (e.g. routing the hierarchy
+        listing through the SEARCH driver, or compiling the access scope to a
+        SQL predicate). Left as a documented gap tracked under #1311; it never
+        leaks via the envelope driver since it does not use it.
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
@@ -1026,6 +1058,18 @@ class StacVirtualMixin(_Host):
                 matching_rule, parent_value, hierarchy_params
             )
 
+            # Row-level ABAC: thread the caller's principals from request state
+            # into ``search_items`` exactly as the main STAC ``/search`` route
+            # does (#1311). Without this the anonymous-role token is dropped and
+            # an access-aware envelope driver would fail closed even for a
+            # legitimately-scoped caller. Behaviour-neutral for non-envelope
+            # drivers, which ignore the compiled scope.
+            from dynastore.modules.storage.access_scope import (
+                principals_from_request_state,
+            )
+
+            _principals, _principal = principals_from_request_state(request)
+
             # Execute search with hierarchy scope
             (
                 items_rows,
@@ -1037,6 +1081,8 @@ class StacVirtualMixin(_Host):
                 stac_config,
                 hierarchy_sql=hierarchy_sql,
                 hierarchy_params=hierarchy_params,
+                principals=_principals,
+                principal=_principal,
             )
 
             # Map to Features

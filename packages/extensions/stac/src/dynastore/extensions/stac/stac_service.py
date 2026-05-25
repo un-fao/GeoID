@@ -769,6 +769,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         from dynastore.extensions.tools.query import (
             OGC_RESERVED_QUERY_PARAMS,
             combine_cql_filters,
+            maybe_dispatch_items_to_search_driver,
         )
 
         extra_filters = {
@@ -791,6 +792,40 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 catalog_id, collection_id, db_resource=conn
             )
 
+            # ── Routing-aware items SEARCH-driver dispatch (#1047, #1311) ─────
+            # Mirror the OGC Features / Records ``/items`` paths and STAC
+            # ``/search``: for a structural-only listing (no CQL2 ``filter`` and
+            # no ``?{property}={value}`` shorthand) resolve the items SEARCH
+            # driver via routing and dispatch through its streaming
+            # ``read_entities`` + ``count_entities`` contract. The helper threads
+            # the HTTP ``request`` so an access-aware envelope driver gets the
+            # caller's compiled read scope (fail-closed); it returns ``None`` —
+            # and ``create_item_collection`` falls back to the PG
+            # ``get_stac_items_paginated`` path unchanged — for a CQL/attribute
+            # filter, a read-primary (PG) driver, a non-ES items driver, or any
+            # dispatch error.
+            #
+            # LIMITATION (same as OGC Features/Records #1314): the PG fallback
+            # has no row-level access-filter seam, so a *filtered* listing
+            # (``?{property}={value}`` shorthand or CQL2 ``filter``) is served
+            # by PG and does NOT apply the envelope driver's row-level ABAC.
+            # This is not a regression (pre-#1311 every listing here went to PG
+            # unfiltered); it only means filtered queries on an ABAC-protected
+            # collection must use the STAC ``/search`` route, which routes
+            # through the access-aware ``search_items`` path. Closing this gap
+            # needs a PG access-filter seam or CQL2→ES translation on the
+            # envelope driver — tracked under #1285/#1311.
+            search_dispatch = None
+            if not cql_filter:
+                search_dispatch = await maybe_dispatch_items_to_search_driver(
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    limit=limit,
+                    offset=offset,
+                    has_complex_filter=False,
+                    request=request,
+                )
+
             try:
                 result = await stac_generator.create_item_collection(
                     request,
@@ -804,6 +839,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     collection_id=collection_id,
                     lang=language,
                     cql_filter=cql_filter,
+                    search_dispatch=search_dispatch,
                 )
             except ValueError as e:
                 # Unknown property / malformed CQL → 400

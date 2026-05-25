@@ -205,6 +205,39 @@ async def test_intersects_threads_into_query_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_structural_filters_thread_into_query_request(monkeypatch):
+    """Caller-supplied structural attribute predicates (e.g. the STAC
+    virtual-asset view's ``asset_id`` equality, #1311) thread through ``filters``
+    onto the dispatched ``QueryRequest`` so the ES driver folds them into the
+    query — the helper does not silently drop them."""
+    from dynastore.models.query_builder import FilterCondition
+
+    drv = _FakeEsItemsDriver(features=[], total=0)
+    cond = FilterCondition(field="asset_id", operator="=", value="asset-xyz")
+    resp = await _dispatch(monkeypatch, drv, filters=[cond])
+    assert resp is not None
+    _ = [f async for f in resp]
+    req = drv.read_calls[0]["request"]
+    assert len(req.filters) == 1
+    assert req.filters[0].field == "asset_id"
+    assert req.filters[0].value == "asset-xyz"
+    # count_entities receives the same predicate so numberMatched is consistent.
+    assert drv.count_calls[0]["request"].filters[0].field == "asset_id"
+
+
+@pytest.mark.asyncio
+async def test_filters_default_to_empty_list(monkeypatch):
+    """No ``filters`` supplied → an empty list on the request (never ``None``),
+    matching the QueryRequest default; existing structural-only callers are
+    unaffected."""
+    drv = _FakeEsItemsDriver(features=[], total=0)
+    resp = await _dispatch(monkeypatch, drv)
+    assert resp is not None
+    _ = [f async for f in resp]
+    assert drv.read_calls[0]["request"].filters == []
+
+
+@pytest.mark.asyncio
 async def test_dispatch_declines_for_pg_fallback_driver(monkeypatch):
     """A QUERY_FALLBACK_SOURCE (PG) driver → None so the PG path serves it."""
     resp = await _dispatch(monkeypatch, _FakePgFallbackDriver())
@@ -324,6 +357,30 @@ async def test_envelope_driver_threads_access_filter_at_collection_scope(monkeyp
     assert perms.calls[0]["catalog_id"] == "cat-x"
     assert perms.calls[0]["principals"] == ["user:alice", "reader"]
     assert perms.calls[0]["principal"] == "P"
+
+
+@pytest.mark.asyncio
+async def test_envelope_driver_threads_access_filter_with_structural_filters(monkeypatch):
+    """The STAC virtual-asset path (#1311 item 1) dispatches with BOTH a
+    structural ``asset_id`` predicate AND an access-aware envelope driver: the
+    compiled read scope is still threaded onto the request alongside the
+    attribute filter, so the page is access-scoped, not just asset-scoped."""
+    from dynastore.models.query_builder import FilterCondition
+
+    scope = AccessFilter.allow_everything()
+    perms = _FakePerms(scope)
+    _patch_perms(monkeypatch, perms)
+    drv = _FakeEnvelopeDriver(features=[_feat("a")], total=1)
+    cond = FilterCondition(field="asset_id", operator="=", value="asset-xyz")
+
+    resp = await _dispatch(monkeypatch, drv, filters=[cond], request=_request())
+    assert resp is not None
+    _ = [f async for f in resp]
+
+    req = drv.read_calls[0]["request"]
+    assert req.access_filter is scope
+    assert req.filters[0].field == "asset_id"
+    assert perms.calls[0]["collection_id"] == "col-a"
 
 
 @pytest.mark.asyncio
