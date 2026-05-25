@@ -256,6 +256,55 @@ async def test_new_version_closes_previous_and_opens_new(
 
 
 @pytest.mark.asyncio
+async def test_new_version_implicit_validity_is_contiguous(
+    app_lifespan, catalog_id, collection_id
+):
+    """Regression: when no ``valid_from`` is supplied (the common ingestion
+    case — features carry no temporal property), the new version's lower bound
+    defaults to the hub ``transaction_time``. The archived row's closing upper
+    bound MUST read that SAME instant, not ``datetime.now()`` evaluated per-row
+    at archive time — otherwise the two windows overlap by the few ms/s between
+    them and an as-of-now query matches both versions of the same identity.
+
+    This is the path exercised by real ingestion; the explicit-``valid_from``
+    test above could not catch the drift because it pins both bounds itself.
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    configs = get_protocol(ConfigsProtocol)
+    policy = ItemsWritePolicy(
+        on_conflict=WriteConflictPolicy.NEW_VERSION,
+        derive=DeriveSpec(external_id="properties.code"),
+        validity=ValiditySpec(start_from="context"),
+    )
+    await _provision(catalogs, configs, catalog_id, collection_id, policy)
+
+    # No processing_context valid_from on EITHER write — both bounds fall back
+    # to the per-write hub transaction_time.
+    await catalogs.upsert(catalog_id, collection_id, _feature("A", "Alpha-v1"))
+    await catalogs.upsert(
+        catalog_id, collection_id, _feature("A", "Alpha-v2", coords=(13.0, 42.0))
+    )
+
+    rows = await _attr_rows(
+        catalogs, app_lifespan.engine, catalog_id, collection_id, "A",
+        with_validity=True,
+    )
+    assert len(rows) == 2, "new_version must retain both the old and new rows"
+    old, new = rows[0], rows[1]
+    assert old["geoid"] != new["geoid"], "new_version must mint a fresh geoid"
+
+    # The crux of the regression: contiguity. The old version closes EXACTLY
+    # where the new version opens — no gap, no overlap.
+    assert old["valid_to"] is not None, "the previous version must be closed"
+    assert new["valid_to"] is None, "the new (current) version must stay open-ended"
+    assert old["valid_to"] == new["valid_from"], (
+        "archived upper bound must equal the new lower bound exactly "
+        f"(got old.valid_to={old['valid_to']} vs new.valid_from={new['valid_from']})"
+    )
+    assert old["valid_from"] < old["valid_to"], "old window must be non-empty"
+
+
+@pytest.mark.asyncio
 async def test_new_version_without_validity_falls_back_to_update(
     app_lifespan, catalog_id, collection_id
 ):
