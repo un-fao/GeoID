@@ -181,3 +181,81 @@ async def test_broadcast_drops_generated_on_input_batch_fallback():
     assert recs == batch
     for rec in recs:
         assert "geoid" not in rec
+
+
+# --- per-row rejections → FAILED outcomes (partial-batch reporting) ----------
+# A single feature that fails value/sidecar validation is surfaced by the
+# upsert via ``ctx.extensions["_rejections"]``. The job must report it as a row
+# FAILURE (so the detailed report names it) while the accepted siblings still
+# report SUCCESS — instead of the whole job aborting.
+
+
+@pytest.mark.asyncio
+async def test_broadcast_reports_rejections_as_failed_alongside_accepted():
+    batch = [{"id": "a"}, {"id": "b"}]
+    upsert_result = [{"id": "a", "item_id": "uuid-a"}]  # only 'a' persisted
+    rejections = [
+        {
+            "external_id": "b",
+            "reason": "validation_error",
+            "message": (
+                "Feature properties violate the items schema: "
+                "END_DATE: None is not of type 'string'"
+            ),
+            "record": {"id": "b", "properties": {"END_DATE": None}},
+        }
+    ]
+    reporter = _RecordingReporter()
+
+    await _broadcast_batch_outcome(
+        [reporter], batch, upsert_result, rejections=rejections
+    )
+
+    outcomes = reporter.calls[0]
+    statuses = sorted(o["status"] for o in outcomes)
+    assert statuses == ["FAILED", "SUCCESS"]
+    failed = next(o for o in outcomes if o["status"] == "FAILED")
+    assert "violate the items schema" in failed["message"]
+    assert failed["record"] == {"id": "b", "properties": {"END_DATE": None}}
+    success = next(o for o in outcomes if o["status"] == "SUCCESS")
+    assert success["record"]["item_id"] == "uuid-a"
+
+
+@pytest.mark.asyncio
+async def test_broadcast_rejection_without_record_falls_back_to_identity():
+    batch = [{"id": "a"}]
+    rejections = [
+        {
+            "geoid": "g2",
+            "external_id": "ext-2",
+            "reason": "validation_error",
+            "message": "bad",
+        }
+    ]
+    reporter = _RecordingReporter()
+
+    await _broadcast_batch_outcome(
+        [reporter], batch, upsert_result=[], rejections=rejections
+    )
+
+    failed = [o for o in reporter.calls[0] if o["status"] == "FAILED"]
+    assert len(failed) == 1
+    assert failed[0]["record"] == {"geoid": "g2", "external_id": "ext-2"}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_all_rejected_reports_only_failures():
+    batch = [{"id": "a"}, {"id": "b"}]
+    rejections = [
+        {"reason": "validation_error", "message": "bad a", "record": {"id": "a"}},
+        {"reason": "validation_error", "message": "bad b", "record": {"id": "b"}},
+    ]
+    reporter = _RecordingReporter()
+
+    await _broadcast_batch_outcome(
+        [reporter], batch, upsert_result=[], rejections=rejections
+    )
+
+    outcomes = reporter.calls[0]
+    assert len(outcomes) == 2
+    assert all(o["status"] == "FAILED" for o in outcomes)

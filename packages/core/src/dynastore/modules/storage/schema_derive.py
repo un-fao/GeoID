@@ -75,6 +75,20 @@ def derive_wire_schema(
         if fd.format is not None:
             prop["format"] = fd.format
 
+        # A non-required field is nullable: its sidecar column is created
+        # without NOT NULL, so a present-but-``null`` value is legal storage.
+        # Only the write validator needs to accept it — admit ``null`` into the
+        # property's type so a value the database would happily store is not
+        # rejected by a stricter wire check. ``required`` controls key
+        # *presence* (read schema only); nullability is the orthogonal axis.
+        # The published read schema keeps the canonical, non-null typed shape.
+        if purpose == "write" and not fd.required:
+            t = prop.get("type")
+            if isinstance(t, str):
+                prop["type"] = [t, "null"]
+            elif isinstance(t, list) and "null" not in t:
+                prop["type"] = [*t, "null"]
+
         properties[key] = prop
         if fd.required is True:
             required.append(key)

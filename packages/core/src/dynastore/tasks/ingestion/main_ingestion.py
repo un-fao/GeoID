@@ -67,37 +67,72 @@ def _enrich_report_record(record, generated: dict):
     return rec
 
 
-async def _broadcast_batch_outcome(reporters, batch: list, upsert_result, generated=None):
-    """Fan out per-row outcomes to every reporter after a successful batch upsert.
+async def _broadcast_batch_outcome(
+    reporters, batch: list, upsert_result, generated=None, rejections=None
+):
+    """Fan out per-row outcomes to every reporter after a batch upsert.
 
-    ``catalog_module.upsert`` is transactional — a clean return means every row
-    in the batch persisted, so synthesize SUCCESS outcomes 1:1 with the input
-    batch. The upsert return is preferred as the canonical ``record`` (carries
-    server-assigned fields like ``item_id``); if its shape doesn't align with
-    the input length, fall back to the input feature. Contract for the
-    payload shape lives on ``ReportingInterface.process_batch_outcome`` —
-    each item is ``{"status", "message", "record"}``.
+    Accepted rows are reported as SUCCESS and per-row ``rejections`` (the
+    upsert's ``ctx.extensions["_rejections"]`` out-list) as FAILED, so a single
+    bad row lands in the detailed report as a row failure instead of aborting
+    the whole job. Contract for the payload shape lives on
+    ``ReportingInterface.process_batch_outcome`` — each item is
+    ``{"status", "message", "record"}``.
+
+    With no rejections the upsert is transactional, so every input row
+    persisted: the read-back ``upsert_result`` is the canonical record source
+    (server-assigned fields), and if its shape doesn't line up 1:1 with the
+    input batch we fall back to the input features. When there ARE rejections
+    the batch is partial — the read-back holds only the accepted rows, so it is
+    always the success source and the rejected rows are reported separately.
 
     ``generated`` is the upsert's ``ctx.extensions["_generated_stats"]`` — per
-    item the geoid, external_id, asset_id and full computed-statistics set. It
-    is aligned with the upsert *result*, so it is only applied on the preferred
-    path (records == upsert_result); on the input-batch fallback it is dropped
-    rather than mis-zipped.
+    accepted item the geoid, external_id, asset_id and full computed-statistics
+    set, aligned with the read-back. It is applied only when its length matches
+    the success records, else dropped rather than mis-zipped.
     """
-    if isinstance(upsert_result, list) and len(upsert_result) == len(batch):
-        records = upsert_result
-    else:
+    rejections = list(rejections or [])
+    accepted = (
+        upsert_result
+        if isinstance(upsert_result, list)
+        else ([upsert_result] if upsert_result else [])
+    )
+    # Legacy defensive fallback only applies when nothing was rejected: if the
+    # read-back didn't align 1:1 with the input batch, report the input
+    # features (server fields/stats unavailable) rather than under-reporting.
+    if not rejections and len(accepted) != len(batch):
         records = batch
         generated = None
-    aligned = isinstance(generated, list) and len(generated) == len(records)
+    else:
+        records = accepted
+
+    gen = (
+        generated
+        if isinstance(generated, list) and len(generated) == len(records)
+        else None
+    )
     outcomes = []
     for i, rec in enumerate(records):
-        if aligned:
-            rec = _enrich_report_record(rec, generated[i])
+        if gen is not None:
+            rec = _enrich_report_record(rec, gen[i])
         outcomes.append({"status": "SUCCESS", "message": None, "record": rec})
-    await asyncio.gather(
-        *(reporter.process_batch_outcome(outcomes) for reporter in reporters)
-    )
+    for rej in rejections:
+        rec = rej.get("record")
+        if rec is None:
+            rec = {
+                k: rej[k]
+                for k in ("geoid", "external_id")
+                if rej.get(k) is not None
+            }
+        outcomes.append({
+            "status": "FAILED",
+            "message": rej.get("message") or rej.get("reason") or "rejected",
+            "record": rec,
+        })
+    if outcomes:
+        await asyncio.gather(
+            *(reporter.process_batch_outcome(outcomes) for reporter in reporters)
+        )
 
 
 # Top-level keys yielded by readers (e.g. GdalOsgeoReader) that are GeoJSON
@@ -523,6 +558,7 @@ async def run_ingestion_task(
                     await _broadcast_batch_outcome(
                         reporters, current_batch, upsert_result,
                         upsert_ctx.extensions.get("_generated_stats"),
+                        rejections=upsert_ctx.extensions.get("_rejections"),
                     )
                     await asyncio.gather(
                         *(
@@ -545,6 +581,7 @@ async def run_ingestion_task(
                 await _broadcast_batch_outcome(
                     reporters, current_batch, upsert_result,
                     upsert_ctx.extensions.get("_generated_stats"),
+                    rejections=upsert_ctx.extensions.get("_rejections"),
                 )
                 await asyncio.gather(
                     *(
