@@ -101,12 +101,40 @@ def _normalize_geometry(geometry: Any) -> Optional[Dict[str, Any]]:
 
 
 def _feature_to_dict(feature: Any, catalog_id: str, collection_id: str) -> Dict[str, Any]:
-    """Convert a Feature object returned by ItemsProtocol into a GeoidResult-shaped dict."""
+    """Convert a Feature object returned by ItemsProtocol into a GeoidResult-shaped dict.
+
+    ``collection_id`` is the *default* collection — the one the caller is
+    iterating. A per-catalog (not per-collection) index, such as the private ES
+    driver, resolves a by-id read regardless of the scoped collection, so the
+    matched feature may belong to a different collection than the one being
+    scanned. When the feature carries its own collection membership that
+    membership wins, so a cross-collection geoid lookup reports the collection
+    the item actually belongs to rather than the first one iterated (#1327).
+    """
     props: Dict[str, Any] = {}
     if hasattr(feature, "properties") and feature.properties:
         props = dict(feature.properties)
     elif isinstance(feature, dict):
         props = dict(feature.get("properties") or {})
+
+    # collection_id: resolve the matched item's TRUE membership, preferring (in
+    # order): the STAC top-level ``collection`` member (public/base ES feature),
+    # the canonical/flavoured ``collection_id``/``collection`` property surfaced
+    # by the private ES doc, then the caller-supplied default (PG path /
+    # fallback). The top-level read is string-guarded so non-string attribute
+    # stand-ins are ignored; consumed property keys are popped so the envelope
+    # field is not echoed back inside ``properties``.
+    top_collection = getattr(feature, "collection", None)
+    if not isinstance(top_collection, str) and isinstance(feature, dict):
+        top_collection = feature.get("collection")
+    prop_collection = props.pop("collection_id", None)
+    prop_collection_alt = props.pop("collection", None)
+    prop_collection = prop_collection or prop_collection_alt
+    resolved_collection = (
+        (top_collection if isinstance(top_collection, str) and top_collection else None)
+        or (prop_collection if isinstance(prop_collection, str) and prop_collection else None)
+        or collection_id
+    )
 
     # geoid: prefer property field; fall back to feature.id (may be external_id
     # when AttributesSidecar is configured as the id provider).
@@ -135,7 +163,7 @@ def _feature_to_dict(feature: Any, catalog_id: str, collection_id: str) -> Dict[
     return {
         "geoid": str(geoid) if geoid else None,
         "catalog_id": catalog_id,
-        "collection_id": collection_id,
+        "collection_id": resolved_collection,
         "external_id": external_id,
         "geometry": geometry,
         "bbox": bbox,
