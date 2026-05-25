@@ -1100,16 +1100,32 @@ async def create_item_collection(
     collection_id: Optional[str] = None,
     lang: str = "en",
     cql_filter: Optional[str] = None,
+    search_dispatch: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Generates a STAC ItemCollection for a single collection."""
+    """Generates a STAC ItemCollection for a single collection.
+
+    ``search_dispatch`` (#1311): when the caller has already dispatched the
+    listing to the routing-pinned items SEARCH driver (see
+    ``maybe_dispatch_items_to_search_driver``), it passes the resulting
+    ``QueryResponse`` here so this builder uses the driver-streamed features +
+    ``total_count`` instead of running the PostgreSQL ``get_stac_items_paginated``
+    fallback. ``None`` (the default) keeps the existing PG path byte-for-byte.
+    """
     # Ensure logical IDs are available for row-to-feature conversion
     catalog_id = catalog_id or schema
     collection_id = collection_id or table
 
-    items_rows, item_count = await stac_db.get_stac_items_paginated(
-        conn, catalog_id, collection_id, limit, offset, stac_config,
-        cql_filter=cql_filter,
-    )
+    if search_dispatch is not None:
+        # Driver-streamed page: the SEARCH driver already applied row-level
+        # access scoping (envelope driver) and reports numberMatched via
+        # ``count_entities``. Materialize the bounded page for item rendering.
+        items_rows = [feature async for feature in search_dispatch.items]
+        item_count = search_dispatch.total_count or 0
+    else:
+        items_rows, item_count = await stac_db.get_stac_items_paginated(
+            conn, catalog_id, collection_id, limit, offset, stac_config,
+            cql_filter=cql_filter,
+        )
 
     stac_items_tasks = [
         create_item_from_feature(

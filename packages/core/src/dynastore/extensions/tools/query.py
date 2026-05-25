@@ -82,6 +82,7 @@ async def maybe_dispatch_items_to_search_driver(
     intersects: Optional[Dict[str, Any]] = None,
     datetime: Optional[str] = None,
     ids: Optional[List[str]] = None,
+    filters: Optional[List[Any]] = None,
     limit: int = 10,
     offset: int = 0,
     has_complex_filter: bool = False,
@@ -161,11 +162,15 @@ async def maybe_dispatch_items_to_search_driver(
 
     # Single-collection /items: leave ``collections`` unset so the driver keeps
     # its routed single-collection fast path; the positional collection scopes.
+    # ``filters`` carries any caller-supplied structural attribute predicates
+    # (e.g. the virtual-asset view's ``asset_id`` equality); the ES driver folds
+    # ``eq``/``like`` conditions into the query as additional ``must`` clauses.
     query_request = QueryRequest(
         item_ids=ids,
         bbox=bbox,
         intersects=intersects,
         datetime=datetime,
+        filters=filters or [],
         limit=limit,
         offset=offset,
     )
