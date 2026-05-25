@@ -23,7 +23,7 @@ import asyncio
 import itertools
 from typing import Optional
 
-from dynastore.modules.catalog.asset_service import Asset, AssetCreate, VirtualAssetCreate
+from dynastore.modules.catalog.asset_service import Asset, VirtualAssetCreate
 from dynastore.modules.catalog.models import CoreAssetReferenceType
 
 from dynastore.modules.catalog.tools import recalculate_and_update_extents
