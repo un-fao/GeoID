@@ -167,17 +167,29 @@ def _build_private_items_routing() -> Any:
                 OperationDriverEntry(driver_ref="items_postgresql_driver"),
             ],
 
+            # SEARCH is pinned operator-managed (#1336). With ``source="auto"``
+            # here, ``_self_register_searchers_into`` is not a no-op, and the
+            # public ``items_elasticsearch_driver`` (auto_register_for_routing ⊇
+            # {SEARCH}) gets appended to a private catalog's items SEARCH list —
+            # pointing it at the SHARED public items index instead of the
+            # per-tenant private index. Marking these entries operator-sourced
+            # makes ``_is_operator_managed(SEARCH)`` true so no public driver is
+            # appended, keeping private item search isolated to PG + private ES.
+            # This is the items-tier counterpart of the catalog/collection
+            # SEARCH pin (#1335) and is consistent with the private-isolation
+            # lock (#1047). Public catalogs use the default items routing where
+            # the ES re-merge (#1320/#1323) still applies — a separate path.
             Operation.SEARCH: [
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_private_driver",
                     hints={Hint.GEOMETRY_SIMPLIFIED},
-                    source="auto",
+                    source="operator",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
                     hints={Hint.GEOMETRY_EXACT},
                     write_mode=WriteMode.SYNC,
-                    source="auto",
+                    source="operator",
                 )
             ]
         },
