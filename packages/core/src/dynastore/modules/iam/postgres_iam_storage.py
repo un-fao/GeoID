@@ -876,6 +876,26 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 object_ref=object_ref,
             ) or []
 
+    async def list_grants_for_resource(
+        self,
+        scope_schema: str,
+        resource_kind: str,
+        resource_ref: str,
+        conn: Optional[DbResource] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every grant scoped to a specific resource (the Admin UI reverse
+        "who has access to collection C" view, #1342). Whole-catalog grants
+        (``resource_kind IS NULL``) are not included — this is the
+        per-resource view.
+        """
+        async with managed_transaction(conn or self.engine) as db:
+            return await LIST_GRANTS_FOR_RESOURCE.execute(
+                db,
+                schema=scope_schema,
+                resource_kind=resource_kind,
+                resource_ref=resource_ref,
+            ) or []
+
     async def count_grants_for_object(
         self,
         scope_schema: str,
