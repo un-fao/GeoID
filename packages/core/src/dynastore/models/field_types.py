@@ -30,6 +30,13 @@ OGR field *subtypes* (``Boolean``/``Int16``/``Float32``/``JSON``/``UUID``) are
 preserved on the optional ``subtype`` axis so they are no longer flattened away;
 ``Boolean``/``JSON``/``UUID`` additionally *promote* the base ``data_type`` to
 ``boolean``/``jsonb``/``uuid`` so each driver materializes them natively.
+``Int16``/``Float32`` keep their base today and are recorded for the planned
+narrowing to ``SMALLINT``/``REAL`` (see ``CANONICAL_TO_PG_DDL`` below).
+
+The user-facing reference — the canonical vocabulary, the temporary deprecated
+aliases (see :mod:`dynastore.models.legacy_type_aliases`), and the planned
+changes — is ``docs/components/field-types.md``; keep it in sync with the tables
+in this module.
 """
 
 from __future__ import annotations

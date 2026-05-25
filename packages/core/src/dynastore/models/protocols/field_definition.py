@@ -96,12 +96,16 @@ class FieldDefinition(BaseModel):
     capabilities: List[FieldCapability] = []
     data_type: str = Field(
         description=(
-            "Canonical, GDAL-rooted field type. One of: "
+            "Canonical, GDAL-rooted field type. WORKS TODAY: one of "
             + ", ".join(sorted(CANONICAL_DATA_TYPES))
-            + "; or a parametrized geometry such as ``geometry(Point,4326)``. "
-            "Legacy SQL spellings (e.g. text, int, float, datetime, json, bool) "
-            "are accepted and normalized to the canonical token during a "
-            "temporary migration window."
+            + ", or a parametrized geometry such as ``geometry(Point,4326)``; "
+            "gdalinfo types are accepted via the items-schema/derive endpoint, "
+            "which translates OGR names (e.g. Real -> double) to these tokens. "
+            "DEPRECATED (still accepted, will be removed): legacy SQL spellings "
+            "(e.g. text, int, float, real, datetime, json, bool) are folded to "
+            "the canonical token during a temporary migration window. See the "
+            "Field Types reference (docs/components/field-types.md) for the full "
+            "today / deprecated / planned breakdown."
         ),
         json_schema_extra={
             "examples": ["string", "integer", "timestamp", "geometry(Point,4326)"],
@@ -113,7 +117,9 @@ class FieldDefinition(BaseModel):
             "Optional OGR-style refinement of ``data_type``, carrying the "
             "gdalinfo subtype so it is not flattened away. One of: "
             + ", ".join(sorted(CANONICAL_SUBTYPES))
-            + "."
+            + ". boolean/json/uuid promote the base type today; int16/float32 "
+            "keep their base now and are recorded for the planned narrowing to "
+            "SMALLINT/REAL (see docs/components/field-types.md)."
         ),
     )
     # Driver-computed read-projection detail (e.g. "h.geom", "a.asset_id"). NOT
