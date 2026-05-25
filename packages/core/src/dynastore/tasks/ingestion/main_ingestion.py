@@ -40,7 +40,34 @@ from .operations import initialize_operations, run_pre_operations, run_post_oper
 logger = logging.getLogger(__name__)
 
 
-async def _broadcast_batch_outcome(reporters, batch: list, upsert_result):
+def _enrich_report_record(record, generated: dict):
+    """Stamp the info the ingestion generated onto one report record.
+
+    Identity (``geoid`` / ``external_id`` / ``asset_id``) goes to the record
+    top level — each only when actually produced, so absent values simply don't
+    appear ("if enabled"). Every generated statistic is merged into
+    ``properties`` (the "calculated attributes"); a real attribute wins on a
+    name clash. Returns a plain ``dict`` so every reporter sees one shape — the
+    same normalisation ``GcsDetailedReporter`` already applies.
+    """
+    if hasattr(record, "model_dump"):
+        rec = record.model_dump(mode="json", exclude_none=True)
+    elif isinstance(record, dict):
+        rec = dict(record)
+    else:
+        return record
+    for key in ("geoid", "external_id", "asset_id"):
+        value = generated.get(key)
+        if value is not None:
+            rec[key] = value
+    stats = generated.get("stats") or {}
+    if stats:
+        props = rec.get("properties")
+        rec["properties"] = {**stats, **(props if isinstance(props, dict) else {})}
+    return rec
+
+
+async def _broadcast_batch_outcome(reporters, batch: list, upsert_result, generated=None):
     """Fan out per-row outcomes to every reporter after a successful batch upsert.
 
     ``catalog_module.upsert`` is transactional — a clean return means every row
@@ -50,14 +77,24 @@ async def _broadcast_batch_outcome(reporters, batch: list, upsert_result):
     the input length, fall back to the input feature. Contract for the
     payload shape lives on ``ReportingInterface.process_batch_outcome`` —
     each item is ``{"status", "message", "record"}``.
+
+    ``generated`` is the upsert's ``ctx.extensions["_generated_stats"]`` — per
+    item the geoid, external_id, asset_id and full computed-statistics set. It
+    is aligned with the upsert *result*, so it is only applied on the preferred
+    path (records == upsert_result); on the input-batch fallback it is dropped
+    rather than mis-zipped.
     """
     if isinstance(upsert_result, list) and len(upsert_result) == len(batch):
         records = upsert_result
     else:
         records = batch
-    outcomes = [
-        {"status": "SUCCESS", "message": None, "record": rec} for rec in records
-    ]
+        generated = None
+    aligned = isinstance(generated, list) and len(generated) == len(records)
+    outcomes = []
+    for i, rec in enumerate(records):
+        if aligned:
+            rec = _enrich_report_record(rec, generated[i])
+        outcomes.append({"status": "SUCCESS", "message": None, "record": rec})
     await asyncio.gather(
         *(reporter.process_batch_outcome(outcomes) for reporter in reporters)
     )
@@ -474,16 +511,18 @@ async def run_ingestion_task(
                 current_batch.append(feature)
 
                 if len(current_batch) >= batch_size:
+                    upsert_ctx = DriverContext(db_resource=engine)
                     upsert_result = await catalog_module.upsert(
                         catalog_id,
                         collection_id,
                         current_batch,
-                        ctx=DriverContext(db_resource=engine),
+                        ctx=upsert_ctx,
                         processing_context=upsert_context,
                     )
                     rows_ingested += len(current_batch)
                     await _broadcast_batch_outcome(
-                        reporters, current_batch, upsert_result
+                        reporters, current_batch, upsert_result,
+                        upsert_ctx.extensions.get("_generated_stats"),
                     )
                     await asyncio.gather(
                         *(
@@ -494,16 +533,18 @@ async def run_ingestion_task(
                     current_batch = []
 
             if current_batch:
+                upsert_ctx = DriverContext(db_resource=engine)
                 upsert_result = await catalog_module.upsert(
                     catalog_id,
                     collection_id,
                     current_batch,
-                    ctx=DriverContext(db_resource=engine),
+                    ctx=upsert_ctx,
                     processing_context=upsert_context,
                 )
                 rows_ingested += len(current_batch)
                 await _broadcast_batch_outcome(
-                    reporters, current_batch, upsert_result
+                    reporters, current_batch, upsert_result,
+                    upsert_ctx.extensions.get("_generated_stats"),
                 )
                 await asyncio.gather(
                     *(

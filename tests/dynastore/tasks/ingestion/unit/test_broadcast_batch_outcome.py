@@ -15,7 +15,10 @@ import pytest
 
 import dynastore.models.protocols  # noqa: F401  (pre-warm registration chain)
 
-from dynastore.tasks.ingestion.main_ingestion import _broadcast_batch_outcome
+from dynastore.tasks.ingestion.main_ingestion import (
+    _broadcast_batch_outcome,
+    _enrich_report_record,
+)
 
 
 class _RecordingReporter:
@@ -100,3 +103,81 @@ async def test_broadcast_fans_out_to_every_reporter():
 async def test_broadcast_with_empty_reporter_list_is_a_noop():
     """Reporter list may be empty when the task request omits ``reporting``."""
     await _broadcast_batch_outcome([], [{"id": "a"}], upsert_result=None)
+
+
+# --- generated-info enrichment (geoid / external_id / asset_id / statistics) --
+
+
+def test_enrich_stamps_identity_at_top_level_and_stats_into_properties():
+    record = {"type": "Feature", "id": "geoid-a", "properties": {"NAME": "Friuli"}}
+    generated = {
+        "geoid": "geoid-a",
+        "external_id": "1621",
+        "asset_id": "ITAL1_01",
+        "stats": {"area": 7845.0, "perimeter": 412.3},
+    }
+    out = _enrich_report_record(record, generated)
+    assert out["geoid"] == "geoid-a"
+    assert out["external_id"] == "1621"
+    assert out["asset_id"] == "ITAL1_01"
+    # generated statistics land under properties (the calculated attributes),
+    # alongside the real attribute, which wins on a name clash.
+    assert out["properties"] == {"NAME": "Friuli", "area": 7845.0, "perimeter": 412.3}
+
+
+def test_enrich_omits_absent_identity_keys():
+    """external_id / asset_id only appear when the ingestion produced them."""
+    out = _enrich_report_record(
+        {"properties": {}},
+        {"geoid": "g", "external_id": None, "asset_id": None, "stats": {}},
+    )
+    assert out["geoid"] == "g"
+    assert "external_id" not in out
+    assert "asset_id" not in out
+
+
+def test_enrich_does_not_overwrite_real_attribute_with_stat():
+    out = _enrich_report_record(
+        {"properties": {"area": "surveyed"}},
+        {"geoid": "g", "stats": {"area": 7845.0}},
+    )
+    assert out["properties"]["area"] == "surveyed"
+
+
+@pytest.mark.asyncio
+async def test_broadcast_applies_generated_when_aligned_with_result():
+    batch = [{"id": "1621"}, {"id": "1622"}]
+    upsert_result = [
+        {"type": "Feature", "id": "geo-1", "properties": {"NAME": "A"}},
+        {"type": "Feature", "id": "geo-2", "properties": {"NAME": "B"}},
+    ]
+    generated = [
+        {"geoid": "geo-1", "external_id": "1621", "asset_id": "X", "stats": {"area": 1.0}},
+        {"geoid": "geo-2", "external_id": "1622", "asset_id": "X", "stats": {"area": 2.0}},
+    ]
+    reporter = _RecordingReporter()
+
+    await _broadcast_batch_outcome([reporter], batch, upsert_result, generated)
+
+    recs = [o["record"] for o in reporter.calls[0]]
+    assert recs[0]["geoid"] == "geo-1"
+    assert recs[0]["external_id"] == "1621"
+    assert recs[0]["properties"] == {"NAME": "A", "area": 1.0}
+    assert recs[1]["properties"] == {"NAME": "B", "area": 2.0}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_drops_generated_on_input_batch_fallback():
+    """Generated stats align with the upsert result, not the input batch, so a
+    shape mismatch (which falls back to the input batch) must not stamp them."""
+    batch = [{"id": "1621"}, {"id": "1622"}]
+    generated = [{"geoid": "geo-1", "stats": {"area": 1.0}}]  # wrong length anyway
+    reporter = _RecordingReporter()
+
+    # single-dict upsert_result → fallback to input batch
+    await _broadcast_batch_outcome([reporter], batch, {"id": "1621"}, generated)
+
+    recs = [o["record"] for o in reporter.calls[0]]
+    assert recs == batch
+    for rec in recs:
+        assert "geoid" not in rec
