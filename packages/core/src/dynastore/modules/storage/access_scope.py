@@ -11,18 +11,21 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""Shared read-scope compilation for the access-controlled envelope index.
+"""Shared read-scope compilation for access-controlled storage drivers.
 
-Every search entry point that dispatches to the envelope driver (the STAC
-``/search`` fast path and the search extension's ``/search`` family) must
-derive the SAME row-level read scope for a given principal. Keeping that single
-piece of security logic in one place — rather than re-implementing it per entry
-point — is what stops the two paths from drifting (a looser path is a leak).
+Every read entry point that dispatches to an access-aware driver (the STAC
+``/search`` fast path, the search extension's ``/search`` family and the OGC
+API ``/items`` listings) must derive the SAME row-level read scope for a given
+principal. Keeping that single piece of security logic in one place — rather
+than re-implementing it per entry point — is what stops the paths from drifting
+(a looser path is a leak). This module is driver-agnostic: it lives in the
+storage core, not under any one driver, so core dispatch code can reach it
+without importing a driver package.
 
-The function reaches the authorization engine ONLY through the neutral
-``PermissionProtocol`` + ``AccessFilter`` contract via ``get_protocol`` — it
-imports nothing from the IAM module, so the storage layer stays decoupled from
-authz internals.
+The functions reach the authorization engine ONLY through the neutral
+``PermissionProtocol`` + ``AccessFilter`` contract via ``get_protocol`` — they
+import nothing from the IAM module at runtime, so the storage layer stays
+decoupled from authz internals.
 
 Fail-closed: when no ``PermissionProtocol`` is registered (an access-aware
 driver in a deployment with no authz engine) the result is
@@ -30,12 +33,20 @@ driver in a deployment with no authz engine) the result is
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
+
+    from dynastore.models.auth import Principal
+    from dynastore.models.protocols.access_filter import AccessFilter
 
 __all__ = ["compile_read_access_filter", "principals_from_request_state"]
 
 
-def principals_from_request_state(request: Any) -> Tuple[List[str], Optional[Any]]:
+def principals_from_request_state(
+    request: "Request",
+) -> "Tuple[List[str], Optional[Principal]]":
     """Derive ``(principals, principal)`` from IAM-middleware request state.
 
     ``IamMiddleware`` populates ``request.state.principal`` (a ``Principal`` or
@@ -48,7 +59,7 @@ def principals_from_request_state(request: Any) -> Tuple[List[str], Optional[Any
     non-empty list (public-only scope), never an empty one.
     """
     state = getattr(request, "state", None)
-    principal = getattr(state, "principal", None)
+    principal: "Optional[Principal]" = getattr(state, "principal", None)
     principal_id = getattr(state, "principal_id", None)
     principal_role = getattr(state, "principal_role", None)
     principals: List[str] = []
@@ -66,8 +77,8 @@ async def compile_read_access_filter(
     catalog_id: Optional[str],
     collections: Optional[List[str]],
     principals: Optional[List[str]],
-    principal: Optional[Any],
-) -> "Any":
+    principal: "Optional[Principal]",
+) -> "AccessFilter":
     """Compile the caller's read scope to a neutral ``AccessFilter``.
 
     Returns ``AccessFilter.deny_everything()`` when no ``PermissionProtocol`` is

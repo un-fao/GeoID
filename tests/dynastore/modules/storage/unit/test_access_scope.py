@@ -11,8 +11,8 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""Unit tests for the shared read-scope compile helper used by every search
-entry point that dispatches to the access-controlled envelope driver."""
+"""Unit tests for the shared read-scope compile helper used by every read
+entry point that dispatches to an access-aware storage driver."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from dynastore.models.protocols.access_filter import AccessClause, AccessFilter, FieldPredicate
-from dynastore.modules.storage.drivers.elasticsearch_envelope import access_scope
+from dynastore.modules.storage import access_scope
 
 
 class _FakePerms:

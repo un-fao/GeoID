@@ -563,7 +563,7 @@ class SearchService(ExtensionProtocol):
         from dynastore.modules.storage.drivers.elasticsearch_envelope.access_translate import (
             access_filter_to_es,
         )
-        from dynastore.modules.storage.drivers.elasticsearch_envelope.access_scope import (
+        from dynastore.modules.storage.access_scope import (
             compile_read_access_filter,
         )
         from dynastore.modules.storage.drivers.es_common import merge_es_filter
