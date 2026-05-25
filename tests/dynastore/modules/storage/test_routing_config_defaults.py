@@ -46,6 +46,82 @@ def test_default_read_routing_unchanged():
     assert pg_read.on_failure == FailurePolicy.FATAL
 
 
+def test_default_items_search_declares_op_appropriate_hints():
+    """SEARCH entries declare the search-flavour hints each driver serves so a
+    resolved config is self-documenting. ES carries the search engine flavours
+    (search/fulltext/attribute_filter/...); PG carries the relational ones
+    (attribute_filter/group_by/geometry_exact/...)."""
+    from dynastore.modules.storage.hints import Hint
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig, Operation,
+    )
+    cfg = ItemsRoutingConfig()
+    search = cfg.operations[Operation.SEARCH]
+    es = next(e for e in search if e.driver_ref == "items_elasticsearch_driver")
+    pg = next(e for e in search if e.driver_ref == "items_postgresql_driver")
+    # both serve the common filter/sort flavours
+    for h in (Hint.ATTRIBUTE_FILTER, Hint.SPATIAL_FILTER, Hint.SORT):
+        assert h in es.hints and h in pg.hints
+    # engine-only vs relational-only
+    assert Hint.FULLTEXT in es.hints and Hint.SEARCH in es.hints
+    assert Hint.GROUP_BY in pg.hints
+    assert Hint.GEOMETRY_SIMPLIFIED in es.hints
+    assert Hint.GEOMETRY_EXACT in pg.hints
+
+
+def test_default_items_search_excludes_read_only_hints():
+    """``tiles`` (and other non-search hints) only make sense on READ — they
+    must NOT appear in SEARCH entries."""
+    from dynastore.modules.storage.hints import Hint
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig, Operation,
+    )
+    cfg = ItemsRoutingConfig()
+    for e in cfg.operations[Operation.SEARCH]:
+        assert Hint.TILES not in e.hints
+        assert Hint.WRITE not in e.hints
+        assert Hint.METADATA not in e.hints
+        assert Hint.JOIN not in e.hints
+    # tiles is still declared where it belongs: the PG READ entry
+    read = cfg.operations[Operation.READ]
+    pg_read = next(e for e in read if e.driver_ref == "items_postgresql_driver")
+    assert Hint.TILES in pg_read.hints
+
+
+def test_default_items_filtered_search_resolves_es_first():
+    """A filtered/sorted search routes to ES first (the search engine): the
+    declared ES search surface is a strict superset-by-size of PG's, so the
+    best-overlap matcher's longest-effective tiebreak ranks ES above PG for any
+    flavour both serve. Unfiltered search keeps declared order (ES then PG)."""
+    from dynastore.modules.storage.hints import Hint
+    from dynastore.modules.storage.routing_config import (
+        ItemsRoutingConfig, Operation,
+    )
+    cfg = ItemsRoutingConfig()
+    search = cfg.operations[Operation.SEARCH]
+    es = next(e for e in search if e.driver_ref == "items_elasticsearch_driver")
+    pg = next(e for e in search if e.driver_ref == "items_postgresql_driver")
+
+    def resolve(requested):
+        if not requested:
+            return [e.driver_ref for e in search]
+        matched = [
+            (i, e) for i, e in enumerate(search)
+            if requested.issubset(frozenset(e.hints))
+        ]
+        matched.sort(key=lambda t: (-len(t[1].hints), t[0]))
+        return [e.driver_ref for _, e in matched]
+
+    assert len(es.hints) > len(pg.hints)  # ES wins the longest-effective tiebreak
+    assert resolve(frozenset()) == [
+        "items_elasticsearch_driver", "items_postgresql_driver",
+    ]
+    for flavour in (Hint.ATTRIBUTE_FILTER, Hint.SPATIAL_FILTER, Hint.SORT):
+        assert resolve(frozenset({flavour}))[0] == "items_elasticsearch_driver"
+    # group_by is relational-only → PG even though ES is listed first
+    assert resolve(frozenset({Hint.GROUP_BY})) == ["items_postgresql_driver"]
+
+
 def test_collection_routing_default_write_is_pg_fatal():
     from dynastore.modules.storage.routing_config import (
         CollectionRoutingConfig, FailurePolicy, Operation, WriteMode,

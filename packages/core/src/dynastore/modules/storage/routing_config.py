@@ -625,13 +625,41 @@ class ItemsRoutingConfig(_RoutingConfigBase):
                 ),
             ],
             Operation.SEARCH: [
+                # SEARCH entries declare the search-flavour hints each driver
+                # serves, so a resolved config is self-documenting and the
+                # routing intent is explicit (mirrors the READ defaults and
+                # CollectionRoutingConfig SEARCH). Each set is the driver's
+                # ``supported_hints`` restricted to search-applicable flavours:
+                # operation-specific hints stay out (e.g. ``TILES`` is a READ
+                # concern and lives only on the PG READ entry, never here;
+                # ``WRITE``/``METADATA``/``JOIN`` are not search flavours).
+                #
+                # Consequence of declaring these explicitly: the best-overlap
+                # matcher (router.py) now ranks by the DECLARED surface rather
+                # than the driver-class fallback, so a filtered/sorted search
+                # (``attribute_filter``/``spatial_filter``/``sort``) routes to
+                # ES first — the search engine — instead of PG (which only won
+                # before as an accident of PG's longer total ``supported_hints``
+                # surface). Unfiltered search is unaffected (the matcher is
+                # skipped on empty request-hints, so declared order ES→PG holds).
                 OperationDriverEntry(
                     driver_ref="items_elasticsearch_driver",
+                    hints={
+                        Hint.SEARCH, Hint.FULLTEXT, Hint.GEOMETRY_SIMPLIFIED,
+                        Hint.SPATIAL_FILTER, Hint.ATTRIBUTE_FILTER, Hint.SORT,
+                        Hint.AGGREGATION, Hint.COUNT, Hint.STATISTICS,
+                    },
                     on_failure=FailurePolicy.FATAL,
                     source="auto",
                 ),
                 OperationDriverEntry(
                     driver_ref="items_postgresql_driver",
+                    hints={
+                        Hint.GEOMETRY_EXACT,
+                        Hint.SPATIAL_FILTER, Hint.ATTRIBUTE_FILTER, Hint.SORT,
+                        Hint.GROUP_BY, Hint.AGGREGATION, Hint.COUNT,
+                        Hint.STATISTICS,
+                    },
                     on_failure=FailurePolicy.FATAL,
                     source="auto",
                 ),
