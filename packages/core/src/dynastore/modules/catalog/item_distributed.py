@@ -304,14 +304,22 @@ class ItemDistributedMixin(_Host):
             if active_rec and effective_on_conflict == WriteConflictPolicy.NEW_VERSION:
                 # Archive the existing version before inserting. The close-point
                 # MUST equal the incoming version's validity start so the
-                # temporal history stays contiguous (no gap/overlap). The new
-                # version's ``valid_from`` is resolved from the write context
-                # (``processing_context``), so the archived row's upper bound
-                # must read the same source — falling back to the hub payload
-                # and finally ingestion time.
+                # temporal history stays contiguous (no gap/overlap).
+                #
+                # The new version's ``valid_from`` is resolved the same way the
+                # attributes sidecar resolves it in ``finalize_upsert_payload``:
+                #   1. an explicit feature/context ``valid_from`` if present;
+                #   2. otherwise the new hub row's ``transaction_time`` (the
+                #      authoritative per-item ingestion instant, set once in
+                #      ``item_service``) — NOT ``now()``, which is evaluated
+                #      per-row at archive time and lands a few ms/s later than
+                #      the new row's ``valid_from``, producing overlapping
+                #      windows. ``expire_at`` must read that SAME source so the
+                #      archived upper bound equals the new lower bound exactly.
                 expire_at = (
                     processing_context.get("valid_from")
                     or hub_payload.get("valid_from")
+                    or hub_payload.get("transaction_time")
                     or datetime.now(timezone.utc)
                 )
                 for sidecar in sidecars:
