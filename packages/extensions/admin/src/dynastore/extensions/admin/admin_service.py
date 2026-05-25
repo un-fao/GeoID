@@ -16,7 +16,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -33,7 +33,8 @@ from dynastore.models.protocols.catalogs import CatalogsProtocol
 from dynastore.models.protocols.policies import (
     Policy, Role, Principal,
     RoleCreate, RoleUpdate, RoleResponse,
-    PrincipalResponse, AssignRoleRequest,
+    PrincipalResponse, AssignRoleRequest, CreateBindingRequest,
+    PermissionProtocol,
 )
 
 from dynastore.extensions.iam.guards import ensure_privileged_role_assignment
@@ -858,6 +859,170 @@ class AdminService(ExtensionProtocol):
                 )
             )
         return result
+
+    # ---- Collection-scope bindings (#1342 — generic role|policy grant
+    #      with effect / validity / per-binding quota, scoped to a
+    #      collection via the unified `grants` table) -----------------------
+    #
+    # These are the write path that activates the dormant resource-scope
+    # (#1341) and per-binding quota (#1344) features: until an operator
+    # authors a collection-scoped binding here, the resolver has nothing
+    # scoped to enforce. The resource scope (collection) comes from the URL,
+    # never the body, so a request can only bind within the path it targets.
+
+    @router.post(
+        "/catalogs/{catalog_id}/collections/{collection_id}/grants",
+        status_code=201,
+        summary="Create a collection-scoped binding (role|policy) for a principal",
+    )
+    async def create_collection_binding(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        body: CreateBindingRequest,
+    ):
+        mgr = _iam()
+        # Role bindings carry privilege-escalation risk — gate exactly like
+        # the catalog-scope role grant (platform-tier names blocked; catalog
+        # admins may still bind catalog-tier roles within their own catalog).
+        # Policy bindings are not role escalations and the route is already
+        # admin-gated, so no extra guard there.
+        if body.object_kind == "role":
+            await ensure_privileged_role_assignment(
+                request, body.object_ref,
+                protected_roles=IamRolesConfig().platform_admin_tier_role_set,
+            )
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        p = await mgr.get_principal(body.subject_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        # The bound object must exist in this catalog scope.
+        if body.object_kind == "role":
+            registered = await mgr.list_roles(catalog_id=catalog_id)
+            if not any(r.name == body.object_ref for r in registered):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Role '{body.object_ref}' is not registered for "
+                        f"catalog '{catalog_id}'."
+                    ),
+                )
+        else:
+            perm = get_protocol(PermissionProtocol)
+            pol = (
+                await perm.get_policy(body.object_ref, catalog_id=catalog_id)
+                if perm is not None
+                else None
+            )
+            if pol is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Policy '{body.object_ref}' not found for "
+                        f"catalog '{catalog_id}'."
+                    ),
+                )
+        granted_by = getattr(getattr(request.state, "principal", None), "id", None)
+        try:
+            grant_id = await mgr.storage.grant(
+                scope_schema=await mgr.resolve_schema(catalog_id),
+                subject_kind="principal",
+                subject_ref=str(body.subject_id),
+                object_kind=body.object_kind,
+                object_ref=body.object_ref,
+                effect=body.effect,
+                valid_from=body.valid_from,
+                valid_until=body.valid_until,
+                quota=body.quota,
+                granted_by=granted_by,
+                resource_kind="collection",
+                resource_ref=collection_id,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "id": str(grant_id) if grant_id else None,
+            "subject_id": str(body.subject_id),
+            "object_kind": body.object_kind,
+            "object_ref": body.object_ref,
+            "effect": body.effect,
+            "resource_kind": "collection",
+            "resource_ref": collection_id,
+        }
+
+    @router.get(
+        "/catalogs/{catalog_id}/collections/{collection_id}/grants",
+        summary="List collection-scoped bindings (by principal, or reverse who-has-access)",
+    )
+    async def list_collection_bindings(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        collection_id: str,
+        principal_id: Optional[UUID] = Query(
+            None,
+            description="Filter to one principal's bindings effective in this collection.",
+        ),
+    ):
+        mgr = _iam()
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        schema = await mgr.resolve_schema(catalog_id)
+        if principal_id is not None:
+            rows = await mgr.storage.list_grants_for_subject(
+                scope_schema=schema,
+                subject_kind="principal",
+                subject_ref=str(principal_id),
+            )
+            # A binding applies to this collection if it is scoped here or is
+            # catalog-wide (resource_kind NULL) — mirrors the resolver's
+            # additive scope semantics.
+            return [
+                r for r in rows
+                if r.get("resource_ref") == collection_id
+                or r.get("resource_kind") is None
+            ]
+        # Reverse view: every principal bound on this specific collection.
+        return await mgr.storage.list_grants_for_resource(
+            scope_schema=schema,
+            resource_kind="collection",
+            resource_ref=collection_id,
+        )
+
+    @router.delete(
+        "/catalogs/{catalog_id}/collections/{collection_id}/grants",
+        status_code=204,
+        summary="Revoke a collection-scoped binding (by match)",
+    )
+    async def revoke_collection_binding(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        subject_id: UUID = Query(..., description="Principal whose binding is revoked."),
+        object_kind: Literal["role", "policy"] = Query(...),
+        object_ref: str = Query(...),
+        effect: Literal["allow", "deny"] = Query("allow"),
+    ):
+        mgr = _iam()
+        if object_kind == "role":
+            await ensure_privileged_role_assignment(
+                request, object_ref,
+                protected_roles=IamRolesConfig().platform_admin_tier_role_set,
+            )
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        try:
+            await mgr.storage.revoke_by_match(
+                scope_schema=await mgr.resolve_schema(catalog_id),
+                subject_kind="principal",
+                subject_ref=str(subject_id),
+                object_kind=object_kind,
+                object_ref=object_ref,
+                effect=effect,
+                resource_kind="collection",
+                resource_ref=collection_id,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     # -------------------------------------------------------------------------
     # Role Management (/admin/roles)

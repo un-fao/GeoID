@@ -12,7 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import Protocol, List, Literal, Optional, Tuple, Any, runtime_checkable
+from datetime import datetime
+from typing import Dict, Protocol, List, Literal, Optional, Tuple, Any, runtime_checkable
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -77,6 +79,42 @@ class RoleResponse(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     role: str
+
+
+class CreateBindingRequest(BaseModel):
+    """A generic IAM binding scoped to a resource (collection / item).
+
+    The resource scope (``resource_kind`` / ``resource_ref``) is taken from
+    the route path, not the body, so a request can only ever bind within the
+    URL it targets. The body declares *what* is bound (a ``role`` or a
+    ``policy``) to *whom* (``subject_id``), with the binding's effect,
+    validity window, and optional per-binding ``quota`` (rate-limit /
+    lifetime-quota spec consumed by the IAM counter conditions).
+    """
+
+    subject_id: UUID = Field(description="Principal that receives the binding.")
+    object_kind: Literal["role", "policy"] = Field(
+        description="Whether the binding grants a role or a direct policy."
+    )
+    object_ref: str = Field(description="Role name or policy id being bound.")
+    effect: Literal["allow", "deny"] = Field(
+        default="allow",
+        description="allow grants; deny is enforced with deny-precedence.",
+    )
+    valid_from: Optional[datetime] = Field(
+        default=None, description="Binding becomes active at this time (default: now)."
+    )
+    valid_until: Optional[datetime] = Field(
+        default=None, description="Binding expires at this time (default: never)."
+    )
+    quota: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Per-binding rate-limit / lifetime-quota spec, e.g. "
+            "{'rate_limit': {'limit': 100, 'window_seconds': 60}} or "
+            "{'max_count': {'limit': 100000}}."
+        ),
+    )
 
 
 class PrincipalResponse(BaseModel):

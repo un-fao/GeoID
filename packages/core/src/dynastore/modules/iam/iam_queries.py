@@ -737,6 +737,23 @@ LIST_GRANTS_FOR_OBJECT = DQLQuery(
     result_handler=ResultHandler.ALL_DICTS,
 )
 
+# Reverse "who has access to this resource" lookup for the Admin UI
+# bindings tab (#1342): every grant scoped to a specific resource
+# (e.g. resource_kind='collection', resource_ref=<collection id>).
+# Whole-catalog grants (resource_kind IS NULL) are intentionally NOT
+# returned — this is the per-resource view, not the catalog-wide one.
+LIST_GRANTS_FOR_RESOURCE = DQLQuery(
+    """
+    SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
+           valid_from, valid_until, conditions, quota, granted_by, granted_at,
+           resource_kind, resource_ref
+    FROM {schema}.grants
+    WHERE resource_kind = :resource_kind AND resource_ref = :resource_ref
+    ORDER BY subject_ref, object_kind, object_ref;
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
 # Used by the `?cascade=true` precheck on role/policy-definition delete.
 COUNT_GRANTS_FOR_OBJECT = DQLQuery(
     """
