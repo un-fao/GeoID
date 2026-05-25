@@ -664,6 +664,8 @@ class PolicyService:
         schema: str,
         catalog_id: Optional[str] = None,
         custom_policies: Optional[List[Policy]] = None,
+        principal_id: Optional[UUID] = None,
+        collection_id: Optional[str] = None,
     ) -> List[Policy]:
         """Resolve the full policy set for ``principals`` in one read scope.
 
@@ -687,6 +689,10 @@ class PolicyService:
         # 1. Fetch all roles matching any of the principals to resolve policy IDs
         # Always check the global "iam" schema first for roles
         all_policy_ids = set()
+        # Role names already resolved via the flat-name path. Used by the
+        # grant-based step below so a role granted *and* present as a flat
+        # principal name is not double-counted.
+        resolved_roles: set[str] = set()
         schemas_to_check = ["iam"]  # Always check global schema
         if schema != "iam":
             schemas_to_check.append(
@@ -708,6 +714,7 @@ class PolicyService:
                             f"EVAL: Found role '{principal}' schema={check_schema} policies={role_obj.policies}"
                         )
                         all_policy_ids.update(role_obj.policies)
+                        resolved_roles.add(principal)
                     else:
                         logger.debug(
                             f"EVAL: Role '{principal}' not found in schema '{check_schema}'."
@@ -728,6 +735,83 @@ class PolicyService:
         if custom_policies:
             effective_policies.extend(custom_policies)
 
+        # 4. Resource-scoped (and whole-catalog) grants from the unified
+        # grants table. The flat-name path above only resolves roles a
+        # caller passed in by name; a principal whose authority comes from a
+        # *grant row* (e.g. a collection-scoped role binding) is invisible
+        # to that path. Resolve those grant rows → role names → policies and
+        # APPEND. This only ADDS policies, never removes — deny-precedence in
+        # ``evaluate_access`` / ``compile_read_filter`` still wins. Fully
+        # fail-closed: on any error we log a WARNING and evaluate on the
+        # pre-step set (no widening).
+        # ``resolve_effective_grants`` is a concrete PostgresIamStorage method,
+        # not on the AbstractIamStorage interface — fetch via getattr so the
+        # resolution is optional for storages that don't implement it.
+        resolve_grants = getattr(self.iam_storage, "resolve_effective_grants", None)
+        if (
+            principal_id is not None
+            and self.iam_storage is not None
+            and resolve_grants is not None
+        ):
+            try:
+                grant_rows = await resolve_grants(
+                    principal_id=principal_id,
+                    catalog_schema=schema,
+                    collection_id=collection_id,
+                )
+                granted_role_names = {
+                    row["object_ref"]
+                    for row in (grant_rows or [])
+                    if row.get("object_kind") == "role"
+                    and row.get("object_ref")
+                    and row["object_ref"] not in resolved_roles
+                }
+                for role_name in granted_role_names:
+                    resolved_roles.add(role_name)
+                    grant_policy_ids: set = set()
+                    for check_schema in schemas_to_check:
+                        role_obj = await self.iam_storage.get_role(
+                            role_name, schema=check_schema
+                        )
+                        if role_obj:
+                            grant_policy_ids.update(role_obj.policies)
+                    for pid in grant_policy_ids:
+                        pol = await self.get_policy(pid, catalog_id=catalog_id)
+                        if not pol and catalog_id:
+                            pol = await self.get_policy(pid, catalog_id=None)
+                        if pol:
+                            effective_policies.append(pol)
+                # Direct policy grants (object_kind='policy'): a policy bound
+                # straight to the principal, optionally collection-scoped.
+                # Attach it; its own ALLOW/DENY effect governs via the
+                # ranking in the caller. Dedup against policies already
+                # collected so a policy reachable both via a role and
+                # directly is not double-listed.
+                seen_ids = {p.id for p in effective_policies}
+                granted_policy_ids = {
+                    row["object_ref"]
+                    for row in (grant_rows or [])
+                    if row.get("object_kind") == "policy" and row.get("object_ref")
+                }
+                for pid in granted_policy_ids:
+                    if pid in seen_ids:
+                        continue
+                    pol = await self.get_policy(pid, catalog_id=catalog_id)
+                    if not pol and catalog_id:
+                        pol = await self.get_policy(pid, catalog_id=None)
+                    if pol:
+                        effective_policies.append(pol)
+                        seen_ids.add(pol.id)
+            except Exception:
+                logger.warning(
+                    "EVAL: resource-scoped grant resolution failed for "
+                    "principal_id=%s collection_id=%s; evaluating on the "
+                    "pre-grant policy set (fail-closed).",
+                    principal_id,
+                    collection_id,
+                    exc_info=True,
+                )
+
         return effective_policies
 
     async def evaluate_access(
@@ -738,10 +822,17 @@ class PolicyService:
         request_context: Any = None,
         catalog_id: Optional[str] = None,
         custom_policies: Optional[List[Policy]] = None,
+        principal_id: Optional[UUID] = None,
+        collection_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         The central Zero-Trust evaluation engine.
         Returns (is_allowed, reason).
+
+        ``principal_id``/``collection_id`` (optional) enable resolution of
+        resource-scoped (and whole-catalog) grants from the unified grants
+        table for this principal. When ``principal_id`` is ``None`` the
+        behaviour is unchanged from before grant-scope enforcement.
         """
         schema = await self._resolve_schema(catalog_id)
         logger.debug(
@@ -753,6 +844,8 @@ class PolicyService:
             schema=schema,
             catalog_id=catalog_id,
             custom_policies=custom_policies,
+            principal_id=principal_id,
+            collection_id=collection_id,
         )
 
         logger.debug(
@@ -867,6 +960,7 @@ class PolicyService:
         collection_id: Optional[str] = None,
         *,
         principal: Optional[Principal] = None,
+        principal_id: Optional[UUID] = None,
     ) -> AccessFilter:
         """Project this principal's read scope into a neutral AccessFilter.
 
@@ -900,6 +994,8 @@ class PolicyService:
             schema=schema,
             catalog_id=catalog_id,
             custom_policies=(principal.custom_policies or None) if principal else None,
+            principal_id=principal_id,
+            collection_id=collection_id,
         )
 
         # Representative read path for the requested scope. Reusing the

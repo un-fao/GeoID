@@ -114,6 +114,18 @@ CREATE_ROLE_HIERARCHY_TABLE = DDLQuery("""
 # resolution-time validation logs and skips dangling object refs.
 # Cross-schema FKs would block `DROP SCHEMA … CASCADE` on tenant
 # eviction; we trade FK safety for tenant-cleanup simplicity.
+# resource_kind / resource_ref scope a grant to a specific resource within
+# the scope schema (e.g. resource_kind='collection', resource_ref=<id>).
+# NULL/NULL = whole-catalog grant (the historical behaviour). Enforcement:
+# explicit DENY at any scope wins; ALLOWs are additive across scopes.
+#
+# NOTE: the old inline UNIQUE(subject_kind, subject_ref, object_kind,
+# object_ref, effect) constraint is intentionally REMOVED here — uniqueness
+# now includes the resource columns and is expressed by the functional
+# unique index ``uq_grants_subject_object_resource`` (see
+# CREATE_GRANTS_UNIQUE_WITH_RESOURCE below). The index uses COALESCE so two
+# NULL resource columns collapse to a single key, preserving the old
+# whole-catalog uniqueness while allowing one grant per (…, collection).
 CREATE_GRANTS_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.grants (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -129,7 +141,8 @@ CREATE_GRANTS_TABLE = DDLQuery("""
         quota JSONB,
         granted_by UUID,
         granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (subject_kind, subject_ref, object_kind, object_ref, effect)
+        resource_kind VARCHAR(32),
+        resource_ref VARCHAR(256)
     );
     CREATE INDEX IF NOT EXISTS idx_grants_subject
         ON {schema}.grants (subject_kind, subject_ref);
@@ -138,6 +151,63 @@ CREATE_GRANTS_TABLE = DDLQuery("""
     CREATE INDEX IF NOT EXISTS idx_grants_validity
         ON {schema}.grants (valid_until) WHERE valid_until IS NOT NULL;
 """)
+
+# Idempotent column-add for existing DBs created before the resource-scope
+# columns landed. Always-run (paired with the unique-index swap) by
+# ``_initialize_schema`` after the CREATE TABLE batch.
+ADD_GRANTS_RESOURCE_COLUMNS = DDLQuery(
+    "ALTER TABLE {schema}.grants "
+    "ADD COLUMN IF NOT EXISTS resource_kind VARCHAR(32), "
+    "ADD COLUMN IF NOT EXISTS resource_ref VARCHAR(256);"
+)
+
+# Lookup index for resource-scoped grants (partial — only rows that carry a
+# resource scope are indexed; whole-catalog rows already covered by
+# idx_grants_subject).
+CREATE_IDX_GRANTS_RESOURCE = DDLQuery(
+    "CREATE INDEX IF NOT EXISTS idx_grants_subject_resource "
+    "ON {schema}.grants (subject_kind, subject_ref, resource_kind, resource_ref) "
+    "WHERE resource_kind IS NOT NULL;"
+)
+
+# Functional unique index replacing the old inline UNIQUE constraint.
+# COALESCE collapses NULL resource columns to '' so the whole-catalog
+# (NULL/NULL) row keeps its single-row uniqueness while distinct
+# collections each get their own row.
+CREATE_GRANTS_UNIQUE_WITH_RESOURCE = DDLQuery(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_grants_subject_object_resource "
+    "ON {schema}.grants "
+    "(subject_kind, subject_ref, object_kind, object_ref, effect, "
+    "COALESCE(resource_kind, ''), COALESCE(resource_ref, ''));"
+)
+
+# Robustly drop the old auto-named UNIQUE constraint on existing DBs.
+# PG auto-names it (and may truncate at 63 chars), so we introspect
+# pg_constraint and drop any UNIQUE constraint on grants whose column set
+# is exactly (subject_kind, subject_ref, object_kind, object_ref, effect).
+#
+# This is a ``.format(schema=...)``-style template, NOT a DDLQuery: the
+# ``{schema}`` token appears inside a SQL string literal
+# (``nsp.nspname = '{schema}'``), where the DDLQuery identifier-quoting
+# formatter would wrongly double-quote it. The storage layer pre-substitutes
+# the schema with str.format and wraps the result in a fresh DDLQuery —
+# mirroring the prune-function DDL pattern in postgres_iam_storage.py.
+DROP_OLD_GRANTS_UNIQUE = """
+DO $$
+DECLARE c text;
+BEGIN
+  SELECT con.conname INTO c
+  FROM pg_constraint con
+  JOIN pg_class rel ON rel.oid = con.conrelid
+  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+  WHERE nsp.nspname = '{schema}' AND rel.relname = 'grants' AND con.contype = 'u'
+    AND (SELECT array_agg(att.attname::text ORDER BY att.attname::text)
+         FROM unnest(con.conkey) k JOIN pg_attribute att
+           ON att.attrelid = con.conrelid AND att.attnum = k)
+        = ARRAY['effect','object_kind','object_ref','subject_kind','subject_ref'];
+  IF c IS NOT NULL THEN EXECUTE format('ALTER TABLE {schema}.grants DROP CONSTRAINT %I', c); END IF;
+END $$;
+"""
 
 # Policies — platform-only for PR-1 (lives in `iam.policies`).
 #
@@ -547,14 +617,17 @@ INSERT_GRANT = DQLQuery(
     """
     INSERT INTO {schema}.grants (
         subject_kind, subject_ref, object_kind, object_ref, effect,
-        valid_from, valid_until, conditions, quota, granted_by
+        valid_from, valid_until, conditions, quota, granted_by,
+        resource_kind, resource_ref
     )
     VALUES (
         :subject_kind, :subject_ref, :object_kind, :object_ref, :effect,
         COALESCE(:valid_from, NOW()), :valid_until,
-        CAST(:conditions AS jsonb), CAST(:quota AS jsonb), :granted_by
+        CAST(:conditions AS jsonb), CAST(:quota AS jsonb), :granted_by,
+        :resource_kind, :resource_ref
     )
-    ON CONFLICT (subject_kind, subject_ref, object_kind, object_ref, effect)
+    ON CONFLICT (subject_kind, subject_ref, object_kind, object_ref, effect,
+                 COALESCE(resource_kind, ''), COALESCE(resource_ref, ''))
     DO UPDATE SET
         valid_from  = EXCLUDED.valid_from,
         valid_until = EXCLUDED.valid_until,
@@ -579,7 +652,9 @@ DELETE_GRANTS_BY_MATCH = DQLQuery(
       AND subject_ref  = :subject_ref
       AND object_kind  = :object_kind
       AND object_ref   = :object_ref
-      AND effect       = :effect;
+      AND effect       = :effect
+      AND COALESCE(resource_kind, '') = COALESCE(:resource_kind, '')
+      AND COALESCE(resource_ref, '')  = COALESCE(:resource_ref, '');
     """,
     result_handler=ResultHandler.ROWCOUNT,
 )
@@ -587,7 +662,8 @@ DELETE_GRANTS_BY_MATCH = DQLQuery(
 LIST_GRANTS_FOR_SUBJECT = DQLQuery(
     """
     SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
-           valid_from, valid_until, conditions, quota, granted_by, granted_at
+           valid_from, valid_until, conditions, quota, granted_by, granted_at,
+           resource_kind, resource_ref
     FROM {schema}.grants
     WHERE subject_kind = :subject_kind AND subject_ref = :subject_ref
     ORDER BY object_kind, object_ref;
@@ -669,12 +745,33 @@ LIST_ROLE_NAMES_FOR_IDENTITY = DQLQuery(
 LIST_TIMEACTIVE_GRANTS_FOR_PRINCIPAL = DQLQuery(
     """
     SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
-           valid_from, valid_until, conditions, quota, granted_by, granted_at
+           valid_from, valid_until, conditions, quota, granted_by, granted_at,
+           resource_kind, resource_ref
     FROM {schema}.grants
     WHERE subject_kind = 'principal'
       AND subject_ref  = :principal_id
       AND valid_from <= NOW()
       AND (valid_until IS NULL OR NOW() < valid_until);
+    """,
+    result_handler=ResultHandler.ALL_DICTS,
+)
+
+# Resource-scoped sibling of LIST_TIMEACTIVE_GRANTS_FOR_PRINCIPAL: returns
+# whole-catalog grants (resource_kind IS NULL) PLUS grants scoped to the
+# requested resource. Allows are additive across both scopes; deny precedence
+# is applied by the caller.
+LIST_TIMEACTIVE_SCOPED_GRANTS_FOR_PRINCIPAL = DQLQuery(
+    """
+    SELECT id, subject_kind, subject_ref, object_kind, object_ref, effect,
+           valid_from, valid_until, conditions, quota, granted_by, granted_at,
+           resource_kind, resource_ref
+    FROM {schema}.grants
+    WHERE subject_kind = 'principal'
+      AND subject_ref  = :principal_id
+      AND valid_from <= NOW()
+      AND (valid_until IS NULL OR NOW() < valid_until)
+      AND (resource_kind IS NULL
+           OR (resource_kind = :resource_kind AND resource_ref = :resource_ref));
     """,
     result_handler=ResultHandler.ALL_DICTS,
 )

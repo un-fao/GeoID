@@ -135,6 +135,22 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             ],
         ).execute(conn, schema=schema)
 
+        # 1b. Grants resource-scope migration (always-run, idempotent).
+        #
+        # The CREATE TABLE batch above is skipped on warm DBs (sentinel
+        # hit), so these steps run unconditionally to bring existing
+        # grants tables up to the resource-scoped shape. Order matters:
+        #   add columns → drop the old auto-named UNIQUE constraint →
+        #   create the resource-aware UNIQUE index → create the lookup
+        #   index. The DROP is a str.format template (its {schema} sits in
+        #   a SQL string literal that the DDLQuery identifier-quoter would
+        #   mangle), wrapped in a fresh DDLQuery — same pattern as the
+        #   prune-function DDL below.
+        await ADD_GRANTS_RESOURCE_COLUMNS.execute(conn, schema=schema)
+        await DDLQuery(DROP_OLD_GRANTS_UNIQUE.format(schema=schema)).execute(conn)
+        await CREATE_GRANTS_UNIQUE_WITH_RESOURCE.execute(conn, schema=schema)
+        await CREATE_IDX_GRANTS_RESOURCE.execute(conn, schema=schema)
+
         # Partition tables (IF NOT EXISTS in SQL handles idempotency)
         if schema in ["iam"]:
             await CREATE_PARTITION_GLOBAL.execute(conn, schema=schema)
@@ -736,14 +752,21 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         conditions: Optional[Dict[str, Any]] = None,
         quota: Optional[Dict[str, Any]] = None,
         granted_by: Optional[UUID] = None,
+        resource_kind: Optional[str] = None,
+        resource_ref: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> Optional[UUID]:
         """Insert (or refresh) a grant row in `{scope_schema}.grants`.
 
         Returns the grant id. Idempotent on
-        (subject_kind, subject_ref, object_kind, object_ref, effect):
-        a second call with the same tuple updates the time/condition/
-        quota columns and bumps `granted_at`.
+        (subject_kind, subject_ref, object_kind, object_ref, effect,
+        resource_kind, resource_ref): a second call with the same tuple
+        updates the time/condition/quota columns and bumps `granted_at`.
+
+        `resource_kind`/`resource_ref` scope the grant to a specific
+        resource within the scope schema (e.g. ``"collection"`` + a
+        collection id). ``None``/``None`` (the default) is a whole-catalog
+        grant — the historical behaviour.
         """
         async with managed_transaction(conn or self.engine) as db:
             return await INSERT_GRANT.execute(
@@ -759,6 +782,8 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 conditions=json.dumps(conditions) if conditions is not None else None,
                 quota=json.dumps(quota) if quota is not None else None,
                 granted_by=granted_by,
+                resource_kind=resource_kind,
+                resource_ref=resource_ref,
             )
 
     async def revoke(
@@ -782,10 +807,17 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         object_kind: str,
         object_ref: str,
         effect: str = EFFECT_ALLOW,
+        resource_kind: Optional[str] = None,
+        resource_ref: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> int:
         """Delete every grant matching (subject_kind, subject_ref,
-        object_kind, object_ref, effect). Returns rows deleted.
+        object_kind, object_ref, effect, resource_kind, resource_ref).
+        Returns rows deleted.
+
+        ``resource_kind``/``resource_ref`` default to ``None`` (whole-catalog
+        row); a scoped revoke removes only the matching scoped row and leaves
+        the whole-catalog row intact.
         """
         async with managed_transaction(conn or self.engine) as db:
             return await DELETE_GRANTS_BY_MATCH.execute(
@@ -796,6 +828,8 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
                 object_kind=object_kind,
                 object_ref=object_ref,
                 effect=effect,
+                resource_kind=resource_kind,
+                resource_ref=resource_ref,
             )
 
     async def list_grants_for_subject(
@@ -905,9 +939,16 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         role_name: str,
         catalog_schema: str,
         granted_by: Optional[UUID] = None,
+        collection_id: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> None:
-        """Grant a catalog-scope role to a principal in `catalog_schema`."""
+        """Grant a catalog-scope role to a principal in `catalog_schema`.
+
+        ``collection_id`` (optional) scopes the grant to a single
+        collection within the catalog; ``None`` (default) is a
+        whole-catalog grant.
+        """
+        resource_kind = SUBJECT_COLLECTION if collection_id else None
         await self.grant(
             scope_schema=catalog_schema,
             subject_kind=SUBJECT_PRINCIPAL,
@@ -915,6 +956,8 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
             object_kind=OBJECT_ROLE,
             object_ref=role_name,
             granted_by=granted_by,
+            resource_kind=resource_kind,
+            resource_ref=collection_id,
             conn=conn,
         )
 
@@ -923,15 +966,23 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         principal_id: UUID,
         role_name: str,
         catalog_schema: str,
+        collection_id: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> bool:
-        """Revoke a catalog-scope role from a principal."""
+        """Revoke a catalog-scope role from a principal.
+
+        ``collection_id`` (optional) targets a collection-scoped grant;
+        ``None`` (default) targets the whole-catalog grant.
+        """
+        resource_kind = SUBJECT_COLLECTION if collection_id else None
         count = await self.revoke_by_match(
             scope_schema=catalog_schema,
             subject_kind=SUBJECT_PRINCIPAL,
             subject_ref=str(principal_id),
             object_kind=OBJECT_ROLE,
             object_ref=role_name,
+            resource_kind=resource_kind,
+            resource_ref=collection_id,
             conn=conn,
         )
         return count > 0
@@ -996,21 +1047,26 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         principal_id: UUID,
         catalog_schema: Optional[str] = None,
         request_path: Optional[str] = None,
+        collection_id: Optional[str] = None,
         conn: Optional[DbResource] = None,
     ) -> List[Dict[str, Any]]:
         """Return the time-active direct grants for a principal across
         platform + (optional) catalog scopes.
 
-        PR-1 skeleton: only direct principal grants are computed.
-        Resource-scoped subjects (catalog/collection/item/asset) and
-        scope cascade (D10) plug in later by extending Step 3 of the
-        algorithm; deny precedence (D9), conditions (D-PR2), and quota
-        (D-PR2) are evaluated by the caller (PolicyService) using the
-        raw rows returned here.
+        When ``collection_id`` is set, the catalog-schema grants are read
+        through the resource-scoped query: whole-catalog grants
+        (``resource_kind IS NULL``) PLUS grants scoped to that collection
+        are returned (allows additive; deny precedence applied by the
+        caller). When ``collection_id`` is ``None`` the historical
+        unscoped query is used, surfacing every catalog grant regardless
+        of resource scope. Platform (``iam``) grants always use the
+        unscoped query — platform grants are never collection-scoped.
 
-        See docs in the design spec for the full algorithm; the
-        `request_path` parameter is accepted now so callers don't have
-        to change signatures when scope cascade lands.
+        PR-1 skeleton otherwise unchanged: only direct principal grants
+        are computed. Deny precedence (D9), conditions (D-PR2), and quota
+        (D-PR2) are evaluated by the caller (PolicyService) using the
+        raw rows returned here. ``request_path`` is accepted now so
+        callers don't have to change signatures when scope cascade lands.
         """
         out: List[Dict[str, Any]] = []
         async with managed_transaction(conn or self.engine) as db:
@@ -1021,9 +1077,18 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
 
             if catalog_schema and catalog_schema != "iam":
                 try:
-                    catalog = await LIST_TIMEACTIVE_GRANTS_FOR_PRINCIPAL.execute(
-                        db, schema=catalog_schema, principal_id=str(principal_id)
-                    ) or []
+                    if collection_id is not None:
+                        catalog = await LIST_TIMEACTIVE_SCOPED_GRANTS_FOR_PRINCIPAL.execute(
+                            db,
+                            schema=catalog_schema,
+                            principal_id=str(principal_id),
+                            resource_kind=SUBJECT_COLLECTION,
+                            resource_ref=collection_id,
+                        ) or []
+                    else:
+                        catalog = await LIST_TIMEACTIVE_GRANTS_FOR_PRINCIPAL.execute(
+                            db, schema=catalog_schema, principal_id=str(principal_id)
+                        ) or []
                     out.extend(catalog)
                 except TableNotFoundError:
                     pass
