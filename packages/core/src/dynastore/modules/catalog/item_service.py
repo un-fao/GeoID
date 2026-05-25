@@ -977,6 +977,15 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         prepared: List[Dict[str, Any]] = []
         unique_partition_values: set = set()
+        # Per-row preparation rejections. A single feature that fails value
+        # validation (items-schema ValueError) or a sidecar pre-write check
+        # must NOT collapse the whole batch — it is recorded here and the loop
+        # moves to the next item, exactly as Phase 4 does for the distributed
+        # upsert's ``SidecarRejectedError``. Merged with the Phase 4 rejections
+        # and surfaced via ``ctx.extensions["_rejections"]`` so the HTTP layer
+        # builds a 207 IngestionReport and the ingestion job reports the row as
+        # a failure instead of aborting (the row carries ``record`` for that).
+        prep_rejections: List[Dict[str, Any]] = []
         for item_data in items_list:
             if hasattr(item_data, "model_dump"):
                 raw_item = item_data.model_dump(by_alias=True, exclude_unset=True)  # type: ignore[reportAttributeAccessIssue]
@@ -985,62 +994,82 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             else:
                 raise ValueError(f"Unsupported item type: {type(item_data)}")
 
-            _validate_feature_properties(schema_validator, raw_item)
+            try:
+                _validate_feature_properties(schema_validator, raw_item)
 
-            geoid = generate_geoid()
-            item_context: Dict[str, Any] = {
-                "geoid": geoid,
-                "operation": "insert",
-                "_raw_item": raw_item,
-                # Pristine snapshot taken before any sidecar mutates raw_item.
-                # A prune-first sidecar (item_metadata) strips title/description/
-                # keywords and ``:``-namespaced extension keys from the shared
-                # ``properties`` in place so the attributes residue stays clean.
-                # The stac_metadata sidecar, which runs afterwards and owns those
-                # extension keys (extra_fields), reads from this snapshot so its
-                # content isn't lost to the earlier strip.
-                "_pristine_item": copy.deepcopy(raw_item),
-                "_items_write_policy": items_write_policy,
-                **(processing_context or {}),
-            }
-            hub_payload: Dict[str, Any] = {
-                "geoid": geoid,
-                "transaction_time": datetime.now(timezone.utc),
-                "deleted_at": None,
-            }
-            sidecar_payloads: Dict[str, Dict[str, Any]] = {}
-            partition_values: Dict[str, Any] = {}
+                geoid = generate_geoid()
+                item_context: Dict[str, Any] = {
+                    "geoid": geoid,
+                    "operation": "insert",
+                    "_raw_item": raw_item,
+                    # Pristine snapshot taken before any sidecar mutates raw_item.
+                    # A prune-first sidecar (item_metadata) strips title/description/
+                    # keywords and ``:``-namespaced extension keys from the shared
+                    # ``properties`` in place so the attributes residue stays clean.
+                    # The stac_metadata sidecar, which runs afterwards and owns those
+                    # extension keys (extra_fields), reads from this snapshot so its
+                    # content isn't lost to the earlier strip.
+                    "_pristine_item": copy.deepcopy(raw_item),
+                    "_items_write_policy": items_write_policy,
+                    **(processing_context or {}),
+                }
+                hub_payload: Dict[str, Any] = {
+                    "geoid": geoid,
+                    "transaction_time": datetime.now(timezone.utc),
+                    "deleted_at": None,
+                }
+                sidecar_payloads: Dict[str, Dict[str, Any]] = {}
+                partition_values: Dict[str, Any] = {}
 
-            for sidecar in sidecars_ordered:
-                val_result = sidecar.validate_insert(raw_item, item_context)
-                if not val_result.valid:
-                    raise ValueError(
-                        f"Sidecar {sidecar.sidecar_id} rejected item: {val_result.error}"
-                    )
-                sc_payload = sidecar.prepare_upsert_payload(raw_item, item_context)
-                if sc_payload:
-                    sidecar_payloads[sidecar.sidecar_id] = sc_payload
-                    for pk in sidecar.get_partition_keys():
-                        if pk in sc_payload:
-                            partition_values[pk] = sc_payload[pk]
-                            item_context[pk] = sc_payload[pk]
+                for sidecar in sidecars_ordered:
+                    val_result = sidecar.validate_insert(raw_item, item_context)
+                    if not val_result.valid:
+                        raise ValueError(
+                            f"Sidecar {sidecar.sidecar_id} rejected item: {val_result.error}"
+                        )
+                    sc_payload = sidecar.prepare_upsert_payload(raw_item, item_context)
+                    if sc_payload:
+                        sidecar_payloads[sidecar.sidecar_id] = sc_payload
+                        for pk in sidecar.get_partition_keys():
+                            if pk in sc_payload:
+                                partition_values[pk] = sc_payload[pk]
+                                item_context[pk] = sc_payload[pk]
 
-            hub_payload.update(partition_values)
-            if col_config.partitioning.enabled and partition_values:
-                # Single-level partitioning today — first value is the partition key.
-                unique_partition_values.add(next(iter(partition_values.values())))
+                hub_payload.update(partition_values)
+                if col_config.partitioning.enabled and partition_values:
+                    # Single-level partitioning today — first value is the partition key.
+                    unique_partition_values.add(next(iter(partition_values.values())))
 
-            # geometry_hash is now PG-generated on the geometries sidecar
-            # (issue #220) — STORED column ``encode(digest(ST_AsBinary(geom),
-            # 'sha256'), 'hex')``.  No longer carried on the hub row; the
-            # matcher JOINs the sidecar to read it.
+                # geometry_hash is now PG-generated on the geometries sidecar
+                # (issue #220) — STORED column ``encode(digest(ST_AsBinary(geom),
+                # 'sha256'), 'hex')``.  No longer carried on the hub row; the
+                # matcher JOINs the sidecar to read it.
 
-            prepared.append({
-                "geoid": geoid,
-                "hub_payload": hub_payload,
-                "sidecar_payloads": sidecar_payloads,
-                "item_context": item_context,
-            })
+                prepared.append({
+                    "geoid": geoid,
+                    "hub_payload": hub_payload,
+                    "sidecar_payloads": sidecar_payloads,
+                    "item_context": item_context,
+                })
+            except ValueError as exc:
+                # One bad row → one rejection, not a dead batch. ``record`` is
+                # carried so the ingestion job can report the failed row's
+                # attributes; the HTTP drain ignores the extra key.
+                props = raw_item.get("properties") if isinstance(raw_item, dict) else None
+                ext = None
+                if isinstance(props, dict):
+                    ext = props.get("external_id") or props.get("id")
+                if ext is None and isinstance(raw_item, dict):
+                    ext = raw_item.get("id")
+                prep_rejections.append({
+                    "geoid": None,
+                    "external_id": ext,
+                    "sidecar_id": None,
+                    "matcher": None,
+                    "reason": "validation_error",
+                    "message": str(exc),
+                    "record": raw_item,
+                })
 
         # Phase 3 — pre-create unique partitions on a brief DDL conn so the
         # write tx isn't holding a write lock during DDL coordination.
@@ -1113,6 +1142,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                             "matcher": rej.matcher,
                             "reason": rej.reason,
                             "message": str(rej),
+                            # Original feature for job-side failure reporting;
+                            # the HTTP rejection drain ignores the extra key.
+                            "record": plan["item_context"].get("_raw_item"),
                         })
                         continue
                     if new_row is None:
@@ -1142,9 +1174,11 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # Hand rejections to the caller via the typed DriverContext escape
         # hatch. The OGC mixin seeds an empty list before the call and drains
         # this key after so rejections and accepted rows can be combined into
-        # a single 207 IngestionReport.
-        if ctx is not None and rejections:
-            ctx.extensions["_rejections"] = rejections
+        # a single 207 IngestionReport. Phase 2 preparation rejections (bad
+        # value / sidecar pre-check) precede Phase 4 acceptance rejections.
+        all_rejections = prep_rejections + rejections
+        if ctx is not None and all_rejections:
+            ctx.extensions["_rejections"] = all_rejections
 
         # Phase 5 — bulk read-back on a fresh conn, post-commit. One SELECT
         # for the whole batch (vs N inside the write tx). Preserves input

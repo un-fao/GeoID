@@ -23,7 +23,6 @@ from dynastore.models.localization import LocalizedText
 from uuid import UUID
 from datetime import datetime
 from dynastore.models.shared_models import Link
-import uuid
 from dynastore.models.tasks import Task, TaskPayload, TaskExecutionMode
 
 if TYPE_CHECKING:
@@ -336,7 +335,14 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
         progress=task.progress,
         created=task.timestamp,
         updated=task.finished_at or task.started_at or task.timestamp,
-        links=links or task.links.copy() if task.links else []
+        # Prefer caller-supplied HATEOAS links; fall back to any links already
+        # on the task, else empty. The parentheses are load-bearing: without
+        # them the conditional bound looser than ``or`` and the whole
+        # expression collapsed to ``[]`` whenever ``task.links`` was empty —
+        # which is the case for every freshly created async job — silently
+        # discarding the links the caller passed and leaving an ``href=""``
+        # placeholder (see the ``self``-link backfill below).
+        links=links or (task.links.copy() if task.links else []),
     )
 
     # OGC Process ID mapping
@@ -344,13 +350,13 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
     # This assumes the task_type string corresponds to the process identifier.
     
     # Ensure 'self' link is present
-    has_self = any(l.rel == "self" for l in info.links)
+    has_self = any(link.rel == "self" for link in info.links)
     if not has_self:
         info.links.append(Link(rel="self", type="application/json", title=LocalizedText(en="this job"), href=""))
 
     # If successful, ensure results link is present
     if task.status == TaskStatusEnum.COMPLETED:
-        has_results = any(l.rel == "http://www.opengis.net/def/rel/ogc/1.0/results" for l in info.links)
+        has_results = any(link.rel == "http://www.opengis.net/def/rel/ogc/1.0/results" for link in info.links)
         if not has_results:
             info.links.append(Link(
                 rel="http://www.opengis.net/def/rel/ogc/1.0/results",

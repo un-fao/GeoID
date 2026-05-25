@@ -125,14 +125,21 @@ def test_write_purpose_omits_required():
 
 
 def test_write_purpose_keeps_value_constraints():
+    # required=True keeps the type strict ("string"), isolating this test to
+    # value-constraint passthrough; nullability of non-required fields has its
+    # own coverage below.
     fields = {
         "name": FieldDefinition(
-            name="name", data_type="string", max_length=50, pattern="^[a-z]+$"
+            name="name", data_type="string", max_length=50, pattern="^[a-z]+$",
+            required=True,
         ),
         "score": FieldDefinition(
-            name="score", data_type="double", minimum=0.0, maximum=100.0
+            name="score", data_type="double", minimum=0.0, maximum=100.0,
+            required=True,
         ),
-        "kind": FieldDefinition(name="kind", data_type="string", enum=["a", "b", "c"]),
+        "kind": FieldDefinition(
+            name="kind", data_type="string", enum=["a", "b", "c"], required=True,
+        ),
     }
     schema = derive_wire_schema(fields, purpose="write")
     assert schema is not None
@@ -157,3 +164,52 @@ def test_read_purpose_is_default_and_unchanged():
     # the read variant keeps both required and additionalProperties
     assert default["required"] == ["a"]  # type: ignore[index]
     assert default["additionalProperties"] is False  # type: ignore[index]
+
+
+# ── non-required ⇒ nullable on the write path ──────────────────────────────
+# A non-required field's sidecar column is created without NOT NULL, so a
+# present-but-``null`` value is legal storage. The write validator must admit
+# it (otherwise a value the database would store is rejected by a stricter
+# wire check — the START_DATE/END_DATE ingestion failure). ``required`` is the
+# key-presence axis; nullability is orthogonal and applies to the write schema
+# only — the published read schema keeps the canonical typed shape.
+
+
+def test_write_purpose_non_required_field_is_nullable():
+    fields = {
+        "start": FieldDefinition(name="start", data_type="string", required=False),
+        "ts": FieldDefinition(name="ts", data_type="timestamp", required=False),
+        "code": FieldDefinition(name="code", data_type="string", required=True),
+    }
+    props = derive_wire_schema(fields, purpose="write")["properties"]  # type: ignore[index]
+    assert props["start"]["type"] == ["string", "null"]
+    # value constraints survive nullability
+    assert props["ts"]["type"] == ["string", "null"]
+    assert props["ts"]["format"] == "date-time"
+    # required field keeps its strict, non-null type
+    assert props["code"]["type"] == "string"
+
+
+def test_write_purpose_nullable_handles_object_type():
+    fields = {"g": FieldDefinition(name="g", data_type="geometry", required=False)}
+    props = derive_wire_schema(fields, purpose="write")["properties"]  # type: ignore[index]
+    assert props["g"]["type"] == ["object", "null"]
+
+
+def test_read_purpose_non_required_field_stays_non_null():
+    fields = {"start": FieldDefinition(name="start", data_type="string", required=False)}
+    props = derive_wire_schema(fields)["properties"]  # type: ignore[index]  # read default
+    assert props["start"]["type"] == "string"
+
+
+def test_write_validator_accepts_null_for_non_required_field():
+    from jsonschema import Draft202012Validator
+
+    fields = {
+        "start": FieldDefinition(name="start", data_type="string", required=False),
+    }
+    schema = derive_wire_schema(fields, purpose="write")
+    validator = Draft202012Validator(schema)  # type: ignore[arg-type]
+    assert list(validator.iter_errors({"start": None})) == []  # null now OK
+    assert list(validator.iter_errors({"start": "2026-01-01"})) == []  # string OK
+    assert list(validator.iter_errors({})) == []  # absent OK
