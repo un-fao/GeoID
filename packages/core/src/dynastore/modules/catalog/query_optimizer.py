@@ -500,6 +500,11 @@ class QueryOptimizer:
 
         if any(sel.field == "*" for sel in query.select):
             select_fields.append("h.*")
+            # Collect the set of fields explicitly overridden by non-* FieldSelections
+            # so that sidecar expansion can skip them and avoid duplicate AS aliases.
+            explicit_field_names = {
+                sel.field for sel in query.select if sel.field != "*"
+            }
             # Also include all sidecar SELECT fields — h.* only covers the Hub table.
             for sc_config in required_sidecars:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
@@ -508,8 +513,53 @@ class QueryOptimizer:
                     for f in sidecar.get_select_fields(
                         request=query, hub_alias="h", sidecar_alias=sc_alias, include_all=True
                     ):
+                        # Derive the logical alias from the SQL fragment so we can
+                        # detect collisions with explicit overrides.  SQL patterns:
+                        #   "expr AS alias"  / "expr as alias"  / bare "table.col"
+                        f_lower = f.lower()
+                        as_idx = f_lower.rfind(" as ")
+                        if as_idx != -1:
+                            logical_name = f[as_idx + 4:].strip().strip('"')
+                        else:
+                            # bare "alias" or "table.col" — take the last segment
+                            logical_name = f.rsplit(".", 1)[-1].strip().strip('"')
+                        if logical_name in explicit_field_names:
+                            # An explicit FieldSelection already covers this field;
+                            # skip the sidecar projection to avoid a duplicate alias.
+                            continue
                         if f not in select_fields:
                             select_fields.append(f)
+            # Render any explicit non-* FieldSelections (e.g. ST_Transform overrides).
+            # These are added AFTER h.* so the explicit projection appears in the
+            # SELECT list alongside the wildcard expansion.
+            for sel in query.select:
+                if sel.field == "*" or sel.field not in self.field_index:
+                    continue
+                _, field_def = self.field_index[sel.field]
+                expr = field_def.sql_expression
+                if sel.transformation:
+                    if (
+                        sel.transformation == "ST_Transform"
+                        and field_def.data_type
+                        and "geometry" in field_def.data_type
+                    ):
+                        target_srid = sel.transform_args.get("srid") or sel.transform_args.get("0")
+                        if str(target_srid) not in field_def.data_type:
+                            args_str = ", ".join(
+                                f"'{v}'" if isinstance(v, str) else str(v)
+                                for v in sel.transform_args.values()
+                            )
+                            expr = f"{sel.transformation}({expr}{', ' + args_str if args_str else ''})"
+                    else:
+                        args_str = ", ".join(
+                            f"'{v}'" if isinstance(v, str) else str(v)
+                            for v in sel.transform_args.values()
+                        )
+                        expr = f"{sel.transformation}({expr}{', ' + args_str if args_str else ''})"
+                alias = sel.alias or sel.field
+                rendered = f"{expr} as {alias}"
+                if rendered not in select_fields:
+                    select_fields.append(rendered)
         elif not query.select:
             # Default empty select -> similar to `select *` just without h.*
             pass
