@@ -54,6 +54,11 @@ __all__ = [
     # Phantom-token denylist admin DTOs (#1343).
     "DenylistEntryRequest",
     "DenylistEntryResponse",
+    # Effective-permissions explainer (#1346 backend half).
+    "EffectivePermissionRequest",
+    "EffectivePermissionResponse",
+    "GrantTraceEntry",
+    "ConditionTraceEntry",
 ]
 
 
@@ -191,6 +196,186 @@ class DenylistEntryResponse(BaseModel):
     expires_at: Optional[float] = None
 
 
+# --- Effective-permissions explainer DTOs (#1346 backend half) ---
+#
+# Diagnostic surface for "why can / can't principal P do action A on
+# resource R?". The trace is a BYPRODUCT of the same decision walk
+# ``evaluate_access`` runs on the hot path — no parallel evaluator. Every
+# field below mirrors a discrete step the walk already takes, so an
+# operator reading the response is seeing exactly what the engine saw.
+#
+# Out of scope here: the frontend "Why?" affordance — ships separately
+# (see #1346 follow-up tracker).
+
+
+class ConditionTraceEntry(BaseModel):
+    """One condition evaluated during the decision walk.
+
+    Mirrors a single ``Condition`` (``type`` + ``config``) and reports
+    whether the condition handler returned True for THIS principal /
+    request context. ``detail`` is a free-form one-liner the handler
+    populates for human-readable counters or quota messages
+    (e.g. ``"rate 73/100 within window"``); not load-bearing on the
+    verdict.
+    """
+
+    type: str = Field(description="Condition type (rate_limit, max_count, match, ...).")
+    config: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Condition spec as authored on the policy.",
+    )
+    passed: bool = Field(description="Whether this condition admitted the request.")
+    detail: Optional[str] = Field(
+        default=None,
+        description="Optional handler-emitted note (counters, quota state, ...).",
+    )
+
+
+class GrantTraceEntry(BaseModel):
+    """One grant the engine considered during the decision walk.
+
+    ``matched=False`` entries are recorded too, so the operator can see
+    *why* a binding the principal expected to grant access did not fire.
+    ``why_not`` is a one-line reason (method mismatch / resource mismatch
+    / condition failed / outside validity window / unsatisfiable
+    principal gate / uncompilable). For grant-row-derived entries the
+    grant identity (``grant_id``, ``subject_kind``, ``subject_ref``,
+    ``object_kind``, ``object_ref``, ``resource_kind``, ``resource_ref``,
+    ``valid_from``, ``valid_until``) is set; for policies reached via the
+    flat-name ``principals`` path or via ``custom_policies`` the grant
+    identity fields default to the policy id and the "policy" object
+    kind, with no validity window.
+    """
+
+    grant_id: str = Field(
+        description=(
+            "Grant identifier — the grants-table row id when the policy "
+            "was reached via a binding, else the policy id."
+        ),
+    )
+    subject_kind: str = Field(
+        description=(
+            "Subject side of the binding: ``principal`` (direct grant) "
+            "or ``role`` (role-name path). For policies attached via "
+            "flat-name resolution this echoes ``role``."
+        ),
+    )
+    subject_ref: str = Field(
+        description="Principal id or role name the binding is attached to.",
+    )
+    object_kind: Literal["role", "policy"] = Field(
+        description="What was bound — a role (whose policies fan out) or a policy.",
+    )
+    object_ref: str = Field(description="Role name or policy id.")
+    effect: Literal["allow", "deny"] = Field(
+        description="The grant's effect, normalised to lowercase.",
+    )
+    resource_kind: Optional[str] = Field(
+        default=None,
+        description="``collection`` / ``item`` / ... when scoped, else None (whole-catalog).",
+    )
+    resource_ref: Optional[str] = Field(default=None)
+    matched: bool = Field(
+        description=(
+            "Whether the binding's policy admitted the request "
+            "(method + resource + conditions all passed)."
+        ),
+    )
+    why_not: Optional[str] = Field(
+        default=None,
+        description="One-line reason when ``matched=False``.",
+    )
+    conditions_evaluated: List[ConditionTraceEntry] = Field(
+        default_factory=list,
+        description="Per-condition trace, in the order the walk evaluated them.",
+    )
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    in_validity_window: bool = Field(
+        default=True,
+        description=(
+            "False when ``valid_from``/``valid_until`` excluded the grant; "
+            "the resolver already drops out-of-window grants before they "
+            "reach the walk, so a False entry is a synthetic carry-through "
+            "for operator visibility."
+        ),
+    )
+
+
+class EffectivePermissionRequest(BaseModel):
+    """Inputs to ``GET /admin/iam/effective`` — the verdict to explain.
+
+    ``catalog_id``/``collection_id`` mirror the scope arguments
+    ``evaluate_access`` already takes. ``resource_kind``/``resource_ref``
+    are forwarded as an explicit narrower scope for resource-scoped
+    bindings (collection-scope grants resolve through
+    :meth:`resolve_effective_grants` keyed on ``collection_id``; further
+    kinds are recorded on the request envelope for symmetry with the
+    binding DTO and surface unchanged on the response).
+    """
+
+    principal_id: str = Field(description="Subject the verdict is for.")
+    catalog_id: Optional[str] = Field(
+        default=None,
+        description="Catalog scope; ``None`` means the platform plane.",
+    )
+    collection_id: Optional[str] = Field(default=None)
+    action: str = Field(
+        description=(
+            "Verb being asked about — matches ``evaluate_access``'s "
+            "``method`` argument vocabulary (HTTP verb or platform "
+            "``Action`` enum value)."
+        ),
+    )
+    resource_kind: Optional[str] = Field(
+        default=None,
+        description="``collection`` / ``item`` / ``asset`` / ...",
+    )
+    resource_ref: Optional[str] = Field(default=None)
+
+
+class EffectivePermissionResponse(BaseModel):
+    """Decision + full trace for an effective-permissions probe.
+
+    ``decision`` and ``decision_reason`` are the verdict ``evaluate_access``
+    would emit on the hot path for the same request — the trace flag never
+    moves them (drift property test asserts this). ``grants_considered``
+    lists every policy the engine looked at, matched or not, in the order
+    it walked them; ``deny_precedence_applied`` is True when at least one
+    DENY matched, regardless of whether a stronger ALLOW exists (the
+    ranking step lives below it and may still pick the ALLOW under #915
+    priority semantics — see :attr:`decision_reason` for the chosen
+    winner). ``compiled_rule_version`` surfaces a cache-tag when the
+    evaluator carries one; absent today but reserved so a future cache
+    layer can expose staleness without a DTO bump.
+    """
+
+    request: EffectivePermissionRequest
+    decision: Literal["allow", "deny"]
+    decision_reason: str = Field(
+        description=(
+            "One-line summary of the chosen winner — mirrors the engine's "
+            "log line so audit and explainer agree by construction."
+        ),
+    )
+    deny_precedence_applied: bool = Field(
+        description="True iff any matching DENY was found during the walk.",
+    )
+    grants_considered: List[GrantTraceEntry] = Field(
+        default_factory=list,
+        description=(
+            "Full list of policies/bindings the engine walked, in walk "
+            "order. Includes non-matching entries with ``why_not`` so "
+            "the operator can see what the principal was *expected* to "
+            "have."
+        ),
+    )
+    compiled_rule_version: Optional[str] = Field(
+        default=None,
+        description="Reserved for a future compiled-rule cache version tag.",
+    )
+
+
 # --- Policy wire DTOs ---
 
 class PolicyCreate(BaseModel):
@@ -274,6 +459,7 @@ class PermissionProtocol(Protocol):
         custom_policies: Optional[List["Policy"]] = None,
         principal_id: Optional[Any] = None,
         collection_id: Optional[str] = None,
+        trace_collector: Optional[Any] = None,
     ) -> Tuple[bool, str]: ...
 
     async def provision_default_policies(

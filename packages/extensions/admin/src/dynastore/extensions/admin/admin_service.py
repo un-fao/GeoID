@@ -35,6 +35,8 @@ from dynastore.models.protocols.policies import (
     RoleCreate, RoleUpdate, RoleResponse,
     PrincipalResponse, AssignRoleRequest, CreateBindingRequest,
     DenylistEntryRequest, DenylistEntryResponse,
+    EffectivePermissionRequest, EffectivePermissionResponse,
+    GrantTraceEntry, ConditionTraceEntry,
     PermissionProtocol,
 )
 
@@ -1290,6 +1292,168 @@ class AdminService(ExtensionProtocol):
             )
         # DELETE is idempotent: whether or not an entry actually existed,
         # the post-condition ("entry is absent") holds → 204.
+
+    # ---- IAM effective-permissions explainer (#1346 backend half) -----------
+    #
+    # Diagnostic: "why can / can't principal P perform action A on resource R
+    # here?". The trace is a BYPRODUCT of the same ``evaluate_access`` walk the
+    # hot path uses (see ``policies.py``: opt-in ``trace_collector`` kwarg) —
+    # no parallel evaluator. Operators use this to debug an unexpected 403 or
+    # to verify a binding lands the way they expect. Sysadmin-only: the trace
+    # leaks the platform's full policy/binding shape for a principal and must
+    # not reach the catalog-admin tier.
+    #
+    # Frontend "Why?" affordance is a follow-up — kept out of scope here to
+    # avoid colliding with the parallel governance-UI work.
+
+    @router.get(
+        "/iam/effective",
+        summary="Explain the effective permission for a principal/action/resource",
+        response_model=EffectivePermissionResponse,
+    )
+    async def get_effective_permissions_explained(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        principal_id: str = Query(
+            ...,
+            description="Principal id (UUID) the verdict is for.",
+        ),
+        action: str = Query(
+            ...,
+            description=(
+                "Verb being asked about. Accepts a standard HTTP verb "
+                "(GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS) or a platform "
+                "``Action`` enum value (READ/LIST/CREATE/UPDATE/DELETE/"
+                "EXECUTE/SEARCH/PURGE)."
+            ),
+        ),
+        catalog_id: Optional[str] = Query(
+            None, description="Catalog scope; omit for the platform plane."
+        ),
+        collection_id: Optional[str] = Query(None),
+        resource_kind: Optional[str] = Query(
+            None,
+            description="Optional resource kind (``collection`` / ``item`` / ``asset``).",
+        ),
+        resource_ref: Optional[str] = Query(None),
+    ):
+        await _ensure_sysadmin(request)
+        mgr = _iam()
+
+        # Validate the action vocabulary up front so an operator typo
+        # returns a 422 instead of silently denying-by-default. The
+        # accepted set mirrors ``evaluate_access``'s real consumers:
+        # HTTP-verb method names from middleware + the ``Action`` enum.
+        from dynastore.models.auth import Action as _ActionEnum
+        _valid_actions = {a.value for a in _ActionEnum} | {
+            "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
+        }
+        if action not in _valid_actions:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unknown action {action!r}. Accepted: "
+                    f"{sorted(_valid_actions)}."
+                ),
+            )
+
+        # Resolve the principal — 404 cleanly rather than evaluating
+        # against an empty role/grant set (which would return a
+        # confusing deny-by-default).
+        try:
+            principal_uuid = UUID(principal_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail="Invalid principal_id (must be UUID).")
+        principal = await mgr.get_principal(principal_uuid)
+        if principal is None:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+
+        # Build the principals list the engine consumes: subject id +
+        # every role name on the principal. This mirrors the flat-name
+        # path ``check_permission`` builds; the unified-grants step
+        # picks up bindings the principal holds directly.
+        principals_list: list = []
+        if getattr(principal, "subject_id", None):
+            principals_list.append(principal.subject_id)
+        principals_list.extend(list(getattr(principal, "roles", None) or []))
+
+        # Mint a representative request path for the requested scope.
+        # The policy resource matcher uses start-anchored regex (see
+        # ``Policy.matches_resource``), so we pick the same canonical
+        # shapes ``_read_scope_probe_paths`` uses on the read-filter
+        # side — keeps explainer relevance aligned with engine
+        # relevance.
+        if catalog_id and collection_id:
+            if resource_kind == "item" and resource_ref:
+                path = f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{resource_ref}"
+            else:
+                path = f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items"
+        elif catalog_id:
+            path = f"/stac/catalogs/{catalog_id}"
+        else:
+            path = "/"
+
+        # Run the SAME evaluator the hot path uses, with a trace
+        # collector attached. The hot-path call site stays untouched —
+        # ``trace_collector`` defaults to ``None``.
+        from dynastore.modules.iam.policies import _TraceCollector
+        collector = _TraceCollector()
+        perm = mgr.get_policy_service()
+        allowed, _reason = await perm.evaluate_access(  # type: ignore[attr-defined]
+            principals=principals_list,
+            path=path,
+            method=action,
+            request_context=None,
+            catalog_id=catalog_id,
+            custom_policies=principal.custom_policies or None,
+            principal_id=principal_uuid,
+            collection_id=collection_id,
+            trace_collector=collector,
+        )
+
+        # Translate the dataclass trace into the wire DTO.
+        grants_considered = [
+            GrantTraceEntry(
+                grant_id=r.grant_id,
+                subject_kind=r.subject_kind,
+                subject_ref=r.subject_ref,
+                object_kind=r.object_kind if r.object_kind in ("role", "policy") else "policy",
+                object_ref=r.object_ref,
+                effect=r.effect if r.effect in ("allow", "deny") else "allow",
+                resource_kind=r.resource_kind,
+                resource_ref=r.resource_ref,
+                matched=r.matched,
+                why_not=r.why_not,
+                conditions_evaluated=[
+                    ConditionTraceEntry(
+                        type=c["type"],
+                        config=c["config"],
+                        passed=c["passed"],
+                        detail=c.get("detail"),
+                    )
+                    for c in r.conditions_evaluated
+                ],
+                valid_from=r.valid_from,
+                valid_until=r.valid_until,
+                in_validity_window=r.in_validity_window,
+            )
+            for r in collector.records
+        ]
+
+        return EffectivePermissionResponse(
+            request=EffectivePermissionRequest(
+                principal_id=principal_id,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                action=action,
+                resource_kind=resource_kind,
+                resource_ref=resource_ref,
+            ),
+            decision="allow" if allowed else "deny",
+            decision_reason=collector.decision_reason or _reason,
+            deny_precedence_applied=collector.deny_precedence_applied,
+            grants_considered=grants_considered,
+            compiled_rule_version=None,
+        )
 
     # ---- Collection-scope bindings (#1342 — generic role|policy grant
     #      with effect / validity / per-binding quota, scoped to a
