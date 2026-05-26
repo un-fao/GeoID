@@ -78,17 +78,25 @@ async def setup_collection(
     # The config storage for a freshly-created collection can briefly return
     # 409 while provisioning settles (the "config PUT right after create"
     # race). It is harmless and self-clears, but surfaces under xdist parallel
-    # load and flakes this fixture. Poll the PUT until it stops racing — the
-    # same retry pattern operators use against the live configs API.
+    # load and flakes this fixture. The 409 detail itself names this and tells
+    # operators to poll ``provisioning_status`` until ready.
+    #
+    # On a healthy local stack the first PUT succeeds in <1 s; under CI xdist
+    # the catalog has been observed taking 60+ s to leave the provisioning
+    # state. The previous 10-attempt × 0.2 s exponential loop (~11 s budget)
+    # exhausted before the catalog reached ``ready``. Budget here is ~120 s
+    # total with capped backoff, only paid on the flaky path. See #1361 + the
+    # 2026-05-26 CI dispatch run 26434105114 unit-tests failure for the data
+    # points behind these numbers.
     config_url = (
         f"/configs/catalogs/{catalog_id}/collections/{collection_id}"
         f"/plugins/collection_plugin_config"
     )
-    for attempt in range(10):
+    for attempt in range(120):  # up to ~120 s, only when 409 keeps recurring
         r = await in_process_client_module.put(config_url, json=config_data)
         if r.status_code != 409:
             break
-        await asyncio.sleep(0.2 * (attempt + 1))
+        await asyncio.sleep(min(0.2 * (attempt + 1), 2.0))
     assert r.status_code in [200, 204], (
         f"config PUT failed after retries: {r.status_code} {r.text}"
     )
