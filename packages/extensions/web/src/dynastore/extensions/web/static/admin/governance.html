@@ -166,9 +166,89 @@
         <hr class="rule">
         <table id="principals-table">
           <thead>
-            <tr><th>Identifier</th><th>Provider</th><th>Roles (at scope)</th><th></th></tr>
+            <tr><th>Identifier</th><th>Provider</th><th>Bindings (at scope)</th><th></th></tr>
           </thead>
           <tbody><tr class="empty-row"><td colspan="4">Press <em>Search</em> for the first fifty principals.</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Binding editor (#1346) — full binding shape: kind, effect,
+           validity window, per-binding quota. Active once a principal
+           is picked from the Survey table above. -->
+      <div class="plate" id="binding-plate" style="display:none">
+        <div class="plate-header">
+          <h3 id="binding-form-title">Grant a binding</h3>
+          <div class="plate-meta" id="binding-form-route">POST /admin/platform/grants</div>
+        </div>
+        <p class="muted" id="binding-form-subject" style="margin-top:0"></p>
+        <form id="binding-create">
+          <div class="form-row">
+            <div>
+              <label for="binding-object-kind">Object kind</label>
+              <select id="binding-object-kind">
+                <option value="role">role</option>
+                <option value="policy">policy</option>
+              </select>
+            </div>
+            <div>
+              <label for="binding-object-ref">Object ref — role name or policy id</label>
+              <input id="binding-object-ref" list="binding-object-ref-list" type="text" required placeholder="editor">
+              <datalist id="binding-object-ref-list"></datalist>
+            </div>
+            <div>
+              <label for="binding-effect">Effect</label>
+              <select id="binding-effect">
+                <option value="allow">allow</option>
+                <option value="deny">deny</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="binding-valid-from">Valid from (local time, optional)</label>
+              <input id="binding-valid-from" type="datetime-local">
+            </div>
+            <div>
+              <label for="binding-valid-until">Valid until (local time, optional)</label>
+              <input id="binding-valid-until" type="datetime-local">
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="binding-quota-rate-limit">Rate limit — requests / sec (optional)</label>
+              <input id="binding-quota-rate-limit" type="number" min="0" step="1" placeholder="100">
+            </div>
+            <div>
+              <label for="binding-quota-max-count">Lifetime max count (optional)</label>
+              <input id="binding-quota-max-count" type="number" min="0" step="1" placeholder="100000">
+            </div>
+            <div>
+              <label for="binding-quota-json">Raw quota JSON (overrides the two fields above if set)</label>
+              <input id="binding-quota-json" type="text" placeholder='{"rate_limit":{"limit":100,"window_seconds":60}}'>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit" id="binding-submit-btn">Grant</button>
+            <button class="btn btn-secondary" type="button" id="binding-cancel-btn">Close</button>
+            <span id="binding-status" class="status"></span>
+          </div>
+        </form>
+
+        <hr class="rule">
+        <h4 style="margin:0 0 8px 0">Existing bindings</h4>
+        <table id="bindings-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Object</th>
+              <th>Effect</th>
+              <th>Valid from</th>
+              <th>Valid until</th>
+              <th>Quota</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody><tr class="empty-row"><td colspan="7">Pick a principal above.</td></tr></tbody>
         </table>
       </div>
     </section>

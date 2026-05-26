@@ -7,8 +7,7 @@ import {
   listRoles, createRole, updateRole, deleteRole,
   listPolicies, createPolicy, updatePolicy, deletePolicy,
   searchPrincipals,
-  assignGlobalRole, removeGlobalRole,
-  assignCatalogRole, removeCatalogRole,
+  listGrants, createGrant, deleteGrant,
   getCatalogProvisioning,
 } from "../common/api.js";
 import { mountContextBar } from "../common/context-bar.js";
@@ -23,6 +22,9 @@ const state = {
   policies: [],
   principals: [],
   editingRoleName: null,
+  // Principals → binding editor (#1346) — picked subject for the binding form.
+  bindingSubject: null,    // { id, label }
+  bindings: [],            // list of grant rows for the picked subject at scope
 };
 
 function csv(s) {
@@ -428,6 +430,7 @@ function renderPrincipals() {
     return;
   }
   const canWrite = canWriteAtScope();
+  const pickedId = state.bindingSubject && state.bindingSubject.id;
   for (const p of state.principals) {
     const tr = document.createElement("tr");
     const ident = document.createElement("td");
@@ -436,20 +439,15 @@ function renderPrincipals() {
     provider.textContent = p.provider || "—";
     provider.className = "muted";
 
+    // "Bindings (at scope)" column — kept compact: shows the role names the
+    // principal currently has at this scope as plain chips. Per-binding
+    // mutation (deny / validity / quota / kind=policy) happens in the
+    // dedicated editor below, not inline here.
     const rolesCell = document.createElement("td");
     for (const rn of p.roles || []) {
       const chip = document.createElement("span");
       chip.className = "chip";
       chip.textContent = rn;
-      if (canWrite) {
-        const x = document.createElement("button");
-        x.className = "btn btn-xs";
-        x.style.cssText = "margin-left:4px;padding:0 4px;background:transparent;color:inherit;border:none;";
-        x.textContent = "×";
-        x.title = "Remove role";
-        x.addEventListener("click", () => unassign(p, rn));
-        chip.appendChild(x);
-      }
       rolesCell.appendChild(chip);
     }
     if (!(p.roles || []).length) {
@@ -461,65 +459,282 @@ function renderPrincipals() {
 
     const actions = document.createElement("td");
     actions.style.textAlign = "right";
-
-    const sel = document.createElement("select");
-    sel.style.marginRight = "6px";
-    const opt0 = document.createElement("option");
-    opt0.value = "";
-    opt0.textContent = "Choose role…";
-    sel.appendChild(opt0);
-    for (const r of state.roles) {
-      const o = document.createElement("option");
-      o.value = r.name;
-      o.textContent = r.name;
-      sel.appendChild(o);
-    }
-
-    const add = document.createElement("button");
-    add.className = "btn btn-secondary btn-xs";
-    add.textContent = "Assign";
-    add.disabled = !canWrite;
-    add.addEventListener("click", () => {
-      if (!sel.value) return;
-      assign(p, sel.value);
-    });
-
-    actions.appendChild(sel);
-    actions.appendChild(add);
+    const pick = document.createElement("button");
+    pick.className = "btn btn-secondary btn-xs";
+    pick.textContent = pickedId === p.id ? "Editing" : "Manage bindings";
+    pick.disabled = !canWrite;
+    pick.addEventListener("click", () => pickSubject(p));
+    actions.appendChild(pick);
 
     tr.append(ident, provider, rolesCell, actions);
     tbody.appendChild(tr);
   }
 }
 
-async function assign(principal, role) {
+// ---- Binding editor (#1346) ---------------------------------------------
+//
+// The legacy assign/remove role surface (POST /admin/.../roles +
+// DELETE) is allow-only by contract. The new endpoints —
+// POST/GET/DELETE /admin/{platform,catalogs/{cat}}/grants — take the
+// generic CreateBindingRequest shape (effect, valid_from, valid_until,
+// object_kind=role|policy, quota). We drive the form from those.
+
+function currentGrantScope() {
   const cid = scopeCatalogId();
-  try {
-    if (cid) {
-      await assignCatalogRole(principal.id, cid, role);
-    } else {
-      await assignGlobalRole(principal.id, role);
-    }
-    setStatus("#principals-status", `Assigned ${role} to ${principal.display_name || principal.id}.`, "ok");
-    refreshPrincipals();
-  } catch (e) {
-    setStatus("#principals-status", `Assign failed: ${e.message}`, "err");
+  if (cid) return { kind: "catalog", catalogId: cid };
+  return { kind: "platform" };
+}
+
+function grantRouteHint() {
+  const cid = scopeCatalogId();
+  if (cid) return `POST /admin/catalogs/${cid}/grants`;
+  return "POST /admin/platform/grants";
+}
+
+function subjectLabel(p) {
+  return p.display_name || p.subject_id || p.id;
+}
+
+function pickSubject(p) {
+  state.bindingSubject = { id: p.id, label: subjectLabel(p) };
+  $("#binding-plate").style.display = "";
+  $("#binding-form-subject").textContent = `Subject: ${state.bindingSubject.label}  (${state.bindingSubject.id})`;
+  $("#binding-form-route").textContent = grantRouteHint();
+  resetBindingForm();
+  setStatus("#binding-status", "", "");
+  refreshBindings();
+  // Re-render the principals table so the "Editing" label updates.
+  renderPrincipals();
+  // Refresh the object_ref datalist for the current object_kind.
+  refreshObjectRefSuggestions();
+  $("#binding-plate").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeBindingEditor() {
+  state.bindingSubject = null;
+  state.bindings = [];
+  $("#binding-plate").style.display = "none";
+  renderPrincipals();
+}
+
+function resetBindingForm() {
+  $("#binding-create").reset();
+  $("#binding-object-kind").value = "role";
+  $("#binding-effect").value = "allow";
+}
+
+function refreshObjectRefSuggestions() {
+  const kind = $("#binding-object-kind").value;
+  const list = $("#binding-object-ref-list");
+  clearNode(list);
+  const source = kind === "role" ? state.roles : state.policies;
+  for (const r of source) {
+    const opt = document.createElement("option");
+    opt.value = kind === "role" ? r.name : r.id;
+    list.appendChild(opt);
   }
 }
 
-async function unassign(principal, role) {
-  if (!confirm(`Remove role "${role}" from ${principal.display_name || principal.id}?`)) return;
-  const cid = scopeCatalogId();
+function buildQuotaPayload() {
+  // Raw JSON wins if non-empty — operator escape hatch for the
+  // shapes the backend accepts but the two structured fields don't
+  // express (e.g. burst windows, named buckets).
+  const raw = $("#binding-quota-json").value.trim();
+  if (raw) {
+    try { return JSON.parse(raw); }
+    catch (_e) { throw new Error("Quota JSON is not valid JSON."); }
+  }
+  const rate = $("#binding-quota-rate-limit").value.trim();
+  const max = $("#binding-quota-max-count").value.trim();
+  const out = {};
+  if (rate !== "") {
+    const n = Number(rate);
+    if (!Number.isFinite(n) || n < 0) throw new Error("Rate limit must be a non-negative number.");
+    out.rate_limit = { limit: n, window_seconds: 1 };
+  }
+  if (max !== "") {
+    const n = Number(max);
+    if (!Number.isFinite(n) || n < 0) throw new Error("Lifetime max count must be a non-negative number.");
+    out.max_count = { limit: n };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function fmtDateTime(value) {
+  if (!value) return "—";
   try {
-    if (cid) {
-      await removeCatalogRole(principal.id, cid, role);
-    } else {
-      await removeGlobalRole(principal.id, role);
+    return new Date(value).toISOString().replace("T", " ").slice(0, 19) + "Z";
+  } catch (_e) {
+    return String(value);
+  }
+}
+
+async function refreshBindings() {
+  const tbody = $("#bindings-table tbody");
+  clearNode(tbody);
+  const loading = document.createElement("tr");
+  loading.className = "empty-row";
+  const td = document.createElement("td");
+  td.colSpan = 7;
+  td.textContent = "Loading…";
+  loading.appendChild(td);
+  tbody.appendChild(loading);
+
+  if (!state.bindingSubject) {
+    clearNode(tbody);
+    return;
+  }
+
+  try {
+    state.bindings = await listGrants(currentGrantScope(), state.bindingSubject.id) || [];
+  } catch (e) {
+    clearNode(tbody);
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const errTd = document.createElement("td");
+    errTd.colSpan = 7;
+    errTd.textContent = `Load failed: ${e.message}`;
+    tr.appendChild(errTd);
+    tbody.appendChild(tr);
+    return;
+  }
+  renderBindings();
+}
+
+function renderBindings() {
+  const tbody = $("#bindings-table tbody");
+  clearNode(tbody);
+  if (!state.bindings.length) {
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const td = document.createElement("td");
+    td.colSpan = 7;
+    td.textContent = "No bindings on this principal at this scope.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  const canWrite = canWriteAtScope();
+  for (const row of state.bindings) {
+    const tr = document.createElement("tr");
+    const effect = row.effect || "allow";
+    if (effect === "deny") {
+      // Deny rows: distinct, terracotta-tinted, faint left border so they
+      // pop visually against allow rows in a long list.
+      tr.style.background = "rgba(196, 78, 50, 0.06)";
+      tr.style.borderLeft = "3px solid var(--terracotta-deep, #c44e32)";
     }
-    setStatus("#principals-status", `Removed ${role}.`, "ok");
+
+    const kind = document.createElement("td");
+    kind.textContent = row.object_kind || "role";
+
+    const obj = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = row.object_ref || "—";
+    obj.appendChild(code);
+
+    const eff = document.createElement("td");
+    const chip = document.createElement("span");
+    chip.className = `chip effect-${effect === "deny" ? "DENY" : "ALLOW"}`;
+    chip.textContent = effect;
+    eff.appendChild(chip);
+
+    const vf = document.createElement("td");
+    vf.className = "muted";
+    vf.textContent = fmtDateTime(row.valid_from);
+    const vu = document.createElement("td");
+    vu.className = "muted";
+    vu.textContent = fmtDateTime(row.valid_until);
+
+    const quota = document.createElement("td");
+    if (row.quota == null) {
+      quota.className = "muted";
+      quota.textContent = "—";
+    } else {
+      // Render via <pre>textContent so any operator-supplied JSON cannot
+      // smuggle markup into the table.
+      const pre = document.createElement("pre");
+      pre.style.cssText = "margin:0;font-size:11px;white-space:pre-wrap;max-width:280px;";
+      pre.textContent = typeof row.quota === "object"
+        ? JSON.stringify(row.quota)
+        : String(row.quota);
+      quota.appendChild(pre);
+    }
+
+    const actions = document.createElement("td");
+    actions.style.textAlign = "right";
+    const del = document.createElement("button");
+    del.className = "btn btn-danger btn-xs";
+    del.textContent = "Revoke";
+    del.disabled = !canWrite;
+    del.addEventListener("click", () => revokeBinding(row));
+    actions.appendChild(del);
+
+    tr.append(kind, obj, eff, vf, vu, quota, actions);
+    tbody.appendChild(tr);
+  }
+}
+
+async function onSubmitBinding(e) {
+  e.preventDefault();
+  if (!state.bindingSubject) {
+    setStatus("#binding-status", "Pick a principal first.", "err");
+    return;
+  }
+  if (!canWriteAtScope()) {
+    setStatus("#binding-status", "You cannot grant bindings at this scope.", "err");
+    return;
+  }
+  const objectRef = $("#binding-object-ref").value.trim();
+  if (!objectRef) {
+    setStatus("#binding-status", "Object ref is required.", "err");
+    return;
+  }
+  const body = {
+    subject_id: state.bindingSubject.id,
+    object_kind: $("#binding-object-kind").value,
+    object_ref: objectRef,
+    effect: $("#binding-effect").value,
+  };
+  const vf = $("#binding-valid-from").value;
+  const vu = $("#binding-valid-until").value;
+  if (vf) body.valid_from = new Date(vf).toISOString();
+  if (vu) body.valid_until = new Date(vu).toISOString();
+  let quota;
+  try { quota = buildQuotaPayload(); }
+  catch (err) { setStatus("#binding-status", err.message, "err"); return; }
+  if (quota != null) body.quota = quota;
+
+  try {
+    await createGrant(currentGrantScope(), body);
+    setStatus("#binding-status", "Binding granted.", "ok");
+    resetBindingForm();
+    refreshBindings();
+    // Refresh the principal row so the "Bindings (at scope)" chips reflect
+    // the new role/policy. Cheap: same search the user already ran.
+    refreshPrincipals();
+  } catch (err) {
+    setStatus("#binding-status", `Grant failed: ${err.message}`, "err");
+  }
+}
+
+async function revokeBinding(row) {
+  if (!state.bindingSubject) return;
+  const label = `${row.object_kind || "role"}:${row.object_ref}`;
+  if (!confirm(`Revoke ${label} (${row.effect || "allow"}) from ${state.bindingSubject.label}?`)) return;
+  try {
+    await deleteGrant(currentGrantScope(), {
+      subjectId: state.bindingSubject.id,
+      objectKind: row.object_kind || "role",
+      objectRef: row.object_ref,
+      effect: row.effect || "allow",
+    });
+    setStatus("#binding-status", `Revoked ${label}.`, "ok");
+    refreshBindings();
     refreshPrincipals();
   } catch (e) {
-    setStatus("#principals-status", `Remove failed: ${e.message}`, "err");
+    setStatus("#binding-status", `Revoke failed: ${e.message}`, "err");
   }
 }
 
@@ -653,8 +868,12 @@ async function boot() {
       }
       state.scope = scope;
       if (state.editingRoleName) exitEditRoleMode();
+      // Scope change invalidates the picked subject's binding view —
+      // bindings are scope-specific (platform vs catalog).
+      if (state.bindingSubject) closeBindingEditor();
       await Promise.all([refreshRoles(), refreshPolicies()]);
       if ($("#tab-principals").classList.contains("active")) refreshPrincipals();
+      refreshObjectRefSuggestions();
     },
   });
 
@@ -685,6 +904,17 @@ async function boot() {
       e.preventDefault();
       refreshPrincipals();
     }
+  });
+
+  // Binding editor (#1346)
+  $("#binding-create").addEventListener("submit", onSubmitBinding);
+  $("#binding-cancel-btn").addEventListener("click", closeBindingEditor);
+  $("#binding-object-kind").addEventListener("change", () => {
+    refreshObjectRefSuggestions();
+    // Clear the previous suggestion when switching kinds — a role name
+    // is rarely a valid policy id and vice versa, so leaving the value
+    // sitting in the box would just cause a 422 on submit.
+    $("#binding-object-ref").value = "";
   });
 
   $("#prov-check-btn").addEventListener("click", checkProvisioning);
