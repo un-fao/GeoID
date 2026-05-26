@@ -55,6 +55,8 @@ from .models import (
     PrincipalCreate, PrincipalUpdate,
     UsagePage, UsageResetResponse, UsageRow,
     CatalogProvisioningView, ProvisioningTaskView,
+    GrantUsageView, GrantUsageEntry, GrantUsageCounters,
+    GrantRateLimitCounter, GrantMaxCountCounter,
 )
 from .policies import admin_policies, admin_role_bindings
 
@@ -1928,6 +1930,201 @@ class AdminService(ExtensionProtocol):
             policy_id=policy_id,
             principal_key=principal_key,
             reset_count=int(before or 0),
+        )
+
+    # -------------------------------------------------------------------------
+    # Per-binding live counter view (/admin/iam/usage/grants) — #1342 / #1346
+    # -------------------------------------------------------------------------
+    #
+    # Surface the live rate-limit / lifetime-quota counter state attached to
+    # each of a principal's bindings. Counter rows are namespaced per binding
+    # via ``quota_namespace(grant_id)`` (= ``f"grant:{grant_id}"``); for
+    # ``scope=principal`` (the default that ``quota_to_conditions`` stamps),
+    # the row's ``principal_key`` is the binding's ``subject_ref``. The
+    # window/limit/window_seconds figures are echoed from the grant's
+    # ``quota`` JSONB so the UI doesn't have to re-parse the spec, and the
+    # current bucket start is derived locally from ``bucket_for`` so an
+    # operator can see when the rate-limit row resets without a second
+    # round-trip.
+    #
+    # Sysadmin-only: counter activity reveals principal traffic patterns
+    # (when a binding hit its limit, how recently it was exercised). Catalog
+    # admins do not reach this surface even though they can manage the
+    # bindings — usage state is a platform-tier diagnostic.
+    #
+    # Valkey-unavailable posture: the layered counter's own ``.get()`` falls
+    # back to PG transparently. When that fallback fires we surface
+    # ``valkey_available=False`` on the wire so the UI can show a "figures
+    # may be stale" banner; the route still returns 200 with the PG numbers.
+    # A hard 503 fires only when neither tier can serve any reading — i.e.
+    # the registered counter raises on the first read. This mirrors the
+    # posture ``LayeredUsageCounter.get`` already takes internally.
+
+    @router.get(
+        "/iam/usage/grants",
+        summary="Live rate-limit / lifetime-quota counters, per binding",
+        response_model=GrantUsageView,
+    )
+    async def list_grant_usage(  # type: ignore[reportGeneralTypeIssues]
+        request: Request,
+        principal_id: str = Query(
+            ...,
+            description=(
+                "Principal id (UUID) whose bindings to enumerate. The "
+                "response carries one entry per grant row attached to "
+                "this principal at the requested scope."
+            ),
+        ),
+        catalog_id: Optional[str] = Query(
+            None,
+            description=(
+                "Catalog scope; omit for the platform plane. Catalog-scope "
+                "view follows the same ``resolve_schema`` lookup the "
+                "binding CRUD routes use."
+            ),
+        ),
+    ):
+        from datetime import datetime, timezone
+
+        from dynastore.models.protocols.usage_counter import UsageCounterProtocol
+        from dynastore.modules.iam.scale_config import quota_namespace
+        from dynastore.modules.iam.usage_counter_bucket import bucket_for
+
+        await _ensure_sysadmin(request)
+
+        # Validate the principal id up front — same 422 / 404 envelope the
+        # effective-permissions route uses (#1389) so callers see one
+        # consistent error vocabulary across the IAM diagnostic surfaces.
+        try:
+            principal_uuid = UUID(principal_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid principal_id (must be UUID).",
+            )
+
+        mgr = _iam()
+        principal = await mgr.get_principal(principal_uuid)
+        if principal is None:
+            raise HTTPException(status_code=404, detail="Principal not found.")
+
+        # Resolve the scope schema. The platform plane is the canonical
+        # ``"iam"`` schema; catalog-scope reuses ``resolve_schema`` so a
+        # missing catalog falls back to the platform schema (matching
+        # IamService's lenient posture). The binding routes already
+        # validate the catalog explicitly when they need a strict 404,
+        # but the inspection route is intentionally tolerant: an unknown
+        # catalog returns an empty entry list rather than a noisy error.
+        if catalog_id:
+            scope_schema = await mgr.resolve_schema(catalog_id)
+        else:
+            scope_schema = "iam"
+
+        grants = await mgr.storage.list_grants_for_subject(
+            scope_schema=scope_schema,
+            subject_kind="principal",
+            subject_ref=str(principal_uuid),
+        ) or []
+
+        counter = get_protocol(UsageCounterProtocol)
+        # No counter backend registered at all → still serve the binding
+        # list with empty counter cells (and valkey_available=False). The
+        # alternative (503) would block the UI from seeing the bindings
+        # themselves, which is the wrong default for an inspection
+        # endpoint that doesn't write anything.
+        valkey_available = counter is not None
+
+        entries: list[GrantUsageEntry] = []
+        for g in grants:
+            grant_id = g.get("id")
+            if grant_id is None:
+                continue
+            grant_id_str = str(grant_id)
+            namespace = quota_namespace(grant_id_str)
+            quota_spec = g.get("quota") if isinstance(g.get("quota"), dict) else None
+
+            counters = GrantUsageCounters()
+            if counter is not None and isinstance(quota_spec, dict):
+                # The counter row key on the read side mirrors what
+                # ``quota_to_conditions`` stamps at policy-evaluation time:
+                # scope=principal → principal_key = the binding's subject_ref
+                # (which is the principal id for direct grants). Role-scoped
+                # grants live on a different row keyed by role name; we
+                # don't enumerate those here because the route's input is
+                # a principal id, not a role.
+                principal_key = str(principal_uuid)
+
+                rate_spec = quota_spec.get("rate_limit")
+                if isinstance(rate_spec, dict):
+                    rl_limit = int(rate_spec.get("limit", 0) or 0)
+                    rl_window = int(rate_spec.get("window_seconds", 0) or 0)
+                    if rl_limit > 0 and rl_window > 0:
+                        try:
+                            rl_count = int(await counter.get(
+                                namespace, principal_key,
+                                window_seconds=rl_window,
+                            ))
+                        except Exception:
+                            logger.warning(
+                                "list_grant_usage: counter.get(rate_limit) "
+                                "failed for grant=%s principal=%s",
+                                grant_id_str, principal_key, exc_info=True,
+                            )
+                            rl_count = 0
+                            valkey_available = False
+                        bucket = bucket_for(rl_window)
+                        counters.rate_limit = GrantRateLimitCounter(
+                            count=rl_count,
+                            limit=rl_limit,
+                            window_seconds=rl_window,
+                            remaining=max(0, rl_limit - rl_count),
+                            window_start=bucket.isoformat(),
+                        )
+
+                count_spec = quota_spec.get("max_count")
+                if isinstance(count_spec, dict):
+                    mc_limit = int(count_spec.get("limit", 0) or 0)
+                    if mc_limit > 0:
+                        try:
+                            mc_count = int(await counter.get(
+                                namespace, principal_key,
+                                window_seconds=None,
+                            ))
+                        except Exception:
+                            logger.warning(
+                                "list_grant_usage: counter.get(max_count) "
+                                "failed for grant=%s principal=%s",
+                                grant_id_str, principal_key, exc_info=True,
+                            )
+                            mc_count = 0
+                            valkey_available = False
+                        counters.max_count = GrantMaxCountCounter(
+                            count=mc_count,
+                            limit=mc_limit,
+                            remaining=max(0, mc_limit - mc_count),
+                        )
+
+            entries.append(GrantUsageEntry(
+                grant_id=grant_id_str,
+                subject_kind=str(g.get("subject_kind") or "principal"),
+                subject_ref=str(g.get("subject_ref") or principal_uuid),
+                object_kind=str(g.get("object_kind") or "role"),
+                object_ref=str(g.get("object_ref") or ""),
+                effect=str(g.get("effect") or "allow"),
+                resource_kind=g.get("resource_kind"),
+                resource_ref=g.get("resource_ref"),
+                quota_spec=quota_spec,
+                counters=counters,
+                valid_from=g.get("valid_from"),
+                valid_until=g.get("valid_until"),
+            ))
+
+        return GrantUsageView(
+            principal_id=str(principal_uuid),
+            catalog_id=catalog_id,
+            entries=entries,
+            valkey_available=valkey_available,
+            fetched_at=datetime.now(tz=timezone.utc).isoformat(),
         )
 
     # -------------------------------------------------------------------------

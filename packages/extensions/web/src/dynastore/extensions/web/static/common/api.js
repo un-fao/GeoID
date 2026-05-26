@@ -327,6 +327,29 @@ export const fetchEffectivePermissions = ({
   return getJSON(`/admin/iam/effective${query}`);
 };
 
+// ----- IAM per-binding live counter view (#1342 / #1346) -----
+//
+// Diagnostic: live rate-limit / lifetime-quota counter state per binding
+// for a given principal. Mirrors the backend GET /admin/iam/usage/grants
+// contract. Every query value runs through encodeURIComponent so principal
+// ids and catalog ids carrying unusual characters (spaces, ampersands,
+// slashes) can't smuggle extra query keys past the server's typed query
+// params. Sysadmin-only on the server; the 403 surfaces to the page.
+export const fetchGrantUsage = ({
+  principalId,
+  catalogId,
+} = {}) => {
+  const parts = [];
+  const push = (key, value) => {
+    if (value == null || value === "") return;
+    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+  };
+  push("principal_id", principalId);
+  push("catalog_id", catalogId);
+  const query = parts.length ? `?${parts.join("&")}` : "";
+  return getJSON(`/admin/iam/usage/grants${query}`);
+};
+
 // ----- STAC write endpoints (create catalog / collection / features) -----
 
 export const createStacCatalog = (definition) => postJSON(`/catalogs`, definition);
