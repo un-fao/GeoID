@@ -1314,10 +1314,29 @@ class CatalogService(CatalogsProtocol):
                 db_resource=conn,
             )
 
-        # Invalidate cache
+            # Re-read inside the same transaction so the returned model
+            # reflects the freshly-written split-table data. The router
+            # fan-out MUST share ``conn`` — when the outer caller (e.g. a
+            # FastAPI request) owns the transaction it is not yet committed,
+            # so a fan-out on a separate pool connection would observe only
+            # the pre-write state and the handler would echo stale data.
+            # ``update_collection`` solves the same hazard the same way
+            # (see ``collection_service.update_collection`` re-fetch).
+            in_tx_post = await _get_catalog_query.execute(conn, id=catalog_id)
+            in_tx_router = await self._resolve_catalog_router_metadata(
+                catalog_id, db_resource=conn,
+            )
+            fresh = self._unpack_catalog_row(
+                in_tx_post, router_metadata=in_tx_router,
+            )
+
+        # Invalidate cache AFTER the transaction exits so concurrent readers
+        # cannot repopulate it with pre-commit state.
         _invalidate_catalog_model_cache(catalog_id)
 
-        return await self.get_catalog_model(catalog_id, ctx=DriverContext(db_resource=db_resource) if db_resource else None)
+        if fresh is None:
+            return merged_model
+        return await self._run_catalog_pipeline(catalog_id, fresh)
 
     async def delete_catalog_language(
         self, catalog_id: str, lang: str, ctx: Optional["DriverContext"] = None
