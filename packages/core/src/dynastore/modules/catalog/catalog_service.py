@@ -1903,6 +1903,17 @@ class CatalogService(CatalogsProtocol):
             catalog_id, collection_id, item_id, lang, ctx=ctx
         )
 
+    async def resolve_external_id_by_geoid(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        geoid: str,
+        ctx: Optional[DriverContext] = None,
+    ) -> Optional[str]:
+        return await self._item_svc.resolve_external_id_by_geoid(
+            catalog_id, collection_id, geoid, ctx=ctx
+        )
+
     @property
     def count_items_by_asset_id_query(self) -> Any:
         return self._item_svc.count_items_by_asset_id_query

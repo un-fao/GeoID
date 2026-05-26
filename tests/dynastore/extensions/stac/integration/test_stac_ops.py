@@ -89,16 +89,50 @@ async def test_stac_item_lifecycle(sysadmin_in_process_client, in_process_client
     )
     assert r.json()["id"] == final_item_id
 
-    # Steps 3-5 (PUT update, DELETE, verify-deletion) are blocked on a real
-    # server-side bug surfaced by the post-#1212 id contract: PUT against a
-    # known geoid does not update the geoid-keyed row — it inserts a new row
-    # whose external_id is the geoid we PUT against, leaving the original
-    # row untouched. The follow-up DELETE then deletes the duplicate only,
-    # and the verify-deletion GET resolves to the still-alive original.
-    # Tracked separately so the POST + GET assertions above continue to
-    # guard the post-#1212 id contract on the read path that already works.
-    pytest.skip(
-        "PUT/DELETE/verify-deletion blocked on STAC PUT geoid-update bug (#1367)"
+    # 3. Update Item via STAC — PUT-by-geoid in-place (fix for #1367).
+    # The path-id is the geoid returned by POST; the body id must match the
+    # path id per the matched-or-400 guard in update_stac_item. The handler
+    # translates the geoid back to the row's external_id before delegating
+    # to upsert, so the existing row updates in place (no duplicate insert).
+    updated_data = item_raw_data.copy()
+    updated_data["id"] = final_item_id
+    if "properties" not in updated_data:
+        updated_data["properties"] = {}
+    updated_data["properties"]["custom_updated"] = True
+
+    r = await sysadmin_in_process_client.put(
+        f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{final_item_id}",
+        json=updated_data,
+    )
+    assert r.status_code == 200, (
+        f"Failed to update item {final_item_id}. Response: {r.text}"
+    )
+
+    # The PUT must update the SAME geoid-keyed row, not insert a new one.
+    assert r.json()["id"] == final_item_id, (
+        f"PUT must update the geoid-keyed row in place, not insert a duplicate. "
+        f"Path id={final_item_id}, response id={r.json().get('id')}"
+    )
+
+    props = r.json().get("properties", {})
+    assert str(props.get("custom_updated")).lower() == "true", (
+        f"Property 'custom_updated' not found or incorrect in {props}"
+    )
+
+    # 4. Delete Item via STAC
+    r = await sysadmin_in_process_client.delete(
+        f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{final_item_id}"
+    )
+    assert r.status_code == 204, (
+        f"Failed to delete item {final_item_id}. Response: {r.text}"
+    )
+
+    # 5. Verify deletion
+    r = await in_process_client.get(
+        f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{final_item_id}"
+    )
+    assert r.status_code == 404, (
+        f"Item {final_item_id} still exists after deletion. Response: {r.text}"
     )
 
 

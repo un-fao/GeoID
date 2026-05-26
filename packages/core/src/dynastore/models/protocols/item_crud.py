@@ -80,3 +80,20 @@ class ItemCrudProtocol(Protocol):
     ) -> int:
         """Delete a specific language translation for an item."""
         ...
+
+    async def resolve_external_id_by_geoid(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        geoid: str,
+        ctx: Optional["DriverContext"] = None,
+    ) -> Optional[str]:
+        """Translate a path-id geoid into its row's stored ``external_id``.
+
+        Returns ``None`` when ``geoid`` is not a UUID, the
+        catalog/collection is unresolved, the collection has no identity-
+        carrying sidecar, or no active row matches. Used by write handlers
+        whose API contract carries the geoid as the surface-level id (post-
+        #1212) to translate back to the external_id ``upsert`` keys on.
+        """
+        ...
