@@ -128,7 +128,10 @@ class IamRolesConfig(PluginConfig):
     from the historical ``"anonymous"``).
     """
 
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "iam", "roles")
+    # Type annotation mirrors PluginConfig._address (Tuple[Optional[str], ...]);
+    # this config's tuple has no None slots, but pyright's invariance check on
+    # mutable ClassVars rejects narrowing the element type.
+    _address: ClassVar[Tuple[Optional[str], ...]] = ("platform", "modules", "iam", "roles")
 
     sysadmin_role_name: Mutable[str] = Field(
         default="sysadmin",
@@ -197,13 +200,13 @@ class IamRolesConfig(PluginConfig):
     )
 
     @property
-    def admin_role_set(self) -> frozenset:
+    def admin_role_set(self) -> frozenset[str]:
         """Frozen set of role names treated as 'platform admin' for
         ``Permission.ADMIN`` checks."""
         return frozenset(self.admin_tier_role_names)
 
     @property
-    def platform_admin_tier_role_set(self) -> frozenset:
+    def platform_admin_tier_role_set(self) -> frozenset[str]:
         """Subset of ``admin_role_set`` whose names are platform-tier.
 
         Used by catalog-scope grant/revoke guards: a catalog admin must
@@ -223,7 +226,7 @@ class IamRolesConfig(PluginConfig):
         ]
 
     @property
-    def platform_role_names(self) -> frozenset:
+    def platform_role_names(self) -> frozenset[str]:
         """Names of platform-tier roles (not grantable per-catalog).
 
         Used by ``GET /admin/roles?catalog_id=X`` to filter out
@@ -319,7 +322,7 @@ class IamScaleConfig(PluginConfig):
     is out of scope (needs the cleanup migration).
     """
 
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "iam", "scale")
+    _address: ClassVar[Tuple[Optional[str], ...]] = ("platform", "modules", "iam", "scale")
 
     valkey_required: Mutable[bool] = Field(
         default=False,

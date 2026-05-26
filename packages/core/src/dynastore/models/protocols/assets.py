@@ -73,13 +73,12 @@ Quick reference
         print(r.ref_type, r.ref_id, "blocking:", not r.cascade_delete)
 """
 
-from typing import Protocol, Optional, Any, List, Dict, runtime_checkable, TYPE_CHECKING
+from typing import Protocol, Optional, List, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.modules.catalog.asset_service import (
         Asset,
         AssetBase,
-        AssetUploadDefinition,
         AssetUpdate,
         AssetReference,
         AssetReferenceType,

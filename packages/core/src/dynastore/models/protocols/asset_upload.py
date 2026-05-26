@@ -125,7 +125,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from dynastore.modules.catalog.asset_service import Asset, AssetUploadDefinition
+    from dynastore.modules.catalog.asset_service import AssetUploadDefinition
 
 
 class UploadStatus(str, Enum):

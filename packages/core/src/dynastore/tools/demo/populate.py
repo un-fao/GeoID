@@ -97,7 +97,8 @@ async def populate():
         ]
 
         result = await catalogs_svc.upsert(catalog_id, collection_id, demo_items)
-        logger.info(f"Successfully ingested {len(result)} items.")
+        count = len(result) if isinstance(result, list) else 1
+        logger.info(f"Successfully ingested {count} items.")
         logger.info("Demo data population complete.")
 
 

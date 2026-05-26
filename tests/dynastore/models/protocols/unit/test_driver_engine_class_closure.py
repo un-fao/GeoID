@@ -42,7 +42,7 @@ import dynastore.modules.catalog.drivers.pg_asset_driver  # noqa: F401
 
 from dynastore.models.protocols.typed_driver import (
     _PluginDriverConfig,
-    _registered_pairs,
+    registered_pairs,
 )
 from dynastore.modules.db_config.engine_registry import (
     list_registered_engines,
@@ -73,7 +73,7 @@ def _concrete_bound_configs() -> list[type[_PluginDriverConfig]]:
     bound-pair registry so orphans don't double-fail through this
     test (the orphan guard already covers them).
     """
-    bound = set(_registered_pairs())
+    bound = set(registered_pairs())
     seen: set[type] = set()
     out: list[type[_PluginDriverConfig]] = []
     stack: list[type] = list(_PluginDriverConfig.__subclasses__())

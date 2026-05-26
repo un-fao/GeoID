@@ -108,10 +108,10 @@ def test_class_key_matches_driver_class_name_for_every_pair():
     registry-corruption regression where the reverse lookup returns the
     wrong class.
     """
-    from dynastore.models.protocols.typed_driver import _registered_pairs
+    from dynastore.models.protocols.typed_driver import registered_pairs
     from dynastore.tools.typed_store.base import _to_snake
 
-    pairs = _registered_pairs()
+    pairs = registered_pairs()
     assert pairs, "Registry is empty — driver imports didn't fire."
 
     mismatches: list[str] = []
@@ -135,11 +135,11 @@ def test_class_key_drops_config_suffix_convention():
     ``Config`` removed.  Operators copy ONE name between
     ``routing.WRITE[].driver_ref`` and ``configs.platform.catalog.{tier}.drivers.{driver_ref}``.
     """
-    from dynastore.models.protocols.typed_driver import _registered_pairs
+    from dynastore.models.protocols.typed_driver import registered_pairs
     from dynastore.tools.typed_store.base import _to_snake
 
     violations: list[str] = []
-    for cfg_cls in _registered_pairs():
+    for cfg_cls in registered_pairs():
         # Skip test-local fixtures (see _all_concrete_subclasses docstring).
         if "<locals>" in cfg_cls.__qualname__:
             continue

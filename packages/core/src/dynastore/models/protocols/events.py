@@ -1,14 +1,10 @@
 from typing import (
     Any,
-    Dict,
-    List,
     Optional,
-    Union,
     Protocol,
     runtime_checkable,
     Callable,
     Coroutine,
-    Awaitable,
 )
 
 Listener = Callable[..., Coroutine[Any, Any, None]]

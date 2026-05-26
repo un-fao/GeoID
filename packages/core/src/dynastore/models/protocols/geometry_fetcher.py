@@ -7,7 +7,7 @@ and height attributes for a specific set of feature IDs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True)

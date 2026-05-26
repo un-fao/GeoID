@@ -559,12 +559,20 @@ reportUnnecessaryTypeIgnoreComment = "none"
 # noise that doesn't indicate a real problem.
 reportMissingModuleSource = "none"
 
-# NOTE: a per-environment "strict" override for models/protocols was removed —
-# pyright rejects ``typeCheckingMode`` inside ``executionEnvironments`` (emits
-# "unrecognized setting" and ignores it), so the override never took effect and
-# printed a config error on every run. Adopting genuine strict mode there is
-# tracked separately (it surfaces ~77 reportUnknown*/reportMissing* findings,
-# rules this config deliberately disables globally).
+# Protocol layer: tighten the high-signal rules that the global relaxations
+# would otherwise hide. We re-enable per-rule (which pyright DOES accept inside
+# executionEnvironments) instead of `typeCheckingMode = "strict"` (which it does
+# not, see #1359). Bulk reportUnknown*/reportMissingParameterType strict noise
+# is left off here; a full strict adoption can follow once protocols are
+# fully annotated. Ref #1359.
+[[tool.pyright.executionEnvironments]]
+root = "packages/core/src/dynastore/models/protocols"
+reportIncompatibleVariableOverride = "error"
+reportIncompatibleMethodOverride = "error"
+reportPrivateUsage = "error"
+reportUnusedImport = "error"
+reportUnusedFunction = "error"
+reportMissingTypeArgument = "error"
 
 # Optional-extra raster paths (rasterio): silence missing-import noise on files
 # that lazy-import these at call time. Runtime guards with try/except.

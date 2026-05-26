@@ -134,15 +134,13 @@ class CatalogsProtocol(ItemCrudProtocol, ItemQueryProtocol, ItemIntrospectionPro
         ...
 
     # === Core Catalog Operations ===
-
-    async def upsert(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        items: Union[Dict[str, Any], Any],
-        ctx: Optional["DriverContext"] = None,
-        processing_context: Optional[Dict[str, Any]] = None,
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]: ...
+    # NB: ``upsert`` is inherited from ``ItemCrudProtocol`` — do not re-declare
+    # here. The earlier stub narrowed input/widened output incompatibly with
+    # the base contract (caught by pyright's reportIncompatibleMethodOverride;
+    # ref #1359). Concrete implementations (``CatalogService.upsert``) may
+    # return ``dict`` rows; consumers should treat the return as
+    # ``Feature | List[Feature]`` per the base type and rely on the OGC
+    # façade to coerce dict rows into Feature models at the boundary.
 
     async def get_catalog(
         self, catalog_id: str, lang: str = "en", ctx: Optional["DriverContext"] = None,
