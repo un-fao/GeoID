@@ -21,7 +21,8 @@ import enum
 import logging
 import uuid
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Tuple, Any, Dict, cast
 from uuid import UUID
 from dynastore.tools.cache import cached
@@ -45,6 +46,120 @@ def _validate_schema_name(schema: str) -> str:
 from dynastore.models.protocols.authorization import IamRolesConfig
 
 from .models import PolicyBundle, Policy, Condition, Role, Principal  # noqa: F401
+
+
+# --- Effective-permissions explainer support (#1346 backend half) ---
+#
+# A trace is a *byproduct* of the existing evaluate_access walk: every
+# step the engine already takes (resolve effective policies → walk each
+# policy for method/resource/conditions → rank) drops a record into a
+# collector when one is passed in. The hot path passes nothing and pays
+# nothing (default ``None``); the explainer route passes a collector and
+# reads back the full annotated walk. The decision the engine returns is
+# identical with or without a collector — that invariant is enforced by
+# the drift property test.
+
+
+@dataclass
+class _GrantTraceRecord:
+    """Mutable per-policy walk record the collector fills in as the walk
+    proceeds. Mirrors :class:`GrantTraceEntry` field-for-field; the
+    explainer route translates the dataclass to the Pydantic DTO.
+
+    ``policy_id`` is keyed by the engine's policy iteration; the
+    collector cross-references ``grant_by_policy_id`` (populated during
+    resolution) to backfill grant-row identity. Defaults pre-fill the
+    "policy not reached via a binding" shape so a record that never sees
+    a grant row still has sensible values."""
+
+    policy_id: str
+    grant_id: str
+    subject_kind: str = "role"
+    subject_ref: str = ""
+    object_kind: str = "policy"
+    object_ref: str = ""
+    effect: str = "allow"
+    resource_kind: Optional[str] = None
+    resource_ref: Optional[str] = None
+    matched: bool = False
+    why_not: Optional[str] = None
+    conditions_evaluated: List[Dict[str, Any]] = field(default_factory=list)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    in_validity_window: bool = True
+
+
+@dataclass
+class _TraceCollector:
+    """Carries trace state through ``_resolve_effective_policies`` and
+    ``evaluate_access``. Default-constructed when the caller asks for a
+    trace; the hot path passes ``None`` and never allocates one.
+
+    ``records`` is keyed by ``Policy.id`` *plus* a discriminator (grant
+    id or ``"policy:<id>"``) so a policy reached via multiple grants
+    (e.g. same role bound twice with different validity windows) shows
+    as multiple records — that's what the operator needs to see.
+
+    ``decision_reason`` is set by the walk's winner-selection step so
+    the API response mirrors the engine's audit log line by
+    construction."""
+
+    records: List[_GrantTraceRecord] = field(default_factory=list)
+    deny_precedence_applied: bool = False
+    decision_reason: str = ""
+
+    def add(self, rec: _GrantTraceRecord) -> None:
+        self.records.append(rec)
+
+    def find_or_create(self, policy_id: str, grant_id: str) -> _GrantTraceRecord:
+        """Look up a previously-recorded entry (resolution time) so the
+        walk can mark it matched / record per-condition outcomes. Falls
+        back to creating a fresh record when the policy is reached
+        through a path the resolver did not annotate (custom_policies,
+        statement-only bundles).
+        """
+        for r in self.records:
+            if r.policy_id == policy_id and r.grant_id == grant_id:
+                return r
+        rec = _GrantTraceRecord(
+            policy_id=policy_id,
+            grant_id=grant_id or policy_id,
+            object_ref=policy_id,
+        )
+        self.records.append(rec)
+        return rec
+
+
+def _find_trace_record_for_policy(
+    collector: "_TraceCollector", pol: Policy,
+) -> _GrantTraceRecord:
+    """Return the first un-walked trace record for ``pol`` (matched is
+    still False), else synthesize one.
+
+    A single ``policy_id`` can show up multiple times in the collector
+    when the same policy is reached via several grants — the walk visits
+    the same ``Policy`` object once per ``effective_policies`` entry,
+    so we hand it back records in resolver-stamped order. When a policy
+    arrived through a non-grant path (statement-only bundle, etc.) no
+    record was stamped, so we create one keyed on the policy id.
+    """
+    for r in collector.records:
+        if r.policy_id == pol.id and not r.matched and r.why_not is None and not r.conditions_evaluated:
+            return r
+    # Fall back to a synthesized record so the walk always has somewhere
+    # to write its outcome — keeps the trace complete for paths the
+    # resolver did not annotate.
+    rec = _GrantTraceRecord(
+        policy_id=pol.id,
+        grant_id=f"policy:{pol.id}",
+        subject_kind="policy",
+        subject_ref=pol.id,
+        object_kind="policy",
+        object_ref=pol.id,
+        effect=pol.effect.lower(),
+    )
+    collector.records.append(rec)
+    return rec
 from .policy_storage import AbstractPolicyStorage
 from .iam_storage import AbstractIamStorage
 from .postgres_policy_storage import PostgresPolicyStorage
@@ -667,6 +782,7 @@ class PolicyService:
         principal_id: Optional[UUID] = None,
         collection_id: Optional[str] = None,
         request_context: Any = None,
+        trace_collector: Optional["_TraceCollector"] = None,
     ) -> List[Policy]:
         """Resolve the full policy set for ``principals`` in one read scope.
 
@@ -700,6 +816,9 @@ class PolicyService:
                 schema
             )  # Also check catalog-specific schema if different
 
+        # Provenance: which role(s) brought a policy into the set, so the
+        # trace can attribute it. Only used when the collector is on.
+        flat_role_by_policy: Dict[str, str] = {}
         for check_schema in schemas_to_check:
             for principal in principals:
                 if not principal:
@@ -716,6 +835,9 @@ class PolicyService:
                         )
                         all_policy_ids.update(role_obj.policies)
                         resolved_roles.add(principal)
+                        if trace_collector is not None:
+                            for _pid in role_obj.policies:
+                                flat_role_by_policy.setdefault(_pid, principal)
                     else:
                         logger.debug(
                             f"EVAL: Role '{principal}' not found in schema '{check_schema}'."
@@ -731,10 +853,32 @@ class PolicyService:
                 pol = await self.get_policy(pid, catalog_id=None)
             if pol:
                 effective_policies.append(pol)
+                if trace_collector is not None:
+                    _role = flat_role_by_policy.get(pid, "")
+                    trace_collector.add(_GrantTraceRecord(
+                        policy_id=pol.id,
+                        grant_id=f"role:{_role}:{pol.id}" if _role else f"policy:{pol.id}",
+                        subject_kind="role" if _role else "policy",
+                        subject_ref=_role or pol.id,
+                        object_kind="policy",
+                        object_ref=pol.id,
+                        effect=pol.effect.lower(),
+                    ))
 
         # 3. Include custom policies directly attached to the principal
         if custom_policies:
             effective_policies.extend(custom_policies)
+            if trace_collector is not None:
+                for pol in custom_policies:
+                    trace_collector.add(_GrantTraceRecord(
+                        policy_id=pol.id,
+                        grant_id=f"custom:{pol.id}",
+                        subject_kind="principal",
+                        subject_ref=str(principal_id) if principal_id else "",
+                        object_kind="policy",
+                        object_ref=pol.id,
+                        effect=pol.effect.lower(),
+                    ))
 
         # 4. Resource-scoped (and whole-catalog) grants from the unified
         # grants table. The flat-name path above only resolves roles a
@@ -760,15 +904,20 @@ class PolicyService:
                     catalog_schema=schema,
                     collection_id=collection_id,
                 )
+                # Build a role→grant-row lookup so the role-fanout below
+                # can stamp grant identity (id / scope / validity) on
+                # every policy that was reached via this binding.
+                role_rows: Dict[str, Dict[str, Any]] = {}
+                for row in (grant_rows or []):
+                    if row.get("object_kind") == "role" and row.get("object_ref"):
+                        role_rows.setdefault(row["object_ref"], row)
                 granted_role_names = {
-                    row["object_ref"]
-                    for row in (grant_rows or [])
-                    if row.get("object_kind") == "role"
-                    and row.get("object_ref")
-                    and row["object_ref"] not in resolved_roles
+                    name for name in role_rows
+                    if name not in resolved_roles
                 }
                 for role_name in granted_role_names:
                     resolved_roles.add(role_name)
+                    grant_row = role_rows[role_name]
                     grant_policy_ids: set = set()
                     for check_schema in schemas_to_check:
                         role_obj = await self.iam_storage.get_role(
@@ -782,6 +931,21 @@ class PolicyService:
                             pol = await self.get_policy(pid, catalog_id=None)
                         if pol:
                             effective_policies.append(pol)
+                            if trace_collector is not None:
+                                trace_collector.add(_GrantTraceRecord(
+                                    policy_id=pol.id,
+                                    grant_id=str(grant_row.get("id") or f"grant:{role_name}:{pol.id}"),
+                                    subject_kind="role",
+                                    subject_ref=role_name,
+                                    object_kind="role",
+                                    object_ref=role_name,
+                                    effect=str(grant_row.get("effect") or pol.effect).lower(),
+                                    resource_kind=grant_row.get("resource_kind"),
+                                    resource_ref=grant_row.get("resource_ref"),
+                                    valid_from=grant_row.get("valid_from"),
+                                    valid_until=grant_row.get("valid_until"),
+                                    in_validity_window=True,
+                                ))
                 # Direct policy grants (object_kind='policy'): a policy bound
                 # straight to the principal, optionally collection-scoped.
                 # Attach it; its own ALLOW/DENY effect governs via the
@@ -789,11 +953,11 @@ class PolicyService:
                 # collected so a policy reachable both via a role and
                 # directly is not double-listed.
                 seen_ids = {p.id for p in effective_policies}
-                granted_policy_ids = {
-                    row["object_ref"]
-                    for row in (grant_rows or [])
-                    if row.get("object_kind") == "policy" and row.get("object_ref")
-                }
+                policy_rows: Dict[str, Dict[str, Any]] = {}
+                for row in (grant_rows or []):
+                    if row.get("object_kind") == "policy" and row.get("object_ref"):
+                        policy_rows.setdefault(row["object_ref"], row)
+                granted_policy_ids = set(policy_rows.keys())
                 for pid in granted_policy_ids:
                     if pid in seen_ids:
                         continue
@@ -803,6 +967,22 @@ class PolicyService:
                     if pol:
                         effective_policies.append(pol)
                         seen_ids.add(pol.id)
+                        if trace_collector is not None:
+                            grant_row = policy_rows[pid]
+                            trace_collector.add(_GrantTraceRecord(
+                                policy_id=pol.id,
+                                grant_id=str(grant_row.get("id") or f"grant:policy:{pol.id}"),
+                                subject_kind="principal",
+                                subject_ref=str(principal_id) if principal_id else "",
+                                object_kind="policy",
+                                object_ref=pol.id,
+                                effect=str(grant_row.get("effect") or pol.effect).lower(),
+                                resource_kind=grant_row.get("resource_kind"),
+                                resource_ref=grant_row.get("resource_ref"),
+                                valid_from=grant_row.get("valid_from"),
+                                valid_until=grant_row.get("valid_until"),
+                                in_validity_window=True,
+                            ))
                 # Per-binding quota / rate-limit (#1344). Every in-scope
                 # ALLOW grant may carry a ``quota`` JSONB; turn it (or the
                 # configured ``IamScaleConfig`` default) into rate_limit /
@@ -895,6 +1075,7 @@ class PolicyService:
         custom_policies: Optional[List[Policy]] = None,
         principal_id: Optional[UUID] = None,
         collection_id: Optional[str] = None,
+        trace_collector: Optional["_TraceCollector"] = None,
     ) -> Tuple[bool, str]:
         """
         The central Zero-Trust evaluation engine.
@@ -904,6 +1085,15 @@ class PolicyService:
         resource-scoped (and whole-catalog) grants from the unified grants
         table for this principal. When ``principal_id`` is ``None`` the
         behaviour is unchanged from before grant-scope enforcement.
+
+        ``trace_collector`` (optional) is the effective-permissions
+        explainer hook (#1346). When provided, every step of the walk
+        (resolved policies, per-policy match outcomes, per-condition
+        results, deny-precedence resolution, winner selection) is
+        recorded on the collector as a byproduct of the existing walk —
+        no parallel evaluator. Default ``None`` is the hot path; trace
+        mode pays for an extra walk-time list append per policy and is
+        used only by ``/admin/iam/effective``.
         """
         schema = await self._resolve_schema(catalog_id)
         logger.debug(
@@ -918,6 +1108,7 @@ class PolicyService:
             principal_id=principal_id,
             collection_id=collection_id,
             request_context=request_context,
+            trace_collector=trace_collector,
         )
 
         logger.debug(
@@ -962,18 +1153,59 @@ class PolicyService:
                 f"method_match={method_match}, path_match={path_match}"
             )
 
+            # Trace hook: every policy the walk visits drops a record on
+            # the collector with the exact match outcome. ``find_or_create``
+            # picks up the record the resolver stamped (grant identity /
+            # validity window) so the operator sees the full row, not just
+            # the policy id. Per-condition results are appended below.
+            trace_rec: Optional[_GrantTraceRecord] = None
+            if trace_collector is not None:
+                trace_rec = _find_trace_record_for_policy(trace_collector, p)
+                trace_rec.effect = p.effect.lower()
+
             if not (method_match and path_match):
+                if trace_rec is not None:
+                    if not method_match and not path_match:
+                        trace_rec.why_not = (
+                            f"method {method!r} and path {path!r} did not match policy"
+                        )
+                    elif not method_match:
+                        trace_rec.why_not = f"method {method!r} not in policy actions"
+                    else:
+                        trace_rec.why_not = f"path {path!r} not in policy resources"
                 continue
 
             conditions_met = True
             if p.conditions:
                 for cond in p.conditions:
-                    if not await self._evaluate_condition(cond, request_context):
+                    cond_ok = await self._evaluate_condition(cond, request_context)
+                    if trace_rec is not None:
+                        trace_rec.conditions_evaluated.append({
+                            "type": cond.type,
+                            "config": dict(cond.config or {}),
+                            "passed": bool(cond_ok),
+                            "detail": None,
+                        })
+                    if not cond_ok:
                         conditions_met = False
+                        # Continue evaluating the remaining conditions
+                        # only when tracing — the engine short-circuits.
+                        # We mirror engine behaviour to keep the
+                        # decision walk identical.
                         break
 
             if not conditions_met:
+                if trace_rec is not None:
+                    trace_rec.why_not = (
+                        f"condition {trace_rec.conditions_evaluated[-1]['type']!r} did not pass"
+                        if trace_rec.conditions_evaluated
+                        else "a condition did not pass"
+                    )
                 continue
+
+            if trace_rec is not None:
+                trace_rec.matched = True
+                trace_rec.why_not = None
 
             if p.effect == "DENY":
                 if best_deny is None or _rank_key(p) < _rank_key(best_deny):
@@ -995,11 +1227,17 @@ class PolicyService:
         elif best_allow is not None:
             winner = best_allow
 
+        if trace_collector is not None:
+            trace_collector.deny_precedence_applied = best_deny is not None
+
         if winner is None:
             logger.warning(
                 f"EVAL: DENIED (No matching ALLOW policy found) for {principals} on {method} {path}"
             )
-            return False, "Deny by Default (No matching ALLOW policy found)"
+            reason = "Deny by Default (No matching ALLOW policy found)"
+            if trace_collector is not None:
+                trace_collector.decision_reason = reason
+            return False, reason
 
         if winner.effect == "DENY":
             if loser is not None:
@@ -1014,7 +1252,10 @@ class PolicyService:
                 )
             else:
                 logger.info(f"EVAL: DENIED by {winner.id} (priority={winner.priority})")
-            return False, f"Explicit DENY by policy {winner.id}"
+            reason = f"Explicit DENY by policy {winner.id}"
+            if trace_collector is not None:
+                trace_collector.decision_reason = reason
+            return False, reason
 
         if loser is not None:
             logger.info(
@@ -1023,7 +1264,10 @@ class PolicyService:
             )
         else:
             logger.info(f"EVAL: ALLOWED by {winner.id} (priority={winner.priority})")
-        return True, f"Allowed by policy {winner.id}"
+        reason = f"Allowed by policy {winner.id}"
+        if trace_collector is not None:
+            trace_collector.decision_reason = reason
+        return True, reason
 
     async def compile_read_filter(
         self,
