@@ -39,13 +39,19 @@ class AppliedPresetsService:
     def __init__(self, engine: Optional[DbResource]) -> None:
         self._engine = engine
 
+    def _resource(self, conn: Optional[Any]) -> DbResource:
+        """Return ``conn`` if provided, else the service engine; assert non-None."""
+        resource = conn if conn is not None else self._engine
+        assert resource is not None, "AppliedPresetsService: no DB resource available"
+        return resource  # type: ignore[return-value]
+
     # ------------------------------------------------------------------
     # DDL bootstrap — called from the IAM module lifespan
     # ------------------------------------------------------------------
 
     async def ensure_table(self, conn: Optional[Any] = None) -> None:
         """Create the ``iam.applied_presets`` table and indexes if absent."""
-        resource = conn or self._engine
+        resource = self._resource(conn)
         await _q.CREATE_APPLIED_PRESETS_TABLE.execute(resource)
         await _q.CREATE_APPLIED_PRESETS_STATE_IDX.execute(resource)
         await _q.CREATE_APPLIED_PRESETS_SCOPE_IDX.execute(resource)
@@ -61,7 +67,7 @@ class AppliedPresetsService:
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
         """Return the audit row for ``(name, scope_key)`` or ``None``."""
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.SELECT_ROW.execute(
             resource, preset_name=name, scope_key=scope_key
         )
@@ -100,7 +106,7 @@ class AppliedPresetsService:
         to list all catalog-scoped rows. ``cursor`` is a preset name for
         keyset pagination.
         """
-        resource = conn or self._engine
+        resource = self._resource(conn)
         sql_prefix = (scope_key_prefix or "%") + (
             "" if scope_key_prefix is None or scope_key_prefix.endswith("%") else "%"
         )
@@ -131,7 +137,7 @@ class AppliedPresetsService:
         conn: Optional[Any] = None,
     ) -> AppliedRow:
         """Insert or reset a row to ``pending`` state."""
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.UPSERT_PENDING.execute(
             resource,
             preset_name=name,
@@ -148,7 +154,7 @@ class AppliedPresetsService:
         task_id: Optional[UUID] = None,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_IN_PROGRESS.execute(
             resource,
             preset_name=name,
@@ -164,7 +170,7 @@ class AppliedPresetsService:
         revoke_descriptor: Dict[str, Any],
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_APPLIED.execute(
             resource,
             preset_name=name,
@@ -180,7 +186,7 @@ class AppliedPresetsService:
         last_error: str,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_FAILED.execute(
             resource,
             preset_name=name,
@@ -196,7 +202,7 @@ class AppliedPresetsService:
         task_id: Optional[UUID] = None,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_REVOKE_PENDING.execute(
             resource,
             preset_name=name,
@@ -211,7 +217,7 @@ class AppliedPresetsService:
         scope_key: str,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_REVOKED.execute(
             resource, preset_name=name, scope_key=scope_key
         )
@@ -224,7 +230,7 @@ class AppliedPresetsService:
         last_error: str,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_REVOKE_FAILED.execute(
             resource,
             preset_name=name,
@@ -241,7 +247,7 @@ class AppliedPresetsService:
         child_error: str,
         conn: Optional[Any] = None,
     ) -> Optional[AppliedRow]:
-        resource = conn or self._engine
+        resource = self._resource(conn)
         row = await _q.MARK_PARTIAL.execute(
             resource,
             preset_name=name,
