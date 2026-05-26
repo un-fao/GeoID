@@ -80,6 +80,7 @@ if TYPE_CHECKING:
         Asset,
         AssetBase,
         AssetUpdate,
+        AssetPatchBody,
         AssetReference,
         AssetReferenceType,
     )
@@ -169,10 +170,37 @@ class AssetsProtocol(Protocol):
         """
         Updates an existing asset's mutable fields (currently: ``metadata``).
 
+        Replace semantics — ``update.metadata`` overwrites the stored value
+        wholesale. For partial / nested updates use :meth:`patch_asset`.
+
         Args:
             asset_id: The asset ID to update.
             update: Asset update data.
             catalog_id: The catalog ID containing the asset.
+            collection_id: Optional collection ID for scoping.
+
+        Returns:
+            Updated Asset model instance.
+        """
+        ...
+
+    async def patch_asset(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        patch: "AssetPatchBody",
+        collection_id: Optional[str] = None,
+    ) -> "Asset":
+        """
+        RFC 7396 JSON Merge Patch of an asset's ``metadata``.
+
+        Keys absent from the patch are preserved; a key set to ``null`` is
+        removed; nested dicts are merged recursively; lists/scalars replace.
+
+        Args:
+            catalog_id: The catalog ID containing the asset.
+            asset_id: The asset ID to patch.
+            patch: Partial-update body.
             collection_id: Optional collection ID for scoping.
 
         Returns:

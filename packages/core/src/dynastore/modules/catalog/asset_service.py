@@ -320,11 +320,38 @@ class AssetUpdate(BaseModel):
 
     Identity (``asset_id``, ``filename``, ``href``) is immutable once a row
     becomes ``ACTIVE``; use a NEW_VERSION write policy to replace.
+
+    Used by ``PUT`` (full replace): the request's ``metadata`` overwrites the
+    stored ``metadata`` wholesale. For partial / nested updates use ``PATCH``
+    with :class:`AssetPatchBody` (RFC 7396 JSON Merge Patch).
     """
 
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Arbitrary metadata for the asset."
     )
+
+
+class AssetPatchBody(BaseModel):
+    """RFC 7396 JSON Merge Patch body for ``PATCH`` on an asset.
+
+    The only patchable top-level key is ``metadata``. Inside ``metadata``,
+    standard merge-patch rules apply: keys absent from the patch are left
+    untouched; a key set to ``null`` is removed from the stored document;
+    nested dicts are merged recursively; lists / scalars replace.
+
+    Use this to update a few keys without losing siblings injected by
+    other writers (e.g. the gdalinfo enrichment task).
+    """
+
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Partial metadata patch. Keys with value ``null`` are removed; "
+            "nested objects are deep-merged."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class AssetUploadDefinition(BaseModel):
@@ -927,6 +954,72 @@ class AssetService(AssetsProtocol):
         )
 
         # Fetch canonical state
+        fetched_doc = await write_driver.get_asset(
+            catalog_id, asset_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        updated = Asset.model_validate(fetched_doc or updated_doc)
+
+        self._invalidate_cache(updated.asset_id, catalog_id, collection_id)
+
+        if self._event_emitter:
+            await self._event_emitter(
+                AssetEventType.ASSET_UPDATED, updated.model_dump(),
+                db_resource=db_resource,
+            )
+        return updated
+
+    async def patch_asset(
+        self,
+        catalog_id: str,
+        asset_id: str,
+        patch: AssetPatchBody,
+        collection_id: Optional[str] = None,
+        db_resource: Optional[DbResource] = None,
+    ) -> Asset:
+        """RFC 7396 partial update of an asset's ``metadata``.
+
+        Unlike :meth:`update_asset` (which replaces ``metadata`` wholesale),
+        this merges the patch into the stored document key-by-key: ``null``
+        removes a key, nested dicts recurse, lists/scalars replace. Sibling
+        keys not mentioned in the patch are preserved — so an enrichment
+        writer (e.g. gdalinfo) and an end-user editing ``metadata.title``
+        no longer clobber each other.
+        """
+        from dynastore.modules.storage.router import get_asset_driver
+        from dynastore.modules.catalog._merge_patch import merge_patch
+
+        current = await self.get_asset(
+            asset_id=asset_id,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            db_resource=db_resource,
+        )
+        if not current:
+            raise ValueError(
+                f"Asset '{asset_id}' not found in catalog '{catalog_id}'."
+            )
+
+        # No-op patch: body absent or `{"metadata": null}` -> nothing to do.
+        # The user can still call PUT with `{"metadata": {}}` to clear it.
+        if patch.metadata is None:
+            return current
+
+        merged_metadata = merge_patch(current.metadata or {}, patch.metadata)
+
+        updated_doc: Dict[str, Any] = current.model_dump()
+        updated_doc["metadata"] = merged_metadata
+        updated_doc["collection_id"] = collection_id
+        updated_doc["updated_at"] = datetime.now(timezone.utc)
+
+        write_driver = await get_asset_driver("WRITE", catalog_id, collection_id)
+        await write_driver.index_asset(catalog_id, updated_doc, db_resource=db_resource)
+
+        await self._fan_out_asset_writes(
+            catalog_id, collection_id, updated_doc, "index_asset",
+        )
+
         fetched_doc = await write_driver.get_asset(
             catalog_id, asset_id,
             collection_id=collection_id,
