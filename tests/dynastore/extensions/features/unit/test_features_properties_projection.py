@@ -174,7 +174,8 @@ def _call_get_items(svc, **overrides):
         filter_lang="cql2-text",
         filter_crs=None,
         properties=None,
-        skip_geometry=False,
+        skip_geometry=None,
+        return_geometry=None,
         crs=None,
         bbox_crs=None,
         sortby=None,
@@ -589,3 +590,115 @@ def test_es_source_filter_default_is_unset():
         fields=PUBLIC_ENVELOPE_FIELDS,
     )
     assert "_source" not in body
+
+
+# ---------------------------------------------------------------------------
+# 6. ``returnGeometry`` alias + skipGeometry/returnGeometry conflict handling
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_geometry_flag_default_both_none():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(None, None) is False
+
+
+def test_resolve_geometry_flag_only_skip_true():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(True, None) is True
+
+
+def test_resolve_geometry_flag_only_skip_false():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(False, None) is False
+
+
+def test_resolve_geometry_flag_only_return_true():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(None, True) is False  # returnGeometry=true → keep
+
+
+def test_resolve_geometry_flag_only_return_false():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(None, False) is True  # returnGeometry=false → skip
+
+
+def test_resolve_geometry_flag_both_consistent_skip():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(True, False) is True
+
+
+def test_resolve_geometry_flag_both_consistent_keep():
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    assert resolve_geometry_flag(False, True) is False
+
+
+def test_resolve_geometry_flag_both_conflicting_true_true_raises_400():
+    from fastapi import HTTPException
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    with pytest.raises(HTTPException) as exc:
+        resolve_geometry_flag(True, True)
+    assert exc.value.status_code == 400
+    assert "Conflicting" in str(exc.value.detail)
+
+
+def test_resolve_geometry_flag_both_conflicting_false_false_raises_400():
+    from fastapi import HTTPException
+    from dynastore.extensions.tools.query import resolve_geometry_flag
+    with pytest.raises(HTTPException) as exc:
+        resolve_geometry_flag(False, False)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_return_geometry_false_equivalent_to_skip_geometry_true(monkeypatch):
+    """``returnGeometry=false`` produces the same Feature.geometry=null output
+    as ``skipGeometry=true``."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(stream_features=[_feature("f-1")], total=1)
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, return_geometry=False)
+    body = json.loads(await _read_body(resp))
+    assert body["features"][0]["geometry"] is None
+    assert catalogs.last_request.skip_geometry is True
+
+
+@pytest.mark.asyncio
+async def test_return_geometry_true_default_keeps_geometry(monkeypatch):
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(
+        stream_features=[_feature("f-1", geometry=_SAMPLE_GEOM)],
+        total=1,
+    )
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, return_geometry=True)
+    body = json.loads(await _read_body(resp))
+    assert body["features"][0]["geometry"] is not None
+    assert catalogs.last_request.skip_geometry is False
+
+
+@pytest.mark.asyncio
+async def test_skip_and_return_geometry_conflict_returns_400(monkeypatch):
+    """Passing both with contradictory values surfaces as HTTP 400."""
+    from fastapi import HTTPException
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(stream_features=[_feature("f-1")], total=1)
+    _wire(monkeypatch, svc, catalogs)
+
+    with pytest.raises(HTTPException) as exc:
+        await _call_get_items(svc, skip_geometry=True, return_geometry=True)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_skip_and_return_geometry_consistent_accepted(monkeypatch):
+    """Passing both with consistent values is accepted (skip=True, return=False)."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(stream_features=[_feature("f-1")], total=1)
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, skip_geometry=True, return_geometry=False)
+    body = json.loads(await _read_body(resp))
+    assert body["features"][0]["geometry"] is None
+    assert catalogs.last_request.skip_geometry is True

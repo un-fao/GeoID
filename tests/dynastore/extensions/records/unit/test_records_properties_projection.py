@@ -125,7 +125,8 @@ def _call_get_records(svc, **overrides):
         filter_lang="cql2-text",
         filter_crs=None,
         properties=None,
-        skip_geometry=False,
+        skip_geometry=None,
+        return_geometry=None,
         sortby=None,
         q=None,
     )
@@ -217,5 +218,57 @@ async def test_records_skip_geometry_default_false(monkeypatch):
     _wire(monkeypatch, svc, catalogs)
 
     await _call_get_records(svc)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is False
+
+
+# ---------------------------------------------------------------------------
+# ``returnGeometry`` alias + conflict handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_records_return_geometry_false_skips(monkeypatch):
+    """``returnGeometry=false`` is equivalent to ``skipGeometry=true``."""
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_records(svc, return_geometry=False)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is True
+
+
+@pytest.mark.asyncio
+async def test_records_return_geometry_true_keeps(monkeypatch):
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_records(svc, return_geometry=True)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is False
+
+
+@pytest.mark.asyncio
+async def test_records_skip_and_return_conflict_400(monkeypatch):
+    """Conflicting skipGeometry + returnGeometry → HTTP 400."""
+    from fastapi import HTTPException
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    with pytest.raises(HTTPException) as exc:
+        await _call_get_records(svc, skip_geometry=True, return_geometry=True)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_records_skip_and_return_consistent_ok(monkeypatch):
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_records(svc, skip_geometry=False, return_geometry=True)
     assert catalogs.last_request is not None
     assert catalogs.last_request.skip_geometry is False

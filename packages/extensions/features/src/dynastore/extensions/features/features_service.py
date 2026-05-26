@@ -917,15 +917,25 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 "an accepted ``properties`` name."
             ),
         ),
-        skip_geometry: bool = Query(
-            False,
+        skip_geometry: Optional[bool] = Query(
+            None,
             alias="skipGeometry",
             description=(
                 "When true, the returned Features carry ``geometry: null`` "
                 "and the resolved driver omits the geometry from its "
                 "projection (PG drops the SELECT, ES adds ``geometry`` to "
                 "``_source.excludes``). De-facto pygeoapi convention. "
-                "Default: false."
+                "Mutually exclusive with ``returnGeometry`` unless both are "
+                "consistent. Default: false."
+            ),
+        ),
+        return_geometry: Optional[bool] = Query(
+            None,
+            alias="returnGeometry",
+            description=(
+                "ESRI de-facto alias for ``skipGeometry``. ``returnGeometry=false`` "
+                "is equivalent to ``skipGeometry=true``. Passing both with "
+                "conflicting values returns HTTP 400."
             ),
         ),
         crs: Optional[str] = Query(None, description="CRS URI for output geometry."),
@@ -1093,10 +1103,13 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                     request=request,
                 )
 
-            # ``skipGeometry`` may arrive as a literal ``Query(...)`` sentinel
-            # in direct unit-test calls — coerce non-bools to the documented
-            # default before plumbing.
-            skip_geom_bool = bool(skip_geometry) if isinstance(skip_geometry, bool) else False
+            # Resolve skipGeometry/returnGeometry from the two accepted forms.
+            # FastAPI direct-call unit tests may pass literal ``Query(...)``
+            # sentinels — normalise non-bools/non-None to None before resolution.
+            _sg = skip_geometry if isinstance(skip_geometry, bool) else None
+            _rg = return_geometry if isinstance(return_geometry, bool) else None
+            from dynastore.extensions.tools.query import resolve_geometry_flag
+            skip_geom_bool = resolve_geometry_flag(_sg, _rg)
 
             request_obj = parse_ogc_query_request(
                 bbox=bbox,

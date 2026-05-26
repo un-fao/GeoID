@@ -278,13 +278,23 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 "``skipGeometry``."
             ),
         ),
-        skip_geometry: bool = Query(
-            False,
+        skip_geometry: Optional[bool] = Query(
+            None,
             alias="skipGeometry",
             description=(
                 "When true, returned records carry ``geometry: null`` and "
                 "the resolved driver omits the geometry from its projection. "
-                "De-facto pygeoapi convention. Default: false."
+                "De-facto pygeoapi convention. Mutually exclusive with "
+                "``returnGeometry`` unless both are consistent. Default: false."
+            ),
+        ),
+        return_geometry: Optional[bool] = Query(
+            None,
+            alias="returnGeometry",
+            description=(
+                "ESRI de-facto alias for ``skipGeometry``. "
+                "``returnGeometry=false`` is equivalent to ``skipGeometry=true``. "
+                "Passing both with conflicting values returns HTTP 400."
             ),
         ),
         sortby: Optional[str] = Query(None, description="Sort order (e.g., '-title,+created')."),
@@ -393,8 +403,13 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 request=request,
             )
 
-        # ``skipGeometry`` coercion for unit-test direct calls (Query sentinel).
-        skip_geom_bool = bool(skip_geometry) if isinstance(skip_geometry, bool) else False
+        # Resolve skipGeometry/returnGeometry from the two accepted forms.
+        # Unit-test direct calls may pass ``Query(...)`` sentinels — normalise
+        # non-bools/non-None to None before resolution.
+        _sg = skip_geometry if isinstance(skip_geometry, bool) else None
+        _rg = return_geometry if isinstance(return_geometry, bool) else None
+        from dynastore.extensions.tools.query import resolve_geometry_flag
+        skip_geom_bool = resolve_geometry_flag(_sg, _rg)
 
         request_obj = parse_ogc_query_request(
             bbox=None,

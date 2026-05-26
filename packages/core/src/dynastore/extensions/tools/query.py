@@ -300,6 +300,39 @@ def combine_cql_filters(
     return " AND ".join(f"({c})" for c in cql_parts)
 
 
+def resolve_geometry_flag(
+    skip_geometry: Optional[bool],
+    return_geometry: Optional[bool],
+) -> bool:
+    """
+    Resolve the geometry-omission flag from the two accepted query params.
+
+    ``skipGeometry`` (pygeoapi de-facto) and ``returnGeometry`` (ESRI de-facto)
+    express the same toggle from opposite poles. Either may be passed; passing
+    both is allowed only when they agree. Contradiction → HTTP 400.
+
+    Returns the canonical ``skip_geometry`` boolean (True = omit geometry).
+    """
+    if skip_geometry is None and return_geometry is None:
+        return False
+    if skip_geometry is not None and return_geometry is not None:
+        if skip_geometry == (not return_geometry):
+            return skip_geometry
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Conflicting geometry flags: skipGeometry={skip_geometry} "
+                f"and returnGeometry={return_geometry}. Pass only one, or "
+                "ensure they are mutually consistent "
+                "(skipGeometry == not returnGeometry)."
+            ),
+        )
+    if skip_geometry is not None:
+        return skip_geometry
+    assert return_geometry is not None
+    return not return_geometry
+
+
 def parse_ogc_query_request(
     bbox: Optional[str] = None,
     datetime_param: Optional[str] = None,
