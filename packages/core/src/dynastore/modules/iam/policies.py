@@ -371,7 +371,7 @@ class PolicyService:
         schema = await self._resolve_schema(catalog_id)
         try:
             return await self.storage.list_policies(
-                limit=limit, offset=offset, schema=schema
+                limit=limit, offset=offset, schema=schema, partition_key=catalog_id or "global"
             )
         except TableNotFoundError:
             # See get_policy: a non-IAM catalog has no tenant policies table;
