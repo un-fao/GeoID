@@ -256,6 +256,45 @@ export const removeCatalogRole = (principalId, catalogId, role) =>
       + `/roles/${encodeURIComponent(role)}`,
   );
 
+// ----- Generic IAM bindings (#1346): platform & catalog scope -----
+//
+// These are the write path that lets operators author bindings the legacy
+// /admin/.../roles endpoints can't express: effect=deny, valid_from /
+// valid_until time windows, direct object_kind=policy bindings, and
+// per-binding quota. The legacy /roles endpoints stay as backcompat for
+// allow-only role grants. See packages/extensions/admin/.../admin_service.py.
+
+// scope: {kind: "platform"} | {kind: "catalog", catalogId}
+function grantsBasePath(scope) {
+  if (!scope || scope.kind === "platform") return "/admin/platform/grants";
+  if (scope.kind === "catalog") {
+    return `/admin/catalogs/${encodeURIComponent(scope.catalogId)}/grants`;
+  }
+  throw new Error(`unsupported grant scope kind: ${scope.kind}`);
+}
+
+// List the bindings a principal has at this scope.
+export const listGrants = (scope, principalId) =>
+  getJSON(`${grantsBasePath(scope)}${qs({ principal_id: principalId })}`);
+
+// Create a binding. `body` is a CreateBindingRequest payload — subject_id,
+// object_kind ("role"|"policy"), object_ref, effect ("allow"|"deny"),
+// optional valid_from / valid_until (ISO-8601), optional quota (JSON object).
+export const createGrant = (scope, body) =>
+  postJSON(grantsBasePath(scope), body);
+
+// Revoke a binding by match — see admin_service.py revoke_*_binding query
+// params: subject_id, object_kind, object_ref, effect.
+export const deleteGrant = (scope, { subjectId, objectKind, objectRef, effect = "allow" }) =>
+  deleteJSON(
+    `${grantsBasePath(scope)}${qs({
+      subject_id: subjectId,
+      object_kind: objectKind,
+      object_ref: objectRef,
+      effect,
+    })}`,
+  );
+
 // ----- STAC write endpoints (create catalog / collection / features) -----
 
 export const createStacCatalog = (definition) => postJSON(`/catalogs`, definition);
