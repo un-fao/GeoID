@@ -15,11 +15,13 @@ DynaStore runs two **independent** database stacks. They share configuration (vi
 | Tier         | Module                  | Driver       | Pool kind                | Resolves via SCOPE alias |
 |--------------|-------------------------|--------------|--------------------------|--------------------------|
 | API services | `db` (`DBService`)      | `asyncpg`    | async pool               | `db_async`               |
-| Worker jobs  | `datastore` (`DatastoreModule`) | `psycopg2` | sync engine              | `db_sync`                |
+| I/O-bound workers | `db` + `datastore` (both) | `asyncpg` + `psycopg2` | async pool + sync engine | `module_db` in SCOPE |
+| CPU-bound workers | `datastore` (`DatastoreModule`) | `psycopg2` | sync engine | `db_sync` |
 | Shared layer | `db_config` (`DBConfigModule`) | n/a (config) | sets `app_state.db_config` for both | included by both aliases |
 
 - **Async pool (services).** The FastAPI application (`main.py`) uses `asyncpg`. Multi-tenant request fan-out runs on the primary event loop with high concurrency and zero per-request thread overhead.
-- **Sync engine (jobs).** Cloud Run Jobs (ingestion, gdal, dimensions_materialize, tiles_preseed, etc.) use `psycopg2`. A job is a one-shot, single-threaded process; a second async pool inside it gives no concurrency win and would double the pool footprint per execution. **Jobs intentionally do not install `asyncpg`.**
+- **I/O-bound streaming workers.** Cloud Run Jobs whose hot path is server-side cursor streaming (export_features, dwh_join) include `module_db` in their SCOPE extras. `DatastoreModule.engine` prefers the async engine when both are present. AsyncConnection.stream() then works without asyncio.to_thread threading workarounds.
+- **CPU-bound workers.** Cloud Run Jobs where compute dominates (ingestion/GDAL, gdal, tiles_preseed/morecantile, dimensions_materialize) use `psycopg2` only. A job is a one-shot, single-threaded process; a second async pool gives no concurrency win and doubles pool footprint per execution. **These jobs intentionally do not install `asyncpg`.**
 
 ### Import-time isolation (load-bearing invariant)
 
