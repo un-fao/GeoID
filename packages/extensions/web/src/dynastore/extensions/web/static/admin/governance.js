@@ -9,6 +9,7 @@ import {
   searchPrincipals,
   listGrants, createGrant, deleteGrant,
   fetchEffectivePermissions,
+  fetchGrantUsage,
   getCatalogProvisioning,
 } from "../common/api.js";
 import { mountContextBar } from "../common/context-bar.js";
@@ -665,6 +666,18 @@ function renderBindings() {
     why.setAttribute("aria-label", "Explain effective permissions for this binding");
     why.addEventListener("click", () => openExplainer(row));
     actions.appendChild(why);
+    // "Usage" affordance — opens the live-counter panel (#1342 / #1346).
+    // Sysadmin-only on the server; we don't gate client-side so the 403
+    // surfaces in the panel if an unauthorised operator reaches the row.
+    // Not fetched on hover/render — counters reveal traffic patterns and
+    // the request goes through the sysadmin gate; fetch only on click.
+    const usage = document.createElement("button");
+    usage.type = "button";
+    usage.className = "btn btn-ghost btn-xs";
+    usage.textContent = "Usage";
+    usage.setAttribute("aria-label", "Show live usage counters for this binding");
+    usage.addEventListener("click", () => openUsagePanel(row));
+    actions.appendChild(usage);
     const del = document.createElement("button");
     del.className = "btn btn-danger btn-xs";
     del.textContent = "Revoke";
@@ -945,6 +958,208 @@ function renderExplainerResult(data) {
     tbody.appendChild(tr);
   });
 }
+
+// ---- Per-binding live counter view (#1342 / #1346) ----------------------
+//
+// "Usage" per binding row → opens a dialog that calls
+// GET /admin/iam/usage/grants and renders the live counter state for the
+// matching grant. Every server-derived field is set via textContent —
+// no innerHTML on response data. ``valkey_available=false`` surfaces a
+// stale-data banner; the response still carries PG-fallback figures.
+
+const usagePanel = {
+  grantId: null,
+  principalId: null,
+  catalogId: null,
+};
+
+function openUsagePanel(row) {
+  if (!state.bindingSubject || !row) return;
+  usagePanel.grantId = row.id ? String(row.id) : null;
+  usagePanel.principalId = state.bindingSubject.id;
+  usagePanel.catalogId = scopeCatalogId();
+
+  const subjectLine =
+    `Subject: ${state.bindingSubject.label}  (${state.bindingSubject.id})`
+    + (usagePanel.catalogId ? `  ·  catalog ${usagePanel.catalogId}` : "  ·  platform")
+    + `  ·  ${row.object_kind || "role"} ${row.object_ref || ""}`
+    + (row.resource_kind && row.resource_ref
+        ? `  ·  ${row.resource_kind} ${row.resource_ref}`
+        : "");
+  $("#usage-subject").textContent = subjectLine;
+  $("#usage-stale-banner").style.display = "none";
+  $("#usage-stale-banner").textContent = "";
+  setStatus("#usage-status", "", "");
+  clearNode($("#usage-body"));
+
+  const dlg = $("#usage-modal");
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+
+  // Fetch immediately on open — the panel is empty until the network
+  // round-trip lands.
+  refreshUsagePanel();
+}
+
+function closeUsagePanel() {
+  const dlg = $("#usage-modal");
+  if (typeof dlg.close === "function") dlg.close();
+  else dlg.removeAttribute("open");
+}
+
+async function refreshUsagePanel() {
+  setStatus("#usage-status", "Loading…", "");
+  try {
+    const data = await fetchGrantUsage({
+      principalId: usagePanel.principalId,
+      catalogId: usagePanel.catalogId,
+    });
+    setStatus("#usage-status", "", "");
+    renderUsagePanel(data);
+  } catch (err) {
+    setStatus("#usage-status", `Failed: ${err.message}`, "err");
+  }
+}
+
+function renderUsagePanel(data) {
+  // Stale-data banner — wire-flag drives visibility.
+  const banner = $("#usage-stale-banner");
+  if (data && data.valkey_available === false) {
+    banner.textContent =
+      "Live Valkey counters unavailable; figures may be stale (PG fallback).";
+    banner.style.display = "";
+  } else {
+    banner.textContent = "";
+    banner.style.display = "none";
+  }
+
+  const body = $("#usage-body");
+  clearNode(body);
+
+  const entries = (data && Array.isArray(data.entries)) ? data.entries : [];
+  // Filter to just the binding the row was opened for — the wire returns
+  // every binding for the principal so the same payload can power a
+  // future "all bindings" view, but the per-row panel is single-binding.
+  const target = usagePanel.grantId
+    ? entries.find((e) => String(e.grant_id) === usagePanel.grantId)
+    : null;
+
+  if (!target) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent =
+      "No counter state attached to this binding at the current scope.";
+    body.appendChild(note);
+    return;
+  }
+
+  // Validity-window line.
+  const validity = document.createElement("p");
+  validity.className = "muted";
+  if (!target.valid_from && !target.valid_until) {
+    validity.textContent = "Validity: always";
+  } else {
+    validity.textContent =
+      `Validity: ${fmtDateTime(target.valid_from)} → ${fmtDateTime(target.valid_until)}`;
+  }
+  body.appendChild(validity);
+
+  // Quota spec — pretty-printed via textContent so an operator-supplied
+  // condition spec cannot smuggle markup into the DOM.
+  const specHead = document.createElement("h4");
+  specHead.className = "ci-subhead";
+  specHead.textContent = "Quota spec";
+  body.appendChild(specHead);
+  const specPre = document.createElement("pre");
+  specPre.className = "cell-json";
+  specPre.textContent = target.quota_spec
+    ? JSON.stringify(target.quota_spec, null, 2)
+    : "(no per-binding quota)";
+  body.appendChild(specPre);
+
+  // Live counters table — one row per counter shape (rate_limit / max_count).
+  const head = document.createElement("h4");
+  head.className = "ci-subhead";
+  head.textContent = "Live counters";
+  body.appendChild(head);
+
+  const table = document.createElement("table");
+  table.className = "kv-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["Kind", "Count", "Limit", "Remaining", "Window", "Window start"]
+    .forEach((label) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  const counters = target.counters || {};
+  const rows = [];
+  if (counters.rate_limit) {
+    rows.push({
+      kind: "rate_limit",
+      count: counters.rate_limit.count,
+      limit: counters.rate_limit.limit,
+      remaining: counters.rate_limit.remaining,
+      window: counters.rate_limit.window_seconds + "s",
+      windowStart: counters.rate_limit.window_start || "—",
+    });
+  }
+  if (counters.max_count) {
+    rows.push({
+      kind: "max_count",
+      count: counters.max_count.count,
+      limit: counters.max_count.limit,
+      remaining: counters.max_count.remaining,
+      window: "lifetime",
+      windowStart: "—",
+    });
+  }
+
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.textContent = "No counter conditions configured on this binding.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  } else {
+    rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      [r.kind, String(r.count), String(r.limit), String(r.remaining),
+       r.window, r.windowStart].forEach((v) => {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  // Fetched-at footer — operator can confirm freshness at a glance.
+  if (data.fetched_at) {
+    const ts = document.createElement("p");
+    ts.className = "muted";
+    ts.textContent = `Fetched at ${data.fetched_at}`;
+    body.appendChild(ts);
+  }
+}
+
+// Wire close + refresh buttons once the DOM is ready. The modal scaffold
+// lives in governance.html; here we just hook up the controls.
+document.addEventListener("DOMContentLoaded", () => {
+  const closeBtn = $("#usage-close-btn");
+  if (closeBtn) closeBtn.addEventListener("click", closeUsagePanel);
+  const refreshBtn = $("#usage-refresh-btn");
+  if (refreshBtn) refreshBtn.addEventListener("click", refreshUsagePanel);
+});
 
 // --- Provisioning -------------------------------------------------------
 

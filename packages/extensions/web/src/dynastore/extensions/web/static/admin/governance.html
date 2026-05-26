@@ -385,6 +385,32 @@
         </div>
       </div>
     </dialog>
+
+    <!-- Per-binding live counter view (#1342 / #1346) — per-row "Usage"
+         affordance on the bindings table opens this dialog and calls
+         GET /admin/iam/usage/grants. Sysadmin-only on the server. Native
+         <dialog> with the same plate idiom as the explainer modal. -->
+    <dialog id="usage-modal" class="explainer-modal"
+            aria-labelledby="usage-title">
+      <div class="plate explainer-plate">
+        <div class="plate-header">
+          <h3 id="usage-title">Live usage counters</h3>
+          <div class="plate-meta">GET /admin/iam/usage/grants</div>
+        </div>
+        <p class="muted" id="usage-subject"></p>
+        <p id="usage-stale-banner" class="status err" style="display:none"></p>
+        <div class="form-actions">
+          <button class="btn" type="button" id="usage-refresh-btn">
+            Refresh
+          </button>
+          <button class="btn btn-secondary" type="button"
+                  id="usage-close-btn">Close</button>
+          <span id="usage-status" class="status"></span>
+        </div>
+        <hr class="rule">
+        <div id="usage-body"></div>
+      </div>
+    </dialog>
   </main>
 
   <script>
