@@ -269,17 +269,29 @@ class OGCServiceMixin:
         collection_id: str,
         item_id: str,
         db_resource,
+        *,
+        caller_id: Optional[str] = None,
     ) -> Response:
         """Shared item deletion: delete + 404 check + 204 response.
 
         The caller is responsible for transaction management (e.g.
         ``managed_transaction``) — this mixin stays decoupled from
         ``modules.db_config``.
+
+        ``caller_id`` attributes the tile-cache invalidation task to the
+        authenticated principal.  HTTP handlers should pass
+        ``request.state.principal_id``; internal/system callers leave it
+        unset so the sentinel fallback in
+        ``enqueue_tile_invalidation_task`` applies.
         """
         catalogs_svc = await self._get_catalogs_service()
-        from dynastore.models.driver_context import DriverContext
+        from dynastore.models.driver_context import DriverContext, ProcessingHints
         rows_affected = await catalogs_svc.delete_item(
-            catalog_id, collection_id, item_id, ctx=DriverContext(db_resource=db_resource)
+            catalog_id, collection_id, item_id,
+            ctx=DriverContext(
+                db_resource=db_resource,
+                processing=ProcessingHints(caller_id=caller_id) if caller_id else None,
+            ),
         )
         if rows_affected == 0:
             raise HTTPException(

@@ -941,11 +941,17 @@ class ItemQueryMixin:
                             enqueue_tile_invalidation_task,
                         )
 
+                        _caller_id = (
+                            ctx.processing.caller_id
+                            if ctx and ctx.processing
+                            else None
+                        )
                         await enqueue_tile_invalidation_task(
                             catalog_id, collection_id, [],
                             engine=db_resource or self.engine,
                             schema=phys_schema,
                             prior_bboxes=[prior_bbox],
+                            caller_id=_caller_id,
                         )
                     except Exception as exc:  # noqa: BLE001 — never break delete
                         logger.warning(
