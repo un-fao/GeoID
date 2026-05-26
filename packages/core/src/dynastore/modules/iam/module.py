@@ -137,11 +137,16 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
             # Global initialization
             try:
+                from .applied_presets_service import AppliedPresetsService
+
                 db = get_protocol(DatabaseProtocol)
                 engine = db.engine if db else None
                 async with managed_transaction(engine) as conn:
                     await self.storage._initialize_schema(conn, schema="iam")
                     await policy_storage._initialize_schema(conn, schema="iam")
+                    # Preset audit table — idempotent CREATE IF NOT EXISTS.
+                    applied_svc = AppliedPresetsService(engine)
+                    await applied_svc.ensure_table(conn=conn)
 
                     # Provision default global policies
                     await self._policy_service.provision_default_policies(conn=conn)
