@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access &amp; Bindings — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="../static/common/admin.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div class="folio">III.</div>
+      <div>
+        <div class="kicker">DynaStore — Atlas of governance</div>
+        <h1>Access &amp; Bindings</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Bindings are the third axis of authorization: who, on what resource,
+      with what role or policy. Platform and catalog roles live in the
+      Governance hub; this page is for the per-collection bindings — the
+      finer scope where most real-world access is shaped.
+    </p>
+
+    <div id="context-bar" class="context-bar"></div>
+
+    <!-- Scope picker -------------------------------------------------- -->
+    <section class="plate">
+      <div class="plate-header">
+        <h3>Scope</h3>
+        <div class="plate-meta" id="scope-route">GET /admin/catalogs · /catalogs/{cat}/collections</div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="scope-catalog">Catalog</label>
+          <select id="scope-catalog">
+            <option value="">— pick a catalog —</option>
+          </select>
+        </div>
+        <div>
+          <label for="scope-collection">Collection</label>
+          <select id="scope-collection" disabled>
+            <option value="">— pick a collection —</option>
+          </select>
+        </div>
+      </div>
+      <div id="scope-status" class="hint"></div>
+    </section>
+
+    <div class="tabs" id="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="by-principal">By principal</button>
+      <button class="tab-btn" data-tab="by-resource">Who can access this collection</button>
+    </div>
+
+    <!-- By principal ------------------------------------------------- -->
+    <section id="tab-by-principal" class="tab-panel active">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Pick a principal</h3>
+          <div class="plate-meta">GET /admin/principals?q=&hellip;</div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label for="principal-search">Search by identifier / email</label>
+            <input id="principal-search" type="text" placeholder="user@example.org">
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button id="principal-search-btn" type="button">Search</button>
+          </div>
+        </div>
+        <div id="principal-results" class="results"></div>
+        <div id="principal-selected" class="hint"></div>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3 id="bindings-title">Bindings on the selected collection</h3>
+          <div class="plate-meta">GET /admin/catalogs/{cat}/collections/{coll}/grants?principal_id=&hellip;</div>
+        </div>
+        <div id="bindings-table"></div>
+      </div>
+
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Grant a new binding</h3>
+          <div class="plate-meta">POST /admin/catalogs/{cat}/collections/{coll}/grants</div>
+        </div>
+        <form id="binding-create">
+          <div class="form-row">
+            <div>
+              <label for="binding-object-kind">Object kind</label>
+              <select id="binding-object-kind">
+                <option value="role">role</option>
+                <option value="policy">policy</option>
+              </select>
+            </div>
+            <div>
+              <label for="binding-object-ref">Object ref (role name or policy id)</label>
+              <input id="binding-object-ref" type="text" required placeholder="editor">
+            </div>
+            <div>
+              <label for="binding-effect">Effect</label>
+              <select id="binding-effect">
+                <option value="allow">allow</option>
+                <option value="deny">deny</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div>
+              <label for="binding-valid-from">Valid from (UTC, optional)</label>
+              <input id="binding-valid-from" type="datetime-local">
+            </div>
+            <div>
+              <label for="binding-valid-until">Valid until (UTC, optional)</label>
+              <input id="binding-valid-until" type="datetime-local">
+            </div>
+            <div>
+              <label for="binding-quota">Quota (JSON, optional)</label>
+              <input id="binding-quota" type="text" placeholder='{"rate_limit":{"limit":100,"window_seconds":60}}'>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit">Grant binding</button>
+            <span id="binding-create-status" class="hint"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- By resource (reverse view) ----------------------------------- -->
+    <section id="tab-by-resource" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Every binding on the selected collection</h3>
+          <div class="plate-meta">GET /admin/catalogs/{cat}/collections/{coll}/grants</div>
+        </div>
+        <p class="hint">
+          The reverse view: every principal with a role or policy binding
+          scoped to this collection. Whole-catalog grants are not listed
+          here — see the Governance hub for those.
+        </p>
+        <div id="reverse-table"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="../static/admin/access-bindings.js"></script>
+</body>
+</html>

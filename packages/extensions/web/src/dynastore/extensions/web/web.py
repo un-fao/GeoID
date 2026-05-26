@@ -1166,6 +1166,35 @@ async function demoAction(action) {
         return self._serve_html_template(html_path)
 
     @expose_web_page(
+        page_id="access-bindings",
+        title="Access & Bindings",
+        icon="fa-link",
+        description=(
+            "Manage role and policy bindings at collection scope: pick a "
+            "principal and a collection to view/edit their access, or reverse "
+            "the question and see every principal bound on a collection."
+        ),
+        audience_policy_id="web_admin_access",
+        section="admin",
+        priority=14,
+    )
+    async def access_bindings_page(self, request: Request):
+        """Collection-scoped binding editor (#1342). The page is a thin client
+        over the existing /admin endpoints — principals/roles/policies CRUD,
+        the collection-binding CRUD added in #1360 (POST/GET/DELETE
+        /admin/catalogs/{cat}/collections/{coll}/grants), and the reverse
+        view via list_grants_for_resource. Server-side /admin/* endpoints
+        enforce authorization on every mutation; the page itself is gated by
+        ``web_admin_access`` like the rest of the hub."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
+        html_path = os.path.join(static_dir, "access-bindings.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(
+                status_code=404, detail="Access & Bindings page template not found."
+            )
+        return self._serve_html_template(html_path)
+
+    @expose_web_page(
         page_id="stac-authoring",
         title="STAC Authoring",
         icon="fa-book-atlas",
