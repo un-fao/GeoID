@@ -69,10 +69,17 @@ async def test_stac_external_metadata_flow(sysadmin_in_process_client, in_proces
         print(f"DEBUG: Item Add Response body: {r.text}")
     assert r.status_code == 201
 
+    # Per #1212, ``feature.id`` defaults to the system-assigned geoid; the
+    # caller-supplied ``"test-metadata-item"`` is replaced. Capture the
+    # returned id so the lookup hits the right row (the GET path resolves
+    # the path id against ``geoid``, which is UUID-typed — passing the old
+    # non-UUID caller id raises ``DataError`` at the binder).
+    returned_item_id = r.json()["id"]
+
     # 3. Retrieve Item and Verify Merging
     # We retrieve in Italian to test i18n resolution
     r = await in_process_client.get(
-        f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}?lang=it"
+        f"/stac/catalogs/{catalog_id}/collections/{collection_id}/items/{returned_item_id}?lang=it"
     )
     assert r.status_code == 200
     retrieved = r.json()
