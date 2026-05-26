@@ -638,6 +638,93 @@ class ItemQueryMixin:
                 if row else None
             )
 
+    async def resolve_external_id_by_geoid(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        geoid: str,
+        ctx: Optional[DriverContext] = None,
+    ) -> Optional[str]:
+        """Look up the ``external_id`` of the active row whose ``geoid`` matches.
+
+        Symmetric counterpart to the sidecar-based path used by
+        ``delete_item``: post-#1212 the canonical surface-level id IS the
+        geoid, so write handlers that receive a path-id need a cheap way to
+        translate that geoid back to the row's ``external_id`` before they
+        delegate to ``upsert`` (whose conflict resolution keys on
+        ``external_id``). Without this, a PUT against an existing geoid hits
+        the external_id-keyed path with the geoid string, misses every row
+        (no row has that geoid stored as its external_id), and inserts a
+        duplicate. See #1367.
+
+        Returns ``None`` when:
+          * ``geoid`` is not a valid UUID (no UUID-typed row can match),
+          * the catalog/collection cannot be physically resolved,
+          * the collection has no sidecar carrying a ``feature_id_field_name``,
+          * or no active row matches.
+
+        Returns the row's stored ``external_id`` string otherwise. Read-only;
+        safe to call on a shared transaction.
+        """
+        import uuid as _uuid
+
+        try:
+            _uuid.UUID(str(geoid))
+        except (ValueError, AttributeError, TypeError):
+            return None
+
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+
+        db_resource = ctx.db_resource if ctx else None
+        async with managed_transaction(db_resource or self.engine) as conn:
+            phys_schema = await self._resolve_physical_schema(
+                catalog_id, db_resource=conn
+            )
+            phys_table = await self._resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn
+            )
+            if not phys_schema or not phys_table:
+                return None
+
+            from dynastore.modules.storage.router import get_driver as _get_driver
+            from dynastore.modules.storage.routing_config import Operation
+            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
+            col_config = await _driver.get_driver_config(
+                catalog_id, collection_id, db_resource=conn,
+            )
+            if not col_config or not driver_sidecars(col_config):
+                return None
+
+            from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+                SidecarRegistry,
+            )
+
+            for sc in driver_sidecars(col_config):
+                if not sc.feature_id_field_name:
+                    continue
+                sidecar = SidecarRegistry.get_sidecar(sc)
+                if sidecar is None:
+                    continue
+                sc_table = f"{phys_table}_{sidecar.sidecar_id}"
+                ext_id = await DQLQuery(
+                    f'SELECT s.{sc.feature_id_field_name} '
+                    f'FROM "{phys_schema}"."{phys_table}" h '
+                    f'JOIN "{phys_schema}"."{sc_table}" s '
+                    f"ON s.geoid = h.geoid "
+                    f"WHERE h.geoid = :geoid "
+                    f"AND h.deleted_at IS NULL "
+                    f"LIMIT 1",
+                    result_handler=ResultHandler.SCALAR,
+                ).execute(conn, geoid=str(geoid))
+                if ext_id is not None:
+                    return str(ext_id)
+                # First sidecar carrying the identity field is authoritative —
+                # mirrors delete_item's single-sidecar resolution loop.
+                return None
+
+            return None
+
     async def _capture_prior_bbox_for_delete(
         self,
         catalog_id: str,

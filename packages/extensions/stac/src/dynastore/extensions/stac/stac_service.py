@@ -1102,6 +1102,27 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             providers = get_protocols(StacExtensionProtocol)
 
             async with managed_transaction(engine) as conn:
+                # PUT-by-geoid resolution (#1367). Post-#1212 the canonical
+                # surface-level item id IS the geoid, so a PUT path-id is
+                # usually a geoid — not an external_id. ``upsert`` keys
+                # conflict resolution on external_id; without translating
+                # first, the geoid string never matches any stored
+                # external_id and a fresh row is inserted alongside the
+                # geoid-keyed one. Symmetric to the sidecar geoid lookup in
+                # ``delete_item``: when the path-id IS a known geoid, swap
+                # the payload id for that row's external_id so upsert
+                # updates the right row in place. Falls through unchanged
+                # when the path-id isn't a known geoid (create-on-PUT and
+                # external-id-keyed PUT semantics preserved).
+                resolved_external_id = await items_svc.resolve_external_id_by_geoid(
+                    catalog_id,
+                    collection_id,
+                    str(item_id),
+                    ctx=DriverContext(db_resource=conn),
+                )
+                if resolved_external_id is not None and resolved_external_id != str(item_id):
+                    item_payload.id = resolved_external_id
+
                 # Upsert the item
                 new_row_or_list = await items_svc.upsert(
                     catalog_id,
