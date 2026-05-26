@@ -1,333 +1,502 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Admin Panel — Agro-Informatics Platform</title>
-<link rel="stylesheet" href="../static/vendor/vendor.css"/>
-<style>
-  :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --surface2: #21262d;
-    --border: #30363d;
-    --primary: #58a6ff;
-    --primary-dark: #1f6feb;
-    --success: #3fb950;
-    --danger: #f85149;
-    --warning: #d29922;
-    --text: #c9d1d9;
-    --text-dim: #8b949e;
-    --radius: 8px;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Panel — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!--
+    Shared cartographic-atlas theme. Page is served at /web/pages/admin_panel
+    by the IAM extension; the web extension exposes its static/ directory at
+    /web/static/ so this relative href resolves to /web/static/common/admin.css
+    in production, the same path governance.html and access-bindings.html use.
+  -->
+  <link rel="stylesheet" href="../static/common/admin.css">
+  <style>
+    /*
+     * Panel-only rules — the rest of the styling is canonical (admin.css).
+     * Kept inline (no new static mount in the admin extension) to avoid
+     * adding cross-extension plumbing for a few dozen lines of CSS that
+     * are genuinely page-local (modal chrome, condition cards, toast,
+     * the action-button clustering inside the catalog-permissions tab).
+     */
 
-  .panel { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
-  h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
-  h1 i { color: var(--primary); margin-right: 10px; }
-  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 24px; }
+    /* Modal scrim + dialog — atlas-paper instead of dark surface. */
+    .modal-bg {
+      position: fixed;
+      inset: 0;
+      background: rgba(26, 22, 18, 0.55);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-bg.hidden { display: none; }
+    .modal {
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      padding: 22px 24px;
+      width: 480px;
+      max-width: 95vw;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 28px rgba(26, 22, 18, 0.18);
+    }
+    .modal h2 {
+      font-family: var(--font-display);
+      font-variation-settings: "opsz" 48;
+      font-weight: 500;
+      font-size: 1.18rem;
+      color: var(--ink);
+      letter-spacing: -0.005em;
+      padding-bottom: 10px;
+      margin-bottom: 16px;
+      border-bottom: 1px dashed var(--rule);
+    }
+    .modal-wide { max-width: 780px; }
+    .modal-xl   { max-width: 900px; }
 
-  /* Tabs */
-  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 24px; }
-  .tab-btn {
-    padding: 10px 20px; border: none; background: none; color: var(--text-dim);
-    font-family: 'Inter', sans-serif; font-size: 0.9rem; cursor: pointer;
-    border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .tab-btn:hover { color: var(--text); }
-  .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
-  .tab-pane { display: none; }
-  .tab-pane.active { display: block; }
+    /* Vertical stack of single-field rows inside a modal — the canonical
+     * .form-row is a two-up grid that fights single-input dialogs. */
+    .form-stack > * + * { margin-top: 12px; }
 
-  /* Toolbar */
-  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-  .search-box {
-    flex: 1; min-width: 200px; padding: 8px 12px;
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: var(--radius); color: var(--text); font-size: 0.85rem;
-    outline: none;
-  }
-  .search-box:focus { border-color: var(--primary); }
-  .btn {
-    padding: 8px 16px; border-radius: var(--radius); border: none; cursor: pointer;
-    font-family: 'Inter', sans-serif; font-size: 0.85rem; font-weight: 500;
-    display: flex; align-items: center; gap: 7px; transition: all .2s;
-  }
-  .btn-primary { background: var(--primary-dark); color: #fff; }
-  .btn-primary:hover { background: var(--primary); }
-  .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
-  .btn-danger:hover { background: var(--danger); color: #fff; }
-  .btn-success { background: transparent; color: var(--success); border: 1px solid var(--success); }
-  .btn-success:hover { background: var(--success); color: #fff; }
-  .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
-  .action-btns { display: flex; gap: 8px; align-items: center; }
+    /* Toolbar above each table — search input + button cluster. */
+    .panel-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .panel-toolbar > .input-medium,
+    .panel-toolbar > .input-large {
+      flex: 1;
+      min-width: 220px;
+    }
+    .panel-toolbar > label {
+      margin-bottom: 0;
+      white-space: nowrap;
+    }
 
-  /* Table */
-  .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th { background: var(--surface2); color: var(--text-dim); font-weight: 600; padding: 10px 14px; text-align: left; }
-  td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: middle; }
-  tr:hover td { background: rgba(88,166,255,.04); }
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.75rem; font-weight: 600;
-  }
-  .badge-ok { background: rgba(63,185,80,.15); color: var(--success); }
-  .badge-off { background: rgba(248,81,73,.15); color: var(--danger); }
-  .badge-role { background: rgba(88,166,255,.12); color: var(--primary); margin: 2px; }
-  .badge-sys { background: rgba(210,153,34,.15); color: var(--warning); }
+    /* Action button cluster inside a table cell. */
+    .action-btns {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
 
-  /* Modal */
-  .modal-bg {
-    position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .modal-bg.hidden { display: none; }
-  .modal {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 28px; width: 480px; max-width: 95vw; max-height: 85vh; overflow-y: auto;
-  }
-  .modal h2 { font-size: 1.1rem; margin-bottom: 20px; }
-  .form-row { margin-bottom: 14px; }
-  label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 5px; }
-  input, textarea, select {
-    width: 100%; padding: 8px 12px; background: var(--surface2);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    color: var(--text); font-size: 0.85rem; outline: none;
-    font-family: 'Inter', sans-serif;
-  }
-  input:focus, textarea:focus, select:focus { border-color: var(--primary); }
-  textarea { resize: vertical; min-height: 80px; }
-  .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    /* Chip group inside a cell (roles, policies). */
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
 
-  /* Alerts */
-  #toast {
-    position: fixed; bottom: 24px; right: 24px; z-index: 200;
-    padding: 12px 20px; border-radius: var(--radius); font-size: 0.85rem;
-    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 320px;
-  }
-  #toast.show { opacity: 1; }
-  #toast.ok { background: #1e3a25; border: 1px solid var(--success); color: var(--success); }
-  #toast.err { background: #3a1a1a; border: 1px solid var(--danger); color: var(--danger); }
+    /* Chip variants the shared file does not declare — keep semantic names. */
+    .chip-active  { color: var(--olive);            border-color: var(--olive); }
+    .chip-off     { color: var(--terracotta-deep);  border-color: var(--terracotta-deep); }
+    .chip-system  { color: var(--amber);            border-color: var(--amber); }
 
-  .loader { text-align: center; padding: 40px; color: var(--text-dim); }
-  .empty { text-align: center; padding: 40px; color: var(--text-dim); font-size: 0.9rem; }
-  .chip-list { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip-input { width: 100%; margin-top: 6px; }
-</style>
-<script src="../website/context-selector.js?v={{VERSION}}"></script>
-<script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor@latest/dist/jsoneditor.min.js"></script>
+    /* Inline revoke button inside a chip — flat, danger-tinted. */
+    .chip-x {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 2px;
+      margin-left: 4px;
+      background: transparent;
+      border: 0;
+      color: var(--terracotta-deep);
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1;
+    }
+    .chip-x:hover { color: var(--terracotta); }
+
+    /* Truncating monospace cell for resources / regex blobs. */
+    td.cell-mono {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--ink-soft);
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Centred priority column. */
+    td.cell-center { text-align: center; font-family: var(--font-mono); }
+
+    /* Policy-condition card inside the policy modal. */
+    .cond-card {
+      border: 1px solid var(--rule);
+      background: var(--paper);
+      padding: 10px 12px;
+    }
+    .cond-card + .cond-card { margin-top: 8px; }
+    .cond-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .cond-card-head > select { max-width: 220px; }
+    .cond-note {
+      color: var(--ink-dim);
+      font-size: 0.74rem;
+      font-style: italic;
+      margin-top: 4px;
+    }
+
+    /* Pager beneath the usage table. */
+    .pager-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      gap: 10px;
+    }
+    .pager-meta {
+      color: var(--ink-dim);
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+    }
+    .pager-controls { display: inline-flex; gap: 6px; }
+
+    /* Toast — bottom-right, atlas-tinted, fades. */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 200;
+      padding: 10px 16px;
+      font-family: var(--font-ui);
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      max-width: 320px;
+      opacity: 0;
+      transition: opacity 0.25s;
+      pointer-events: none;
+      background: var(--paper);
+      border: 1px solid var(--rule);
+      border-left: 3px solid var(--ink-dim);
+      color: var(--ink);
+    }
+    #toast.show { opacity: 1; }
+    #toast.ok  { border-left-color: var(--olive); }
+    #toast.err { border-left-color: var(--terracotta-deep); }
+
+    /* Loader inside an empty-row td. */
+    .loader-line {
+      color: var(--ink-dim);
+      font-style: italic;
+      font-family: var(--font-ui);
+      text-align: center;
+      padding: 22px 10px;
+    }
+
+    /* The Catalog Permissions tab's catalog picker — keep the select wide. */
+    #cp-catalog-select { min-width: 260px; max-width: 360px; }
+  </style>
+  <script src="../website/context-selector.js?v={{VERSION}}"></script>
 </head>
 <body>
-<div class="panel">
-  <h1><i class="fa-solid fa-shield-halved"></i> Agro-Informatics Platform: Admin Panel</h1>
-  <p class="subtitle">Manage users, roles, policies and catalog access on the AgroInformatics Platform.</p>
-
-    <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('users')"><i class="fa-solid fa-users"></i> Users</button>
-      <button class="tab-btn" onclick="switchTab('principals')"><i class="fa-solid fa-fingerprint"></i> Principals</button>
-      <button class="tab-btn" onclick="switchTab('roles')"><i class="fa-solid fa-user-tag"></i> Roles</button>
-      <button class="tab-btn" onclick="switchTab('policies')"><i class="fa-solid fa-file-shield"></i> Policies</button>
-      <button class="tab-btn" onclick="switchTab('catalog-permissions')"><i class="fa-solid fa-database"></i> Catalog Permissions</button>
-    </div>
-
-  <!-- ── USERS TAB ── -->
-  <div id="tab-users" class="tab-pane active">
-    <div class="toolbar">
-      <input class="search-box" id="user-search" placeholder="Search by username…" oninput="filterUsers()">
-      <button class="btn btn-primary" onclick="openUserModal()"><i class="fa-solid fa-plus"></i> New User</button>
-      <button class="btn btn-primary" onclick="loadUsers()"><i class="fa-solid fa-rotate"></i></button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Username</th><th>Provider</th><th>Roles</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody id="users-tbody"><tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ── PRINCIPALS TAB ── -->
-  <div id="tab-principals" class="tab-pane">
-    <div class="toolbar">
-      <input class="search-box" id="principal-search" placeholder="Search by identifier or role…" oninput="filterPrincipals()">
-      <button class="btn btn-primary" onclick="loadPrincipals()"><i class="fa-solid fa-rotate"></i> Refresh</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Display Name</th><th>Provider</th><th>Subject ID</th><th>Roles</th><th>Active</th><th>Actions</th></tr></thead>
-        <tbody id="principals-tbody"><tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ── ROLES TAB ── -->
-  <div id="tab-roles" class="tab-pane">
-    <div class="toolbar">
-      <button class="btn btn-primary" onclick="openRoleModal()"><i class="fa-solid fa-plus"></i> New Role</button>
-      <button class="btn btn-primary" onclick="loadRoles()"><i class="fa-solid fa-rotate"></i></button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Name</th><th>Description</th><th>Policies</th><th>System</th><th>Actions</th></tr></thead>
-        <tbody id="roles-tbody"><tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ── POLICIES TAB ── -->
-  <div id="tab-policies" class="tab-pane">
-    <div class="toolbar">
-      <input class="search-box" id="policy-search" placeholder="Search by ID, action, or resource…" oninput="filterPolicies()">
-      <div id="cs-policies-container"></div>
-      <button class="btn btn-primary" onclick="openPolicyModal()"><i class="fa-solid fa-plus"></i> New Policy</button>
-      <button class="btn btn-primary" onclick="loadPolicies()"><i class="fa-solid fa-rotate"></i></button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>ID</th><th>Effect</th><th>Priority</th><th>Actions</th><th>Resources</th><th>Description</th><th>Ops</th></tr></thead>
-        <tbody id="policies-tbody"><tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ── CATALOG PERMISSIONS TAB ── -->
-  <div id="tab-catalog-permissions" class="tab-pane">
-    <div class="toolbar">
-      <label style="color:var(--text-dim);font-size:13px">Catalog</label>
-      <select id="cp-catalog-select" onchange="loadCatalogUsers()" style="min-width:240px"></select>
-      <button class="btn btn-primary" onclick="openCatalogGrantModal()" id="cp-grant-btn" disabled><i class="fa-solid fa-user-plus"></i> Grant Access</button>
-      <button class="btn btn-primary" onclick="loadCatalogUsers()"><i class="fa-solid fa-rotate"></i></button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Display Name</th><th>Provider</th><th>Subject ID</th><th>Roles in catalog</th><th>Actions</th></tr></thead>
-        <tbody id="cp-tbody"><tr><td colspan="5" class="empty">Pick a catalog above.</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-
-</div>
-
-<!-- ── MODALS ── -->
-
-<!-- New User Modal -->
-<div id="user-modal" class="modal-bg hidden">
-  <div class="modal">
-    <h2><i class="fa-solid fa-user-plus" style="color:var(--primary);margin-right:8px"></i>Create User</h2>
-    <div class="form-row"><label>Username *</label><input id="nm-username" placeholder="e.g. jsmith"/></div>
-    <div class="form-row"><label>Password *</label><input id="nm-password" type="password" placeholder="Minimum 8 characters"/></div>
-    <div class="form-row"><label>Email</label><input id="nm-email" type="email" placeholder="user@example.com"/></div>
-    <div class="form-row"><label>Roles (comma-separated)</label><input id="nm-roles" value="user" placeholder="e.g. user, viewer"/></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeUserModal()" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="createUser()"><i class="fa-solid fa-check"></i> Create</button>
-    </div>
-  </div>
-</div>
-
-<!-- Assign Catalog Role Modal (user-centric, opened from Users tab) -->
-<div id="catalog-modal" class="modal-bg hidden">
-  <div class="modal">
-    <h2><i class="fa-solid fa-database" style="color:var(--primary);margin-right:8px"></i>Assign Catalog Role</h2>
-    <input type="hidden" id="cm-principal-id"/>
-    <div class="form-row"><label>Catalog ID *</label><input id="cm-catalog" placeholder="e.g. agro_data_2024"/></div>
-    <div class="form-row"><label>Role *</label><input id="cm-role" placeholder="e.g. viewer, editor, admin"/></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeCatalogModal()" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="assignCatalogRole()"><i class="fa-solid fa-check"></i> Assign</button>
-    </div>
-  </div>
-</div>
-
-<!-- Grant Catalog Access Modal (catalog-centric, opened from Catalog Permissions tab) -->
-<div id="catalog-grant-modal" class="modal-bg hidden">
-  <div class="modal">
-    <h2><i class="fa-solid fa-user-plus" style="color:var(--primary);margin-right:8px"></i>Grant Catalog Access</h2>
-    <div class="form-row"><label>Catalog</label><input id="cg-catalog" disabled style="opacity:.7"/></div>
-    <div class="form-row"><label>Principal subject_id *</label><input id="cg-principal" placeholder="UUID or provider:subject"/></div>
-    <div class="form-row"><label>Role *</label><select id="cg-role"></select></div>
-    <div class="form-actions">
-      <button class="btn" onclick="closeCatalogGrantModal()" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="submitCatalogGrant()"><i class="fa-solid fa-check"></i> Grant</button>
-    </div>
-  </div>
-</div>
-
-<!-- New Role Modal -->
-<div id="role-modal" class="modal-bg hidden">
-  <div class="modal">
-    <h2><i class="fa-solid fa-user-tag" style="color:var(--primary);margin-right:8px"></i>Create Role</h2>
-    <div class="form-row"><label>Name *</label><input id="rm-name" placeholder="e.g. data_editor"/></div>
-    <div class="form-row"><label>Description</label><input id="rm-desc" placeholder="Brief description"/></div>
-    <div class="form-row"><label>Policies (comma-separated IDs)</label><input id="rm-policies" placeholder="e.g. stac_public_access, web_public_access"/></div>
-    <div class="form-actions">
-      <button class="btn" onclick="document.getElementById('role-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="createRole()"><i class="fa-solid fa-check"></i> Create</button>
-    </div>
-  </div>
-</div>
-
-<!-- Policy Modal (create + edit) -->
-<div id="policy-modal" class="modal-bg hidden">
-  <div class="modal" style="max-width:780px">
-    <h2><i class="fa-solid fa-file-shield" style="color:var(--primary);margin-right:8px"></i><span id="pm-title">Create Policy</span></h2>
-    <input type="hidden" id="pm-mode" value="create"/>
-    <div class="form-row"><label>Policy ID *</label><input id="pm-id" placeholder="e.g. my_catalog_read"/></div>
-    <div class="form-row"><label>Description</label><input id="pm-desc" placeholder="Brief description"/></div>
-    <div class="form-row"><label>Effect</label>
-      <select id="pm-effect"><option value="ALLOW">ALLOW</option><option value="DENY">DENY</option></select>
-    </div>
-    <div class="form-row"><label>Priority — [-1000, 1000], higher wins; ties resolve to DENY</label>
-      <input id="pm-priority" type="number" min="-1000" max="1000" step="1" value="0"/></div>
-    <div class="form-row"><label>Actions (comma-separated)</label><input id="pm-actions" placeholder="GET, POST, PUT, DELETE"/></div>
-    <div class="form-row"><label>Resources (regex patterns, one per line)</label>
-      <textarea id="pm-resources" placeholder="/my/resource/.*&#10;/other/path">/my/resource/.*</textarea>
-    </div>
-    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0"/>
-    <div class="form-row" style="display:flex;justify-content:space-between;align-items:center">
-      <label style="margin:0">Conditions</label>
-      <button class="btn btn-sm btn-primary" onclick="addPolicyCondition()"><i class="fa-solid fa-plus"></i> Add Condition</button>
-    </div>
-    <div id="pm-conditions" style="display:flex;flex-direction:column;gap:8px"></div>
-    <div class="form-actions">
-      <button class="btn" onclick="document.getElementById('policy-modal').classList.add('hidden')" style="color:var(--text-dim)">Cancel</button>
-      <button class="btn btn-primary" onclick="submitPolicy()"><i class="fa-solid fa-check"></i> <span id="pm-submit-label">Create</span></button>
-    </div>
-  </div>
-</div>
-
-<!-- Policy Usage Modal -->
-<div id="policy-usage-modal" class="modal-bg hidden">
-  <div class="modal" style="max-width:900px">
-    <h2><i class="fa-solid fa-gauge-high" style="color:var(--primary);margin-right:8px"></i>Usage — <span id="pu-policy-id" style="font-family:monospace"></span></h2>
-    <p style="color:var(--text-dim);font-size:13px;margin:4px 0 12px">
-      Rate-limit / quota counter rows tracked for this policy. <strong>Reset</strong> clears the counter
-      (renews an exhausted lifetime quota or zeroes a windowed limit).
-    </p>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Principal key</th><th>Count</th><th>Window start</th><th>Expires</th><th>Last seen</th><th>Ops</th></tr></thead>
-        <tbody id="pu-tbody"><tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr></tbody>
-      </table>
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-      <div id="pu-paging" style="color:var(--text-dim);font-size:13px"></div>
+  <main>
+    <header class="masthead">
+      <div class="folio">IV.</div>
       <div>
-        <button class="btn btn-sm" id="pu-prev" onclick="pageUsage(-1)" disabled>← Prev</button>
-        <button class="btn btn-sm" id="pu-next" onclick="pageUsage(1)" disabled>Next →</button>
+        <div class="kicker">DynaStore — Atlas of governance</div>
+        <h1>Admin Panel</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Users, roles, policies and catalog access for the Agro-Informatics
+      Platform. Platform scope is the baseline; catalog scope is the tenant
+      overlay applied on top.
+    </p>
+
+    <div class="tabs" id="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="users" type="button">Users</button>
+      <button class="tab-btn" data-tab="principals" type="button">Principals</button>
+      <button class="tab-btn" data-tab="roles" type="button">Roles</button>
+      <button class="tab-btn" data-tab="policies" type="button">Policies</button>
+      <button class="tab-btn" data-tab="catalog-permissions" type="button">Catalog Permissions</button>
+    </div>
+
+    <!-- Users -->
+    <section id="tab-users" class="tab-panel active">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Users</h3>
+          <div class="plate-meta">GET /admin/principals</div>
+        </div>
+        <div class="panel-toolbar">
+          <label for="user-search">Search</label>
+          <input id="user-search" type="search" class="input-medium" placeholder="Search by username&hellip;">
+          <span class="spacer"></span>
+          <button class="btn" type="button" id="btn-new-user">New User</button>
+          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-users" aria-label="Refresh users">Refresh</button>
+        </div>
+        <table id="users-table">
+          <thead>
+            <tr><th>Username</th><th>Provider</th><th>Roles</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="users-tbody">
+            <tr class="empty-row"><td colspan="5" class="loader-line">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Principals -->
+    <section id="tab-principals" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Principals</h3>
+          <div class="plate-meta">GET /admin/principals</div>
+        </div>
+        <div class="panel-toolbar">
+          <label for="principal-search">Search</label>
+          <input id="principal-search" type="search" class="input-large" placeholder="Search by identifier or role&hellip;">
+          <span class="spacer"></span>
+          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-principals">Refresh</button>
+        </div>
+        <table id="principals-table">
+          <thead>
+            <tr><th>Display Name</th><th>Provider</th><th>Subject ID</th><th>Roles</th><th>Active</th><th></th></tr>
+          </thead>
+          <tbody id="principals-tbody">
+            <tr class="empty-row"><td colspan="6" class="loader-line">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Roles -->
+    <section id="tab-roles" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Roles</h3>
+          <div class="plate-meta">GET /admin/roles</div>
+        </div>
+        <div class="panel-toolbar">
+          <span class="spacer"></span>
+          <button class="btn" type="button" id="btn-new-role">New Role</button>
+          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-roles">Refresh</button>
+        </div>
+        <table id="roles-table">
+          <thead>
+            <tr><th>Name</th><th>Description</th><th>Policies</th><th></th></tr>
+          </thead>
+          <tbody id="roles-tbody">
+            <tr class="empty-row"><td colspan="4" class="loader-line">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Policies -->
+    <section id="tab-policies" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Policies</h3>
+          <div class="plate-meta">GET /admin/policies</div>
+        </div>
+        <div class="panel-toolbar">
+          <label for="policy-search">Search</label>
+          <input id="policy-search" type="search" class="input-medium" placeholder="Search by ID, action, or resource&hellip;">
+          <div id="cs-policies-container"></div>
+          <span class="spacer"></span>
+          <button class="btn" type="button" id="btn-new-policy">New Policy</button>
+          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-policies">Refresh</button>
+        </div>
+        <table id="policies-table">
+          <thead>
+            <tr><th>ID</th><th>Effect</th><th>Priority</th><th>Actions</th><th>Resources</th><th>Description</th><th></th></tr>
+          </thead>
+          <tbody id="policies-tbody">
+            <tr class="empty-row"><td colspan="7" class="loader-line">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Catalog Permissions -->
+    <section id="tab-catalog-permissions" class="tab-panel">
+      <div class="plate">
+        <div class="plate-header">
+          <h3>Catalog Permissions</h3>
+          <div class="plate-meta">GET /admin/catalogs/{cat}/principals</div>
+        </div>
+        <div class="panel-toolbar">
+          <label for="cp-catalog-select">Catalog</label>
+          <select id="cp-catalog-select"></select>
+          <span class="spacer"></span>
+          <button class="btn" type="button" id="cp-grant-btn" disabled>Grant Access</button>
+          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-cp">Refresh</button>
+        </div>
+        <table id="cp-table">
+          <thead>
+            <tr><th>Display Name</th><th>Provider</th><th>Subject ID</th><th>Roles in catalog</th><th></th></tr>
+          </thead>
+          <tbody id="cp-tbody">
+            <tr class="empty-row"><td colspan="5">Pick a catalog above.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modals -->
+
+  <!-- New User -->
+  <div id="user-modal" class="modal-bg hidden" role="dialog" aria-labelledby="user-modal-title" aria-hidden="true">
+    <div class="modal">
+      <h2 id="user-modal-title">Create user</h2>
+      <div class="form-stack">
+        <div><label for="nm-username">Username *</label><input id="nm-username" type="text" placeholder="e.g. jsmith"></div>
+        <div><label for="nm-password">Password *</label><input id="nm-password" type="password" placeholder="Minimum 8 characters"></div>
+        <div><label for="nm-email">Email</label><input id="nm-email" type="email" placeholder="user@example.com"></div>
+        <div><label for="nm-roles">Roles &mdash; csv</label><input id="nm-roles" type="text" value="user" placeholder="e.g. user, viewer"></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-user">Cancel</button>
+        <button class="btn" type="button" id="btn-submit-user">Create</button>
       </div>
     </div>
-    <div class="form-actions">
-      <button class="btn" onclick="document.getElementById('policy-usage-modal').classList.add('hidden')" style="color:var(--text-dim)">Close</button>
-      <button class="btn btn-primary" onclick="refreshPolicyUsage()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+  </div>
+
+  <!-- Assign Catalog Role (user-centric, from Users / Principals tab) -->
+  <div id="catalog-modal" class="modal-bg hidden" role="dialog" aria-labelledby="catalog-modal-title" aria-hidden="true">
+    <div class="modal">
+      <h2 id="catalog-modal-title">Assign catalog role</h2>
+      <input type="hidden" id="cm-principal-id">
+      <div class="form-stack">
+        <div><label for="cm-catalog">Catalog ID *</label><input id="cm-catalog" type="text" placeholder="e.g. agro_data_2024"></div>
+        <div><label for="cm-role">Role *</label><input id="cm-role" type="text" placeholder="e.g. viewer, editor, admin"></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-catalog">Cancel</button>
+        <button class="btn" type="button" id="btn-submit-catalog">Assign</button>
+      </div>
     </div>
   </div>
-</div>
 
+  <!-- Grant Catalog Access (catalog-centric, from Catalog Permissions tab) -->
+  <div id="catalog-grant-modal" class="modal-bg hidden" role="dialog" aria-labelledby="catalog-grant-title" aria-hidden="true">
+    <div class="modal">
+      <h2 id="catalog-grant-title">Grant catalog access</h2>
+      <div class="form-stack">
+        <div><label for="cg-catalog">Catalog</label><input id="cg-catalog" type="text" disabled></div>
+        <div><label for="cg-principal">Principal subject_id *</label><input id="cg-principal" type="text" placeholder="UUID or provider:subject"></div>
+        <div><label for="cg-role">Role *</label><select id="cg-role"></select></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-catalog-grant">Cancel</button>
+        <button class="btn" type="button" id="btn-submit-catalog-grant">Grant</button>
+      </div>
+    </div>
+  </div>
 
-<div id="toast"></div><script>
+  <!-- New Role -->
+  <div id="role-modal" class="modal-bg hidden" role="dialog" aria-labelledby="role-modal-title" aria-hidden="true">
+    <div class="modal">
+      <h2 id="role-modal-title">Create role</h2>
+      <div class="form-stack">
+        <div><label for="rm-name">Name *</label><input id="rm-name" type="text" placeholder="e.g. data_editor"></div>
+        <div><label for="rm-desc">Description</label><input id="rm-desc" type="text" placeholder="Brief description"></div>
+        <div><label for="rm-policies">Policies &mdash; csv of IDs</label><input id="rm-policies" type="text" placeholder="e.g. stac_public_access, web_public_access"></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-role">Cancel</button>
+        <button class="btn" type="button" id="btn-submit-role">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Policy create / edit -->
+  <div id="policy-modal" class="modal-bg hidden" role="dialog" aria-labelledby="pm-title" aria-hidden="true">
+    <div class="modal modal-wide">
+      <h2><span id="pm-title">Create policy</span></h2>
+      <input type="hidden" id="pm-mode" value="create">
+      <div class="form-stack">
+        <div><label for="pm-id">Policy ID *</label><input id="pm-id" type="text" placeholder="e.g. my_catalog_read"></div>
+        <div><label for="pm-desc">Description</label><input id="pm-desc" type="text" placeholder="Brief description"></div>
+        <div>
+          <label for="pm-effect">Effect</label>
+          <select id="pm-effect">
+            <option value="ALLOW">ALLOW</option>
+            <option value="DENY">DENY</option>
+          </select>
+        </div>
+        <div>
+          <label for="pm-priority">Priority &mdash; [-1000, 1000], higher wins; ties resolve to DENY</label>
+          <input id="pm-priority" type="number" min="-1000" max="1000" step="1" value="0" class="input-num">
+        </div>
+        <div><label for="pm-actions">Actions &mdash; csv</label><input id="pm-actions" type="text" placeholder="GET, POST, PUT, DELETE"></div>
+        <div>
+          <label for="pm-resources">Resources &mdash; regex patterns, one per line</label>
+          <textarea id="pm-resources" placeholder="/my/resource/.*&#10;/other/path">/my/resource/.*</textarea>
+        </div>
+      </div>
+      <hr class="rule">
+      <div class="row">
+        <h4 class="ci-subhead" style="margin:0">Conditions</h4>
+        <span class="spacer"></span>
+        <button class="btn btn-secondary btn-xs" type="button" id="btn-add-cond">Add condition</button>
+      </div>
+      <div id="pm-conditions"></div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-cancel-policy">Cancel</button>
+        <button class="btn" type="button" id="btn-submit-policy"><span id="pm-submit-label">Create</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Policy usage -->
+  <div id="policy-usage-modal" class="modal-bg hidden" role="dialog" aria-labelledby="pu-title" aria-hidden="true">
+    <div class="modal modal-xl">
+      <h2 id="pu-title">Usage &mdash; <span id="pu-policy-id" class="muted" style="font-family:var(--font-mono);font-weight:400"></span></h2>
+      <p class="muted" style="margin-bottom:12px">
+        Rate-limit / quota counter rows tracked for this policy. <strong>Reset</strong> clears the counter
+        (renews an exhausted lifetime quota or zeroes a windowed limit).
+      </p>
+      <table id="pu-table">
+        <thead>
+          <tr><th>Principal key</th><th>Count</th><th>Window start</th><th>Expires</th><th>Last seen</th><th></th></tr>
+        </thead>
+        <tbody id="pu-tbody">
+          <tr class="empty-row"><td colspan="6" class="loader-line">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+      <div class="pager-row">
+        <div id="pu-paging" class="pager-meta"></div>
+        <div class="pager-controls">
+          <button class="btn btn-secondary btn-xs" type="button" id="pu-prev" disabled>&larr; Prev</button>
+          <button class="btn btn-secondary btn-xs" type="button" id="pu-next" disabled>Next &rarr;</button>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" type="button" id="btn-close-pu">Close</button>
+        <button class="btn" type="button" id="btn-refresh-pu">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    // Atlas masthead stamp — mirrors governance.html / access-bindings.html.
+    document.getElementById("masthead-stamp").textContent =
+      `FOLIO ${new Date().toISOString().slice(0, 10)}\nREV. ${Math.floor(Math.random()*900+100)}`;
+  </script>
+  <script>
 // Derive API root from the page URL so paths work behind any prefix proxy.
 // admin_panel.html is served at {root}/web/pages/admin — go up to {root}.
 const _ADMIN_ROOT = (function () {
@@ -374,12 +543,26 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// ── Tab switching ──
+// Show / hide a modal by id with aria-hidden in sync.
+function showModal(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('hidden');
+  el.setAttribute('aria-hidden', 'false');
+}
+function hideModal(id) {
+  const el = document.getElementById(id);
+  el.classList.add('hidden');
+  el.setAttribute('aria-hidden', 'true');
+}
+
+// ── Tab switching (data-tab attr, no reliance on global event) ──
 function switchTab(name) {
-  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  event.currentTarget.classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
   if (name === 'users') loadUsers();
   if (name === 'principals') loadPrincipals();
   if (name === 'roles') loadRoles();
@@ -388,28 +571,29 @@ function switchTab(name) {
 }
 
 // ── USERS ──
+let _allUsers = [];
 async function loadUsers() {
   const tb = document.getElementById('users-tbody');
-  tb.innerHTML = '<tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  tb.innerHTML = '<tr class="empty-row"><td colspan="5" class="loader-line">Loading…</td></tr>';
   try {
     _allUsers = await apiFetch('/principals');
     renderUsers(_allUsers);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="5">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderUsers(list) {
   const tb = document.getElementById('users-tbody');
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No users found.</td></tr>'; return; }
+  if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="5">No users found.</td></tr>'; return; }
   tb.innerHTML = list.map(u => `
     <tr>
       <td><strong>${escapeHtml(u.display_name || u.subject_id)}</strong></td>
-      <td><span style="color:var(--text-dim)">${escapeHtml(u.provider || 'local')}</span></td>
-      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="badge badge-role">${escapeHtml(r)}</span>`).join('')}</div></td>
-      <td><span class="badge ${u.is_active?'badge-ok':'badge-off'}">${u.is_active?'Active':'Inactive'}</span></td>
-      <td><div class="action-btns">
+      <td class="muted">${escapeHtml(u.provider || 'local')}</td>
+      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="chip">${escapeHtml(r)}</span>`).join('')}</div></td>
+      <td><span class="chip ${u.is_active?'chip-active':'chip-off'}">${u.is_active?'Active':'Inactive'}</span></td>
+      <td class="table-actions"><div class="action-btns">
         ${u.is_active
-          ? `<button class="btn btn-sm btn-danger" data-action="deactivate" data-id="${escapeHtml(u.id)}" title="Deactivate"><i class="fa-solid fa-ban"></i></button>`
-          : `<button class="btn btn-sm btn-success" data-action="activate" data-id="${escapeHtml(u.id)}" title="Reactivate"><i class="fa-solid fa-check"></i></button>`}
-        <button class="btn btn-sm btn-primary" data-action="catalog-modal" data-id="${escapeHtml(u.id)}"><i class="fa-solid fa-database"></i></button>
+          ? `<button class="btn btn-danger btn-xs" data-action="deactivate" data-id="${escapeHtml(u.id)}" aria-label="Deactivate user" title="Deactivate">Deactivate</button>`
+          : `<button class="btn btn-secondary btn-xs" data-action="activate" data-id="${escapeHtml(u.id)}" aria-label="Reactivate user" title="Reactivate">Reactivate</button>`}
+        <button class="btn btn-secondary btn-xs" data-action="catalog-modal" data-id="${escapeHtml(u.id)}" aria-label="Assign catalog role" title="Assign catalog role">Catalog…</button>
       </div></td>
     </tr>`).join('');
   tb.querySelectorAll('[data-action="deactivate"]').forEach(b => b.addEventListener('click', () => setUserActive(b.dataset.id, false)));
@@ -423,8 +607,8 @@ function filterUsers() {
     (u.subject_id||'').toLowerCase().includes(q)
   ));
 }
-function openUserModal() { document.getElementById('user-modal').classList.remove('hidden'); }
-function closeUserModal() { document.getElementById('user-modal').classList.add('hidden'); }
+function openUserModal() { showModal('user-modal'); }
+function closeUserModal() { hideModal('user-modal'); }
 async function createUser() {
   const username = document.getElementById('nm-username').value.trim();
   const password = document.getElementById('nm-password').value;
@@ -440,7 +624,7 @@ async function setUserActive(id, active) {
   const verb = active ? 'Reactivate' : 'Deactivate';
   if (!confirm(`${verb} this user?`)) return;
   try {
-    await apiFetch(`/principals/${id}`, { method:'PUT', body: JSON.stringify({is_active: active}) });
+    await apiFetch(`/principals/${encodeURIComponent(id)}`, { method:'PUT', body: JSON.stringify({is_active: active}) });
     toast(`User ${active ? 'reactivated' : 'deactivated'}.`); loadUsers();
   } catch(e) { toast(e.message, false); }
 }
@@ -455,7 +639,7 @@ async function loadCatalogPermissionsCatalogs() {
     const cats = await apiFetch('/catalogs?limit=200');
     if (!cats.length) {
       sel.innerHTML = '<option>No catalogs available</option>';
-      document.getElementById('cp-tbody').innerHTML = '<tr><td colspan="5" class="empty">No catalogs to manage.</td></tr>';
+      document.getElementById('cp-tbody').innerHTML = '<tr class="empty-row"><td colspan="5">No catalogs to manage.</td></tr>';
       return;
     }
     sel.innerHTML = cats.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.title || c.id)}</option>`).join('');
@@ -471,36 +655,32 @@ async function loadCatalogUsers() {
   const cat = document.getElementById('cp-catalog-select').value;
   const tb = document.getElementById('cp-tbody');
   if (!cat || cat === 'Loading…' || cat === 'No catalogs available') {
-    tb.innerHTML = '<tr><td colspan="5" class="empty">Pick a catalog above.</td></tr>';
+    tb.innerHTML = '<tr class="empty-row"><td colspan="5">Pick a catalog above.</td></tr>';
     return;
   }
-  tb.innerHTML = '<tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  tb.innerHTML = '<tr class="empty-row"><td colspan="5" class="loader-line">Loading…</td></tr>';
   try {
     const users = await apiFetch(`/catalogs/${encodeURIComponent(cat)}/principals`);
     if (!users || !users.length) {
-      tb.innerHTML = `<tr><td colspan="5" class="empty">No principals have access to <strong>${escapeHtml(cat)}</strong>. Click <em>Grant Access</em> to add one.</td></tr>`;
+      tb.innerHTML = `<tr class="empty-row"><td colspan="5">No principals have access to <strong>${escapeHtml(cat)}</strong>. Click <em>Grant Access</em> to add one.</td></tr>`;
       return;
     }
     tb.innerHTML = users.map(u => {
       const roles = (u.roles || []).map(r => `
-        <span class="badge badge-role" style="display:inline-flex;align-items:center;gap:4px">
+        <span class="chip">
           ${escapeHtml(r)}
-          <button title="Revoke" data-action="revoke" data-pid="${escapeHtml(u.id)}" data-role="${escapeHtml(r)}"
-            style="background:none;border:0;color:var(--danger);cursor:pointer;padding:0;font-size:11px">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
+          <button class="chip-x" type="button" title="Revoke" aria-label="Revoke role ${escapeHtml(r)}"
+            data-action="revoke" data-pid="${escapeHtml(u.id)}" data-role="${escapeHtml(r)}">&times;</button>
         </span>`).join('');
       return `
         <tr>
           <td><strong>${escapeHtml(u.display_name || u.subject_id)}</strong></td>
-          <td><span style="color:var(--text-dim)">${escapeHtml(u.provider || 'local')}</span></td>
-          <td><code style="font-size:11px;color:var(--text-dim)">${escapeHtml(u.subject_id)}</code></td>
+          <td class="muted">${escapeHtml(u.provider || 'local')}</td>
+          <td><code>${escapeHtml(u.subject_id)}</code></td>
           <td><div class="chip-list">${roles}</div></td>
-          <td><div class="action-btns">
-            <button class="btn btn-sm btn-primary" title="Add another role for this principal"
-              data-action="add" data-subject="${escapeHtml(u.id)}">
-              <i class="fa-solid fa-plus"></i>
-            </button>
+          <td class="table-actions"><div class="action-btns">
+            <button class="btn btn-secondary btn-xs" type="button" aria-label="Add another role for this principal"
+              data-action="add" data-subject="${escapeHtml(u.id)}">Add role</button>
           </div></td>
         </tr>`;
     }).join('');
@@ -511,7 +691,7 @@ async function loadCatalogUsers() {
       btn.addEventListener('click', () => openCatalogGrantModal(btn.dataset.subject));
     });
   } catch(e) {
-    tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`;
+    tb.innerHTML = `<tr class="empty-row"><td colspan="5">Error: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -559,12 +739,10 @@ async function openCatalogGrantModal(prefilledSubjectId) {
   } catch(_) {
     _setRoleOptions(sel, [], 'Error loading roles');
   }
-  document.getElementById('catalog-grant-modal').classList.remove('hidden');
+  showModal('catalog-grant-modal');
 }
 
-function closeCatalogGrantModal() {
-  document.getElementById('catalog-grant-modal').classList.add('hidden');
-}
+function closeCatalogGrantModal() { hideModal('catalog-grant-modal'); }
 
 async function submitCatalogGrant() {
   const cat = document.getElementById('cg-catalog').value;
@@ -590,40 +768,41 @@ async function submitCatalogGrant() {
 // ── CATALOG ROLE (user-centric, from Users tab) ──
 function openCatalogModal(principalId) {
   document.getElementById('cm-principal-id').value = principalId;
-  document.getElementById('catalog-modal').classList.remove('hidden');
+  showModal('catalog-modal');
 }
-function closeCatalogModal() { document.getElementById('catalog-modal').classList.add('hidden'); }
+function closeCatalogModal() { hideModal('catalog-modal'); }
 async function assignCatalogRole() {
   const pid = document.getElementById('cm-principal-id').value;
   const catalog = document.getElementById('cm-catalog').value.trim();
   const role = document.getElementById('cm-role').value.trim();
   if (!catalog || !role) { toast('Catalog ID and role are required.', false); return; }
   try {
-    await apiFetch(`/catalogs/${catalog}/principals/${pid}/roles`, { method:'POST', body: JSON.stringify({role}) });
+    await apiFetch(`/catalogs/${encodeURIComponent(catalog)}/principals/${encodeURIComponent(pid)}/roles`, { method:'POST', body: JSON.stringify({role}) });
     toast(`Role '${role}' assigned to catalog '${catalog}'.`); closeCatalogModal();
   } catch(e) { toast(e.message, false); }
 }
 
 // ── PRINCIPALS ──
+let _allPrincipals = [];
 async function loadPrincipals() {
   const tb = document.getElementById('principals-tbody');
-  tb.innerHTML = '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  tb.innerHTML = '<tr class="empty-row"><td colspan="6" class="loader-line">Loading…</td></tr>';
   try {
     _allPrincipals = await apiFetch('/principals');
     renderPrincipals(_allPrincipals);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="6" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="6">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderPrincipals(list) {
   const tb = document.getElementById('principals-tbody');
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No principals found.</td></tr>'; return; }
+  if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No principals found.</td></tr>'; return; }
   tb.innerHTML = list.map(p => `
     <tr>
       <td><strong>${escapeHtml(p.display_name || '—')}</strong></td>
-      <td><span style="color:var(--text-dim)">${escapeHtml(p.provider || '—')}</span></td>
-      <td style="font-family:monospace;font-size:0.8rem">${escapeHtml(p.subject_id || '—')}</td>
-      <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="badge badge-role">${escapeHtml(r)}</span>`).join('')}</div></td>
-      <td><span class="badge ${p.is_active?'badge-ok':'badge-off'}">${p.is_active?'Yes':'No'}</span></td>
-      <td><button class="btn btn-sm btn-primary" data-action="catalog-modal" data-id="${escapeHtml(p.id)}"><i class="fa-solid fa-database"></i> Catalog Role</button></td>
+      <td class="muted">${escapeHtml(p.provider || '—')}</td>
+      <td><code>${escapeHtml(p.subject_id || '—')}</code></td>
+      <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="chip">${escapeHtml(r)}</span>`).join('')}</div></td>
+      <td><span class="chip ${p.is_active?'chip-active':'chip-off'}">${p.is_active?'Yes':'No'}</span></td>
+      <td class="table-actions"><button class="btn btn-secondary btn-xs" type="button" data-action="catalog-modal" data-id="${escapeHtml(p.id)}">Catalog role</button></td>
     </tr>`).join('');
   tb.querySelectorAll('[data-action="catalog-modal"]').forEach(b => b.addEventListener('click', () => openCatalogModal(b.dataset.id)));
 }
@@ -637,29 +816,29 @@ function filterPrincipals() {
 }
 
 // ── ROLES ──
+let _allRoles = [];
 async function loadRoles() {
   const tb = document.getElementById('roles-tbody');
-  tb.innerHTML = '<tr><td colspan="5" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  tb.innerHTML = '<tr class="empty-row"><td colspan="4" class="loader-line">Loading…</td></tr>';
   try {
     _allRoles = await apiFetch('/roles');
     renderRoles(_allRoles);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="5" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="4">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderRoles(list) {
   const tb = document.getElementById('roles-tbody');
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No roles found.</td></tr>'; return; }
+  if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="4">No roles found.</td></tr>'; return; }
   tb.innerHTML = list.map(r => `
     <tr>
       <td><strong>${escapeHtml(r.name)}</strong></td>
-      <td style="color:var(--text-dim)">${escapeHtml(r.description || '—')}</td>
-      <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="badge badge-role">${escapeHtml(p)}</span>`).join('')}</div></td>
-      <td>
-        <button class="btn btn-sm btn-danger" data-action="delete-role" data-name="${escapeHtml(r.name)}"><i class="fa-solid fa-trash"></i></button>
-      </td>
+      <td class="muted">${escapeHtml(r.description || '—')}</td>
+      <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="chip">${escapeHtml(p)}</span>`).join('')}</div></td>
+      <td class="table-actions"><button class="btn btn-danger btn-xs" type="button" data-action="delete-role" data-name="${escapeHtml(r.name)}" aria-label="Delete role">Delete</button></td>
     </tr>`).join('');
   tb.querySelectorAll('[data-action="delete-role"]').forEach(b => b.addEventListener('click', () => deleteRole(b.dataset.name)));
 }
-function openRoleModal() { document.getElementById('role-modal').classList.remove('hidden'); }
+function openRoleModal() { showModal('role-modal'); }
+function closeRoleModal() { hideModal('role-modal'); }
 async function createRole() {
   const name = document.getElementById('rm-name').value.trim();
   const description = document.getElementById('rm-desc').value.trim();
@@ -667,21 +846,22 @@ async function createRole() {
   if (!name) { toast('Role name is required.', false); return; }
   try {
     await apiFetch('/roles', { method:'POST', body: JSON.stringify({name,description,policies}) });
-    toast('Role created.'); document.getElementById('role-modal').classList.add('hidden'); loadRoles();
+    toast('Role created.'); closeRoleModal(); loadRoles();
   } catch(e) { toast(e.message, false); }
 }
 async function deleteRole(name) {
   if (!confirm(`Delete role '${name}'?`)) return;
   try {
-    await apiFetch(`/roles/${name}`, { method:'DELETE' });
+    await apiFetch(`/roles/${encodeURIComponent(name)}`, { method:'DELETE' });
     toast('Role deleted.'); loadRoles();
   } catch(e) { toast(e.message, false); }
 }
 
 // ── POLICIES ──
+let _allPolicies = [];
 async function loadPolicies() {
   const tb = document.getElementById('policies-tbody');
-  tb.innerHTML = '<tr><td colspan="7" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>';
+  tb.innerHTML = '<tr class="empty-row"><td colspan="7" class="loader-line">Loading…</td></tr>';
   try {
     let url = `/policies`;
     if (_csPolicies && _csPolicies.state.catalogId && _csPolicies.state.catalogId !== '_system_') {
@@ -689,35 +869,36 @@ async function loadPolicies() {
     }
     _allPolicies = await apiFetch(url);
     renderPolicies(_allPolicies);
-  } catch(e) { tb.innerHTML = `<tr><td colspan="7" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`; }
+  } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="7">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
 function renderPolicies(list) {
   const tb = document.getElementById('policies-tbody');
   const sys = new Set(['public_access','self_service_access','sysadmin_full_access']);
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No policies found.</td></tr>'; return; }
+  if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No policies found.</td></tr>'; return; }
   // Builds row HTML. Every user-controlled value is escaped via escapeHtml();
   // condition type checks read from a fixed allowlist (rate_limit, max_count).
   tb.innerHTML = list.map(p => {
     const conds = (p.conditions || []);
     const hasRate = conds.some(c => c.type === 'rate_limit');
     const hasQuota = conds.some(c => c.type === 'max_count');
-    const limitBadges = [
-      hasRate ? '<span class="badge" style="background:rgba(255,165,0,.15);color:#ffa500" title="Has rate_limit condition"><i class="fa-solid fa-gauge-high"></i> rate</span>' : '',
-      hasQuota ? '<span class="badge" style="background:rgba(220,53,69,.15);color:#dc3545" title="Has max_count condition"><i class="fa-solid fa-stop"></i> quota</span>' : '',
+    const limitChips = [
+      hasRate ? '<span class="chip limit-rate" title="Has rate_limit condition">rate</span>' : '',
+      hasQuota ? '<span class="chip limit-quota" title="Has max_count condition">quota</span>' : '',
     ].filter(Boolean).join(' ');
-    const ops = sys.has(p.id) ? '<span class="badge badge-sys">System</span>' : `
-        <button class="btn btn-sm" data-action="edit-policy" data-id="${escapeHtml(p.id)}" title="Edit"><i class="fa-solid fa-pen"></i></button>
-        ${(hasRate || hasQuota) ? `<button class="btn btn-sm" data-action="usage-policy" data-id="${escapeHtml(p.id)}" title="Usage"><i class="fa-solid fa-gauge-high"></i></button>` : ''}
-        <button class="btn btn-sm btn-danger" data-action="delete-policy" data-id="${escapeHtml(p.id)}" title="Delete"><i class="fa-solid fa-trash"></i></button>`;
+    const ops = sys.has(p.id) ? '<span class="chip chip-system">System</span>' : `
+        <button class="btn btn-secondary btn-xs" type="button" data-action="edit-policy" data-id="${escapeHtml(p.id)}" aria-label="Edit policy" title="Edit">Edit</button>
+        ${(hasRate || hasQuota) ? `<button class="btn btn-secondary btn-xs" type="button" data-action="usage-policy" data-id="${escapeHtml(p.id)}" aria-label="Show usage" title="Usage">Usage</button>` : ''}
+        <button class="btn btn-danger btn-xs" type="button" data-action="delete-policy" data-id="${escapeHtml(p.id)}" aria-label="Delete policy" title="Delete">Delete</button>`;
+    const effectChip = `<span class="chip effect-${escapeHtml(p.effect)}">${escapeHtml(p.effect)}</span>`;
     return `
     <tr>
-      <td><strong style="font-family:monospace">${escapeHtml(p.id)}</strong> ${limitBadges}</td>
-      <td><span class="badge" style="background:${p.effect==='ALLOW'?'rgba(63,185,80,.15)':'rgba(248,81,73,.15)'};color:${p.effect==='ALLOW'?'var(--success)':'var(--danger)'}">${escapeHtml(p.effect)}</span></td>
-      <td style="text-align:center;font-family:monospace">${escapeHtml(String(p.priority ?? 0))}</td>
-      <td><div class="chip-list">${(p.actions||[]).map(a=>`<span class="badge badge-role">${escapeHtml(a)}</span>`).join('')}</div></td>
-      <td style="font-family:monospace;font-size:0.75rem;max-width:260px;overflow:hidden;text-overflow:ellipsis">${escapeHtml((p.resources||[]).join(', '))}</td>
-      <td style="color:var(--text-dim)">${escapeHtml(p.description || '—')}</td>
-      <td>${ops}</td>
+      <td><strong><code>${escapeHtml(p.id)}</code></strong> ${limitChips}</td>
+      <td>${effectChip}</td>
+      <td class="cell-center">${escapeHtml(String(p.priority ?? 0))}</td>
+      <td><div class="chip-list">${(p.actions||[]).map(a=>`<span class="chip">${escapeHtml(a)}</span>`).join('')}</div></td>
+      <td class="cell-mono" title="${escapeHtml((p.resources||[]).join(', '))}">${escapeHtml((p.resources||[]).join(', '))}</td>
+      <td class="muted">${escapeHtml(p.description || '—')}</td>
+      <td class="table-actions"><div class="action-btns">${ops}</div></td>
     </tr>`;
   }).join('');
   tb.querySelectorAll('[data-action="delete-policy"]').forEach(b => b.addEventListener('click', () => deletePolicy(b.dataset.id)));
@@ -739,10 +920,9 @@ function filterPolicies() {
 // values pass through escapeHtml; type slugs come from a fixed allowlist
 // (CONDITION_TYPES).
 function openPolicyModal(editId) {
-  const modal = document.getElementById('policy-modal');
   const isEdit = !!editId;
   document.getElementById('pm-mode').value = isEdit ? 'edit' : 'create';
-  document.getElementById('pm-title').textContent = isEdit ? `Edit Policy — ${editId}` : 'Create Policy';
+  document.getElementById('pm-title').textContent = isEdit ? `Edit policy — ${editId}` : 'Create policy';
   document.getElementById('pm-submit-label').textContent = isEdit ? 'Save' : 'Create';
   const condWrap = document.getElementById('pm-conditions');
   condWrap.replaceChildren();
@@ -766,8 +946,9 @@ function openPolicyModal(editId) {
     document.getElementById('pm-actions').value = '';
     document.getElementById('pm-resources').value = '/my/resource/.*';
   }
-  modal.classList.remove('hidden');
+  showModal('policy-modal');
 }
+function closePolicyModal() { hideModal('policy-modal'); }
 
 const CONDITION_TYPES = ['rate_limit', 'max_count', 'time_window', 'expiration', 'match', 'custom'];
 
@@ -776,16 +957,16 @@ function _condBody(type, cfg) {
   const v = (k, d) => escapeHtml(c[k] !== undefined && c[k] !== null ? String(c[k]) : (d ?? ''));
   if (type === 'rate_limit') {
     return `
-      <div class="form-row"><label>Limit *</label><input data-k="limit" type="number" min="1" value="${v('limit','60')}"/></div>
-      <div class="form-row"><label>Window (seconds) *</label><input data-k="window_seconds" type="number" min="1" value="${v('window_seconds','60')}"/></div>
-      <div class="form-row"><label>Scope</label>
+      <div><label>Limit *</label><input data-k="limit" type="number" min="1" value="${v('limit','60')}"></div>
+      <div><label>Window (seconds) *</label><input data-k="window_seconds" type="number" min="1" value="${v('window_seconds','60')}"></div>
+      <div><label>Scope</label>
         <select data-k="scope">
           ${['principal','role','client_ip','catalog'].map(s => `<option value="${s}"${(c.scope||'principal')===s?' selected':''}>${s}</option>`).join('')}
         </select>
       </div>
-      <div class="form-row"><label>Path pattern (regex)</label><input data-k="path_pattern" placeholder="^/tiles/" value="${v('path_pattern')}"/></div>
-      <div class="form-row"><label>Methods (comma-separated, blank = any)</label><input data-k="methods" placeholder="GET, POST" value="${v('methods')}" data-array="csv"/></div>
-      <div class="form-row"><label>Mode</label>
+      <div><label>Path pattern (regex)</label><input data-k="path_pattern" placeholder="^/tiles/" value="${v('path_pattern')}"></div>
+      <div><label>Methods — csv, blank = any</label><input data-k="methods" placeholder="GET, POST" value="${v('methods')}" data-array="csv"></div>
+      <div><label>Mode</label>
         <select data-k="mode">
           ${['graceful','strict'].map(s => `<option value="${s}"${(c.mode||'graceful')===s?' selected':''}>${s}</option>`).join('')}
         </select>
@@ -793,50 +974,49 @@ function _condBody(type, cfg) {
   }
   if (type === 'max_count') {
     return `
-      <div class="form-row"><label>Limit *</label><input data-k="limit" type="number" min="1" value="${v('limit','100')}"/></div>
-      <div class="form-row"><label>Scope</label>
+      <div><label>Limit *</label><input data-k="limit" type="number" min="1" value="${v('limit','100')}"></div>
+      <div><label>Scope</label>
         <select data-k="scope">
           ${['principal','role','client_ip','catalog'].map(s => `<option value="${s}"${(c.scope||'principal')===s?' selected':''}>${s}</option>`).join('')}
         </select>
       </div>
-      <div class="form-row"><label>Path pattern (regex)</label><input data-k="path_pattern" placeholder="^/jobs/" value="${v('path_pattern')}"/></div>
-      <div class="form-row"><label>Methods (comma-separated, blank = any)</label><input data-k="methods" placeholder="POST" value="${v('methods')}" data-array="csv"/></div>
-      <div class="form-row"><label>Mode</label>
+      <div><label>Path pattern (regex)</label><input data-k="path_pattern" placeholder="^/jobs/" value="${v('path_pattern')}"></div>
+      <div><label>Methods — csv, blank = any</label><input data-k="methods" placeholder="POST" value="${v('methods')}" data-array="csv"></div>
+      <div><label>Mode</label>
         <select data-k="mode">
           ${['graceful','strict'].map(s => `<option value="${s}"${(c.mode||'graceful')===s?' selected':''}>${s}</option>`).join('')}
         </select>
       </div>
-      <p style="color:var(--text-dim);font-size:12px;margin:4px 0 0">Lifetime quota — does not auto-renew. Operators reset via the Usage panel.</p>`;
+      <p class="cond-note">Lifetime quota — does not auto-renew. Operators reset via the Usage panel.</p>`;
   }
   if (type === 'time_window') {
     return `
-      <div class="form-row"><label>Start (ISO 8601, optional)</label><input data-k="start" placeholder="2026-01-01T00:00:00Z" value="${v('start')}"/></div>
-      <div class="form-row"><label>End (ISO 8601, optional)</label><input data-k="end" placeholder="2026-12-31T23:59:59Z" value="${v('end')}"/></div>`;
+      <div><label>Start (ISO 8601, optional)</label><input data-k="start" placeholder="2026-01-01T00:00:00Z" value="${v('start')}"></div>
+      <div><label>End (ISO 8601, optional)</label><input data-k="end" placeholder="2026-12-31T23:59:59Z" value="${v('end')}"></div>`;
   }
   if (type === 'expiration') {
-    return `<div class="form-row"><label>Expires at (ISO 8601) *</label><input data-k="expires_at" placeholder="2026-12-31T23:59:59Z" value="${v('expires_at')}"/></div>`;
+    return `<div><label>Expires at (ISO 8601) *</label><input data-k="expires_at" placeholder="2026-12-31T23:59:59Z" value="${v('expires_at')}"></div>`;
   }
   if (type === 'match') {
-    return `<div class="form-row"><label>Match config (JSON)</label><textarea data-k="__json" rows="4" placeholder='{"field": "subject.tier", "equals": "premium"}'>${escapeHtml(JSON.stringify(c, null, 2) === '{}' ? '' : JSON.stringify(c, null, 2))}</textarea></div>`;
+    return `<div><label>Match config (JSON)</label><textarea data-k="__json" rows="4" placeholder='{"field": "subject.tier", "equals": "premium"}'>${escapeHtml(JSON.stringify(c, null, 2) === '{}' ? '' : JSON.stringify(c, null, 2))}</textarea></div>`;
   }
-  return `<div class="form-row"><label>Config (JSON)</label><textarea data-k="__json" rows="5" placeholder='{}'>${escapeHtml(JSON.stringify(c, null, 2) === '{}' ? '' : JSON.stringify(c, null, 2))}</textarea></div>`;
+  return `<div><label>Config (JSON)</label><textarea data-k="__json" rows="5" placeholder='{}'>${escapeHtml(JSON.stringify(c, null, 2) === '{}' ? '' : JSON.stringify(c, null, 2))}</textarea></div>`;
 }
 
 function addPolicyCondition(preset) {
   const wrap = document.getElementById('pm-conditions');
   const card = document.createElement('div');
   card.className = 'cond-card';
-  card.style.cssText = 'border:1px solid var(--border);border-radius:6px;padding:10px';
   const initialType = (preset && preset.type) || 'rate_limit';
   const initialCfg = (preset && preset.config) || {};
   const header = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-      <select class="cond-type" style="max-width:200px">
+    <div class="cond-card-head">
+      <select class="cond-type" aria-label="Condition type">
         ${CONDITION_TYPES.map(t => `<option value="${t}"${t===initialType?' selected':''}>${t}</option>`).join('')}
       </select>
-      <button class="btn btn-sm btn-danger" data-action="remove-cond"><i class="fa-solid fa-trash"></i></button>
+      <button class="btn btn-danger btn-xs" type="button" data-action="remove-cond" aria-label="Remove condition">Remove</button>
     </div>
-    <div class="cond-body">${_condBody(initialType, initialCfg)}</div>`;
+    <div class="cond-body form-stack">${_condBody(initialType, initialCfg)}</div>`;
   card.insertAdjacentHTML('beforeend', header);
   wrap.appendChild(card);
   card.querySelector('[data-action="remove-cond"]').addEventListener('click', () => card.remove());
@@ -898,7 +1078,7 @@ async function submitPolicy() {
       await apiFetch('/policies', { method:'POST', body: JSON.stringify({id, description, effect, priority, actions, resources, conditions}) });
       toast('Policy created.');
     }
-    document.getElementById('policy-modal').classList.add('hidden');
+    closePolicyModal();
     loadPolicies();
   } catch(e) { toast(e.message, false); }
 }
@@ -906,7 +1086,7 @@ async function submitPolicy() {
 async function deletePolicy(id) {
   if (!confirm(`Delete policy '${id}'?`)) return;
   try {
-    await apiFetch(`/policies/${id}`, { method:'DELETE' });
+    await apiFetch(`/policies/${encodeURIComponent(id)}`, { method:'DELETE' });
     toast('Policy deleted.'); loadPolicies();
   } catch(e) { toast(e.message, false); }
 }
@@ -917,30 +1097,31 @@ let _puState = { policyId: null, offset: 0, limit: 50, nextOffset: null };
 async function openPolicyUsage(policyId) {
   _puState = { policyId, offset: 0, limit: 50, nextOffset: null };
   document.getElementById('pu-policy-id').textContent = policyId;
-  document.getElementById('policy-usage-modal').classList.remove('hidden');
+  showModal('policy-usage-modal');
   await refreshPolicyUsage();
 }
+function closePolicyUsage() { hideModal('policy-usage-modal'); }
 
 async function refreshPolicyUsage() {
   const tb = document.getElementById('pu-tbody');
   tb.replaceChildren();
-  tb.insertAdjacentHTML('beforeend', '<tr><td colspan="6" class="loader"><i class="fa-solid fa-spinner fa-spin"></i> Loading…</td></tr>');
+  tb.insertAdjacentHTML('beforeend', '<tr class="empty-row"><td colspan="6" class="loader-line">Loading…</td></tr>');
   try {
     const qs = `?limit=${_puState.limit}&offset=${_puState.offset}`;
     const page = await apiFetch(`/policies/${encodeURIComponent(_puState.policyId)}/usage${qs}`);
     _puState.nextOffset = page.next_offset;
     tb.replaceChildren();
     if (!page.rows.length) {
-      tb.insertAdjacentHTML('beforeend', '<tr><td colspan="6" class="empty">No counter rows.</td></tr>');
+      tb.insertAdjacentHTML('beforeend', '<tr class="empty-row"><td colspan="6">No counter rows.</td></tr>');
     } else {
       const rows = page.rows.map(r => `
         <tr>
-          <td style="font-family:monospace">${escapeHtml(r.principal_key)}</td>
+          <td><code>${escapeHtml(r.principal_key)}</code></td>
           <td><strong>${escapeHtml(String(r.count))}</strong></td>
-          <td style="color:var(--text-dim);font-size:12px">${escapeHtml(r.window_start || '—')}</td>
-          <td style="color:var(--text-dim);font-size:12px">${escapeHtml(r.expires_at || '—')}</td>
-          <td style="color:var(--text-dim);font-size:12px">${escapeHtml(r.last_seen_at || '—')}</td>
-          <td><button class="btn btn-sm btn-danger" data-action="reset-usage" data-key="${escapeHtml(r.principal_key)}"><i class="fa-solid fa-rotate-left"></i> Reset</button></td>
+          <td class="muted">${escapeHtml(r.window_start || '—')}</td>
+          <td class="muted">${escapeHtml(r.expires_at || '—')}</td>
+          <td class="muted">${escapeHtml(r.last_seen_at || '—')}</td>
+          <td class="table-actions"><button class="btn btn-danger btn-xs" type="button" data-action="reset-usage" data-key="${escapeHtml(r.principal_key)}" aria-label="Reset counter">Reset</button></td>
         </tr>`).join('');
       tb.insertAdjacentHTML('beforeend', rows);
       tb.querySelectorAll('[data-action="reset-usage"]').forEach(b => b.addEventListener('click', () => resetPolicyUsage(b.dataset.key)));
@@ -950,7 +1131,7 @@ async function refreshPolicyUsage() {
     document.getElementById('pu-paging').textContent = `Offset ${_puState.offset}${_puState.nextOffset !== null ? ' — more available' : ''}`;
   } catch (e) {
     tb.replaceChildren();
-    tb.insertAdjacentHTML('beforeend', `<tr><td colspan="6" class="empty">Error: ${escapeHtml(e.message)}</td></tr>`);
+    tb.insertAdjacentHTML('beforeend', `<tr class="empty-row"><td colspan="6">Error: ${escapeHtml(e.message)}</td></tr>`);
   }
 }
 
@@ -969,33 +1150,69 @@ async function resetPolicyUsage(principalKey) {
   } catch (e) { toast(e.message, false); }
 }
 
-// Initial load
+// ── Wire-up (no inline onclick handlers; tabs use data-tab) ──
 let _csPolicies = null;
 document.addEventListener('DOMContentLoaded', () => {
-  _csPolicies = new ContextSelector({
-    containerId: 'cs-policies-container',
-    enableCollection: false,
-    enableSearch: true,
-    onChange: () => {
-      if (document.getElementById('tab-policies').classList.contains('active')) {
-        loadPolicies();
-      }
-    }
+  // Tabs
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.addEventListener('click', () => switchTab(b.dataset.tab));
   });
-  
-  _csPolicies = new ContextSelector({
-    containerId: 'cs-policies-container',
-    enableCollection: false,
-    enableSearch: true,
-    onChange: () => {
-      if (document.getElementById('tab-policies').classList.contains('active')) {
-        loadPolicies();
-      }
-    }
-  });
-});
-loadUsers();
 
-</script>
+  // Toolbar buttons
+  document.getElementById('btn-new-user').addEventListener('click', openUserModal);
+  document.getElementById('btn-refresh-users').addEventListener('click', loadUsers);
+  document.getElementById('user-search').addEventListener('input', filterUsers);
+
+  document.getElementById('btn-refresh-principals').addEventListener('click', loadPrincipals);
+  document.getElementById('principal-search').addEventListener('input', filterPrincipals);
+
+  document.getElementById('btn-new-role').addEventListener('click', openRoleModal);
+  document.getElementById('btn-refresh-roles').addEventListener('click', loadRoles);
+
+  document.getElementById('btn-new-policy').addEventListener('click', () => openPolicyModal());
+  document.getElementById('btn-refresh-policies').addEventListener('click', loadPolicies);
+  document.getElementById('policy-search').addEventListener('input', filterPolicies);
+
+  document.getElementById('cp-catalog-select').addEventListener('change', loadCatalogUsers);
+  document.getElementById('cp-grant-btn').addEventListener('click', () => openCatalogGrantModal());
+  document.getElementById('btn-refresh-cp').addEventListener('click', loadCatalogUsers);
+
+  // Modal action buttons
+  document.getElementById('btn-cancel-user').addEventListener('click', closeUserModal);
+  document.getElementById('btn-submit-user').addEventListener('click', createUser);
+
+  document.getElementById('btn-cancel-catalog').addEventListener('click', closeCatalogModal);
+  document.getElementById('btn-submit-catalog').addEventListener('click', assignCatalogRole);
+
+  document.getElementById('btn-cancel-catalog-grant').addEventListener('click', closeCatalogGrantModal);
+  document.getElementById('btn-submit-catalog-grant').addEventListener('click', submitCatalogGrant);
+
+  document.getElementById('btn-cancel-role').addEventListener('click', closeRoleModal);
+  document.getElementById('btn-submit-role').addEventListener('click', createRole);
+
+  document.getElementById('btn-cancel-policy').addEventListener('click', closePolicyModal);
+  document.getElementById('btn-submit-policy').addEventListener('click', submitPolicy);
+  document.getElementById('btn-add-cond').addEventListener('click', () => addPolicyCondition());
+
+  document.getElementById('btn-close-pu').addEventListener('click', closePolicyUsage);
+  document.getElementById('btn-refresh-pu').addEventListener('click', refreshPolicyUsage);
+  document.getElementById('pu-prev').addEventListener('click', () => pageUsage(-1));
+  document.getElementById('pu-next').addEventListener('click', () => pageUsage(1));
+
+  _csPolicies = new ContextSelector({
+    containerId: 'cs-policies-container',
+    enableCollection: false,
+    enableSearch: true,
+    onChange: () => {
+      if (document.getElementById('tab-policies').classList.contains('active')) {
+        loadPolicies();
+      }
+    }
+  });
+
+  // Initial tab
+  loadUsers();
+});
+  </script>
 </body>
 </html>
