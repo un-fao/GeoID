@@ -274,7 +274,17 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             None,
             description=(
                 "Comma-separated property names; unknown name → 400, empty "
-                "value strips all attribute properties."
+                "value strips all attribute properties. Orthogonal to "
+                "``skipGeometry``."
+            ),
+        ),
+        skip_geometry: bool = Query(
+            False,
+            alias="skipGeometry",
+            description=(
+                "When true, returned records carry ``geometry: null`` and "
+                "the resolved driver omits the geometry from its projection. "
+                "De-facto pygeoapi convention. Default: false."
             ),
         ),
         sortby: Optional[str] = Query(None, description="Sort order (e.g., '-title,+created')."),
@@ -383,6 +393,9 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 request=request,
             )
 
+        # ``skipGeometry`` coercion for unit-test direct calls (Query sentinel).
+        skip_geom_bool = bool(skip_geometry) if isinstance(skip_geometry, bool) else False
+
         request_obj = parse_ogc_query_request(
             bbox=None,
             datetime_param=None,
@@ -394,6 +407,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             filter_lang=fl_normalised,
             filter_crs_srid=filter_crs_srid,
             select_fields=select_fields,
+            skip_geometry=skip_geom_bool,
         )
 
         # Free-text search — add as CQL2 LIKE filter on title if present
@@ -443,6 +457,18 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                     for key in list(props.keys()):
                         if key not in projection_set:
                             props.pop(key, None)
+            # ``Record`` already emits ``geometry: null`` by construction
+            # (records_generator builds ``rm.Record(geometry=None, ...)``),
+            # so ``skip_geometry`` is mainly a hint to the driver layer here
+            # (PG drops the geom SELECT, ES adds ``geometry`` to
+            # ``_source.excludes``). The Feature-level normalisation below
+            # keeps the contract honest if the generator ever evolves to
+            # carry a geometry.
+            if skip_geom_bool and hasattr(feature, "geometry"):
+                try:
+                    feature.geometry = None
+                except Exception:
+                    pass
             records.append(gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config, read_policy=read_policy))
 
         # Pagination links

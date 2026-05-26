@@ -125,6 +125,7 @@ def _call_get_records(svc, **overrides):
         filter_lang="cql2-text",
         filter_crs=None,
         properties=None,
+        skip_geometry=False,
         sortby=None,
         q=None,
     )
@@ -189,3 +190,32 @@ async def test_records_filter_lang_invalid_400(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         await _call_get_records(svc, filter="x=1", filter_lang="ecql")
     assert excinfo.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# ``skipGeometry`` — service threads it onto QueryRequest
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_records_skip_geometry_threaded(monkeypatch):
+    """``skipGeometry=true`` lands on ``QueryRequest.skip_geometry`` so the
+    driver layer can push the projection down."""
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_records(svc, skip_geometry=True)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is True
+
+
+@pytest.mark.asyncio
+async def test_records_skip_geometry_default_false(monkeypatch):
+    svc = RecordsService.__new__(RecordsService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_records(svc)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is False

@@ -326,6 +326,19 @@ class QueryRequest(BaseModel):
             "``feature_id_expr = ANY(:_item_ids)``."
         ),
     )
+    skip_geometry: bool = Field(
+        default=False,
+        description=(
+            "When True, the resolved driver must omit the geometry column "
+            "from its projection — PG drops the ``geom`` SELECT; ES pushes "
+            "down ``_source.excludes=['geometry']``; the service layer "
+            "normalises the emitted Feature's ``geometry`` to ``null``. "
+            "Set from the OGC API Features de-facto ``skipGeometry`` query "
+            "parameter (pygeoapi convention). Orthogonal to ``select`` — "
+            "``select`` narrows Feature.properties, ``skip_geometry`` "
+            "controls Feature.geometry."
+        ),
+    )
 
     @field_validator("select")
     @classmethod

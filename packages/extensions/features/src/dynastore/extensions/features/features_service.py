@@ -911,7 +911,21 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 "property of the collection — unknown names return HTTP 400. "
                 "An empty value (``?properties=``) returns only the "
                 "OGC-mandatory fields (id, geometry, type, links). "
-                "Omitted = all properties returned."
+                "Omitted = all properties returned. Orthogonal to "
+                "``skipGeometry``: ``properties`` narrows Feature.properties, "
+                "``skipGeometry`` controls Feature.geometry. ``geom`` is not "
+                "an accepted ``properties`` name."
+            ),
+        ),
+        skip_geometry: bool = Query(
+            False,
+            alias="skipGeometry",
+            description=(
+                "When true, the returned Features carry ``geometry: null`` "
+                "and the resolved driver omits the geometry from its "
+                "projection (PG drops the SELECT, ES adds ``geometry`` to "
+                "``_source.excludes``). De-facto pygeoapi convention. "
+                "Default: false."
             ),
         ),
         crs: Optional[str] = Query(None, description="CRS URI for output geometry."),
@@ -1079,6 +1093,11 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                     request=request,
                 )
 
+            # ``skipGeometry`` may arrive as a literal ``Query(...)`` sentinel
+            # in direct unit-test calls — coerce non-bools to the documented
+            # default before plumbing.
+            skip_geom_bool = bool(skip_geometry) if isinstance(skip_geometry, bool) else False
+
             request_obj = parse_ogc_query_request(
                 bbox=bbox,
                 datetime_param=datetime_param,
@@ -1092,6 +1111,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 filter_lang=fl_normalised,
                 filter_crs_srid=filter_crs_srid,
                 select_fields=select_fields,
+                skip_geometry=skip_geom_bool,
             )
 
             # Execute search via protocol (streaming)
@@ -1142,9 +1162,11 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             # Resolve the projection set once per request. The post-fetch
             # narrowing is the universal fallback for drivers that do not
             # honour ``QueryRequest.select`` (e.g. Elasticsearch returns the
-            # whole ``_source``) and for nested ``properties.foo`` paths that
-            # the SQL projection cannot narrow. The driver-layer ``select``
-            # threaded above remains the fast path for PG.
+            # whole ``_source`` when the index has no source-filter mapping)
+            # and for nested ``properties.foo`` paths that the SQL projection
+            # cannot narrow. The driver-layer ``select`` threaded above
+            # remains the fast path for PG; the ES driver pushes the same
+            # projection down via ``_source.includes/excludes``.
             _projection_set: Optional[set] = None
             if select_fields is not None:
                 _projection_set = set(select_fields)
@@ -1162,6 +1184,16 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                             for key in list(feature.properties.keys()):
                                 if key not in _projection_set:
                                     feature.properties.pop(key, None)
+
+                    # ``skipGeometry`` normalises Feature.geometry to ``null``
+                    # at the service boundary. PG already drops the SELECT and
+                    # ES adds ``geometry`` to ``_source.excludes``, so this is
+                    # the safety net for hits that arrived from any path that
+                    # missed the push-down (multi-driver pipelines, mocks, or
+                    # cached/legacy index shapes). RFC 7946 explicitly permits
+                    # ``"geometry": null`` on a Feature.
+                    if skip_geom_bool:
+                        feature.geometry = None
 
                     # Add OGC self/collection links
                     feature_id = feature.id

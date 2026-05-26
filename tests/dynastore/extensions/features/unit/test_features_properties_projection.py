@@ -59,11 +59,15 @@ def _make_request(
     return Request(scope)
 
 
-def _feature(fid: str, props: Optional[Dict[str, Any]] = None) -> _OGCFeature:
+def _feature(
+    fid: str,
+    props: Optional[Dict[str, Any]] = None,
+    geometry: Optional[Dict[str, Any]] = None,
+) -> _OGCFeature:
     return _OGCFeature(
         type="Feature",
         id=fid,
-        geometry=None,
+        geometry=geometry,
         properties=props if props is not None else {
             "title": fid,
             "rainfall_mm": 12.3,
@@ -170,6 +174,7 @@ def _call_get_items(svc, **overrides):
         filter_lang="cql2-text",
         filter_crs=None,
         properties=None,
+        skip_geometry=False,
         crs=None,
         bbox_crs=None,
         sortby=None,
@@ -362,3 +367,225 @@ def test_parse_cql2_json_translator_runs():
     )
     assert "title" in where.lower()
     assert "x" in list(params.values())
+
+
+# ---------------------------------------------------------------------------
+# 4. ``skipGeometry`` query parameter — service layer
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_GEOM = {"type": "Point", "coordinates": [10.0, 20.0]}
+
+
+@pytest.mark.asyncio
+async def test_skip_geometry_true_emits_null_geometry(monkeypatch):
+    """``skipGeometry=true`` → emitted Feature.geometry is ``null``."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(
+        stream_features=[_feature("f-1", geometry=_SAMPLE_GEOM)],
+        total=1,
+    )
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, skip_geometry=True)
+    body = json.loads(await _read_body(resp))
+    feat = body["features"][0]
+    # RFC 7946 permits ``geometry: null`` on a Feature; we emit it explicitly
+    # rather than dropping the key.
+    assert "geometry" in feat
+    assert feat["geometry"] is None
+
+
+@pytest.mark.asyncio
+async def test_skip_geometry_false_preserves_geometry(monkeypatch):
+    """Default (``skipGeometry=false``) leaves Feature.geometry intact."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(
+        stream_features=[_feature("f-1", geometry=_SAMPLE_GEOM)],
+        total=1,
+    )
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, skip_geometry=False)
+    body = json.loads(await _read_body(resp))
+    feat = body["features"][0]
+    assert feat["geometry"] is not None
+    assert feat["geometry"]["type"] == "Point"
+
+
+@pytest.mark.asyncio
+async def test_skip_geometry_threaded_into_query_request(monkeypatch):
+    """``skipGeometry=true`` lands on ``QueryRequest.skip_geometry`` so the
+    driver layer can push the projection down (PG drops SELECT geom; ES adds
+    ``geometry`` to ``_source.excludes``)."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(stream_features=[], total=0)
+    _wire(monkeypatch, svc, catalogs)
+
+    await _call_get_items(svc, skip_geometry=True)
+    assert catalogs.last_request is not None
+    assert catalogs.last_request.skip_geometry is True
+
+
+@pytest.mark.asyncio
+async def test_skip_geometry_composes_with_properties(monkeypatch):
+    """``skipGeometry=true`` + ``properties=`` compose: both projections apply,
+    geometry is nulled out and only the requested attributes survive."""
+    svc = OGCFeaturesService.__new__(OGCFeaturesService)
+    catalogs = _FakeCatalogs(
+        stream_features=[_feature("f-1", geometry=_SAMPLE_GEOM)],
+        total=1,
+    )
+    _wire(monkeypatch, svc, catalogs)
+
+    resp = await _call_get_items(svc, properties="title", skip_geometry=True)
+    body = json.loads(await _read_body(resp))
+    feat = body["features"][0]
+    assert feat["geometry"] is None
+    assert set(feat["properties"].keys()) == {"title"}
+
+
+# ---------------------------------------------------------------------------
+# 5. ``skipGeometry`` — PG and ES driver push-down (unit tests, no DB / no ES)
+# ---------------------------------------------------------------------------
+
+
+def test_skip_geometry_threaded_through_parse_ogc_query_request():
+    """The shared OGC parser threads ``skip_geometry`` onto the QueryRequest."""
+    from dynastore.extensions.tools.query import parse_ogc_query_request
+
+    req = parse_ogc_query_request(skip_geometry=True)
+    assert req.skip_geometry is True
+
+    req2 = parse_ogc_query_request()
+    assert req2.skip_geometry is False
+
+
+def test_pg_geometries_sidecar_omits_geom_when_skip_geometry_true():
+    """The PG ``geometries`` sidecar's ``get_select_fields`` must NOT emit a
+    SELECT for the geometry column when the request carries
+    ``skip_geometry=True``. This is the PG SELECT-projection push-down — the
+    column never leaves the database.
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.geometries import (
+        GeometriesSidecar,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
+        GeometriesSidecarConfig,
+    )
+    from dynastore.models.query_builder import QueryRequest, FieldSelection
+
+    cfg = GeometriesSidecarConfig()
+    sc = GeometriesSidecar(cfg)
+
+    # Helper: did the SELECT list include the MAIN geom column (not bbox_geom,
+    # not h3/s2, not stats)? The marker pattern is the ST_AsGeoJSON alias
+    # ``as <geom_column>`` at end of the expression.
+    geom_alias = f" as {cfg.geom_column}"
+
+    # Selective mode: skip_geometry=True suppresses the main-geom SELECT.
+    req_skip = QueryRequest(
+        select=[FieldSelection(field="*")],
+        skip_geometry=True,
+    )
+    selects_skip = sc.get_select_fields(request=req_skip, sidecar_alias="sc_g")
+    assert not any(s.endswith(geom_alias) for s in selects_skip), (
+        f"expected no main-geom SELECT with skip_geometry=True, got {selects_skip!r}"
+    )
+
+    # Selective mode: skip_geometry=False keeps the main-geom SELECT.
+    req_keep = QueryRequest(
+        select=[FieldSelection(field="*")],
+        skip_geometry=False,
+    )
+    selects_keep = sc.get_select_fields(request=req_keep, sidecar_alias="sc_g")
+    assert any(s.endswith(geom_alias) for s in selects_keep), (
+        f"expected main-geom SELECT with skip_geometry=False, got {selects_keep!r}"
+    )
+
+    # Full mode (include_all=True) — also honours skip_geometry.
+    selects_full_skip = sc.get_select_fields(
+        request=req_skip, sidecar_alias="sc_g", include_all=True,
+    )
+    assert not any(s.endswith(geom_alias) for s in selects_full_skip)
+
+
+def test_es_source_filter_excludes_geometry_when_skip_geometry_true():
+    """The ES items driver pushes ``skip_geometry`` down to the search body as
+    ``_source.excludes=['geometry']`` so ES never returns the geometry bytes
+    over the wire.
+    """
+    from dynastore.modules.storage.drivers.elasticsearch import (
+        _ItemsElasticsearchBase,
+    )
+    from dynastore.modules.elasticsearch.items_query import (
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    from dynastore.models.query_builder import QueryRequest
+
+    req = QueryRequest(skip_geometry=True)
+    body, params = _ItemsElasticsearchBase._build_read_search_body(
+        collection_id="col",
+        request=req,
+        limit=10,
+        offset=0,
+        fields=PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert "_source" in body
+    assert "geometry" in body["_source"].get("excludes", [])
+
+
+def test_es_source_filter_includes_selected_properties():
+    """With an explicit ``select`` the ES body must carry
+    ``_source.includes`` listing the requested property paths (under
+    ``properties.*`` / ``properties.extras.*``) plus the GeoJSON/STAC
+    structural members so the doc round-trips through
+    ``unproject_item_from_es``.
+    """
+    from dynastore.modules.storage.drivers.elasticsearch import (
+        _ItemsElasticsearchBase,
+    )
+    from dynastore.modules.elasticsearch.items_query import (
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    from dynastore.models.query_builder import QueryRequest, FieldSelection
+
+    req = QueryRequest(select=[FieldSelection(field="title"), FieldSelection(field="country")])
+    body, _params = _ItemsElasticsearchBase._build_read_search_body(
+        collection_id="col",
+        request=req,
+        limit=10,
+        offset=0,
+        fields=PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert "_source" in body
+    includes = body["_source"].get("includes", [])
+    # Structural members the round-trip needs.
+    assert "id" in includes
+    assert "geometry" in includes  # not skipped → present
+    # Requested property paths threaded under properties.* and extras.*.
+    assert "properties.title" in includes
+    assert "properties.extras.title" in includes
+    assert "properties.country" in includes
+
+
+def test_es_source_filter_default_is_unset():
+    """A plain browse (``select=[*]``, ``skip_geometry=False``) must NOT add a
+    ``_source`` clause — ES returns the whole document as before."""
+    from dynastore.modules.storage.drivers.elasticsearch import (
+        _ItemsElasticsearchBase,
+    )
+    from dynastore.modules.elasticsearch.items_query import (
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    from dynastore.models.query_builder import QueryRequest
+
+    req = QueryRequest()  # defaults: select=[*], skip_geometry=False
+    body, _params = _ItemsElasticsearchBase._build_read_search_body(
+        collection_id="col",
+        request=req,
+        limit=10,
+        offset=0,
+        fields=PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert "_source" not in body

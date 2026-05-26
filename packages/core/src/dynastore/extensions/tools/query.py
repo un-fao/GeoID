@@ -314,6 +314,7 @@ def parse_ogc_query_request(
     filter_lang: str = "cql2-text",
     filter_crs_srid: Optional[int] = None,
     select_fields: Optional[List[str]] = None,
+    skip_geometry: bool = False,
 ) -> QueryRequest:
     """
     Unifies OGC parameter parsing into a structured QueryRequest.
@@ -341,6 +342,7 @@ def parse_ogc_query_request(
         filters=[],
         filter_lang=filter_lang,
         filter_crs_srid=filter_crs_srid,
+        skip_geometry=skip_geometry,
         **({"select": select} if select is not None else {}),
     )
 
