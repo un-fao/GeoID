@@ -64,6 +64,19 @@ register_preset(DefaultsPostgresPreset())
 register_preset(PrivateCollectionPreset())
 register_preset(ItemsEsPrivatePreset())
 
+# Curated composite presets — imported after all routing presets so their
+# children are already registered when the composites/__init__.py runs.
+# The composites subpackage handles its own graceful-degradation: a missing
+# child (e.g. IAM extension not installed) logs an info line and skips that
+# composite without raising.
+try:
+    from . import composites as composites  # noqa: F401
+except Exception:  # noqa: BLE001
+    import logging as _logging
+    _logging.getLogger(__name__).info(
+        "presets.composites subpackage failed to import — no composites registered"
+    )
+
 __all__ = [
     "AppliedDescriptor",
     "CompositePreset",
