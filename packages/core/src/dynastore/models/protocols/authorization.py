@@ -422,6 +422,33 @@ class IamScaleConfig(PluginConfig):
             "Valkey memory."
         ),
     )
+    compiled_rule_cache_ttl_seconds: Mutable[int] = Field(
+        default=60,
+        ge=1,
+        description=(
+            "TTL (seconds) for the per-process compiled-policy cache "
+            "(``PolicyService.get_effective_policies``). The cache key already "
+            "includes the per-schema binding-version counter, so a writer's "
+            "``bump_binding_version`` causes immediate cross-pod invalidation "
+            "on the next read — this TTL is the backstop that bounds staleness "
+            "if a bump failed to land or a pod missed the version bump (e.g. "
+            "the distributed backend was briefly unreachable). 60s mirrors the "
+            "L1 tier cap on the resolution cache; lower for stricter freshness "
+            "at the cost of more DB list_policies round-trips on cold reads."
+        ),
+    )
+    compiled_rule_cache_maxsize: Mutable[int] = Field(
+        default=1024,
+        ge=1,
+        description=(
+            "Per-process maximum number of compiled-policy cache entries. The "
+            "cache key is ``(partition_key, schema, rule_version)`` so a "
+            "high-multitenant deployment with many catalogs may want a larger "
+            "value (memory-cheap — each entry is a ``List[Policy]`` bounded by "
+            "the per-partition policy count). Default 1024 matches the rest "
+            "of the cache decorator defaults."
+        ),
+    )
 
 
 @runtime_checkable

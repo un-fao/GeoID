@@ -25,7 +25,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Tuple, Any, Dict, cast
 from uuid import UUID
-from dynastore.tools.cache import cached
+from dynastore.modules.iam.compiled_rule_cache import (
+    get_compiled_rule_cache,
+    get_ttl_seconds,
+    iam_rule_version_async,
+)
 from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.models.protocols.access_filter import (
     AccessClause,
@@ -282,13 +286,16 @@ class PolicyService:
         return pattern[:32]
 
     def invalidate_cache(self):
-        """Invalidates the evaluation cache."""
+        """Invalidates the compiled-policy cache.
+
+        Local in-process drop only — cross-pod invalidation rides on the
+        per-schema binding-version counter (see
+        :mod:`dynastore.modules.iam.compiled_rule_cache`). The storage layer
+        already bumps that counter on every CRUD path, so a sibling pod
+        sees the change on the next read via the version-keyed cache miss.
+        """
         try:
-            # Clear the @cached cache for get_effective_policies
-            cast(Any, self.get_effective_policies).cache_clear()
-        except AttributeError:
-            # In case the decorator is missing or hasn't finished wrapping
-            pass
+            get_compiled_rule_cache().clear()
         except Exception as e:
             logger.error(f"Failed to clear policy cache: {e}")
 
@@ -729,14 +736,36 @@ class PolicyService:
 
     # --- Evaluation ---
 
-    @cached(maxsize=512, namespace="policies")
     async def get_effective_policies(
         self, partition_key: str, schema: str
     ) -> List[Policy]:
-        """Caches policy sets per partition/schema."""
-        return await self.storage.list_policies(
-            partition_key=partition_key, limit=1000, schema=schema
+        """Return the policy set for a partition/schema, TTL- and version-cached.
+
+        The cache key is ``(partition_key, schema, rule_version)``. The
+        rule_version comes from the shared per-schema binding-version
+        counter (see :mod:`dynastore.modules.iam.compiled_rule_cache`),
+        which every IAM CRUD writer already bumps via the storage layer
+        — so a mutation on any pod causes a key-miss on every pod's next
+        read, no pub/sub required. A TTL (config-driven via
+        :attr:`IamScaleConfig.compiled_rule_cache_ttl_seconds`) backstops
+        the case where the counter is briefly unreachable.
+        """
+        rule_version = await iam_rule_version_async(schema)
+        cache = get_compiled_rule_cache()
+        ttl = get_ttl_seconds()
+
+        async def _compile() -> List[Policy]:
+            return await self.storage.list_policies(
+                partition_key=partition_key, limit=1000, schema=schema
+            )
+
+        value, _ = await cache.get_or_compute(
+            key=(partition_key, schema),
+            compute=_compile,
+            ttl_seconds=ttl,
+            rule_version=rule_version,
         )
+        return value
 
     async def evaluate_policy_statements(
         self, policy: PolicyBundle, method: str, path: str, request_context: Any = None

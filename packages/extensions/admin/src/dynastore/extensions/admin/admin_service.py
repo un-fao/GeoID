@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.modules import get_protocol
+from dynastore.modules.iam.compiled_rule_cache import iam_rule_version
 from dynastore.modules.iam.iam_service import IamService
 from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.models.protocols.catalogs import CatalogsProtocol
@@ -1452,7 +1453,12 @@ class AdminService(ExtensionProtocol):
             decision_reason=collector.decision_reason or _reason,
             deny_precedence_applied=collector.deny_precedence_applied,
             grants_considered=grants_considered,
-            compiled_rule_version=None,
+            # Stamp the rule version the cache layer is currently serving
+            # so the operator can see whether the explainer's verdict came
+            # off a fresh or stale view (the version moves on every IAM
+            # CRUD bump, so two consecutive explains across a write should
+            # show different values).
+            compiled_rule_version=str(iam_rule_version()),
         )
 
     # ---- Collection-scope bindings (#1342 — generic role|policy grant
