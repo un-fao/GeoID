@@ -94,13 +94,17 @@ async def test_stac_link_verification_scenario(sysadmin_in_process_client):
     assert items_data["numberMatched"] == 0
 
     # --- Step 7: Create Item ---
-    item_id = "test_item_01"
+    # Per #1212, ``feature.id`` defaults to the system-assigned geoid: the
+    # caller-supplied ``"test_item_01"`` is replaced. Capture the returned id
+    # so the follow-up GET hits the right row (the read path resolves the
+    # path id against ``geoid``, which is UUID-typed — passing the old
+    # non-UUID caller id raises ``DataError`` at the binder).
     create_item = await client.post(
         f"/stac/catalogs/{cat_id}/collections/{col_id}/items",
         json={
             "type": "Feature",
             "stac_version": "1.0.0",
-            "id": item_id,
+            "id": "test_item_01",
             "bbox": [0.0, 0.0, 0.0, 0.0],
             "geometry": {"type": "Point", "coordinates": [0, 0]},
             "properties": {"datetime": "2024-01-01T00:00:00Z"},
@@ -112,10 +116,11 @@ async def test_stac_link_verification_scenario(sysadmin_in_process_client):
         print(f"Item creation failed with {create_item.status_code}")
         print(f"Response: {create_item.text}")
     assert create_item.status_code == 201
+    returned_item_id = create_item.json()["id"]
 
     # --- Step 8: Get Single Item (Verify links) ---
     res_item = await client.get(
-        f"/stac/catalogs/{cat_id}/collections/{col_id}/items/{item_id}"
+        f"/stac/catalogs/{cat_id}/collections/{col_id}/items/{returned_item_id}"
     )
     assert res_item.status_code == 200
     item = res_item.json()
@@ -125,5 +130,5 @@ async def test_stac_link_verification_scenario(sysadmin_in_process_client):
     assert "parent" in item_links
     assert "collection" in item_links
 
-    assert item_links["self"]["href"].endswith(f"/items/{item_id}")
+    assert item_links["self"]["href"].endswith(f"/items/{returned_item_id}")
     assert item_links["parent"]["href"].endswith(f"/collections/{col_id}")
