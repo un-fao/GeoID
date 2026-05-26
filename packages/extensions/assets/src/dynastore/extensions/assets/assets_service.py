@@ -62,6 +62,7 @@ from dynastore.modules.catalog.asset_service import (
     AssetKind,
     AssetStatus,
     AssetUpdate,
+    AssetPatchBody,
     AssetUploadDefinition,
     AssetReference,
     AssetReferencedError,
@@ -308,10 +309,17 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets/{asset_id}",
-            self.update_catalog_asset,
+            self.patch_catalog_asset,
             methods=["PATCH"],
             response_model=Asset,
             summary="Update Asset (partial)",
+            description=(
+                "Partial update via **RFC 7396 JSON Merge Patch**. The only "
+                "patchable top-level key is `metadata`; inside it, keys absent "
+                "from the patch are preserved, a key set to `null` is removed, "
+                "and nested objects are deep-merged. Lists and scalars replace. "
+                "Use `PUT` to replace `metadata` wholesale."
+            ),
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/assets/{asset_id}",
@@ -369,10 +377,17 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}",
-            self.update_collection_asset,
+            self.patch_collection_asset,
             methods=["PATCH"],
             response_model=Asset,
             summary="Update Collection Asset (partial)",
+            description=(
+                "Partial update via **RFC 7396 JSON Merge Patch**. The only "
+                "patchable top-level key is `metadata`; inside it, keys absent "
+                "from the patch are preserved, a key set to `null` is removed, "
+                "and nested objects are deep-merged. Lists and scalars replace. "
+                "Use `PUT` to replace `metadata` wholesale."
+            ),
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}",
@@ -749,6 +764,21 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
 
+    async def patch_catalog_asset(
+        self,
+        patch: AssetPatchBody,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+    ):
+        """RFC 7396 JSON Merge Patch over an asset's ``metadata``."""
+        await require_catalog_ready(catalog_id)
+        try:
+            return await self.assets.patch_asset(
+                catalog_id=catalog_id, asset_id=asset_id, patch=patch,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
 
     async def delete_catalog_asset_by_id(
         self,
@@ -902,6 +932,25 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 catalog_id=catalog_id,
                 asset_id=asset_id,
                 update=asset_in,
+                collection_id=collection_id,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    async def patch_collection_asset(
+        self,
+        patch: AssetPatchBody,
+        catalog_id: str = Path(..., description="The catalog ID"),
+        collection_id: str = Path(..., description="The collection ID"),
+        asset_id: str = Path(..., description="The asset ID"),
+    ):
+        """RFC 7396 JSON Merge Patch over a collection asset's ``metadata``."""
+        await require_catalog_ready(catalog_id)
+        try:
+            return await self.assets.patch_asset(
+                catalog_id=catalog_id,
+                asset_id=asset_id,
+                patch=patch,
                 collection_id=collection_id,
             )
         except ValueError as e:

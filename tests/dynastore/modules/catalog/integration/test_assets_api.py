@@ -133,3 +133,90 @@ async def test_assets_api_crud(
 
     finally:
         await catalogs.delete_catalog(catalog_id, force=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.enable_extensions("assets")
+async def test_assets_patch_merge_preserves_siblings(
+    sysadmin_in_process_client,
+    catalog_obj,
+    catalog_id,
+    collection_obj,
+    collection_id,
+):
+    """Regression for the gdalinfo-clobber bug.
+
+    PATCH must deep-merge ``metadata`` (RFC 7396): a user editing
+    ``metadata.title`` MUST NOT wipe sibling keys (e.g. ``gdalinfo``)
+    injected by other writers. Setting a key to ``null`` removes it.
+    """
+    client = sysadmin_in_process_client
+    catalogs = get_protocol(CatalogsProtocol)
+
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await catalogs.create_catalog(catalog_obj)
+    await catalogs.create_collection(catalog_id, collection_obj)
+
+    try:
+        asset_id = f"PATCH_MERGE_{generate_test_id()}"
+        create_payload = {
+            "asset_id": asset_id,
+            "filename": "raster.tif",
+            "uri": "gs://bucket/raster.tif",
+            "asset_type": "RASTER",
+            "metadata": {
+                "title": "original",
+                "description": "",
+                "gdalinfo": {
+                    "size": [4096, 4096],
+                    "bands": [{"type": "Byte", "noDataValue": 0}],
+                },
+            },
+        }
+        resp = await client.post(
+            f"/assets/catalogs/{catalog_id}/collections/{collection_id}",
+            json=create_payload,
+        )
+        assert resp.status_code == 201
+
+        base = f"/assets/catalogs/{catalog_id}/collections/{collection_id}/assets/{asset_id}"
+
+        # 1. PATCH only metadata.title — gdalinfo must survive.
+        resp = await client.patch(base, json={"metadata": {"title": "new title"}})
+        assert resp.status_code == 200, resp.text
+        meta = resp.json()["metadata"]
+        assert meta["title"] == "new title"
+        assert meta["description"] == ""
+        assert meta["gdalinfo"]["size"] == [4096, 4096]
+        assert meta["gdalinfo"]["bands"] == [{"type": "Byte", "noDataValue": 0}]
+
+        # 2. Null on a key removes it.
+        resp = await client.patch(base, json={"metadata": {"description": None}})
+        assert resp.status_code == 200
+        meta = resp.json()["metadata"]
+        assert "description" not in meta
+        assert "gdalinfo" in meta
+
+        # 3. Nested PATCH merges inside gdalinfo, doesn't replace it.
+        resp = await client.patch(base, json={"metadata": {"gdalinfo": {"crs": "EPSG:4326"}}})
+        assert resp.status_code == 200
+        gi = resp.json()["metadata"]["gdalinfo"]
+        assert gi["size"] == [4096, 4096]  # untouched
+        assert gi["crs"] == "EPSG:4326"     # added
+
+        # 4. Empty PATCH body is a no-op (idempotent).
+        resp = await client.patch(base, json={})
+        assert resp.status_code == 200
+        assert resp.json()["metadata"]["title"] == "new title"
+
+        # 5. PUT still replaces metadata wholesale (existing contract).
+        resp = await client.put(base, json={"metadata": {"only": "this"}})
+        assert resp.status_code == 200
+        assert resp.json()["metadata"] == {"only": "this"}
+
+        # 6. Unknown top-level key in PATCH is rejected (422).
+        resp = await client.patch(base, json={"asset_id": "hacked"})
+        assert resp.status_code == 422
+
+    finally:
+        await catalogs.delete_catalog(catalog_id, force=True)
