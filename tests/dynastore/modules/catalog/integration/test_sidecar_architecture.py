@@ -101,9 +101,11 @@ async def test_columnar_attributes_sidecar(app_lifespan, catalog_id, collection_
 
     res = await catalogs.upsert(catalog_id, collection_id, item_data)
     assert res is not None
-    # res is Feature object
-    # We query by external_id (id) instead of geoid because geoid is internal
-    item_id = res.id
+    # res is a Feature; res.id defaults to geoid (the stable Hub identity).
+    # external_id_as_feature_id is opt-in via ItemsReadPolicy.feature_type, and
+    # the upsert response Feature does not carry that policy by default — keep
+    # the original literal external_id for the sidecar lookup below.
+    external_id = item_id  # "city-1" as posted
 
     # 4. Verify Physical Storage
     phys_schema = await catalogs.resolve_physical_schema(catalog_id)
@@ -135,7 +137,7 @@ async def test_columnar_attributes_sidecar(app_lifespan, catalog_id, collection_
         row = await DQLQuery(
             f'SELECT population, category FROM "{phys_schema}"."{attr_table}" WHERE external_id = :ext_id',
             result_handler=ResultHandler.ONE_DICT,
-        ).execute(conn, ext_id=item_id)
+        ).execute(conn, ext_id=external_id)
 
         assert row["population"] == 2800000
         assert row["category"] == "capital"
