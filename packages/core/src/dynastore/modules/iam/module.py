@@ -186,6 +186,32 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # cross-pod increments stay atomic without a parallel client.
             await self._register_usage_counter_drivers(stack)
 
+            # Compiled-rule cache TTL / rule-version refresher (#1343).
+            # Pulls the live ``IamScaleConfig`` TTL + maxsize snapshot and
+            # the platform binding-version counter on a slow timer so the
+            # sync hot path consumes them without an async hop. Registered
+            # on the exit stack so it stops cleanly on module unload.
+            try:
+                from dynastore.modules.iam.compiled_rule_cache import (
+                    start_background_refresh,
+                )
+                _stop_refresh = await start_background_refresh()
+
+                @asynccontextmanager
+                async def _refresh_ctx():
+                    try:
+                        yield
+                    finally:
+                        await _stop_refresh()
+
+                await stack.enter_async_context(_refresh_ctx())
+            except Exception:
+                logger.warning(
+                    "IamModule: compiled-rule cache refresher failed to start; "
+                    "TTL/version snapshots fall back to in-source defaults",
+                    exc_info=True,
+                )
+
             # IdP factory — IDP_TYPE selects the backend (default: oidc)
             # KEYCLOAK_* vars are read as fallbacks for backward compatibility.
             # See modules/iam/identity_providers/README.md for adding new types.
