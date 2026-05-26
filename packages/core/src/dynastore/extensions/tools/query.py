@@ -311,6 +311,9 @@ def parse_ogc_query_request(
     bbox_crs_srid: Optional[int] = None,
     include_total_count: bool = True,
     extra_filters: Optional[Dict[str, str]] = None,
+    filter_lang: str = "cql2-text",
+    filter_crs_srid: Optional[int] = None,
+    select_fields: Optional[List[str]] = None,
 ) -> QueryRequest:
     """
     Unifies OGC parameter parsing into a structured QueryRequest.
@@ -320,11 +323,25 @@ def parse_ogc_query_request(
     CQL2-Text equality clauses and combined with any explicit ``filter`` so both
     paths share the same validation, identifier safety, and parameter binding.
     """
+    from dynastore.models.query_builder import FieldSelection
+
+    select: Optional[List[FieldSelection]] = None
+    if select_fields:
+        # Narrow the driver-level projection to exactly the requested names.
+        # An empty selection is intentionally NOT wired into ``select`` here
+        # because :pyfunc:`QueryRequest.validate_select` would re-expand ``[]``
+        # to ``[FieldSelection(field="*")]``; the service-layer post-fetch
+        # projection handles the empty case by stripping every attribute.
+        select = [FieldSelection(field=name) for name in select_fields]
+
     request_obj = QueryRequest(
         limit=limit,
         offset=offset,
         include_total_count=include_total_count,
         filters=[],
+        filter_lang=filter_lang,
+        filter_crs_srid=filter_crs_srid,
+        **({"select": select} if select is not None else {}),
     )
 
     # 0. Item IDs

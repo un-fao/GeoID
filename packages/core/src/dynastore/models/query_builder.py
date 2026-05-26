@@ -270,6 +270,25 @@ class QueryRequest(BaseModel):
     cql_filter: Optional[str] = Field(
         default=None, description="A raw CQL2 filter string to be parsed and validated."
     )
+    filter_lang: str = Field(
+        default="cql2-text",
+        description=(
+            "Encoding of ``cql_filter``. ``cql2-text`` (default) routes the "
+            "filter through the CQL2-Text parser; ``cql2-json`` routes it "
+            "through the JSON parser. Set from the OGC API Features "
+            "``filter-lang`` query parameter."
+        ),
+    )
+    filter_crs_srid: Optional[int] = Field(
+        default=None,
+        description=(
+            "SRID for geometry literals in ``cql_filter``. Set from the OGC "
+            "API Features ``filter-crs`` query parameter (default = CRS84 / "
+            "4326). Stamped onto every parsed Geometry literal so the "
+            "translator emits ``ST_GeomFromEWKT('SRID=<srid>;...')`` rather "
+            "than the pygeofilter default."
+        ),
+    )
     es_filter: Optional[Dict[str, Any]] = Field(
         default=None,
         description=(
