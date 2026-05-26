@@ -1197,6 +1197,8 @@ async def _drop_legacy_tenant_tasks_tables(
 
     Returns the number of tenant ``tasks`` tables dropped.
     """
+    from dynastore.modules.db_config import maintenance_tools
+
     skipped = {global_schema, "pg_catalog", "information_schema"}
 
     # Discover tenant schemas that currently host a ``tasks`` table.
@@ -1230,10 +1232,7 @@ async def _drop_legacy_tenant_tasks_tables(
             f"partman-{tenant_schema}-tasks",
         ):
             try:
-                await DQLQuery(
-                    "SELECT cron.unschedule(:job_name)",
-                    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-                ).execute(conn, job_name=job_name)
+                await maintenance_tools.unregister_cron_job(conn, job_name)
             except Exception as exc:  # noqa: BLE001 — best-effort, job may not exist
                 logger.debug(
                     "TasksModule: pg_cron.unschedule(%r) skipped: %s",
