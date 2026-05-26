@@ -36,9 +36,11 @@ from httpx import AsyncClient
 # Modules required to register the PluginConfig surfaces + the gdal Process.
 # ``processes`` extension surfaces ``GET /processes`` (asserts gdal applicability),
 # ``configs`` extension surfaces the PluginConfig PUT/GET round-trip.
+# ``tasks`` provides the ``ProcessRegistryProtocol`` impl (``TasksModule``) that
+# the processes extension queries — without it the /processes inventory is empty.
 pytestmark = [
     pytest.mark.enable_modules(
-        "db_config", "db", "catalog", "storage", "gdal", "processes",
+        "db_config", "db", "catalog", "storage", "gdal", "processes", "tasks",
     ),
     pytest.mark.enable_extensions("features", "configs", "processes"),
 ]
