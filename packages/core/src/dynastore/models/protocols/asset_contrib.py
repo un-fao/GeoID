@@ -38,7 +38,7 @@ class ResourceRef:
     collection_id: str
     item_id: Optional[str] = None
     bbox: Optional[Tuple[float, float, float, float]] = None
-    geometry: Optional[dict] = None
+    geometry: Optional[dict[str, Any]] = None
     base_url: str = ""
     style: Optional[str] = None
     extras: Mapping[str, Any] = field(default_factory=dict)

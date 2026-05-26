@@ -99,3 +99,16 @@ class TypedModelRegistry:
     def clear(cls) -> None:
         """Test hook only."""
         cls._by_key.clear()
+
+    @classmethod
+    def force_bind(cls, key: str, model: Type["PersistentModel"]) -> None:
+        """Rebind ``key`` to ``model`` unconditionally.
+
+        Narrow use case: late-binding of a TypedDriver config whose
+        ``class_key()`` only resolves *after* its driver pair declares
+        ``TypedDriver[ConfigCls]`` (see
+        :mod:`dynastore.models.protocols.typed_driver`). Bypasses the
+        duplicate-detection in :meth:`register` because the caller already
+        knows the rebind is legitimate (same class, post-bind key change).
+        """
+        cls._by_key[key] = model

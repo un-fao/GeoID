@@ -24,7 +24,7 @@ Producers implement `WebPageContributor.get_web_pages()` and/or
 walking across foreign extensions.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
 

@@ -59,7 +59,7 @@ class StatsProtocol(Protocol):
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
         path_pattern: Optional[str] = None,
-        methods: Optional[list] = None,
+        methods: Optional[list[str]] = None,
         **kwargs: Any,
     ) -> Any:
         """Retrieves aggregated access statistics (e.g. total requests, average latency).

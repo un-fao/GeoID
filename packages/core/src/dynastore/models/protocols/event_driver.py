@@ -41,12 +41,10 @@ Backend-agnostic consumer loop:
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
-    AsyncIterator,
     Dict,
     FrozenSet,
     List,

@@ -56,7 +56,7 @@ from typing import (
 
 
 from dynastore.models.ogc import Feature, FeatureCollection
-from dynastore.models.query_builder import QueryRequest, QueryResponse
+from dynastore.models.query_builder import QueryRequest
 
 if TYPE_CHECKING:
     from dynastore.models.protocols.field_definition import FieldDefinition

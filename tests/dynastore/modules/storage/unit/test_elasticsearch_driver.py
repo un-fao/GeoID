@@ -198,12 +198,12 @@ class TestItemsElasticsearchPrivateDriverMeta:
         registers automatically.  Pinning here so a future refactor that
         accidentally drops the TypedDriver base is caught at unit-test time.
         """
-        from dynastore.models.protocols.typed_driver import _registered_pairs
+        from dynastore.models.protocols.typed_driver import registered_pairs
         from dynastore.modules.storage.driver_config import (
             ItemsElasticsearchPrivateDriverConfig,
         )
 
-        pairs = _registered_pairs()
+        pairs = registered_pairs()
         assert ItemsElasticsearchPrivateDriverConfig in pairs
         assert pairs[ItemsElasticsearchPrivateDriverConfig] is ItemsElasticsearchPrivateDriver
         assert ItemsElasticsearchPrivateDriverConfig.class_key() == "items_elasticsearch_private_driver"

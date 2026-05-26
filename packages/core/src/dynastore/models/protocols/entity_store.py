@@ -47,7 +47,7 @@ from typing import (
 # Re-exported so concrete driver classes can declare ``sla`` as
 # ``ClassVar[Optional[DriverSla]]`` alongside their other protocol
 # attributes without a separate import of driver_roles.
-from dynastore.models.protocols.driver_roles import DriverSla  # noqa: F401
+from dynastore.models.protocols.driver_roles import DriverSla as DriverSla  # re-export
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.storage_location import StorageLocation

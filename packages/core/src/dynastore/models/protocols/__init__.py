@@ -172,6 +172,7 @@ __all__ = [
     "WebModuleProtocol",
     "QueryTransformProtocol",
     "CRSProtocol",
+    "BigQueryProtocol",
     "HttpxProtocol",
     "StylesProtocol",
     "MovingFeaturesProtocol",

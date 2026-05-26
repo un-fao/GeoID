@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 # Ensure every driver module's class-creation side-effects fire so
-# ``_registered_pairs()`` returns the production driver-config list.
+# ``registered_pairs()`` returns the production driver-config list.
 import dynastore.modules.storage.driver_config  # noqa: F401
 import dynastore.modules.storage.drivers.catalog_postgresql  # noqa: F401
 import dynastore.modules.storage.drivers.collection_postgresql  # noqa: F401

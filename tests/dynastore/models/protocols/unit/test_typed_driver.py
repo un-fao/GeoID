@@ -23,7 +23,7 @@ from dynastore.models.mutability import Mutable
 from dynastore.models.protocols.typed_driver import (
     TypedDriver,
     _PluginDriverConfig,
-    _registered_pairs,
+    registered_pairs,
 )
 
 
@@ -40,7 +40,7 @@ def test_concrete_pair_registers_and_class_key_resolves():
     # config_cls() round-trips back to the bound config.
     assert _DemoDriverA.config_cls() is _DemoConfigA
     # Registry contains the pair.
-    assert _registered_pairs()[_DemoConfigA] is _DemoDriverA
+    assert registered_pairs()[_DemoConfigA] is _DemoDriverA
 
 
 def test_orphan_config_raises_on_assert_bound():
@@ -83,7 +83,7 @@ def test_abstract_intermediate_does_not_register():
     class _AbstractRole(TypedDriver):
         pass
 
-    assert _AbstractRole not in _registered_pairs().values()
+    assert _AbstractRole not in registered_pairs().values()
 
 
 def test_class_key_byte_matches_driver_name():

@@ -644,13 +644,13 @@ class ConfigsService(ExtensionProtocol):
         )
         from dynastore.models.protocols.typed_driver import (
             _PluginDriverConfig,
-            _registered_pairs,
+            registered_pairs,
         )
 
         engines = list_registered_engines()
 
         # Build reverse index: engine_class → [driver class_key, ...]
-        bound_pairs = _registered_pairs()
+        bound_pairs = registered_pairs()
         compat: Dict[str, List[str]] = {}
         for cfg_cls in bound_pairs:
             if not issubclass(cfg_cls, _PluginDriverConfig):

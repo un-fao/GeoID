@@ -166,7 +166,7 @@ class TypedDriver(Generic[ConfigT]):
         from dynastore.tools.typed_store.registry import TypedModelRegistry
         new_key = direct_bind.class_key()
         if TypedModelRegistry.get(new_key) is not direct_bind:
-            TypedModelRegistry._by_key[new_key] = direct_bind
+            TypedModelRegistry.force_bind(new_key, direct_bind)
 
 
 class _PluginDriverConfig(PluginConfig):
@@ -301,14 +301,14 @@ class _PluginDriverConfig(PluginConfig):
         ``CollectionDriverConfig``, ``AssetDriverConfig``) always return
         ``__qualname__`` — they're abstract markers, never published.
         """
-        from dynastore.tools.typed_store.base import _to_snake
+        from dynastore.tools.typed_store._snake import to_snake
 
         if _is_abstract_base(cls):
-            return _to_snake(cls.__qualname__)
+            return to_snake(cls.__qualname__)
         driver_cls = _DRIVER_REGISTRY.get(cls)
         if driver_cls is None:
-            return _to_snake(cls.__qualname__)
-        return _to_snake(driver_cls.__name__)
+            return to_snake(cls.__qualname__)
+        return to_snake(driver_cls.__name__)
 
     @classmethod
     def assert_bound(cls) -> None:
@@ -326,7 +326,7 @@ class _PluginDriverConfig(PluginConfig):
             )
 
 
-def _registered_pairs() -> Dict[Type["_PluginDriverConfig"], Type["TypedDriver[Any]"]]:
+def registered_pairs() -> Dict[Type["_PluginDriverConfig"], Type["TypedDriver[Any]"]]:
     """Read-only view of the (config_cls -> driver_cls) registry.
 
     Test/diagnostic affordance — production code uses
