@@ -220,8 +220,11 @@ async def test_item_ops(
         # Use upsert for single item
         res = await catalogs_svc.upsert(catalog_id, collection_id, feat_def)
         assert res is not None
-        # res is a Feature object now
-        assert res.id == item_id
+        # Per #1212, feature.id defaults to the system-assigned geoid (the
+        # client-supplied id is replaced) unless the collection opts into
+        # external_id_as_feature_id. So a geoid is assigned; it is not the
+        # input item_id. Retrieval/deletion use the returned id.
+        assert res.id is not None
 
         # 2. Delete Item
         # Use ID to ensure deletion
