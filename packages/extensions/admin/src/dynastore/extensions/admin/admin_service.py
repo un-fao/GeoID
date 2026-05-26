@@ -2247,26 +2247,23 @@ class AdminService(ExtensionProtocol):
         return {"message": "JWT secret rotated. Previous secret remains valid for existing tokens."}
 
     # -------------------------------------------------------------------------
-    # Routing Presets (#847 / #972) — named, cascade-consistent config
-    # bundles operators apply in one call. The registry is a single flat
-    # namespace; a preset declares its ``tier`` and the URL family encodes
-    # the apply scope. Three URL families, each with POST (apply) / DELETE
-    # (rollback, #971) symmetry, dispatching on the preset's tier:
+    # Presets — named platform actions applied/revoked via admin API.
     #
+    # Three URL families encode the apply scope:
     #   /admin/presets/{name}                                  platform
     #   /admin/catalogs/{cat}/presets/{name}                   catalog
     #   /admin/catalogs/{cat}/collections/{col}/presets/{name} collection
     #
-    # Items/assets-tier presets are reachable at the collection family
-    # (and at the catalog family when ``catalog_scopable``). A preset
-    # applied at a URL family that does not match its tier returns 409.
-    # All three families share ``_apply_preset_bundle`` /
-    # ``_unapply_preset_bundle`` so apply/rollback semantics stay identical
-    # across scopes.
+    # Routing presets (``public_catalog``, ``private_catalog``, etc.) retain
+    # their existing POST/DELETE semantics via the bundle apply path.
+    # New-style generalised presets additionally record an audit row in
+    # ``iam.applied_presets`` when the lifecycle layer is available.
+    #
+    # Search, GET-single, and dry-run endpoints are new in this revision.
     # -------------------------------------------------------------------------
 
-    @router.get("/presets", summary="List registered routing presets (#847, #972)")
-    async def list_routing_presets(
+    @router.get("/presets", summary="Search and list registered presets")
+    async def list_routing_presets(  # name kept for back-compat with existing clients
         request: Request,  # type: ignore[reportGeneralTypeIssues]
         tier: Optional[str] = Query(
             None,
@@ -2275,11 +2272,15 @@ class AdminService(ExtensionProtocol):
                 "(platform / catalog / collection / items / assets)."
             ),
         ),
+        q: Optional[str] = Query(None, description="Full-text search on name, description, keywords."),
+        name: Optional[str] = Query(None, description="Exact or prefix match on preset name."),
+        keywords: Optional[str] = Query(None, description="Comma-separated AND match on keywords."),
+        limit: int = Query(50, ge=1, le=200),
+        cursor: Optional[str] = Query(None, description="Keyset pagination cursor (preset name)."),
     ):
         from dynastore.modules.storage.presets import (
             PresetTier,
-            get_preset,
-            list_presets,
+            search_presets,
         )
 
         tier_filter: Optional[PresetTier] = None
@@ -2295,23 +2296,34 @@ class AdminService(ExtensionProtocol):
                     ),
                 ) from exc
 
-        out = []
-        for name in list_presets(tier_filter):
-            preset = get_preset(name)
-            entry = {"name": name, "description": preset.description}
-            preset_tier = getattr(preset, "tier", None)
-            if preset_tier is not None:
-                entry["tier"] = (
-                    preset_tier.value
-                    if hasattr(preset_tier, "value")
-                    else str(preset_tier)
-                )
-            # ``catalog_scopable`` only carries meaning for items/assets
-            # presets but is emitted for all so clients can render it
-            # uniformly.
-            entry["catalog_scopable"] = bool(getattr(preset, "catalog_scopable", False))
-            out.append(entry)
-        return {"presets": out}
+        kw_list = [k.strip() for k in keywords.split(",")] if keywords else None
+
+        result = search_presets(
+            q=q,
+            name=name,
+            tier=tier_filter,
+            keywords=kw_list,
+            limit=limit,
+            cursor=cursor,
+        )
+        # Legacy shape: also expose as "presets" list for back-compat.
+        return {"presets": result["items"], "next_cursor": result["next_cursor"]}
+
+    @router.get("/presets/{preset_name}", summary="Get a single preset definition")
+    async def get_preset_detail(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        preset_name: str,
+    ):
+        from dynastore.modules.storage.presets import get_preset, search_presets
+
+        try:
+            get_preset(preset_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        result = search_presets(name=preset_name, limit=1)
+        items = result.get("items", [])
+        return items[0] if items else {}
 
     # ----- Platform tier: /admin/presets/{name} -----------------------------
 
@@ -2442,3 +2454,103 @@ class AdminService(ExtensionProtocol):
         return await _unapply_preset_bundle(
             preset, {"catalog_id": catalog_id, "collection_id": collection_id}
         )
+
+    # ----- Dry-run endpoints (all three scopes) --------------------------------
+
+    @router.post(
+        "/presets/{preset_name}/dry-run",
+        summary="Dry-run a platform-tier preset — returns plan without writes",
+    )
+    async def dry_run_platform_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        preset_name: str,
+    ):
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.storage.presets import (
+            NoParams,
+            PresetTier,
+        )
+        from dynastore.modules.storage.presets.lifecycle import _build_context, dry_run_preset as _dry_run
+
+        _resolve_preset_for_scope(preset_name, PresetTier.PLATFORM)
+        db_proto = get_protocol(DatabaseProtocol)
+        engine = db_proto.engine if db_proto else None
+        ctx = _build_context(engine, principal=None, scope="platform")
+        plan = await _dry_run(preset_name, "platform", NoParams(), ctx)
+        return {
+            "preset_name": plan.preset_name,
+            "scope_key": plan.scope_key,
+            "entries": [
+                {"kind": e.kind, "target": e.target, "detail": e.detail}
+                for e in plan.entries
+            ],
+            "warnings": list(plan.warnings),
+        }
+
+    @router.post(
+        "/catalogs/{catalog_id}/presets/{preset_name}/dry-run",
+        summary="Dry-run a catalog-tier preset — returns plan without writes",
+    )
+    async def dry_run_catalog_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        preset_name: str,
+    ):
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.storage.presets import (
+            NoParams,
+            PresetTier,
+        )
+        from dynastore.modules.storage.presets.lifecycle import _build_context, dry_run_preset as _dry_run
+
+        await _assert_catalog_exists(catalog_id)
+        _resolve_preset_for_scope(preset_name, PresetTier.CATALOG)
+        scope_key = f"catalog:{catalog_id}"
+        db_proto = get_protocol(DatabaseProtocol)
+        engine = db_proto.engine if db_proto else None
+        ctx = _build_context(engine, principal=None, scope=scope_key)
+        plan = await _dry_run(preset_name, scope_key, NoParams(), ctx)
+        return {
+            "preset_name": plan.preset_name,
+            "scope_key": plan.scope_key,
+            "entries": [
+                {"kind": e.kind, "target": e.target, "detail": e.detail}
+                for e in plan.entries
+            ],
+            "warnings": list(plan.warnings),
+        }
+
+    @router.post(
+        "/catalogs/{catalog_id}/collections/{collection_id}/presets/{preset_name}/dry-run",
+        summary="Dry-run a collection-tier preset — returns plan without writes",
+    )
+    async def dry_run_collection_preset(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        preset_name: str,
+    ):
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.storage.presets import (
+            NoParams,
+            PresetTier,
+        )
+        from dynastore.modules.storage.presets.lifecycle import _build_context, dry_run_preset as _dry_run
+
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        _resolve_preset_for_scope(preset_name, PresetTier.COLLECTION)
+        scope_key = f"catalog:{catalog_id}/collection:{collection_id}"
+        db_proto = get_protocol(DatabaseProtocol)
+        engine = db_proto.engine if db_proto else None
+        ctx = _build_context(engine, principal=None, scope=scope_key)
+        plan = await _dry_run(preset_name, scope_key, NoParams(), ctx)
+        return {
+            "preset_name": plan.preset_name,
+            "scope_key": plan.scope_key,
+            "entries": [
+                {"kind": e.kind, "target": e.target, "detail": e.detail}
+                for e in plan.entries
+            ],
+            "warnings": list(plan.warnings),
+        }
