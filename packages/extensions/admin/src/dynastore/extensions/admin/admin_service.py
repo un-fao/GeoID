@@ -355,6 +355,10 @@ async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
     ``base_scope`` is the URL-derived scope (``{}`` / ``{catalog_id}`` /
     ``{catalog_id, collection_id}``); the preset's own per-entry scope is
     layered on top so a bundle can mix tiers. Returns the response body.
+    
+    After applying the bundle, calls ``preset.on_applied(**base_scope)`` if
+    the preset implements this optional hook (e.g., for per-catalog policy
+    registration).
     """
     from dynastore.models.protocols.configs import ConfigsProtocol
 
@@ -368,6 +372,18 @@ async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
         scope = {**base_scope, **dict(entry.scope)}
         await configs.set_config(entry.config_cls, entry.instance, **scope)
         applied.append(entry.slot)
+    
+    # Call optional on_applied hook if the preset implements it
+    if hasattr(preset, 'on_applied') and callable(preset.on_applied):
+        try:
+            await preset.on_applied(**base_scope)
+        except Exception as e:
+            logger.error(
+                f"Error calling on_applied hook for preset '{preset.name}': {e}",
+                exc_info=True,
+            )
+            # Don't fail the preset application if the hook fails
+    
     return {"preset": preset.name, "applied": applied, **base_scope}
 
 

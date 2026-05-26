@@ -79,5 +79,14 @@ class GeoidPreset:
             },
         )
 
+    async def on_applied(self, catalog_id: str) -> None:
+        """Called after the preset bundle is applied to a catalog.
+        
+        Registers per-catalog geoid IAM policies for the lookup-only access model.
+        """
+        from .catalog_policies import register_geoid_policies_for_catalog
+        
+        await register_geoid_policies_for_catalog(catalog_id)
+
 
 register_preset(GeoidPreset())

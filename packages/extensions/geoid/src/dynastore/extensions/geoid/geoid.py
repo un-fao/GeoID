@@ -172,12 +172,14 @@ class Geoid(ExtensionProtocol, WebOverrideProtocol, WebPageProtocol, StaticFiles
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        from .policies import register_geoid_policies
-
         # Audience ConditionHandlers were migrated to core IAM (#286) and
         # are auto-registered there; the extension no longer registers
-        # them itself. Geoid-extension policies still register here.
-        register_geoid_policies()
+        # them itself.
+        #
+        # Geoid-extension policies are now registered per-catalog via the
+        # preset's on_applied() hook when the geoid preset is applied to
+        # a catalog. This enables multi-tenant isolation and reduces overhead
+        # on catalogs that don't use the geoid preset.
         yield
 
     # ------------------------------------------------------------------ #
