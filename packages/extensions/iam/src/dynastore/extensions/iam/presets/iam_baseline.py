@@ -135,24 +135,17 @@ def _admin_catalog_access_policy(required_roles: List[str]) -> Policy:
 def _catalog_preset_delegation_policy(delegation_role_names: List[str]) -> Policy:
     """Allow delegation_role_names to POST/DELETE catalog-scoped presets.
 
-    The safe-subset of preset names listed here will be expanded by PR-3
-    as per-extension presets are registered. For now the placeholder covers
-    the routing presets that are already in the registry.
+    The resource regex currently covers ALL registered preset names at the
+    catalog scope. PR-3 will introduce a safe-subset condition once the
+    ConditionHandler has an ``allowed_preset_names`` config key; until
+    then the only guard is the ``catalog_admin_required`` role check.
     """
-    # Safe subset for catalog-scope preset delegation (PR-3 will expand).
-    _SAFE_PRESET_NAMES = [
-        "public_catalog",
-        "private_catalog",
-        "defaults_postgres",
-        "private_collection",
-        "items_es_private",
-    ]
     return Policy(
         id="catalog_preset_delegation",
         description=(
             "Lets catalog-tier admins (roles in required_roles) apply or "
-            "revoke the safe subset of presets at their catalog scope. "
-            "Expanded by PR-3 as per-extension presets are registered."
+            "revoke presets at their catalog scope. PR-3 will add an "
+            "allowed_preset_names guard when the condition handler supports it."
         ),
         actions=["POST", "DELETE"],
         resources=[r"^/admin/catalogs/[^/]+/presets/[^/]+$"],
@@ -251,6 +244,13 @@ class IamBaseline:
             logger.debug("iam_baseline: upserted policy %s", pol.id)
 
         # Upsert the updated admin_catalog_access policy with delegation roles.
+        # NOTE: the admin extension's PolicyContributor still declares
+        # admin_catalog_access with required_roles=[] and the contributor loop
+        # runs on every startup. Until PR-5 removes the contributor loop, this
+        # update is reset to required_roles=[] on the next process restart.
+        # Operators who need persistent catalog-admin delegation should apply
+        # iam_baseline and then NOT restart until PR-5 is in place, or set
+        # delegation via the admin extension's role-binding REST API.
         admin_cat_pol = _admin_catalog_access_policy(p.delegation_role_names)
         await policy_service.update_policy(admin_cat_pol)
         applied_policy_ids.append(admin_cat_pol.id)
