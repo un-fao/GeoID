@@ -34,8 +34,6 @@ from typing import Any, Callable, ClassVar, List, Tuple, Type, cast
 
 from pydantic import BaseModel
 
-from dynastore.models.auth import Policy
-from dynastore.models.auth_models import Role
 from dynastore.models.protocols.policy_contributor import PolicyContributor
 
 from .preset import (
@@ -154,13 +152,11 @@ class PolicyContributorPreset:
         applied_role_names: List[str] = []
 
         for pol in (contributor.get_policies() or []):
-            assert isinstance(pol, Policy)
             await ctx.policy.update_policy(pol)
             applied_policy_ids.append(pol.id)
             logger.debug("%s: upserted policy %s", self.name, pol.id)
 
         for role in (contributor.get_role_bindings() or []):
-            assert isinstance(role, Role)
             await ctx.iam.update_role(role)
             applied_role_names.append(role.name)
             logger.debug("%s: upserted role binding %s", self.name, role.name)
@@ -184,14 +180,9 @@ class PolicyContributorPreset:
         # when stripping shared roles we only remove the relevant bindings.
         own_policy_ids = set(policy_ids)
 
-        # Delete policies introduced by this preset.
-        for pid in policy_ids:
-            deleted = await ctx.policy.delete_policy(pid)
-            logger.debug("%s: deleted policy %s (found=%s)", self.name, pid, deleted)
-
-        # Reverse role bindings.
-        # Shared roles (sysadmin, admin, user, anonymous) must not be
-        # deleted — only strip the policy links this preset added.
+        # Reverse role bindings first, then delete orphan policies.
+        # Stripping shared roles before policy deletion ensures no role
+        # references a policy that has already been removed.
         existing_roles = {r.name: r for r in (await ctx.iam.list_roles())}
 
         for rname in role_names:
@@ -209,3 +200,8 @@ class PolicyContributorPreset:
                 logger.debug(
                     "%s: deleted role %s (found=%s)", self.name, rname, deleted
                 )
+
+        # Delete policies introduced by this preset after role bindings are cleared.
+        for pid in policy_ids:
+            deleted = await ctx.policy.delete_policy(pid)
+            logger.debug("%s: deleted policy %s (found=%s)", self.name, pid, deleted)
