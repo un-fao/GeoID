@@ -1,115 +1,461 @@
-:root {
-    --sidebar-bg: #0f172a;
-    --sidebar-text: #94a3b8;
-    --bg-color: #f1f5f9;
-    --card-bg: #ffffff;
-    --text-primary: #1e293b;
-    --text-secondary: #64748b;
-    --primary: #2563eb;
-    --success: #10b981;
-    --warning: #f59e0b;
-    --danger: #ef4444;
-    --border: #e2e8f0;
+/*
+ * Dashboard extras — operator-only surface.
+ *
+ * The dashboard is operator-facing (system overview, logs, task monitor,
+ * process executor), so it shares the cartographic-atlas aesthetic of the
+ * admin pages. Tokens, masthead, plate, button, table, chip, tab and form
+ * rules all come from ../common/admin.css (which is loaded first via a
+ * <link> in each dashboard page).
+ *
+ * This file carries only the genuinely-dashboard-specific rules:
+ *   - the stats grid on Overview
+ *   - the task monitor grid + progress bar
+ *   - the log-level chip variants used by app.js
+ *   - the processes.html two-column endpoint editor
+ *
+ * Do NOT redefine tokens, .btn, .plate, .chip, .tab-btn, .empty-row or
+ * any other canonical surface here. If something is missing, extend
+ * admin.css (single-writer) — not this file.
+ */
+
+/* --- Stats grid (Overview) ------------------------------------------- */
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', system-ui, sans-serif; }
-
-body { background: var(--bg-color); height: 100vh; overflow: hidden; }
-
-.app-container { display: flex; height: 100%; }
-
-/* Sidebar */
-.sidebar {
-    width: 260px; background: var(--sidebar-bg); color: var(--sidebar-text);
-    display: flex; flex-direction: column; flex-shrink: 0;
+.stat-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 16px 18px;
+  position: relative;
 }
 
-.sidebar .logo {
-    height: 64px; display: flex; align-items: center; padding: 0 1.5rem;
-    font-size: 1.25rem; font-weight: 700; color: white; border-bottom: 1px solid #1e293b;
-}
-.sidebar .logo span { color: var(--primary); }
-.sidebar .logo small { font-size: 0.7rem; background: #334155; padding: 2px 6px; border-radius: 4px; margin-left: 8px; color: #cbd5e1; }
-
-.side-nav { padding: 1.5rem 1rem; flex: 1; }
-.nav-item {
-    display: flex; align-items: center; padding: 0.75rem 1rem;
-    color: var(--sidebar-text); text-decoration: none; border-radius: 6px;
-    margin-bottom: 0.5rem; transition: all 0.2s;
-}
-.nav-item:hover, .nav-item.active { background: #1e293b; color: white; }
-.nav-item .icon { margin-right: 0.75rem; font-size: 1.2rem; }
-
-.user-info {
-    padding: 1.5rem; border-top: 1px solid #1e293b;
-    display: flex; align-items: center; gap: 1rem;
-}
-.avatar {
-    width: 40px; height: 40px; background: var(--primary); color: white;
-    border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 0.9rem;
-}
-.user-info .details { display: flex; flex-direction: column; }
-.user-info .name { color: white; font-weight: 500; font-size: 0.9rem; }
-.user-info .role { font-size: 0.8rem; }
-
-/* Main Content */
-.main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-.top-bar {
-    height: 64px; background: white; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; justify-content: space-between; padding: 0 2rem;
-}
-.top-bar h2 { font-size: 1.25rem; color: var(--text-primary); }
-
-.actions { display: flex; align-items: center; gap: 1rem; }
-#last-updated { font-size: 0.85rem; color: var(--text-secondary); }
-.refresh-btn {
-    background: transparent; border: 1px solid var(--border); padding: 0.4rem 0.8rem;
-    border-radius: 4px; cursor: pointer; color: var(--text-secondary);
-}
-.refresh-btn:hover { background: #f8fafc; color: var(--primary); border-color: var(--primary); }
-.exit-btn {
-    text-decoration: none; color: var(--text-secondary); font-size: 0.9rem;
-    margin-left: 1rem;
+.stat-card h3 {
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin-bottom: 8px;
 }
 
-#views { padding: 2rem; overflow-y: auto; flex: 1; }
-.view { display: none; }
-.view.active { display: block; }
+.stat-card .value {
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 96;
+  font-weight: 400;
+  font-size: 2rem;
+  line-height: 1.05;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
 
-/* Dashboard Widgets */
-.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: 2rem; }
-.stat-card { background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border); }
-.stat-card h3 { font-size: 0.9rem; color: var(--text-secondary); font-weight: 500; margin-bottom: 0.5rem; }
-.stat-card .value { font-size: 1.8rem; font-weight: 700; color: var(--text-primary); }
-.stat-card .subtext { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem; }
-.status-ok { color: var(--success) !important; }
+.stat-card .value.status-ok { color: var(--olive); }
+.stat-card .value.status-warn { color: var(--amber); }
+.stat-card .value.status-err { color: var(--terracotta-deep); }
 
-.charts-row { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; }
-.chart-container { background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border); height: 350px; }
-.chart-container h4 { margin-bottom: 1rem; color: var(--text-primary); }
+.stat-card .subtext {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+  margin-top: 6px;
+  letter-spacing: 0.04em;
+}
 
-/* Logs Table */
-.toolbar { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
-.search-box { padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; width: 300px; }
-.filter-select { padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; }
-.btn-primary { background: var(--primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+/* --- Top action bar (refresh + last-updated + exit) ------------------ */
 
-.logs-table-container { background: white; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; }
-.data-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.data-table th { background: #f8fafc; padding: 0.75rem 1rem; text-align: left; font-weight: 600; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
-.data-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); color: var(--text-primary); }
-.data-table tr:hover { background: #f8fafc; }
-.loading-row { text-align: center; color: var(--text-secondary); padding: 2rem; }
+.dashboard-actions {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
 
-/* Task Grid */
-.tasks-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; }
-.task-card { background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid var(--border); }
-.task-header { display: flex; justify-content: space-between; margin-bottom: 1rem; }
-.task-title { font-weight: 600; }
-.task-status { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
-.status-running { background: #dbeafe; color: var(--primary); }
-.status-failed { background: #fee2e2; color: var(--danger); }
-.progress-bar { height: 6px; background: #e2e8f0; border-radius: 3px; margin: 1rem 0; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--primary); width: 45%; }
+.dashboard-actions .last-updated {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--ink-dim);
+  letter-spacing: 0.04em;
+}
+
+.dashboard-actions .spacer { flex: 1; }
+
+/* --- Logs view: toolbar + level chips -------------------------------- */
+
+.logs-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.logs-toolbar .input-medium,
+.logs-toolbar select {
+  margin: 0;
+}
+
+.log-level {
+  display: inline-block;
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-soft);
+}
+
+.log-level.level-error   { color: var(--terracotta-deep); border-color: var(--terracotta-deep); }
+.log-level.level-warning { color: var(--amber); border-color: var(--amber); }
+.log-level.level-info    { color: var(--prussian); border-color: var(--prussian); }
+.log-level.level-debug   { color: var(--ink-dim); border-color: var(--rule); }
+
+/* --- Tasks view: pill filter + task cards ---------------------------- */
+
+.tasks-toolbar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--ink);
+  margin-bottom: 16px;
+}
+
+.tasks-toolbar .pill {
+  padding: 8px 18px 8px 0;
+  margin-right: 22px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s;
+}
+
+.tasks-toolbar .pill:hover { color: var(--ink); }
+.tasks-toolbar .pill.active {
+  color: var(--terracotta);
+  border-bottom-color: var(--terracotta);
+}
+
+.tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.task-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 14px 16px;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.task-title {
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 48;
+  font-weight: 500;
+  font-size: 1rem;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+}
+
+.task-id {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+/* Progress bar — hairline atlas treatment. */
+.progress-bar {
+  height: 4px;
+  background: var(--paper-shadow);
+  border: 1px solid var(--rule-hair);
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--terracotta);
+  transition: width 0.25s ease;
+}
+
+.task-progress-pct {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--ink-dim);
+  text-align: right;
+  letter-spacing: 0.04em;
+}
+
+/* --- Empty / loading row (extends .empty-row from admin.css) --------- */
+
+.loading-row td,
+.empty-cell {
+  text-align: center;
+  color: var(--ink-dim);
+  font-family: var(--font-ui);
+  font-style: italic;
+  padding: 24px 10px;
+  font-size: 0.88rem;
+}
+
+/* --- Processes page: endpoint list + editor -------------------------- */
+
+.processes-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .processes-layout { grid-template-columns: 1fr; }
+}
+
+.processes-layout > .plate { margin-bottom: 0; }
+
+.endpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 72vh;
+  overflow-y: auto;
+}
+
+.endpoint-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.endpoint-btn:hover {
+  background: rgba(180, 71, 43, 0.06);
+  color: var(--ink);
+}
+
+.endpoint-btn.active {
+  background: rgba(180, 71, 43, 0.08);
+  color: var(--terracotta-deep);
+  border-left-color: var(--terracotta);
+  font-weight: 500;
+}
+
+.method-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-soft);
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: center;
+}
+
+.method-tag.method-get    { color: var(--prussian); border-color: var(--prussian); }
+.method-tag.method-post   { color: var(--olive); border-color: var(--olive); }
+.method-tag.method-put    { color: var(--amber); border-color: var(--amber); }
+.method-tag.method-patch  { color: var(--amber); border-color: var(--amber); }
+.method-tag.method-delete { color: var(--terracotta-deep); border-color: var(--terracotta-deep); }
+
+.endpoint-path {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--terracotta);
+  word-break: break-all;
+}
+
+.endpoint-desc {
+  font-family: var(--font-ui);
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  margin-top: 6px;
+}
+
+/* Nested rails for the dynamic OpenAPI form — flat hairline columns to
+ * match the schema-form treatment in admin.css. The old GitHub-dark deep
+ * indentation is replaced with a single hairline on the leading edge. */
+.nested-rail {
+  border-left: 2px solid var(--rule);
+  padding-left: 12px;
+  margin: 10px 0;
+}
+.nested-rail.rail-2 { border-left-color: var(--rule-hair); }
+.nested-rail.rail-3 { border-left-color: var(--rule-hair); padding-left: 10px; }
+.nested-rail.rail-4 { border-left-color: var(--rule-hair); padding-left: 10px; }
+
+/* Collapsible inputs section header (OpenAPI nested objects). */
+.collapsible-section {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  margin-bottom: 10px;
+}
+
+.collapsible-header {
+  background: var(--paper-deep);
+  padding: 6px 10px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--rule-hair);
+}
+
+.collapsible-header .toggle-icon { font-size: 0.7rem; color: var(--ink-dim); }
+.collapsible-header:hover { color: var(--ink); }
+
+.collapsible-body { padding: 10px 12px; }
+.collapsible-body.is-collapsed { display: none; }
+
+.help-text {
+  font-family: var(--font-ui);
+  font-size: 0.74rem;
+  color: var(--ink-dim);
+  font-style: italic;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.required-mark { color: var(--terracotta-deep); margin-left: 2px; }
+
+.section-head {
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule-hair);
+}
+
+.array-item {
+  border: 1px solid var(--rule-hair);
+  background: var(--paper);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.array-item-remove {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--terracotta-deep);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+}
+.array-item-remove:hover {
+  background: var(--terracotta);
+  color: var(--paper);
+  border-color: var(--terracotta);
+}
+
+/* Response panel under the executor. */
+.response-panel {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-hair);
+}
+
+.response-panel pre {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-soft);
+  max-height: 360px;
+  overflow: auto;
+  line-height: 1.5;
+}
+
+.res-status {
+  display: inline-block;
+  padding: 1px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-soft);
+  margin-left: 10px;
+  letter-spacing: 0.04em;
+}
+.res-status.ok  { color: var(--olive); border-color: var(--olive); }
+.res-status.err { color: var(--terracotta-deep); border-color: var(--terracotta-deep); }
+
+/* Error banner on processes page. */
+.error-banner {
+  border: 1px solid var(--terracotta-deep);
+  background: rgba(196, 78, 50, 0.08);
+  color: var(--terracotta-deep);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.error-banner.is-hidden { display: none; }
+
+/* Welcome / pick-an-endpoint placeholder. */
+.welcome-placeholder {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--ink-dim);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.05rem;
+  border: 1px dashed var(--rule);
+}
