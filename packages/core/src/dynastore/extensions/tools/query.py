@@ -376,8 +376,9 @@ def parse_ogc_query_request(
         filter_lang=filter_lang,
         filter_crs_srid=filter_crs_srid,
         skip_geometry=skip_geometry,
-        **({"select": select} if select is not None else {}),
     )
+    if select is not None:
+        request_obj.select = select
 
     # 0. Item IDs
     if item_ids:
