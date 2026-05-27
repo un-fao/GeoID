@@ -49,6 +49,7 @@ from .exceptions import (
 )
 from . import oidc_role_sync
 from .oidc_role_sync_config import OidcRoleSyncConfig
+from .jwt_attr_config import JwtAttributeClaimsConfig, _resolve_claim_value
 from dynastore.tools.ttl_gate import TTLGate
 
 from dynastore.modules.db_config.tools import managed_transaction
@@ -387,6 +388,51 @@ class IamService:
         except Exception:
             logger.debug("OidcRoleSyncConfig unavailable; using defaults", exc_info=True)
             return OidcRoleSyncConfig()
+
+    async def _get_jwt_attr_config(self) -> JwtAttributeClaimsConfig:
+        """Fetch JwtAttributeClaimsConfig via PlatformConfigsProtocol; falls
+        back to an empty config (no-op enrichment) when the protocol or row
+        is unavailable so a missing config never blocks auth.
+        """
+        configs = get_protocol(PlatformConfigsProtocol)
+        if configs is None:
+            return JwtAttributeClaimsConfig()
+        try:
+            cfg = await configs.get_config(JwtAttributeClaimsConfig)
+            if isinstance(cfg, JwtAttributeClaimsConfig):
+                return cfg
+            return JwtAttributeClaimsConfig.model_validate(cfg)
+        except Exception:
+            logger.debug("JwtAttributeClaimsConfig unavailable; using defaults", exc_info=True)
+            return JwtAttributeClaimsConfig()
+
+    async def _merge_jwt_attributes(
+        self,
+        principal: "Principal",
+        identity: Dict[str, Any],
+    ) -> None:
+        """Enrich ``principal.attributes`` with validated JWT claim values.
+
+        Iterates ``JwtAttributeClaimsConfig.claim_map`` and, for each mapped
+        key not already present in ``principal.attributes``, extracts the
+        claim value and sets it.  DB-stored attributes win on collision
+        (only absent keys are filled).  Claims that are missing, None, or
+        empty are skipped silently.
+        """
+        jwt_cfg = await self._get_jwt_attr_config()
+        if not jwt_cfg.claim_map:
+            return
+        raw_claims = identity.get("raw_claims") or {}
+        if not isinstance(raw_claims, dict):
+            return
+        for attr_key, claim_path in jwt_cfg.claim_map.items():
+            if attr_key in principal.attributes:
+                # DB value wins — never overwrite.
+                continue
+            value = _resolve_claim_value(raw_claims, claim_path)
+            if value is None:
+                continue
+            principal.attributes[attr_key] = value
 
     def _get_oidc_sync_gate(self, ttl_seconds: float) -> TTLGate[UUID]:
         """Lazily construct (or rebuild on TTL change) the OIDC reconciler
@@ -1146,7 +1192,11 @@ class IamService:
                     identity, catalog_id, schema, scale_cfg
                 )
                 if resolved is not None:
-                    return resolved
+                    eff_roles, principal = resolved
+                    # JWT-claim merge runs OUTSIDE the cache (claims are
+                    # request-scoped; the cached result carries DB attributes only).
+                    await self._merge_jwt_attributes(principal, identity)
+                    return eff_roles, principal
                 logger.debug(
                     "Principal not found for identity via provider %s", provider_id
                 )
