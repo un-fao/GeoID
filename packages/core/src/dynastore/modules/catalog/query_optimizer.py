@@ -42,6 +42,22 @@ from dynastore.models.protocols.items import ItemsProtocol
 logger = logging.getLogger(__name__)
 
 
+def _extract_alias(sql_fragment: str) -> str:
+    """Return the logical output column name from a SELECT-list SQL fragment.
+
+    Handles ``expr AS alias`` / ``expr as alias`` (case-insensitive) and bare
+    ``table.col`` forms.  Used to detect alias collisions between sidecar
+    ``*`` expansion and caller-provided overrides (``FieldSelection`` or
+    ``raw_selects``) so the optimizer can skip a sidecar projection whose
+    alias is already covered.
+    """
+    f_lower = sql_fragment.lower()
+    as_idx = f_lower.rfind(" as ")
+    if as_idx != -1:
+        return sql_fragment[as_idx + 4:].strip().strip('"')
+    return sql_fragment.rsplit(".", 1)[-1].strip().strip('"')
+
+
 class QueryOptimizer:
     """Optimizes queries based on sidecar capabilities and requested operations.
 
@@ -501,10 +517,17 @@ class QueryOptimizer:
         if any(sel.field == "*" for sel in query.select):
             select_fields.append("h.*")
             # Collect the set of fields explicitly overridden by non-* FieldSelections
-            # so that sidecar expansion can skip them and avoid duplicate AS aliases.
+            # AND by raw_selects entries (used by the MVT transform to inject
+            # ``ST_AsMVTGeom(...) AS geom``), so sidecar expansion can skip them
+            # and avoid duplicate AS aliases that would surface as Postgres
+            # ``column reference is ambiguous`` errors when the inner SELECT is
+            # wrapped (e.g. tile post-processing ``SELECT "geom" FROM (...)``).
             explicit_field_names = {
                 sel.field for sel in query.select if sel.field != "*"
             }
+            explicit_field_names.update(
+                _extract_alias(rs) for rs in query.raw_selects
+            )
             # Also include all sidecar SELECT fields — h.* only covers the Hub table.
             for sc_config in required_sidecars:
                 sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
@@ -513,16 +536,7 @@ class QueryOptimizer:
                     for f in sidecar.get_select_fields(
                         request=query, hub_alias="h", sidecar_alias=sc_alias, include_all=True
                     ):
-                        # Derive the logical alias from the SQL fragment so we can
-                        # detect collisions with explicit overrides.  SQL patterns:
-                        #   "expr AS alias"  / "expr as alias"  / bare "table.col"
-                        f_lower = f.lower()
-                        as_idx = f_lower.rfind(" as ")
-                        if as_idx != -1:
-                            logical_name = f[as_idx + 4:].strip().strip('"')
-                        else:
-                            # bare "alias" or "table.col" — take the last segment
-                            logical_name = f.rsplit(".", 1)[-1].strip().strip('"')
+                        logical_name = _extract_alias(f)
                         if logical_name in explicit_field_names:
                             # An explicit FieldSelection already covers this field;
                             # skip the sidecar projection to avoid a duplicate alias.
