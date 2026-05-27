@@ -425,6 +425,9 @@ class IamService:
         raw_claims = identity.get("raw_claims") or {}
         if not isinstance(raw_claims, dict):
             return
+        issuer = raw_claims.get("iss")
+        if not oidc_role_sync.is_issuer_allowed(issuer, jwt_cfg.issuer_allowlist):
+            return
         for attr_key, claim_path in jwt_cfg.claim_map.items():
             if attr_key in principal.attributes:
                 # DB value wins — never overwrite.

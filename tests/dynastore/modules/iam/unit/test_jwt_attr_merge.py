@@ -107,6 +107,27 @@ def test_resolve_array_selector_rejected() -> None:
     assert _resolve_claim_value({"a": ["v"]}, "a[0]") is None
 
 
+def test_resolve_list_claim_returns_none() -> None:
+    """List-typed claim (e.g. Keycloak one-element list) must return None, not
+    the stringified repr '['finance']' which no predicate would ever match."""
+    assert _resolve_claim_value({"dept": ["finance"]}, "dept") is None
+
+
+def test_resolve_dict_claim_returns_none() -> None:
+    """Dict-typed claim must return None rather than coercing to str."""
+    assert _resolve_claim_value({"dept": {"name": "finance"}}, "dept") is None
+
+
+def test_resolve_int_claim_coerced_to_str() -> None:
+    """Scalar numeric claims are valid and coerced to string."""
+    assert _resolve_claim_value({"level": 3}, "level") == "3"
+
+
+def test_resolve_bool_claim_coerced_to_str() -> None:
+    """Scalar bool claims are valid and coerced to string."""
+    assert _resolve_claim_value({"verified": True}, "verified") == "True"
+
+
 # ---------------------------------------------------------------------------
 # _merge_jwt_attributes tests
 # ---------------------------------------------------------------------------
@@ -224,6 +245,48 @@ async def test_multiple_claims_merged() -> None:
     await svc._merge_jwt_attributes(p, _identity({"dept": "finance", "region": "eu"}))
     assert p.attributes["dept"] == "finance"
     assert p.attributes["region"] == "eu"
+
+
+@pytest.mark.asyncio
+async def test_issuer_not_in_allowlist_is_noop() -> None:
+    """_merge_jwt_attributes is a no-op when the token's iss is not in
+    issuer_allowlist — protects multi-provider deployments from cross-IdP
+    attribute injection."""
+    cfg = JwtAttributeClaimsConfig(
+        claim_map={"dept": "dept"},
+        issuer_allowlist=["https://trusted.example.com"],
+    )
+    svc = _make_service(cfg)
+    p = _principal()
+    identity = _identity({"dept": "finance", "iss": "https://untrusted.partner.com"})
+    await svc._merge_jwt_attributes(p, identity)
+    assert "dept" not in p.attributes
+
+
+@pytest.mark.asyncio
+async def test_issuer_in_allowlist_claims_are_merged() -> None:
+    """Claims are merged when the token's iss is in the allowlist."""
+    cfg = JwtAttributeClaimsConfig(
+        claim_map={"dept": "dept"},
+        issuer_allowlist=["https://trusted.example.com"],
+    )
+    svc = _make_service(cfg)
+    p = _principal()
+    identity = _identity({"dept": "finance", "iss": "https://trusted.example.com"})
+    await svc._merge_jwt_attributes(p, identity)
+    assert p.attributes["dept"] == "finance"
+
+
+@pytest.mark.asyncio
+async def test_none_issuer_allowlist_accepts_all_issuers() -> None:
+    """None issuer_allowlist (default) accepts tokens from any issuer —
+    backward-compatible single-IdP behaviour."""
+    cfg = JwtAttributeClaimsConfig(claim_map={"dept": "dept"}, issuer_allowlist=None)
+    svc = _make_service(cfg)
+    p = _principal()
+    identity = _identity({"dept": "finance", "iss": "https://any.issuer.io"})
+    await svc._merge_jwt_attributes(p, identity)
+    assert p.attributes["dept"] == "finance"
 
 
 # ---------------------------------------------------------------------------

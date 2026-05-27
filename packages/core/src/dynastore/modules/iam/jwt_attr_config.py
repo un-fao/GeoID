@@ -34,7 +34,7 @@ Trust-boundary rationale (in-code contract):
 from __future__ import annotations
 
 import re
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 from pydantic import Field, field_validator
 
@@ -89,6 +89,18 @@ class JwtAttributeClaimsConfig(PluginConfig):
         ),
     )
 
+    issuer_allowlist: Mutable[Optional[List[str]]] = Field(
+        default=None,
+        description=(
+            "Restrict JWT-claim attribute enrichment to tokens whose ``iss`` "
+            "claim is in this list.  ``None`` (default) accepts all verified "
+            "issuers — safe for single-IdP deployments.  In multi-provider "
+            "setups, set this to prevent a partner IdP's ``dept`` (or any other "
+            "mapped claim) from silently widening or restricting ABAC access. "
+            "Mirrors ``OidcRoleSyncConfig.issuer_whitelist``."
+        ),
+    )
+
     @field_validator("claim_map")
     @classmethod
     def _validate_claim_map_keys(cls, value: Dict[str, str]) -> Dict[str, str]:
@@ -118,6 +130,10 @@ def _resolve_claim_value(raw_claims: Dict[str, object], claim_path: str) -> Opti
         return None
     raw = raw_claims.get(key)
     if raw is None:
+        return None
+    if not isinstance(raw, (str, int, float, bool)):
+        # Non-scalar claim (list, dict, …) — coercing to str would produce
+        # an undebuggable "['finance']"-style string that no predicate matches.
         return None
     value = str(raw).strip()
     return value if value else None
