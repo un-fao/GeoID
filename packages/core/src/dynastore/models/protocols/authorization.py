@@ -59,49 +59,19 @@ class RoleSeed(BaseModel):
     parent: Optional[str] = None
 
 
-# Consumed by the ``default_roles_baseline`` preset; planned removal in PR-5 when boot-time auto-seed is dropped.
-_DEFAULT_PLATFORM_ROLES: List[RoleSeed] = [
-    RoleSeed(
-        name="sysadmin",
-        description="System Administrator with full platform access.",
-        policies=["sysadmin_full_access"],
-        level=100,
-        parent=None,
-    ),
-]
+def _canonical_role_seeds() -> Tuple[List["RoleSeed"], List["RoleSeed"]]:
+    """Late-imported canonical role seeds from the ``default_roles_baseline``
+    preset, returned as ``(platform_seeds, catalog_seeds)``.
 
-
-# Consumed by the ``default_roles_baseline`` preset; planned removal in PR-5 when boot-time auto-seed is dropped.
-_DEFAULT_CATALOG_ROLES: List[RoleSeed] = [
-    RoleSeed(
-        name="admin",
-        description="Tenant administrator — manages roles, grants, and members.",
-        policies=[],
-        level=100,
-        parent=None,
-    ),
-    RoleSeed(
-        name="editor",
-        description="Catalog editor — creates and updates content.",
-        policies=["self_service_access"],
-        level=50,
-        parent="admin",
-    ),
-    RoleSeed(
-        name="user",
-        description="Default role for any authenticated user.",
-        policies=["self_service_access"],
-        level=10,
-        parent="editor",
-    ),
-    RoleSeed(
-        name="unauthenticated",
-        description="Read-only floor for anonymous (unauthenticated) requests.",
-        policies=["public_access"],
-        level=0,
-        parent="user",
-    ),
-]
+    Late import breaks the otherwise-circular dependency
+    models.protocols.authorization → modules.iam.presets — the preset
+    declares ``RoleSeed`` instances that themselves come from this file.
+    """
+    from dynastore.modules.iam.presets.default_roles_baseline import (
+        DEFAULT_CATALOG_ROLES,
+        DEFAULT_PLATFORM_ROLES,
+    )
+    return list(DEFAULT_PLATFORM_ROLES), list(DEFAULT_CATALOG_ROLES)
 
 
 class IamRolesConfig(PluginConfig):
@@ -183,18 +153,22 @@ class IamRolesConfig(PluginConfig):
         ),
     )
     platform_roles: Mutable[List[RoleSeed]] = Field(
-        default_factory=lambda: list(_DEFAULT_PLATFORM_ROLES),
+        default_factory=list,
         description=(
-            "Roles seeded once in the platform-global ``iam`` schema. NOT "
-            "surfaced as grantable in ``GET /admin/roles?catalog_id=X``. "
-            "The seed is idempotent — existing rows are not removed if "
-            "dropped from this list."
+            "Operator-defined extra roles seeded into the platform-global "
+            "``iam`` schema in addition to the canonical defaults shipped "
+            "by the ``default_roles_baseline`` preset. NOT surfaced as "
+            "grantable in ``GET /admin/roles?catalog_id=X``. The seed is "
+            "idempotent — existing rows are not removed if dropped from "
+            "this list."
         ),
     )
     catalog_roles: Mutable[List[RoleSeed]] = Field(
-        default_factory=lambda: list(_DEFAULT_CATALOG_ROLES),
+        default_factory=list,
         description=(
-            "Roles seeded per-catalog in each tenant schema. Surfaced by "
+            "Operator-defined extra roles seeded per-catalog in each tenant "
+            "schema in addition to the canonical defaults shipped by the "
+            "``default_roles_baseline`` preset. Surfaced by "
             "``GET /admin/roles?catalog_id=X`` for the grant UI. The seed "
             "is idempotent — existing rows are not removed if dropped "
             "from this list."
@@ -221,25 +195,42 @@ class IamRolesConfig(PluginConfig):
 
     @property
     def role_names(self) -> List[str]:
-        """Names of every seeded role across both tiers — used to filter
+        """Names of every seeded role across both tiers — canonical
+        preset roles plus operator-defined extras. Used to filter
         incoming realm_roles and to enumerate the known landscape."""
-        return [r.name for r in self.platform_roles] + [
-            r.name for r in self.catalog_roles
-        ]
+        canonical_platform, canonical_catalog = _canonical_role_seeds()
+        return (
+            [r.name for r in canonical_platform]
+            + [r.name for r in self.platform_roles]
+            + [r.name for r in canonical_catalog]
+            + [r.name for r in self.catalog_roles]
+        )
 
     @property
     def platform_role_names(self) -> frozenset[str]:
         """Names of platform-tier roles (not grantable per-catalog).
 
         Used by ``GET /admin/roles?catalog_id=X`` to filter out
-        platform-only roles from the catalog grant UI.
+        platform-only roles from the catalog grant UI. Includes both
+        canonical preset roles and operator-defined extras.
         """
-        return frozenset(r.name for r in self.platform_roles)
+        canonical_platform, _ = _canonical_role_seeds()
+        return frozenset(
+            [r.name for r in canonical_platform]
+            + [r.name for r in self.platform_roles]
+        )
 
     @model_validator(mode="after")
     def _validate_hierarchy_and_slots(self) -> "IamRolesConfig":
-        platform_names = {r.name for r in self.platform_roles}
-        catalog_names = {r.name for r in self.catalog_roles}
+        canonical_platform, canonical_catalog = _canonical_role_seeds()
+        platform_names = (
+            {r.name for r in canonical_platform}
+            | {r.name for r in self.platform_roles}
+        )
+        catalog_names = (
+            {r.name for r in canonical_catalog}
+            | {r.name for r in self.catalog_roles}
+        )
         if platform_names & catalog_names:
             raise ValueError(
                 f"IamRolesConfig: role name(s) {sorted(platform_names & catalog_names)} "
@@ -270,8 +261,8 @@ class IamRolesConfig(PluginConfig):
                         )
                     cur = nxt
 
-        _check_cycles(self.platform_roles, "platform")
-        _check_cycles(self.catalog_roles, "catalog")
+        _check_cycles(list(canonical_platform) + list(self.platform_roles), "platform")
+        _check_cycles(list(canonical_catalog) + list(self.catalog_roles), "catalog")
 
         # Slot integrity — slots must point at a real role IN THE EXPECTED TIER.
         for slot, value in (("sysadmin_role_name", self.sysadmin_role_name),):

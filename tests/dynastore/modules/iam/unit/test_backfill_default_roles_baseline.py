@@ -12,9 +12,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import dynastore.modules.iam.migrations.backfill_default_roles_baseline_audit as _m
-from dynastore.models.protocols.authorization import (
-    _DEFAULT_CATALOG_ROLES,
-    _DEFAULT_PLATFORM_ROLES,
+from dynastore.modules.iam.presets.default_roles_baseline import (
+    DEFAULT_CATALOG_ROLES,
+    DEFAULT_PLATFORM_ROLES,
 )
 
 
@@ -24,12 +24,12 @@ from dynastore.models.protocols.authorization import (
 
 _ALL_ROLE_NAMES = [
     s.name
-    for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)
+    for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)
 ]
 
 _ALL_EDGES = [
     [s.parent, s.name]
-    for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)
+    for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)
     if s.parent
 ]
 

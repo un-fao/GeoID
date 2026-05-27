@@ -11,12 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from dynastore.models.auth_models import Role
-from dynastore.models.protocols.authorization import (
-    _DEFAULT_CATALOG_ROLES,
-    _DEFAULT_PLATFORM_ROLES,
-)
 from dynastore.modules.iam.presets.default_roles_baseline import (
     DefaultRolesBaseline,
+    DEFAULT_CATALOG_ROLES,
+    DEFAULT_PLATFORM_ROLES,
     _HIERARCHY_EDGES,
     _upsert_role,
 )
@@ -92,7 +90,7 @@ def _make_ctx(iam: Any) -> PresetContext:
 
 
 _PRESET = DefaultRolesBaseline()
-_ALL_EXPECTED_ROLE_NAMES = [s.name for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)]
+_ALL_EXPECTED_ROLE_NAMES = [s.name for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)]
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +121,7 @@ async def test_apply_writes_all_roles_on_empty_db():
 
 @pytest.mark.asyncio
 async def test_revoke_removes_roles_written_by_apply():
-    all_roles = {s.name: Role(name=s.name, policies=list(s.policies)) for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)}
+    all_roles = {s.name: Role(name=s.name, policies=list(s.policies)) for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)}
     iam = _make_iam(existing_roles=all_roles)
     ctx = _make_ctx(iam)
 
@@ -144,7 +142,7 @@ async def test_revoke_removes_roles_written_by_apply():
 
 @pytest.mark.asyncio
 async def test_apply_is_idempotent_when_roles_exist():
-    all_roles = {s.name: Role(name=s.name, policies=list(s.policies)) for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)}
+    all_roles = {s.name: Role(name=s.name, policies=list(s.policies)) for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)}
     iam = _make_iam(existing_roles=all_roles)
     ctx = _make_ctx(iam)
 

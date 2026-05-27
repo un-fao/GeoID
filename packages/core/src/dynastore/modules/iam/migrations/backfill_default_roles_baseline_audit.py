@@ -34,9 +34,9 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
     managed_transaction,
 )
-from dynastore.models.protocols.authorization import (
-    _DEFAULT_CATALOG_ROLES,
-    _DEFAULT_PLATFORM_ROLES,
+from dynastore.modules.iam.presets.default_roles_baseline import (
+    DEFAULT_CATALOG_ROLES,
+    DEFAULT_PLATFORM_ROLES,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,13 +47,13 @@ _SCOPE_KEY = "platform"
 # Canonical role names from the preset.
 _ROLE_NAMES: List[str] = [
     s.name
-    for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)
+    for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)
 ]
 
 # Canonical hierarchy edges derived from RoleSeed.parent.
 _HIERARCHY_EDGES: List[Tuple[str, str]] = [
     (s.parent, s.name)
-    for s in list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)
+    for s in list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)
     if s.parent
 ]
 

@@ -2,13 +2,16 @@
 
 Pins the tier-split shape that replaces the single-list ``roles`` field:
 
-- defaults seed ``platform_roles=[sysadmin]`` and
-  ``catalog_roles=[admin, editor, user, unauthenticated]``;
+- canonical roles are owned by the ``default_roles_baseline`` preset
+  (platform: ``sysadmin``; catalog: ``admin, editor, user, unauthenticated``);
+- ``IamRolesConfig.platform_roles`` / ``catalog_roles`` hold OPERATOR-DEFINED
+  extras on top of the canonical preset roles (default ``[]``);
+- ``role_names`` / ``platform_role_names`` properties union canonical + extras;
 - role inheritance is encoded on ``RoleSeed.parent``, not a separate
   ``hierarchy`` list (catalog chain: admin → editor → user → unauthenticated);
 - named slots resolve to the correct tier — ``sysadmin_role_name`` must
-  be in ``platform_roles``; ``admin/editor/default_user/anonymous`` slots
-  must be in ``catalog_roles``;
+  be in the platform union; ``admin/editor/default_user/anonymous`` slots
+  must be in the catalog union;
 - ``admin_tier_role_names`` may span tiers (default: ``[sysadmin, admin]``);
 - cycles in the parent links are rejected;
 - cross-tier parents are rejected (a catalog role cannot inherit from a
@@ -22,16 +25,18 @@ from dynastore.models.protocols.authorization import (
     IamRolesConfig,
     RoleSeed,
 )
+from dynastore.modules.iam.presets.default_roles_baseline import (
+    DEFAULT_CATALOG_ROLES,
+    DEFAULT_PLATFORM_ROLES,
+)
 
 
-def test_defaults_seed_platform_sysadmin_only() -> None:
-    cfg = IamRolesConfig()
-    assert [r.name for r in cfg.platform_roles] == ["sysadmin"]
+def test_canonical_platform_seeds_contain_sysadmin_only() -> None:
+    assert [r.name for r in DEFAULT_PLATFORM_ROLES] == ["sysadmin"]
 
 
-def test_defaults_seed_catalog_tier_four_roles() -> None:
-    cfg = IamRolesConfig()
-    assert [r.name for r in cfg.catalog_roles] == [
+def test_canonical_catalog_seeds_contain_four_roles() -> None:
+    assert [r.name for r in DEFAULT_CATALOG_ROLES] == [
         "admin",
         "editor",
         "user",
@@ -40,13 +45,12 @@ def test_defaults_seed_catalog_tier_four_roles() -> None:
     # `viewer` was dropped from the default seed (geoid#643 slice 1).
     # `anonymous` was renamed to `unauthenticated` (geoid#643 slice 2).
     for forbidden in ("viewer", "anonymous"):
-        assert forbidden not in [r.name for r in cfg.catalog_roles]
+        assert forbidden not in [r.name for r in DEFAULT_CATALOG_ROLES]
 
 
-def test_catalog_chain_parent_links() -> None:
+def test_canonical_catalog_chain_parent_links() -> None:
     """Catalog tier inheritance: admin > editor > user > unauthenticated."""
-    cfg = IamRolesConfig()
-    parents = {r.name: r.parent for r in cfg.catalog_roles}
+    parents = {r.name: r.parent for r in DEFAULT_CATALOG_ROLES}
     assert parents == {
         "admin": None,
         "editor": "admin",
@@ -55,9 +59,16 @@ def test_catalog_chain_parent_links() -> None:
     }
 
 
-def test_platform_sysadmin_has_no_parent() -> None:
+def test_canonical_platform_sysadmin_has_no_parent() -> None:
+    assert DEFAULT_PLATFORM_ROLES[0].parent is None
+
+
+def test_config_defaults_to_empty_operator_extras() -> None:
+    """Config-level fields default to ``[]`` — canonical roles live in the
+    preset, not in the runtime-editable config."""
     cfg = IamRolesConfig()
-    assert cfg.platform_roles[0].parent is None
+    assert cfg.platform_roles == []
+    assert cfg.catalog_roles == []
 
 
 def test_default_named_slots() -> None:
@@ -95,10 +106,10 @@ def test_platform_role_names_property_returns_platform_tier_only() -> None:
 
 def test_operator_added_catalog_role_flows_through() -> None:
     """An operator can append a 5th catalog role via PATCH — verify it
-    shows up in role_names and the catalog set."""
+    shows up in role_names alongside canonical roles and is excluded from
+    the platform set."""
     cfg = IamRolesConfig(
         catalog_roles=[
-            *IamRolesConfig().catalog_roles,
             RoleSeed(name="reviewer", description="External reviewer",
                      policies=[], level=40, parent="editor"),
         ],
