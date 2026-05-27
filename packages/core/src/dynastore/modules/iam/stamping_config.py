@@ -21,8 +21,7 @@ time.  The ``_attrs`` envelope is then queried by the read-filter compiler to
 enforce per-document ABAC restrictions from :data:`iam.grants.attribute_predicates`.
 
 Missing config (collection not enrolled in ABAC stamping) ⟹ no ``_attrs`` key
-is written — byte-for-byte today's behaviour except that ``_grant_subjects``
-is also no longer written (retired by #1441).
+is written.
 
 Example config:
 

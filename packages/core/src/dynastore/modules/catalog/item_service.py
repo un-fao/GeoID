@@ -1326,8 +1326,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         Returns ``{_visibility, _owner, _attrs}`` to stamp onto the index
         payload, or ``None`` when the collection does NOT route to an
         access-aware driver (``applies_access_filter=True``) — nothing is
-        stamped in that case. ``_grant_subjects`` is no longer written (retired
-        by #1441; ``doc_builder`` retains read-tolerance for one release).
+        stamped in that case.
 
         Sources:
 
@@ -1487,8 +1486,6 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         wins. The ES read path strips these internal ``_*`` keys, so they never
         surface to clients.
 
-        ``_grant_subjects`` is no longer stamped (retired by #1441).  The doc
-        builder retains read-tolerance for existing docs for one release.
         ``_attrs`` is stamped when the collection has an
         :class:`~dynastore.modules.iam.stamping_config.AttributeStampingPolicy`
         with a non-empty ``attribute_paths`` map.
@@ -1773,8 +1770,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         access-envelope stamping as the read-back dispatch path (#1287):
         ``_external_id`` from the write policy's ``external_id_path``,
         ``_asset_id`` from ``processing_context``, and — when the collection
-        routes WRITE to an access-aware driver — ``_visibility`` / ``_owner`` /
-        ``_grant_subjects``. Stamping is applied to a per-record copy, so the
+        routes WRITE to an access-aware driver — ``_visibility`` / ``_owner``.
+        Stamping is applied to a per-record copy, so the
         inline FATAL ``write_entities`` (primary store) write still receives the
         unstamped items.
 

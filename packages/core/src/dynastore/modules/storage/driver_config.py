@@ -1171,8 +1171,8 @@ class ItemsElasticsearchEnvelopeDriverConfig(CollectionDriverConfig):
     Pairs with
     :class:`~dynastore.modules.storage.drivers.elasticsearch_envelope.driver.ItemsElasticsearchEnvelopeDriver`,
     which writes the full feature (geometry + properties + identity) plus a
-    canonical *access envelope* (``visibility`` / ``owner`` /
-    ``grant_subjects``) into a per-tenant index named
+    canonical *access envelope* (``visibility`` / ``owner``) into a
+    per-tenant index named
     ``{index_prefix}-{catalog_id}-envelope-items`` (catalog-scoped, shared
     across all collections of a catalog). The access envelope backs the
     row-level ABAC filter the driver ANDs into every search.
