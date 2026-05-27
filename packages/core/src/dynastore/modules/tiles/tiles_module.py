@@ -187,10 +187,8 @@ class TilesModule(ModuleProtocol, DatabaseProtocol):
                 unregister_plugin(obj)
                 setattr(self, attr, None)
 
-        # --- REGISTER LISTENERS ---
-        # Register in-process listeners to cleanup tile resources when a collection deletion event occurs.
-        logger.info("TilesModule: Registering event listeners.")
-        register_listeners()
+        # Hard-deletion tile cleanup is now handled by TilePreseedOwner
+        # registered in the cascade cleanup registry.  No event listener needed.
 
 
 # --- Tile Storage Protocols ---
