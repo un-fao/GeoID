@@ -6,12 +6,15 @@ Covers:
 - Owners returning [] are filtered out; task not enqueued when all return [].
 - Enqueue is called with the right payload shape (scope_ref, mode, refs).
 - Owner.describe_scope exception is swallowed and logged; other owners proceed.
+- snapshot_and_enqueue is called BEFORE _drop_schema_query.execute in
+  _purge_catalog_storage (ordering invariant for cascade replay safety).
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any, Iterable
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -201,3 +204,94 @@ class TestOrchestratorSnapshotAndEnqueue:
             CleanupMode.HARD,
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Ordering invariant: snapshot_and_enqueue BEFORE _drop_schema_query.execute
+# ---------------------------------------------------------------------------
+#
+# _purge_catalog_storage must capture the pre-drop DB state before the schema
+# is gone.  If the order ever flips the snapshot reads an empty schema and
+# cascade replay / dead-letter queues lose all refs — silent data loss.
+# This test pins the call order structurally so any future reordering breaks
+# loudly in CI.
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeCatalogStorageOrdering:
+    """Regression guard for #1470: snapshot_and_enqueue precedes schema drop."""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_called_before_schema_drop(self) -> None:
+        """snapshot_and_enqueue must be awaited before _drop_schema_query.execute."""
+        import dynastore.modules.catalog.catalog_service as cs_mod
+        from dynastore.modules.catalog.catalog_service import CatalogService
+
+        # --- fake conn -------------------------------------------------------
+        conn = MagicMock()
+
+        # --- orchestrator with a trackable snapshot_and_enqueue --------------
+        mock_orchestrator = MagicMock()
+        snapshot_mock = AsyncMock(return_value="task-id-test")
+        mock_orchestrator.snapshot_and_enqueue = snapshot_mock
+
+        # --- parent mock that records ordering across both targets -----------
+        parent = Mock()
+        parent.attach_mock(snapshot_mock, "snapshot_and_enqueue")
+
+        # --- _drop_schema_query.execute mock ---------------------------------
+        drop_execute_mock = AsyncMock(return_value=None)
+        parent.attach_mock(drop_execute_mock, "drop_execute")
+
+        # --- inline DQLQuery for physical_schema lookup ----------------------
+        # The method constructs DQLQuery(SQL).execute(conn, ...) inline.
+        # We patch the class so any instantiation returns a mock whose execute
+        # returns the fake schema name.
+        fake_dql_instance = MagicMock()
+        fake_dql_instance.execute = AsyncMock(return_value="s_test_schema")
+
+        # --- _hard_delete_catalog_query.execute ------------------------------
+        hard_delete_execute_mock = AsyncMock(return_value=1)
+
+        # --- managed_nested_transaction no-op context manager ---------------
+        @asynccontextmanager
+        async def _fake_nested_tx(conn_arg: Any):  # noqa: ANN001
+            yield MagicMock()
+
+        service = CatalogService(cascade_orchestrator=mock_orchestrator)
+
+        with (
+            patch.object(cs_mod._drop_schema_query, "execute", drop_execute_mock),
+            patch.object(cs_mod._hard_delete_catalog_query, "execute", hard_delete_execute_mock),
+            patch(
+                "dynastore.modules.catalog.catalog_service.DQLQuery",
+                return_value=fake_dql_instance,
+            ),
+            patch(
+                "dynastore.modules.catalog.catalog_service.managed_nested_transaction",
+                _fake_nested_tx,
+            ),
+        ):
+            await service._purge_catalog_storage(conn, "cat-ordering-test")
+
+        # Both methods must have been called exactly once.
+        snapshot_mock.assert_awaited_once()
+        drop_execute_mock.assert_awaited_once()
+
+        # Ordering: snapshot_and_enqueue must appear BEFORE drop_execute in
+        # the parent mock's call list.
+        call_names = [c[0] for c in parent.mock_calls]
+        assert "snapshot_and_enqueue" in call_names, (
+            "snapshot_and_enqueue was not called — cascade snapshot is missing"
+        )
+        assert "drop_execute" in call_names, (
+            "_drop_schema_query.execute was not called — schema was never dropped"
+        )
+        snapshot_pos = call_names.index("snapshot_and_enqueue")
+        drop_pos = call_names.index("drop_execute")
+        assert snapshot_pos < drop_pos, (
+            f"_drop_schema_query.execute (pos {drop_pos}) ran BEFORE "
+            f"snapshot_and_enqueue (pos {snapshot_pos}). "
+            "The cascade snapshot would capture an empty schema — "
+            "revert the reordering in _purge_catalog_storage."
+        )
