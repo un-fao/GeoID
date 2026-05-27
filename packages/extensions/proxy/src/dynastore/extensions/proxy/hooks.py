@@ -1,6 +1,5 @@
 from typing import Optional
 import logging
-from dynastore.modules.catalog.event_service import register_event_listener, CatalogEventType
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler, DbResource
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.modules import get_protocol
@@ -10,12 +9,15 @@ logger = logging.getLogger(__name__)
 
 async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, cache_conn: Optional[DbResource] = None, db_resource: Optional[DbResource] = None, **kwargs):
     """
-    Listener for COLLECTION_DELETION and COLLECTION_HARD_DELETION events.
-    Cleans up all proxy URLs associated with a deleted collection.
+    Cleanup all proxy URLs associated with a deleted collection.
+
+    Retained for direct-call use (e.g. tombstone reset on create_collection).
+    Hard-delete cleanup is now handled by ProxyUrlOwner registered in the
+    cascade cleanup registry.
     """
     catalog_id = kwargs.get("catalog_id") or (event_payload.get("catalog_id") if event_payload else None)
     collection_id = kwargs.get("collection_id") or (event_payload.get("collection_id") if event_payload else None)
-    
+
     active_db = db_resource or cache_conn
 
     if not catalog_id or not collection_id or not active_db:
@@ -37,10 +39,10 @@ async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, ca
         )
         # Use active_db directly to avoid nested transaction deadlocks
         short_keys = await find_keys_query.execute(active_db, coll=collection_id)
-        
+
         if not short_keys:
             return
-        
+
         logger.info(f"Proxy Hook: Found {len(short_keys)} short keys to delete for collection '{collection_id}'")
 
         # 3. Delete from global proxy table
@@ -51,8 +53,7 @@ async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, ca
             except Exception as e:
                 logger.error(f"Proxy Hook: Failed to delete short key '{key}' from storage: {e}")
 
-        # 4. Clean up tracking table — DML, use DQLQuery (DDLQuery would
-        # wrap each DELETE in advisory lock + savepoint, wrong for hot path)
+        # 4. Clean up tracking table — DML, use DQLQuery
         await DQLQuery(
             f"DELETE FROM {phys_schema}.collection_proxy_urls WHERE collection_id = :coll",
             result_handler=ResultHandler.NONE,
@@ -60,9 +61,3 @@ async def cleanup_collection_proxy_urls(event_payload: Optional[dict] = None, ca
 
     except Exception as e:
         logger.error(f"Proxy Hook: Error during cleanup for collection '{collection_id}': {e}", exc_info=True)
-
-def register_proxy_listeners():
-    """Registers proxy cleanup listeners."""
-    register_event_listener(CatalogEventType.COLLECTION_DELETION, cleanup_collection_proxy_urls)
-    register_event_listener(CatalogEventType.COLLECTION_HARD_DELETION, cleanup_collection_proxy_urls)
-
