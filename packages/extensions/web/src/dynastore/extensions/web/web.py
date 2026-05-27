@@ -80,6 +80,7 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
             actions=["GET", "OPTIONS"],
             resources=[
                 "/$",
+                "/health$",
                 "/docs.*",
                 "/openapi.json",
                 "/favicon.ico.*",
@@ -91,7 +92,6 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/web/docs-content/.*",
                 "/web/docs-manifest$",
                 "/web/config/.*",
-                "/web/health$",
                 "/web/dashboard/?$",
                 "/web/lite/.*",
                 "/.well-known/.*",
@@ -1496,10 +1496,6 @@ async function demoAction(action) {
             if os.path.exists(processes_index):
                 return await self.serve_file(processes_index)
             return HTMLResponse("Processes Page Not Found", status_code=404)
-
-        @self.router.get("/health", tags=["Web Health"])
-        async def health_check():
-            return {"status": "ok"}
 
         @self.router.get("/config/pages", response_class=JSONResponse)
         async def get_web_pages_config(
