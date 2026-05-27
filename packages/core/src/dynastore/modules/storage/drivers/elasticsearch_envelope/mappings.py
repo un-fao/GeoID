@@ -20,7 +20,7 @@ which holds only platform-wide STAC mappings (catalog/collection/item/asset).
 
 Stores the full feature (geometry + properties + identity) in a single index
 per tenant (catalog), plus a canonical *access envelope* (``visibility`` /
-``owner`` / ``grant_subjects``) carried as typed root keyword fields. The
+``owner``) carried as typed root keyword fields. The
 access fields are intentionally part of the STATIC mapping (root
 ``dynamic: false``) — never dynamically inferred — so that a row-level access
 filter built from them is reliable: a field that is sometimes absent from the
@@ -55,15 +55,10 @@ ENVELOPE_FEATURE_MAPPING: Dict[str, Any] = {
         "external_id":           {"type": "keyword"},
         "asset_id":              {"type": "keyword"},
         # --- access envelope (typed, never dynamic) ---
-        # These three back the row-level ABAC ``terms`` predicates. They MUST
+        # These two back the row-level ABAC ``terms`` predicates. They MUST
         # stay in the static mapping so a filter on them is deterministic.
         "visibility":            {"type": "keyword"},
         "owner":                 {"type": "keyword"},
-        # ``grant_subjects`` is multi-valued (a keyword field in ES is
-        # implicitly array-capable); a ``terms`` filter intersects it.
-        # Retained in the mapping for read-tolerance on pre-#1441 docs;
-        # new docs no longer populate this field.
-        "grant_subjects":        {"type": "keyword"},
         # ``attrs`` holds per-document ABAC attributes stamped at write time
         # from the collection's AttributeStampingPolicy (#1441).  Sub-fields
         # are declared dynamic ``keyword`` so a new attribute key is

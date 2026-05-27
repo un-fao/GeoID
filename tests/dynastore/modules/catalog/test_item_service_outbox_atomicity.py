@@ -35,7 +35,7 @@ Scenarios covered:
    the unstamped items.
 5. **Access-envelope stamping** — when the collection routes WRITE to an
    access-aware driver, the outbox payload also carries ``_visibility`` /
-   ``_owner`` / ``_grant_subjects`` (#1285/#1287).
+   ``_owner`` (#1285/#1287).
 
 The tests inject a fake routing resolver, a fake driver registry, a
 fake outbox store, and a stub TX/db resource via the new
@@ -405,8 +405,8 @@ async def test_upsert_bulk_stamps_identity_on_outbox_records():
 @pytest.mark.asyncio
 async def test_upsert_bulk_stamps_access_envelope_for_access_aware_driver():
     """When the collection routes WRITE to an access-aware driver, OUTBOX
-    payloads also carry the access envelope (``_visibility`` / ``_owner`` /
-    ``_grant_subjects``) — #1285/#1287. The primary write stays clean."""
+    payloads also carry the access envelope (``_visibility`` / ``_owner``) —
+    #1285/#1287. The primary write stays clean."""
     engine = _FakeEngine()
     driver = _RecordingDriver()
     outbox = _RecordingOutbox()
@@ -425,7 +425,6 @@ async def test_upsert_bulk_stamps_access_envelope_for_access_aware_driver():
         return {
             "_visibility": "private",
             "_owner": "alice",
-            "_grant_subjects": [],
         }
 
     svc._resolve_external_id_path = _no_ext  # type: ignore[assignment]
@@ -438,6 +437,5 @@ async def test_upsert_bulk_stamps_access_envelope_for_access_aware_driver():
     payload = outbox.enqueued_calls[0]["rows"][0].payload
     assert payload["_visibility"] == "private"
     assert payload["_owner"] == "alice"
-    assert payload["_grant_subjects"] == []
     # Primary store row is untouched by the envelope stamping.
     assert "_visibility" not in driver.calls[0]["entities"][0]

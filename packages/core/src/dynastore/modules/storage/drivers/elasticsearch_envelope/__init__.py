@@ -16,7 +16,7 @@
 Standardized-envelope Elasticsearch storage driver subpackage — items-tier only.
 
 This driver writes a canonical document envelope carrying typed identity and
-access fields (``visibility`` / ``owner`` / ``grant_subjects``) and ANDs a
+access fields (``visibility`` / ``owner``) and ANDs a
 row-level access filter into every search by translating a neutral
 ``AccessFilter`` into ES Query DSL.
 

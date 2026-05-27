@@ -16,7 +16,7 @@
 ItemsElasticsearchEnvelopeDriver — standardized-envelope ES storage driver.
 
 Writes the full feature (geometry + properties + identity) plus a canonical
-*access envelope* (``visibility`` / ``owner`` / ``grant_subjects``) into a
+*access envelope* (``visibility`` / ``owner``) into a
 per-tenant index whose name is owned by this subpackage
 (``{prefix}-{catalog_id}-envelope-items``). Driver-private mapping
 (``ENVELOPE_FEATURE_MAPPING``) lives in :mod:`.mappings`.
@@ -74,7 +74,7 @@ class ItemsElasticsearchEnvelopeDriver(
     index ``{prefix}-{catalog_id}-envelope-items`` shared across all
     collections of the catalog. The mapping is ``ENVELOPE_FEATURE_MAPPING``
     (root ``dynamic: false`` to reject smuggled fields; the access fields
-    ``visibility`` / ``owner`` / ``grant_subjects`` are typed root keywords so
+    ``visibility`` / ``owner`` are typed root keywords so
     the row-level filter is reliable; ``properties.*`` stays dynamic so tenant
     attributes index without mapping churn).
 
@@ -246,7 +246,6 @@ class ItemsElasticsearchEnvelopeDriver(
             asset_id=ctx.get("asset_id"),
             visibility=ctx.get("visibility"),
             owner=ctx.get("owner"),
-            grant_subjects=ctx.get("grant_subjects"),
             attrs=ctx.get("attrs"),
         )
 
@@ -421,7 +420,7 @@ class ItemsElasticsearchEnvelopeDriver(
         Surfaces feature bookkeeping (``external_id`` and the simplification
         markers) in ``properties`` so callers can detect simplification without
         a separate API. The access-envelope fields (``visibility`` / ``owner``
-        / ``grant_subjects``) are deliberately NOT surfaced into the read
+        ) are deliberately NOT surfaced into the read
         contract — they are internal authorization metadata, not feature
         attributes.
         """
@@ -531,7 +530,7 @@ class ItemsElasticsearchEnvelopeDriver(
 
         When called from the ``IndexDispatcher``, ``op.payload`` carries the
         full STAC item (with any dispatcher-stamped ``_visibility`` /
-        ``_owner`` / ``_grant_subjects`` access keys); the driver builds the
+        ``_owner`` access keys); the driver builds the
         envelope doc and shrinks oversized geometries before indexing.
         """
         if op.entity_type != "item":
