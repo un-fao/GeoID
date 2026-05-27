@@ -148,7 +148,17 @@ async def _build_collection_subquery(
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            schema_fields = list((getattr(schema, "fields", None) or {}).keys())
+            # Filter to fields safe for MVT properties: skip geometry-typed
+            # entries (the geom comes from the geometry sidecar; selecting
+            # ``geometry`` again would JOIN as a missing attribute) and skip
+            # ``expose=False`` admin-tuned fields (the schema's own opt-out).
+            fields = getattr(schema, "fields", None) or {}
+            schema_fields = [
+                name
+                for name, fdef in fields.items()
+                if getattr(fdef, "expose", True)
+                and not str(getattr(fdef, "data_type", "")).startswith("geometry")
+            ]
     except Exception as exc:  # noqa: BLE001 — read assembly must not break on config miss
         logger.debug(
             "tile read_policy resolution skipped for %s/%s: %s",
