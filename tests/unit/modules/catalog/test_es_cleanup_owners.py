@@ -1,4 +1,4 @@
-"""Unit tests for EsItemsIndexOwner and EsCollectionIndexOwner — Chunk 2.
+"""Unit tests for EsItemsIndexOwner — Chunk 2.
 
 Covers:
 - describe_scope returns expected CleanupRef shape for CATALOG scope.
@@ -7,8 +7,7 @@ Covers:
 - cleanup_one treats 404 (ignore_unavailable) as DONE (no exception raised).
 - cleanup_one SOFT returns DONE and does not call delete.
 - cleanup_one HARD on ES exception returns RETRY.
-- register_owners adds both owners to the registry.
-- EsCollectionIndexOwner.describe_scope always returns [].
+- register_owners adds the owner to the registry.
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ from dynastore.modules.catalog.resource_owner import (
     ScopeRef,
 )
 from dynastore.modules.storage.drivers.elasticsearch_private.cascade_owners import (
-    EsCollectionIndexOwner,
     EsItemsIndexOwner,
     register_owners,
 )
@@ -195,63 +193,22 @@ class TestEsItemsIndexOwnerCleanupOne:
 
 
 # ---------------------------------------------------------------------------
-# EsCollectionIndexOwner
-# ---------------------------------------------------------------------------
-
-
-class TestEsCollectionIndexOwner:
-    @pytest.mark.asyncio
-    async def test_describe_scope_catalog_returns_empty(self) -> None:
-        owner = EsCollectionIndexOwner()
-        scope_ref = ScopeRef(scope=ResourceScope.CATALOG, catalog_id=_CATALOG_ID)
-        refs = await owner.describe_scope(scope_ref, MagicMock())
-        assert refs == []
-
-    @pytest.mark.asyncio
-    async def test_describe_scope_collection_returns_empty(self) -> None:
-        owner = EsCollectionIndexOwner()
-        scope_ref = ScopeRef(
-            scope=ResourceScope.COLLECTION,
-            catalog_id=_CATALOG_ID,
-            collection_id="col-1",
-        )
-        refs = await owner.describe_scope(scope_ref, MagicMock())
-        assert refs == []
-
-    @pytest.mark.asyncio
-    async def test_cleanup_one_returns_done(self) -> None:
-        owner = EsCollectionIndexOwner()
-        ref = CleanupRef(
-            kind="es_index", locator="dummy", owner_id=EsCollectionIndexOwner.owner_id
-        )
-        outcome = await owner.cleanup_one(ref, CleanupMode.HARD)
-        assert outcome == CleanupOutcome.DONE
-
-
-# ---------------------------------------------------------------------------
 # register_owners
 # ---------------------------------------------------------------------------
 
 
 class TestRegisterOwners:
-    def test_register_adds_both_owners(self) -> None:
+    def test_register_adds_items_owner(self) -> None:
         reg = CascadeCleanupRegistry()
         register_owners(reg)
 
         assert reg.get(EsItemsIndexOwner.owner_id) is not None
-        assert reg.get(EsCollectionIndexOwner.owner_id) is not None
 
     def test_register_items_owner_in_catalog_scope(self) -> None:
         reg = CascadeCleanupRegistry()
         register_owners(reg)
         catalog_owners = [o.owner_id for o in reg.owners_for_scope(ResourceScope.CATALOG)]
         assert EsItemsIndexOwner.owner_id in catalog_owners
-
-    def test_register_collection_owner_in_collection_scope(self) -> None:
-        reg = CascadeCleanupRegistry()
-        register_owners(reg)
-        col_owners = [o.owner_id for o in reg.owners_for_scope(ResourceScope.COLLECTION)]
-        assert EsCollectionIndexOwner.owner_id in col_owners
 
     def test_double_register_raises_value_error(self) -> None:
         reg = CascadeCleanupRegistry()

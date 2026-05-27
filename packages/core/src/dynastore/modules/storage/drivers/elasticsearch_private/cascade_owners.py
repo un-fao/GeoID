@@ -13,19 +13,11 @@
 
 """Cascade cleanup owners for the Elasticsearch private items driver.
 
-Two owners are provided:
-
-* :class:`EsItemsIndexOwner` — manages the per-catalog private items index
-  named ``{prefix}-{catalog_id}-private-items`` (as returned by
-  :func:`~dynastore.modules.storage.drivers.elasticsearch_private.mappings.get_private_index_name`).
-  Handles CATALOG scope (one ref per catalog) and COLLECTION scope (returns
-  the same per-catalog index, since the private driver uses a single shared
-  index per tenant — not one per collection).
-
-* :class:`EsCollectionIndexOwner` — the private driver has NO per-collection
-  sub-index.  ``describe_scope`` always returns ``[]`` so the owner registers
-  only as a documentation stub and a hook point for future per-collection
-  private sharding.
+:class:`EsItemsIndexOwner` manages the per-catalog private items index named
+``{prefix}-{catalog_id}-private-items`` (see
+:func:`~dynastore.modules.storage.drivers.elasticsearch_private.mappings.get_private_index_name`).
+Only CATALOG scope is meaningful — the private driver uses a single shared
+index per tenant, so deleting a collection does not touch ES.
 
 Do NOT import these owners at module scope from anywhere that is loaded during
 startup unless you call :func:`register_owners` explicitly after construction.
@@ -156,47 +148,6 @@ class EsItemsIndexOwner(BaseResourceOwner):
             return CleanupOutcome.RETRY
 
 
-class EsCollectionIndexOwner(BaseResourceOwner):
-    """Resource owner stub for per-collection ES private indexes.
-
-    The current private driver does NOT create per-collection sub-indexes —
-    all items across collections in a catalog share
-    ``{prefix}-{catalog_id}-private-items``.
-
-    This owner exists as a forward-compatibility hook: if a future slice
-    introduces per-collection sharding, this class will be extended.
-    Until then, ``describe_scope`` always returns ``[]`` for every scope.
-    """
-
-    owner_id: ClassVar[str] = "es_private.collection_index"
-
-    def supported_scopes(self) -> Iterable[ResourceScope]:
-        # Registers for COLLECTION scope so it appears in the dispatch table
-        # when the private driver is active, but returns no refs today.
-        return (ResourceScope.COLLECTION,)
-
-    async def describe_scope(
-        self, scope_ref: ScopeRef, conn: Any
-    ) -> list[CleanupRef]:
-        # No per-collection index exists in the current private driver.
-        return []
-
-    async def cleanup_one(
-        self,
-        ref: CleanupRef,
-        mode: CleanupMode,
-        *,
-        dry_run: bool = False,
-    ) -> CleanupOutcome:
-        # Should never be called — describe_scope always returns [].
-        logger.warning(
-            "EsCollectionIndexOwner.cleanup_one called for %r — "
-            "no per-collection index expected; returning DONE.",
-            ref.locator,
-        )
-        return CleanupOutcome.DONE
-
-
 def register_owners(registry: "CascadeCleanupRegistry") -> None:
     """Register ES private cascade owners into *registry*.
 
@@ -205,9 +156,7 @@ def register_owners(registry: "CascadeCleanupRegistry") -> None:
     is called.  Do NOT call at module import time.
     """
     registry.register(EsItemsIndexOwner())
-    registry.register(EsCollectionIndexOwner())
     logger.info(
-        "EsPrivateDriver: registered cascade owners %r and %r.",
+        "EsPrivateDriver: registered cascade owner %r.",
         EsItemsIndexOwner.owner_id,
-        EsCollectionIndexOwner.owner_id,
     )
