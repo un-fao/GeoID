@@ -76,6 +76,32 @@ from dynastore.tools.discovery import register_plugin, unregister_plugin
 
 logger = logging.getLogger(__name__)
 
+# Module-level DQLQuery objects used by _bootstrap_public_access_baseline so
+# that tests can patch them without fighting inline construction.
+from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler  # noqa: E402
+
+_BOOTSTRAP_SELECT_SENTINEL = DQLQuery(
+    """
+    SELECT 1 FROM iam.applied_presets
+    WHERE preset_name = 'public_access_baseline'
+      AND scope_key   = 'platform'
+    """,
+    result_handler=ResultHandler.ONE_OR_NONE,
+)
+
+_BOOTSTRAP_INSERT_SENTINEL = DQLQuery(
+    """
+    INSERT INTO iam.applied_presets
+        (preset_name, scope_key, state, applied_at, applied_by,
+         params_snapshot, revoke_descriptor, updated_at)
+    VALUES
+        ('public_access_baseline', 'platform', 'applied', NOW(), NULL,
+         :params_snapshot, :revoke_descriptor, NOW())
+    ON CONFLICT (preset_name, scope_key) DO NOTHING
+    """,
+    result_handler=ResultHandler.ONE_OR_NONE,
+)
+
 
 from dynastore.models.protocols.policies import PermissionProtocol
 class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PermissionProtocol):
@@ -176,20 +202,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             _roles_bf_exc,
                         )
 
-                    # One-shot migration: normalize the public_access policy
-                    # resource list — remove the stale /web/.* catch-all (fixed
-                    # in eaa8cbf89). With _ALWAYS_REFRESH gone from PR-5 the
-                    # old broken row would not be auto-corrected at boot without
-                    # this explicit migration step.
-                    try:
-                        from dynastore.modules.iam.migrations.normalize_public_access import run_migration as _run_normalize
-                        await _run_normalize(engine=engine)
-                    except Exception as _norm_exc:
-                        logger.warning(
-                            "IamModule: public_access normalize migration failed (non-fatal): %s",
-                            _norm_exc,
-                        )
-
                     # One-shot migration: backfill the allowed_preset_names
                     # safe-subset on the catalog_preset_delegation policy
                     # (#1426). Pre-fix iam_baseline shipped without the
@@ -257,6 +269,24 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # would be merged into Principal.attributes, potentially widening
             # or restricting ABAC access silently.
             await _warn_jwt_attr_no_issuer_allowlist()
+
+            # Cold-boot fallback for headless infrastructure (#1412 follow-up).
+            # Issue #1412 moved all extension policies into operator-applied presets but
+            # headless infra probes (Cloud Run /health startup probe) run BEFORE any
+            # operator can log in. Apply `public_access_baseline` ONCE per DB to land the
+            # minimal anon-allow Policy. Sentinel: iam.applied_presets row.
+            # On restart, the row is present and this block no-ops. Sysadmin DELETE of
+            # the preset removes both the Policy and the audit row, re-enabling re-apply.
+            try:
+                db = get_protocol(DatabaseProtocol)
+                engine = db.engine if db else None
+                await self._bootstrap_public_access_baseline(engine)
+            except Exception as exc:
+                logger.error(
+                    "public_access_baseline bootstrap failed; /health may 403 until "
+                    "operator applies it manually via POST /admin/presets/public_access_baseline/apply: %s",
+                    exc,
+                )
 
             # Register plugins
             register_plugin(self._iam_manager)
@@ -354,6 +384,64 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         
         # Finally unregister self
         unregister_plugin(self)
+
+    async def _bootstrap_public_access_baseline(self, engine: Any) -> None:
+        """Apply ``public_access_baseline`` once per DB on cold-boot.
+
+        Uses iam.applied_presets as a sentinel so subsequent restarts no-op.
+        Sysadmin DELETE of the preset removes the sentinel row and re-arms
+        this block on the next restart.
+        """
+        import json
+
+        from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+        from dynastore.modules.storage.presets.preset import NoParams, PresetContext
+        from dynastore.modules.storage.presets.registry import find_preset
+        from dynastore.modules.iam.iam_service import IamService
+        from dynastore.modules.iam.policies import PolicyService
+
+        async with acquire_startup_lock(engine, "iam_seed:public_access_baseline") as conn:
+            if conn is None:
+                # Another worker holds the lock and is performing the bootstrap.
+                return
+
+            row = await _BOOTSTRAP_SELECT_SENTINEL.execute(conn)
+            if row is not None:
+                logger.debug(
+                    "public_access_baseline bootstrap: sentinel present — skipping"
+                )
+                return
+
+            preset = find_preset("public_access_baseline")
+            if preset is None:
+                logger.warning(
+                    "public_access_baseline bootstrap: preset not registered — skipping"
+                )
+                return
+
+            ctx = PresetContext(
+                db=engine,
+                iam=get_protocol(IamService),
+                policy=get_protocol(PolicyService),
+                config=None,
+                tasks=None,
+                cron=None,
+                libs=None,
+                principal=None,
+                scope="platform",
+            )
+
+            descriptor = await preset.apply(NoParams(), "platform", ctx)
+
+            await _BOOTSTRAP_INSERT_SENTINEL.execute(
+                conn,
+                params_snapshot=json.dumps({}),
+                revoke_descriptor=json.dumps(descriptor.payload),
+            )
+            logger.info(
+                "public_access_baseline preset applied on cold-boot — "
+                "anon /health probe enabled"
+            )
 
     async def _register_usage_counter_drivers(self, stack: AsyncExitStack) -> None:
         """Wire a :class:`UsageCounterProtocol` driver for rate-limit / quota.
