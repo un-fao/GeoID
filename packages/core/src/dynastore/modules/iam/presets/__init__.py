@@ -20,7 +20,9 @@ registrations happen before ``GET /admin/presets`` is served.
 from dynastore.modules.storage.presets.registry import register_preset
 
 from .default_roles_baseline import DefaultRolesBaseline
+from .public_access_baseline import PublicAccessBaseline
 
 register_preset(DefaultRolesBaseline())
+register_preset(PublicAccessBaseline())
 
-__all__ = ["DefaultRolesBaseline"]
+__all__ = ["DefaultRolesBaseline", "PublicAccessBaseline"]
