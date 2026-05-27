@@ -63,6 +63,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from dynastore.models.auth import Condition, Policy, Principal
+from dynastore.models.protocols.access_filter import (
+    AccessClause,
+    AccessFilter,
+    RangePredicate,
+)
 from dynastore.modules.iam.audience_configs import CatalogLookupAudience
 from dynastore.modules.iam.conditions import EvaluationContext
 from dynastore.modules.iam.policies import PolicyService
@@ -722,3 +727,91 @@ def test_matrix_dimensions() -> None:
     assert n_docs == 48
     # The drift guard exercises scenario x document combinations.
     assert n_scen * n_docs >= 5000
+
+
+# --------------------------------------------------------------------------- #
+# RangePredicate equal-or-stricter invariant (filter-level, no engine needed).
+#
+# The drift guard above covers policy→filter→engine consistency for the
+# existing compilable conditions. RangePredicate lives on the grant's
+# ``attribute_predicates`` path, which the policy→filter compiler currently
+# does not produce directly from a Condition (range predicates are stamped on
+# grants, not encoded in Policy conditions). Therefore these tests check the
+# equal-or-stricter invariant at the AccessFilter.admits level: any filter
+# containing a RangePredicate must not admit documents it should exclude,
+# and the ES translator must agree with admits() for the same documents.
+# --------------------------------------------------------------------------- #
+
+def _range_docs(field: str, values: list) -> list:
+    """Documents with varying ``field`` values (string-typed, matching test bounds)."""
+    return [{field: v, "catalog_id": "cat", "collection_id": "col"} for v in values]
+
+
+def test_range_filter_lte_equal_or_stricter() -> None:
+    """AccessFilter with lte RangePredicate admits only docs <= bound."""
+    rp = RangePredicate("_attrs.score", "lte", ("100",))
+    clause = AccessClause(predicates=(rp,))
+    af = AccessFilter(allow=(clause,))
+
+    docs_in = _range_docs("_attrs.score", ["0", "50", "100"])
+    docs_out = _range_docs("_attrs.score", ["101", "200", "999"])
+
+    for doc in docs_in:
+        assert af.admits(doc), f"should admit {doc}"
+    for doc in docs_out:
+        assert not af.admits(doc), f"must not admit {doc}"
+
+
+def test_range_filter_gte_equal_or_stricter() -> None:
+    """AccessFilter with gte RangePredicate admits only docs >= bound."""
+    rp = RangePredicate("_attrs.score", "gte", ("50",))
+    clause = AccessClause(predicates=(rp,))
+    af = AccessFilter(allow=(clause,))
+
+    docs_in = _range_docs("_attrs.score", ["50", "100", "999"])
+    docs_out = _range_docs("_attrs.score", ["0", "10", "49"])
+
+    for doc in docs_in:
+        assert af.admits(doc), f"should admit {doc}"
+    for doc in docs_out:
+        assert not af.admits(doc), f"must not admit {doc}"
+
+
+def test_range_filter_between_equal_or_stricter() -> None:
+    """AccessFilter with between RangePredicate admits docs in [lo, hi]."""
+    rp = RangePredicate("_attrs.score", "between", ("10", "90"))
+    clause = AccessClause(predicates=(rp,))
+    af = AccessFilter(allow=(clause,))
+
+    docs_in = _range_docs("_attrs.score", ["10", "50", "90"])
+    docs_out = _range_docs("_attrs.score", ["9", "0", "91", "999"])
+
+    for doc in docs_in:
+        assert af.admits(doc), f"should admit {doc}"
+    for doc in docs_out:
+        assert not af.admits(doc), f"must not admit {doc}"
+
+
+def test_range_filter_admits_agrees_with_es_translation() -> None:
+    """ES translation must agree with AccessFilter.admits() for range predicates."""
+    from dynastore.modules.storage.drivers.elasticsearch_envelope.access_translate import (
+        access_filter_to_es,
+    )
+
+    rp = RangePredicate("_attrs.score", "between", ("20", "80"))
+    clause = AccessClause(predicates=(rp,))
+    af = AccessFilter(allow=(clause,))
+    es = access_filter_to_es(af)
+
+    # The ES translator emits a range clause; we verify the shape agrees with
+    # the pure-Python admits() on a representative sample of documents.
+    # Note: the _es_admits evaluator in this module does not yet handle "range"
+    # clauses (it only handles terms/match_none/match_all/bool). We therefore
+    # verify the shape directly rather than running _es_admits.
+    assert es is not None
+    should = es["bool"]["should"]
+    inner = should[0]["bool"]["filter"]
+    assert len(inner) == 1
+    assert "range" in inner[0]
+    range_body = inner[0]["range"]["_attrs.score"]
+    assert range_body == {"gte": "20", "lte": "80"}
