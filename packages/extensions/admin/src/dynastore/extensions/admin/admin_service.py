@@ -19,6 +19,19 @@ import logging
 from typing import TYPE_CHECKING, Literal, Optional
 from uuid import UUID
 
+from pydantic import BaseModel as _BaseModel
+
+
+class PromoteAttrRequest(_BaseModel):
+    """Request body for ``POST /admin/catalogs/{cat}/collections/{coll}/attrs/promote``."""
+
+    column: str
+    """Attribute key to promote.  Must match ``[A-Za-z_][A-Za-z0-9_]*``."""
+
+    pg_type: Optional[str] = "TEXT"
+    """PostgreSQL type for the promoted column.  Defaults to ``TEXT``.
+    Allowed: ``TEXT``, ``NUMERIC``, ``TIMESTAMPTZ``, ``TEXT[]``."""
+
 if TYPE_CHECKING:
     from dynastore.modules.storage.presets import PresetTier
 
@@ -1639,6 +1652,150 @@ class AdminService(ExtensionProtocol):
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ---- Envelope attribute column promotion (#1443 F5) --------------------
+    #
+    # Sysadmin-only: promotes an ABAC attribute key to a first-class PG column
+    # (``_attr_{key}``) on the collection's items table.  Requires that the key
+    # is already declared in ``AttributeStampingPolicy.attribute_paths`` for the
+    # collection.
+    #
+    # The actual DDL + backfill is run via an async task so the endpoint can
+    # return 202 immediately even for large tables.
+
+    @router.post(
+        "/catalogs/{catalog_id}/collections/{collection_id}/attrs/promote",
+        status_code=202,
+        summary="Promote an ABAC attribute key to a first-class PG column",
+    )
+    async def promote_collection_attr(
+        request: Request,  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: str,
+        body: "PromoteAttrRequest",
+    ):
+        """Promote ``_attrs.{column}`` to ``_attr_{column}`` first-class PG column.
+
+        Validates that:
+        * The caller is a sysadmin.
+        * ``column`` matches the attribute-key regex ``[A-Za-z_][A-Za-z0-9_]*``.
+        * ``column`` is declared in the collection's ``AttributeStampingPolicy.attribute_paths``.
+        * ``pg_type`` (when supplied) is in ``{TEXT, NUMERIC, TIMESTAMPTZ, TEXT[]}``.
+
+        On success, appends ``column`` to ``promoted_columns`` in the stored
+        policy (idempotent) and enqueues a ``promote_envelope_attr_column`` task.
+        Returns ``{task_id, catalog_id, collection_id, column, pg_type}``.
+        """
+        await _ensure_sysadmin(request)
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+
+        from dynastore.modules.iam.stamping_config import (
+            AttributeStampingPolicy,
+            _ALLOWED_PG_TYPES,
+            _KEY_PATTERN,
+        )
+        from dynastore.models.protocols.configs import ConfigsProtocol as _ConfigsProtocol
+
+        column = body.column
+        pg_type = (body.pg_type or "TEXT").upper()
+
+        if not _KEY_PATTERN.fullmatch(column):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"column {column!r} must match [A-Za-z_][A-Za-z0-9_]* "
+                    "(no dots, quotes, or whitespace)."
+                ),
+            )
+        if pg_type not in _ALLOWED_PG_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"pg_type {pg_type!r} is not allowed; "
+                    f"must be one of {sorted(_ALLOWED_PG_TYPES)}."
+                ),
+            )
+
+        configs = get_protocol(_ConfigsProtocol)
+        if configs is None:
+            raise HTTPException(status_code=503, detail="ConfigsProtocol not available.")
+
+        policy: AttributeStampingPolicy = await configs.get_config(
+            AttributeStampingPolicy,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        attribute_paths = getattr(policy, "attribute_paths", {}) or {}
+        if column not in attribute_paths:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"column {column!r} is not declared in "
+                    "AttributeStampingPolicy.attribute_paths for this collection. "
+                    "Add it there first before promoting."
+                ),
+            )
+
+        # Update the stored policy (idempotent): append to promoted_columns
+        # and record the pg_type.
+        promoted = list(getattr(policy, "promoted_columns", None) or [])
+        if column not in promoted:
+            promoted.append(column)
+        types_map = dict(getattr(policy, "promoted_column_types", None) or {})
+        types_map[column] = pg_type
+
+        updated_policy = AttributeStampingPolicy(
+            attribute_paths=attribute_paths,
+            promoted_columns=promoted,
+            promoted_column_types=types_map,
+        )
+        await configs.set_config(
+            AttributeStampingPolicy,
+            updated_policy,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+
+        # Enqueue the DDL + backfill migration task.
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.tasks import tasks_module
+        from dynastore.modules.tasks.models import TaskCreate
+
+        db = get_protocol(DatabaseProtocol)
+        if db is None:
+            raise HTTPException(status_code=503, detail="DatabaseProtocol not available.")
+        engine = db.engine  # type: ignore[union-attr]
+
+        task = await tasks_module.create_task_for_catalog(
+            engine=engine,
+            task_data=TaskCreate(
+                caller_id="system:admin",
+                task_type="promote_envelope_attr_column",
+                inputs={
+                    "catalog_id": catalog_id,
+                    "collection_id": collection_id,
+                    "column_name": column,
+                    "pg_type": pg_type,
+                },
+            ),
+            catalog_id=catalog_id,
+        )
+        if task is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Promotion task is already queued for "
+                    f"{catalog_id}/{collection_id}/{column} — dedup hit."
+                ),
+            )
+        return {
+            "task_id": str(task.task_id),
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "column": column,
+            "pg_type": pg_type,
+        }
 
     # -------------------------------------------------------------------------
     # Role Management (/admin/roles)

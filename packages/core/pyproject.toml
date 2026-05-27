@@ -105,6 +105,7 @@ outbox_drain = "dynastore.tasks.outbox_drain.drain_task:OutboxDrainTask"
 index_propagation = "dynastore.tasks.index_propagation.task:IndexPropagationTask"
 gcp_catalog_cleanup = "dynastore.tasks.gcp.gcp_catalog_cleanup_task:GcpCatalogCleanupTask"
 requeue_dead_letter_tasks = "dynastore.tasks.requeue_dead_letter.task:RequeueDeadLetterTasksTask"
+promote_envelope_attr_column = "dynastore.tasks.envelope_attr_promotion.task:PromoteEnvelopeAttrColumnTask"
 
 [build-system]
 requires = ["setuptools>=80.9.0", "setuptools-scm>=8"]

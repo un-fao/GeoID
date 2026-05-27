@@ -44,7 +44,7 @@ neutral :class:`AccessFilter` / :class:`FieldPredicate` contracts.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 __all__ = ["access_filter_to_pg_clause"]
 
@@ -65,13 +65,21 @@ def _field_predicate_to_sql(
     params: Dict[str, Any],
     *,
     envelope_col: str,
+    promoted: Optional[FrozenSet[str]] = None,
 ) -> Optional[str]:
     """Translate one :class:`FieldPredicate` to a SQL fragment.
 
-    Only ``_attrs.<key>`` predicates (JSONB path) are translated.  All other
-    field names (first-class columns and unknowns) are skipped (returns
-    ``None``): the caller already handles them via existing column predicates,
-    and skipping never widens access.
+    Only ``_attrs.<key>`` predicates are translated.  When ``promoted`` is
+    supplied and the key is in that set, a direct-column predicate is emitted
+    (``_attr_{key} = ANY(:p)``) instead of the JSONB path.  This enables
+    btree/GIN index scans on promoted attributes.
+
+    F3 (range predicates) adds its own branch here via the ``promoted`` kwarg
+    so that range predicates on promoted keys can also use the direct column.
+
+    All other field names (first-class columns and unknowns) are skipped
+    (returns ``None``): the caller already handles them via existing column
+    predicates, and skipping never widens access.
     """
     field: str = predicate.field
     values: Tuple[str, ...] = predicate.values
@@ -90,6 +98,13 @@ def _field_predicate_to_sql(
             return None
         p_name = f"{param_prefix}_{attr_key}"
         params[p_name] = list(values)
+
+        # Promoted key → direct-column predicate (index-scannable).
+        if promoted and attr_key in promoted:
+            col = f"_attr_{attr_key}"
+            return f'"{col}" = ANY(:{p_name})'
+
+        # Fallback: JSONB path predicate.
         return (
             f"({envelope_col}->'attrs'->>'{attr_key}') = ANY(:{p_name})"
         )
@@ -104,6 +119,7 @@ def _clause_to_sql(
     params: Dict[str, Any],
     *,
     envelope_col: str,
+    promoted: Optional[FrozenSet[str]] = None,
 ) -> Optional[str]:
     """Translate one :class:`AccessClause` to a SQL AND fragment."""
     preds = list(clause.predicates)
@@ -114,6 +130,7 @@ def _clause_to_sql(
             param_prefix=f"af_{idx}_{j}",
             params=params,
             envelope_col=envelope_col,
+            promoted=promoted,
         )
         if sql is not None:
             parts.append(sql)
@@ -128,6 +145,7 @@ def access_filter_to_pg_clause(
     access_filter: Any,
     *,
     envelope_col: str = "access_envelope",
+    promoted: Optional[FrozenSet[str]] = None,
 ) -> Tuple[Optional[str], Dict[str, Any]]:
     """Translate an :class:`AccessFilter` to a PG SQL clause and bind-params.
 
@@ -136,8 +154,22 @@ def access_filter_to_pg_clause(
       expressed (caller applies no additional WHERE).
     * ``params`` is a dict of named bind parameters for parameterised queries.
 
-    Only ``_attrs.*`` JSONB predicates are translated; first-class column
-    predicates are left to the caller's existing query-builder path.
+    Parameters
+    ----------
+    access_filter:
+        Compiled neutral ``AccessFilter`` instance, or ``None``.
+    envelope_col:
+        Name of the JSONB column holding the access envelope.  Defaults to
+        ``"access_envelope"``.
+    promoted:
+        Optional set of attribute keys that have been promoted to first-class
+        PG columns (``_attr_{key}``).  When provided, predicates on promoted
+        keys emit direct-column SQL (index-scannable) instead of JSONB path
+        expressions.  ``None`` (default) is back-compat: all predicates fall
+        back to JSONB path.
+
+    Only ``_attrs.*`` predicates are translated; first-class column predicates
+    are left to the caller's existing query-builder path.
 
     This is intentionally a best-effort, additive translator.  Unrecognised
     predicates are skipped (safe annoyance — never a security widening) so the
@@ -162,10 +194,14 @@ def access_filter_to_pg_clause(
     if not allow_all and not allow_clauses:
         return "FALSE", {}
 
+    _promoted = promoted or frozenset()
+
     params: Dict[str, Any] = {}
     or_parts: List[str] = []
     for i, clause in enumerate(allow_clauses):
-        sql = _clause_to_sql(clause, i, params, envelope_col=envelope_col)
+        sql = _clause_to_sql(
+            clause, i, params, envelope_col=envelope_col, promoted=_promoted
+        )
         if sql is not None:
             or_parts.append(sql)
 

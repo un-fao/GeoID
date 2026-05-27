@@ -1046,6 +1046,20 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # 'sha256'), 'hex')``.  No longer carried on the hub row; the
                 # matcher JOINs the sidecar to read it.
 
+                # Promoted-column stamping (F5): if this collection has promoted
+                # ABAC attribute columns, merge ``_attr_{key}`` entries into the
+                # hub payload so the PG write path persists them alongside the
+                # JSONB envelope.  Non-fatal: a missing policy simply produces no
+                # promoted payload and the write proceeds as before.
+                try:
+                    _attrs, _promoted = await self._stamp_attrs_with_promoted(
+                        catalog_id, collection_id, raw_item,
+                    )
+                    if _promoted:
+                        hub_payload.update(_promoted)
+                except Exception:
+                    pass  # degrade gracefully — promoted columns are an opt-in feature
+
                 prepared.append({
                     "geoid": geoid,
                     "hub_payload": hub_payload,
@@ -1393,24 +1407,44 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         Feature dict or processing context dict).  Returns an empty dict when
         the policy is absent or ``attribute_paths`` is empty.
         """
+        attrs, _promoted = await self._stamp_attrs_with_promoted(
+            catalog_id, collection_id, source
+        )
+        return attrs
+
+    async def _stamp_attrs_with_promoted(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        source: Dict[str, Any],
+    ) -> "Tuple[Dict[str, Any], Dict[str, Any]]":
+        """Extract ``_attrs`` dict AND promoted-column payload from ``source``.
+
+        Returns ``(attrs, promoted_payload)`` where:
+        * ``attrs`` — the JSONB ``_attrs`` envelope dict (same as before).
+        * ``promoted_payload`` — map of ``_attr_{key} → value`` for every key
+          in ``policy.promoted_columns`` that also has a resolved ``attrs`` value.
+          Empty when no columns are promoted.  PG-specific; non-PG callers discard it.
+        """
         try:
             from dynastore.modules.iam.stamping_config import AttributeStampingPolicy
 
             configs = get_protocol(ConfigsProtocol)
             if configs is None:
-                return {}
+                return {}, {}
             policy = await configs.get_config(
                 AttributeStampingPolicy,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
             if policy is None:
-                return {}
+                return {}, {}
             paths: Dict[str, str] = getattr(policy, "attribute_paths", {}) or {}
             if not paths:
-                return {}
+                return {}, {}
+            promoted_keys: "List[str]" = list(getattr(policy, "promoted_columns", None) or [])
         except Exception:
-            return {}
+            return {}, {}
 
         props = source.get("properties") or {}
         attrs: Dict[str, Any] = {}
@@ -1423,7 +1457,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 val = props[field_name]
                 if val is not None:
                     attrs[key] = val
-        return attrs
+
+        # Build promoted-column payload for the PG hub write.
+        promoted_payload: Dict[str, Any] = {}
+        for key in promoted_keys:
+            if key in attrs:
+                promoted_payload[f"_attr_{key}"] = attrs[key]
+
+        return attrs, promoted_payload
 
     async def _collection_uses_access_aware_driver(
         self,

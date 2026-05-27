@@ -38,17 +38,31 @@ Each key in ``attribute_paths`` becomes ``_attrs.<key>`` on the stored
 document; the value is a simple property path of the form
 ``$.properties.<field_name>``.  Only direct ``properties`` sub-keys are
 supported in this first slice; nested paths and array selectors are deferred.
+
+Promoted columns (F5): keys in ``promoted_columns`` have a corresponding
+``_attr_{key}`` first-class PG column that mirrors the JSONB envelope value.
+The admin endpoint ``POST /admin/catalogs/{cat}/collections/{coll}/attrs/promote``
+enqueues the DDL migration and appends to this list.  Only keys that also
+appear in ``attribute_paths`` are eligible for promotion — validated at config
+load time.
 """
 from __future__ import annotations
 
-from typing import ClassVar, Dict, Optional, Tuple
+import re
+from typing import ClassVar, Dict, List, Optional, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 
-__all__ = ["AttributeStampingPolicy"]
+__all__ = ["AttributeStampingPolicy", "_KEY_PATTERN", "_ALLOWED_PG_TYPES"]
+
+#: Regex applied to promoted-column keys (must match AttributePredicate.key).
+_KEY_PATTERN = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+#: PG types that the promotion migration accepts.
+_ALLOWED_PG_TYPES = frozenset({"TEXT", "NUMERIC", "TIMESTAMPTZ", "TEXT[]"})
 
 
 class AttributeStampingPolicy(PluginConfig):
@@ -62,6 +76,12 @@ class AttributeStampingPolicy(PluginConfig):
 
         PUT /configs/catalogs/{cat}/collections/{col}/plugins/attribute_stamping_policy
         {"attribute_paths": {"dept": "$.properties.department"}}
+
+    Promoted columns: when ``promoted_columns`` is non-empty, the write path
+    also updates ``_attr_{key}`` first-class columns alongside the JSONB
+    envelope.  The PG access-filter translator uses direct-column predicates
+    for promoted keys (btree/GIN index scan) and falls back to the JSONB path
+    for non-promoted ones.
     """
 
     _address: ClassVar[Tuple[str, ...]] = (
@@ -81,3 +101,69 @@ class AttributeStampingPolicy(PluginConfig):
             "Missing config or empty dict = no attribute stamping."
         ),
     )
+
+    promoted_columns: Mutable[List[str]] = Field(
+        default_factory=list,
+        description=(
+            "Keys from ``attribute_paths`` that have been promoted to first-class "
+            "PG columns (``_attr_{key}``).  Only keys also present in "
+            "``attribute_paths`` are eligible.  Populated by the admin promotion "
+            "endpoint; do not edit manually."
+        ),
+    )
+
+    promoted_column_types: Mutable[Dict[str, str]] = Field(
+        default_factory=dict,
+        description=(
+            "Map of promoted key → PG type string.  Allowed values: "
+            "``TEXT``, ``NUMERIC``, ``TIMESTAMPTZ``, ``TEXT[]``.  "
+            "Defaults to ``TEXT`` when a key is not listed."
+        ),
+    )
+
+    @field_validator("promoted_columns", mode="before")
+    @classmethod
+    def _validate_promoted_column_keys(cls, v: object) -> object:
+        """Each promoted key must match the attribute-key regex."""
+        if not isinstance(v, list):
+            return v
+        for key in v:
+            if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+                raise ValueError(
+                    f"promoted_columns entry {key!r} must match "
+                    "[A-Za-z_][A-Za-z0-9_]* (no dots, quotes, or whitespace)."
+                )
+        return v
+
+    @field_validator("promoted_column_types", mode="before")
+    @classmethod
+    def _validate_promoted_column_types(cls, v: object) -> object:
+        """Each type value must be in the allowlist."""
+        if not isinstance(v, dict):
+            return v
+        for key, pg_type in v.items():
+            if not isinstance(key, str) or not _KEY_PATTERN.fullmatch(key):
+                raise ValueError(
+                    f"promoted_column_types key {key!r} must match "
+                    "[A-Za-z_][A-Za-z0-9_]*."
+                )
+            if pg_type not in _ALLOWED_PG_TYPES:
+                raise ValueError(
+                    f"promoted_column_types[{key!r}] = {pg_type!r} is not "
+                    f"allowed; must be one of {sorted(_ALLOWED_PG_TYPES)}."
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _promoted_must_be_subset_of_paths(self) -> "AttributeStampingPolicy":
+        """Every promoted key must also exist in ``attribute_paths``."""
+        paths = set(self.attribute_paths or {})
+        promoted = list(self.promoted_columns or [])
+        orphans = [k for k in promoted if k not in paths]
+        if orphans:
+            raise ValueError(
+                f"promoted_columns keys {orphans} are not declared in "
+                "attribute_paths; remove them from promoted_columns or add "
+                "the corresponding attribute_paths entries first."
+            )
+        return self
