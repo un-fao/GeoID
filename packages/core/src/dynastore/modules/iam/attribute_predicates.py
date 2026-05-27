@@ -57,7 +57,7 @@ Note on rate_limit / max_count:
 from __future__ import annotations
 
 import re
-from typing import ClassVar, Dict, List, Literal, Optional, Protocol, Sequence, Tuple, Union
+from typing import ClassVar, Dict, List, Optional, Protocol, Sequence, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -71,8 +71,11 @@ __all__ = [
     "InCompiler",
     "EqCompiler",
     "LteCompiler",
+    "LteTimestampCompiler",
     "GteCompiler",
+    "GteTimestampCompiler",
     "BetweenCompiler",
+    "BetweenTimestampCompiler",
     "compile_attribute_predicates",
     "PREDICATE_REGISTRY",
 ]
@@ -164,19 +167,6 @@ class EqCompiler:
         if len(values) != 1:
             return None, True
         return FieldPredicate(f"_attrs.{key}", (str(values[0]),)), False
-
-
-def _parse_kind(op_with_suffix: str) -> Literal["numeric", "timestamp"]:
-    """Extract optional ``kind`` suffix from an op string.
-
-    ``"lte:timestamp"`` → ``"timestamp"``; ``"lte"`` or ``"lte:numeric"`` → ``"numeric"``.
-    Unknown suffixes default to ``"numeric"`` (safe: numeric cast is stricter
-    than text comparison for ISO-8601 strings, never wider).
-    """
-    parts = op_with_suffix.split(":", 1)
-    if len(parts) == 2 and parts[1] == "timestamp":
-        return "timestamp"
-    return "numeric"
 
 
 class LteCompiler:
