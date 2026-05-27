@@ -215,46 +215,20 @@
     </header>
 
     <p class="subtitle">
-      Users, roles, policies and catalog access for the Agro-Informatics
+      Principals, roles, policies and catalog access for the Agro-Informatics
       Platform. Platform scope is the baseline; catalog scope is the tenant
       overlay applied on top.
     </p>
 
     <div class="tabs" id="tabs" role="tablist">
-      <button class="tab-btn active" data-tab="users" type="button">Users</button>
-      <button class="tab-btn" data-tab="principals" type="button">Principals</button>
+      <button class="tab-btn active" data-tab="principals" type="button">Principals</button>
       <button class="tab-btn" data-tab="roles" type="button">Roles</button>
       <button class="tab-btn" data-tab="policies" type="button">Policies</button>
       <button class="tab-btn" data-tab="catalog-permissions" type="button">Catalog Permissions</button>
     </div>
 
-    <!-- Users -->
-    <section id="tab-users" class="tab-panel active">
-      <div class="plate">
-        <div class="plate-header">
-          <h3>Users</h3>
-          <div class="plate-meta">GET /admin/principals</div>
-        </div>
-        <div class="panel-toolbar">
-          <label for="user-search">Search</label>
-          <input id="user-search" type="search" class="input-medium" placeholder="Search by username&hellip;">
-          <span class="spacer"></span>
-          <button class="btn" type="button" id="btn-new-user">New User</button>
-          <button class="btn btn-secondary btn-xs" type="button" id="btn-refresh-users" aria-label="Refresh users">Refresh</button>
-        </div>
-        <table id="users-table">
-          <thead>
-            <tr><th>Username</th><th>Provider</th><th>Roles</th><th>Status</th><th></th></tr>
-          </thead>
-          <tbody id="users-tbody">
-            <tr class="empty-row"><td colspan="5" class="loader-line">Loading&hellip;</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
     <!-- Principals -->
-    <section id="tab-principals" class="tab-panel">
+    <section id="tab-principals" class="tab-panel active">
       <div class="plate">
         <div class="plate-header">
           <h3>Principals</h3>
@@ -354,24 +328,7 @@
 
   <!-- Modals -->
 
-  <!-- New User -->
-  <div id="user-modal" class="modal-bg hidden" role="dialog" aria-labelledby="user-modal-title" aria-hidden="true">
-    <div class="modal">
-      <h2 id="user-modal-title">Create user</h2>
-      <div class="form-stack">
-        <div><label for="nm-username">Username *</label><input id="nm-username" type="text" placeholder="e.g. jsmith"></div>
-        <div><label for="nm-password">Password *</label><input id="nm-password" type="password" placeholder="Minimum 8 characters"></div>
-        <div><label for="nm-email">Email</label><input id="nm-email" type="email" placeholder="user@example.com"></div>
-        <div><label for="nm-roles">Roles &mdash; csv</label><input id="nm-roles" type="text" value="user" placeholder="e.g. user, viewer"></div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-secondary" type="button" id="btn-cancel-user">Cancel</button>
-        <button class="btn" type="button" id="btn-submit-user">Create</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Assign Catalog Role (user-centric, from Users / Principals tab) -->
+  <!-- Assign Catalog Role (from Principals tab) -->
   <div id="catalog-modal" class="modal-bg hidden" role="dialog" aria-labelledby="catalog-modal-title" aria-hidden="true">
     <div class="modal">
       <h2 id="catalog-modal-title">Assign catalog role</h2>
@@ -562,70 +519,10 @@ function switchTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.id === 'tab-' + name);
   });
-  if (name === 'users') loadUsers();
   if (name === 'principals') loadPrincipals();
   if (name === 'roles') loadRoles();
   if (name === 'policies') loadPolicies();
   if (name === 'catalog-permissions') loadCatalogPermissionsCatalogs();
-}
-
-// ── USERS ──
-let _allUsers = [];
-async function loadUsers() {
-  const tb = document.getElementById('users-tbody');
-  tb.innerHTML = '<tr class="empty-row"><td colspan="5" class="loader-line">Loading…</td></tr>';
-  try {
-    _allUsers = await apiFetch('/principals');
-    renderUsers(_allUsers);
-  } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="5">Error: ${escapeHtml(e.message)}</td></tr>`; }
-}
-function renderUsers(list) {
-  const tb = document.getElementById('users-tbody');
-  if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="5">No users found.</td></tr>'; return; }
-  tb.innerHTML = list.map(u => `
-    <tr>
-      <td><strong>${escapeHtml(u.display_name || u.subject_id)}</strong></td>
-      <td class="muted">${escapeHtml(u.provider || 'local')}</td>
-      <td><div class="chip-list">${(u.roles||[]).map(r=>`<span class="chip">${escapeHtml(r)}</span>`).join('')}</div></td>
-      <td><span class="chip ${u.is_active?'chip-active':'chip-off'}">${u.is_active?'Active':'Inactive'}</span></td>
-      <td class="table-actions"><div class="action-btns">
-        ${u.is_active
-          ? `<button class="btn btn-danger btn-xs" data-action="deactivate" data-id="${escapeHtml(u.id)}" aria-label="Deactivate user" title="Deactivate">Deactivate</button>`
-          : `<button class="btn btn-secondary btn-xs" data-action="activate" data-id="${escapeHtml(u.id)}" aria-label="Reactivate user" title="Reactivate">Reactivate</button>`}
-        <button class="btn btn-secondary btn-xs" data-action="catalog-modal" data-id="${escapeHtml(u.id)}" aria-label="Assign catalog role" title="Assign catalog role">Catalog…</button>
-      </div></td>
-    </tr>`).join('');
-  tb.querySelectorAll('[data-action="deactivate"]').forEach(b => b.addEventListener('click', () => setUserActive(b.dataset.id, false)));
-  tb.querySelectorAll('[data-action="activate"]').forEach(b => b.addEventListener('click', () => setUserActive(b.dataset.id, true)));
-  tb.querySelectorAll('[data-action="catalog-modal"]').forEach(b => b.addEventListener('click', () => openCatalogModal(b.dataset.id)));
-}
-function filterUsers() {
-  const q = document.getElementById('user-search').value.toLowerCase();
-  renderUsers(_allUsers.filter(u =>
-    (u.display_name||'').toLowerCase().includes(q) ||
-    (u.subject_id||'').toLowerCase().includes(q)
-  ));
-}
-function openUserModal() { showModal('user-modal'); }
-function closeUserModal() { hideModal('user-modal'); }
-async function createUser() {
-  const username = document.getElementById('nm-username').value.trim();
-  const password = document.getElementById('nm-password').value;
-  const email = document.getElementById('nm-email').value.trim();
-  const roles = csvToList(document.getElementById('nm-roles').value);
-  if (!username || !password) { toast('Username and password are required.', false); return; }
-  try {
-    await apiFetch('/principals', { method:'POST', body: JSON.stringify({username,password,email,roles}) });
-    toast('User created successfully.'); closeUserModal(); loadUsers();
-  } catch(e) { toast(e.message, false); }
-}
-async function setUserActive(id, active) {
-  const verb = active ? 'Reactivate' : 'Deactivate';
-  if (!confirm(`${verb} this user?`)) return;
-  try {
-    await apiFetch(`/principals/${encodeURIComponent(id)}`, { method:'PUT', body: JSON.stringify({is_active: active}) });
-    toast(`User ${active ? 'reactivated' : 'deactivated'}.`); loadUsers();
-  } catch(e) { toast(e.message, false); }
 }
 
 // ── CATALOG PERMISSIONS (catalog-centric tab) ──
@@ -764,7 +661,7 @@ async function submitCatalogGrant() {
   } catch(e) { toast(e.message, false); }
 }
 
-// ── CATALOG ROLE (user-centric, from Users tab) ──
+// ── CATALOG ROLE (from Principals tab) ──
 function openCatalogModal(principalId) {
   document.getElementById('cm-principal-id').value = principalId;
   showModal('catalog-modal');
@@ -801,8 +698,15 @@ function renderPrincipals(list) {
       <td><code>${escapeHtml(p.subject_id || '—')}</code></td>
       <td><div class="chip-list">${(p.roles||[]).map(r=>`<span class="chip">${escapeHtml(r)}</span>`).join('')}</div></td>
       <td><span class="chip ${p.is_active?'chip-active':'chip-off'}">${p.is_active?'Yes':'No'}</span></td>
-      <td class="table-actions"><button class="btn btn-secondary btn-xs" type="button" data-action="catalog-modal" data-id="${escapeHtml(p.id)}">Catalog role</button></td>
+      <td class="table-actions"><div class="action-btns">
+        ${p.is_active
+          ? `<button class="btn btn-danger btn-xs" data-action="deactivate" data-id="${escapeHtml(p.id)}" aria-label="Deactivate principal" title="Deactivate">Deactivate</button>`
+          : `<button class="btn btn-secondary btn-xs" data-action="activate" data-id="${escapeHtml(p.id)}" aria-label="Reactivate principal" title="Reactivate">Reactivate</button>`}
+        <button class="btn btn-secondary btn-xs" type="button" data-action="catalog-modal" data-id="${escapeHtml(p.id)}">Catalog role</button>
+      </div></td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="deactivate"]').forEach(b => b.addEventListener('click', () => setPrincipalActive(b.dataset.id, false)));
+  tb.querySelectorAll('[data-action="activate"]').forEach(b => b.addEventListener('click', () => setPrincipalActive(b.dataset.id, true)));
   tb.querySelectorAll('[data-action="catalog-modal"]').forEach(b => b.addEventListener('click', () => openCatalogModal(b.dataset.id)));
 }
 function filterPrincipals() {
@@ -812,6 +716,14 @@ function filterPrincipals() {
     (p.subject_id||'').toLowerCase().includes(q) ||
     (p.roles||[]).some(r => (r||'').toLowerCase().includes(q))
   ));
+}
+async function setPrincipalActive(id, active) {
+  const verb = active ? 'Reactivate' : 'Deactivate';
+  if (!confirm(`${verb} this principal?`)) return;
+  try {
+    await apiFetch(`/principals/${encodeURIComponent(id)}`, { method:'PUT', body: JSON.stringify({is_active: active}) });
+    toast(`Principal ${active ? 'reactivated' : 'deactivated'}.`); loadPrincipals();
+  } catch(e) { toast(e.message, false); }
 }
 
 // ── ROLES ──
@@ -1157,10 +1069,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Toolbar buttons
-  document.getElementById('btn-new-user').addEventListener('click', openUserModal);
-  document.getElementById('btn-refresh-users').addEventListener('click', loadUsers);
-  document.getElementById('user-search').addEventListener('input', filterUsers);
-
   document.getElementById('btn-refresh-principals').addEventListener('click', loadPrincipals);
   document.getElementById('principal-search').addEventListener('input', filterPrincipals);
 
@@ -1176,9 +1084,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-refresh-cp').addEventListener('click', loadCatalogUsers);
 
   // Modal action buttons
-  document.getElementById('btn-cancel-user').addEventListener('click', closeUserModal);
-  document.getElementById('btn-submit-user').addEventListener('click', createUser);
-
   document.getElementById('btn-cancel-catalog').addEventListener('click', closeCatalogModal);
   document.getElementById('btn-submit-catalog').addEventListener('click', assignCatalogRole);
 
@@ -1209,7 +1114,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Initial tab
-  loadUsers();
+  loadPrincipals();
 });
   </script>
 </body>
