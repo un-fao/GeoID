@@ -24,7 +24,7 @@ from dynastore.modules.catalog.resource_owner import (
     CleanupMode,
     CleanupOutcome,
     ResourceOwnerProtocol,
-    ResourceRef,
+    CleanupRef,
     ResourceScope,
     ScopeRef,
 )
@@ -51,12 +51,12 @@ def _make_owner(
 
     async def describe_scope(
         self: Any, scope_ref: ScopeRef, conn: Any
-    ) -> list[ResourceRef]:
+    ) -> list[CleanupRef]:
         return []
 
     async def cleanup_one(
         self: Any,
-        ref: ResourceRef,
+        ref: CleanupRef,
         mode: CleanupMode,
         *,
         dry_run: bool = False,

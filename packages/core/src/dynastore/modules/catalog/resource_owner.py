@@ -25,7 +25,7 @@ Discovery and orchestration are separated from the protocol: a
 ``CascadeCleanupRegistry`` (see ``cascade_registry.py``) collects all
 registered owners at startup.  When a hard-delete is initiated, the
 orchestrator calls ``describe_scope`` on every relevant owner inside the
-delete transaction to snapshot ``ResourceRef`` instances into a durable task
+delete transaction to snapshot ``CleanupRef`` instances into a durable task
 payload.  A separate worker then calls ``cleanup_one`` for each ref —
 possibly on a different instance, after instance death and restart.
 
@@ -45,11 +45,10 @@ This module intentionally has no I/O at import time and no dependency on
 FastAPI, asyncpg, or any external service.  All async work happens inside
 the method implementations, not at module scope.
 
-Note on ``ResourceRef`` naming: the existing
-``dynastore.models.protocols.asset_contrib.ResourceRef`` is a different
-concept (geospatial resource identity for asset-link contribution).  This
-``ResourceRef`` is a cleanup-task payload snapshot.  Import with an alias
-when both are needed in the same scope.
+Naming: the existing ``dynastore.models.protocols.asset_contrib.ResourceRef``
+is a geospatial resource identity used by the asset-link contribution
+protocols; it is a different concept and unrelated to this module.  The
+cleanup payload type here is named ``CleanupRef`` to avoid that collision.
 """
 
 from __future__ import annotations
@@ -101,7 +100,7 @@ class ScopeRef:
 
 
 @dataclass(frozen=True)
-class ResourceRef:
+class CleanupRef:
     """An individual external resource owned by an entity.
 
     Instances are snapshot-serialized into a durable task payload before the
@@ -147,8 +146,8 @@ class ResourceRef:
         }
 
     @classmethod
-    def from_json(cls, d: dict[str, Any]) -> ResourceRef:
-        """Reconstruct a ``ResourceRef`` from a dict produced by ``to_json``.
+    def from_json(cls, d: dict[str, Any]) -> CleanupRef:
+        """Reconstruct a ``CleanupRef`` from a dict produced by ``to_json``.
 
         Raises ``KeyError`` if any required field is absent.
         """
@@ -159,7 +158,7 @@ class ResourceRef:
             metadata=d.get("metadata", {}),
         )
 
-    def round_trip(self) -> ResourceRef:
+    def round_trip(self) -> CleanupRef:
         """Convenience: serialize to JSON bytes and back (smoke-test helper)."""
         return self.from_json(json.loads(json.dumps(self.to_json())))
 
@@ -199,11 +198,11 @@ class ResourceOwnerProtocol(Protocol):
 
     async def describe_scope(
         self, scope_ref: ScopeRef, conn: Any
-    ) -> list[ResourceRef]: ...
+    ) -> list[CleanupRef]: ...
 
     async def cleanup_one(
         self,
-        ref: ResourceRef,
+        ref: CleanupRef,
         mode: CleanupMode,
         *,
         dry_run: bool = False,
@@ -227,12 +226,12 @@ class BaseResourceOwner(ABC):
     @abstractmethod
     async def describe_scope(
         self, scope_ref: ScopeRef, conn: Any
-    ) -> list[ResourceRef]: ...
+    ) -> list[CleanupRef]: ...
 
     @abstractmethod
     async def cleanup_one(
         self,
-        ref: ResourceRef,
+        ref: CleanupRef,
         mode: CleanupMode,
         *,
         dry_run: bool = False,

@@ -1,9 +1,9 @@
 """Unit tests for resource_owner.py — Chunk 1 of Resource Cascade Cleanup.
 
 Covers:
-- ScopeRef and ResourceRef equality, hashability, frozen-ness.
-- ResourceRef.to_json round-trip including nested metadata.
-- ResourceRef.from_json error on missing required keys.
+- ScopeRef and CleanupRef equality, hashability, frozen-ness.
+- CleanupRef.to_json round-trip including nested metadata.
+- CleanupRef.from_json error on missing required keys.
 - Enum string values (must match JSONB storage).
 - ResourceOwnerProtocol runtime isinstance checks.
 - BaseResourceOwner default supported_scopes.
@@ -22,7 +22,7 @@ from dynastore.modules.catalog.resource_owner import (
     CleanupMode,
     CleanupOutcome,
     ResourceOwnerProtocol,
-    ResourceRef,
+    CleanupRef,
     ResourceScope,
     ScopeRef,
 )
@@ -111,36 +111,36 @@ class TestScopeRef:
 
 
 # ---------------------------------------------------------------------------
-# ResourceRef
+# CleanupRef
 # ---------------------------------------------------------------------------
 
 
-class TestResourceRef:
+class TestCleanupRef:
     def test_equality(self) -> None:
-        a = ResourceRef(kind="es_index", locator="cat-items", owner_id="es.items")
-        b = ResourceRef(kind="es_index", locator="cat-items", owner_id="es.items")
+        a = CleanupRef(kind="es_index", locator="cat-items", owner_id="es.items")
+        b = CleanupRef(kind="es_index", locator="cat-items", owner_id="es.items")
         assert a == b
 
     def test_inequality_different_locator(self) -> None:
-        a = ResourceRef(kind="es_index", locator="cat-a", owner_id="es.items")
-        b = ResourceRef(kind="es_index", locator="cat-b", owner_id="es.items")
+        a = CleanupRef(kind="es_index", locator="cat-a", owner_id="es.items")
+        b = CleanupRef(kind="es_index", locator="cat-b", owner_id="es.items")
         assert a != b
 
     def test_hashable(self) -> None:
-        ref = ResourceRef(kind="es_index", locator="cat-items", owner_id="es.items")
+        ref = CleanupRef(kind="es_index", locator="cat-items", owner_id="es.items")
         assert ref in {ref}
 
     def test_frozen_mutation_raises(self) -> None:
-        ref = ResourceRef(kind="es_index", locator="cat-items", owner_id="es.items")
+        ref = CleanupRef(kind="es_index", locator="cat-items", owner_id="es.items")
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
             ref.kind = "mutated"  # type: ignore[misc]
 
     def test_metadata_defaults_to_empty_dict(self) -> None:
-        ref = ResourceRef(kind="es_index", locator="idx", owner_id="es.items")
+        ref = CleanupRef(kind="es_index", locator="idx", owner_id="es.items")
         assert ref.metadata == {}
 
     def test_to_json_round_trip_simple(self) -> None:
-        ref = ResourceRef(kind="es_index", locator="fao-public-items", owner_id="es.items")
+        ref = CleanupRef(kind="es_index", locator="fao-public-items", owner_id="es.items")
         d = ref.to_json()
         assert d == {
             "kind": "es_index",
@@ -148,7 +148,7 @@ class TestResourceRef:
             "owner_id": "es.items",
             "metadata": {},
         }
-        restored = ResourceRef.from_json(d)
+        restored = CleanupRef.from_json(d)
         assert restored == ref
 
     def test_to_json_round_trip_with_nested_metadata(self) -> None:
@@ -159,39 +159,39 @@ class TestResourceRef:
             "tags": ["a", "b"],
             "nested": {"x": None, "y": 3.14},
         }
-        ref = ResourceRef(
+        ref = CleanupRef(
             kind="es_index",
             locator="fao-public-items",
             owner_id="es.items",
             metadata=meta,
         )
         serialized = json.dumps(ref.to_json())
-        restored = ResourceRef.from_json(json.loads(serialized))
+        restored = CleanupRef.from_json(json.loads(serialized))
         assert restored == ref
 
     def test_to_json_round_trip_none_in_metadata(self) -> None:
-        ref = ResourceRef(
+        ref = CleanupRef(
             kind="gcs_prefix",
             locator="gs://bucket/prefix/",
             owner_id="gcp.gcs.prefix",
             metadata={"deleted_at": None},
         )
-        assert ResourceRef.from_json(json.loads(json.dumps(ref.to_json()))) == ref
+        assert CleanupRef.from_json(json.loads(json.dumps(ref.to_json()))) == ref
 
     def test_from_json_missing_kind_raises(self) -> None:
         with pytest.raises(KeyError):
-            ResourceRef.from_json({"locator": "x", "owner_id": "y"})
+            CleanupRef.from_json({"locator": "x", "owner_id": "y"})
 
     def test_from_json_missing_locator_raises(self) -> None:
         with pytest.raises(KeyError):
-            ResourceRef.from_json({"kind": "es_index", "owner_id": "y"})
+            CleanupRef.from_json({"kind": "es_index", "owner_id": "y"})
 
     def test_from_json_missing_owner_id_raises(self) -> None:
         with pytest.raises(KeyError):
-            ResourceRef.from_json({"kind": "es_index", "locator": "x"})
+            CleanupRef.from_json({"kind": "es_index", "locator": "x"})
 
     def test_from_json_missing_metadata_uses_empty_dict(self) -> None:
-        ref = ResourceRef.from_json(
+        ref = CleanupRef.from_json(
             {"kind": "es_index", "locator": "x", "owner_id": "es.items"}
         )
         assert ref.metadata == {}
@@ -210,12 +210,12 @@ class TestResourceOwnerProtocolRuntimeCheck:
             def supported_scopes(self) -> Iterable[ResourceScope]:
                 return (ResourceScope.CATALOG,)
 
-            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[ResourceRef]:
+            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[CleanupRef]:
                 return []
 
             async def cleanup_one(
                 self,
-                ref: ResourceRef,
+                ref: CleanupRef,
                 mode: CleanupMode,
                 *,
                 dry_run: bool = False,
@@ -235,7 +235,7 @@ class TestResourceOwnerProtocolRuntimeCheck:
 
             async def cleanup_one(
                 self,
-                ref: ResourceRef,
+                ref: CleanupRef,
                 mode: CleanupMode,
                 *,
                 dry_run: bool = False,
@@ -251,7 +251,7 @@ class TestResourceOwnerProtocolRuntimeCheck:
             def supported_scopes(self) -> Iterable[ResourceScope]:
                 return (ResourceScope.CATALOG,)
 
-            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[ResourceRef]:
+            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[CleanupRef]:
                 return []
 
             # missing cleanup_one
@@ -264,12 +264,12 @@ class TestResourceOwnerProtocolRuntimeCheck:
 
             # missing supported_scopes
 
-            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[ResourceRef]:
+            async def describe_scope(self, scope_ref: ScopeRef, conn: Any) -> list[CleanupRef]:
                 return []
 
             async def cleanup_one(
                 self,
-                ref: ResourceRef,
+                ref: CleanupRef,
                 mode: CleanupMode,
                 *,
                 dry_run: bool = False,
@@ -291,12 +291,12 @@ class TestBaseResourceOwnerDefaultScopes:
 
             async def describe_scope(
                 self, scope_ref: ScopeRef, conn: Any
-            ) -> list[ResourceRef]:
+            ) -> list[CleanupRef]:
                 return []
 
             async def cleanup_one(
                 self,
-                ref: ResourceRef,
+                ref: CleanupRef,
                 mode: CleanupMode,
                 *,
                 dry_run: bool = False,
@@ -317,12 +317,12 @@ class TestBaseResourceOwnerDefaultScopes:
 
             async def describe_scope(
                 self, scope_ref: ScopeRef, conn: Any
-            ) -> list[ResourceRef]:
+            ) -> list[CleanupRef]:
                 return []
 
             async def cleanup_one(
                 self,
-                ref: ResourceRef,
+                ref: CleanupRef,
                 mode: CleanupMode,
                 *,
                 dry_run: bool = False,
