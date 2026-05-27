@@ -87,6 +87,20 @@ def test_cursor_decode_wrong_shape_raises_value_error():
         _decode_cursor(bad)
 
 
+def test_cursor_decode_rejects_malformed_iso_timestamp():
+    """Crafted cursor with a non-ISO ``applied_at_iso`` must raise ValueError
+    at decode time so the endpoint returns 400 instead of forwarding the
+    string to PostgreSQL where the TIMESTAMPTZ cast would 500."""
+    import base64
+    from dynastore.modules.iam.applied_presets_service import _decode_cursor
+
+    bad = base64.urlsafe_b64encode(
+        json.dumps(["not-a-timestamp", "preset_x"]).encode()
+    ).decode()
+    with pytest.raises(ValueError, match="ISO 8601"):
+        _decode_cursor(bad)
+
+
 # ---------------------------------------------------------------------------
 # list_for_scope — happy path by scope tier
 # ---------------------------------------------------------------------------

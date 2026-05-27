@@ -2379,7 +2379,12 @@ class AdminService(ExtensionProtocol):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         db_proto = get_protocol(DatabaseProtocol)
-        engine = db_proto.engine if db_proto else None
+        if db_proto is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Database protocol unavailable.",
+            )
+        engine = db_proto.engine
 
         svc = AppliedPresetsService(engine)
         rows, next_cursor = await svc.list_for_scope(

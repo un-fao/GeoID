@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -60,6 +61,17 @@ def _decode_cursor(cursor: str) -> Tuple[Optional[str], str]:
         applied_at_iso, preset_name = parts
         if not isinstance(preset_name, str):
             raise ValueError("preset_name must be a string")
+        if applied_at_iso is not None:
+            if not isinstance(applied_at_iso, str):
+                raise ValueError("applied_at_iso must be a string or null")
+            # Validate ISO timestamp shape so a crafted cursor cannot reach PG
+            # as a malformed cast and surface as a 500.
+            try:
+                datetime.fromisoformat(applied_at_iso)
+            except ValueError as ts_exc:
+                raise ValueError(
+                    f"applied_at_iso is not a valid ISO 8601 timestamp: {ts_exc}"
+                ) from ts_exc
         return applied_at_iso, preset_name
     except Exception as exc:
         raise ValueError(f"invalid cursor: {exc}") from exc
