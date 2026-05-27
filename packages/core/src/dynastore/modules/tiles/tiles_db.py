@@ -19,7 +19,7 @@
 # dynastore/modules/tiles/tiles_db.py
 
 import logging
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, List, Mapping, Optional, Tuple, Union
 from sqlalchemy import text
 from shapely.geometry import box
 from shapely import wkb
@@ -125,12 +125,15 @@ async def _build_collection_subquery(
     # time is the only way to prevent leaks (raw geometry WKB, undeclared
     # JSONB keys, geoid).
     #
-    # ``schema_fields`` carries the ``ItemsSchema.fields`` keys down the MVT
-    # path so ``feature_type.expose=None`` (the default) can surface the
-    # declared schema as tile properties — matching the /items wire shape.
-    # See :func:`project_select_for_feature_type` for the trinary semantics.
+    # We pass the raw ``ItemsSchema.fields`` dict down to the SSOT helper
+    # ``project_select_for_feature_type`` — it filters out geometry-typed and
+    # ``expose=False`` entries internally (read-side mirror of the write SSOTs
+    # ``schema_field_materializes_as_column`` / ``bridge_schema_to_attribute_sidecar``,
+    # which keep geometry out of the attributes sidecar). The driver's MVT
+    # query then materialises the per-row ``ST_AsMVTGeom(...) AS geom`` and
+    # the wrapping ``ST_AsMVT`` aggregates only those columns.
     feature_type = None
-    schema_fields: List[str] = []
+    schema_fields: Optional[Mapping[str, Any]] = None
     try:
         from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.read_policy import ItemsReadPolicy
@@ -148,17 +151,7 @@ async def _build_collection_subquery(
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
-            # Filter to fields safe for MVT properties: skip geometry-typed
-            # entries (the geom comes from the geometry sidecar; selecting
-            # ``geometry`` again would JOIN as a missing attribute) and skip
-            # ``expose=False`` admin-tuned fields (the schema's own opt-out).
-            fields = getattr(schema, "fields", None) or {}
-            schema_fields = [
-                name
-                for name, fdef in fields.items()
-                if getattr(fdef, "expose", True)
-                and not str(getattr(fdef, "data_type", "")).startswith("geometry")
-            ]
+            schema_fields = getattr(schema, "fields", None) or {}
     except Exception as exc:  # noqa: BLE001 — read assembly must not break on config miss
         logger.debug(
             "tile read_policy resolution skipped for %s/%s: %s",
