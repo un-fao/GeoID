@@ -235,7 +235,7 @@ async def test_policy_with_two_paths_produces_correct_update_body():
     # First pair
     action0 = body[0]["update"]
     assert action0["_index"] == "pfx-cat1-envelope-items"
-    assert action0["_id"] == "cat1:col1:g1"
+    assert action0["_id"] == "g1"
     assert action0["retry_on_conflict"] == 3
     doc0 = body[1]
     assert doc0["doc_as_upsert"] is False
@@ -243,7 +243,7 @@ async def test_policy_with_two_paths_produces_correct_update_body():
 
     # Second pair
     action1 = body[2]["update"]
-    assert action1["_id"] == "cat1:col1:g2"
+    assert action1["_id"] == "g2"
     doc1 = body[3]
     assert doc1["doc"]["attrs"] == {"dept": "legal", "region": "US"}
 
@@ -357,8 +357,8 @@ async def test_error_mid_stream_continues_and_summarises():
                 # Simulate a bulk response with an error item.
                 return {
                     "items": [
-                        {"update": {"_id": "cat1:col1:g0", "error": {"reason": "boom"}}},
-                        {"update": {"_id": "cat1:col1:g1", "error": None}},
+                        {"update": {"_id": "g0", "error": {"reason": "boom"}}},
+                        {"update": {"_id": "g1", "error": None}},
                     ]
                 }
             self.bulk_calls.append(body)
@@ -401,7 +401,7 @@ async def test_error_mid_stream_continues_and_summarises():
     assert result["status"] == "done"
     # 3 items total; one error reported for g0
     assert len(result["errors"]) == 1
-    assert result["errors"][0]["id"] == "cat1:col1:g0"
+    assert result["errors"][0]["id"] == "g0"
     assert "boom" in result["errors"][0]["reason"]
 
 
@@ -425,7 +425,7 @@ def test_build_bulk_update_body_shape():
     assert len(body) == 2
     action = body[0]["update"]
     assert action["_index"] == "idx"
-    assert action["_id"] == "cat:col:g1"
+    assert action["_id"] == "g1"
     assert action["retry_on_conflict"] == 3
     doc = body[1]
     assert doc["doc_as_upsert"] is False

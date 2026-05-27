@@ -282,11 +282,10 @@ def _build_bulk_update_body(
             continue
         doc_dict = _feature_to_dict(feature)
         new_attrs = stamp_fn(doc_dict, attribute_paths)
-        doc_id = f"{catalog_id}:{collection_id}:{geoid}"
         body.append({
             "update": {
                 "_index": index_name,
-                "_id": doc_id,
+                "_id": geoid,
                 "retry_on_conflict": 3,
             }
         })
