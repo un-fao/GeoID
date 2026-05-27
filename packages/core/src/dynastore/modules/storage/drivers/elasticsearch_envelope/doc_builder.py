@@ -21,31 +21,11 @@ in the envelope subpackage so the platform never imports it.
 Like the private-driver doc builder, but additionally stamps the canonical
 *access envelope* — ``visibility`` / ``owner`` / ``attrs`` — as typed
 top-level fields so the row-level access filter can match on them reliably.
-
-``grant_subjects`` support has been retired as a write path (#1441): the
-``_normalize_grant_subjects`` helper is kept for read-tolerance on documents
-written before #1441 (accept-but-ignore on already-stored docs) and will be
-removed in a future release.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
-
-def _normalize_grant_subjects(value: Any) -> Optional[List[str]]:
-    """Coerce a grant-subjects value to a list of strings (or ``None``).
-
-    Retained for read-tolerance on docs written before #1441.  New docs no
-    longer carry ``_grant_subjects``; this normaliser is a no-op on them.
-    Scheduled for removal after one release.
-    """
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple, set)):
-        out = [str(v) for v in value if v is not None]
-        return out or None
-    return [str(value)]
+from typing import Any, Dict
 
 
 def build_envelope_feature_doc(
@@ -57,7 +37,6 @@ def build_envelope_feature_doc(
     asset_id: Any = None,
     visibility: Any = None,
     owner: Any = None,
-    grant_subjects: Any = None,
     attrs: Any = None,
 ) -> Dict[str, Any]:
     """Build an ``ENVELOPE_FEATURE_MAPPING``-shaped doc from a Feature/dict.
@@ -75,10 +54,8 @@ def build_envelope_feature_doc(
     * ``asset_id``       ← arg, else ``src["_asset_id"]``
     * ``visibility``     ← arg, else ``src["_visibility"]``
     * ``owner``          ← arg, else ``src["_owner"]``
-    * ``grant_subjects`` ← arg, else ``src["_grant_subjects"]`` (read-tolerance
-      for pre-#1441 docs; new docs omit this field)
     * ``attrs``          ← arg, else ``src["_attrs"]`` (ABAC attribute dict
-      from the per-collection stamping policy, #1441)
+      from the per-collection stamping policy)
     """
     if hasattr(item, "model_dump"):
         src = item.model_dump(by_alias=True, exclude_none=True)
@@ -113,15 +90,7 @@ def build_envelope_feature_doc(
     if own is not None:
         doc["owner"] = str(own)
 
-    # Read-tolerance for pre-#1441 docs that still carry ``grant_subjects``.
-    raw_grants = (
-        grant_subjects if grant_subjects is not None else src.get("_grant_subjects")
-    )
-    grants = _normalize_grant_subjects(raw_grants)
-    if grants is not None:
-        doc["grant_subjects"] = grants
-
-    # ABAC attribute dict (#1441) — propagated verbatim from ``_attrs``.
+    # ABAC attribute dict — propagated verbatim from ``_attrs``.
     raw_attrs = attrs if attrs is not None else src.get("_attrs")
     if isinstance(raw_attrs, dict) and raw_attrs:
         doc["attrs"] = raw_attrs

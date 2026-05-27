@@ -57,7 +57,7 @@ _SAFE_ATTR_KEY_RE = re.compile(r"[A-Za-z0-9_]+")
 # JSONB envelope.  Predicates on these must be handled by the caller's
 # existing column-based filter logic.
 _FIRST_CLASS_COLS = frozenset(
-    {"catalog_id", "collection_id", "visibility", "owner", "grant_subjects"}
+    {"catalog_id", "collection_id", "visibility", "owner"}
 )
 
 

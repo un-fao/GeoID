@@ -58,7 +58,7 @@ def _predicate_to_terms(predicate: Any) -> Dict[str, Any]:
     For :class:`FieldPredicate`: emits an ES ``terms`` (set-membership) clause.
     ``terms`` membership matches the predicate's pure-Python semantics: a
     scalar field matches when its value is in ``values``; an array field
-    matches when it intersects ``values`` (``grant_subjects``).
+    matches when it intersects ``values``.
 
     For :class:`RangePredicate`: emits an ES ``range`` clause. The ``kind``
     field (numeric vs timestamp) is transparent to ES — both map to the same

@@ -15,7 +15,7 @@
 """Access-envelope write stamping in ``ItemService._dispatch_index_upsert`` (#1285).
 
 The standardized row-level-ABAC envelope driver reads typed access fields
-(``_visibility`` / ``_owner`` / ``_grant_subjects``) off the index payload. The
+(``_visibility`` / ``_owner``) off the index payload. The
 dispatcher stamps them — but ONLY when the collection routes WRITE to an
 access-aware driver (``applies_access_filter=True``). For every other collection
 the payload is unchanged, so existing stored docs (public / private indexes) are
@@ -136,7 +136,7 @@ async def test_envelope_visibility_public(monkeypatch):
     assert env is not None
     assert env["_visibility"] == "public"
     assert env["_owner"] == "alice"
-    # _grant_subjects retired by #1441; _attrs absent when no stamping policy.
+    # _grant_subjects is never stamped; _attrs absent when no stamping policy.
     assert "_grant_subjects" not in env
 
 
@@ -194,7 +194,7 @@ async def test_dispatch_stamps_access_fields_for_envelope_target(monkeypatch):
     payload = ops[0].payload
     assert payload["_visibility"] == "private"
     assert payload["_owner"] == "alice"
-    # _grant_subjects retired by #1441; not stamped on new docs.
+    # _grant_subjects is never stamped on new docs.
     assert "_grant_subjects" not in payload
 
 

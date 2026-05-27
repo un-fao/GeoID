@@ -265,6 +265,13 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             except Exception as e:
                 logger.warning("IamModule: OidcRoleSyncConfig seed failed (non-fatal): %s", e)
 
+            # Warn operators when JWT-claim attribute enrichment is active
+            # (claim_map non-empty) but no issuer_allowlist is configured.
+            # In multi-provider deployments any verified issuer's claim values
+            # would be merged into Principal.attributes, potentially widening
+            # or restricting ABAC access silently.
+            await _warn_jwt_attr_no_issuer_allowlist()
+
             # Register plugins
             register_plugin(self._iam_manager)
 
@@ -891,6 +898,33 @@ async def _seed_oidc_role_sync_config(engine: Any) -> None:
             "OidcRoleSyncConfig: reconcile_enabled=True but issuer_whitelist "
             "is not set. OIDC role sync will accept tokens from any issuer. "
             "Set issuer_whitelist to restrict mapped-role grants to trusted issuers."
+        )
+
+
+async def _warn_jwt_attr_no_issuer_allowlist() -> None:
+    """Warn at startup when JWT-claim attribute enrichment is active without an
+    issuer_allowlist.  Mirrors the OidcRoleSyncConfig warning above.
+    """
+    from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+    from .jwt_attr_config import JwtAttributeClaimsConfig
+
+    configs = get_protocol(PlatformConfigsProtocol)
+    if configs is None:
+        return
+    try:
+        persisted = await configs.list_configs()
+    except Exception:
+        return
+    raw = persisted.get(JwtAttributeClaimsConfig)
+    if raw is None:
+        return
+    cfg: Any = raw if isinstance(raw, JwtAttributeClaimsConfig) else JwtAttributeClaimsConfig.model_validate(raw)
+    if cfg.claim_map and not cfg.issuer_allowlist:
+        logger.warning(
+            "JwtAttributeClaimsConfig: claim_map is set but issuer_allowlist "
+            "is not. JWT-claim attribute enrichment will accept tokens from any "
+            "verified issuer. Set issuer_allowlist to restrict attribute injection "
+            "to trusted issuers and prevent cross-provider ABAC interference."
         )
 
 

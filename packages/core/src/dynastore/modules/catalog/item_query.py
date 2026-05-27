@@ -406,7 +406,7 @@ class ItemQueryMixin:
                 project_select_for_feature_type,
             )
             selects = project_select_for_feature_type(
-                feature_type, params.get("schema_fields") or []
+                feature_type, params.get("schema_fields") or None
             )
             # ``geom`` is reserved by ``MVTQueryTransform`` for the per-row
             # ``ST_AsMVTGeom(...) AS geom`` projection that the wrapping

@@ -2,10 +2,11 @@
 
 Endpoints exposed by this router:
 
-    GET/POST  /search                                                   – Unscoped item search (public alias)
-    GET/POST  /search/catalogs/{catalog_id}                             – Catalog-scoped item search
-    POST      /search/catalogs/{catalog_id}/reindex                     – Trigger catalog reindex (admin)
-    POST      /search/catalogs/{catalog_id}/collections/{cid}/reindex   – Trigger collection reindex (admin)
+    GET/POST  /search                                                                    – Unscoped item search (public alias)
+    GET/POST  /search/catalogs/{catalog_id}                                              – Catalog-scoped item search
+    POST      /search/catalogs/{catalog_id}/reindex                                      – Trigger catalog reindex (admin)
+    POST      /search/catalogs/{catalog_id}/collections/{cid}/reindex                    – Trigger collection reindex (admin)
+    POST      /search/catalogs/{catalog_id}/collections/{cid}/backfill-envelope-attrs    – Stamp _attrs on pre-#1441 envelope docs (sysadmin)
 
 Per #819 catalog/collection keyword-search routes were removed; the
 extension is item-only and dispatches through ``ItemsRoutingConfig.operations[SEARCH]``
@@ -20,7 +21,7 @@ Conformance class: https://api.stacspec.org/v1.0.0/item-search
 """
 import logging
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from .search_models import ItemCollection, SearchBody
 
@@ -232,3 +233,28 @@ async def post_reindex_collection_scoped(
     driver: Optional[str] = Query(None, description="Hint: which secondary driver to reindex."),
 ) -> Dict[str, Any]:
     return await _get_search_service().reindex_collection(catalog_id, collection_id, driver=driver)
+
+
+# ---------------------------------------------------------------------------
+# Backfill envelope attrs — POST /search/catalogs/{id}/collections/{cid}/backfill-envelope-attrs
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/catalogs/{catalog_id}/collections/{collection_id}/backfill-envelope-attrs",
+    response_model=Dict[str, Any],
+    summary="Stamp _attrs onto pre-existing envelope-driver docs (sysadmin only).",
+    status_code=202,
+)
+async def post_backfill_envelope_attrs(
+    request: Request,
+    catalog_id: str,
+    collection_id: str,
+    dry_run: bool = Body(False, description="Count items but do not write to Elasticsearch."),
+    batch_size: int = Body(500, ge=1, le=5000, description="Items per page / ES bulk batch."),
+) -> Dict[str, Any]:
+    return await _get_search_service().backfill_envelope_attrs(
+        catalog_id,
+        collection_id,
+        dry_run=dry_run,
+        batch_size=batch_size,
+    )
