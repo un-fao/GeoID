@@ -190,6 +190,21 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             _norm_exc,
                         )
 
+                    # One-shot migration: backfill the allowed_preset_names
+                    # safe-subset on the catalog_preset_delegation policy
+                    # (#1426). Pre-fix iam_baseline shipped without the
+                    # allowlist, leaving catalog admins able to POST/DELETE
+                    # any registered preset at their scope.
+                    try:
+                        from dynastore.modules.iam.migrations.tighten_catalog_preset_allowlist import run_migration as _run_tighten
+                        await _run_tighten(engine=engine)
+                    except Exception as _tighten_exc:
+                        logger.warning(
+                            "IamModule: catalog_preset_delegation allowlist "
+                            "migration failed (non-fatal): %s",
+                            _tighten_exc,
+                        )
+
                     # Self-heal guard: if the platform-tier sysadmin role is
                     # absent (e.g. a DB reset happened before this restart),
                     # seed it directly so the service is never left in a

@@ -60,6 +60,16 @@ class IamBaselineParams(BaseModel):
     policy's ``catalog_admin_required`` condition so catalog admins can
     manage their own catalog presets. The default ``["admin"]`` matches
     the seeded ``admin`` role name from ``IamRolesConfig``.
+
+    ``allowed_preset_names`` is the safe-subset allowlist for catalog-
+    scoped preset delegation. It is injected into the
+    ``catalog_preset_delegation`` policy's ``catalog_admin_required``
+    condition. The default ``["public_catalog", "private_catalog"]``
+    matches the two catalog-scopable shape presets; composites and
+    security-sensitive routing presets (e.g. ``items_es_private``) are
+    intentionally OUT — they fan out to children or pin global drivers
+    that the catalog admin should not necessarily authorise. Sysadmin
+    and platform-grant principals bypass the allowlist.
     """
 
     delegation_role_names: List[str] = Field(
@@ -68,6 +78,14 @@ class IamBaselineParams(BaseModel):
             "Role names that gain catalog-scoped preset delegation. "
             "Injected into admin_catalog_access's catalog_admin_required "
             "condition. An empty list leaves catalog delegation disabled."
+        ),
+    )
+    allowed_preset_names: List[str] = Field(
+        default_factory=lambda: ["public_catalog", "private_catalog"],
+        description=(
+            "Safe-subset allowlist for catalog-scoped preset delegation. "
+            "Empty list disables all catalog-scoped preset POST/DELETE for "
+            "the role; sysadmin/platform bypass remains."
         ),
     )
 
@@ -132,20 +150,25 @@ def _admin_catalog_access_policy(required_roles: List[str]) -> Policy:
     )
 
 
-def _catalog_preset_delegation_policy(delegation_role_names: List[str]) -> Policy:
-    """Allow delegation_role_names to POST/DELETE catalog-scoped presets.
+def _catalog_preset_delegation_policy(
+    delegation_role_names: List[str],
+    allowed_preset_names: List[str],
+) -> Policy:
+    """Allow ``delegation_role_names`` to POST/DELETE catalog-scoped presets
+    whose ``{name}`` is in ``allowed_preset_names``.
 
-    The resource regex currently covers ALL registered preset names at the
-    catalog scope. PR-3 will introduce a safe-subset condition once the
-    ConditionHandler has an ``allowed_preset_names`` config key; until
-    then the only guard is the ``catalog_admin_required`` role check.
+    The resource regex matches every catalog-scoped preset path; the
+    ``catalog_admin_required`` condition's ``allowed_preset_names`` config
+    key enforces the safe-subset gate. Sysadmin / platform-grant principals
+    bypass both the role check and the allowlist (handler-level).
     """
     return Policy(
         id="catalog_preset_delegation",
         description=(
             "Lets catalog-tier admins (roles in required_roles) apply or "
-            "revoke presets at their catalog scope. PR-3 will add an "
-            "allowed_preset_names guard when the condition handler supports it."
+            "revoke a safe subset of presets at their catalog scope. The "
+            "allowed_preset_names guard is enforced by the catalog_admin_required "
+            "condition handler."
         ),
         actions=["POST", "DELETE"],
         resources=[r"^/admin/catalogs/[^/]+/presets/[^/]+$"],
@@ -153,7 +176,10 @@ def _catalog_preset_delegation_policy(delegation_role_names: List[str]) -> Polic
         conditions=[
             Condition(
                 type="catalog_admin_required",
-                config={"required_roles": delegation_role_names},
+                config={
+                    "required_roles": delegation_role_names,
+                    "allowed_preset_names": allowed_preset_names,
+                },
             )
         ],
     )
@@ -215,7 +241,10 @@ class IamBaseline:
         entries.append(PresetPlanEntry(
             kind="upsert_policy",
             target="catalog_preset_delegation",
-            detail={"required_roles": p.delegation_role_names},
+            detail={
+                "required_roles": p.delegation_role_names,
+                "allowed_preset_names": p.allowed_preset_names,
+            },
         ))
         return PresetPlan(
             preset_name=self.name,
@@ -260,10 +289,16 @@ class IamBaseline:
         )
 
         # Upsert catalog-scoped preset delegation policy.
-        delegation_pol = _catalog_preset_delegation_policy(p.delegation_role_names)
+        delegation_pol = _catalog_preset_delegation_policy(
+            p.delegation_role_names, p.allowed_preset_names
+        )
         await policy_service.update_policy(delegation_pol)
         applied_policy_ids.append(delegation_pol.id)
-        logger.debug("iam_baseline: upserted policy %s", delegation_pol.id)
+        logger.debug(
+            "iam_baseline: upserted policy %s (allowlist=%s)",
+            delegation_pol.id,
+            p.allowed_preset_names,
+        )
 
         # Upsert role bindings (existing roles get the new policy merged in).
         for role in _iam_service_role_bindings():
@@ -275,6 +310,7 @@ class IamBaseline:
             "policy_ids": applied_policy_ids,
             "role_names": applied_role_names,
             "delegation_role_names": p.delegation_role_names,
+            "allowed_preset_names": p.allowed_preset_names,
         })
 
     async def revoke(
