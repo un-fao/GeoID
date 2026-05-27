@@ -1394,7 +1394,10 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         the policy is absent or ``attribute_paths`` is empty.
         """
         try:
-            from dynastore.modules.iam.stamping_config import AttributeStampingPolicy
+            from dynastore.modules.iam.stamping_config import (
+                AttributeStampingPolicy,
+                stamp_attrs_from_feature,
+            )
 
             configs = get_protocol(ConfigsProtocol)
             if configs is None:
@@ -1412,18 +1415,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         except Exception:
             return {}
 
-        props = source.get("properties") or {}
-        attrs: Dict[str, Any] = {}
-        _PREFIX = "$.properties."
-        for key, path in paths.items():
-            if not isinstance(path, str) or not path.startswith(_PREFIX):
-                continue
-            field_name = path[len(_PREFIX):]
-            if field_name and field_name in props:
-                val = props[field_name]
-                if val is not None:
-                    attrs[key] = val
-        return attrs
+        return stamp_attrs_from_feature(source, paths)
 
     async def _collection_uses_access_aware_driver(
         self,

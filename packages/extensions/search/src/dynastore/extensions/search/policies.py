@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def register_search_policies():
-    """Register admin-only policy for the reindex endpoints via PermissionProtocol."""
+    """Register admin-only policies for search admin endpoints via PermissionProtocol."""
     from dynastore.models.protocols.policies import PermissionProtocol
 
     pm = get_protocol(PermissionProtocol)
@@ -31,8 +31,28 @@ def register_search_policies():
     )
     pm.register_policy(reindex_policy)
 
+    backfill_policy = Policy(
+        id="search_envelope_backfill_sysadmin",
+        description=(
+            "Grants access to the envelope-attrs backfill endpoint (sysadmin only). "
+            "This endpoint stamps _attrs onto pre-existing ES envelope-driver docs "
+            "written before #1441 shipped."
+        ),
+        actions=["POST"],
+        resources=[
+            "/search/catalogs/.*/collections/.*/backfill-envelope-attrs",
+        ],
+        effect="ALLOW",
+    )
+    pm.register_policy(backfill_policy)
+
     cfg = IamRolesConfig()
     for role_name in (cfg.sysadmin_role_name, cfg.admin_role_name):
         pm.register_role(Role(name=role_name, policies=["search_reindex_admin"]))
 
-    logger.debug("Search reindex policies registered via PermissionProtocol.")
+    # Backfill is sysadmin-only (destructive batch write).
+    pm.register_role(
+        Role(name=cfg.sysadmin_role_name, policies=["search_envelope_backfill_sysadmin"])
+    )
+
+    logger.debug("Search admin policies registered via PermissionProtocol.")

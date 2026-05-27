@@ -95,6 +95,7 @@ metadata_catalog_log_indexer = "dynastore.modules.storage.drivers.catalog_log_in
 gdal = "dynastore.tasks.gdal.gdalinfo_task:GdalInfoTask"
 gcp_provision = "dynastore.tasks.gcp_provision.task:ProvisioningTask"
 elasticsearch_indexer = "dynastore.tasks.elasticsearch_indexer.indexer_task:ElasticsearchIndexerTask"
+envelope_attrs_backfill = "dynastore.tasks.elasticsearch_indexer.envelope_backfill_task:EnvelopeAttrsBackfillTask"
 elasticsearch_private_tasks = "dynastore.modules.storage.drivers.elasticsearch_private.tasks:PrivateIndexTask"
 ingestion = "dynastore.tasks.ingestion.ingestion_task:IngestionTask"
 dwh_join = "dynastore.tasks.dwh_join.dwh_join_export_task:DwhJoinExportTask"

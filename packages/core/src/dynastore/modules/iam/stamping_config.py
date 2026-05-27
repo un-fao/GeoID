@@ -41,14 +41,48 @@ supported in this first slice; nested paths and array selectors are deferred.
 """
 from __future__ import annotations
 
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import Any, ClassVar, Dict, Mapping, Optional, Tuple
 
 from pydantic import Field
 
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 
-__all__ = ["AttributeStampingPolicy"]
+__all__ = ["AttributeStampingPolicy", "stamp_attrs_from_feature"]
+
+
+_PREFIX = "$.properties."
+
+
+def stamp_attrs_from_feature(
+    feature: Mapping[str, Any],
+    paths: Mapping[str, str],
+) -> Dict[str, Any]:
+    """Extract attribute values from a Feature dict using declared JSONPath-lite paths.
+
+    For each key in ``paths`` whose value starts with ``$.properties.<field>``,
+    extracts the corresponding value from ``feature["properties"]``.  Keys
+    whose path is absent, malformed, or whose property value is ``None`` are
+    omitted from the result.
+
+    Returns an empty dict when ``feature`` is not a mapping or ``paths`` is
+    empty.  Never raises.
+    """
+    if not isinstance(feature, Mapping) or not paths:
+        return {}
+    props = feature.get("properties") or {}
+    if not isinstance(props, Mapping):
+        return {}
+    attrs: Dict[str, Any] = {}
+    for key, path in paths.items():
+        if not isinstance(path, str) or not path.startswith(_PREFIX):
+            continue
+        field_name = path[len(_PREFIX):]
+        if field_name and field_name in props:
+            val = props[field_name]
+            if val is not None:
+                attrs[key] = val
+    return attrs
 
 
 class AttributeStampingPolicy(PluginConfig):
