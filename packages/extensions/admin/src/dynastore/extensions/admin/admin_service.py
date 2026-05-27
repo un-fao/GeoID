@@ -389,11 +389,12 @@ async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
 
 
 async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
-    """Rollback a preset bundle, leaf-first, with 409 on divergence.
+    """Rollback a preset bundle, leaf-first, lenient on per-slot divergence.
 
-    Mirrors the catalog-tier rollback contract (#971): a persisted row
-    that no longer matches the preset's emitted instance blocks the whole
-    rollback with 409 and nothing is deleted; missing rows are no-ops.
+    Operators may edit individual slots via REST after the preset was applied;
+    rollback removes only what still matches the preset's emitted instance,
+    leaves diverged slots untouched, and skips missing rows. Each outcome is
+    reported in the response so callers can audit which slots were retained.
     """
     from dynastore.models.protocols.configs import ConfigsProtocol
 
@@ -402,13 +403,18 @@ async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
         raise HTTPException(status_code=503, detail="Configs service unavailable.")
 
     bundle = preset.build(**base_scope)
-    diverged: list[dict] = []
-    to_delete: list[tuple[str, type, dict]] = []
+    deleted: list[str] = []
+    skipped: list[dict] = []
 
     for entry in bundle.iter_rollback():
         scope = {**base_scope, **dict(entry.scope)}
         persisted = await configs.get_persisted_config(entry.config_cls, **scope)
         if persisted is None:
+            skipped.append({
+                "slot": entry.slot,
+                "class": entry.config_cls.__name__,
+                "reason": "missing",
+            })
             continue
         try:
             persisted_norm = entry.config_cls.model_validate(persisted).model_dump(mode="json")
@@ -416,32 +422,22 @@ async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
             persisted_norm = persisted
         expected_norm = entry.instance.model_dump(mode="json")
         if persisted_norm == expected_norm:
-            to_delete.append((entry.slot, entry.config_cls, scope))
+            await configs.delete_config(entry.config_cls, **scope)
+            deleted.append(entry.slot)
         else:
-            diverged.append({
+            logger.info(
+                "preset=%s scope=%s slot=%s diverged on revoke — leaving in place",
+                preset.name, base_scope, entry.slot,
+            )
+            skipped.append({
                 "slot": entry.slot,
                 "class": entry.config_cls.__name__,
+                "reason": "diverged",
                 "persisted": persisted_norm,
                 "expected": expected_norm,
             })
 
-    if diverged:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": (
-                    f"Preset '{preset.name}' cannot be rolled back: "
-                    f"{len(diverged)} slot(s) diverge from the preset bundle."
-                ),
-                "diverged": diverged,
-            },
-        )
-
-    deleted: list[str] = []
-    for slot_name, cfg_cls, scope in to_delete:
-        await configs.delete_config(cfg_cls, **scope)
-        deleted.append(slot_name)
-    return {"preset": preset.name, "deleted": deleted, **base_scope}
+    return {"preset": preset.name, "deleted": deleted, "skipped": skipped, **base_scope}
 
 
 class AdminService(ExtensionProtocol):
@@ -2499,15 +2495,18 @@ class AdminService(ExtensionProtocol):
         catalog_id: str,
         preset_name: str,
     ):
-        """Rollback ``preset_name`` from ``catalog_id`` when the persisted
-        rows still match the preset bundle byte-for-byte.
+        """Rollback ``preset_name`` from ``catalog_id`` leniently per slot.
 
-        Any slot whose persisted row diverges from the preset's emitted
-        instance is reported via HTTP 409 with a ``diverged`` payload and
-        the endpoint deletes nothing — the operator must reconcile or
-        force-PUT before a rollback succeeds. Slots are walked leaf-first
-        (items template → collection template → catalog routing →
-        audiences). Missing rows are no-ops.
+        Walks slots leaf-first (items template → collection template →
+        catalog routing → audiences). For each slot:
+        - matches preset emission → deleted, listed in ``deleted``.
+        - diverged from preset emission → left in place, listed in
+          ``skipped`` with ``reason: diverged`` plus the persisted/expected
+          payload so operators can audit.
+        - missing → listed in ``skipped`` with ``reason: missing``.
+
+        Operators who edited a slot via REST after apply keep their edits;
+        revoke removes only what still matches what the preset wrote.
         """
         from dynastore.modules.storage.presets import PresetTier
 
