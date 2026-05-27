@@ -172,8 +172,20 @@ def _web_role_bindings(
     admin_role_name = admin_role_name or cfg.admin_role_name
     user_role_name = user_role_name or cfg.default_user_role_name
     anonymous_role_name = anonymous_role_name or cfg.anonymous_role_name
+    # Bind ``web_public_access`` (which whitelists root ``/health``) to BOTH
+    # the configured ``anonymous_role_name`` AND the literal default
+    # ``"unauthenticated"``. The literal binding is a defence layer: if an
+    # operator renames ``IamRolesConfig.anonymous_role_name`` away from
+    # ``"unauthenticated"``, the Cloud Run / load-balancer startup probe
+    # (which still hits ``/health`` anonymously and gets mapped to the
+    # platform's default anonymous role) keeps passing instead of 403'ing
+    # the revision into a boot loop. The INSERT_ROLE ON CONFLICT union in
+    # ``iam_queries`` dedups when the two names coincide.
+    anon_bindings = [Role(name=anonymous_role_name, policies=["web_public_access"])]
+    if anonymous_role_name != "unauthenticated":
+        anon_bindings.append(Role(name="unauthenticated", policies=["web_public_access"]))
     return [
-        Role(name=anonymous_role_name, policies=["web_public_access"]),
+        *anon_bindings,
         Role(name=sysadmin_role_name, policies=["web_sysadmin_access"]),
         Role(name=admin_role_name, policies=["web_admin_access"]),
         Role(name=user_role_name, policies=["web_admin_access"]),
