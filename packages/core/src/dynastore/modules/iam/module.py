@@ -205,6 +205,34 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             _tighten_exc,
                         )
 
+                    # One-shot migration: add attribute_predicates JSONB
+                    # column to every grants table (#1441).  Existing rows
+                    # default to '[]' — full backwards compatibility with
+                    # the pure-RBAC path.
+                    try:
+                        from dynastore.modules.iam.migrations.add_grants_attribute_predicates import run_migration as _run_attr_preds
+                        await _run_attr_preds(engine=engine)
+                    except Exception as _attr_exc:
+                        logger.warning(
+                            "IamModule: add_grants_attribute_predicates "
+                            "migration failed (non-fatal): %s",
+                            _attr_exc,
+                        )
+
+                    # One-shot migration: drop dead IAM schema artefacts
+                    # (#1345 — PR-6 of the IAM-at-scale sequence).
+                    # Drops: policies_sysadmin, policies_auth partitions;
+                    #        principals.policy column; roles.level column.
+                    # Non-fatal: artefacts are dead weight, not load-bearing.
+                    try:
+                        from dynastore.modules.iam.migrations.iam_cleanup_v1 import run_migration as _run_cleanup
+                        await _run_cleanup(engine=engine)
+                    except Exception as _cleanup_exc:
+                        logger.warning(
+                            "IamModule: iam_cleanup_v1 migration failed (non-fatal): %s",
+                            _cleanup_exc,
+                        )
+
                     # Self-heal guard: if the platform-tier sysadmin role is
                     # absent (e.g. a DB reset happened before this restart),
                     # seed it directly so the service is never left in a

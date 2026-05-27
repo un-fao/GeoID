@@ -19,7 +19,7 @@
 # dynastore/modules/tiles/tiles_db.py
 
 import logging
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, List, Mapping, Optional, Tuple, Union
 from sqlalchemy import text
 from shapely.geometry import box
 from shapely import wkb
@@ -124,8 +124,18 @@ async def _build_collection_subquery(
     # selected column as a tile property, so honouring feature_type at SELECT
     # time is the only way to prevent leaks (raw geometry WKB, undeclared
     # JSONB keys, geoid).
+    #
+    # We pass the raw ``ItemsSchema.fields`` dict down to the SSOT helper
+    # ``project_select_for_feature_type`` — it filters out geometry-typed and
+    # ``expose=False`` entries internally (read-side mirror of the write SSOTs
+    # ``schema_field_materializes_as_column`` / ``bridge_schema_to_attribute_sidecar``,
+    # which keep geometry out of the attributes sidecar). The driver's MVT
+    # query then materialises the per-row ``ST_AsMVTGeom(...) AS geom`` and
+    # the wrapping ``ST_AsMVT`` aggregates only those columns.
     feature_type = None
+    schema_fields: Optional[Mapping[str, Any]] = None
     try:
+        from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.read_policy import ItemsReadPolicy
 
         configs = get_protocol(ConfigsProtocol)
@@ -136,6 +146,12 @@ async def _build_collection_subquery(
                 collection_id=collection_id,
             )
             feature_type = getattr(policy, "feature_type", None)
+            schema = await configs.get_config(
+                ItemsSchema,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            schema_fields = getattr(schema, "fields", None) or {}
     except Exception as exc:  # noqa: BLE001 — read assembly must not break on config miss
         logger.debug(
             "tile read_policy resolution skipped for %s/%s: %s",
@@ -157,6 +173,7 @@ async def _build_collection_subquery(
         "cql_filter": cql_filter,
         "tile_wkb": tile_wkb,
         "feature_type": feature_type,
+        "schema_fields": schema_fields,
     }
 
     if subset_params:

@@ -180,17 +180,40 @@ class MVTQueryTransform:
         outer ``ST_AsMVT(mvtgeom.*, ...)``. Without this wrap the legacy tile
         path leaked ``geoid`` (and, before the geometry-placeholder removal,
         raw WKB) into every feature regardless of ``feature_type.expose``.
+
+        Trinary ``feature_type.expose`` (see :class:`FeatureType`):
+        ``None`` → schema-declared fields (from ``context['schema_fields']``,
+          the raw ``ItemsSchema.fields`` mapping; geometry-typed and
+          ``expose=False`` entries are filtered via the read-side SSOT in
+          :func:`...storage.read_policy._readable_schema_field_names`);
+        ``[]`` → none (geometry-only tile);
+        non-empty list → schema fields PLUS the listed computed names.
         """
+        from dynastore.modules.storage.read_policy import (
+            _readable_schema_field_names,
+        )
+
         feature_type = context.get("feature_type")
         if feature_type is None:
             return sql, params
+
+        schema_fields = _readable_schema_field_names(
+            context.get("schema_fields") or None
+        )
 
         keep: list[str] = ["geom"]
         if feature_type.expose_geoid:
             keep.append("geoid")
         if feature_type.expose_created:
             keep.append("created")
-        keep.extend(feature_type.expose or [])
+
+        if feature_type.expose is None:
+            keep.extend(schema_fields)
+        elif len(feature_type.expose) == 0:
+            pass  # explicit suppression: geometry-only
+        else:
+            keep.extend(schema_fields)
+            keep.extend(feature_type.expose)
 
         # ``identifier`` quote each column name so JSONB-derived names with
         # mixed-case (``CODE``/``NAME``) survive Postgres' lowercase-folding.
