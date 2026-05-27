@@ -39,9 +39,13 @@ from __future__ import annotations
 
 from typing import ClassVar, Dict, List, Optional, Protocol, Sequence, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dynastore.models.protocols.access_filter import FieldPredicate
+
+import re
+
+_KEY_PATTERN = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 __all__ = [
     "AttributePredicate",
@@ -65,12 +69,28 @@ class AttributePredicate(BaseModel):
         {"key": "dept", "op": "in", "values": ["finance", "global"]}
     """
 
-    key: str = Field(description="Document attribute key under ``_attrs``.")
+    key: str = Field(
+        description=(
+            "Document attribute key under ``_attrs``. Must match "
+            "``[A-Za-z_][A-Za-z0-9_]*`` — the same shape used unquoted "
+            "as a JSONB key in the PG translator."
+        ),
+    )
     op: str = Field(description="Comparison operator: 'in', 'eq', …")
     values: List[str] = Field(
         default_factory=list,
         description="Comparison values. Non-empty for 'in'/'eq'.",
     )
+
+    @field_validator("key")
+    @classmethod
+    def _validate_key(cls, value: str) -> str:
+        if not _KEY_PATTERN.fullmatch(value):
+            raise ValueError(
+                "AttributePredicate.key must match [A-Za-z_][A-Za-z0-9_]* "
+                "(no quotes, dots, or whitespace)."
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------

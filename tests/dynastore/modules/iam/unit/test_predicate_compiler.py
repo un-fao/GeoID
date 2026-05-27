@@ -164,3 +164,37 @@ def test_compile_value_stringified():
     fps, unc = compile_attribute_predicates(preds)
     assert not unc
     assert all(isinstance(v, str) for v in fps[0].values)
+
+
+# ---------------------------------------------------------------------------
+# Key-format validation (PG translator defense-in-depth)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "x'--",          # SQL quote escape
+        'x"; DROP',      # SQL injection vector
+        "with space",
+        "dot.path",      # dots reserved for the _attrs.<key> separator
+        "1leading_digit",
+        "",
+        "-dash",
+    ],
+)
+def test_attribute_predicate_key_rejects_unsafe_chars(bad_key):
+    """``AttributePredicate.key`` must reject anything outside ``[A-Za-z_][A-Za-z0-9_]*``.
+
+    The PG translator interpolates the key unquoted into a JSONB path; the
+    pydantic validator is the first line of defense.
+    """
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        AttributePredicate(key=bad_key, op="in", values=["x"])
+
+
+@pytest.mark.parametrize("good_key", ["dept", "_internal", "level_3", "Sensitivity"])
+def test_attribute_predicate_key_accepts_safe_chars(good_key):
+    """Valid identifier keys pass."""
+    p = AttributePredicate(key=good_key, op="eq", values=["v"])
+    assert p.key == good_key

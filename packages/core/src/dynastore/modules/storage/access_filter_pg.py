@@ -43,11 +43,13 @@ neutral :class:`AccessFilter` / :class:`FieldPredicate` contracts.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 __all__ = ["access_filter_to_pg_clause"]
 
 _ATTRS_PREFIX = "_attrs."
+_SAFE_ATTR_KEY_RE = re.compile(r"[A-Za-z0-9_]+")
 
 # First-class column names that are stored as regular PG columns, NOT in the
 # JSONB envelope.  Predicates on these must be handled by the caller's
@@ -81,11 +83,15 @@ def _field_predicate_to_sql(
         attr_key = field[len(_ATTRS_PREFIX):]
         if not attr_key or not values:
             return None
-        # JSONB path lookup: (envelope_col->'attrs'->>'key') = ANY(:param)
+        # JSONB key must match the AttributePredicate.key pattern enforced at
+        # the grant ingress; defense-in-depth: skip the predicate (never widen)
+        # if it slipped through with disallowed characters.
+        if not _SAFE_ATTR_KEY_RE.fullmatch(attr_key):
+            return None
         p_name = f"{param_prefix}_{attr_key}"
         params[p_name] = list(values)
         return (
-            f"({envelope_col}->'attrs'->>'{ attr_key}') = ANY(:{p_name})"
+            f"({envelope_col}->'attrs'->>'{attr_key}') = ANY(:{p_name})"
         )
 
     # Unknown field — skip (fail-safe, not fail-open).
@@ -145,13 +151,18 @@ def access_filter_to_pg_clause(
         # matches nothing.
         return "FALSE", {}
 
-    if getattr(access_filter, "allow_all", True) and not getattr(
-        access_filter, "allow", ()
-    ):
+    allow_all = getattr(access_filter, "allow_all", False)
+    allow_clauses = getattr(access_filter, "allow", ())
+
+    if allow_all and not allow_clauses:
         return None, {}
 
+    # Empty allow set without allow_all is the "deny everything by empty allow"
+    # semantic; mirror the ES translator's match-nothing behaviour.
+    if not allow_all and not allow_clauses:
+        return "FALSE", {}
+
     params: Dict[str, Any] = {}
-    allow_clauses = getattr(access_filter, "allow", ())
     or_parts: List[str] = []
     for i, clause in enumerate(allow_clauses):
         sql = _clause_to_sql(clause, i, params, envelope_col=envelope_col)

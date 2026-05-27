@@ -1093,6 +1093,13 @@ class PolicyService:
         # ``attribute_predicates = []`` behave exactly as before (the policy
         # path above already covers them).  An uncompilable predicate op
         # excludes the entire grant from the ALLOW set (fail-closed).
+        #
+        # Pure ABAC grants (no base policy match, only attribute predicates)
+        # WILL produce an ALLOW clause at the index/search layer.  That is
+        # intentional: the runtime engine re-evaluates per request so any
+        # actual GET on a matching item is still re-checked end-to-end;
+        # search returns only the items whose stored ``_attrs`` envelope
+        # admits the predicate, which is exactly the ABAC contract.
         attr_allow_clauses, attr_uncompilable = await _compile_grant_attribute_clauses(
             iam_storage=self.iam_storage,
             principal_id=principal_id,

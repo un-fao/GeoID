@@ -90,6 +90,19 @@ def test_allow_all_no_restriction():
     assert params == {}
 
 
+def test_empty_allow_without_allow_all_is_deny_everything():
+    """``AccessFilter(allow_all=False, allow=())`` means deny everything.
+
+    Mirrors the ES translator's match-nothing behaviour; must emit ``FALSE``
+    rather than ``None`` (no-restriction). Regression guard for the security
+    bug where the implicit-deny case fell through to the no-clause branch.
+    """
+    af = AccessFilter(allow_all=False, allow=())
+    sql, params = access_filter_to_pg_clause(af)
+    assert sql == "FALSE"
+    assert params == {}
+
+
 def test_none_access_filter_no_restriction():
     """None → no restriction."""
     sql, params = access_filter_to_pg_clause(None)
