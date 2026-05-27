@@ -6,6 +6,10 @@ from .tasks import (
     BulkCollectionReindexInputs,
     BulkCollectionReindexTask,
 )
+from .envelope_backfill_task import (
+    EnvelopeAttrsBackfillInputs,
+    EnvelopeAttrsBackfillTask,
+)
 
 
 __all__ = [
@@ -15,4 +19,6 @@ __all__ = [
     "BulkCatalogReindexTask",
     "BulkCollectionReindexInputs",
     "BulkCollectionReindexTask",
+    "EnvelopeAttrsBackfillInputs",
+    "EnvelopeAttrsBackfillTask",
 ]

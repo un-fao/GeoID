@@ -484,6 +484,57 @@ class SearchService(ExtensionProtocol):
             "status": "queued",
         }
 
+    async def backfill_envelope_attrs(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        dry_run: bool = False,
+        batch_size: int = 500,
+    ) -> Dict[str, Any]:
+        """Enqueue an EnvelopeAttrsBackfillTask and return 202 + task_id.
+
+        Sysadmin-only endpoint.  The task stamps ``attrs`` onto existing
+        envelope-driver documents that pre-date #1441.
+        """
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.modules.tasks import tasks_module
+        from dynastore.modules.tasks.models import TaskCreate
+        from dynastore.tools.discovery import get_protocol
+
+        db = get_protocol(DatabaseProtocol)
+        if not db:
+            raise RuntimeError("DatabaseProtocol not available.")
+        engine = db.engine if isinstance(db, DatabaseProtocol) else db
+
+        inputs: Dict[str, Any] = {
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "dry_run": dry_run,
+            "batch_size": batch_size,
+        }
+
+        task = await tasks_module.create_task_for_catalog(
+            engine=engine,
+            task_data=TaskCreate(
+                caller_id="system:search",
+                task_type="envelope_attrs_backfill_collection",
+                inputs=inputs,
+            ),
+            catalog_id=catalog_id,
+        )
+        if task is None:
+            raise RuntimeError(
+                "backfill_envelope_attrs: create_task returned None "
+                "(dedup hit on a non-dedup task)."
+            )
+        return {
+            "task_id": str(task.task_id),
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+            "dry_run": dry_run,
+            "status": "queued",
+        }
+
     def _resolve_items_driver_by_ref(self, driver_ref: str) -> Any:
         """Resolve a live items ES driver instance by its ``driver_ref``.
 

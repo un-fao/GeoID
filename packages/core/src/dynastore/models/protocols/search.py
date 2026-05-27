@@ -114,3 +114,22 @@ class SearchProtocol(Protocol):
             ``status``.
         """
         ...
+
+    async def backfill_envelope_attrs(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        dry_run: bool = False,
+        batch_size: int = 500,
+    ) -> Dict[str, Any]:
+        """
+        Enqueue a task to stamp ``attrs`` onto pre-existing envelope-driver
+        documents that were written before attribute stamping (#1441) shipped.
+
+        Sysadmin-only.
+
+        Returns:
+            Dict with ``task_id``, ``catalog_id``, ``collection_id``,
+            ``dry_run``, ``status``.
+        """
+        ...
