@@ -34,11 +34,12 @@ Collection-scoped only.
 """
 
 import logging
-from typing import Any, ClassVar, Iterable, List, Optional, Tuple
+from typing import Any, ClassVar, List, Mapping, Optional, Tuple
 
 from pydantic import Field
 
 from dynastore.models.mutability import Mutable
+from dynastore.models.protocols.field_definition import FieldDefinition
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.modules.storage.computed_fields import FeatureType
 
@@ -188,9 +189,44 @@ async def _validate_read_policy(
 ItemsReadPolicy.register_validate_handler(_validate_read_policy)
 
 
+def _readable_schema_field_names(
+    declared_schema: Optional[Mapping[str, FieldDefinition]],
+) -> List[str]:
+    """Filter ``ItemsSchema.fields`` down to the names safe to project as
+    attribute properties on a read path.
+
+    Two skip rules — the read-side mirror of the write-side SSOTs in
+    :mod:`dynastore.modules.storage.field_constraints`:
+
+      * ``data_type`` starts with ``geometry`` — geometry is owned by the
+        geometry sidecar / driver, never by the attributes sidecar. Selecting
+        ``attributes->>'geometry'`` would return NULL (write side
+        :func:`bridge_schema_to_attribute_sidecar` skips geometry-typed
+        fields, so the JSONB blob never carries that key) and on the MVT
+        path the empty column kills the tile render. The tolerant
+        ``startswith`` matches the write-side check at
+        ``field_constraints.schema_field_materializes_as_column``.
+      * ``expose`` is ``False`` — admin-tuned opt-out on a per-field basis;
+        the field stays declared (so writes still validate against it) but
+        does not surface on the wire.
+
+    Names only — callers feed the result into ``FieldSelection(field=name)``.
+    """
+    if not declared_schema:
+        return []
+    out: List[str] = []
+    for name, fd in declared_schema.items():
+        if (getattr(fd, "data_type", "") or "").lower().startswith("geometry"):
+            continue
+        if not getattr(fd, "expose", True):
+            continue
+        out.append(name)
+    return out
+
+
 def project_select_for_feature_type(
     feature_type: FeatureType,
-    declared_fields: Optional[Iterable[str]] = None,
+    declared_schema: Optional[Mapping[str, FieldDefinition]] = None,
 ) -> List[Any]:
     """Build the SELECT list a read path needs to honour ``feature_type``.
 
@@ -202,15 +238,21 @@ def project_select_for_feature_type(
     SELECT list. Both paths thus answer to a single declarative contract
     (``ItemsReadPolicy.feature_type``) — never two divergent code paths.
 
+    ``declared_schema`` is the collection's ``ItemsSchema.fields`` mapping.
+    The helper internally filters it to attribute-projectable names via
+    :func:`_readable_schema_field_names` — the read-side mirror of the
+    write-side ``schema_field_materializes_as_column`` /
+    ``bridge_schema_to_attribute_sidecar``. So a caller may pass the raw
+    schema fields dict; geometry-typed and ``expose=False`` entries are
+    dropped before any ``FieldSelection`` is built.
+
     ``expose`` is trinary (see :class:`FeatureType`):
 
-      * ``None`` (default) — surface every declared schema field
-        (``declared_fields`` supplied by the caller; usually
-        ``ItemsSchema.fields`` keys).
+      * ``None`` (default) — surface every readable declared schema field.
       * ``[]`` (explicit empty) — surface no schema or computed properties;
         the SELECT list contains only the ``expose_geoid`` / ``expose_created``
         toggles (and the geometry, added separately by the tile transform).
-      * Non-empty list — additive: declared schema fields PLUS the listed
+      * Non-empty list — additive: readable schema fields PLUS the listed
         computed ``ComputedField.resolved_name`` values from
         ``ItemsWritePolicy.compute``. ``_validate_read_policy`` already
         rejects unknown / unstored names at config-save time.
@@ -225,18 +267,18 @@ def project_select_for_feature_type(
     if feature_type.expose_created:
         selects.append(FieldSelection(field="transaction_time", alias="created"))
 
-    schema = list(declared_fields or [])
+    readable = _readable_schema_field_names(declared_schema)
 
     if feature_type.expose is None:
-        # Default: mirror the write schema.
-        for name in schema:
+        # Default: mirror the write schema (filtered to readable fields).
+        for name in readable:
             selects.append(FieldSelection(field=name))
     elif len(feature_type.expose) == 0:
         # Explicit empty: surface nothing beyond the geoid/created toggles.
         pass
     else:
         # Schema baseline + listed computed/derived (additive).
-        for name in schema:
+        for name in readable:
             selects.append(FieldSelection(field=name))
         for name in feature_type.expose:
             selects.append(FieldSelection(field=name))
