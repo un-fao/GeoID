@@ -106,7 +106,8 @@ async def test_empty_flush_short_circuits_without_db_call() -> None:
 
 @pytest.mark.asyncio
 async def test_flush_opens_single_transaction_for_all_pending() -> None:
-    """Pin the load-bearing invariant of #204: ONE managed_transaction(engine)
+    """Pin the load-bearing invariant of #204: ONE advisory-locked transaction
+    (via ``acquire_startup_lock``, which wraps ``managed_transaction``)
     regardless of how many policies/roles are pending. Pre-fix this would
     have been ``len(policies) + len(roles)`` separate transactions.
     """
@@ -133,11 +134,11 @@ async def test_flush_opens_single_transaction_for_all_pending() -> None:
     fake_db = MagicMock()
     fake_db.engine = MagicMock()
     with patch("dynastore.modules.iam.module.get_protocol", return_value=fake_db), \
-         patch("dynastore.modules.db_config.query_executor.managed_transaction", _MTx):
+         patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _MTx):
         await mod.flush_pending_registrations()
 
     assert enter_count["n"] == 1, (
-        f"Expected exactly 1 managed_transaction(engine) call, got {enter_count['n']}"
+        f"Expected exactly 1 acquire_startup_lock(engine, ...) call, got {enter_count['n']}"
     )
     assert calls["n"] == 5, f"Expected 5 update_policy calls, got {calls['n']}"
 
@@ -168,7 +169,7 @@ async def test_flush_propagates_storage_exception_instead_of_swallowing() -> Non
     fake_db.engine = MagicMock()
 
     with patch("dynastore.modules.iam.module.get_protocol", return_value=fake_db), \
-         patch("dynastore.modules.db_config.query_executor.managed_transaction", _MTx):
+         patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _MTx):
         with pytest.raises(RuntimeError, match="injected failure on policy upsert #3"):
             await mod.flush_pending_registrations()
 
@@ -203,7 +204,7 @@ async def test_flush_clears_pending_buffers_before_attempting_persist() -> None:
     fake_db = MagicMock()
     fake_db.engine = MagicMock()
     with patch("dynastore.modules.iam.module.get_protocol", return_value=fake_db), \
-         patch("dynastore.modules.db_config.query_executor.managed_transaction", _MTx):
+         patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _MTx):
         await mod.flush_pending_registrations()
 
     assert mod._pending_policies == {}, "pending policies should be drained"
@@ -224,12 +225,14 @@ class _PgError(Exception):
 
 
 def _patched_flush(mod, mtx_cls):
-    """Common patch context: get_protocol → fake_db, managed_transaction → mtx_cls."""
+    """Common patch context: get_protocol → fake_db,
+    acquire_startup_lock → ``mtx_cls`` (a callable returning an async CM that
+    yields the connection — matches the harmonized advisory-lock callsite)."""
     fake_db = MagicMock()
     fake_db.engine = MagicMock()
     return (
         patch("dynastore.modules.iam.module.get_protocol", return_value=fake_db),
-        patch("dynastore.modules.db_config.query_executor.managed_transaction", mtx_cls),
+        patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", mtx_cls),
     )
 
 

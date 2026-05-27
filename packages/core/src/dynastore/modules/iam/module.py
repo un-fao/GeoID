@@ -219,20 +219,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             _attr_exc,
                         )
 
-                    # One-shot migration: drop dead IAM schema artefacts
-                    # (#1345 — PR-6 of the IAM-at-scale sequence).
-                    # Drops: policies_sysadmin, policies_auth partitions;
-                    #        principals.policy column; roles.level column.
-                    # Non-fatal: artefacts are dead weight, not load-bearing.
-                    try:
-                        from dynastore.modules.iam.migrations.iam_cleanup_v1 import run_migration as _run_cleanup
-                        await _run_cleanup(engine=engine)
-                    except Exception as _cleanup_exc:
-                        logger.warning(
-                            "IamModule: iam_cleanup_v1 migration failed (non-fatal): %s",
-                            _cleanup_exc,
-                        )
-
                     # Self-heal guard: if the platform-tier sysadmin role is
                     # absent (e.g. a DB reset happened before this restart),
                     # seed it directly so the service is never left in a
@@ -722,7 +708,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         if policy_service is None:
             return
         storage = self.storage
-        from dynastore.modules.db_config.query_executor import managed_transaction
+        from dynastore.modules.db_config.locking_tools import acquire_startup_lock
         from dynastore.models.protocols import DatabaseProtocol
         db = get_protocol(DatabaseProtocol)
         engine = db.engine if db else None
@@ -756,22 +742,22 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 seed_policies_by_role[seed.name] = list(seed.policies)
 
         async def _flush_once() -> None:
-            async with managed_transaction(engine) as conn:
-                # Cross-process / cross-worker serialization (closes #263).
-                # Postgres advisory transaction-scoped lock — only one flush
-                # runs the read-modify-write block at a time, system-wide.
-                # `pg_advisory_xact_lock` is auto-released at COMMIT/ROLLBACK,
-                # so leaks are impossible.  Without this, the SQLSTATE-40001
-                # retry caught the *visible* race but a second class —
-                # read-modify-write on `iam.roles` returning a stale snapshot
-                # from an in-flight concurrent tx and overwriting the winner
-                # — silently left the roles table empty even though the
-                # flush log reported success.  Reproduced 2026-05-05 during
-                # the keycloak-fix browser verification.
-                from sqlalchemy import text
-                await conn.execute(  # type: ignore[misc]
-                    text("SELECT pg_advisory_xact_lock(hashtext('iam_seed:iam'))")
-                )
+            # Cross-process / cross-worker serialization (closes #263).
+            # ``acquire_startup_lock`` opens a managed transaction, acquires a
+            # Postgres advisory xact-scoped lock via DQLQuery/DDLQuery (no
+            # inline raw ``text()`` execution — same wrappers the rest of the
+            # platform uses), and releases at COMMIT/ROLLBACK. Without the
+            # lock, SQLSTATE-40001 retry catches the visible race but a
+            # second class — read-modify-write on ``iam.roles`` returning a
+            # stale snapshot from an in-flight concurrent tx and overwriting
+            # the winner — silently left the roles table empty even though
+            # the flush log reported success (reproduced 2026-05-05 during
+            # the keycloak-fix browser verification).
+            async with acquire_startup_lock(engine, "iam_seed:iam") as conn:
+                if conn is None:
+                    # Lock wait timed out. Another worker holds the lock and
+                    # is performing the flush; nothing to do here.
+                    return
 
                 # Policies: one storage call per policy, all in this tx.
                 # `update_policy` opens a nested SAVEPOINT via
