@@ -468,3 +468,123 @@ async def test_apply_is_idempotent():
 
     assert result1.payload.keys() == result2.payload.keys()
     assert result1.payload["policy_ids"] == result2.payload["policy_ids"]
+
+
+# ---------------------------------------------------------------------------
+# allowed_preset_names — safe-subset gate on catalog_preset_delegation (#1426)
+# ---------------------------------------------------------------------------
+
+def test_default_allowed_preset_names_is_shape_subset():
+    """Default allowlist must be the two catalog-scopable shape presets."""
+    p = IamBaselineParams()
+    assert p.allowed_preset_names == ["public_catalog", "private_catalog"]
+
+
+def test_custom_allowed_preset_names_propagate():
+    p = IamBaselineParams(allowed_preset_names=["public_catalog"])
+    assert p.allowed_preset_names == ["public_catalog"]
+
+
+@pytest.mark.asyncio
+async def test_apply_writes_allowlist_into_catalog_preset_delegation():
+    """The catalog_preset_delegation policy condition must carry the allowlist."""
+    preset = _make_preset()
+    policies_written: Dict[str, Any] = {}
+
+    policy_svc = MagicMock()
+
+    async def _capture_policy(policy: Any) -> Any:
+        policies_written[policy.id] = policy
+        return policy
+
+    policy_svc.update_policy = _capture_policy
+    policy_svc.delete_policy = AsyncMock(return_value=True)
+    iam_svc = MagicMock()
+    iam_svc.update_role = AsyncMock()
+    iam_svc.list_roles = AsyncMock(return_value=[])
+    iam_svc.delete_role = AsyncMock(return_value=True)
+
+    ctx = PresetContext(
+        db=MagicMock(),
+        iam=iam_svc,
+        policy=policy_svc,
+        config=MagicMock(),
+        tasks=None, cron=None, libs=None, principal=None,
+        scope="platform",
+    )
+    params = IamBaselineParams(allowed_preset_names=["public_catalog"])
+
+    await preset.apply(params, "platform", ctx)
+
+    delegation_pol = policies_written.get("catalog_preset_delegation")
+    assert delegation_pol is not None
+    cond = delegation_pol.conditions[0]
+    assert cond.config["required_roles"] == ["admin"]
+    assert cond.config["allowed_preset_names"] == ["public_catalog"]
+
+
+@pytest.mark.asyncio
+async def test_apply_does_not_set_allowlist_on_admin_catalog_access():
+    """admin_catalog_access gates ALL catalog admin routes, NOT just presets;
+    it must NOT carry an allowlist — that would deny non-preset admin calls.
+    """
+    preset = _make_preset()
+    policies_written: Dict[str, Any] = {}
+
+    policy_svc = MagicMock()
+
+    async def _capture_policy(policy: Any) -> Any:
+        policies_written[policy.id] = policy
+        return policy
+
+    policy_svc.update_policy = _capture_policy
+    policy_svc.delete_policy = AsyncMock(return_value=True)
+    iam_svc = MagicMock()
+    iam_svc.update_role = AsyncMock()
+    iam_svc.list_roles = AsyncMock(return_value=[])
+    iam_svc.delete_role = AsyncMock(return_value=True)
+
+    ctx = PresetContext(
+        db=MagicMock(),
+        iam=iam_svc,
+        policy=policy_svc,
+        config=MagicMock(),
+        tasks=None, cron=None, libs=None, principal=None,
+        scope="platform",
+    )
+    params = IamBaselineParams()
+
+    await preset.apply(params, "platform", ctx)
+
+    admin_pol = policies_written.get("admin_catalog_access")
+    assert admin_pol is not None
+    cond = admin_pol.conditions[0]
+    assert "allowed_preset_names" not in cond.config
+
+
+@pytest.mark.asyncio
+async def test_apply_descriptor_carries_allowed_preset_names():
+    preset = _make_preset()
+    ctx = _make_context()
+    params = IamBaselineParams(allowed_preset_names=["public_catalog"])
+
+    result = await preset.apply(params, "platform", ctx)
+
+    assert result.payload["allowed_preset_names"] == ["public_catalog"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_includes_allowlist_in_delegation_entry():
+    preset = _make_preset()
+    ctx = _make_context()
+    params = IamBaselineParams(allowed_preset_names=["public_catalog"])
+
+    plan = await preset.dry_run(params, "platform", ctx)
+
+    delegation_entries = [
+        e for e in plan.entries if e.target == "catalog_preset_delegation"
+    ]
+    assert len(delegation_entries) == 1
+    assert delegation_entries[0].detail.get("allowed_preset_names") == [
+        "public_catalog"
+    ]
