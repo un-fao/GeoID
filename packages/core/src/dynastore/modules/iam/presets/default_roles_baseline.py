@@ -14,14 +14,15 @@
 
 """``default_roles_baseline`` preset — platform predefined roles + hierarchy.
 
-Reads the canonical role definitions from
-``dynastore.models.protocols.authorization`` and upserts them into the
-global ``iam`` schema.  The ``"iam"`` keyword triggers the self-lockout
-guard on DELETE.
+Canonical declaration of the platform-tier and catalog-tier predefined
+roles plus the role hierarchy chain.  The ``"iam"`` keyword triggers
+the self-lockout guard on DELETE.
 
-PR-5 will remove the hardcoded defaults from ``authorization.py`` once
-boot-time auto-seed is fully dropped; until then this preset reads from
-them as its source of truth.
+The ``unauthenticated`` role intentionally ships with NO policy
+bindings — the ``public_access_baseline`` preset (auto-bootstrapped in
+``IamModule.lifespan``) unions ``public_access`` into the role at
+startup so anonymous probes work even when this preset has not been
+explicitly applied.
 """
 from __future__ import annotations
 
@@ -31,11 +32,7 @@ from typing import ClassVar, List, Tuple, Type
 from pydantic import BaseModel
 
 from dynastore.models.auth_models import Role
-from dynastore.models.protocols.authorization import (
-    _DEFAULT_CATALOG_ROLES,
-    _DEFAULT_PLATFORM_ROLES,
-    RoleSeed,
-)
+from dynastore.models.protocols.authorization import RoleSeed
 from dynastore.modules.storage.presets.preset import (
     AppliedDescriptor,
     NoParams,
@@ -47,8 +44,51 @@ from dynastore.modules.storage.presets.protocol import PresetTier
 
 logger = logging.getLogger(__name__)
 
+
+DEFAULT_PLATFORM_ROLES: List[RoleSeed] = [
+    RoleSeed(
+        name="sysadmin",
+        description="System Administrator with full platform access.",
+        policies=["sysadmin_full_access"],
+        level=100,
+        parent=None,
+    ),
+]
+
+
+DEFAULT_CATALOG_ROLES: List[RoleSeed] = [
+    RoleSeed(
+        name="admin",
+        description="Tenant administrator — manages roles, grants, and members.",
+        policies=[],
+        level=100,
+        parent=None,
+    ),
+    RoleSeed(
+        name="editor",
+        description="Catalog editor — creates and updates content.",
+        policies=["self_service_access"],
+        level=50,
+        parent="admin",
+    ),
+    RoleSeed(
+        name="user",
+        description="Default role for any authenticated user.",
+        policies=["self_service_access"],
+        level=10,
+        parent="editor",
+    ),
+    RoleSeed(
+        name="unauthenticated",
+        description="Read-only floor for anonymous (unauthenticated) requests.",
+        policies=[],
+        level=0,
+        parent="user",
+    ),
+]
+
 # Hierarchy edges derived from RoleSeed.parent for both tiers.
-_ALL_SEEDS: List[RoleSeed] = list(_DEFAULT_PLATFORM_ROLES) + list(_DEFAULT_CATALOG_ROLES)
+_ALL_SEEDS: List[RoleSeed] = list(DEFAULT_PLATFORM_ROLES) + list(DEFAULT_CATALOG_ROLES)
 _HIERARCHY_EDGES: List[Tuple[str, str]] = [
     (s.parent, s.name) for s in _ALL_SEEDS if s.parent
 ]
