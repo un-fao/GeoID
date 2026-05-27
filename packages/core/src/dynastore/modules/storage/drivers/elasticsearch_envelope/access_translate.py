@@ -55,7 +55,7 @@ def _predicate_to_terms(predicate: Any) -> Dict[str, Any]:
 
     ``terms`` membership matches the predicate's pure-Python semantics: a
     scalar field matches when its value is in ``values``; an array field
-    matches when it intersects ``values`` (``grant_subjects``).
+    matches when it intersects ``values``.
     """
     return {"terms": {predicate.field: list(predicate.values)}}
 

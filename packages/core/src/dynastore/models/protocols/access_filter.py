@@ -78,8 +78,8 @@ class FieldPredicate:
 
     ``values`` is a set of acceptable values for ``field``. Matching is
     membership: a scalar document field matches when its value is in
-    ``values``; an *array* document field (e.g. ``grant_subjects``) matches
-    when it intersects ``values``. This maps directly onto an Elasticsearch
+    ``values``; an *array* document field matches when it intersects
+    ``values``. This maps directly onto an Elasticsearch
     ``terms`` query and onto a SQL ``field = ANY(values)`` / array-overlap.
     """
 

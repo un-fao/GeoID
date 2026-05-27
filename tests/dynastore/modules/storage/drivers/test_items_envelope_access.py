@@ -19,7 +19,7 @@ Covers the security-critical pieces with no live Elasticsearch:
 * ``access_filter_to_es`` — branch-by-branch + a property-style cross-check
   against ``AccessFilter.admits`` (the reference semantics).
 * ``build_envelope_feature_doc`` — access-field stamping (explicit + ``_``
-  fallbacks), grant-subjects normalization, underscore-property stripping.
+  fallbacks), underscore-property stripping.
 * driver class registration — config ``class_key()``, ClassVars, index name.
 * the row-level seam — ``_query_request_to_es`` ANDs the access clause and
   produces a no-result query for ``deny_all``.
@@ -108,18 +108,6 @@ def test_empty_predicate_clause_becomes_match_all():
     es = access_filter_to_es(f)
     assert es["bool"]["should"] == [{"match_all": {}}]
     assert es["bool"]["minimum_should_match"] == 1
-
-
-def test_array_grant_subjects_predicate_uses_terms():
-    clause = AccessClause(
-        predicates=(FieldPredicate("grant_subjects", ("g:team-a", "g:team-b")),),
-    )
-    f = AccessFilter(allow=(clause,))
-    es = access_filter_to_es(f)
-    inner = es["bool"]["should"][0]
-    assert inner == {
-        "bool": {"filter": [{"terms": {"grant_subjects": ["g:team-a", "g:team-b"]}}]}
-    }
 
 
 def test_multi_predicate_clause_is_conjunction():
@@ -282,16 +270,13 @@ def _es_clause_admits(clause: Any, doc: Dict[str, Any]) -> bool:
 def _sample_docs() -> List[Dict[str, Any]]:
     visibilities = [None, "public", "restricted", "private"]
     owners = [None, "alice", "bob"]
-    grants = [None, ["g:team-a"], ["g:team-a", "g:team-b"], ["g:team-c"]]
     docs: List[Dict[str, Any]] = []
-    for vis, own, gr in itertools.product(visibilities, owners, grants):
+    for vis, own in itertools.product(visibilities, owners):
         d: Dict[str, Any] = {"geoid": "x"}
         if vis is not None:
             d["visibility"] = vis
         if own is not None:
             d["owner"] = own
-        if gr is not None:
-            d["grant_subjects"] = gr
         docs.append(d)
     return docs
 
@@ -299,9 +284,6 @@ def _sample_docs() -> List[Dict[str, Any]]:
 def _sample_filters() -> List[AccessFilter]:
     pub = AccessClause(predicates=(FieldPredicate("visibility", ("public",)),))
     own_alice = AccessClause(predicates=(FieldPredicate("owner", ("alice",)),))
-    team = AccessClause(
-        predicates=(FieldPredicate("grant_subjects", ("g:team-a", "g:team-b")),),
-    )
     deny_bob = AccessClause(predicates=(FieldPredicate("owner", ("bob",)),))
     multi = AccessClause(predicates=(
         FieldPredicate("visibility", ("restricted",)),
@@ -314,7 +296,6 @@ def _sample_filters() -> List[AccessFilter]:
         AccessFilter(allow_all=True, deny=(deny_bob,)),
         AccessFilter(allow=(pub,)),
         AccessFilter(allow=(pub, own_alice)),
-        AccessFilter(allow=(team,)),
         AccessFilter(allow=(pub,), deny=(deny_bob,)),
         AccessFilter(allow=(multi,)),
         AccessFilter(allow=(unconditional,)),
@@ -347,7 +328,7 @@ def test_mapping_declares_access_fields_as_keyword():
     props = ENVELOPE_FEATURE_MAPPING["properties"]
     assert props["visibility"] == {"type": "keyword"}
     assert props["owner"] == {"type": "keyword"}
-    assert props["grant_subjects"] == {"type": "keyword"}
+    assert "grant_subjects" not in props
     # Root is static so dynamic fields cannot pollute the access envelope.
     assert ENVELOPE_FEATURE_MAPPING["dynamic"] is False
     # Tenant attributes stay dynamic.
@@ -366,11 +347,9 @@ def test_access_fields_from_explicit_args():
         collection_id="col",
         visibility="restricted",
         owner="alice",
-        grant_subjects=["g:team-a", "g:team-b"],
     )
     assert doc["visibility"] == "restricted"
     assert doc["owner"] == "alice"
-    assert doc["grant_subjects"] == ["g:team-a", "g:team-b"]
 
 
 def test_access_fields_fall_back_to_underscore_source_keys():
@@ -378,13 +357,11 @@ def test_access_fields_fall_back_to_underscore_source_keys():
         "id": "geo-2",
         "_visibility": "public",
         "_owner": "bob",
-        "_grant_subjects": ["g:x"],
         "properties": {"name": "y"},
     }
     doc = build_envelope_feature_doc(item, catalog_id="cat", collection_id="col")
     assert doc["visibility"] == "public"
     assert doc["owner"] == "bob"
-    assert doc["grant_subjects"] == ["g:x"]
 
 
 def test_explicit_args_override_underscore_keys():
@@ -402,36 +379,11 @@ def test_explicit_args_override_underscore_keys():
     assert doc["owner"] == "explicit"
 
 
-def test_grant_subjects_scalar_normalizes_to_list():
-    item = {"id": "geo-4", "properties": {}}
-    doc = build_envelope_feature_doc(
-        item, catalog_id="cat", collection_id="col", grant_subjects="g:solo",
-    )
-    assert doc["grant_subjects"] == ["g:solo"]
-
-
-def test_grant_subjects_set_normalizes_to_list_of_strings():
-    item = {"id": "geo-5", "properties": {}}
-    doc = build_envelope_feature_doc(
-        item, catalog_id="cat", collection_id="col", grant_subjects={1, 2},
-    )
-    assert sorted(doc["grant_subjects"]) == ["1", "2"]
-
-
-def test_empty_grant_subjects_omits_the_field():
-    item = {"id": "geo-6", "properties": {}}
-    doc = build_envelope_feature_doc(
-        item, catalog_id="cat", collection_id="col", grant_subjects=[],
-    )
-    assert "grant_subjects" not in doc
-
-
 def test_no_access_fields_omits_them():
     item = {"id": "geo-7", "properties": {"name": "z"}}
     doc = build_envelope_feature_doc(item, catalog_id="cat", collection_id="col")
     assert "visibility" not in doc
     assert "owner" not in doc
-    assert "grant_subjects" not in doc
 
 
 def test_underscore_properties_are_stripped():
