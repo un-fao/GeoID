@@ -791,17 +791,13 @@ def register_listeners():
     """
     Subscribes the GCP module to internal catalog events.
     This enables 'in-process' synchronization without needing an external webhook.
+
+    Hard-deletion cleanup (BEFORE_CATALOG_HARD_DELETION,
+    BEFORE_COLLECTION_HARD_DELETION) is handled by GcsCatalogPrefixOwner /
+    GcsCollectionPrefixOwner registered in the cascade cleanup registry, so
+    those event listeners are intentionally absent here.
     """
-    logger.info("Registering GCP module as a listener for Catalog events...")
-
-    register_event_listener(
-        CatalogEventType.BEFORE_CATALOG_HARD_DELETION, _adapter_catalog_hard_deletion
-    )
-
-    register_event_listener(
-        CatalogEventType.BEFORE_COLLECTION_HARD_DELETION,
-        _adapter_collection_hard_deletion,
-    )
+    logger.info("Registering GCP module as a listener for Catalog events.")
     logger.info("GCP module successfully subscribed to Catalog events.")
 
 
