@@ -177,10 +177,16 @@ class IamMiddleware(BaseHTTPMiddleware):
             return principal_role
 
     def _emit_audit(
-        self, event_type: str, principal_id: str, ip: str, schema: str,
+        self, event_type: str, principal_id: str, ip: str,
         detail: Optional[dict] = None,
     ) -> None:
-        """Fire-and-forget audit event (non-blocking)."""
+        """Fire-and-forget audit event (non-blocking).
+
+        Always writes to the platform ``iam`` schema — the audit_log table
+        does not exist in tenant schemas. Callers must encode catalog context
+        inside the ``detail`` dict (e.g. ``"catalog_id"``) rather than
+        routing to a tenant schema.
+        """
         import asyncio
         storage = getattr(self._iam_manager, "storage", None)
         if storage and hasattr(storage, "log_audit_event"):
@@ -191,7 +197,6 @@ class IamMiddleware(BaseHTTPMiddleware):
                         principal_id=principal_id,
                         ip_address=ip,
                         detail=detail,
-                        schema=schema,
                     )
                 )
             except RuntimeError:
@@ -430,8 +435,8 @@ class IamMiddleware(BaseHTTPMiddleware):
         if not allowed_by_global:
             logger.debug(f"Access denied by Global Security policy: {reason}")
             self._emit_audit(
-                "authz_denied", effective_principal_id, client_ip, schema,
-                {"path": path, "method": method, "reason": reason},
+                "authz_denied", effective_principal_id, client_ip,
+                {"path": path, "method": method, "reason": reason, "catalog_id": catalog_id},
             )
             return JSONResponse(
                 {"detail": f"Access denied by Global Security policy: {reason}"},

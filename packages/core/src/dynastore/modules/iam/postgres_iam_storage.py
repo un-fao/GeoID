@@ -522,14 +522,18 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         ip_address: Optional[str] = None,
         detail: Optional[Dict[str, Any]] = None,
         conn: Optional[DbResource] = None,
-        schema: str = "iam",
     ) -> None:
-        """Write a structured audit log entry."""
+        """Write a structured audit log entry.
+
+        The audit_log table lives exclusively in the platform ``iam`` schema.
+        The schema is hardcoded here — callers must NOT forward a tenant schema.
+        Include the catalog context in the ``detail`` dict instead.
+        """
         try:
             async with managed_transaction(conn or self.engine) as db:
                 await INSERT_AUDIT_EVENT.execute(
                     db,
-                    schema=schema,
+                    schema="iam",
                     event_type=event_type,
                     principal_id=principal_id,
                     ip_address=ip_address,
