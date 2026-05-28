@@ -29,14 +29,10 @@ async def enable_bucket_provisioning(app_lifespan):
     """Enable GCS bucket provisioning at the platform tier for this suite.
 
     ``GcpCatalogBucketConfig.provision_enabled`` defaults to ``True`` in code,
-    but the dev/on-prem service config trees seed a platform-tier override of
-    ``provision_enabled=false`` (geoid#1167) so a local catalog becomes ready
-    without a real GCS bucket. That platform row persists in the shared test
-    database, so without this fixture catalog creation would skip the
-    ``gcp_provision_catalog`` enqueue and no bucket would ever be created
-    (geoid#1174). This suite exercises real GCS provisioning against valid
-    credentials, so it must run with provisioning ON — set it explicitly here
-    rather than depending on whatever the shared DB happens to carry.
+    so a fresh DB picks it up via the Pydantic default. The platform row from
+    a previous run may persist in the shared test database with any value, so
+    we set it explicitly here rather than depending on what the shared DB
+    happens to carry.
     """
     from dynastore.tools.discovery import get_protocol
     from dynastore.models.protocols import ConfigsProtocol
