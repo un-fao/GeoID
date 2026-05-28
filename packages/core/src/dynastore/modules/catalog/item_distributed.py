@@ -637,7 +637,7 @@ class ItemDistributedMixin(_Host):
         return payload
 
     async def _upsert_sidecar_table_raw(
-        self, conn, schema, table, data, conflict_cols: List[str] = ["geoid"],
+        self, conn, schema, table, data, conflict_cols: Optional[List[str]] = None,
         geom_cols: Optional[Set[str]] = None,
     ):
         """Sidecar upsert with ON CONFLICT (conflict_cols).
@@ -649,6 +649,8 @@ class ItemDistributedMixin(_Host):
         column literally named ``centroid``. Falls back to the historical fixed
         set when a caller doesn't supply one.
         """
+        if conflict_cols is None:
+            conflict_cols = ["geoid"]
         if geom_cols is None:
             geom_cols = {"geom", "bbox_geom", "centroid"}
         cols: list = []
