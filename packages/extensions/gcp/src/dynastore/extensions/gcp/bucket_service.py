@@ -19,18 +19,11 @@
 #    dynastore/extensions/gcp/bucket_service.py
 
 import logging
-import uuid
 import base64, json
-from dynastore.modules.db_config.exceptions import ImmutableConfigError
 from google.cloud.storage.blob import Blob
 from typing import Optional, Dict, Any, cast
 from dynastore.models.shared_models import Link
 from dynastore.models.localization import LocalizedText
-from dynastore.modules.gcp.gcp_config import (
-    GcpCatalogBucketConfig,
-    GcpCollectionBucketConfig,
-    GcpEventingConfig,
-)
 from dynastore.modules.gcp.models import PUBSUB_JWT_AUDIENCE, GcpBucketDetails
 from fastapi import (
     HTTPException,
@@ -44,7 +37,6 @@ from fastapi import (
 )
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import (
-    ConfigsProtocol,
     StorageProtocol,
     CloudIdentityProtocol,
     CloudStorageClientProtocol,
@@ -213,15 +205,6 @@ def get_catalogs_provider() -> CatalogsProtocol:
     return provider
 
 
-def get_configs_provider() -> ConfigsProtocol:
-    """FastAPI dependency to get the ConfigsProtocol implementation."""
-    provider = get_protocol(ConfigsProtocol)
-    if not provider:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Configuration service unavailable.",
-        )
-    return provider
 class BucketService(ExtensionProtocol):
     priority: int = 100
     router: APIRouter = APIRouter(prefix="/gcp", tags=["GCP Services"])
@@ -315,29 +298,6 @@ class BucketService(ExtensionProtocol):
     #         # received its 202 and will not retry.
     #         logger.error(f"Background webhook processing failed for event '{event_payload.get('event_type')}': {e}", exc_info=True)
 
-    @router.get(
-        "/catalogs/{catalog_id}/config/bucket",
-        response_model=GcpCatalogBucketConfig,
-        summary="Get the GCP bucket configuration for a catalog.",
-    )
-    async def get_gcp_catalog_bucket_config(
-        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
-        config_provider: ConfigsProtocol = Depends(get_configs_provider),
-    ):
-        """
-        Retrieves the GCP bucket configuration for a catalog, showing the resolved
-        settings from the hierarchy (Catalog > Platform > Default).
-        """
-        config = await config_provider.get_config(
-            GcpCatalogBucketConfig, catalog_id
-        )
-        if not isinstance(config, GcpCatalogBucketConfig):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No bucket configuration found for catalog '{catalog_id}'.",
-            )
-        return config
-
     # @router.put("/catalogs/{catalog_id}/collections/{collection_id}/config/bucket", status_code=status.HTTP_204_NO_CONTENT)
     # async def set_gcp_collection_bucket_config(catalog_id: str, collection_id: str, config: GcpCollectionBucketConfig, gcp_module: GCPModule = Depends(get_gcp_module)):
     #     """
@@ -368,25 +328,6 @@ class BucketService(ExtensionProtocol):
     #     if not isinstance(config, GcpCollectionBucketConfig):
     #         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No bucket configuration found for this collection.")
     #     return cast(GcpCollectionBucketConfig, config)
-
-    @router.get(
-        "/catalogs/{catalog_id}/config/eventing",
-        response_model=GcpEventingConfig,
-        status_code=status.HTTP_200_OK,
-        summary="Get the eventing configuration for a catalog.",
-    )
-    async def get_eventing_config(
-        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
-        eventing_provider: EventingProtocol = Depends(get_eventing_provider),
-    ):
-        """
-        Retrieves the current eventing configuration for the specified catalog,
-        including the state of its managed eventing system and custom subscriptions.
-        """
-        config = await eventing_provider.get_eventing_config(catalog_id)
-        if not config:
-            return GcpEventingConfig()  # Return a default empty config
-        return config
 
     @router.post(
         "/events/pubsub-push",
@@ -704,117 +645,6 @@ class BucketService(ExtensionProtocol):
             time_created=str(bucket.time_created),
             updated=str(bucket.updated),
         )
-
-    @router.delete(
-        "/catalogs/{catalog_id}/collections/{collection_id}/files",
-        status_code=status.HTTP_204_NO_CONTENT,
-        summary="Delete a file or folder from a collection's bucket.",
-    )
-    async def delete_collection_file_or_folder(
-        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
-        collection_id: str,
-        path: str = Query(
-            ...,
-            description="The relative path to the file or folder to delete. To delete a folder, the path must end with a '/'. For example, 'my_file.tif' or 'my_folder/'. The path is relative to the collection's folder in the bucket.",
-        ),
-        storage_provider: StorageProtocol = Depends(get_storage_provider),
-        storage_client_provider: CloudStorageClientProtocol = Depends(
-            get_storage_client_provider
-        ),
-    ):
-        """
-        Deletes a specific file or an entire folder (prefix) from a collection's
-        dedicated folder within its GCS bucket.
-        """
-        bucket_name = await storage_provider.get_storage_identifier(catalog_id)
-        if not bucket_name:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No bucket associated with catalog '{catalog_id}'.",
-            )
-
-        storage_client = storage_client_provider.get_storage_client()
-        bucket = storage_client.bucket(bucket_name)
-
-        # Construct the full path within the bucket
-        full_path = bucket_tool.get_blob_path_for_collection_file(collection_id, path)
-
-        if path.endswith("/"):
-            # It's a folder deletion request
-            logger.info(
-                f"Deleting folder with prefix '{full_path}' from bucket '{bucket_name}'."
-            )
-            blobs_to_delete = list(bucket.list_blobs(prefix=full_path))
-            if blobs_to_delete:
-                bucket.delete_blobs(blobs_to_delete)
-                logger.info(
-                    f"Successfully deleted {len(blobs_to_delete)} objects for folder '{path}'."
-                )
-            else:
-                logger.info(f"No objects found to delete for folder '{path}'.")
-        else:
-            # It's a single file deletion request
-            logger.info(f"Deleting file '{full_path}' from bucket '{bucket_name}'.")
-            blob = bucket.blob(full_path)
-            if not blob.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"File not found at path: {path}",
-                )
-            blob.delete()
-
-    @router.delete(
-        "/catalogs/{catalog_id}/files",
-        status_code=status.HTTP_204_NO_CONTENT,
-        summary="Delete a file or folder from a catalog's bucket.",
-    )
-    async def delete_catalog_file_or_folder(
-        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
-        path: str = Query(
-            ...,
-            description="The relative path to the file or folder to delete. To delete a folder, the path must end with a '/'. For example, 'my_file.tif' or 'my_folder/'. The path is relative to the catalog's root folder in the bucket.",
-        ),
-        storage_provider: StorageProtocol = Depends(get_storage_provider),
-        storage_client_provider: CloudStorageClientProtocol = Depends(
-            get_storage_client_provider
-        ),
-    ):
-        """
-        Deletes a specific file or an entire folder (prefix) from a catalog's
-        root folder within its GCS bucket.
-        """
-        bucket_name = await storage_provider.get_storage_identifier(catalog_id)
-        if not bucket_name:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No bucket associated with catalog '{catalog_id}'.",
-            )
-
-        storage_client = storage_client_provider.get_storage_client()
-        bucket = storage_client.bucket(bucket_name)
-
-        full_path = bucket_tool.get_blob_path_for_catalog_file(path)
-
-        if path.endswith("/"):
-            logger.info(
-                f"Deleting folder with prefix '{full_path}' from bucket '{bucket_name}'."
-            )
-            blobs_to_delete = list(bucket.list_blobs(prefix=full_path))
-            if blobs_to_delete:
-                bucket.delete_blobs(blobs_to_delete)
-                logger.info(
-                    f"Successfully deleted {len(blobs_to_delete)} objects for folder '{path}'."
-                )
-        else:
-            logger.info(f"Deleting file '{full_path}' from bucket '{bucket_name}'.")
-            blob = bucket.blob(full_path)
-            if not blob.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"File not found at path: {path}",
-                )
-            blob.delete()
-
 
 async def _list_files(
     catalog_id: str,
