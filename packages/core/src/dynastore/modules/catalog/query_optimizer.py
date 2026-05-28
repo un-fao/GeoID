@@ -232,6 +232,22 @@ class QueryOptimizer:
                 )
                 continue
             jsonb_fd = attr_sidecar.jsonb_property_field(name, fd)
+            if jsonb_fd is None:
+                # Sidecar is COLUMNAR-only — there is no JSONB blob column
+                # to extract from. The items_schema declared a field that is
+                # not materialised as a native column AND can't be reached as
+                # a JSONB key. Likely an out-of-sync schema (FAST/required not
+                # set on the field, or sidecar storage_mode pinned COLUMNAR).
+                # Skip rather than synthesise SQL that references a
+                # non-existent column.
+                logger.warning(
+                    "items_schema field %r cannot be enriched: sidecar "
+                    "storage_mode is COLUMNAR-only and the field is not "
+                    "advertised as a native column. Either mark the field "
+                    "FAST/required, or switch the sidecar to JSONB/AUTOMATIC.",
+                    name,
+                )
+                continue
             self.field_index[name] = (attr_sidecar, jsonb_fd)
 
     def map_row_to_feature(
