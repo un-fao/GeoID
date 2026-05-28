@@ -239,19 +239,16 @@ def _logs_per_catalog_policy(sysadmin_role_name: Optional[str] = None) -> Policy
 
 def _logs_per_catalog_role_bindings(
     admin_role_name: Optional[str] = None,
-    user_role_name: Optional[str] = None,
 ) -> List[Role]:
-    """Bind the per-catalog logs policy to ADMIN + USER roles.
+    """Bind the per-catalog logs policy to the catalog ADMIN role.
 
     Sysadmin access is handled inside the condition handler, not via a
     separate role binding — same shape as ``web_dashboard_per_catalog_access``.
     """
     cfg = IamRolesConfig()
     admin = admin_role_name or cfg.admin_role_name
-    user = user_role_name or cfg.default_user_role_name
     return [
         Role(name=admin, policies=["logs_per_catalog_access"]),
-        Role(name=user, policies=["logs_per_catalog_access"]),
     ]
 
 
@@ -431,28 +428,8 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
     def database(self) -> DatabaseProtocol:
         return self.get_protocol(DatabaseProtocol)  # type: ignore[return-value]
 
-    # PolicyContributor: declare authz needs; IAM forwards centrally.
-    # No direct call to PermissionProtocol — keeps the plugin agnostic
-    # of the enforcement implementation.
-    def get_policies(self):
-        return [
-            _logs_system_policy(),
-            _logs_dashboard_policy(),
-            _logs_per_catalog_policy(),
-        ]
-
-    def get_role_bindings(self):
-        return [
-            _logs_system_role_binding(),
-            _logs_dashboard_role_binding(),
-            *_logs_per_catalog_role_bindings(),
-        ]
-
     @asynccontextmanager
     async def lifespan(self, app: Any):
-        # Policies declared via PolicyContributor (get_policies +
-        # get_role_bindings); IAM picks them up centrally.
-
         db = self.database
         if db:
             self.engine = db.engine

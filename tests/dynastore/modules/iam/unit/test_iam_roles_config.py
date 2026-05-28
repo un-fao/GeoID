@@ -3,15 +3,20 @@
 Pins the tier-split shape that replaces the single-list ``roles`` field:
 
 - canonical roles are owned by the ``default_roles_baseline`` preset
-  (platform: ``sysadmin``; catalog: ``admin, editor, user, unauthenticated``);
+  (platform: ``sysadmin``; catalog: ``admin, unauthenticated`` — ``editor``
+  and ``user`` were dropped to minimize the always-on role surface);
 - ``IamRolesConfig.platform_roles`` / ``catalog_roles`` hold OPERATOR-DEFINED
   extras on top of the canonical preset roles (default ``[]``);
 - ``role_names`` / ``platform_role_names`` properties union canonical + extras;
 - role inheritance is encoded on ``RoleSeed.parent``, not a separate
-  ``hierarchy`` list (catalog chain: admin → editor → user → unauthenticated);
+  ``hierarchy`` list — the trimmed default catalog tier has no edges
+  (admin and unauthenticated are both top-level);
 - named slots resolve to the correct tier — ``sysadmin_role_name`` must
   be in the platform union; ``admin/editor/default_user/anonymous`` slots
-  must be in the catalog union;
+  must be in the catalog union; ``editor_role_name`` and
+  ``default_user_role_name`` defaults collapse onto ``admin`` and
+  ``unauthenticated`` respectively, since their historical targets are
+  no longer provisioned;
 - ``admin_tier_role_names`` may span tiers (default: ``[sysadmin, admin]``);
 - cycles in the parent links are rejected;
 - cross-tier parents are rejected (a catalog role cannot inherit from a
@@ -35,27 +40,27 @@ def test_canonical_platform_seeds_contain_sysadmin_only() -> None:
     assert [r.name for r in DEFAULT_PLATFORM_ROLES] == ["sysadmin"]
 
 
-def test_canonical_catalog_seeds_contain_four_roles() -> None:
+def test_canonical_catalog_seeds_contain_two_roles() -> None:
     assert [r.name for r in DEFAULT_CATALOG_ROLES] == [
         "admin",
-        "editor",
-        "user",
         "unauthenticated",
     ]
-    # `viewer` was dropped from the default seed (geoid#643 slice 1).
-    # `anonymous` was renamed to `unauthenticated` (geoid#643 slice 2).
-    for forbidden in ("viewer", "anonymous"):
+    # `viewer` was dropped (geoid#643 slice 1). `anonymous` was renamed
+    # to `unauthenticated` (slice 2). `editor` and `user` were dropped to
+    # minimize the always-on role surface — operators add them via PATCH
+    # if their UI/workflows need that distinction.
+    for forbidden in ("viewer", "anonymous", "editor", "user"):
         assert forbidden not in [r.name for r in DEFAULT_CATALOG_ROLES]
 
 
-def test_canonical_catalog_chain_parent_links() -> None:
-    """Catalog tier inheritance: admin > editor > user > unauthenticated."""
+def test_canonical_catalog_chain_no_default_edges() -> None:
+    """Catalog tier has no default inheritance edges — admin and
+    unauthenticated are both top-level. Operators can add edges via
+    ``IamProtocol.add_role_hierarchy``."""
     parents = {r.name: r.parent for r in DEFAULT_CATALOG_ROLES}
     assert parents == {
         "admin": None,
-        "editor": "admin",
-        "user": "editor",
-        "unauthenticated": "user",
+        "unauthenticated": None,
     }
 
 
@@ -75,8 +80,12 @@ def test_default_named_slots() -> None:
     cfg = IamRolesConfig()
     assert cfg.sysadmin_role_name == "sysadmin"
     assert cfg.admin_role_name == "admin"
-    assert cfg.editor_role_name == "editor"
-    assert cfg.default_user_role_name == "user"
+    # ``editor_role_name`` default collapses onto ``admin`` since the
+    # ``editor`` catalog role is no longer provisioned by the baseline.
+    assert cfg.editor_role_name == "admin"
+    # ``default_user_role_name`` default collapses onto ``unauthenticated``
+    # since the ``user`` catalog role is no longer provisioned.
+    assert cfg.default_user_role_name == "unauthenticated"
     # Renamed default per slice 2.
     assert cfg.anonymous_role_name == "unauthenticated"
 
@@ -93,8 +102,6 @@ def test_role_names_property_unions_both_tiers() -> None:
     assert set(cfg.role_names) == {
         "sysadmin",
         "admin",
-        "editor",
-        "user",
         "unauthenticated",
     }
 
@@ -105,13 +112,13 @@ def test_platform_role_names_property_returns_platform_tier_only() -> None:
 
 
 def test_operator_added_catalog_role_flows_through() -> None:
-    """An operator can append a 5th catalog role via PATCH — verify it
+    """An operator can append an extra catalog role via PATCH — verify it
     shows up in role_names alongside canonical roles and is excluded from
     the platform set."""
     cfg = IamRolesConfig(
         catalog_roles=[
             RoleSeed(name="reviewer", description="External reviewer",
-                     policies=[], level=40, parent="editor"),
+                     policies=[], level=40, parent="admin"),
         ],
     )
     assert "reviewer" in cfg.role_names

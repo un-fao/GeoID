@@ -57,8 +57,8 @@ from .dto import (
 )
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
-from .policies import register_configs_policies
 from . import problem_details
+from . import presets as _configs_presets  # noqa: F401  -- preset registration side-effect
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +102,7 @@ class ConfigsService(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        register_configs_policies()
         problem_details.register(app)
-        logger.info("ConfigsService: Policies + RFC 9457 handler registered.")
         yield
 
     def _setup_routes(self):

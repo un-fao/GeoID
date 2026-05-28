@@ -12,17 +12,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""``default_roles_baseline`` preset — platform predefined roles + hierarchy.
+"""``default_roles_baseline`` preset — platform predefined roles.
 
 Canonical declaration of the platform-tier and catalog-tier predefined
-roles plus the role hierarchy chain.  The ``"iam"`` keyword triggers
-the self-lockout guard on DELETE.
+roles.  The ``"iam"`` keyword triggers the self-lockout guard on DELETE.
 
-The ``unauthenticated`` role intentionally ships with NO policy
-bindings — the ``public_access_baseline`` preset (auto-bootstrapped in
-``IamModule.lifespan``) unions ``public_access`` into the role at
-startup so anonymous probes work even when this preset has not been
-explicitly applied.
+Seeded roles:
+  - ``sysadmin``  — platform tier, full access.
+  - ``admin``     — catalog tier; operator-grantable to per-catalog
+                    admins. Required for catalog-admin UI surfaces.
+  - ``unauthenticated`` — anonymous floor; ships with no policy
+                    bindings (``public_access_baseline`` unions
+                    ``public_access`` in at lifespan).
+
+No hierarchy edges are seeded by default: catalog-tier ``admin`` is a
+peer of platform ``sysadmin``, and ``unauthenticated`` MUST NOT inherit
+either. Operators can add edges via ``IamProtocol.add_role_hierarchy``.
 """
 from __future__ import annotations
 
@@ -65,25 +70,11 @@ DEFAULT_CATALOG_ROLES: List[RoleSeed] = [
         parent=None,
     ),
     RoleSeed(
-        name="editor",
-        description="Catalog editor — creates and updates content.",
-        policies=["self_service_access"],
-        level=50,
-        parent="admin",
-    ),
-    RoleSeed(
-        name="user",
-        description="Default role for any authenticated user.",
-        policies=["self_service_access"],
-        level=10,
-        parent="editor",
-    ),
-    RoleSeed(
         name="unauthenticated",
         description="Read-only floor for anonymous (unauthenticated) requests.",
         policies=[],
         level=0,
-        parent="user",
+        parent=None,
     ),
 ]
 
@@ -104,17 +95,15 @@ def _seeds_to_roles() -> List[Role]:
 class DefaultRolesBaseline:
     """Platform predefined roles seeded into the global ``iam`` schema.
 
-    Upserts ``sysadmin``, ``admin``, ``editor``, ``user``, and
-    ``unauthenticated`` plus the role hierarchy chain
-    ``admin → editor → user → unauthenticated``.  DELETE removes only
-    the roles and edges this apply wrote; operator-added roles are
+    Upserts ``sysadmin``, ``admin``, and ``unauthenticated``.  DELETE
+    removes only the roles this apply wrote; operator-added roles are
     preserved.
     """
 
     name: ClassVar[str] = "default_roles_baseline"
     description: ClassVar[str] = (
-        "Platform predefined roles: admin, editor, user, unauthenticated, "
-        "plus role hierarchy. Scoped to the global iam schema."
+        "Platform predefined roles: sysadmin, admin, unauthenticated. "
+        "Scoped to the global iam schema."
     )
     keywords: ClassVar[Tuple[str, ...]] = ("iam", "platform", "foundational", "roles")
     tier: ClassVar[PresetTier] = PresetTier.PLATFORM

@@ -65,9 +65,6 @@ class NotebooksExtension(ExtensionProtocol):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        from .policies import register_notebooks_policies
-        register_notebooks_policies()
-        logger.info("NotebooksExtension: Policies registered.")
         yield
 
     def _register_routes(self):

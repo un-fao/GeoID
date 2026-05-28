@@ -60,7 +60,6 @@ from .models import (
     GrantRateLimitCounter, GrantMaxCountCounter,
     AppliedRowResponse, AppliedPresetsPage,
 )
-from .policies import admin_policies, admin_role_bindings
 
 logger = logging.getLogger(__name__)
 
@@ -386,19 +385,8 @@ class AdminService(ExtensionProtocol):
         tags=["Authentication & Authorization"], prefix="/admin"
     )
 
-    # PolicyContributor: declare authz needs; IAM forwards centrally.
-    # No direct call to PermissionProtocol — keeps the plugin agnostic
-    # of the enforcement implementation.
-    def get_policies(self):
-        return admin_policies()
-
-    def get_role_bindings(self):
-        return admin_role_bindings()
-
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        # Policies declared via PolicyContributor (get_policies +
-        # get_role_bindings); IAM picks them up centrally.
         yield
 
     # -------------------------------------------------------------------------
@@ -509,11 +497,13 @@ class AdminService(ExtensionProtocol):
         else:
             subject_id = body.subject_id or body.username
 
+        # No-roles fallback resolves through PluginConfig (default:
+        # ``unauthenticated``). The ``user`` role is no longer provisioned.
         new_principal = Principal(
             provider=body.provider,
             subject_id=subject_id,
             display_name=body.username,
-            roles=body.roles or ["user"],
+            roles=body.roles or [IamRolesConfig().default_user_role_name],
             is_active=True,
         )
         created = await mgr.create_principal(new_principal)

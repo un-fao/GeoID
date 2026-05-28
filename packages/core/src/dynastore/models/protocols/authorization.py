@@ -122,17 +122,21 @@ class IamRolesConfig(PluginConfig):
         ),
     )
     editor_role_name: Mutable[str] = Field(
-        default="editor",
+        default="admin",
         description=(
             "Catalog-tier content-editor role name (used by extension policy "
-            "bindings). Must resolve to a ``catalog_roles`` entry."
+            "bindings). Default collapses onto ``admin`` since editor is no "
+            "longer provisioned by ``default_roles_baseline``."
         ),
     )
     default_user_role_name: Mutable[str] = Field(
-        default="user",
+        default="unauthenticated",
         description=(
             "Role assigned to any signed-in principal with no realm roles. "
-            "Must resolve to a ``catalog_roles`` entry."
+            "Default collapses onto ``unauthenticated`` since the historical "
+            "``user`` role is no longer provisioned by "
+            "``default_roles_baseline``. Operators can grant elevated roles "
+            "via the admin API."
         ),
     )
     anonymous_role_name: Mutable[str] = Field(
