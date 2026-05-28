@@ -1,6 +1,4 @@
 import pytest
-import json
-from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
@@ -95,14 +93,48 @@ async def test_stac_search_filters(sysadmin_in_process_client, in_process_client
     assert len(features) == 1
     assert features[0]["id"] == item2_id
 
-    # Blocks 4 (datetime filter) and 5 (combined bbox+ids+datetime path) are
-    # currently blocked by a PG-side SQL composition bug — the datetime branch
-    # references ``sc_attributes`` in WHERE without joining it, yielding HTTP
-    # 500 ``missing FROM-clause entry for table "sc_attributes"``. Tracked
-    # separately so blocks 1-3 (BBOX + IDs) continue to guard the post-#1212
-    # id-contract on the path that already works.
-    pytest.skip(
-        "datetime + combined search blocks blocked on PG sc_attributes JOIN bug"
-    )
+    # 4. Test datetime filter (Refs un-fao/dynastore#339)
+    # On a PG-only collection with no validity column (post-#974 default,
+    # ``enable_validity=False``) the STAC ``/search`` dispatch sorts by the
+    # item's own datetime via the raw SELECT projection
+    # ``(sc_attributes.attributes->>'datetime')::timestamptz AS valid_from``.
+    # Previously the query optimizer scanned only ``raw_where`` for sidecar
+    # aliases, so the ``attributes`` sidecar was never JOINed and the request
+    # 500'd with ``missing FROM-clause entry for table "sc_attributes"``.
+    # The fix scans the raw SELECT projections too, so the request now succeeds.
+    # The bare ``validity`` temporal predicate resolves to match-all when no
+    # validity column exists, so both items are returned — the assertion here
+    # guards the absence of the 500, not temporal narrowing.
+    search_datetime = {
+        "catalog_id": catalog_id,
+        "datetime": "2024-01-01T00:00:00Z/2024-01-03T00:00:00Z",
+        "collections": [collection_id],
+    }
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_datetime)
+    if r.status_code != 200:
+        print(f"\nResponse: {r.json()}")
+    assert r.status_code == 200, r.text
+    features = r.json()["features"]
+    returned_ids = {f["id"] for f in features}
+    assert {item1_id, item2_id} <= returned_ids
+
+    # 5. Test combined bbox + ids + datetime path
+    # The combined search exercises the spatial JOIN, the attributes-sidecar
+    # JOIN (ids + datetime), and the datetime projection together — the exact
+    # composition that previously 500'd. The bbox narrows the result to item1.
+    search_combined = {
+        "catalog_id": catalog_id,
+        "bbox": [9.0, 9.0, 11.0, 11.0],
+        "ids": ["item1", "item2", item1_id, item2_id],
+        "datetime": "2024-01-01T00:00:00Z/2024-01-03T00:00:00Z",
+        "collections": [collection_id],
+    }
+    r = await sysadmin_in_process_client.post("/stac/search", json=search_combined)
+    if r.status_code != 200:
+        print(f"\nResponse: {r.json()}")
+    assert r.status_code == 200, r.text
+    features = r.json()["features"]
+    assert len(features) == 1
+    assert features[0]["id"] == item1_id
 
     # Cleanup handled by fixtures

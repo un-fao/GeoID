@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from dynastore.modules.catalog.query_optimizer import (
-    QueryOptimizer,
+from dynastore.modules.catalog.query_optimizer import QueryOptimizer
+from dynastore.models.query_builder import (
     QueryRequest,
     FieldSelection,
     FilterCondition,
@@ -162,6 +162,76 @@ def test_determine_required_sidecars(mock_col_config, mock_registry):
     )
     required = optimizer.determine_required_sidecars(req_all)
     assert len(required) == 2
+
+
+def test_determine_required_sidecars_scans_raw_selects(mock_col_config, mock_registry):
+    """Regression for un-fao/dynastore#339: a raw SELECT projection that
+    references a sidecar alias (``sc_attributes.attributes->>'datetime'``) must
+    mark that sidecar as required, even when ``raw_where`` does not mention it.
+
+    Post-#974 the attributes sidecar defaults to ``enable_validity=False``; the
+    STAC ``/search`` dispatch then sorts by the item's own datetime via a raw
+    projection ``(sc_attributes.attributes->>'datetime')::timestamptz AS
+    valid_from`` rather than a ``raw_where`` clause. Because the optimizer
+    scanned only ``raw_where`` for sidecar aliases, the ``attributes`` sidecar
+    was never JOINed and the SELECT referenced a missing FROM-clause table,
+    raising asyncpg ``UndefinedTableError: missing FROM-clause entry for table
+    "sc_attributes"``.
+    """
+    mock_geom = _SidecarLike()
+    mock_geom.config.sidecar_id = "geometries"
+    mock_geom.sidecar_id = "geometries"
+    mock_geom.get_queryable_fields.return_value = {
+        "geom": FieldDefinition(
+            name="geom",
+            sql_expression="sc_geom.geom",
+            capabilities=[],
+            data_type="geometry",
+        )
+    }
+    mock_geom.get_main_geometry_field.return_value = "geom"
+
+    mock_attr = _SidecarLike()
+    mock_attr.config.sidecar_id = "attributes"
+    mock_attr.sidecar_id = "attributes"
+    mock_attr.get_queryable_fields.return_value = {
+        "external_id": FieldDefinition(
+            name="external_id",
+            sql_expression="sc_attr.external_id",
+            capabilities=[],
+            data_type="string",
+        )
+    }
+    mock_attr.get_main_geometry_field.return_value = None
+
+    mock_registry.get_sidecar.side_effect = (
+        lambda sc, lenient=True: mock_geom
+        if getattr(sc, "sidecar_type", "") == "geometries"
+        else mock_attr
+    )
+
+    optimizer = QueryOptimizer(mock_col_config)
+
+    # Only a raw SELECT references the attributes sidecar (via its ``sc_attributes``
+    # alias); nothing in ``select`` / ``filters`` / ``raw_where`` does. Disable the
+    # geometry auto-include so the assertion isolates the raw_selects scan.
+    req = QueryRequest(
+        select=[FieldSelection(field="geom")],
+        raw_selects=[
+            "(sc_attributes.attributes->>'datetime')::timestamptz as valid_from"
+        ],
+        raw_where=None,
+        include_total_count=False,
+    )
+
+    required_ids = {
+        sc.sidecar_id
+        for sc in optimizer.determine_required_sidecars(req, require_geometry=False)
+    }
+    assert "attributes" in required_ids, (
+        "raw SELECT referencing sc_attributes must mark the attributes sidecar "
+        "as required so it is JOINed"
+    )
 
 
 def test_build_optimized_query(mock_col_config, mock_registry):

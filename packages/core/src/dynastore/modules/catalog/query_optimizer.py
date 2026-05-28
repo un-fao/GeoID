@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, List, Any, Mapping, Tuple, Set, Optional
+from typing import Dict, List, Any, Mapping, Tuple, Optional
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.read_policy import (
     ItemsReadPolicy,
@@ -33,10 +33,7 @@ from dynastore.modules.storage.drivers.pg_sidecars.base import (
 )
 from dynastore.models.query_builder import (
     QueryRequest,
-    FieldSelection,
-    FilterCondition,
     FilterOperator,
-    SortOrder,
 )
 from dynastore.models.ogc import Feature
 from dynastore.tools.discovery import get_protocol
@@ -547,25 +544,36 @@ class QueryOptimizer:
                     sidecar, _ = self.field_index[field]
                     required_sidecars.add(sidecar.sidecar_id)
 
-        # Check raw WHERE. CQL filters are compiled into ``raw_where`` against
-        # the resolved sidecar expressions (e.g. ``sc_attributes.adm2_pcode``),
-        # bypassing the structured ``query.filters`` checked above. Without
-        # this, a CQL/attribute filter on a sidecar column would reference a
-        # table that was never JOINed -> "invalid reference to FROM-clause
-        # entry". Mark any sidecar whose alias (``sc_<id>.``) or whose
-        # queryable field name appears in ``raw_where`` as required.
-        if query.raw_where:
-            import re as _re
+        # Check raw SQL (WHERE + SELECT projections). CQL filters are compiled
+        # into ``raw_where`` against the resolved sidecar expressions (e.g.
+        # ``sc_attributes.adm2_pcode``), bypassing the structured
+        # ``query.filters`` checked above; server-side code also injects raw
+        # SELECT projections into ``raw_selects`` that reference sidecar columns
+        # directly (e.g. the STAC ``/search`` sort key
+        # ``(sc_attributes.attributes->>'datetime')::timestamptz AS valid_from``
+        # used when a collection has no validity column — post-#974 default).
+        # Either form references a sidecar that the structured analysis never
+        # saw, so without scanning both a sidecar column would reference a table
+        # that was never JOINed -> "missing FROM-clause entry for table
+        # sc_<id>". Mark any sidecar whose alias (``sc_<id>``) or whose
+        # queryable field name appears in the raw SQL as required.
+        import re as _re
 
+        def _mark_required_from_raw_sql(raw_sql: str) -> None:
             for sc_config in driver_sidecars(self.col_config):
                 alias = f"sc_{sc_config.sidecar_id}"
-                if _re.search(rf"\b{_re.escape(alias)}\b", query.raw_where):
+                if _re.search(rf"\b{_re.escape(alias)}\b", raw_sql):
                     required_sidecars.add(sc_config.sidecar_id)
             for field_name, (sidecar, _field_def) in self.field_index.items():
                 if field_name == "geoid":
                     continue
-                if _re.search(rf"\b{_re.escape(field_name)}\b", query.raw_where):
+                if _re.search(rf"\b{_re.escape(field_name)}\b", raw_sql):
                     required_sidecars.add(sidecar.sidecar_id)
+
+        if query.raw_where:
+            _mark_required_from_raw_sql(query.raw_where)
+        for raw_select in query.raw_selects:
+            _mark_required_from_raw_sql(raw_select)
 
         # Always include the geometry sidecar for full Feature responses.
         # Without this, queries that only filter by non-spatial fields (e.g.
