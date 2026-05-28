@@ -53,12 +53,6 @@ except _importlib_metadata.PackageNotFoundError as _exc:
         "(SCOPE excludes the iam extras)"
     ) from _exc
 
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 from dynastore.modules import ModuleProtocol, get_protocol
 from dynastore.models.auth import (
     AuthenticationProtocol,
@@ -76,6 +70,32 @@ from dynastore.tools.discovery import register_plugin, unregister_plugin
 
 logger = logging.getLogger(__name__)
 
+# Module-level DQLQuery objects used by _bootstrap_public_access_baseline so
+# that tests can patch them without fighting inline construction.
+from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler  # noqa: E402
+
+_BOOTSTRAP_SELECT_SENTINEL = DQLQuery(
+    """
+    SELECT 1 FROM iam.applied_presets
+    WHERE preset_name = 'public_access_baseline'
+      AND scope_key   = 'platform'
+    """,
+    result_handler=ResultHandler.ONE_OR_NONE,
+)
+
+_BOOTSTRAP_INSERT_SENTINEL = DQLQuery(
+    """
+    INSERT INTO iam.applied_presets
+        (preset_name, scope_key, state, applied_at, applied_by,
+         params_snapshot, revoke_descriptor, updated_at)
+    VALUES
+        ('public_access_baseline', 'platform', 'applied', NOW(), NULL,
+         :params_snapshot, :revoke_descriptor, NOW())
+    ON CONFLICT (preset_name, scope_key) DO NOTHING
+    """,
+    result_handler=ResultHandler.ONE_OR_NONE,
+)
+
 
 from dynastore.models.protocols.policies import PermissionProtocol
 class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, PermissionProtocol):
@@ -87,12 +107,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # In-memory buffers deduped across extensions. Roles with the same
-        # name coming from multiple extensions (e.g. 'anonymous' from features,
-        # stac, coverages, records, notebooks, web) are merged here and
-        # persisted exactly once during flush_pending_registrations().
-        self._pending_policies: dict[str, Any] = {}
-        self._pending_roles: dict[str, Any] = {}
         self._role_lock = asyncio.Lock()
         # Register as early as possible to be discoverable during extension configuration
         register_plugin(self)
@@ -176,20 +190,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             _roles_bf_exc,
                         )
 
-                    # One-shot migration: normalize the public_access policy
-                    # resource list — remove the stale /web/.* catch-all (fixed
-                    # in eaa8cbf89). With _ALWAYS_REFRESH gone from PR-5 the
-                    # old broken row would not be auto-corrected at boot without
-                    # this explicit migration step.
-                    try:
-                        from dynastore.modules.iam.migrations.normalize_public_access import run_migration as _run_normalize
-                        await _run_normalize(engine=engine)
-                    except Exception as _norm_exc:
-                        logger.warning(
-                            "IamModule: public_access normalize migration failed (non-fatal): %s",
-                            _norm_exc,
-                        )
-
                     # One-shot migration: backfill the allowed_preset_names
                     # safe-subset on the catalog_preset_delegation policy
                     # (#1426). Pre-fix iam_baseline shipped without the
@@ -217,20 +217,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                             "IamModule: add_grants_attribute_predicates "
                             "migration failed (non-fatal): %s",
                             _attr_exc,
-                        )
-
-                    # One-shot migration: drop dead IAM schema artefacts
-                    # (#1345 — PR-6 of the IAM-at-scale sequence).
-                    # Drops: policies_sysadmin, policies_auth partitions;
-                    #        principals.policy column; roles.level column.
-                    # Non-fatal: artefacts are dead weight, not load-bearing.
-                    try:
-                        from dynastore.modules.iam.migrations.iam_cleanup_v1 import run_migration as _run_cleanup
-                        await _run_cleanup(engine=engine)
-                    except Exception as _cleanup_exc:
-                        logger.warning(
-                            "IamModule: iam_cleanup_v1 migration failed (non-fatal): %s",
-                            _cleanup_exc,
                         )
 
                     # Self-heal guard: if the platform-tier sysadmin role is
@@ -271,6 +257,24 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             # would be merged into Principal.attributes, potentially widening
             # or restricting ABAC access silently.
             await _warn_jwt_attr_no_issuer_allowlist()
+
+            # Cold-boot fallback for headless infrastructure (#1412 follow-up).
+            # Issue #1412 moved all extension policies into operator-applied presets but
+            # headless infra probes (Cloud Run /health startup probe) run BEFORE any
+            # operator can log in. Apply `public_access_baseline` ONCE per DB to land the
+            # minimal anon-allow Policy. Sentinel: iam.applied_presets row.
+            # On restart, the row is present and this block no-ops. Sysadmin DELETE of
+            # the preset removes both the Policy and the audit row, re-enabling re-apply.
+            try:
+                db = get_protocol(DatabaseProtocol)
+                engine = db.engine if db else None
+                await self._bootstrap_public_access_baseline(engine)
+            except Exception as exc:
+                logger.error(
+                    "public_access_baseline bootstrap failed; /health may 403 until "
+                    "operator applies it manually via POST /admin/presets/public_access_baseline/apply: %s",
+                    exc,
+                )
 
             # Register plugins
             register_plugin(self._iam_manager)
@@ -368,6 +372,64 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         
         # Finally unregister self
         unregister_plugin(self)
+
+    async def _bootstrap_public_access_baseline(self, engine: Any) -> None:
+        """Apply ``public_access_baseline`` once per DB on cold-boot.
+
+        Uses iam.applied_presets as a sentinel so subsequent restarts no-op.
+        Sysadmin DELETE of the preset removes the sentinel row and re-arms
+        this block on the next restart.
+        """
+        import json
+
+        from dynastore.modules.db_config.locking_tools import acquire_startup_lock
+        from dynastore.modules.storage.presets.preset import NoParams, PresetContext
+        from dynastore.modules.storage.presets.registry import find_preset
+        from dynastore.modules.iam.iam_service import IamService
+        from dynastore.modules.iam.policies import PolicyService
+
+        async with acquire_startup_lock(engine, "iam_seed:public_access_baseline") as conn:
+            if conn is None:
+                # Another worker holds the lock and is performing the bootstrap.
+                return
+
+            row = await _BOOTSTRAP_SELECT_SENTINEL.execute(conn)
+            if row is not None:
+                logger.debug(
+                    "public_access_baseline bootstrap: sentinel present — skipping"
+                )
+                return
+
+            preset = find_preset("public_access_baseline")
+            if preset is None:
+                logger.warning(
+                    "public_access_baseline bootstrap: preset not registered — skipping"
+                )
+                return
+
+            ctx = PresetContext(
+                db=engine,
+                iam=get_protocol(IamService),
+                policy=get_protocol(PolicyService),
+                config=None,
+                tasks=None,
+                cron=None,
+                libs=None,
+                principal=None,
+                scope="platform",
+            )
+
+            descriptor = await preset.apply(NoParams(), "platform", ctx)
+
+            await _BOOTSTRAP_INSERT_SENTINEL.execute(
+                conn,
+                params_snapshot=json.dumps({}),
+                revoke_descriptor=json.dumps(descriptor.payload),
+            )
+            logger.info(
+                "public_access_baseline preset applied on cold-boot — "
+                "anon /health probe enabled"
+            )
 
     async def _register_usage_counter_drivers(self, stack: AsyncExitStack) -> None:
         """Wire a :class:`UsageCounterProtocol` driver for rate-limit / quota.
@@ -592,261 +654,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             offset=offset,
             catalog_id=catalog_id,
         )
-
-    async def _persist_policy(self, policy: Any):
-        """Persist a policy to the database via storage upsert."""
-        policy_service = self._policy_service
-        if policy_service is None:
-            return
-        try:
-            from dynastore.modules.db_config.query_executor import managed_transaction
-            from dynastore.models.protocols import DatabaseProtocol
-            db = get_protocol(DatabaseProtocol)
-            engine = db.engine if db else None
-
-            async with managed_transaction(engine) as conn:
-                await policy_service.storage.update_policy(policy, schema="iam", conn=conn)
-                logger.debug(f"Persisted policy: {policy.id}")
-                policy_service.invalidate_cache()
-        except Exception as e:
-            logger.warning(f"Failed to persist policy {policy.id}: {e}")
-
-    async def _persist_role(self, role: Any):
-        """Persist a role to the database via storage upsert.
-
-        Lock serializes cross-worker-safe read-modify-write merges so a
-        role registered in a different process does not clobber ours.
-        """
-        async with self._role_lock:
-            storage = self.storage
-            policy_service = self._policy_service
-            if storage is None or policy_service is None:
-                return
-            try:
-                from dynastore.modules.db_config.query_executor import managed_transaction
-                from dynastore.models.protocols import DatabaseProtocol
-                db = get_protocol(DatabaseProtocol)
-                engine = db.engine if db else None
-
-                async with managed_transaction(engine) as conn:
-                    existing = await storage.get_role(role.name, schema="iam", conn=conn)
-                    if existing:
-                        merged_policies = list(set(existing.policies + role.policies))
-                        role = role.model_copy(update={"policies": merged_policies})
-                        await storage.update_role(role, schema="iam", conn=conn)
-                    else:
-                        await storage.create_role(role, schema="iam", conn=conn)
-                    logger.debug(f"Persisted role: {role.name}")
-                    policy_service.invalidate_cache()
-            except Exception as e:
-                logger.warning(f"Failed to persist role {role.name}: {e}")
-
-    def register_policy(self, policy: Any) -> Any:
-        """Buffer a policy for persistence at flush time.
-
-        Extensions call this during their lifespan. Duplicate IDs replace
-        the earlier entry (policy IDs are globally unique per extension, so
-        this only guards against re-registration within one process).
-        """
-        if not self._policy_service:
-            logger.warning(f"PolicyService not ready; cannot register policy {policy.id}")
-            return policy
-        self._pending_policies[policy.id] = policy
-        return policy
-
-    def register_role(self, role: Any) -> Any:
-        """Buffer a role for persistence at flush time, merging policies by name.
-
-        Multiple extensions register roles with the same name (e.g. every
-        OGC extension adds its public-access policy to 'anonymous'). We
-        union policy lists in-memory so the DB sees exactly one upsert
-        per unique role name in flush_pending_registrations().
-        """
-        if not self._policy_service:
-            logger.warning(f"PolicyService not ready; cannot register role {getattr(role, 'name', role)}")
-            return role
-        existing = self._pending_roles.get(role.name)
-        if existing is None:
-            self._pending_roles[role.name] = role
-        else:
-            merged_policies = list(set(existing.policies + role.policies))
-            self._pending_roles[role.name] = existing.model_copy(update={"policies": merged_policies})
-        return role
-
-    async def flush_pending_registrations(self):
-        """Persist buffered policies and roles in a single atomic transaction.
-
-        The previous implementation fanned each policy/role out to a
-        separate ``managed_transaction(engine)`` via
-        ``asyncio.gather(*tasks, return_exceptions=True)``. That had two
-        compounding bugs (issue #203):
-
-        1. **Deadlock window**: ~30 simultaneous upserts on the same
-           partitioned table racing against parallel sibling-service
-           seeds (catalog + web + worker + maps + tools + auth all run
-           IAM lifespan at startup, all hitting ``iam.policies_global``
-           concurrently). Postgres picks deadlock victims and rolls
-           them back. Whether a particular row commits depends on
-           timing — repro is intermittent: sometimes ``iam.policies``
-           ends up at 20 rows, sometimes 0.
-        2. **Silent failures**: ``return_exceptions=True`` collected
-           the rolled-back exceptions into the gather result and
-           dropped them on the floor. The per-task ``except Exception``
-           in ``_persist_policy`` would have logged a WARNING, but the
-           "Persisted policy" log line had already fired in the body
-           BEFORE the implicit-commit-at-aexit raised — so the operator
-           sees "Persisted policy: X" lines for rows that never landed.
-
-        Fix: one transaction, sequential upserts, exceptions propagate.
-        ~30 policies + 4 roles is cheap (~30ms); serial vs concurrent
-        is not a perf concern.
-
-        Sibling-service race retry (issue #209.2): sibling services
-        (catalog + web + worker + maps + tools + auth + geoid) still
-        open separate transactions that all upsert the same partition
-        rows. PG ``ON CONFLICT DO UPDATE`` serialises correctly but can
-        still surface SQLSTATE ``40001`` (serialization_failure) or
-        ``40P01`` (deadlock_detected) when the concurrency is tight at
-        cold start. Bounded retry — 3 attempts, exponential backoff —
-        handles the cluster cold-start window without masking real bugs:
-        any other exception propagates immediately.
-        """
-        policies = list(self._pending_policies.values())
-        roles = list(self._pending_roles.values())
-        self._pending_policies.clear()
-        self._pending_roles.clear()
-        if not policies and not roles:
-            return
-
-        policy_service = self._policy_service
-        if policy_service is None:
-            return
-        storage = self.storage
-        from dynastore.modules.db_config.query_executor import managed_transaction
-        from dynastore.models.protocols import DatabaseProtocol
-        db = get_protocol(DatabaseProtocol)
-        engine = db.engine if db else None
-        if engine is None:
-            logger.warning("IamModule.flush_pending_registrations: no DB engine available")
-            return
-
-        attempted_p = [p.id for p in policies]
-        attempted_r = [r.name for r in roles]
-
-        # Seed-policy lookup keyed by role name. ``provision_default_policies``
-        # only writes ``platform_roles`` into the platform ``iam`` schema
-        # (catalog-tier RoleSeeds are seeded per-catalog by the lifecycle
-        # hook, not here). But ``flush_pending_registrations`` writes ALL
-        # buffered roles to ``schema="iam"`` regardless of tier — so when
-        # contributors register, say, ``Role(name="unauthenticated",
-        # policies=["web_public_access", ...])``, the read-modify-write below
-        # starts from ``existing=None`` (no seed write ever landed for the
-        # catalog-tier role in platform schema) and persists the row with
-        # ONLY contributor policies. The seed-declared ``public_access`` is
-        # silently dropped → ``/health`` 403 (geoid#902). Union the
-        # ``RoleSeed.policies`` for the role name into the merge so the seed
-        # binding survives. Applies to both platform_roles and catalog_roles
-        # since the platform ``iam.roles`` table holds the role rows the
-        # request-scope eval looks up when no catalog context is present
-        # (e.g. /health).
-        seed_policies_by_role: dict[str, list[str]] = {}
-        if policy_service is not None:
-            role_config = policy_service._role_config
-            for seed in list(role_config.platform_roles) + list(role_config.catalog_roles):
-                seed_policies_by_role[seed.name] = list(seed.policies)
-
-        async def _flush_once() -> None:
-            async with managed_transaction(engine) as conn:
-                # Cross-process / cross-worker serialization (closes #263).
-                # Postgres advisory transaction-scoped lock — only one flush
-                # runs the read-modify-write block at a time, system-wide.
-                # `pg_advisory_xact_lock` is auto-released at COMMIT/ROLLBACK,
-                # so leaks are impossible.  Without this, the SQLSTATE-40001
-                # retry caught the *visible* race but a second class —
-                # read-modify-write on `iam.roles` returning a stale snapshot
-                # from an in-flight concurrent tx and overwriting the winner
-                # — silently left the roles table empty even though the
-                # flush log reported success.  Reproduced 2026-05-05 during
-                # the keycloak-fix browser verification.
-                from sqlalchemy import text
-                await conn.execute(  # type: ignore[misc]
-                    text("SELECT pg_advisory_xact_lock(hashtext('iam_seed:iam'))")
-                )
-
-                # Policies: one storage call per policy, all in this tx.
-                # `update_policy` opens a nested SAVEPOINT via
-                # `managed_transaction(conn)`. Each per-policy SAVEPOINT
-                # commits or rolls back independently — but a row that
-                # rolls back STILL surfaces as an exception here, instead
-                # of being silently swallowed by `asyncio.gather`.
-                for p in policies:
-                    await policy_service.storage.update_policy(p, schema="iam", conn=conn)
-
-                # Roles: same pattern, with the existing read-modify-write
-                # merge so concurrent extensions registering the same role
-                # name (every OGC extension adds to 'anonymous', etc.) end
-                # up with the union of policy ids — PLUS the RoleSeed
-                # defaults (see ``seed_policies_by_role`` above for the
-                # geoid#902 motivation).
-                if storage is not None:
-                    async with self._role_lock:
-                        for r in roles:
-                            existing = await storage.get_role(r.name, schema="iam", conn=conn)
-                            seed_policies = seed_policies_by_role.get(r.name, [])
-                            base_policies = list(existing.policies) if existing else []
-                            merged = list(set(base_policies + seed_policies + r.policies))
-                            if existing:
-                                merged_role = r.model_copy(update={"policies": merged})
-                                await storage.update_role(merged_role, schema="iam", conn=conn)
-                            else:
-                                # First write — start from the seed-augmented
-                                # merge so the row lands with seed + contributor
-                                # policies even when no prior row exists.
-                                # Without this, the catalog-tier
-                                # ``unauthenticated`` seed would be lost on
-                                # cold boot because no platform-tier seed
-                                # write touches it.
-                                seeded_role = r.model_copy(update={"policies": merged})
-                                await storage.create_role(seeded_role, schema="iam", conn=conn)
-
-        try:
-            # ``reraise=True`` propagates the underlying exception on
-            # exhaustion (no ``RetryError`` wrapper). Other exceptions
-            # propagate immediately because ``retry_if_exception``
-            # returns False for them — no retry attempted.
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=0.05, max=0.5),
-                retry=retry_if_exception(_is_transient_serialization_failure),
-                reraise=True,
-            ):
-                with attempt:
-                    await _flush_once()
-
-            policy_service.invalidate_cache()
-            logger.info(
-                "IamModule: flushed %d policies + %d roles in one transaction",
-                len(policies), len(roles),
-            )
-        except Exception as e:
-            logger.error(
-                "IamModule.flush_pending_registrations: transaction failed; "
-                "policies=%s roles=%s — error: %s",
-                attempted_p, attempted_r, e,
-            )
-            raise
-
-
-def _is_transient_serialization_failure(exc: BaseException) -> bool:
-    """True for PG SQLSTATE 40001 (serialization_failure) / 40P01
-    (deadlock_detected). Used to bound the IAM-seeding retry window —
-    these are the only two SQLSTATEs that are safe to retry blindly
-    because Postgres has already rolled back the offending transaction.
-    Any other DB error indicates a real problem and propagates.
-    """
-    orig = getattr(exc, "orig", None)
-    pgcode = getattr(orig, "pgcode", None) or getattr(exc, "pgcode", None)
-    return pgcode in ("40001", "40P01")
 
 
 async def _seed_oidc_role_sync_config(engine: Any) -> None:

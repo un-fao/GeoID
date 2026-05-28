@@ -219,20 +219,56 @@ async def _drop_worker_db():
     return
 
 
+async def _bootstrap_foundational_schemas(engine) -> None:
+    """Create foundational tables that must exist before xdist workers clone
+    ``gis_dev`` as a per-worker template database.
+
+    ``configs.platform_configs`` is owned by ``DBConfigModule``/
+    ``PlatformConfigService``; ``iam.applied_presets`` is owned by
+    ``IamModule``/``AppliedPresetsService``.  Both modules create these
+    tables in their lifespan, but xdist workers clone the template
+    *before* any lifespan runs — so the controller must bootstrap them
+    explicitly here so every cloned worker DB already contains the rows.
+
+    Called from the session-level ``db_reset_session`` fixture after the
+    cleanup pass finishes.  Idempotent: all DDL uses CREATE … IF NOT EXISTS.
+    DDL stays inside each owning module; this helper only invokes the
+    existing idempotent bootstrap entry-points.
+    """
+    from dynastore.modules.db_config.platform_config_service import (
+        PlatformConfigService,
+    )
+    from dynastore.modules.iam.applied_presets_service import AppliedPresetsService
+    from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
+    from dynastore.modules.db_config.query_executor import managed_transaction
+
+    # configs schema + platform_configs table (delegates to PlatformConfigService
+    # so the DDL stays inside the module, not here).
+    await PlatformConfigService.initialize_storage(engine)
+
+    # iam schema + applied_presets table.
+    async with managed_transaction(engine) as conn:
+        await ensure_schema_exists(conn, "iam")
+        svc = AppliedPresetsService(engine)
+        await svc.ensure_table(conn=conn)
+
+
 async def _assert_foundational_schemas(engine) -> None:
     """Fail fast if foundational DB schemas are missing after module startup.
 
     ``DBConfigModule`` must create ``configs.platform_configs`` during its
-    lifespan.  If that table is absent after ``modules.lifespan`` returns,
-    every config read will raise and every collection/catalog create will
-    500.  Asserting here surfaces the regression immediately with a clear
-    message instead of burying it under hundreds of cascade 500s.
+    lifespan and ``IamModule`` must create ``iam.applied_presets``.  If
+    either table is absent after ``modules.lifespan`` returns, every config
+    read or preset-audit write will raise and every collection/catalog
+    create will 500.  Asserting here surfaces the regression immediately
+    with a clear message instead of burying it under hundreds of cascade 500s.
     """
     import pytest
     from sqlalchemy import text
 
     _REQUIRED: tuple[tuple[str, str], ...] = (
         ("configs", "platform_configs"),
+        ("iam", "applied_presets"),
     )
     async with engine.connect() as conn:
         for schema, table in _REQUIRED:
@@ -243,8 +279,8 @@ async def _assert_foundational_schemas(engine) -> None:
             if row.scalar() is None:
                 pytest.fail(
                     f"Foundational schema regression: {fq} does not exist after "
-                    f"module lifespan startup. DBConfigModule may have failed to "
-                    f"initialize storage. Check module startup logs for CRITICAL errors."
+                    f"module lifespan startup. Check module startup logs for "
+                    f"CRITICAL errors."
                 )
 
 
@@ -1049,24 +1085,35 @@ async def app_lifespan(
                 f"Extension lifespan partially failed: {e}"
             )
 
-        # Mirror main.py: flush buffered policy/role registrations from
-        # extensions to the IAM store. Without this, policies registered
-        # via PermissionProtocol.register_policy(...) (e.g. STAC's
-        # ``stac_public_access`` policy granting anonymous GET access)
-        # stay in IamModule's in-memory pending buffer and never reach
-        # the DB — leaving every registered route unprotected (or
-        # relying on stale policies from a prior test session that DID
-        # flush). Same flush as ``app_lifespan_module`` below.
+        # Apply all registered PolicyContributorPresets so extension policies
+        # (e.g. STAC's stac_public_access, features_enable, auth_enable, …)
+        # land in the test DB — equivalent to the platform_demo apply that
+        # would run on a real deployment.
         try:
-            from dynastore.models.protocols.policies import PermissionProtocol
-            pm = modules.get_protocol(PermissionProtocol)
-            flush = getattr(pm, "flush_pending_registrations", None)
-            if flush is not None:
-                await flush()
+            import logging as _logging
+            from dynastore.modules.storage.presets.registry import find_preset, list_presets
+            from dynastore.modules.storage.presets.policy_contributor_adapter import PolicyContributorPreset
+            from dynastore.modules.storage.presets.preset import NoParams
+            from dynastore.modules.storage.presets.lifecycle import _build_context
+            from dynastore.models.protocols import DatabaseProtocol
+
+            _db = modules.get_protocol(DatabaseProtocol)
+            _engine = _db.engine if _db else None
+            _ctx = _build_context(_engine, None, "platform")
+
+            for _preset_name in list_presets():
+                try:
+                    _preset = find_preset(_preset_name)
+                    if isinstance(_preset, PolicyContributorPreset):
+                        await _preset.apply(NoParams(), "platform", _ctx)
+                except Exception as _pe:
+                    _logging.getLogger(__name__).warning(
+                        "Test fixture: preset '%s' apply failed: %s", _preset_name, _pe
+                    )
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
-                f"Test fixture: flush_pending_registrations failed: {e}"
+                f"Test fixture: PolicyContributorPreset apply loop failed: {e}"
             )
 
         # Attach app to state for easy access in tests (e.g. for in-process AsyncClient)
@@ -1235,22 +1282,35 @@ async def app_lifespan_module(request):
             import logging
             logging.getLogger(__name__).warning(f"Extension lifespan partially failed: {e}")
 
-        # Mirror main.py: flush buffered policy/role registrations from
-        # extensions to the IAM store. Without this, policies registered
-        # via PermissionProtocol.register_policy(...) stay in IamModule's
-        # in-memory pending buffer and never reach the DB — leaving every
-        # registered route unprotected (or relying on stale policies from a
-        # prior test session that DID flush).
+        # Apply all registered PolicyContributorPresets so extension policies
+        # (e.g. STAC's stac_public_access, features_enable, auth_enable, …)
+        # land in the test DB — equivalent to the platform_demo apply that
+        # would run on a real deployment.
         try:
-            from dynastore.models.protocols.policies import PermissionProtocol
-            pm = modules.get_protocol(PermissionProtocol)
-            flush = getattr(pm, "flush_pending_registrations", None)
-            if flush is not None:
-                await flush()
+            import logging as _logging
+            from dynastore.modules.storage.presets.registry import find_preset, list_presets
+            from dynastore.modules.storage.presets.policy_contributor_adapter import PolicyContributorPreset
+            from dynastore.modules.storage.presets.preset import NoParams
+            from dynastore.modules.storage.presets.lifecycle import _build_context
+            from dynastore.models.protocols import DatabaseProtocol
+
+            _db = modules.get_protocol(DatabaseProtocol)
+            _engine = _db.engine if _db else None
+            _ctx = _build_context(_engine, None, "platform")
+
+            for _preset_name in list_presets():
+                try:
+                    _preset = find_preset(_preset_name)
+                    if isinstance(_preset, PolicyContributorPreset):
+                        await _preset.apply(NoParams(), "platform", _ctx)
+                except Exception as _pe:
+                    _logging.getLogger(__name__).warning(
+                        "Test fixture: preset '%s' apply failed: %s", _preset_name, _pe
+                    )
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
-                f"Test fixture: flush_pending_registrations failed: {e}"
+                f"Test fixture: PolicyContributorPreset apply loop failed: {e}"
             )
 
         app.state.app = app

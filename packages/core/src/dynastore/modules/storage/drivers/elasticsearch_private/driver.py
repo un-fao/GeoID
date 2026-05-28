@@ -659,7 +659,7 @@ class ItemsElasticsearchPrivateDriver(
     async def _apply_deny_policy(catalog_id: str) -> None:
         from dynastore.tools.discovery import get_protocol
         try:
-            from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role
+            from dynastore.models.protocols.policies import PermissionProtocol, Policy
         except ImportError:
             return
 
@@ -694,9 +694,6 @@ class ItemsElasticsearchPrivateDriver(
             effect="DENY",
         )
 
-        perm.register_policy(deny_policy)
-        perm.register_role(Role(name="all_users", policies=[policy_id]))
-
         try:
             await perm.create_policy(deny_policy)
         except Exception:
@@ -704,6 +701,16 @@ class ItemsElasticsearchPrivateDriver(
                 await perm.update_policy(deny_policy)
             except Exception as e:
                 logger.error("DENY policy persist failed for '%s': %s", catalog_id, e)
+                return
+
+        # Bind the deny policy to the all_users role atomically — no Python R-M-W.
+        try:
+            from dynastore.modules.iam.iam_service import IamService
+            iam = get_protocol(IamService)
+            if iam:
+                await iam.bind_policy_to_role("all_users", {"id": policy_id})
+        except Exception as e:
+            logger.warning("Failed to bind deny policy '%s' to all_users role: %s", policy_id, e)
 
     @staticmethod
     async def _revoke_deny_policy(catalog_id: str) -> None:
@@ -717,8 +724,19 @@ class ItemsElasticsearchPrivateDriver(
         if not perm:
             return
 
+        policy_id = f"private_deny_{catalog_id}"
+
+        # Strip the deny policy from the all_users role atomically — no Python R-M-W.
         try:
-            await perm.delete_policy(f"private_deny_{catalog_id}")
+            from dynastore.modules.iam.iam_service import IamService
+            iam = get_protocol(IamService)
+            if iam:
+                await iam.unbind_policy_from_role("all_users", policy_id)
+        except Exception as e:
+            logger.warning("Failed to strip deny policy '%s' from all_users role: %s", policy_id, e)
+
+        try:
+            await perm.delete_policy(policy_id)
         except Exception:
             pass
 

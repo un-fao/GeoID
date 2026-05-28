@@ -43,6 +43,8 @@ from dynastore.models.protocols import (
     GcpCatalogProvisioning,
 )
 from dynastore.modules.gcp.tools.bucket import BucketConflictError
+from dynastore.modules.gcp.gcp_eventing_ops import OrphanSubscriptionClash
+from dynastore.modules.catalog.log_manager import log_error
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,33 @@ class ProvisioningTask(TaskProtocol):
         except PermanentTaskFailure:
             await self._mark_failed(catalog_id)
             raise
+        except OrphanSubscriptionClash as e:
+            # A push subscription with the deterministic name exists but is
+            # bound to a different (or tombstoned) topic. Pub/Sub binding is
+            # immutable, so retrying cannot recover — surface the recovery
+            # message on the tenant log so the maintainer can act, and mark
+            # the step failed terminally.
+            logger.error(
+                f"GcpProvisionCatalogTask: subscription clash for catalog "
+                f"'{catalog_id}': {e}"
+            )
+            try:
+                await log_error(
+                    catalog_id,
+                    "gcp.provision.subscription_clash",
+                    str(e),
+                )
+            except Exception as log_err:  # pragma: no cover — diagnostic best-effort
+                logger.error(
+                    f"GcpProvisionCatalogTask: failed to write tenant log for "
+                    f"catalog '{catalog_id}' subscription clash: {log_err}"
+                )
+            await self._mark_failed(catalog_id)
+            raise PermanentTaskFailure(
+                f"Pub/Sub subscription clash for catalog '{catalog_id}' — "
+                f"manual recovery required. See tenant log "
+                f"'gcp.provision.subscription_clash' for the gcloud command."
+            ) from e
         except BucketConflictError as e:
             # The deterministic bucket name is owned by another GCP project or
             # already linked to another catalog. Retrying regenerates the SAME

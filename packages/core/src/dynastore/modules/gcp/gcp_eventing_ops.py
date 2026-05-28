@@ -60,6 +60,44 @@ from dynastore.modules.catalog.lifecycle_manager import LifecycleContext
 logger = logging.getLogger(__name__)
 
 
+class OrphanSubscriptionClash(RuntimeError):
+    """A push subscription already exists with a topic binding we cannot satisfy.
+
+    Subscription→topic binding is immutable in Pub/Sub: ``modify_push_config``
+    refreshes the endpoint/OIDC token but cannot rebind the subscription.
+    The most common cause is a prior teardown that deleted the topic but left
+    the subscription orphaned (pre-fix ``teardown_managed_eventing_channel``
+    relied on the false belief that topic-delete cascades to subscriptions).
+
+    Raised at provisioning time so the caller can roll back the just-created
+    topic + notifications instead of leaving a half-wired bucket where
+    OBJECT_FINALIZE messages silently vanish.
+    """
+
+    def __init__(self, *, sub_path: str, bound_to: str, expected: str, project_id: str):
+        self.sub_path = sub_path
+        self.bound_to = bound_to
+        self.expected = expected
+        sub_id = sub_path.rsplit("/", 1)[-1]
+        message = (
+            f"Pub/Sub subscription clash:\n"
+            f"  subscription: {sub_path}\n"
+            f"  bound to:     {bound_to}\n"
+            f"  expected:     {expected}\n"
+            f"\n"
+            f"Subscription→topic binding is immutable in Pub/Sub, so re-provisioning\n"
+            f"cannot rebind this subscription. The most common cause is a prior\n"
+            f"teardown that deleted the topic but left the subscription orphaned.\n"
+            f"\n"
+            f"To recover:\n"
+            f"  gcloud pubsub subscriptions delete {sub_id} --project={project_id}\n"
+            f"\n"
+            f"Then retry the catalog provisioning (POST/PUT the eventing config or\n"
+            f"re-trigger the gcp_provision_catalog task)."
+        )
+        super().__init__(message)
+
+
 class GcpEventingOpsMixin:
     """Mixin providing Pub/Sub and eventing operations for GCPModule.
 
@@ -438,17 +476,81 @@ class GcpEventingOpsMixin:
         managed_config.bucket_id = bucket_name
 
         # 3. Create the push subscription to the managed topic.
+        # If we hit a subscription clash (orphan from a prior teardown that
+        # leaked the subscription), roll back the resources we just created
+        # in steps 1+2 so the bucket isn't left half-wired. We leave the
+        # bucket itself alone — it may pre-exist with user data.
         push_attributes = {
             "subscription_id": managed_config.subscription.subscription_id,
             "catalog_id": catalog_id,
             "subscription_type": "managed",
         }
-        updated_subscription = await self.setup_push_subscription(
-            topic_path, managed_config.subscription, custom_attributes=push_attributes
-        )
+        try:
+            updated_subscription = await self.setup_push_subscription(
+                topic_path, managed_config.subscription, custom_attributes=push_attributes
+            )
+        except OrphanSubscriptionClash as clash:
+            logger.error(
+                f"Subscription clash provisioning eventing for catalog '{catalog_id}'. "
+                f"Rolling back just-created topic+notifications. Details:\n{clash}"
+            )
+            await self._rollback_eventing_resources(
+                catalog_id=catalog_id,
+                topic_path=topic_path,
+                bucket_name=bucket_name,
+                notification_ids=list(managed_config.gcs_notification_ids),
+            )
+            raise
         managed_config.subscription = updated_subscription
 
         return managed_config
+
+    async def _rollback_eventing_resources(
+        self,
+        *,
+        catalog_id: str,
+        topic_path: str,
+        bucket_name: Optional[str],
+        notification_ids: list,
+    ) -> None:
+        """Best-effort teardown of resources created in ``setup_managed_eventing_channel``
+        when downstream steps fail (e.g. ``OrphanSubscriptionClash``).
+
+        Each delete is independent — a failure in one does not skip the next.
+        The bucket is intentionally NOT touched (may pre-exist with user data).
+        """
+        # GCS notifications.
+        if bucket_name and notification_ids:
+            for notif_id in notification_ids:
+                try:
+                    await self.get_bucket_service().teardown_gcs_notification(
+                        bucket_name, notif_id
+                    )
+                    logger.info(
+                        f"Rollback: deleted GCS notification '{notif_id}' on bucket '{bucket_name}'."
+                    )
+                except Exception as e:  # noqa: BLE001 — never block rollback
+                    logger.error(
+                        f"Rollback: failed to delete GCS notification '{notif_id}' on bucket '{bucket_name}': {e}",
+                        exc_info=True,
+                    )
+
+        # Topic. Subscription is deliberately left alone — it is the conflicting
+        # orphan and operator action is required to remove it (the recovery
+        # command is included in the OrphanSubscriptionClash message).
+        try:
+            await run_in_thread(
+                self.get_publisher_client().delete_topic,
+                request={"topic": topic_path},
+            )
+            logger.info(f"Rollback: deleted topic '{topic_path}' for catalog '{catalog_id}'.")
+        except google_exceptions.NotFound:
+            pass
+        except Exception as e:  # noqa: BLE001 — never block rollback
+            logger.error(
+                f"Rollback: failed to delete topic '{topic_path}' for catalog '{catalog_id}': {e}",
+                exc_info=True,
+            )
 
     async def setup_push_subscription(
         self,
@@ -544,14 +646,38 @@ class GcpEventingOpsMixin:
                 f"Created Pub/Sub push subscription '{subscription_path}' to endpoint '{push_endpoint}' with attributes {list(attributes.keys())}."
             )
         except google_exceptions.AlreadyExists:
-            logger.debug(
-                f"Pub/Sub subscription '{subscription_path}' already exists. Updating PushConfig to ensure attributes are current."
-            )
-            # If the subscription exists, we MUST update the PushConfig to ensure that
-            # any new custom attributes (like subscription_id) are applied.
-            # create_subscription does not update existing resources.
+            # Pub/Sub binds subscription→topic immutably. Before refreshing
+            # push_config, verify the existing subscription is bound to the
+            # topic we expect; otherwise modify_push_config would silently
+            # succeed while messages on the new topic still have no subscriber.
+            # Pub/Sub returns ``existing.topic == "_deleted-topic_"`` when the
+            # bound topic has been tombstoned.
             try:
-                # Run blocking modify_push_config via the shared concurrency backend
+                existing = await run_in_thread(
+                    subscriber_client.get_subscription,
+                    request={"subscription": subscription_path},
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to inspect existing subscription '{subscription_path}' "
+                    f"after AlreadyExists: {e}"
+                )
+                raise
+
+            if existing.topic != topic_path:
+                raise OrphanSubscriptionClash(
+                    sub_path=subscription_path,
+                    bound_to=existing.topic or "<unknown>",
+                    expected=topic_path,
+                    project_id=project_id,
+                )
+
+            logger.debug(
+                f"Pub/Sub subscription '{subscription_path}' already exists and is "
+                f"bound to the expected topic. Updating PushConfig to ensure "
+                f"attributes are current."
+            )
+            try:
                 await run_in_thread(
                     subscriber_client.modify_push_config,
                     request={
@@ -589,11 +715,32 @@ class GcpEventingOpsMixin:
                     f"Could not determine bucket name for catalog '{catalog_id}'. Skipping GCS notification teardown."
                 )
 
-        # 2. Delete the managed topic. This will also delete its subscriptions.
+        # 2. Delete the managed subscription FIRST. Deleting a Pub/Sub topic
+        # does NOT cascade to its subscriptions — they survive as orphans bound
+        # to a tombstoned topic, and since subscription→topic binding is
+        # immutable in Pub/Sub they cannot be re-bound by a future re-provision.
+        # Without explicit teardown here, a later catalog re-create would hit
+        # AlreadyExists in setup_push_subscription and either silently keep the
+        # orphan or now raise OrphanSubscriptionClash.
+        if managed_config.subscription and managed_config.subscription.subscription_path:
+            subscriber_client = self.get_subscriber_client()
+            try:
+                await run_in_thread(
+                    subscriber_client.delete_subscription,
+                    request={"subscription": managed_config.subscription.subscription_path},
+                )
+                logger.info(
+                    f"Deleted managed Pub/Sub subscription: {managed_config.subscription.subscription_path}"
+                )
+            except google_exceptions.NotFound:
+                logger.debug(
+                    f"Managed Pub/Sub subscription '{managed_config.subscription.subscription_path}' not found. Nothing to delete."
+                )
+
+        # 3. Delete the managed topic.
         if managed_config.topic_path:
             publisher_client = self.get_publisher_client()
             try:
-                # Run blocking delete_topic via the shared concurrency backend
                 await run_in_thread(
                     publisher_client.delete_topic,
                     request={"topic": managed_config.topic_path},

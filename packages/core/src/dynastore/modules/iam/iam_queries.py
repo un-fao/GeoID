@@ -526,30 +526,26 @@ DELETE_PRINCIPAL = DQLQuery(
 
 # ON CONFLICT semantics are ADDITIVE on ``policies`` (closes geoid#902).
 # The cold-boot path seeds the catalog-tier ``unauthenticated`` role via
-# this query with ``policies=["public_access"]``, then the contributor
-# lifespan loop (web, stac, records, maps, edr, …) re-issues
-# ``register_role(Role(name="unauthenticated", policies=[…])`` which
-# buffers an in-memory union and ultimately calls ``update_role``
-# (REPLACE — operator intent). The merge logic in
-# ``IamModule.flush_pending_registrations`` reads-modifies-writes against
-# the DB so the buffered union is unioned with the seed before the
-# REPLACE — under nominal ordering that preserves ``public_access``.
+# this query with ``policies=["public_access"]``. PolicyContributorPreset
+# instances (web, stac, records, maps, edr, …) later call ``update_role``
+# (REPLACE — operator intent) so that each preset applies its own policy
+# union idempotently via the preset lifecycle (apply/revoke).
 #
-# But ``create_role`` is reachable from multiple racing paths during cold
+# ``create_role`` is reachable from multiple racing paths during cold
 # boot (per-service ``PolicyService.provision_default_policies`` for both
-# ``catalog_id=None`` and ``catalog_id="_system_"``, plus
-# ``IamModule.flush_pending_registrations`` itself when the role is absent
-# at read-time). If two of those paths race past the ``get_role`` check
-# concurrently, the second INSERT used to hit ON CONFLICT and replace
-# ``policies`` with EXCLUDED — silently dropping bindings the first path
-# already wrote. The replace-on-conflict semantics surfaced as the
-# ``/health`` 403 in geoid#902 (the seed-declared ``public_access`` was
-# the binding being clobbered).
+# ``catalog_id=None`` and ``catalog_id="_system_"``). If two of those
+# paths race past the ``get_role`` check concurrently, the second INSERT
+# used to hit ON CONFLICT and replace ``policies`` with EXCLUDED —
+# silently dropping bindings the first path already wrote. The
+# replace-on-conflict semantics surfaced as the ``/health`` 403 in
+# geoid#902 (the seed-declared ``public_access`` was the binding being
+# clobbered).
 #
 # Fix: on conflict, ``policies`` is recomputed as the UNION of the
 # existing JSONB array and EXCLUDED's. Operator REPLACE remains
-# available via UPDATE_ROLE (used by ``PATCH /admin/roles`` and the
-# merge branch of ``flush_pending_registrations``); the additive
+# available via UPDATE_ROLE (used by ``PATCH /admin/roles`` and
+# ``update_role`` callers such as PolicyContributorPreset.apply and
+# the ES private driver's all_users role binding); the additive
 # semantics only kick in when two callers ``create_role`` the same name.
 INSERT_ROLE = DQLQuery(
     """
@@ -616,6 +612,44 @@ UPDATE_ROLE = DQLQuery(
 
 DELETE_ROLE = DQLQuery(
     "DELETE FROM {schema}.roles WHERE id = :name OR name = :name;",
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+# Atomic policy bind — appends policy_id string to roles.policies, replacing
+# any existing equal entry. roles.policies is a JSONB array of plain strings.
+# Single SQL UPDATE: no Python read-modify-write, no race window.
+# jsonb_agg over zero rows returns NULL → COALESCE to empty array.
+BIND_POLICY_TO_ROLE = DQLQuery(
+    """
+    UPDATE {schema}.roles
+    SET policies = COALESCE(
+        (
+            SELECT jsonb_agg(elem)
+            FROM jsonb_array_elements_text(COALESCE(policies, '[]'::jsonb)) AS elem
+            WHERE elem != :policy_id
+        ),
+        '[]'::jsonb
+    ) || jsonb_build_array(:policy_id::text)
+    WHERE id = :role_name OR name = :role_name;
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
+# Atomic policy unbind — removes all string entries equal to policy_id.
+# NULL jsonb_agg (zero matching rows) is coalesced to empty array.
+UNBIND_POLICY_FROM_ROLE = DQLQuery(
+    """
+    UPDATE {schema}.roles
+    SET policies = COALESCE(
+        (
+            SELECT jsonb_agg(elem)
+            FROM jsonb_array_elements_text(COALESCE(policies, '[]'::jsonb)) AS elem
+            WHERE elem != :policy_id
+        ),
+        '[]'::jsonb
+    )
+    WHERE id = :role_name OR name = :role_name;
+    """,
     result_handler=ResultHandler.ROWCOUNT,
 )
 
