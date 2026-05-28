@@ -1566,7 +1566,7 @@ async function demoAction(action) {
         DEMO_CATALOG_ID = "demo_catalog"
         DEMO_COLLECTION_ID = "demo_collection"
 
-        @self.router.post("/admin/demo/populate", response_class=JSONResponse, tags=["Admin"])
+        @self.router.post("/admin/demo/populate", response_class=JSONResponse, tags=["Dynastore Web Service"])
         async def demo_populate(request: Request):
             """Provision demo catalog, collection and sample items."""
             from dynastore.models.protocols import CatalogsProtocol as _CatProt
@@ -1626,7 +1626,7 @@ async function demoAction(action) {
             return {"status": "ok", "catalog_id": DEMO_CATALOG_ID,
                     "collection_id": DEMO_COLLECTION_ID, "items": len(result)}
 
-        @self.router.post("/admin/demo/cleanup", response_class=JSONResponse, tags=["Admin"])
+        @self.router.post("/admin/demo/cleanup", response_class=JSONResponse, tags=["Dynastore Web Service"])
         async def demo_cleanup(request: Request):
             """Delete only the demo collection and catalog, leaving all other data intact."""
             from dynastore.models.protocols import CatalogsProtocol as _CatProt
@@ -1923,7 +1923,7 @@ async function demoAction(action) {
         @self.router.get(
             "/dashboard/ogc-compliance",
             response_class=JSONResponse,
-            tags=["Web Dashboard"],
+            tags=["Dynastore Web Service"],
         )
         async def get_dashboard_platform_ogc_compliance():
             from dynastore.extensions.tools.conformance import get_conformance_summary
@@ -1977,7 +1977,7 @@ async function demoAction(action) {
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/ogc-compliance",
             response_class=JSONResponse,
-            tags=["Web Dashboard"],
+            tags=["Dynastore Web Service"],
         )
         async def get_ogc_compliance(catalog_id: str):
             """Return the OGC API conformance summary. The summary is
