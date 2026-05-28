@@ -1091,8 +1091,15 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         fd: FieldDefinition,
         *,
         sidecar_alias: Optional[str] = None,
-    ) -> FieldDefinition:
+    ) -> Optional[FieldDefinition]:
         """Build a ``FieldDefinition`` that resolves ``name`` via JSONB extraction.
+
+        Returns ``None`` when ``resolved_storage_mode`` is not JSONB — the
+        sidecar's table in COLUMNAR mode has no blob column to extract from,
+        so synthesising ``(sc_attributes.attributes->>'NAME')::TEXT`` would
+        crash the query with ``UndefinedColumnError``. Symmetric with
+        :meth:`get_dynamic_field_definition`, which already guards the same
+        way.
 
         Used by :class:`...catalog.QueryOptimizer` to enrich its field index
         from ``ItemsSchema.fields`` — schema is the SSOT for what a collection
@@ -1102,6 +1109,8 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         (e.g. ``start_date <= now()``) parses correctly instead of producing
         a text-vs-date error at execution time.
         """
+        if self.resolved_storage_mode != AttributeStorageMode.JSONB:
+            return None
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
         canonical = (fd.data_type or "string").lower()
         pg_type = CANONICAL_TO_PG_DDL.get(canonical, "TEXT")

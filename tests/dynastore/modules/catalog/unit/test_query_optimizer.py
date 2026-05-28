@@ -758,6 +758,45 @@ def test_jsonb_property_field_casts_via_canonical_data_type():
     assert out_jsonb.sql_expression == "(sc_attributes.attributes->>'BLOB')::JSONB"
 
 
+def test_jsonb_property_field_returns_none_in_columnar_mode():
+    """COLUMNAR-mode sidecars have no JSONB blob column on disk, so any
+    extraction SQL would crash at runtime with ``UndefinedColumnError``.
+    The helper must refuse to synthesise one — symmetric with the existing
+    guard in :meth:`get_dynamic_field_definition`.
+
+    Regression for v0.17.50: an items_schema field that didn't match the
+    sidecar's columnar entries was being aliased to ``(sc_attributes.
+    attributes->>'NAME')::TEXT`` and crashed every MVT render on
+    ``datamgr02/region`` with ``column sc_attributes.attributes does not
+    exist``.
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
+        FeatureAttributeSidecar,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeSchemaEntry,
+        PostgresType,
+    )
+
+    columnar = FeatureAttributeSidecar(
+        FeatureAttributeSidecarConfig(
+            attribute_schema=[
+                AttributeSchemaEntry(name="CODE", type=PostgresType.TEXT),
+            ],
+        ),
+    )
+    assert columnar.jsonb_property_field(
+        "MISSING", FieldDefinition(name="MISSING", data_type="string"),
+    ) is None
+
+    explicit_columnar = FeatureAttributeSidecar(
+        FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.COLUMNAR),
+    )
+    assert explicit_columnar.jsonb_property_field(
+        "X", FieldDefinition(name="X", data_type="date"),
+    ) is None
+
+
 @pytest.fixture
 def _real_sidecar_registry():
     """Yield with the default sidecar registry warmed up, leaving the
@@ -825,10 +864,18 @@ def test_optimizer_enriches_field_index_from_items_schema(_real_sidecar_registry
     assert fd_start.sql_expression == "(sc_attributes.attributes->>'START_DATE')::DATE"
 
 
-def test_optimizer_schema_enrichment_does_not_shadow_native_columns(_real_sidecar_registry):
+def test_optimizer_schema_enrichment_does_not_shadow_native_columns(
+    _real_sidecar_registry, caplog,
+):
     """A schema field whose name matches an existing native (columnar)
-    column must keep the columnar ``sql_expression`` — JSONB extraction is
-    a fallback for JSONB-only fields, not a shadow of native storage."""
+    column must keep the columnar ``sql_expression`` — never shadowed by
+    a schema-derived fallback. A sibling schema field that is NOT in the
+    columnar ``attribute_schema`` must be skipped + warned, because a
+    COLUMNAR-mode sidecar has no JSONB blob column on disk (a JSONB
+    extract would crash with ``UndefinedColumnError``).
+    """
+    import logging
+
     from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         AttributeSchemaEntry,
         PostgresType,
@@ -849,15 +896,22 @@ def test_optimizer_schema_enrichment_does_not_shadow_native_columns(_real_sideca
         "START_DATE": FieldDefinition(name="START_DATE", data_type="date"),
     }
 
-    optimizer = QueryOptimizer(col_config, schema_fields=schema_fields)
+    with caplog.at_level(
+        logging.WARNING, logger="dynastore.modules.catalog.query_optimizer",
+    ):
+        optimizer = QueryOptimizer(col_config, schema_fields=schema_fields)
 
     _, fd_code = optimizer.field_index["CODE"]
     # Native column expression (case-preserving quoted identifier) — NOT a
     # JSONB extraction — must win over the schema-derived fallback.
     assert fd_code.sql_expression == 'sc_attributes."CODE"'
-    # The non-columnar schema field still gets the JSONB fallback.
-    _, fd_start = optimizer.field_index["START_DATE"]
-    assert "->>'START_DATE'" in fd_start.sql_expression
+    # The non-columnar schema field is skipped (no JSONB blob exists on a
+    # COLUMNAR-mode sidecar table — synthesising one would crash the query).
+    assert "START_DATE" not in optimizer.field_index
+    assert any(
+        "cannot be enriched" in rec.getMessage() and rec.args and rec.args[0] == "START_DATE"
+        for rec in caplog.records
+    )
 
 
 def test_optimizer_skips_columnar_expected_field_when_sidecar_silent(
