@@ -1,20 +1,14 @@
 import os
 import hashlib
 import secrets
-from typing import List, Any, Dict, Optional
-from fastapi import APIRouter, FastAPI, Request, Depends, HTTPException, Form
-from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse
+from typing import List, Optional
+from fastapi import APIRouter, FastAPI, Request, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_static
-from dynastore.extensions.tools.url import build_sibling_redirect, resolve_redirect_uri
-from dynastore.models.protocols import (
-    CatalogsProtocol,
-    ConfigsProtocol,
-    PropertiesProtocol,
-)
+from dynastore.extensions.tools.url import resolve_redirect_uri
 from contextlib import asynccontextmanager
 from starlette.middleware.sessions import SessionMiddleware
 import logging

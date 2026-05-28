@@ -16,8 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Type
-from pydantic import BaseModel, Field, model_validator
+from typing import ClassVar, Tuple
+from pydantic import Field
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.modules.storage.driver_config import WriteConflictPolicy

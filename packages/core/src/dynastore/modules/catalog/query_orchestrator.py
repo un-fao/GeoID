@@ -17,15 +17,12 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 
-from sqlalchemy import text
-from pydantic import BaseModel
 
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.storage.drivers.pg_sidecars.base import SidecarProtocol
 from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
-from dynastore.modules.db_config.query_executor import DbResource, GeoDQLQuery, ResultHandler
 
 logger = logging.getLogger(__name__)
 
