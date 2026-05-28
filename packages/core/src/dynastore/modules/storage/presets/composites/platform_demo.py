@@ -60,6 +60,8 @@ _COMPOSE: Tuple[str, ...] = (
     "logs_enable",
     "maps_enable",
     "stats_enable",
+    "notebooks_enable",
+    "configs_enable",
     "web_enable",
     "admin_enable",
 )

@@ -1,34 +1,40 @@
-#    Copyright 2026 FAO
-#    Licensed under the Apache License, Version 2.0 (the "License").
+#    Copyright 2026 FAO — Apache 2.0; see ../../LICENSE.
 
-import logging
-from dynastore.models.protocols.policies import Policy
-from dynastore.tools.discovery import get_protocol
+"""Pure declarations of the Configs extension's authz policies.
 
-logger = logging.getLogger(__name__)
+Consumed by IAM via ``ConfigsService.get_policies`` /
+``get_role_bindings`` through the structural ``PolicyContributor``
+duck-type and forwarded by ``PolicyContributorPreset``
+(see ``modules/storage/presets/policy_contributor_adapter.py``).
+"""
+
+from typing import List
+
+from dynastore.models.auth import Policy
+from dynastore.models.auth_models import Role
 
 
-def register_configs_policies():
-    """Register configs-access policy (sysadmin only) via PermissionProtocol."""
-    from dynastore.models.protocols.policies import PermissionProtocol
+_CONFIGS_ACCESS_POLICY_ID = "configs_access"
 
-    pm = get_protocol(PermissionProtocol)
-    if not pm:
-        logger.warning("PermissionProtocol not available; configs policies not registered.")
-        return
 
-    configs_policy = Policy(
-        id="configs_access",
-        description="Grants full access to configuration management endpoints.",
-        actions=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        resources=[
-            "/configs",
-            "/configs/",
-            "/configs/.*",
-            "/web/pages/configs_editor",  # expose_web_page route
-        ],
-        effect="ALLOW",
-    )
-    pm.register_policy(configs_policy)
+def configs_policies() -> List[Policy]:
+    return [
+        Policy(
+            id=_CONFIGS_ACCESS_POLICY_ID,
+            description="Grants full access to configuration management endpoints.",
+            actions=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            resources=[
+                "/configs",
+                "/configs/",
+                "/configs/.*",
+                "/web/pages/configs_editor",
+            ],
+            effect="ALLOW",
+        ),
+    ]
 
-    logger.debug("Configs policies registered via PermissionProtocol.")
+
+def configs_role_bindings() -> List[Role]:
+    # No role binding: ``configs_access`` is reachable via ``sysadmin_full_access``
+    # already; operator can bind it to additional roles via the IAM admin UI.
+    return []
