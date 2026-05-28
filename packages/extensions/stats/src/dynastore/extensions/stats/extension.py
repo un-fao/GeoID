@@ -19,6 +19,8 @@
 
 import logging
 import os
+import asyncio
+from pathlib import Path
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -125,8 +127,8 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
             return HTMLResponse(
                 content='<div class="text-slate-400 text-sm py-8">Stats page template missing.</div>'
             )
-        with open(file_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read().replace("{{VERSION}}", VERSION))
+        html = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
+        return HTMLResponse(content=html.replace("{{VERSION}}", VERSION))
 
     @property
     def catalogs(self) -> CatalogsProtocol:

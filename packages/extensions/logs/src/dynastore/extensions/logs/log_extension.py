@@ -16,9 +16,11 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import logging
 import json
 import os
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -353,8 +355,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
         )
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Logs dashboard template not found.")
-        with open(html_path, "r", encoding="utf-8") as f:
-            html = f.read()
+        html = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
         prefix = (request.scope.get("root_path") or "").rstrip("/")
         html = html.replace("__API_PREFIX__", prefix)
         return HTMLResponse(html)
@@ -393,8 +394,7 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
                 status_code=404,
                 detail="Catalog logs template not found.",
             )
-        with open(html_path, "r", encoding="utf-8") as f:
-            html = f.read()
+        html = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
         ctx = {
             "modules": {
                 # LogService is registered by CatalogModule which is in
