@@ -227,7 +227,7 @@ models/protocols/
 modules/elasticsearch/
   __init__.py              # Exports ElasticsearchModule
   module.py                # Event listeners, IndexerProtocol impl
-  config.py                # EnvVar-based ES connection config
+  client_config.py         # EnvVar-based ES connection config
   mappings.py              # Index mappings + helpers
   collection_es_driver.py  # Public CollectionStore driver (shared
                            #   {prefix}-collections singleton)
@@ -244,9 +244,6 @@ extensions/search/
   search_models.py         # Pydantic models (SearchBody, ItemCollection, etc.)
   policies.py              # Admin-only policy for reindex endpoints
 
-tasks/elasticsearch/
-  tasks.py                 # Per-item ElasticsearchIndexTask, ElasticsearchDeleteTask
-
 tasks/elasticsearch_indexer/
   __init__.py              # Exports bulk + private task classes
   tasks.py                 # Bulk reindex + private index/delete tasks
@@ -254,9 +251,9 @@ tasks/elasticsearch_indexer/
 
 ## Implementing an Alternative Backend
 
-To replace Elasticsearch with another search engine (e.g. Solr, Meilisearch):
+To replace Elasticsearch with another search engine (e.g. Meilisearch):
 
-1. **Create a new module** (`modules/solr/`) implementing `IndexerProtocol`:
+1. **Create a new module** (e.g. `modules/meilisearch/`) implementing `IndexerProtocol`:
    - `index_document()`, `delete_document()`, `bulk_reindex()`, `ensure_index()`
    - Register event listeners in `lifespan` (same pattern as `ElasticsearchModule`).
 

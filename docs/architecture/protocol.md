@@ -47,4 +47,4 @@ Previously, extensions like `tiles` and `stac` had to import the `apikey` module
 ## Implementation Details
 -   **Tool**: `dynastore/tools/discovery.py`
 -   **Protocols**: `dynastore/models/auth.py`, `dynastore/modules/protocols.py`
--   **Refactored Example**: [tiles/policies.py](../../packages/extensions/tiles/src/dynastore/extensions/tiles/policies.py)
+-   **Refactored Example**: [tiles/presets/__init__.py](../../packages/extensions/tiles/src/dynastore/extensions/tiles/presets/__init__.py)

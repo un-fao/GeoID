@@ -5,37 +5,47 @@ This document describes the security architecture of AIP Catalog Services. The s
 ## Architecture
 
 ```
-Request → ApiKeyMiddleware → Identity Resolution → Policy Evaluation → Allow / Deny
+Request → IamMiddleware → Identity Resolution → Policy Evaluation → Allow / Deny
 ```
 
 ### Identity Resolution
 
-The middleware extracts credentials from:
+`IamMiddleware` (`extensions/iam/middleware.py`) intercepts every request and
+resolves credentials by discovering an `AuthenticatorProtocol` implementation
+at runtime via `get_protocol(AuthenticatorProtocol)`. The concrete
+implementation is `IamModule` (`modules/iam/module.py`), which delegates to one
+or more registered **Identity Providers** (`IdentityProviderProtocol`).
+
+Credentials are extracted from:
 1. `Authorization: Bearer <jwt_token>` header
-2. `X-API-Key: <raw_key>` header
-3. `?api_key=<raw_key>` query parameter
+2. Session cookie (set after `/auth/authorize` OIDC flow)
 
-Credentials are passed to registered **Identity Providers** (discoverable via `IdentityProviderProtocol`):
+Identity providers are registered at startup from `IdpConfig` (class key
+`idp_config`, configured via the Configs API) or from `KEYCLOAK_*` environment
+variables when no `IdpConfig` record exists:
 
-| Provider | Validates | Issues JWT |
-|----------|-----------|------------|
-| `LocalDBIdentityProvider` | Raw API keys (SHA-256 hash lookup), JWT tokens (signature verification) | Yes |
-| `KeycloakIdentityProvider` | Keycloak-issued JWTs via JWKS endpoint | No |
+| Provider | Class | Validates |
+|----------|-------|-----------|
+| `OidcIdentityProvider` | `modules/iam/identity_providers/oidc_identity.py` | Keycloak-issued JWTs via JWKS endpoint; optional audience verification |
 
-If no credentials are provided, the request is treated as **anonymous** with the `anonymous` role.
+If no credentials are provided, or if token validation fails, the request is
+treated as **unauthenticated** with the `unauthenticated` role (configurable
+via `IamRolesConfig.anonymous_role_name`).
 
 ### Principal Model
 
-Every authenticated request produces a `Principal`:
+Every authenticated request produces a `Principal` (defined in
+`models/auth.py`):
 
 ```
 Principal
-├── subject_id    — UUID of the authenticated entity
-├── roles         — ["sysadmin", "user", ...] from principals table
-├── custom_policies — inline Policy objects attached to the key
-├── catalog_match — optional regex restricting catalog access
-├── collection_match — optional regex restricting collection access
-└── metadata      — arbitrary key-value attributes
+├── id            — UUID of the authenticated entity
+├── provider      — identity provider name (e.g. "oidc", "oidc:service_account")
+├── subject_id    — provider-specific subject identifier
+├── display_name  — human-readable name
+├── roles         — ["sysadmin", "admin", ...] from grants table
+├── custom_policies — inline Policy objects attached to the principal
+└── attributes    — arbitrary key-value attributes from JWT claims
 ```
 
 ## Policy Engine
@@ -43,9 +53,9 @@ Principal
 ### Evaluation Flow
 
 ```
-1. Collect roles from principal (subject_id → roles via principals table)
+1. Collect roles from principal (subject_id → grants via iam.grants)
 2. For each role, look up policy IDs (roles → policies mapping)
-3. Fetch full Policy objects from storage
+3. Fetch full Policy objects from iam.policies
 4. Include custom_policies directly attached to the principal
 5. For each policy: check action regex against HTTP method, resource regex against path
 6. First matching DENY → deny immediately
@@ -66,87 +76,105 @@ Policy
 └── description     — human-readable description
 ```
 
-Wildcard `"*"` in actions/resources is auto-converted to `".*"` regex via `transform_wildcards` validator.
+Wildcard `"*"` in actions/resources is auto-converted to `".*"` regex via
+`transform_wildcards` validator.
 
 ### Default Roles and Policies
 
-Provisioned on first startup via `PolicyService.provision_default_policies()`:
+Provisioned by applying the `iam_baseline` and `default_roles_baseline` presets
+(`extensions/iam/presets/iam_baseline.py`,
+`modules/iam/presets/default_roles_baseline.py`):
 
 | Role | Policies | Description |
 |------|----------|-------------|
-| `sysadmin` | `sysadmin_full_access` | Unrestricted `.*` on `.*` |
-| `admin` | `sysadmin_full_access` | Same as sysadmin |
-| `anonymous` | `public_access` | GET/POST/OPTIONS/HEAD on `/`, `/health`, `/docs.*`, `/apikey/auth/*` |
-| `user` | `self_service_access` | GET on `/iam/me`, `/iam/me/.*`, `/auth/userinfo` |
+| `sysadmin` | `sysadmin_full_access`, `admin_authorization_api` | Unrestricted `.*` on `.*` |
+| `admin` | `admin_authorization_api` | Manage principals, roles, and policies |
+| `unauthenticated` | `self_service_authorization_api` (+ `public_access` if the `public_access_baseline` preset is applied) | Floor role for all requests |
 
-Extensions register additional policies during their `lifespan()`. For example:
-- `features_public_access` → `/features/.*` (GET/POST/OPTIONS)
+Extensions register additional policies via the `PolicyContributorPreset`
+mechanism. For example:
+- `tiles_public_access` → `/tiles/.*` (GET/OPTIONS), contributed by `extensions/tiles/presets/__init__.py`
+- `features_public_access` → `/features/.*`
 - `stac_public_access` → `/stac/.*`
-- `maps_public_access` → `/maps/.*`
-- `admin_access` → `/admin/.*` (linked to sysadmin/admin roles)
 
 ### Conditions
 
-Policies support conditions evaluated at request time:
+Policies support conditions evaluated at request time
+(`modules/iam/conditions.py`):
 
 | Condition Type | Config | Description |
 |----------------|--------|-------------|
 | `rate_limit` | `max_requests`, `period_seconds`, `scope` | Token-bucket rate limiting. Scope: `global`, `catalog`, `collection` |
 | `ip_whitelist` | `allowed_ips` | CIDR-based IP restriction |
 | `time_window` | `start_hour`, `end_hour` | Time-of-day access window |
+| `catalog_admin_required` | `required_roles` | Per-catalog admin delegation |
 
-### Concurrent Role Registration
+## OAuth2 / OIDC Flow
 
-During startup, multiple extensions register policies for the same roles (e.g., adding `maps_public_access` to `anonymous`). This is handled via fire-and-forget `asyncio.create_task()` calls, serialized by an `asyncio.Lock` in `ApiKeyModule._persist_role()` to prevent read-modify-write races.
-
-## API Key Lifecycle
+The `auth` extension (`extensions/auth/authentication.py`) provides an
+OAuth2 authorization code flow backed by the configured OIDC provider
+(typically Keycloak):
 
 ```
-POST /apikey/keys       — create a new API key (returns raw key once)
-GET  /apikey/me/keys    — list own keys
-DELETE /apikey/keys/{id} — revoke a key
-POST /apikey/auth/login  — exchange API key for JWT token
-GET  /apikey/auth/validate — validate a JWT token
-GET  /apikey/auth/jwks.json — public JWKS for token verification
+GET  /auth/authorize            — redirect to IdP login
+POST /auth/token                — exchange auth code for access token
+POST /auth/refresh              — exchange refresh token for new access token
+GET  /auth/userinfo             — return normalized profile from valid JWT
+GET  /auth/logout               — clear session and redirect
 ```
 
-### Key Storage
+The `iam` extension (`extensions/iam/service.py`) provides:
 
-Raw API keys are never stored. On creation:
-1. A random key is generated
-2. The SHA-256 hash is stored in `apikey.api_keys` (partitioned by hash)
-3. A 10-char prefix is stored for identification
-4. The raw key is returned once to the caller
+```
+GET  /iam/me                    — effective permissions for the current principal
+GET  /iam/me/roles              — roles of the current principal
+GET  /iam/me/catalogs           — catalogs the current principal has access to
+GET  /iam/jwks.json             — public JWKS for token verification
+```
 
-### JWT Tokens
+## Concurrency and Policy Registration
 
-- Issued by `LocalDBIdentityProvider` on successful login
-- Signed with a per-instance secret stored in `apikey.jwt_config`
-- Contains `sub` (principal UUID), `roles`, `exp`, `iat`
-- Validated via JWKS endpoint or direct secret verification
+During startup, multiple extensions register policies for roles via
+`IamModule.create_policy` / `IamModule.create_role`. The `PermissionProtocol`
+implementation in `IamModule` serializes concurrent writes to the policy tables
+via PostgreSQL transactions. Extensions discover the `PermissionProtocol`
+implementation through `get_protocol(PermissionProtocol)` — there are no direct
+module imports.
 
 ## Database Tables
 
-All auth tables live in the `apikey` schema:
+All platform IAM tables live in the `iam` schema:
 
 | Table | Purpose |
 |-------|---------|
-| `principals` | Identity registry (UUID, roles, custom_policies) |
-| `api_keys` | Key hashes, linked to principals (HASH-partitioned) |
-| `identity_links` | Maps external identities (provider + subject_id) to principals |
-| `users` | Username/password_hash for local auth |
-| `policies` | Policy definitions (LIST-partitioned by partition_key) |
-| `roles` | Role-to-policy mappings |
-| `jwt_config` | JWT signing secrets |
-| `refresh_tokens` | Refresh token storage |
+| `iam.principals` | Identity registry (UUID, provider, display_name) |
+| `iam.identity_links` | Maps external identities (provider + subject_id) to principals |
+| `iam.grants` | Role assignments scoped to platform or per-catalog |
+| `iam.roles` | Role definitions |
+| `iam.role_hierarchy` | Parent-child role relationships |
+| `iam.policies` | Policy definitions (LIST-partitioned by partition_key) |
+| `iam.refresh_tokens` | Refresh token storage |
+| `iam.usage_counters` | Per-principal request counters (rate limiting) |
+
+Per-catalog IAM (role grants for catalog members) lives in each catalog's
+own schema under the same table names.
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
-| `src/dynastore/modules/apikey/module.py` | ApiKeyModule — lifespan, register_policy, register_role |
-| `src/dynastore/modules/apikey/policies.py` | PolicyService — CRUD, evaluation engine |
-| `src/dynastore/modules/apikey/apikey_service.py` | ApiKeyService — key creation, authentication |
-| `src/dynastore/extensions/apikey/middleware.py` | Request interception, principal resolution, policy evaluation |
-| `src/dynastore/extensions/apikey/service.py` | REST API endpoints for key management |
-| `src/dynastore/modules/apikey/identity_providers/` | LocalDB and Keycloak identity providers |
+| `src/dynastore/modules/iam/module.py` | `IamModule` — `AuthenticatorProtocol` + `PermissionProtocol` impl, lifespan |
+| `src/dynastore/modules/iam/iam_service.py` | `IamService` — principal CRUD, JWT issuance, OIDC reconciliation |
+| `src/dynastore/modules/iam/iam_queries.py` | SQL DDL and DML for all IAM tables |
+| `src/dynastore/modules/iam/policies.py` | Policy evaluation helpers |
+| `src/dynastore/modules/iam/conditions.py` | Condition handlers (rate_limit, ip_whitelist, time_window) |
+| `src/dynastore/modules/iam/identity_providers/oidc_identity.py` | `OidcIdentityProvider` — JWKS-backed JWT validation |
+| `src/dynastore/modules/iam/presets/default_roles_baseline.py` | Default `sysadmin`, `admin`, `unauthenticated` roles |
+| `src/dynastore/modules/iam/presets/public_access_baseline.py` | Optional `public_access` policy for anonymous discovery |
+| `src/dynastore/extensions/iam/middleware.py` | `IamMiddleware` — request interception, principal resolution, policy evaluation |
+| `src/dynastore/extensions/iam/service.py` | `IamExtension` — `/iam/` REST routes, JWKS endpoint |
+| `src/dynastore/extensions/iam/presets/iam_baseline.py` | `sysadmin_full_access` policy and role bindings |
+| `src/dynastore/extensions/auth/authentication.py` | `Authentication` extension — `/auth/` OAuth2/OIDC proxy routes |
+| `src/dynastore/models/protocols/authentication.py` | `AuthenticatorProtocol` — identity-resolution contract |
+| `src/dynastore/models/protocols/policies.py` | `PermissionProtocol`, `Policy`, `Principal`, `Role` |
+| `src/dynastore/models/auth.py` | `Principal` runtime model |

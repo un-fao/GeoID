@@ -53,4 +53,4 @@ The admin extension contributes one web page via `@expose_web_page`:
 |------|---------|
 | `src/dynastore/extensions/admin/admin_service.py` | Main service — routes, CRUD endpoints |
 | `src/dynastore/extensions/admin/policies.py` | Policy registration for admin routes |
-| `src/dynastore/extensions/admin/static/admin_panel.html` | Admin dashboard page |
+| `src/dynastore/extensions/admin/admin_panel.html` | Admin dashboard page |
