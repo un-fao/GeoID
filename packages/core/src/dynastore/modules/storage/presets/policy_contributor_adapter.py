@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Shared role names that belong to the platform seed and must never be
 # deleted by a per-extension preset revoke — only the policy links are
 # stripped.
-_SHARED_ROLE_NAMES: Tuple[str, ...] = ("sysadmin", "admin", "user", "anonymous")
+_SHARED_ROLE_NAMES: Tuple[str, ...] = ("sysadmin", "admin", "anonymous", "unauthenticated")
 
 
 class PolicyContributorPreset:

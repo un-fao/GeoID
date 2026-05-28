@@ -136,6 +136,10 @@ def _iam_service_role_bindings() -> List[Role]:
         # (which replaces the policies list entirely) retains it alongside
         # the admin_authorization_api binding that this preset introduces.
         Role(name=cfg.sysadmin_role_name, policies=["sysadmin_full_access", "admin_authorization_api"]),
+        # ``default_user_role_name`` now defaults to ``unauthenticated``; this
+        # binding lets anonymous principals reach /iam/me + /auth/userinfo for
+        # the self-info contract. Authenticated users with the same role get
+        # the same surface — there is no extra elevation here.
         Role(name=cfg.default_user_role_name, policies=["self_service_authorization_api"]),
     ]
 
@@ -198,7 +202,7 @@ def _catalog_preset_delegation_policy(
 
 # Shared roles whose rows must never be deleted by revoke — they are
 # owned by the platform seed and other contributors bind to them.
-_SHARED_ROLE_NAMES: Tuple[str, ...] = ("sysadmin", "admin", "user")
+_SHARED_ROLE_NAMES: Tuple[str, ...] = ("sysadmin", "admin")
 
 
 # ---------------------------------------------------------------------------

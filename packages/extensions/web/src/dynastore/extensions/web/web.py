@@ -163,14 +163,12 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
 def _web_role_bindings(
     sysadmin_role_name: Optional[str] = None,
     admin_role_name: Optional[str] = None,
-    user_role_name: Optional[str] = None,
     anonymous_role_name: Optional[str] = None,
 ) -> List[Role]:
     """Pure declaration of the web extension's role-to-policy bindings."""
     cfg = IamRolesConfig()
     sysadmin_role_name = sysadmin_role_name or cfg.sysadmin_role_name
     admin_role_name = admin_role_name or cfg.admin_role_name
-    user_role_name = user_role_name or cfg.default_user_role_name
     anonymous_role_name = anonymous_role_name or cfg.anonymous_role_name
     # Bind ``web_public_access`` (which whitelists root ``/health``) to BOTH
     # the configured ``anonymous_role_name`` AND the literal default
@@ -188,12 +186,9 @@ def _web_role_bindings(
         *anon_bindings,
         Role(name=sysadmin_role_name, policies=["web_sysadmin_access"]),
         Role(name=admin_role_name, policies=["web_admin_access"]),
-        Role(name=user_role_name, policies=["web_admin_access"]),
         Role(name=sysadmin_role_name, policies=["web_dashboard_platform_access"]),
         Role(name=admin_role_name, policies=["web_dashboard_ogc_compliance_access"]),
-        Role(name=user_role_name, policies=["web_dashboard_ogc_compliance_access"]),
         Role(name=admin_role_name, policies=["web_dashboard_per_catalog_access"]),
-        Role(name=user_role_name, policies=["web_dashboard_per_catalog_access"]),
     ]
 
 

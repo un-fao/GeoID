@@ -497,11 +497,13 @@ class AdminService(ExtensionProtocol):
         else:
             subject_id = body.subject_id or body.username
 
+        # No-roles fallback resolves through PluginConfig (default:
+        # ``unauthenticated``). The ``user`` role is no longer provisioned.
         new_principal = Principal(
             provider=body.provider,
             subject_id=subject_id,
             display_name=body.username,
-            roles=body.roles or ["user"],
+            roles=body.roles or [IamRolesConfig().default_user_role_name],
             is_active=True,
         )
         created = await mgr.create_principal(new_principal)

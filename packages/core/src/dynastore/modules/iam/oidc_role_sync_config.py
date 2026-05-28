@@ -41,15 +41,13 @@ class OidcRoleSyncConfig(PluginConfig):
             "exposure toggle; IAM routes are always-on."
         ),
     )
-    # Default values track IamRolesConfig.{sysadmin,editor}_role_name; a
-    # unit test (issue #659) pins them so any future rename of the
-    # platform role defaults fails CI here instead of silently breaking
-    # the OIDC reconciler. Operators that rename roles at runtime should
-    # PATCH this config alongside the IamRolesConfig change.
+    # Default mapping carries only roles that ``default_roles_baseline``
+    # actually provisions (sysadmin). ``geoid.editor`` was removed when the
+    # editor/user catalog roles were dropped from the baseline; operators
+    # can re-add it via PATCH after creating a matching role.
     role_mapping: Mutable[Dict[str, str]] = Field(
         default_factory=lambda: {
             "geoid.sysadmin": "sysadmin",
-            "geoid.editor": "editor",
         },
         description=(
             "Map OIDC role names (as they appear in the normalized "

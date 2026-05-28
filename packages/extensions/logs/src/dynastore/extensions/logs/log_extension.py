@@ -239,19 +239,16 @@ def _logs_per_catalog_policy(sysadmin_role_name: Optional[str] = None) -> Policy
 
 def _logs_per_catalog_role_bindings(
     admin_role_name: Optional[str] = None,
-    user_role_name: Optional[str] = None,
 ) -> List[Role]:
-    """Bind the per-catalog logs policy to ADMIN + USER roles.
+    """Bind the per-catalog logs policy to the catalog ADMIN role.
 
     Sysadmin access is handled inside the condition handler, not via a
     separate role binding — same shape as ``web_dashboard_per_catalog_access``.
     """
     cfg = IamRolesConfig()
     admin = admin_role_name or cfg.admin_role_name
-    user = user_role_name or cfg.default_user_role_name
     return [
         Role(name=admin, policies=["logs_per_catalog_access"]),
-        Role(name=user, policies=["logs_per_catalog_access"]),
     ]
 
 
