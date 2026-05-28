@@ -157,6 +157,19 @@ class PolicyContributorPreset:
             logger.debug("%s: upserted policy %s", self.name, pol.id)
 
         for role in (contributor.get_role_bindings() or []):
+            # Bind policies additively. bind_policy_to_role is an UPDATE that no-ops
+            # when the role row is absent, so we create missing sentinel roles (e.g.
+            # "catalog_admin") first. Shared roles (sysadmin, admin, user) are expected
+            # to exist; for them only the additive bind runs — the existing policy list
+            # is preserved.
+            from dynastore.models.auth_models import Role as _Role
+            try:
+                await ctx.iam.create_role(_Role(name=role.name, policies=[]))
+                logger.debug("%s: created sentinel role %s", self.name, role.name)
+            except Exception:
+                # Role already exists — IamService.create_role raises ValueError for
+                # duplicates. That's fine; the bind below adds the policies additively.
+                pass
             for pid in (role.policies or []):
                 await ctx.iam.bind_policy_to_role(role.name, {"id": pid})
             applied_role_names.append(role.name)
