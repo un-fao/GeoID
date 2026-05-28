@@ -349,6 +349,86 @@ def test_deferred_hop_warns_once_for_read_input_transformers(caplog):
     assert matches == [], "Second load must not re-emit; dedupe failed"
 
 
+def test_search_output_transformers_warn_on_non_asset_tier(caplog):
+    """geoid#1567: read-side restore_from_index is wired only for the asset
+    tier, so SEARCH ``output_transformers`` on a collection/items tier validate
+    but never run. The validator must WARN (not silently accept) so the no-op
+    surfaces at config-load."""
+    from dynastore.modules.storage.routing_config import (
+        CollectionRoutingConfig,
+        Operation,
+        OperationDriverEntry,
+        TransformerEntry,
+        _DEFERRED_HOP_WARNED,
+    )
+
+    _DEFERRED_HOP_WARNED.clear()
+    with caplog.at_level(
+        logging.WARNING, logger="dynastore.modules.storage.routing_config",
+    ):
+        CollectionRoutingConfig(
+            operations={
+                Operation.SEARCH: [
+                    OperationDriverEntry(
+                        driver_ref="es_collection_searcher",
+                        output_transformers=("noop_attached_transformer",),
+                    ),
+                ],
+            },
+            transformers=[
+                TransformerEntry(driver_ref="noop_attached_transformer"),
+            ],
+        )
+    matches = [
+        rec for rec in caplog.records
+        if "output_transformers declared on operation 'SEARCH'" in rec.message
+        and "restore_from_index is wired only for the asset tier" in rec.message
+    ]
+    assert len(matches) == 1, (
+        "Expected exactly one SEARCH-output deferred-hop WARN on a non-asset "
+        "tier; got %d" % len(matches)
+    )
+
+
+def test_search_output_transformers_silent_on_asset_tier(caplog):
+    """geoid#1567: the asset tier's SEARCH path DOES invoke restore_from_index
+    (``_wired_output_search_hop=True``), so a SEARCH ``output_transformers``
+    declaration there is wired — it must NOT emit a deferred-hop WARN."""
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        Operation,
+        OperationDriverEntry,
+        TransformerEntry,
+        _DEFERRED_HOP_WARNED,
+    )
+
+    _DEFERRED_HOP_WARNED.clear()
+    with caplog.at_level(
+        logging.WARNING, logger="dynastore.modules.storage.routing_config",
+    ):
+        AssetRoutingConfig(
+            operations={
+                Operation.SEARCH: [
+                    OperationDriverEntry(
+                        driver_ref="asset_es_searcher",
+                        output_transformers=("noop_attached_transformer",),
+                    ),
+                ],
+            },
+            transformers=[
+                TransformerEntry(driver_ref="noop_attached_transformer"),
+            ],
+        )
+    matches = [
+        rec for rec in caplog.records
+        if "output_transformers declared on operation 'SEARCH'" in rec.message
+    ]
+    assert matches == [], (
+        "Asset tier SEARCH output_transformers is wired — must not warn; "
+        "got %d WARN(s)" % len(matches)
+    )
+
+
 @pytest.mark.asyncio
 async def test_per_item_failure_isolation_with_transformer_at_index_hop():
     """When the input_transformers chain raises for one item in a bulk,
