@@ -18,7 +18,6 @@
 
 # File: dynastore/modules/iam/module.py
 
-import asyncio
 import logging
 from uuid import UUID
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -77,12 +76,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     _policy_service: Optional[PolicyService] = None
     _authorizer: Optional[IamAuthorizer] = None
     storage: Optional[AbstractIamStorage] = None
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._role_lock = asyncio.Lock()
-        # Register as early as possible to be discoverable during extension configuration
-        register_plugin(self)
 
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:

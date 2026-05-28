@@ -127,17 +127,17 @@ def discover_modules():
 
 def _get_ordered_modules() -> List[str]:
     """
-    Returns modules sorted by their ``priority`` class attribute (ascending).
-    A lower priority value means the module is started earlier.
+    Returns modules sorted by ``(priority, name)`` (ascending). A lower
+    priority value means the module is started earlier; alphabetical name
+    is the tiebreak so the order is deterministic across discovery passes.
     Modules without a ``priority`` attribute default to 100.
     """
-    def _priority(name: str) -> int:
+    def _sort_key(name: str) -> Tuple[int, str]:
         config = _DYNASTORE_MODULES.get(name)
-        if config is None:
-            return 100
-        return getattr(config.cls, "priority", 100)
+        priority = 100 if config is None else getattr(config.cls, "priority", 100)
+        return (priority, name)
 
-    return sorted(_DYNASTORE_MODULES.keys(), key=_priority)
+    return sorted(_DYNASTORE_MODULES.keys(), key=_sort_key)
 
 def instantiate_modules(app_state: object, include_only: Optional[List[str]] = None):
     """
@@ -182,14 +182,22 @@ def instantiate_modules(app_state: object, include_only: Optional[List[str]] = N
             if name.lower().replace("_", "-") in target_names
         ]
 
-    # Sort by priority so foundational modules (lower priority value) come first
-    def _priority(name: str) -> int:
+    # Sort by (priority, name) so foundational modules (lower priority
+    # value) come first, with alphabetical tiebreak for determinism across
+    # entry-point discovery orders. Without the name tiebreak, modules at
+    # the same priority load in dict insertion order — which varies with
+    # installed-distribution order and breaks reproducibility. The name
+    # tiebreak also matters for IAM (priority=100): it places ``iam``
+    # before notebooks/proxy/styles/etc. (also priority=100) so any of
+    # them constructing through ``get_protocol(AuthorizationProtocol)``
+    # in their own ``__init__`` finds it (replaces the legacy
+    # ``register_plugin(self)`` side-effect in ``IamModule.__init__``).
+    def _sort_key(name: str) -> Tuple[int, str]:
         config = _DYNASTORE_MODULES.get(name)
-        if config is None:
-            return 100
-        return getattr(config.cls, "priority", 100)
+        priority = 100 if config is None else getattr(config.cls, "priority", 100)
+        return (priority, name)
 
-    ordered_modules = sorted(available_modules, key=_priority)
+    ordered_modules = sorted(available_modules, key=_sort_key)
 
     logger.info(f"Instantiating modules in order: {ordered_modules}")
     init_failures: List[str] = []
