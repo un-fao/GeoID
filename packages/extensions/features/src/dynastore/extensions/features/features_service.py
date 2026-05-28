@@ -79,7 +79,14 @@ from dynastore.modules.db_config.query_executor import DbResource
 import re
 from . import features_db
 from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
-from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features, resolve_items_read_policy
+from dynastore.extensions.tools.query import (
+    parse_ogc_query_request,
+    stream_ogc_features,
+    resolve_items_read_policy,
+    validate_filter_lang,
+    resolve_geometry_flag_from_query,
+    dispatch_or_stream_items,
+)
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
 
 logger = logging.getLogger(__name__)
@@ -992,25 +999,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 conn, catalog_id, _filter_crs_arg
             )
 
-            # --- ``filter-lang`` validation ----------------------------
-            # OGC API Features Part 3 defines cql2-text + cql2-json. Anything
-            # else is a client error — keep the existing 400 path but accept
-            # cql2-json now (#1385). Coerce non-strings (FastAPI ``Query(...)``
-            # sentinels seen when ``get_items`` is invoked directly in unit
-            # tests) to the documented default.
-            fl_normalised = (
-                filter_lang.lower()
-                if isinstance(filter_lang, str) and filter_lang
-                else "cql2-text"
-            )
-            if fl_normalised not in ("cql2-text", "cql2-json"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unsupported filter-lang '{filter_lang}'. "
-                        "Supported: 'cql2-text', 'cql2-json'."
-                    ),
-                )
+            # --- ``filter-lang`` validation (#1385: accept cql2-json) ---
+            fl_normalised = validate_filter_lang(filter_lang)
 
             # --- ``properties`` validation -----------------------------
             # Comma-separated attribute names. Validated against the
@@ -1100,12 +1090,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 )
 
             # Resolve skipGeometry/returnGeometry from the two accepted forms.
-            # FastAPI direct-call unit tests may pass literal ``Query(...)``
-            # sentinels — normalise non-bools/non-None to None before resolution.
-            _sg = skip_geometry if isinstance(skip_geometry, bool) else None
-            _rg = return_geometry if isinstance(return_geometry, bool) else None
-            from dynastore.extensions.tools.query import resolve_geometry_flag
-            skip_geom_bool = resolve_geometry_flag(_sg, _rg)
+            skip_geom_bool = resolve_geometry_flag_from_query(skip_geometry, return_geometry)
 
             request_obj = parse_ogc_query_request(
                 bbox=bbox,
@@ -1123,23 +1108,18 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 skip_geometry=skip_geom_bool,
             )
 
-            # Execute search via protocol (streaming)
+            # Execute search via protocol (streaming). ctx=None decouples from
+            # the request connection to allow background streaming.
             items_protocol = cast(ItemsProtocol, catalogs_svc)
-            if search_dispatch is not None:
-                query_response = search_dispatch
-            else:
-                try:
-                    query_response = await items_protocol.stream_items(
-                        catalog_id=catalog_id,
-                        collection_id=collection_id,
-                        request=request_obj,
-                        # Decouple from request connection to allow background streaming
-                        ctx=None,
-                        consumer=ConsumerType.OGC_FEATURES,
-                    )
-                except ValueError as e:
-                    # Catch invalid properties/fields and return 400
-                    raise HTTPException(status_code=400, detail=str(e))
+            query_response = await dispatch_or_stream_items(
+                items_protocol,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+                query_request=request_obj,
+                consumer=ConsumerType.OGC_FEATURES,
+                search_dispatch=search_dispatch,
+                ctx=None,
+            )
 
             count = query_response.total_count or 0
             root_url = get_root_url(request)

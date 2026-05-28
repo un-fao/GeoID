@@ -302,26 +302,14 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         from dynastore.extensions.tools.query import (
             parse_ogc_query_request,
             maybe_dispatch_items_to_search_driver,
+            validate_filter_lang,
+            resolve_geometry_flag_from_query,
+            dispatch_or_stream_items,
         )
         from dynastore.tools.discovery import get_protocol
 
         # ``filter-lang`` validation (Phase 1 of #1385 — accept cql2-json).
-        # Defensive normalisation: when ``get_records`` is invoked directly
-        # (unit tests bypass FastAPI), ``filter_lang`` may still be a
-        # ``Query(...)`` sentinel — coerce non-strings to the default.
-        fl_normalised = (
-            filter_lang.lower()
-            if isinstance(filter_lang, str) and filter_lang
-            else "cql2-text"
-        )
-        if fl_normalised not in ("cql2-text", "cql2-json"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unsupported filter-lang '{filter_lang}'. "
-                    "Supported: 'cql2-text', 'cql2-json'."
-                ),
-            )
+        fl_normalised = validate_filter_lang(filter_lang)
 
         # ``filter-crs`` resolution. Records does not expose a CRSProtocol
         # dependency (no per-collection projected geometries), so resolution
@@ -397,12 +385,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             )
 
         # Resolve skipGeometry/returnGeometry from the two accepted forms.
-        # Unit-test direct calls may pass ``Query(...)`` sentinels — normalise
-        # non-bools/non-None to None before resolution.
-        _sg = skip_geometry if isinstance(skip_geometry, bool) else None
-        _rg = return_geometry if isinstance(return_geometry, bool) else None
-        from dynastore.extensions.tools.query import resolve_geometry_flag
-        skip_geom_bool = resolve_geometry_flag(_sg, _rg)
+        skip_geom_bool = resolve_geometry_flag_from_query(skip_geometry, return_geometry)
 
         request_obj = parse_ogc_query_request(
             bbox=None,
@@ -429,19 +412,15 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 request_obj.cql_filter = ilike_expr
 
         items_protocol = cast(ItemsProtocol, catalogs_svc)
-        if search_dispatch is not None:
-            query_response = search_dispatch
-        else:
-            try:
-                query_response = await items_protocol.stream_items(
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                    request=request_obj,
-                    ctx=DriverContext(db_resource=conn) if conn is not None else None,
-                    consumer=ConsumerType.OGC_RECORDS,
-                )
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
+        query_response = await dispatch_or_stream_items(
+            items_protocol,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            query_request=request_obj,
+            consumer=ConsumerType.OGC_RECORDS,
+            search_dispatch=search_dispatch,
+            ctx=DriverContext(db_resource=conn) if conn is not None else None,
+        )
 
         count = query_response.total_count or 0
         root_url = get_root_url(request)

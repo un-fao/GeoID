@@ -333,6 +333,80 @@ def resolve_geometry_flag(
     return not return_geometry
 
 
+def resolve_geometry_flag_from_query(
+    skip_geometry: Any,
+    return_geometry: Any,
+) -> bool:
+    """:func:`resolve_geometry_flag`, tolerant of FastAPI ``Query(...)`` sentinels.
+
+    When an OGC listing handler is invoked directly (unit tests bypass FastAPI),
+    ``skipGeometry`` / ``returnGeometry`` may still carry their ``Query(...)``
+    defaults rather than ``bool`` / ``None``. Coerce any non-bool to ``None``
+    before delegating to :func:`resolve_geometry_flag`.
+    """
+    _sg = skip_geometry if isinstance(skip_geometry, bool) else None
+    _rg = return_geometry if isinstance(return_geometry, bool) else None
+    return resolve_geometry_flag(_sg, _rg)
+
+
+def validate_filter_lang(filter_lang: Any) -> str:
+    """Normalise and validate the OGC API ``filter-lang`` query parameter.
+
+    OGC API Features Part 3 defines ``cql2-text`` (default) and ``cql2-json``;
+    anything else is a client error (HTTP 400). Non-string values — the
+    ``Query(...)`` sentinels seen when a handler is invoked directly in unit
+    tests — coerce to the documented default. Returns the normalised value.
+    """
+    normalised = (
+        filter_lang.lower()
+        if isinstance(filter_lang, str) and filter_lang
+        else "cql2-text"
+    )
+    if normalised not in ("cql2-text", "cql2-json"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported filter-lang '{filter_lang}'. "
+                "Supported: 'cql2-text', 'cql2-json'."
+            ),
+        )
+    return normalised
+
+
+async def dispatch_or_stream_items(
+    items_protocol: Any,
+    *,
+    catalog_id: str,
+    collection_id: str,
+    query_request: QueryRequest,
+    consumer: Any,
+    search_dispatch: Optional[QueryResponse] = None,
+    ctx: Any = None,
+) -> QueryResponse:
+    """Return the routed SEARCH-driver response, or stream from the items protocol.
+
+    Both OGC listing handlers (Features ``/items``, Records ``/items``) share one
+    execution contract: if a routing-aware SEARCH driver already produced a
+    :class:`QueryResponse` (``search_dispatch``), use it; otherwise stream via
+    ``items_protocol.stream_items`` and map the driver's ``ValueError`` (invalid
+    properties / fields) to HTTP 400. Callers supply their own ``consumer``
+    (``OGC_FEATURES`` / ``OGC_RECORDS``) and ``ctx`` (Features decouples with
+    ``None`` for background streaming; Records threads the request connection).
+    """
+    if search_dispatch is not None:
+        return search_dispatch
+    try:
+        return await items_protocol.stream_items(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            request=query_request,
+            ctx=ctx,
+            consumer=consumer,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def parse_ogc_query_request(
     bbox: Optional[str] = None,
     datetime_param: Optional[str] = None,
