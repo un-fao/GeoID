@@ -1,149 +1,149 @@
-# The Migration System
+# Database Schema Establishment
 
-This document describes the database migration architecture of Agro-Informatics Platform (AIP) — Catalog Services. The system provides safe, auditable, and admin-controlled evolution of both the global schema and per-tenant collection schemas.
-
-## Design Principles
-
-### No Auto-Apply at Startup
-
-Earlier versions auto-applied migrations during service startup, which created a race between deploying code and evolving a shared database. The current design separates concerns:
-
-- **Startup**: calls `check_migration_status()` — reads the migration manifest hash in a single SELECT, logs a warning if any migration is pending, and returns immediately. No DDL is executed.
-- **Migration apply**: triggered only by an admin via the REST API or the migrations dashboard. The `run_migrations()` path is protected by a PostgreSQL advisory lock so concurrent admin triggers are safe.
-
-This means a new deployment can start serving traffic immediately, and the operator decides when to apply pending migrations.
-
-### Advisory Locking
-
-`run_migrations()` acquires `pg_advisory_xact_lock(hashtext('dynastore_migration'))` before executing any DDL. Only one process across the entire cluster can run migrations at a time; competing callers block until the lock is released, then detect there is nothing left to apply.
-
-### Tamper Detection
-
-Every applied migration script is stored in `public.schema_migrations` with a SHA-256 hash. On each startup the runner re-hashes all scripts registered in memory and compares them to the stored hashes. If a previously applied script has been modified on disk, `DRIFT_DETECTED` is returned and the service logs an error — no further migrations are applied until the drift is resolved.
-
-### Fast-Path Manifest Hash
-
-To avoid reading the filesystem on every cold start, the runner pre-computes a single manifest hash from all registered script hashes. This value is stored in `public.schema_migrations` under the synthetic key `__manifest__`. A fast-path check compares the in-memory manifest hash against the stored value in one `SELECT`. When they match, startup completes without scanning any migration files.
+This document describes how the database schema comes to exist in DynaStore.
+The versioned-SQL migration framework (`migration_runner.py`, `schema_migrations`
+table, `v{NNNN}__*.sql` scripts, advisory lock, admin migrate/rollback endpoints,
+and migrations dashboard) was **removed entirely** in commit `854c559b`
+("feat(iam)!: remove migration framework; kill hardcoded role strings", 2026-04-17).
+Nothing in this document describes that removed system.
 
 ---
 
-## Two Migration Scopes
+## Hard Invariant
 
-### Global Migrations
+**The application never issues in-place DDL** — no `ALTER TABLE … ADD/DROP/RENAME
+COLUMN`, no type changes, no backfill loops — against an already-materialized
+table. Schema is established only at (re)provision time via idempotent
+`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements.
+There is no versioned migration runner, no `schema_migrations` tracking table,
+no admin `migrate` or `rollback` REST endpoints, and no migrations dashboard.
+See [Schema Evolution & Drift](../components/schema_evolution.md) for the
+implications on per-collection schema drift.
 
-Applied to the `public` (or a nominated global) schema. These cover shared infrastructure: the `tasks` tables, `catalogs`, `collections`, `schema_migrations` itself, and any cross-tenant indexes or functions.
+---
 
-Global migrations are registered by module name:
+## Global Schema (Module Startup)
+
+Global shared-infrastructure tables are created **once per startup** by
+idempotent DDL called from the respective module lifespans. No advisory lock
+or version tracking is needed because every statement uses `IF NOT EXISTS`.
+
+### Platform config tables (`configs` schema)
+
+`PlatformConfigService.initialize_storage` (called from `DBConfigModule.lifespan`
+via `tools.py:ensure_init_db`) issues:
 
 ```python
-from dynastore.modules.db_config.migration_runner import register_module_migrations
-
-register_module_migrations("catalog", "dynastore.modules.catalog.migrations")
+# packages/core/src/dynastore/modules/db_config/typed_store/ddl.py
+PLATFORM_SCHEMAS_DDL   # CREATE SCHEMA IF NOT EXISTS configs;
+                       # CREATE TABLE IF NOT EXISTS configs.schemas (…)
+                       # CREATE TABLE IF NOT EXISTS configs.platform_configs (…)
+                       # CREATE INDEX IF NOT EXISTS …
 ```
 
-Script naming follows the `v{NNNN}__{description}.sql` convention. Scripts are discovered from the package via `importlib.resources` and executed in version-number order.
+Source: `packages/core/src/dynastore/modules/db_config/typed_store/ddl.py`
+(constants `PLATFORM_SCHEMAS_DDL`, `tenant_configs_ddl`).
 
-### Tenant Migrations
+### Catalog registry and metadata tables (`catalog` schema)
 
-Applied to each tenant's own PostgreSQL schema (e.g., `s_abc123`). These cover tenant-specific tables: `collection_configs`, any per-tenant indexes, and future additions to the tenant shell.
-
-Tenant migrations are registered separately:
+`CatalogModule.lifespan` creates:
 
 ```python
-from dynastore.modules.db_config.migration_runner import register_tenant_migrations
-
-register_tenant_migrations("catalog", "dynastore.modules.catalog.tenant_migrations")
+# packages/core/src/dynastore/modules/catalog/catalog_module.py  ~line 375
+await ensure_schema_exists(conn, "catalog")
+await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
+await ensure_global_core_tables(conn)   # catalog.catalog_core, catalog.catalog_stac
+await ensure_stored_procedures(conn)
 ```
 
-Scripts use `{schema}` as a placeholder for the tenant schema name:
-
-```sql
--- v0001__add_schema_hash.sql
-ALTER TABLE {schema}.collection_configs
-    ADD COLUMN IF NOT EXISTS schema_hash VARCHAR(64);
-```
-
-On migration apply, the runner iterates all rows in `catalog.catalogs`, substitutes `{schema}`, and tracks applied versions in a per-tenant `{schema}.schema_migrations` table with the same structure as the global one.
+`CATALOGS_TABLE_DDL` defines `catalog.catalogs` (the platform-wide catalog
+registry). `SHARED_PROPERTIES_SCHEMA` defines `catalog.shared_properties`.
+Source: `packages/core/src/dynastore/modules/catalog/catalog_module.py`
+(constants `CATALOGS_TABLE_DDL`, `SHARED_PROPERTIES_SCHEMA`).
 
 ---
 
-## Tracking Table
+## Tenant Schema (Provisioning Time)
 
-```
-public.schema_migrations
-├── id            SERIAL PRIMARY KEY
-├── version       VARCHAR(10)      -- e.g. "v0002"
-├── module        VARCHAR(255)     -- e.g. "db_config", "tasks"
-├── description   TEXT             -- derived from filename
-├── script_hash   VARCHAR(64)      -- SHA-256 of script content
-├── rollback_sql  TEXT             -- content of paired _rollback.sql (nullable)
-├── applied_at    TIMESTAMPTZ      -- when this version was applied
-└── applied_by    VARCHAR(255)     -- service NAME env var
+Per-tenant tables are created **once**, when a catalog is provisioned (via
+`CatalogService.create_catalog`). The provisioner calls `_build_tenant_core_ddl_batch`
+which returns a `DDLBatch`:
+
+```python
+# packages/core/src/dynastore/modules/catalog/catalog_service.py  line 95
+def _build_tenant_core_ddl_batch(schema: str) -> "DDLBatch":
+    ...
+    return DDLBatch(
+        sentinel=DDLQuery(tenant_configs_sql, check_query=_check_sentinel),
+        steps=[
+            DDLQuery(TENANT_COLLECTIONS_DDL),   # {schema}.collections
+            CREATE_ROLES_TABLE,                 # {schema}.roles
+            CREATE_ROLE_HIERARCHY_TABLE,        # {schema}.role_hierarchy
+            CREATE_GRANTS_TABLE,                # {schema}.grants
+            DDLQuery(tenant_configs_sql, ...),  # {schema}.catalog_configs
+                                                # {schema}.collection_configs
+        ],
+    )
 ```
 
-The synthetic `__manifest__` row stores the combined hash of all registered scripts for the fast-path check.
+`DDLBatch` uses a sentinel check (`collection_configs` existence) as a warm-path
+fast-skip: if the last table already exists the entire batch is skipped in one
+round-trip. Source:
+`packages/core/src/dynastore/modules/catalog/catalog_service.py` (~line 95–136).
+
+After the core batch, additional per-tenant tables are created by
+`@lifecycle_registry.sync_catalog_initializer` hooks registered by
+other modules (assets, tiles, IAM, proxy, indexing outbox, …).
+
+Per-collection hub and sidecar tables are created by
+`ItemsPostgresqlDriver.ensure_storage` at collection provisioning time, again via
+`CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`. The application
+**never** `ALTER`s an existing collection table; adding a column for real requires
+a fresh (re)provision. Source:
+`packages/core/src/dynastore/modules/storage/drivers/postgresql.py` (~line 741).
 
 ---
 
-## Rollback Convention
+## Config Payload Migration DAG
 
-For each `v{NNNN}__description.sql` forward script, an optional `v{NNNN}__rollback.sql` can be placed in the same package. The rollback SQL is stored in the `rollback_sql` column at apply time. Rollback is triggered via the admin API:
+There is **no DDL migration runner**, but there is a lightweight in-memory
+mechanism for evolving stored JSON config payloads: the
+`dynastore.tools.typed_store.migrations` module. This is entirely separate
+from database schema and does not write to any tracking table.
 
-```
-POST /admin/migrations/rollback
-{"module": "db_config", "version": "v0002"}
-```
+When a `PluginConfig` row is read from the database and its stored `schema_id`
+(a SHA-256 content hash of the Pydantic model's JSON schema) differs from the
+current class's `schema_id`, a BFS traversal across registered `@migrates`
+functions transforms the stored dict to the current shape — in-process, with
+no DDL, no DB write. Source:
+`packages/core/src/dynastore/tools/typed_store/migrations.py`.
 
-The `StructuralMigrationTask` executes the stored rollback SQL in the same advisory-locked transaction.
-
----
-
-## Dry-Run Mode
-
-Both `run_migrations()` and the admin API support `dry_run=True`. In dry-run mode, the runner resolves the list of pending scripts and returns their SQL without executing anything. The migrations dashboard uses this to show a preview before the operator clicks Apply.
-
----
-
-## Admin Trigger Flow
-
-```
-Admin clicks "Apply" in dashboard
-  → POST /admin/migrations/apply {"scope": "all", "dry_run": false}
-  → AdminService enqueues StructuralMigrationTask
-  → Worker picks up task
-  → run_migrations(engine, scope="all", dry_run=False)
-      → acquire pg_advisory_xact_lock(...)
-      → execute pending global scripts
-      → for each tenant schema: execute pending tenant scripts
-      → release lock
-  → Task status → COMPLETED
-  → Dashboard polls task status and refreshes
-```
+An operator-facing CLI (`python -m dynastore.modules.db_config.typed_store.cli audit`)
+reports any stored `schema_id` values that have no registered migrator path to
+the current class schema.
 
 ---
 
-## Relationship to per-collection schema
+## Summary Table
 
-This document covers DDL for **shared** infrastructure tables. A
-collection's *own* physical table is a separate concern: its columns are
-created once at provisioning (`CREATE TABLE IF NOT EXISTS`), and the
-application never issues in-place `ALTER TABLE` against it. Drift between
-a collection's declared schema and its physical table is reconciled
-read-only; adding a column for real requires a fresh (re)provision. See
-[Schema Evolution & Drift](../components/schema_evolution.md) and
-[Items Schema](../components/items_schema.md).
+| Scope | When established | Mechanism | Key source |
+|-------|-----------------|-----------|------------|
+| `configs` schema + platform-config tables | Module startup (idempotent) | `PLATFORM_SCHEMAS_DDL` via `PlatformConfigService.initialize_storage` | `modules/db_config/typed_store/ddl.py` |
+| `catalog` schema + catalog registry | Module startup (idempotent) | `CATALOGS_TABLE_DDL` + `SHARED_PROPERTIES_SCHEMA` in `CatalogModule.lifespan` | `modules/catalog/catalog_module.py` |
+| Per-tenant core tables | Catalog provisioning | `_build_tenant_core_ddl_batch` DDLBatch | `modules/catalog/catalog_service.py` |
+| Per-collection hub/sidecar tables | Collection provisioning | `ItemsPostgresqlDriver.ensure_storage` | `modules/storage/drivers/postgresql.py` |
+| Config payload shape evolution | Read time (in-process, no DDL) | `@migrates` DAG in `typed_store.migrations` | `tools/typed_store/migrations.py` |
+
+There is no versioned SQL runner, no `schema_migrations` table, no per-module
+`migrations/` SQL packages, and no admin REST or dashboard for triggering migrations.
 
 ---
 
-## Files
+## See Also
 
-| Path | Purpose |
-|------|---------|
-| `src/dynastore/modules/db_config/migration_runner.py` | Core runner: registration, status check, apply, tenant iteration |
-| `src/dynastore/modules/db_config/migrations/` | Global SQL scripts (`v{NNNN}__*.sql`) |
-| `src/dynastore/tasks/structural_migration/task.py` | TaskProtocol wrapper — runs migrations from the task queue |
-| `src/dynastore/extensions/admin/migration_routes.py` | REST API endpoints for status, pending, apply, history, rollback |
-| `src/dynastore/extensions/admin/static/migrations_panel.html` | Web dashboard |
-| `src/dynastore/modules/catalog/migrations/v0001__catalog_schema.sql` | Creates `catalog` schema + `catalog.catalogs` + `catalog.shared_properties` |
-| `src/dynastore/modules/catalog/tenant_migrations/v0001__config_tables.sql` | Per-tenant `catalog_configs` + `collection_configs` tables |
-| `src/dynastore/tasks/schema_migration/` | Safe data migration pipeline (export → backup-rename → recreate → import) |
+- [Schema Evolution & Drift](../components/schema_evolution.md) — per-collection
+  schema drift, read-only reconciliation, and the no-in-place-DDL rule.
+- [Items Schema](../components/items_schema.md) — declarative field surface and
+  freeze semantics.
+- `packages/core/src/dynastore/modules/db_config/readme.md` — `db_config` module
+  overview, `TypedStore` config persistence, and the config payload migration DAG.
