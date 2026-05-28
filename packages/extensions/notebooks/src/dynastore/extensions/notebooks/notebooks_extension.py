@@ -1,4 +1,6 @@
 # src/dynastore/extensions/notebooks/notebooks_extension.py
+import asyncio
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -150,8 +152,8 @@ class NotebooksExtension(ExtensionProtocol):
         html_path = os.path.join(self._static_dir, "notebooks.html")
         if not os.path.exists(html_path):
             return Response(content="Notebooks page template not found", status_code=404)
-        with open(html_path, "r", encoding="utf-8") as f:
-            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
+        html = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
+        return Response(content=html.replace("{{VERSION}}", VERSION), media_type="text/html")
 
     # ------------------------------------------------------------------
     # Platform notebook endpoints
