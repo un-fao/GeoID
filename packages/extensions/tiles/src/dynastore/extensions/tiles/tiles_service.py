@@ -50,7 +50,6 @@ from dynastore.models.protocols.web import WebModuleProtocol, StaticFilesProtoco
 from dynastore.extensions.web.decorators import expose_static
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.modules.db_config import shared_queries
-import dynastore.modules.catalog.catalog_module as catalog_manager
 import dynastore.modules.tiles.tiles_module as tms_manager
 from dynastore.tools.ogc_common import parse_subset_parameter
 from dynastore.tools.geospatial import SimplificationAlgorithm

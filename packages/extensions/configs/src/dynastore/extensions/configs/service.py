@@ -38,7 +38,6 @@ from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
 from dynastore.extensions.tools.conflict_handler import conflict_to_409
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from dynastore.tools.db import InvalidIdentifierError
-import dynastore.modules.catalog.catalog_module as catalog_manager
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
