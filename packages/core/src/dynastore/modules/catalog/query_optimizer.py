@@ -17,9 +17,12 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, List, Any, Tuple, Set, Optional
+from typing import Dict, List, Any, Mapping, Tuple, Set, Optional
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
-from dynastore.modules.storage.read_policy import ItemsReadPolicy
+from dynastore.modules.storage.read_policy import (
+    ItemsReadPolicy,
+    is_user_readable_schema_field,
+)
 from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
 from dynastore.modules.storage.drivers.pg_sidecars.base import (
     ConsumerType,
@@ -77,6 +80,7 @@ class QueryOptimizer:
         col_config: ItemsPostgresqlDriverConfig,
         consumer: Optional[ConsumerType] = None,
         read_policy: Optional[ItemsReadPolicy] = None,
+        schema_fields: Optional[Mapping[str, FieldDefinition]] = None,
     ):
         self.col_config = col_config
         # Default to GENERIC when no consumer is supplied — preserves the
@@ -86,8 +90,16 @@ class QueryOptimizer:
         # "use defaults" (external_id_as_feature_id=False → geoid is the id,
         # #1212). Callers thread the resolved ItemsReadPolicy where they have it.
         self.read_policy: Optional[ItemsReadPolicy] = read_policy
+        # ``schema_fields`` is the collection's ``ItemsSchema.fields`` mapping —
+        # the SSOT for user-declared properties. Threaded in by read paths that
+        # build a server-side SELECT projection from the schema (notably MVT,
+        # via ``project_select_for_feature_type``) so this optimizer can
+        # validate those names against the schema even when a field lives in
+        # the JSONB attributes blob and not in a native column.
+        self.schema_fields: Optional[Mapping[str, FieldDefinition]] = schema_fields
         self.field_index: Dict[str, Tuple[SidecarProtocol, FieldDefinition]] = {}
         self._build_capability_index()
+        self._enrich_field_index_from_schema()
 
     def _external_id_as_feature_id(self) -> bool:
         """Resolve the wire-shape decision from the read policy, defaulting to
@@ -145,6 +157,49 @@ class QueryOptimizer:
                 # Also index by alias if present
                 if hasattr(field_def, "alias") and field_def.alias:
                     self.field_index[field_def.alias] = (sidecar, field_def)
+
+    def _enrich_field_index_from_schema(self) -> None:
+        """Surface ``ItemsSchema.fields`` entries not already in the index.
+
+        ``ItemsSchema`` is the SSOT for a collection's queryable properties.
+        Fields that are materialised as native columns are already covered by
+        the attributes sidecar's ``get_queryable_fields()`` (columnar branch);
+        the remainder live in the JSONB attributes blob and must be advertised
+        here so a SELECT/filter against them validates and resolves to a typed
+        JSONB extraction. Read-side mirror of the write-side
+        :func:`...field_constraints.bridge_schema_to_attribute_sidecar`
+        (column synthesis) — neither path leaks fields the other does not see.
+
+        Geometry-typed, ``expose=False`` and reserved/system names are skipped
+        via :func:`...read_policy.is_user_readable_schema_field`. Names already
+        in ``field_index`` (columnar columns, identity, validity, hub fields)
+        are kept as-is — a native column always beats a JSONB extraction.
+        """
+        if not self.schema_fields:
+            return
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
+            FeatureAttributeSidecar,
+        )
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+            SidecarRegistry,
+        )
+
+        attr_sidecar: Optional[FeatureAttributeSidecar] = None
+        for sc_config in driver_sidecars(self.col_config):
+            sc = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+            if isinstance(sc, FeatureAttributeSidecar):
+                attr_sidecar = sc
+                break
+        if attr_sidecar is None:
+            return
+
+        for name, fd in self.schema_fields.items():
+            if name in self.field_index:
+                continue
+            if not is_user_readable_schema_field(fd):
+                continue
+            jsonb_fd = attr_sidecar.jsonb_property_field(name, fd)
+            self.field_index[name] = (attr_sidecar, jsonb_fd)
 
     def map_row_to_feature(
         self,

@@ -5,7 +5,6 @@ from dynastore.modules.catalog.query_optimizer import (
     QueryRequest,
     FieldSelection,
     FilterCondition,
-    SortOrder,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.base import FieldDefinition, FieldCapability
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
@@ -722,3 +721,140 @@ def test_star_expansion_skips_sidecar_field_when_raw_select_override_present(
     assert "st_asgeojson" not in sql_lower, (
         f"Sidecar ST_AsGeoJSON projection should have been skipped:\n{sql}"
     )
+
+
+# ---------------------------------------------------------------------------
+# items_schema → field_index enrichment (regression for the empty-MVT case
+# where a VECTOR collection's ``ItemsSchema`` declares user fields that live
+# in the JSONB attributes blob — ``START_DATE`` / ``END_DATE`` on the
+# ``datamgr02/region`` review collection rejected as ``Unknown field`` at
+# tile render time).
+# ---------------------------------------------------------------------------
+
+
+def test_jsonb_property_field_casts_via_canonical_data_type():
+    """``jsonb_property_field`` must derive the SQL cast from the canonical
+    ``data_type`` so a typed comparison parses correctly downstream (a
+    text-vs-date compare would otherwise raise at execution)."""
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
+        FeatureAttributeSidecar,
+    )
+
+    sidecar = FeatureAttributeSidecar(
+        FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB)
+    )
+
+    fd_date = FieldDefinition(name="START_DATE", data_type="date")
+    out = sidecar.jsonb_property_field("START_DATE", fd_date)
+    assert out.sql_expression == "(sc_attributes.attributes->>'START_DATE')::DATE"
+    assert out.data_type == "date"
+
+    fd_text = FieldDefinition(name="CODE", data_type="string")
+    out_text = sidecar.jsonb_property_field("CODE", fd_text)
+    assert out_text.sql_expression == "(sc_attributes.attributes->>'CODE')::TEXT"
+
+    fd_jsonb = FieldDefinition(name="BLOB", data_type="jsonb")
+    out_jsonb = sidecar.jsonb_property_field("BLOB", fd_jsonb)
+    assert out_jsonb.sql_expression == "(sc_attributes.attributes->>'BLOB')::JSONB"
+
+
+@pytest.fixture
+def _real_sidecar_registry():
+    """Yield with the default sidecar registry warmed up, leaving the
+    registry populated for any later tests in the same session — clearing
+    in teardown would force every subsequent test that touches the
+    registry to re-import the defaults.
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+
+    SidecarRegistry._ensure_defaults()
+    yield SidecarRegistry
+
+
+def test_optimizer_enriches_field_index_from_items_schema(_real_sidecar_registry):
+    """Reproduces the ``datamgr02/region`` empty-MVT cause: a VECTOR
+    collection whose ``ItemsSchema.fields`` declares ``START_DATE`` /
+    ``END_DATE`` that the attributes sidecar would not surface from its
+    ``attribute_schema`` alone. The optimizer must enrich its index so the
+    SELECT projection validates against the schema (the SSOT)."""
+
+    col_config = ItemsPostgresqlDriverConfig(
+        sidecars=[
+            FeatureAttributeSidecarConfig(
+                sidecar_type="attributes",
+                storage_mode=AttributeStorageMode.JSONB,
+            ),
+        ],
+    )
+    schema_fields = {
+        "CODE": FieldDefinition(name="CODE", data_type="string"),
+        "START_DATE": FieldDefinition(name="START_DATE", data_type="date"),
+        "END_DATE": FieldDefinition(name="END_DATE", data_type="date"),
+        # Geometry-typed → must be skipped (owned by the geometry sidecar /
+        # driver, never an attribute column).
+        "the_geom": FieldDefinition(name="the_geom", data_type="geometry(Polygon,4326)"),
+        # ``expose=False`` → must be skipped (declared for write validation
+        # only; the read path does not surface it).
+        "INTERNAL": FieldDefinition(name="INTERNAL", data_type="string", expose=False),
+    }
+
+    optimizer = QueryOptimizer(col_config, schema_fields=schema_fields)
+
+    assert "START_DATE" in optimizer.field_index, (
+        "items_schema date field must reach the index for SELECT validation"
+    )
+    assert "END_DATE" in optimizer.field_index
+    assert "CODE" in optimizer.field_index
+    assert "the_geom" not in optimizer.field_index, "geometry-typed must be skipped"
+    assert "INTERNAL" not in optimizer.field_index, "expose=False must be skipped"
+
+    # Validation passes for a SELECT list built from the items_schema (the
+    # exact shape ``project_select_for_feature_type`` produces on the MVT
+    # path) — no ``Unknown field`` is emitted.
+    req = QueryRequest(
+        select=[
+            FieldSelection(field="CODE"),
+            FieldSelection(field="START_DATE"),
+            FieldSelection(field="END_DATE"),
+        ],
+    )
+    errors = optimizer.validate_query(req)
+    assert errors == [], errors
+
+    _, fd_start = optimizer.field_index["START_DATE"]
+    assert fd_start.sql_expression == "(sc_attributes.attributes->>'START_DATE')::DATE"
+
+
+def test_optimizer_schema_enrichment_does_not_shadow_native_columns(_real_sidecar_registry):
+    """A schema field whose name matches an existing native (columnar)
+    column must keep the columnar ``sql_expression`` — JSONB extraction is
+    a fallback for JSONB-only fields, not a shadow of native storage."""
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeSchemaEntry,
+        PostgresType,
+    )
+
+    col_config = ItemsPostgresqlDriverConfig(
+        sidecars=[
+            FeatureAttributeSidecarConfig(
+                sidecar_type="attributes",
+                attribute_schema=[
+                    AttributeSchemaEntry(name="CODE", type=PostgresType.TEXT),
+                ],
+            ),
+        ],
+    )
+    schema_fields = {
+        "CODE": FieldDefinition(name="CODE", data_type="string"),
+        "START_DATE": FieldDefinition(name="START_DATE", data_type="date"),
+    }
+
+    optimizer = QueryOptimizer(col_config, schema_fields=schema_fields)
+
+    _, fd_code = optimizer.field_index["CODE"]
+    # Native column expression (case-preserving quoted identifier) — NOT a
+    # JSONB extraction — must win over the schema-derived fallback.
+    assert fd_code.sql_expression == 'sc_attributes."CODE"'
+    # The non-columnar schema field still gets the JSONB fallback.
+    _, fd_start = optimizer.field_index["START_DATE"]
+    assert "->>'START_DATE'" in fd_start.sql_expression
