@@ -126,21 +126,7 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
             "(web UI or `/auth/web/`)."
         ),
     }
-    openapi_schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"] = {
-        "type": "oauth2",
-        "description": "OIDC Authorization Code flow via Keycloak (use the Authorize button above).",
-        "flows": {
-            "authorizationCode": {
-                "authorizationUrl": auth_url,
-                "tokenUrl": token_url,
-                "scopes": {
-                    "openid": "OpenID Connect",
-                    "email": "User email",
-                    "profile": "User profile",
-                },
-            }
-        },
-    }
+
 
     # Top-level default security: every operation inherits a lock icon in
     # Swagger UI. Routes that are intentionally public (e.g. /health,
@@ -148,8 +134,7 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
     # decorator. Per OpenAPI 3.0, multiple entries in this list are an
     # OR — the request only needs one of them.
     openapi_schema["security"] = [
-        {"HTTPBearer": []},
-        {"OAuth2AuthorizationCode": ["openid", "email", "profile"]},
+        {"HTTPBearer": []}
     ]
 
     # Group every authentication / authorization / admin-user route under a
@@ -163,28 +148,8 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
             "All routes under /auth, /iam, and /admin/principals."
         ),
     }
-    legacy_tag_names = {
-        "auth",
-        "iam",
-        "admin",
-        "Authentication",
-        "Authorization Management",
-        "Self-Service Authorization",
-        "Identity & Access Governance",
-        "IAM Governance",
-        "Credentials",
-        "Admin",
-    }
-    existing_tags = openapi_schema.get("tags") or []
-    pruned_tags = [
-        tag for tag in existing_tags if tag.get("name") not in legacy_tag_names
-    ]
-    if not any(
-        tag.get("name") == authn_authz_tag["name"] for tag in pruned_tags
-    ):
-        pruned_tags.append(authn_authz_tag)
-    openapi_schema["tags"] = pruned_tags
 
+    openapi_schema["tags"] = [authn_authz_tag]
     return openapi_schema
 
 
