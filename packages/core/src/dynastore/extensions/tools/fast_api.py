@@ -16,8 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from enum import Enum
-from typing import Optional, Any, TYPE_CHECKING
+from typing import Optional, Any
 try:
     from fastapi.responses import JSONResponse
 except ImportError:

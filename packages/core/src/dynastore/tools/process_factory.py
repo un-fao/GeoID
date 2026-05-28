@@ -20,7 +20,6 @@ from typing import Type, Dict, Any, List, Optional
 from pydantic import BaseModel
 from dynastore.modules.processes.models import (
     Process,
-    ProcessInput,
     ProcessScope,
     JobControlOptions,
     TransmissionMode,

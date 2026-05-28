@@ -13,8 +13,7 @@
 #    limitations under the License.
 
 import logging
-from enum import Enum
-from typing import Dict, Any
+from typing import Dict
 
 from dynastore.models.shared_models import EventType
 

@@ -22,7 +22,7 @@ import asyncio
 import functools
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import Optional, Callable, Awaitable, Any, TypeVar, Dict, AsyncGenerator, Iterator, Set, cast
+from typing import Optional, Callable, Awaitable, TypeVar, Dict, AsyncGenerator, Iterator, Set, cast
 from sqlalchemy import text, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from dynastore.tools.async_utils import LoopLocalLock
