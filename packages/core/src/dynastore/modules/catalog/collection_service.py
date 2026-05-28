@@ -18,7 +18,7 @@
 
 import logging
 import json
-from typing import List, Optional, Any, Dict, Union, Tuple, Set, Callable
+from typing import List, Optional, Any, Dict, Union, Set
 from dynastore.tools.cache import cached
 from dynastore.models.driver_context import DriverContext
 
@@ -28,13 +28,12 @@ from dynastore.modules.db_config.query_executor import (
     DbResource,
     ResultHandler,
     managed_transaction,
-    managed_nested_transaction,
 )
-from dynastore.modules.catalog.models import Collection, CollectionUpdate, Catalog
+from dynastore.modules.catalog.models import Collection
 from dynastore.modules.catalog.catalog_config import (
     CollectionPluginConfig,
 )
-from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol, AssetsProtocol
+from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.async_utils import signal_bus

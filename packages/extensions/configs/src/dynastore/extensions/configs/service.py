@@ -35,26 +35,14 @@ from dynastore.extensions.configs._composed_query_params import (
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
-from dynastore.extensions.tools.conflict_handler import conflict_to_409
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from dynastore.tools.db import InvalidIdentifierError
 from dynastore.modules import get_protocol
-from dynastore.models.protocols import WebModuleProtocol, ConfigsProtocol
+from dynastore.models.protocols import ConfigsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
 from dynastore.modules.db_config.engine_config import EngineConfig
 from dynastore.modules.db_config.plugin_config import list_registered_configs, require_config_class, resolve_config_class
-from dynastore.modules.db_config.exceptions import (
-    ImmutableConfigError,
-    PluginNotRegisteredError,
-    ConfigValidationError,
-    is_conflict_error,
-)
 
-from .dto import (
-    ConfigEntry,
-    ConfigListResponse,
-    PluginSchemaInfo,
-)
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
 from . import problem_details
@@ -410,7 +398,6 @@ class ConfigsService(ExtensionProtocol):
         ``scope`` is read from ``ConfigScopeMixin.config_scope`` when present,
         or defaults to ``"platform_waterfall"``.
         """
-        from dynastore.modules.storage.schema_types import ConfigScopeMixin
 
         schemas: Dict[str, Any] = {}
         for class_key, config_class in list_registered_configs().items():
