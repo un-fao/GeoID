@@ -47,21 +47,34 @@ def _empty_sidecar() -> FeatureAttributeSidecarConfig:
 # Default behaviour — only constrained fields are lifted
 # ---------------------------------------------------------------------------
 
-def test_default_only_constrained_fields_lifted() -> None:
+def test_default_constrained_field_forces_all_columnar() -> None:
+    """Constraint present → sidecar will resolve COLUMNAR-only → every
+    non-geometry field must follow (silent-drop guard, #1488 / #1491).
+
+    The empty sidecar starts at AUTOMATIC. The constrained field promotes
+    to a column, which would flip ``resolved_storage_mode`` to COLUMNAR
+    (``attributes.py:144-150``) — at DDL time no JSONB blob is created,
+    so any field NOT promoted by the bridge would silently drop at ingest.
+    The bridge force-promotes the plain field to close that hole.
+    """
     schema = MagicMock()
     schema.default_access = FieldAccess.AUTO
     schema.fields = {
         "constrained": _field(required=True),
-        "plain":       _field(),  # no required, no unique → stays in JSONB
+        "plain":       _field(),
     }
 
     bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
     names = {e.name for e in bridged.attribute_schema}
-    assert names == {"constrained"}
+    assert names == {"constrained", "plain"}
 
 
 def test_default_no_change_when_all_plain() -> None:
-    """Schema with only plain fields produces no sidecar entries."""
+    """Schema with only plain fields produces no sidecar entries.
+
+    No field forces a column → sidecar AUTOMATIC resolves to JSONB →
+    DDL creates the blob → plain fields land there. Force-promotion stays off.
+    """
     schema = MagicMock()
     schema.default_access = FieldAccess.AUTO
     schema.fields = {

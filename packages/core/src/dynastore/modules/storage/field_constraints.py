@@ -163,10 +163,22 @@ def bridge_schema_to_attribute_sidecar(
 
     - If an ``AttributeSchemaEntry`` with the same ``name`` already exists,
       overlay ``nullable = not fd.required`` and ``unique = fd.unique``.
-    - Otherwise, append a new entry inferring the PG type from ``fd.data_type``
-      (defaults to ``TEXT``). Only fields carrying a constraint
-      (``required`` or ``unique``) are synthesised; plain fields are left for
-      the existing JSONB / attribute_schema paths.
+    - Otherwise, decide whether to synthesise a native column. The per-field
+      precedence (constraint → FAST → COMPACT → AUTO+capability) is the single
+      :func:`schema_field_materializes_as_column` rule.
+
+    Silent-drop guard (#1488/#1491 follow-up): the sidecar's
+    ``resolved_storage_mode`` (see ``attributes.py:144-150``) becomes
+    COLUMNAR-only the moment *any* attribute_schema entry exists under
+    AUTOMATIC mode (or when COLUMNAR is set explicitly). The DDL branch in
+    ``attributes.py:399-449`` then creates physical columns ONLY — there is
+    no JSONB blob on disk to catch fields that the per-field precedence
+    would have left for JSONB. To make a silent drop architecturally
+    impossible, every non-geometry items_schema field is promoted to an
+    ``AttributeSchemaEntry`` whenever the sidecar will resolve COLUMNAR-only.
+    When the resolution will be JSONB (AUTOMATIC + no constraint/FAST/cap
+    field anywhere in the schema, or explicit JSONB), the blob catches
+    un-promoted fields and the per-field precedence is the only gate.
 
     Returns a new ``FeatureAttributeSidecarConfig`` so callers can replace it
     in ``col_config.sidecars``. If ``schema`` is None or has no fields,
@@ -177,6 +189,7 @@ def bridge_schema_to_attribute_sidecar(
 
     from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
         AttributeSchemaEntry,
+        AttributeStorageMode,
         PostgresType,
     )
 
@@ -192,6 +205,26 @@ def bridge_schema_to_attribute_sidecar(
     # field into a native column. AUTO keeps the historical "constraints + queryable
     # capabilities only" behaviour so sparse schemas don't widen tables unintentionally.
     schema_default_access = getattr(schema, "default_access", FieldAccess.AUTO)
+
+    # Project the sidecar's eventual ``resolved_storage_mode`` so the loop
+    # below can decide whether un-promoted fields will have a JSONB blob to
+    # land in. Mirror of the resolution at ``attributes.py:144-150``:
+    # explicit COLUMNAR/JSONB pin the mode; AUTOMATIC resolves to COLUMNAR
+    # the moment any column entry exists (existing entries already on the
+    # sidecar, or schema fields the per-field precedence will promote).
+    sidecar_mode = getattr(sidecar, "storage_mode", AttributeStorageMode.AUTOMATIC)
+    if sidecar_mode == AttributeStorageMode.COLUMNAR:
+        force_all_columnar = True
+    elif sidecar_mode == AttributeStorageMode.JSONB:
+        force_all_columnar = False
+    else:  # AUTOMATIC
+        force_all_columnar = bool(existing) or any(
+            (not (fd.data_type or "").lower().startswith("geometry"))
+            and schema_field_materializes_as_column(
+                fd, default_access=schema_default_access,
+            )
+            for fd in schema.fields.values()
+        )
 
     changed = False
     for name, fd in schema.fields.items():
@@ -224,15 +257,20 @@ def bridge_schema_to_attribute_sidecar(
                 changed = True
             continue
         # Decide whether to synthesise a native column for this field. The
-        # precedence (hard constraint → FAST → COMPACT → AUTO+capability) is the
-        # single :func:`schema_field_materializes_as_column` rule, shared with the
-        # driver-agnostic projection so PG never re-derives it (#1291). Geometry
-        # is already filtered out above; the predicate reads ``required``/
-        # ``unique`` itself for the hard-constraint rule.
-        if not schema_field_materializes_as_column(
-            fd, default_access=schema_default_access
+        # per-field precedence (hard constraint → FAST → COMPACT → AUTO+
+        # capability) is the single :func:`schema_field_materializes_as_column`
+        # rule, shared with the driver-agnostic projection so PG never
+        # re-derives it (#1291). When ``force_all_columnar`` is set, the
+        # bridge overrides the JSONB-routing arm of the precedence — the
+        # JSONB blob would not exist on disk, so leaving a field there is
+        # equivalent to dropping it at ingest (the #1488 class).
+        if not (
+            force_all_columnar
+            or schema_field_materializes_as_column(
+                fd, default_access=schema_default_access,
+            )
         ):
-            continue  # field stays in JSONB
+            continue  # field stays in JSONB (blob exists in this branch)
         # ``data_type`` is already canonical (validated on FieldDefinition);
         # tolerant lookup so a bypassed/unknown value degrades to TEXT rather
         # than raising deep in DDL generation.

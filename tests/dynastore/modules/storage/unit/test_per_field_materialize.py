@@ -231,26 +231,155 @@ class TestRule5NoneWithCapability:
 
 class TestMixedSchema:
     def test_mixed_precedence_rules(self) -> None:
-        """Validate all rules apply correctly within a single schema pass."""
+        """All rules apply within a single schema pass — with silent-drop guard.
+
+        Per-field precedence (Rules 1–5) decides each field's IDEAL routing,
+        but when the resulting sidecar would resolve COLUMNAR-only (any
+        column-bound field present under AUTOMATIC) the bridge force-promotes
+        every non-geometry field — otherwise un-promoted fields would silently
+        drop at ingest (#1488). Because ``constrained`` (Rule 1) and ``forced``
+        (Rule 2) and ``cap_none`` (Rule 5) all promote here, the sidecar will
+        resolve COLUMNAR-only, so ``suppressed`` (COMPACT) and ``plain_none``
+        (AUTO no caps) also get column entries — JSONB-routing is the right
+        answer ONLY when a JSONB blob exists on disk, which it does not in
+        this schema.
+        """
         schema = _schema({
             # Rule 1: constraint → COLUMN
             "constrained": _fd(required=True, unique=True, access=FieldAccess.COMPACT),
             # Rule 2: explicit True → COLUMN
             "forced":       _fd(access=FieldAccess.FAST),
-            # Rule 3: explicit False → JSONB even with cap
+            # Rule 3: COMPACT — would route to JSONB on its own…
             "suppressed":   _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE]),
-            # Rule 4: None + no cap → JSONB
+            # Rule 4: AUTO + no cap — would route to JSONB on its own…
             "plain_none":   _fd(access=FieldAccess.AUTO),
-            # Rule 5: None + FILTERABLE → COLUMN
+            # Rule 5: AUTO + FILTERABLE → COLUMN
             "cap_none":     _fd(access=FieldAccess.AUTO, capabilities=[FieldCapability.FILTERABLE]),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         names = _names(bridged)
         assert "constrained" in names, "Rule 1 failed"
         assert "forced"      in names, "Rule 2 failed"
-        assert "suppressed" not in names, "Rule 3 failed"
-        assert "plain_none" not in names, "Rule 4 failed"
         assert "cap_none"    in names, "Rule 5 failed"
+        # Silent-drop guard: COMPACT / AUTO+no-cap promoted because sidecar
+        # resolves COLUMNAR-only and the JSONB blob would NOT be DDL'd.
+        assert "suppressed" in names, "silent-drop guard: COMPACT field force-promoted"
+        assert "plain_none" in names, "silent-drop guard: AUTO+no-cap field force-promoted"
+
+
+class TestSilentDropGuard:
+    """Bridge force-promotes ALL non-geometry items_schema fields when the
+    sidecar will resolve COLUMNAR-only — closes the #1488 / #1491 class.
+
+    Resolution mirror at ``attributes.py:144-150``:
+      * sidecar.storage_mode == COLUMNAR (explicit) → always COLUMNAR
+      * sidecar.storage_mode == JSONB (explicit) → always JSONB (blob exists)
+      * sidecar.storage_mode == AUTOMATIC + any attribute_schema entry → COLUMNAR
+      * sidecar.storage_mode == AUTOMATIC + empty schema → JSONB
+    """
+
+    def _columnar_sidecar(self) -> FeatureAttributeSidecarConfig:
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributeStorageMode,
+        )
+        return FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.COLUMNAR)
+
+    def _jsonb_sidecar(self) -> FeatureAttributeSidecarConfig:
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributeStorageMode,
+        )
+        return FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB)
+
+    def test_regression_1488_automatic_mix_promotes_plain_fields(self) -> None:
+        """The exact #1488 shape: 6 required + 2 optional fields, AUTOMATIC sidecar.
+
+        Pre-fix: the 6 required promoted, the 2 optional fell to "JSONB"
+        branch, but AUTOMATIC + 6 entries → COLUMNAR DDL → no JSONB blob →
+        the 2 optional silently dropped at ingest (`datamgr02/region`
+        START_DATE / END_DATE). With the guard, all 8 promote.
+        """
+        schema = _schema({
+            "CODE":       _fd(required=True),
+            "NAME":       _fd(required=True),
+            "LEVEL":      _fd(required=True),
+            "PARENT":     _fd(required=True),
+            "LEVEL_TY":   _fd(required=True),
+            "ADM0_NAME":  _fd(required=True),
+            "START_DATE": _fd(),  # required=False, access=AUTO, no caps
+            "END_DATE":   _fd(),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        assert _names(bridged) == {
+            "CODE", "NAME", "LEVEL", "PARENT", "LEVEL_TY", "ADM0_NAME",
+            "START_DATE", "END_DATE",
+        }
+
+    def test_columnar_explicit_promotes_every_field(self) -> None:
+        """Explicit COLUMNAR sidecar → every non-geometry field gets a column
+        regardless of per-field precedence."""
+        schema = _schema({
+            "plain":   _fd(),
+            "compact": _fd(access=FieldAccess.COMPACT),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, self._columnar_sidecar())
+        assert _names(bridged) == {"plain", "compact"}
+
+    def test_automatic_no_force_keeps_plain_in_jsonb(self) -> None:
+        """No constraint / FAST / cap field anywhere → sidecar AUTOMATIC
+        resolves to JSONB → the blob catches plain fields → no force-promotion."""
+        schema = _schema({
+            "a": _fd(),
+            "b": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE]),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        assert _names(bridged) == set()
+
+    def test_jsonb_explicit_does_not_force_promote(self) -> None:
+        """Explicit JSONB sidecar → blob always exists → no force-promotion.
+
+        Constraint fields still hit Rule 1 (column entries are added even
+        when the resolved mode is JSONB so the constraint metadata is
+        carried; DDL ignores them in JSONB-mode); plain fields stay in JSONB.
+        """
+        schema = _schema({
+            "constrained": _fd(required=True),
+            "plain":       _fd(),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, self._jsonb_sidecar())
+        assert _names(bridged) == {"constrained"}, (
+            "JSONB sidecar must not force-promote plain fields"
+        )
+
+    def test_geometry_skipped_even_when_force_promoting(self) -> None:
+        """Force-promotion under COLUMNAR-only must still skip geometry."""
+        schema = _schema({
+            "constrained": _fd(required=True),  # triggers COLUMNAR resolution
+            "plain":       _fd(),
+            "geom":        _fd(data_type="geometry"),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
+        names = _names(bridged)
+        assert "geom" not in names
+        assert names == {"constrained", "plain"}
+
+    def test_existing_entry_triggers_automatic_columnar_resolution(self) -> None:
+        """A pre-existing attribute_schema entry (AUTOMATIC + non-empty schema)
+        also resolves COLUMNAR → schema-declared plain fields must promote.
+
+        Mirrors the ``ensure_storage`` path where the PG driver pre-populates
+        the sidecar with platform-fixed entries before the bridge runs.
+        """
+        sidecar = FeatureAttributeSidecarConfig(
+            attribute_schema=[
+                AttributeSchemaEntry(name="seeded", type=PostgresType.TEXT, nullable=True),
+            ]
+        )
+        schema = _schema({
+            "plain": _fd(),
+            "extra": _fd(),
+        })
+        bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
+        assert _names(bridged) == {"seeded", "plain", "extra"}
 
 
 # ---------------------------------------------------------------------------

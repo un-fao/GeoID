@@ -845,11 +845,14 @@ class ConfigsService(ExtensionProtocol):
             # implies, using the SAME SSOT bridge the PG driver runs at
             # materialisation (``bridge_schema_to_attribute_sidecar``). Returning
             # it here keeps ``items_schema.fields`` and the columnar
-            # ``attribute_schema`` from drifting silently: a field only lands in
-            # a native column when it carries a constraint, ``access=FAST``, or a
-            # queryable capability — otherwise it stays in JSONB. ``summary``
-            # reports the split so an author sees, up front, which fields will
-            # NOT become columns (the START_DATE/END_DATE foot-gun).
+            # ``attribute_schema`` from drifting silently. Per-field precedence
+            # (constraint, ``access=FAST``, queryable capability) decides the
+            # ideal route, but when the sidecar would resolve COLUMNAR-only
+            # (any column-bound field present under AUTOMATIC) the bridge
+            # force-promotes every non-geometry field so nothing silently
+            # drops at ingest (#1488 / #1491 silent-drop guard). ``summary``
+            # reports the resulting split so the author sees up front what
+            # will land where.
             from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
                 FeatureAttributeSidecarConfig,
             )

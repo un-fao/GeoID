@@ -1725,6 +1725,122 @@ async def _validate_items_schema_reserved_names(
 ItemsSchema.register_validate_handler(_validate_items_schema_reserved_names)
 
 
+async def _validate_items_schema_storage_realizable(
+    config: PluginConfig,
+    catalog_id: "Optional[str]",
+    collection_id: "Optional[str]",
+    db_resource: "Optional[Any]",
+) -> None:
+    """Reject ``ItemsSchema`` fields that would silently drop at ingest.
+
+    Defense in depth for the silent-drop class fixed in
+    ``bridge_schema_to_attribute_sidecar``: when the PG attributes sidecar
+    resolves COLUMNAR-only (explicit COLUMNAR, or AUTOMATIC + any column
+    entry), the JSONB blob is NOT DDL'd (``attributes.py`` DDL else-branch).
+    Every non-geometry items_schema field MUST therefore have an
+    ``AttributeSchemaEntry`` after the bridge runs — otherwise ingest swallows
+    the field at the SQL boundary (``_upsert_sidecar_table_raw`` binds only
+    known columns).
+
+    The bridge auto-promotes every such field, so this handler should never
+    fire under correct code. It is the backstop: if a future regression
+    weakens the bridge, the operator hears about it at config-save instead
+    of discovering empty MVT tiles weeks later (see #1488 / #1491).
+    Best-effort sibling lookup: if the PG driver config is not yet present
+    (first-save case), the validator skips silently.
+    """
+    if not isinstance(config, ItemsSchema):
+        return
+    if not config.fields or not (catalog_id and collection_id):
+        return
+
+    try:
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.drivers.collection_postgresql import (
+            CollectionPostgresqlDriverConfig,
+        )
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributeStorageMode,
+            FeatureAttributeSidecarConfig,
+        )
+        from dynastore.modules.storage.field_constraints import (
+            bridge_schema_to_attribute_sidecar,
+        )
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if not configs:
+            return
+
+        try:
+            driver_cfg = await configs.get_config(
+                CollectionPostgresqlDriverConfig,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+        except Exception:
+            # No driver config yet (typical at first ItemsSchema save) —
+            # nothing to validate against. The realizability check fires the
+            # next time either side is touched.
+            return
+        if driver_cfg is None:
+            return
+
+        sidecar_cfg: "Optional[FeatureAttributeSidecarConfig]" = None
+        for sc in getattr(driver_cfg, "sidecars", None) or []:
+            if isinstance(sc, FeatureAttributeSidecarConfig):
+                sidecar_cfg = sc
+                break
+        if sidecar_cfg is None:
+            return
+
+        # Simulate the bridge against this items_schema; check the resulting
+        # resolved mode the same way ``attributes.py`` does at DDL time.
+        bridged = bridge_schema_to_attribute_sidecar(config, sidecar_cfg)
+        resolved_mode = sidecar_cfg.storage_mode
+        if resolved_mode == AttributeStorageMode.AUTOMATIC:
+            resolved_mode = (
+                AttributeStorageMode.COLUMNAR
+                if bridged.attribute_schema
+                else AttributeStorageMode.JSONB
+            )
+        if resolved_mode == AttributeStorageMode.JSONB:
+            return  # JSONB blob will catch every non-geometry field.
+
+        promoted = {e.name for e in (bridged.attribute_schema or [])}
+        unreachable = [
+            name
+            for name, fd in config.fields.items()
+            if not (fd.data_type or "").lower().startswith("geometry")
+            and name not in promoted
+        ]
+        if unreachable:
+            raise ValueError(
+                f"ItemsSchema for {catalog_id}/{collection_id}: field(s) "
+                f"{sorted(unreachable)} would be silently dropped at ingest. "
+                "The PG attributes sidecar resolves to COLUMNAR-only (no JSONB "
+                "blob exists on disk), yet the bridge did not promote these "
+                "fields to native columns. This signals a regression in "
+                "bridge_schema_to_attribute_sidecar — every non-geometry "
+                "items_schema field must become an AttributeSchemaEntry under "
+                "COLUMNAR resolution. Recover by switching the sidecar "
+                "storage_mode to JSONB (so the blob catches plain fields), or "
+                "annotate the listed fields with required/unique/access=FAST."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        _logger.debug(
+            "items_schema storage-realizability validation skipped for %s/%s: %s",
+            catalog_id,
+            collection_id,
+            exc,
+        )
+
+
+ItemsSchema.register_validate_handler(_validate_items_schema_storage_realizable)
+
+
 # ---------------------------------------------------------------------------
 # Validate handler — ItemsElasticsearchDriverConfig.mapping Tier-2 overlay
 # ---------------------------------------------------------------------------
