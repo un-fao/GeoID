@@ -33,6 +33,20 @@ def _fresh_app() -> FastAPI:
     return FastAPI()
 
 
+def test_swagger_init_oauth_pkce_enabled(monkeypatch):
+    monkeypatch.delenv("IDP_CLIENT_ID", raising=False)
+    monkeypatch.delenv("IDP_AUDIENCE", raising=False)
+
+    app = _fresh_app()
+    configure_swagger_ui(app)
+
+    # ``usePkceWithAuthorizationCodeGrant`` is a current Swagger UI v5 field
+    # and MUST stay enabled — the Keycloak public-client flow relies on PKCE.
+    assert app.swagger_ui_init_oauth is not None
+    assert app.swagger_ui_init_oauth.get("usePkceWithAuthorizationCodeGrant") is True
+    assert app.swagger_ui_init_oauth.get("scopes") == "openid email profile"
+
+
 def test_swagger_init_oauth_clientId_from_env(monkeypatch):
     monkeypatch.setenv("IDP_CLIENT_ID", "geoid-fe")
     monkeypatch.delenv("IDP_AUDIENCE", raising=False)
