@@ -580,7 +580,9 @@ class IamService:
         email = identity.get("email", f"{subject_id}@{provider}")
 
         logger.info(
-            f"Auto-registering new principal: {provider}:{subject_id} in {catalog_id}"
+            f"Auto-registering new principal: {provider}:{subject_id} in {catalog_id} "
+            f"| roles={identity.get('roles')} realm_roles={identity.get('realm_roles')} "
+            f"client_roles={identity.get('client_roles')}"
         )
 
         # Build attributes — enrich for service accounts
