@@ -41,7 +41,7 @@ from dynastore.models.protocols.policies import (
     PermissionProtocol,
 )
 
-from dynastore.extensions.iam.guards import (
+from dynastore.extensions.tools.auth_guards import (
     ensure_privileged_role_assignment,
     security_context_from_request,
 )
@@ -351,93 +351,24 @@ def _resolve_preset_for_scope(preset_name: str, url_tier: "PresetTier"):
 
 
 async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
-    """Walk a preset bundle through ``ConfigsProtocol.set_config``.
+    """Delegate to :func:`lifecycle.dispatch_preset`.
 
-    ``base_scope`` is the URL-derived scope (``{}`` / ``{catalog_id}`` /
-    ``{catalog_id, collection_id}``); the preset's own per-entry scope is
-    layered on top so a bundle can mix tiers. Returns the response body.
-    
-    After applying the bundle, calls ``preset.on_applied(**base_scope)`` if
-    the preset implements this optional hook (e.g., for per-catalog policy
-    registration).
+    The dispatcher picks the right path for ``preset`` — routing-config
+    bundle (``hasattr(preset, "build")``) or generalised ``Preset``
+    (``apply``/``revoke``/``dry_run``). Fixes the ``AttributeError`` raised
+    when the registry returned a generalised preset (e.g. ``PolicyContributorPreset``)
+    to a route that assumed ``preset.build(...)``.
     """
-    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.modules.storage.presets.lifecycle import dispatch_preset
 
-    configs = get_protocol(ConfigsProtocol)
-    if configs is None:
-        raise HTTPException(status_code=503, detail="Configs service unavailable.")
-
-    bundle = preset.build(**base_scope)
-    applied: list[str] = []
-    for entry in bundle.iter_apply():
-        scope = {**base_scope, **dict(entry.scope)}
-        await configs.set_config(entry.config_cls, entry.instance, **scope)
-        applied.append(entry.slot)
-    
-    # Call optional on_applied hook if the preset implements it
-    if hasattr(preset, 'on_applied') and callable(preset.on_applied):
-        try:
-            await preset.on_applied(**base_scope)
-        except Exception as e:
-            logger.error(
-                f"Error calling on_applied hook for preset '{preset.name}': {e}",
-                exc_info=True,
-            )
-            # Don't fail the preset application if the hook fails
-    
-    return {"preset": preset.name, "applied": applied, **base_scope}
+    return await dispatch_preset(preset, "apply", base_scope=base_scope)
 
 
 async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
-    """Rollback a preset bundle, leaf-first, lenient on per-slot divergence.
+    """Delegate to :func:`lifecycle.dispatch_preset` for revoke."""
+    from dynastore.modules.storage.presets.lifecycle import dispatch_preset
 
-    Operators may edit individual slots via REST after the preset was applied;
-    rollback removes only what still matches the preset's emitted instance,
-    leaves diverged slots untouched, and skips missing rows. Each outcome is
-    reported in the response so callers can audit which slots were retained.
-    """
-    from dynastore.models.protocols.configs import ConfigsProtocol
-
-    configs = get_protocol(ConfigsProtocol)
-    if configs is None:
-        raise HTTPException(status_code=503, detail="Configs service unavailable.")
-
-    bundle = preset.build(**base_scope)
-    deleted: list[str] = []
-    skipped: list[dict] = []
-
-    for entry in bundle.iter_rollback():
-        scope = {**base_scope, **dict(entry.scope)}
-        persisted = await configs.get_persisted_config(entry.config_cls, **scope)
-        if persisted is None:
-            skipped.append({
-                "slot": entry.slot,
-                "class": entry.config_cls.__name__,
-                "reason": "missing",
-            })
-            continue
-        try:
-            persisted_norm = entry.config_cls.model_validate(persisted).model_dump(mode="json")
-        except Exception:  # noqa: BLE001 — surface the raw payload on validation failure
-            persisted_norm = persisted
-        expected_norm = entry.instance.model_dump(mode="json")
-        if persisted_norm == expected_norm:
-            await configs.delete_config(entry.config_cls, **scope)
-            deleted.append(entry.slot)
-        else:
-            logger.info(
-                "preset=%s scope=%s slot=%s diverged on revoke — leaving in place",
-                preset.name, base_scope, entry.slot,
-            )
-            skipped.append({
-                "slot": entry.slot,
-                "class": entry.config_cls.__name__,
-                "reason": "diverged",
-                "persisted": persisted_norm,
-                "expected": expected_norm,
-            })
-
-    return {"preset": preset.name, "deleted": deleted, "skipped": skipped, **base_scope}
+    return await dispatch_preset(preset, "unapply", base_scope=base_scope)
 
 
 class AdminService(ExtensionProtocol):

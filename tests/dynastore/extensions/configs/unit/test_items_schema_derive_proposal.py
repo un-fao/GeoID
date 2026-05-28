@@ -119,9 +119,13 @@ async def test_happy_path_merges_and_preserves_tuning() -> None:
 async def test_proposes_attribute_schema_for_constrained_fields() -> None:
     # #330 B4 — the proposal carries a physical ``attribute_schema`` aligned to
     # the merged items_schema, derived through the same SSOT bridge the PG driver
-    # uses at materialisation. A field becomes a native column only when it
-    # carries a constraint, ``access=FAST``, or a queryable capability; plain
-    # fields stay in JSONB. The split is reported under ``summary``.
+    # uses at materialisation. The per-field precedence (constraint / FAST /
+    # queryable capability) decides the ideal route, but the bridge force-
+    # promotes every non-geometry field when the resulting sidecar resolves
+    # COLUMNAR-only (silent-drop guard, #1488 / #1491). Here ``name`` (FAST)
+    # and ``osm_id`` (required) force COLUMNAR resolution, so ``is_paved``
+    # also lifts into a column — otherwise it would be silently dropped at
+    # ingest (no JSONB blob exists on disk).
     current = ItemsSchema(fields={
         "name": FieldDefinition(name="name", data_type="string", access=FieldAccess.FAST),
         "osm_id": FieldDefinition(name="osm_id", data_type="integer", required=True),
@@ -134,8 +138,7 @@ async def test_proposes_attribute_schema_for_constrained_fields() -> None:
     out = await _run(svc, ctx)
 
     attr = {e["name"]: e for e in out["attribute_schema"]}
-    # FAST field + required field both lift into columns; plain is_paved stays JSONB.
-    assert set(attr) == {"name", "osm_id"}
+    assert set(attr) == {"name", "osm_id", "is_paved"}
     assert attr["name"]["type"] == "TEXT"
     assert attr["name"]["nullable"] is True
     assert attr["osm_id"]["nullable"] is False  # required -> NOT NULL
@@ -143,15 +146,19 @@ async def test_proposes_attribute_schema_for_constrained_fields() -> None:
     assert "geometry" not in attr
 
     summary = out["summary"]
-    assert summary["columnar"] == ["name", "osm_id"]
-    assert summary["jsonb"] == ["is_paved"]
+    assert summary["columnar"] == ["is_paved", "name", "osm_id"]
+    assert summary["jsonb"] == []
 
 
 @pytest.mark.asyncio
 async def test_plain_fields_stay_jsonb_are_surfaced() -> None:
-    # #330 B4 — the GLOSIS foot-gun: plain (AUTO, unconstrained) fields silently
-    # land in JSONB rather than a column. The proposal makes that explicit: an
-    # empty ``attribute_schema`` and every field listed under ``summary['jsonb']``.
+    # #330 B4 — when no field carries a constraint / FAST / queryable
+    # capability, the AUTOMATIC sidecar resolves to JSONB, the blob is
+    # DDL'd at materialisation, and every non-geometry field lands there
+    # safely. The proposal surfaces that split: an empty ``attribute_schema``
+    # and every field under ``summary['jsonb']``. (Force-promotion only
+    # kicks in once at least one field would create a column — see the
+    # constrained-field test for that case.)
     svc, ctx = _service(
         current_schema=ItemsSchema(),
         collection=object(),

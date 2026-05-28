@@ -91,9 +91,11 @@ def _make_context(
     updated_policies: Optional[List[str]] = None,
     bound_role_policies: Optional[List[Any]] = None,
     updated_roles: Optional[List[str]] = None,
+    unbound_role_policies: Optional[List[Any]] = None,
     deleted_policies: Optional[List[str]] = None,
     deleted_roles: Optional[List[str]] = None,
     existing_roles: Optional[Dict[str, List[str]]] = None,
+    existing_policies: Optional[Dict[str, Any]] = None,
 ) -> PresetContext:
     if updated_policies is None:
         updated_policies = []
@@ -101,15 +103,22 @@ def _make_context(
         bound_role_policies = []
     if updated_roles is None:
         updated_roles = []
+    if unbound_role_policies is None:
+        unbound_role_policies = []
     if deleted_policies is None:
         deleted_policies = []
     if deleted_roles is None:
         deleted_roles = []
     if existing_roles is None:
         existing_roles = {"sysadmin": [], "admin": [], "user": [], "anonymous": []}
+    if existing_policies is None:
+        existing_policies = {}
 
     policy_svc = MagicMock()
     iam_svc = MagicMock()
+
+    async def _get_policy(pid: str, catalog_id: Any = None) -> Any:
+        return existing_policies.get(pid)
 
     async def _update_policy(pol: Any) -> Any:
         updated_policies.append(pol.id)
@@ -120,11 +129,11 @@ def _make_context(
         return True
 
     async def _bind_policy_to_role(role_name: str, policy_entry: Any, **_: Any) -> None:
-        # Record both role_name and the policy id for assertions.
         bound_role_policies.append((role_name, policy_entry.get("id") if isinstance(policy_entry, dict) else policy_entry))
-        # Also append role_name into updated_roles so existing callers that
-        # check `updated_roles` continue to work.
         updated_roles.append(role_name)
+
+    async def _unbind_policy_from_role(role_name: str, policy_id: str, **_: Any) -> None:
+        unbound_role_policies.append((role_name, policy_id))
 
     async def _update_role(role: Any) -> Any:
         updated_roles.append(role.name)
@@ -151,12 +160,22 @@ def _make_context(
         deleted_roles.append(name)
         return True
 
+    async def _create_role(role: Any) -> Any:
+        # Existing shared roles already present → raise ValueError (mirrors
+        # the real IamService.create_role contract); sentinel roles succeed.
+        if role.name in existing_roles:
+            raise ValueError(f"role {role.name!r} already exists")
+        return role
+
+    policy_svc.get_policy = _get_policy
     policy_svc.update_policy = _update_policy
     policy_svc.delete_policy = _delete_policy
     iam_svc.bind_policy_to_role = _bind_policy_to_role
+    iam_svc.unbind_policy_from_role = _unbind_policy_from_role
     iam_svc.update_role = _update_role
     iam_svc.list_roles = _list_roles
     iam_svc.delete_role = _delete_role
+    iam_svc.create_role = _create_role
 
     return PresetContext(
         db=MagicMock(),
@@ -341,10 +360,10 @@ async def test_revoke_does_not_delete_shared_roles():
         contributor_factory=_MultiPolicyContributor,
     )
     deleted_roles: List[str] = []
-    updated_roles: List[str] = []
+    unbound: List[Any] = []
     ctx = _make_context(
         deleted_roles=deleted_roles,
-        updated_roles=updated_roles,
+        unbound_role_policies=unbound,
         existing_roles={"sysadmin": ["multi_policy_1", "other_policy"]},
     )
     descriptor = AppliedDescriptor(payload={
@@ -353,9 +372,94 @@ async def test_revoke_does_not_delete_shared_roles():
         "role_names": ["sysadmin"],
     })
     await preset.revoke(descriptor, ctx)
-    # sysadmin is shared — must NOT be deleted, must be updated (policies stripped).
+    # sysadmin is shared — must NOT be deleted; must use the atomic
+    # unbind_policy_from_role primitive (no read-modify-write clobber).
     assert "sysadmin" not in deleted_roles
-    assert "sysadmin" in updated_roles
+    assert ("sysadmin", "multi_policy_1") in unbound
+
+
+@pytest.mark.asyncio
+async def test_concurrent_revoke_preserves_other_preset_policies():
+    """Regression for #1473.
+
+    Preset A and preset B both bind a different policy to ``sysadmin``.
+    Revoking A must remove only A's policy — never re-write the whole list,
+    which would race against B's bindings and clobber them under the old
+    read-modify-write pattern.
+    """
+    preset_a = PolicyContributorPreset(
+        name="preset_a",
+        description="A",
+        keywords=("iam",),
+        contributor_factory=_SimpleContributor,
+    )
+    unbound: List[Any] = []
+    updated_roles: List[str] = []
+    ctx = _make_context(
+        unbound_role_policies=unbound,
+        updated_roles=updated_roles,
+        existing_roles={"sysadmin": ["preset_a_policy", "preset_b_policy"]},
+    )
+    descriptor = AppliedDescriptor(payload={
+        "preset_name": "preset_a",
+        "policy_ids": ["preset_a_policy"],
+        "role_names": ["sysadmin"],
+    })
+    await preset_a.revoke(descriptor, ctx)
+
+    # The revoke path must not touch sysadmin via update_role — that's the
+    # clobber. Only unbind_policy_from_role(sysadmin, preset_a_policy) is
+    # allowed, leaving preset_b's binding for sysadmin untouched.
+    assert "sysadmin" not in updated_roles, (
+        "revoke used update_role (RMW clobber); must use unbind_policy_from_role"
+    )
+    assert unbound == [("sysadmin", "preset_a_policy")]
+
+
+@pytest.mark.asyncio
+async def test_apply_logs_conflict_on_id_collision(caplog):
+    """Apply must WARN when a policy id matches an existing policy with a
+    different body — the audit-side conflict signal asked for in #1473."""
+    import logging
+
+    new_policy = Policy(
+        id="conflict_policy",
+        description="new",
+        actions=["POST"],
+        resources=["/x"],
+        effect="ALLOW",
+    )
+    existing_policy = Policy(
+        id="conflict_policy",
+        description="old",
+        actions=["GET"],
+        resources=["/x"],
+        effect="ALLOW",
+    )
+
+    class _ConflictContributor:
+        def get_policies(self):
+            return [new_policy]
+
+        def get_role_bindings(self):
+            return []
+
+    preset = PolicyContributorPreset(
+        name="conflict_test",
+        description="Conflict",
+        keywords=("iam",),
+        contributor_factory=_ConflictContributor,
+    )
+    ctx = _make_context(existing_policies={"conflict_policy": existing_policy})
+
+    with caplog.at_level(logging.WARNING):
+        await preset.apply(NoParams(), "platform", ctx)
+
+    warnings = [
+        rec for rec in caplog.records
+        if rec.levelno == logging.WARNING and "conflict_policy" in rec.getMessage()
+    ]
+    assert warnings, f"Expected conflict WARNING, got records: {[r.getMessage() for r in caplog.records]}"
 
 
 @pytest.mark.asyncio

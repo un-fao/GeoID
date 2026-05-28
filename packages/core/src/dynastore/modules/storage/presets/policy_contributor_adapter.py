@@ -154,6 +154,24 @@ class PolicyContributorPreset:
         applied_role_names: List[str] = []
 
         for pol in (contributor.get_policies() or []):
+            try:
+                existing = await ctx.policy.get_policy(pol.id)
+            except Exception:  # noqa: BLE001 — pre-write check is best-effort
+                existing = None
+            if existing is not None:
+                try:
+                    existing_norm = existing.model_dump(mode="json")
+                    new_norm = pol.model_dump(mode="json")
+                except Exception:  # noqa: BLE001
+                    existing_norm = new_norm = None
+                if existing_norm is not None and existing_norm != new_norm:
+                    logger.warning(
+                        "preset=%s policy id=%s already exists with a different body; "
+                        "overwriting (existing keys=%s, new keys=%s)",
+                        self.name, pol.id,
+                        sorted(existing_norm.keys()) if isinstance(existing_norm, dict) else "?",
+                        sorted(new_norm.keys()) if isinstance(new_norm, dict) else "?",
+                    )
             await ctx.policy.update_policy(pol)
             applied_policy_ids.append(pol.id)
             logger.debug("%s: upserted policy %s", self.name, pol.id)
@@ -189,25 +207,25 @@ class PolicyContributorPreset:
         policy_ids: List[str] = payload.get("policy_ids", [])
         role_names: List[str] = payload.get("role_names", [])
 
-        # Collect the set of policy IDs this preset introduced so that
-        # when stripping shared roles we only remove the relevant bindings.
-        own_policy_ids = set(policy_ids)
-
         # Reverse role bindings first, then delete orphan policies.
-        # Stripping shared roles before policy deletion ensures no role
-        # references a policy that has already been removed.
-        existing_roles = {r.name: r for r in (await ctx.iam.list_roles())}
-
+        # Shared roles (sysadmin/admin/user/anonymous) get only the policies
+        # this preset introduced unbound — never re-written wholesale, which
+        # would clobber bindings added by other presets racing against this
+        # revoke (the original RMW pattern lost concurrent writes; #1473).
         for rname in role_names:
             if rname in _SHARED_ROLE_NAMES:
-                existing = existing_roles.get(rname)
-                if existing is not None:
-                    remaining = [p for p in existing.policies if p not in own_policy_ids]
-                    updated = existing.model_copy(update={"policies": remaining})
-                    await ctx.iam.update_role(updated)
-                    logger.debug(
-                        "%s: stripped policies from shared role %s", self.name, rname
-                    )
+                for pid in policy_ids:
+                    try:
+                        await ctx.iam.unbind_policy_from_role(rname, pid)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "%s: unbind policy %s from shared role %s failed: %s",
+                            self.name, pid, rname, exc,
+                        )
+                logger.debug(
+                    "%s: unbound %d policies from shared role %s",
+                    self.name, len(policy_ids), rname,
+                )
             else:
                 deleted = await ctx.iam.delete_role(rname)
                 logger.debug(

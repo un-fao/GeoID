@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -43,6 +43,8 @@ from .preset import AppliedDescriptor, PresetContext, PresetPlan, TaskHandle
 from .registry import find_preset
 
 logger = logging.getLogger(__name__)
+
+PresetOp = Literal["apply", "unapply", "dry_run"]
 
 
 def _scope_key(scope: str) -> str:
@@ -243,6 +245,84 @@ async def dry_run_preset(
     """Return a plan of what ``apply`` would do — no writes performed."""
     preset = find_preset(name)
     return await preset.dry_run(params, scope_key, ctx)
+
+
+async def dispatch_preset(
+    preset: Any,
+    op: PresetOp,
+    *,
+    base_scope: Mapping[str, str],
+    params: Optional[BaseModel] = None,
+    principal: Optional[Any] = None,
+) -> dict:
+    """Single entry point used by the admin layer.
+
+    Every registered preset exposes ``apply`` / ``revoke`` / ``dry_run``
+    (routing presets are auto-wrapped at registration time). Delegates to
+    the audited :func:`apply_preset` / :func:`revoke_preset` /
+    :func:`dry_run_preset` lifecycle.
+
+    Returns the operator-visible response dict.
+    """
+    from dynastore.modules import get_protocol
+    from dynastore.models.protocols import DatabaseProtocol
+
+    db_proto = get_protocol(DatabaseProtocol)
+    engine = db_proto.engine if db_proto is not None else None
+    audit = AppliedPresetsService(engine)
+
+    scope_key = _scope_from_base(base_scope)
+    ctx = _build_context(engine, principal=principal, scope=scope_key)
+
+    if op == "apply":
+        params_model = params or preset.params_model()
+        row = await apply_preset(
+            preset.name, scope_key, params_model, ctx, engine, audit,
+            applied_by=principal,
+        )
+        return {
+            "preset": preset.name,
+            "scope_key": scope_key,
+            "state": row.get("state") if isinstance(row, dict) else None,
+            **dict(base_scope),
+        }
+    if op == "unapply":
+        row = await revoke_preset(preset.name, scope_key, ctx, engine, audit)
+        return {
+            "preset": preset.name,
+            "scope_key": scope_key,
+            "state": row.get("state") if isinstance(row, dict) else None,
+            **dict(base_scope),
+        }
+    if op == "dry_run":
+        params_model = params or preset.params_model()
+        plan = await dry_run_preset(preset.name, scope_key, params_model, ctx)
+        return {
+            "preset_name": plan.preset_name,
+            "scope_key": plan.scope_key,
+            "entries": [
+                {"kind": e.kind, "target": e.target, "detail": e.detail}
+                for e in plan.entries
+            ],
+            "warnings": list(plan.warnings),
+        }
+    raise ValueError(f"Unknown preset op: {op!r}")
+
+
+def _scope_from_base(base_scope: Mapping[str, str]) -> str:
+    """Build the audit scope_key string from a base-scope dict.
+
+    ``{}`` → ``"platform"``;
+    ``{"catalog_id": "x"}`` → ``"catalog:x"``;
+    ``{"catalog_id": "x", "collection_id": "y"}`` → ``"catalog:x/collection:y"``.
+    """
+    cat = base_scope.get("catalog_id")
+    col = base_scope.get("collection_id")
+    if cat and col:
+        return f"catalog:{cat}/collection:{col}"
+    if cat:
+        return f"catalog:{cat}"
+    return "platform"
 
 
 def _check_self_lockout(
