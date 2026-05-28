@@ -394,7 +394,24 @@ _DEFERRED_HOP_WARNED: Set[Tuple[str, str, str]] = set()
 def _warn_deferred_transformer_hops(
     operations: Dict[str, List["OperationDriverEntry"]],
     config_label: str,
+    search_output_chain_wired: bool = False,
 ) -> None:
+    """Log a one-time WARN for transformer attachments that validate but never
+    run, so the silent no-op surfaces to operators early.
+
+    Two distinct gaps:
+
+    * **Unwired hop** — input/output transformers on an (operation, side) pair
+      whose hop is not wired in this release at all (anything outside
+      :data:`_WIRED_INPUT_HOPS` / :data:`_WIRED_OUTPUT_HOPS`).
+    * **Unwired SEARCH restore (#1567)** — the SEARCH output hop *is* wired in
+      general, but the read-side restore chain (``restore_from_index``) is only
+      invoked by the asset Elasticsearch search driver. On every other tier a
+      SEARCH ``output_transformers`` declaration is accepted by validation yet
+      never executes. ``search_output_chain_wired`` is the owning tier's
+      :attr:`_RoutingConfigBase._search_output_chain_wired` flag — ``True`` only
+      for the tier whose search drivers invoke the restore chain.
+    """
     for op_name, entries in operations.items():
         for entry in entries:
             if entry.input_transformers and op_name not in _WIRED_INPUT_HOPS:
@@ -420,6 +437,22 @@ def _warn_deferred_transformer_hops(
                         "a no-op. Wired output hops: %s.",
                         config_label, op_name, entry.driver_ref, op_name,
                         sorted(_WIRED_OUTPUT_HOPS),
+                    )
+            elif (
+                entry.output_transformers
+                and op_name in _WIRED_OUTPUT_HOPS
+                and not search_output_chain_wired
+            ):
+                key = (op_name, entry.driver_ref, "output-restore")
+                if key not in _DEFERRED_HOP_WARNED:
+                    _DEFERRED_HOP_WARNED.add(key)
+                    logger.warning(
+                        "%s: output_transformers declared on SEARCH for driver "
+                        "'%s', but this tier's search path does not invoke "
+                        "restore_from_index — the declaration is a no-op "
+                        "(#1567). Only the asset Elasticsearch search driver "
+                        "invokes the output (restore) chain today.",
+                        config_label, entry.driver_ref,
                     )
 
 
@@ -481,6 +514,14 @@ class _RoutingConfigBase(PluginConfig):
 
     is_abstract_base: ClassVar[bool] = True
 
+    # Whether this tier's SEARCH path actually invokes the output
+    # (``restore_from_index``) transformer chain. Only the asset Elasticsearch
+    # search driver wires it today (#1567); on every other tier a SEARCH
+    # ``output_transformers`` declaration validates but never runs, so the
+    # validator warns. Override to ``True`` on tiers whose search drivers call
+    # ``restore_transform_chain``.
+    _search_output_chain_wired: ClassVar[bool] = False
+
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
     operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
@@ -530,7 +571,9 @@ class _RoutingConfigBase(PluginConfig):
                 "will populate on next write.", label, exc,
             )
         _validate_transformer_attachment(self.operations, self.transformers, label)
-        _warn_deferred_transformer_hops(self.operations, label)
+        _warn_deferred_transformer_hops(
+            self.operations, label, type(self)._search_output_chain_wired
+        )
         return self
 
 
@@ -826,6 +869,10 @@ class AssetRoutingConfig(_RoutingConfigBase):
     """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "catalog", "assets", "routing")
     _freeze_at: ClassVar[Optional[str]] = "collection"
+    # The asset Elasticsearch search driver invokes the read-side restore chain
+    # (``AssetElasticsearchDriver.search_assets`` → ``restore_transform_chain``),
+    # so SEARCH ``output_transformers`` are honoured on this tier (#1567).
+    _search_output_chain_wired: ClassVar[bool] = True
     # Asset routing cascades platform → catalog → collection: a catalog-tier
     # default must surface in the catalog view while the immutability gate
     # stays collection-scoped (``_freeze_at``).
