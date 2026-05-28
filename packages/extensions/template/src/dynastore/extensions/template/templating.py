@@ -172,7 +172,8 @@ def _interpolate(template: str, model: dict, escapeTemplate: bool = False, autoE
     jinja_template = _select_jinja_env(autoEscape).from_string(template)
     return jinja_template.render(model)
         
-async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: list, resolve_urls_h: list[dict] = []) -> str:
+async def _resolve(client: httpx.AsyncClient, template_str: str, resolve_urls: list, resolve_urls_h: list[dict] | None = None) -> str:
+    resolve_urls_h = resolve_urls_h or []
     
     #with stream as s:
     # template_obj=''.join(chunk for chunk in stream)
