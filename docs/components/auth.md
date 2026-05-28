@@ -99,15 +99,23 @@ mechanism. For example:
 
 ### Conditions
 
-Policies support conditions evaluated at request time
-(`modules/iam/conditions.py`):
+Policies support conditions evaluated at request time. The registered condition
+handlers — and the authoritative spec for each one's config keys — live in
+`modules/iam/conditions.py`:
 
-| Condition Type | Config | Description |
-|----------------|--------|-------------|
-| `rate_limit` | `max_requests`, `period_seconds`, `scope` | Token-bucket rate limiting. Scope: `global`, `catalog`, `collection` |
-| `ip_whitelist` | `allowed_ips` | CIDR-based IP restriction |
-| `time_window` | `start_hour`, `end_hour` | Time-of-day access window |
+| `type` | Config keys | Description |
+|--------|-------------|-------------|
+| `rate_limit` | `limit`, `window_seconds`, `scope` | Per-window token-bucket limit. `scope`: `principal` (default), `role`, `client_ip`, `catalog` |
+| `max_count` | `limit`, `scope` (+ optional `path_pattern`, `methods`, `mode`) | Lifetime quota on matched requests |
+| `query_match` | `param`, `pattern` | Require a query parameter to match a regex |
+| `lookup_only_search` | _(none)_ | Allow `/search` only as retrieve-by-id — request must carry `geoid` or `external_id`; blocks enumeration |
+| `time_window` | `start`, `end` | Absolute ISO-8601 validity window |
+| `expiration` | `expires_at` | Deny once an absolute ISO-8601 instant has passed |
+| `max_token_ttl` | `max_ttl_seconds` (default `3600`) | Reject token requests exceeding a TTL bound |
+| `match` | `attribute`, `operator` (default `eq`), `value` | Compare a request/principal attribute against a value |
+| `and` / `or` / `not` | `conditions` | Boolean combinators over nested conditions |
 | `catalog_admin_required` | `required_roles` | Per-catalog admin delegation |
+| `catalog_membership_required` | `allow_platform`, `allow_sysadmin`, `sysadmin_role` | Require membership in the target catalog |
 
 ## OAuth2 / OIDC Flow
 
@@ -167,7 +175,7 @@ own schema under the same table names.
 | `src/dynastore/modules/iam/iam_service.py` | `IamService` — principal CRUD, JWT issuance, OIDC reconciliation |
 | `src/dynastore/modules/iam/iam_queries.py` | SQL DDL and DML for all IAM tables |
 | `src/dynastore/modules/iam/policies.py` | Policy evaluation helpers |
-| `src/dynastore/modules/iam/conditions.py` | Condition handlers (rate_limit, ip_whitelist, time_window) |
+| `src/dynastore/modules/iam/conditions.py` | Condition handlers (rate_limit, max_count, time_window, catalog_admin_required, …) |
 | `src/dynastore/modules/iam/identity_providers/oidc_identity.py` | `OidcIdentityProvider` — JWKS-backed JWT validation |
 | `src/dynastore/modules/iam/presets/default_roles_baseline.py` | Default `sysadmin`, `admin`, `unauthenticated` roles |
 | `src/dynastore/modules/iam/presets/public_access_baseline.py` | Optional `public_access` policy for anonymous discovery |
