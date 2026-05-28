@@ -73,6 +73,41 @@ _HELP_PAGE_TEMPLATE = """
 _MARKDOWN_EXTENSIONS = ["fenced_code", "tables"]
 
 
+class RendererUnavailable(Exception):
+    """Raised when the ``markdown`` package is not installed."""
+
+
+class ReadmeNotFound(Exception):
+    """Raised when the registry has no entry for ``name`` or the path is absent."""
+
+
+def render_extension_readme_body(registry: dict, name: str) -> str:
+    """Look up ``name`` in *registry*, read its README, and return rendered HTML.
+
+    The returned string is the **bare rendered body** — plain markdown-to-HTML
+    with no surrounding template. Callers are responsible for wrapping it (or
+    not) in a full HTML document.
+
+    Raises:
+        RendererUnavailable: if the ``markdown`` package is not importable.
+        ReadmeNotFound: if *name* is absent from *registry* or the file on
+            disk does not exist.
+    """
+    try:
+        import markdown
+    except ImportError:
+        raise RendererUnavailable("markdown package is not installed")
+
+    readme_path = registry.get(name)
+    if not readme_path or not os.path.exists(readme_path):
+        raise ReadmeNotFound(f"No README registered or file absent for {name!r}")
+
+    with open(readme_path, "r", encoding="utf-8") as f:
+        md_content = f.read()
+
+    return markdown.markdown(md_content, extensions=_MARKDOWN_EXTENSIONS)
+
+
 def _render_help_box(help_url: str) -> str:
     """Right-aligned "Documentation" link injected into OpenAPI tag descriptions.
 
@@ -173,30 +208,24 @@ def setup_global_help_endpoint(app: FastAPI):
 
     async def global_extension_help_handler(request: Request, name: str):
         from dynastore.extensions.tools.url import get_root_url
-        try:
-            import markdown
-        except ImportError:
-            return HTMLResponse("<h1>Documentation renderer (markdown) not installed</h1>", status_code=500)
 
         registry = getattr(request.app.state, "extension_docs_registry", {})
-        readme_path = registry.get(name)
-
-        if not readme_path or not os.path.exists(readme_path):
-            return HTMLResponse("<h1>Documentation not found</h1>", status_code=404)
-
         try:
-            with open(readme_path, "r", encoding="utf-8") as f:
-                md_content = f.read()
-
-            html_content = _HELP_PAGE_TEMPLATE.format(
-                title=f"{name.capitalize()} Extension Help",
-                css=_HELP_PAGE_CSS,
-                docs_url=f"{get_root_url(request=request)}/docs",
-                body=markdown.markdown(md_content, extensions=_MARKDOWN_EXTENSIONS),
-            )
-            return HTMLResponse(content=html_content)
+            body = render_extension_readme_body(registry, name)
+        except RendererUnavailable:
+            return HTMLResponse("<h1>Documentation renderer (markdown) not installed</h1>", status_code=500)
+        except ReadmeNotFound:
+            return HTMLResponse("<h1>Documentation not found</h1>", status_code=404)
         except Exception as e:
             return HTMLResponse(content=f"Error reading docs: {e}", status_code=500)
+
+        html_content = _HELP_PAGE_TEMPLATE.format(
+            title=f"{name.capitalize()} Extension Help",
+            css=_HELP_PAGE_CSS,
+            docs_url=f"{get_root_url(request=request)}/docs",
+            body=body,
+        )
+        return HTMLResponse(content=html_content)
 
     # Register hidden route
     route_path = "/_help/{name}"
@@ -272,16 +301,13 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
             # Add the visible endpoint to the "Help" section of the docs.
             async def _specific_help_handler(request: Request, ext_name: str = extension_name):
                 registry = getattr(request.app.state, "extension_docs_registry", {})
-                path = registry.get(ext_name)
-                if not path:
-                    return HTMLResponse("Docs not found", 404)
                 try:
-                    import markdown
-                except ImportError:
+                    body = render_extension_readme_body(registry, ext_name)
+                except RendererUnavailable:
                     return HTMLResponse("Markdown renderer not installed", 500)
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                return HTMLResponse(markdown.markdown(content, extensions=_MARKDOWN_EXTENSIONS))
+                except ReadmeNotFound:
+                    return HTMLResponse("Docs not found", 404)
+                return HTMLResponse(body)
 
             app.add_api_route(
                 f"/extension-docs/{extension_name}",
