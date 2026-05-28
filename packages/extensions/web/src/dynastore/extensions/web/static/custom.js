@@ -23,9 +23,19 @@ let TOKEN_KEY = 'ds_token'; // Default fallback
 const REFRESH_KEY = 'ds_refresh_token';
 let _refreshTimer = null;
 
-/** Returns the API root path (e.g. '/geospatial/v2/api/auth') from platform config, or '' for root deployments. */
+/**
+ * Returns the API root (origin + proxy prefix), e.g. 'https://host/geospatial/v2/api/auth'
+ * or 'http://localhost:8080' for root deployments.
+ *
+ * Falls back to _SCRIPT_ROOT (derived synchronously from this script's own URL) when
+ * platformConfig is not yet loaded. This is critical: the OIDC code->token exchange runs
+ * during bootstrap BEFORE platformConfig is available (and /configs/plugins/web_config is
+ * itself auth-gated, so it 403s pre-login), which previously left apiRoot() returning ''
+ * and POSTed the exchange to an unprefixed /auth/token -> 404 behind a proxy prefix.
+ */
 function apiRoot() {
-    return (platformConfig && platformConfig.root_path) ? platformConfig.root_path.replace(/\/$/, '') : '';
+    if (platformConfig && platformConfig.root_path) return platformConfig.root_path.replace(/\/$/, '');
+    return _SCRIPT_ROOT;
 }
 
 
