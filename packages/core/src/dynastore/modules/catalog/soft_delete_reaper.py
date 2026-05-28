@@ -72,11 +72,16 @@ class SoftDeleteReaperConfig(PluginConfig):
     _address: ClassVar[Tuple[str, ...]] = ("platform", "modules", "catalog")
 
     enabled: Mutable[bool] = Field(
-        default=True,
+        default=False,
         description=(
-            "Master kill-switch for the soft-delete TTL reaper.  When False "
-            "the background loop starts but performs no scans — useful for "
-            "temporarily pausing promotion without a rolling restart."
+            "Master switch for the soft-delete TTL reaper.  Defaults to False: "
+            "the reaper performs an irreversible hard delete (physical schema "
+            "teardown) of any entity soft-deleted longer than the grace window, "
+            "including tombstones created before this reaper existed, so it is "
+            "opt-in.  An operator enables it via the configs API after reviewing "
+            "existing soft-deleted entities and soaking on a non-production "
+            "environment.  When False the background loop starts but performs "
+            "no scans."
         ),
     )
 

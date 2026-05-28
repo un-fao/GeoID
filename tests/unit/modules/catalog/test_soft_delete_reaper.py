@@ -406,5 +406,7 @@ class TestSoftDeleteReaperConfig:
         with pytest.raises(Exception):
             SoftDeleteReaperConfig(batch_size=501)
 
-    def test_enabled_default_true(self) -> None:
-        assert SoftDeleteReaperConfig().enabled is True
+    def test_enabled_default_false(self) -> None:
+        # The reaper hard-deletes (irreversible) — it must be opt-in, not
+        # auto-active on first deploy. Operators enable it via the configs API.
+        assert SoftDeleteReaperConfig().enabled is False
