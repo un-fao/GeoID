@@ -1,7 +1,9 @@
 # Identity Providers
 
 This directory contains the concrete implementations of `IdentityProviderProtocol`.
-The active provider is selected at startup via the `IDP_TYPE` environment variable.
+The active provider is selected at startup from the **`IdpConfig` platform config**
+(class_key `idp_config`), with a deprecated environment-variable fallback (see
+[Configuration](#configuration-idpconfig-preferred) below).
 
 ---
 
@@ -46,7 +48,39 @@ Tested with: **Keycloak**, **Okta**, **Auth0**, **Azure AD**, **Google**.
 
 > **Setting up Keycloak?** See [`KEYCLOAK_SETUP.md`](./KEYCLOAK_SETUP.md) — recipe for the **Keycloak admin** covering realm / role / client setup, the load-bearing `roles` scope + audience mapper, and a smoke-test command.
 
-### Environment Variables
+## Configuration: `IdpConfig` (preferred)
+
+The IdP factory is **config-first**. Settings live in the `IdpConfig` platform
+config (class_key `idp_config`, defined in
+`src/dynastore/modules/iam/idp_config.py`) and are editable at runtime through
+the Configs API — no restart, no redeploy.
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `type` | `"oidc" \| "saml2"` | `oidc` | `saml2` is reserved (no provider registered yet). |
+| `issuer_url` | string | `null` | Backend-internal issuer URL. Stored **verbatim** (must match the token `iss` exactly per RFC 8414). Unset ⇒ IdP not configured. |
+| `client_id` | string | `dynastore-api` | OAuth2 client ID. |
+| `client_secret` | secret | `null` | Persisted **encrypted**, masked (`***`) in responses/logs. Omit for public clients. |
+| `audience` | string | `null` | Expected `aud` claim. Defaults to `client_id`. |
+| `public_url` | string | `null` | Browser-facing issuer URL when it differs from `issuer_url`. |
+| `roles_claim_path` | string | `realm_access.roles` | Dotted path to the role list in the token claims. |
+
+The IdP is registered only when `type == "oidc"` **and** `issuer_url` is set.
+
+### Migration: ENV → IdpConfig
+
+1. PATCH the `idp_config` platform config with your existing values (the same
+   ones currently in `IDP_*` / `KEYCLOAK_*`). The `client_secret` is encrypted
+   at rest and never returned in full.
+2. Verify the startup log shows `Registered OIDC identity provider from
+   IdpConfig: <issuer>` (no `DEPRECATED` warning).
+3. Remove the `IDP_*` / `KEYCLOAK_*` environment variables from your deployment.
+
+> **Deprecation:** when `idp_config` does not set an `issuer_url`, startup falls
+> back to the environment variables below and logs a `DEPRECATED` warning. **The
+> ENV fallback is removed in the next release** — migrate to `IdpConfig`.
+
+### Environment Variables (deprecated)
 
 | Variable | Alias (legacy) | Description |
 |----------|---------------|-------------|
@@ -66,21 +100,21 @@ Tested with: **Keycloak**, **Okta**, **Auth0**, **Azure AD**, **Google**.
 
 1. **Create** `<type>_identity.py` implementing `IdentityProviderProtocol`.
 
-2. **Add** an `elif` branch in `IamModule.lifespan()`
-   (`src/dynastore/modules/iam/module.py`):
+2. **Add** the backend to `IamModule._register_identity_provider()`
+   (`src/dynastore/modules/iam/module.py`): branch on `IdpConfig.type` and
+   register the provider from the relevant config fields, e.g.
    ```python
-   elif idp_type == "saml2":
+   if cfg.type == "saml2" and cfg.is_configured:
        from .identity_providers.saml2_identity import Saml2IdentityProvider
-       register_plugin(Saml2IdentityProvider(
-           metadata_url=os.environ.get("IDP_METADATA_URL"),
-           sp_entity_id=os.environ.get("IDP_SP_ENTITY_ID"),
-           ...
-       ))
+       register_plugin(Saml2IdentityProvider(metadata_url=..., ...))
+       return
    ```
+   Add the new fields to `IdpConfig` (`idp_config.py`) so they are
+   runtime-editable through the Configs API.
 
 3. **Export** the class in `__init__.py`.
 
-4. **Document** the new `IDP_*` variables in `docker/.env`.
+4. **Document** the new `IdpConfig` fields in the table above.
 
 ---
 
