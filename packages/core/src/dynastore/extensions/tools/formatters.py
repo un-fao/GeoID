@@ -55,7 +55,6 @@ class OGCResponseMetadata(BaseModel):
     timeStamp: Optional[datetime] = Field(default_factory=lambda: datetime.now(timezone.utc))
     links: Optional[List[Link]] = None
 
-# class OutputFormatEnum(str, Enum): ... REMOVED
 
 def _parse_srid_from_srs_name(srs_name: Optional[str]) -> Optional[int]:
     """
