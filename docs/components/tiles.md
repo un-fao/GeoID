@@ -54,7 +54,7 @@ Key files:
 | `modules/tiles/tms_definitions.py` | Built-in TMS definitions (WebMercatorQuad, WorldCRS84Quad) |
 | `modules/tiles/tiles_config.py` | `TilesConfig`, `TilesPreseedConfig` |
 | `modules/tiles/tiles_models.py` | `TileMatrixSet`, `TileMatrixSetRef`, `Link` |
-| `extensions/tiles/policies.py` | Policy registration (auth, rate limits) |
+| `extensions/tiles/presets/__init__.py` | Policy registration via `PolicyContributorPreset` (`tiles_public_access` → `anonymous`) |
 
 ---
 

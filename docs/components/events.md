@@ -61,7 +61,6 @@ Inter-service webhook calls are authenticated using `PLATFORM_EVENTS_API_KEY`. O
 
 | Path | Purpose |
 |------|---------|
-| `src/dynastore/modules/events/events_module.py` | EventsModule — subscription CRUD, dispatch |
+| `src/dynastore/modules/events/events_module.py` | EventsModule — subscription CRUD, dispatch, catalog lifecycle listeners (inlined) |
 | `src/dynastore/modules/events/primitives.py` | Event type definitions, EventRegistry |
-| `src/dynastore/modules/events/catalog_integration.py` | Catalog lifecycle event listeners |
 | `src/dynastore/modules/events/models.py` | EventSubscription, AuthConfig models |

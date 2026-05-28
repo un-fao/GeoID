@@ -142,8 +142,8 @@ redirects to the GCS archive.
 
 The render pool is owned by `MapsService` class-level state. If Maps is
 deployed alongside a high-concurrency Tiles workload, the pool competes for
-CPU. Consider extracting it into a shared worker module
-(`modules/rendering/render_pool.py`) so the pool is tunable globally.
+CPU. Consider extracting it into a shared rendering module so the pool is
+tunable globally.
 
 ---
 
