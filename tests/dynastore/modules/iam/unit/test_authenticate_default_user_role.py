@@ -92,8 +92,16 @@ def _make_request(token: str) -> Any:
 
 @pytest.mark.asyncio
 async def test_hs256_jwt_with_empty_roles_defaults_to_user_role() -> None:
-    """A JWT carrying ``"roles": []`` must surface as ``["user"]``, not
-    ``[]`` (which would collapse to ANONYMOUS at policy time)."""
+    """A JWT carrying ``"roles": []`` must surface as the configured
+    default-user role, not ``[]`` (which would collapse to ANONYMOUS at
+    policy time).
+
+    Post role-trim, ``default_user_role_name`` collapses onto
+    ``unauthenticated`` (same string as ``anonymous_role_name``). The
+    distinction now lives at the *principal* level — an authenticated
+    empty-roles JWT still surfaces a non-None Principal, while anonymous
+    is principal=None.
+    """
     import jwt as pyjwt
     from datetime import datetime, timezone, timedelta
 
@@ -113,9 +121,6 @@ async def test_hs256_jwt_with_empty_roles_defaults_to_user_role() -> None:
     assert principal is not None, "Principal should be resolved from valid HS256 token"
     assert _DEFAULTS.default_user_role_name in effective_roles, (
         f"Expected default-user role for empty-roles HS256 JWT, got {effective_roles!r}"
-    )
-    assert _DEFAULTS.anonymous_role_name not in effective_roles, (
-        f"Authenticated principal must NOT carry anonymous role, got {effective_roles!r}"
     )
 
 

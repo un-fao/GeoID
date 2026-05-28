@@ -312,7 +312,11 @@ async def test_revoke_resets_admin_catalog_access_not_deletes():
 
 @pytest.mark.asyncio
 async def test_revoke_strips_policies_from_shared_roles():
-    """Shared roles (sysadmin, admin, user) must not be deleted — only stripped."""
+    """Shared roles (sysadmin, admin) must not be deleted — only stripped.
+
+    ``user`` was removed from the default role baseline; the shared-role
+    set collapsed to ``(sysadmin, admin)``.
+    """
     preset = _make_preset()
     updated_roles: List[str] = []
     deleted_roles: List[str] = []
@@ -320,7 +324,6 @@ async def test_revoke_strips_policies_from_shared_roles():
     existing_roles = {
         "sysadmin": ["admin_authorization_api", "some_other_policy"],
         "admin": ["admin_authorization_api"],
-        "user": ["self_service_authorization_api"],
     }
 
     policy_svc = MagicMock()
@@ -373,17 +376,17 @@ async def test_revoke_strips_policies_from_shared_roles():
 
     descriptor = AppliedDescriptor(payload={
         "policy_ids": [],
-        "role_names": ["sysadmin", "admin", "user"],
+        "role_names": ["sysadmin", "admin"],
         "delegation_role_names": ["admin"],
     })
 
     await preset.revoke(descriptor, ctx)
 
     # Shared roles must never be deleted.
-    for rname in ("sysadmin", "admin", "user"):
+    for rname in ("sysadmin", "admin"):
         assert rname not in deleted_roles, f"shared role {rname!r} was deleted"
     # They should be updated (policy stripped).
-    for rname in ("sysadmin", "admin", "user"):
+    for rname in ("sysadmin", "admin"):
         assert rname in updated_roles, f"shared role {rname!r} was not updated"
 
 

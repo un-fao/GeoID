@@ -173,9 +173,11 @@ def test_initial_overlay_blocked_by_issuer_whitelist():
 def test_config_defaults_off():
     cfg = OidcRoleSyncConfig()
     assert cfg.reconcile_enabled is False
+    # ``geoid.editor`` was removed when the editor catalog role was
+    # dropped from ``default_roles_baseline``; operators can re-add it
+    # via PATCH after creating a matching role.
     assert cfg.role_mapping == {
         "geoid.sysadmin": "sysadmin",
-        "geoid.editor": "editor",
     }
     assert cfg.ttl_seconds == 60
     assert cfg.issuer_whitelist is None
@@ -187,15 +189,14 @@ def test_config_address_is_platform_iam_oidc_role_sync():
 
 def test_default_role_mapping_tracks_iam_roles_config_defaults():
     # Issue #659: the OidcRoleSyncConfig default role_mapping literal must
-    # stay in sync with IamRolesConfig.{sysadmin,editor}_role_name. If the
-    # platform role names are renamed via the IamRolesConfig defaults, the
-    # OIDC mapping needs a deliberate update — this test fails loudly to
-    # force that. Operator-side runtime overrides still work as before.
+    # stay in sync with platform role names ``IamRolesConfig`` ships.
+    # After the editor/user role trim, only ``sysadmin`` ships by default,
+    # so the mapping is single-entry. If platform role defaults are
+    # renamed, this test fails loudly to force an aligned update.
     from dynastore.models.protocols.authorization import IamRolesConfig
 
     defaults = IamRolesConfig()
     expected = {
         f"geoid.{defaults.sysadmin_role_name}": defaults.sysadmin_role_name,
-        f"geoid.{defaults.editor_role_name}": defaults.editor_role_name,
     }
     assert OidcRoleSyncConfig().role_mapping == expected
