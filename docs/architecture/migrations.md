@@ -122,9 +122,9 @@ Admin clicks "Apply" in dashboard
 
 ---
 
-## Relationship to Schema Evolution
+## Relationship to Per-Collection Schema Changes
 
-Structural migrations handle DDL changes to **shared** infrastructure tables. Per-collection schema evolution (adding columns to a specific collection's physical table) is a separate concern handled by the `SchemaEvolutionEngine`. See [Schema Evolution](../components/schema_evolution.md).
+Structural migrations handle DDL changes to **shared** infrastructure tables. Per-collection physical column changes are handled exclusively via reprovision (delete + recreate the collection) — the app never issues `ALTER TABLE` on an existing collection table. See [Schema Drift and Column Reconciliation](../components/schema_evolution.md).
 
 ---
 
@@ -161,7 +161,7 @@ DELETE /admin/schemas/{catalog_id}/{collection_id}/backups/{timestamp}
 | `src/dynastore/modules/db_config/migration_runner.py` | Core runner: registration, status check, apply, tenant iteration |
 | `src/dynastore/modules/db_config/migrations/` | Global SQL scripts (`v{NNNN}__*.sql`) |
 | `src/dynastore/tasks/structural_migration/task.py` | TaskProtocol wrapper — runs migrations from the task queue |
-| `src/dynastore/extensions/admin/migration_routes.py` | REST API endpoints for status, pending, apply, history, rollback |
+| `packages/extensions/admin/src/dynastore/extensions/admin/admin_service.py` | Admin service (includes migration trigger endpoints) |
 | `src/dynastore/extensions/admin/static/migrations_panel.html` | Web dashboard |
 | `src/dynastore/modules/catalog/migrations/v0001__catalog_schema.sql` | Creates `catalog` schema + `catalog.catalogs` + `catalog.shared_properties` |
 | `src/dynastore/modules/catalog/tenant_migrations/v0001__config_tables.sql` | Per-tenant `catalog_configs` + `collection_configs` tables |
