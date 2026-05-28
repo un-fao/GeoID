@@ -76,10 +76,6 @@ def get_definitions_by_type(target_type: Any) -> List[Any]:
             results.append(config.definition)
     return results
 
-def get_task_definitions() -> List[Any]:
-    """Returns all task definitions."""
-    return [config.definition for config in _DYNASTORE_TASKS.values() if config.definition]
-
 def discover_tasks():
     """Discover every ``dynastore.tasks`` entry-point from installed packages.
 
