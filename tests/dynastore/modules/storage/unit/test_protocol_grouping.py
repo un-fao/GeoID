@@ -73,7 +73,7 @@ class TestNewProtocolsImportable:
         from dynastore.models.protocols.asset_driver import AssetStore
         assert AssetStore.__name__ == "AssetStore"
 
-    def test_collection_metadata_store_importable(self):
+    def test_collection_store_importable(self):
         from dynastore.models.protocols.entity_store import CollectionStore
         assert CollectionStore.__name__ == "CollectionStore"
 
