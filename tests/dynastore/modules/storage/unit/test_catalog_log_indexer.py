@@ -22,7 +22,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_satisfies_catalog_metadata_store_protocol():
+async def test_satisfies_catalog_store_protocol():
     """Structural check — isinstance against the runtime-checkable Protocol."""
     from dynastore.models.protocols.entity_store import CatalogStore
     from dynastore.modules.storage.drivers.catalog_log_indexer import (
