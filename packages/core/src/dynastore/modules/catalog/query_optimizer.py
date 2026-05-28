@@ -162,18 +162,28 @@ class QueryOptimizer:
         """Surface ``ItemsSchema.fields`` entries not already in the index.
 
         ``ItemsSchema`` is the SSOT for a collection's queryable properties.
-        Fields that are materialised as native columns are already covered by
-        the attributes sidecar's ``get_queryable_fields()`` (columnar branch);
-        the remainder live in the JSONB attributes blob and must be advertised
-        here so a SELECT/filter against them validates and resolves to a typed
-        JSONB extraction. Read-side mirror of the write-side
+        Sidecars and items_schema can mix columnar and JSONB storage in the
+        same collection (per-field ``FieldDefinition.access``); this method
+        is the read-side router that picks the right SQL form per field:
+
+          * Native column expected (``schema_field_materializes_as_column``
+            is True for the field): the attributes sidecar must already have
+            advertised it via ``get_queryable_fields()``. If we still see it
+            absent from ``field_index``, the sidecar config is out of sync
+            with the items_schema — skip + log; injecting a JSONB extract
+            here would silently NULL-out every row in the wire response.
+          * JSONB-stored field (the predicate is False): emit a typed JSONB
+            extraction via :meth:`FeatureAttributeSidecar.jsonb_property_field`.
+
+        Names already in ``field_index`` (native columns, identity, validity,
+        hub fields) win unconditionally — sidecars publish the authoritative
+        SQL expression. Geometry-typed, ``expose=False`` and reserved names
+        are skipped via :func:`...read_policy.is_user_readable_schema_field`
+        and the ``ItemsSchema`` reserved-name validator at config-save.
+
+        Read-side mirror of the write-side
         :func:`...field_constraints.bridge_schema_to_attribute_sidecar`
         (column synthesis) — neither path leaks fields the other does not see.
-
-        Geometry-typed, ``expose=False`` and reserved/system names are skipped
-        via :func:`...read_policy.is_user_readable_schema_field`. Names already
-        in ``field_index`` (columnar columns, identity, validity, hub fields)
-        are kept as-is — a native column always beats a JSONB extraction.
         """
         if not self.schema_fields:
             return
@@ -182,6 +192,9 @@ class QueryOptimizer:
         )
         from dynastore.modules.storage.drivers.pg_sidecars.registry import (
             SidecarRegistry,
+        )
+        from dynastore.modules.storage.field_constraints import (
+            schema_field_materializes_as_column,
         )
 
         attr_sidecar: Optional[FeatureAttributeSidecar] = None
@@ -195,8 +208,28 @@ class QueryOptimizer:
 
         for name, fd in self.schema_fields.items():
             if name in self.field_index:
+                # Sidecar already advertised this — its sql_expression is
+                # authoritative (covers both columnar and any sidecar-managed
+                # JSONB form). Never shadow it from items_schema.
                 continue
             if not is_user_readable_schema_field(fd):
+                continue
+            if schema_field_materializes_as_column(fd):
+                # Field is supposed to be a native column but the sidecar
+                # didn't surface it — likely an out-of-sync attribute_schema.
+                # Skip rather than fabricate either SQL form: a JSONB extract
+                # would silently NULL-out the column; a synthesised column
+                # reference would crash the query if the column does not yet
+                # exist. The right next step is to re-ensure the sidecar
+                # config from items_schema (write-side bridge), not to paper
+                # over it here.
+                logger.warning(
+                    "items_schema field %r expects a native column but the "
+                    "attributes sidecar did not advertise it — skipping "
+                    "enrichment. Re-ensure the sidecar config from "
+                    "ItemsSchema (bridge_schema_to_attribute_sidecar).",
+                    name,
+                )
                 continue
             jsonb_fd = attr_sidecar.jsonb_property_field(name, fd)
             self.field_index[name] = (attr_sidecar, jsonb_fd)

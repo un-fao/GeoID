@@ -858,3 +858,78 @@ def test_optimizer_schema_enrichment_does_not_shadow_native_columns(_real_sideca
     # The non-columnar schema field still gets the JSONB fallback.
     _, fd_start = optimizer.field_index["START_DATE"]
     assert "->>'START_DATE'" in fd_start.sql_expression
+
+
+def test_optimizer_skips_columnar_expected_field_when_sidecar_silent(
+    _real_sidecar_registry, caplog
+):
+    """Per-field storage routing: if items_schema says the field MUST be a
+    native column (``access=FAST``) but the attributes sidecar didn't
+    advertise it, the optimizer must skip + warn — never silently fall back
+    to a JSONB extract that would return NULL for every row."""
+    import logging
+
+    from dynastore.models.protocols.field_definition import FieldAccess
+
+    col_config = ItemsPostgresqlDriverConfig(
+        sidecars=[
+            FeatureAttributeSidecarConfig(
+                sidecar_type="attributes",
+                # Sidecar deliberately empty — simulates an out-of-sync
+                # ``attribute_schema`` lagging behind the items_schema.
+                attribute_schema=None,
+            ),
+        ],
+    )
+    schema_fields = {
+        # ``access=FAST`` → ``schema_field_materializes_as_column`` is True.
+        "FAST_COL": FieldDefinition(
+            name="FAST_COL", data_type="string", access=FieldAccess.FAST,
+        ),
+        # ``required=True`` is also a hard column-synthesis trigger.
+        "REQ_COL": FieldDefinition(
+            name="REQ_COL", data_type="string", required=True,
+        ),
+        # COMPACT → JSONB-stored; enrichment path injects the JSONB extract.
+        "JSON_FIELD": FieldDefinition(
+            name="JSON_FIELD", data_type="string", access=FieldAccess.COMPACT,
+        ),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="dynastore.modules.catalog.query_optimizer"):
+        optimizer = QueryOptimizer(col_config, schema_fields=schema_fields)
+
+    assert "FAST_COL" not in optimizer.field_index, (
+        "columnar-expected field must NOT be silently aliased to a JSONB extract"
+    )
+    assert "REQ_COL" not in optimizer.field_index
+    # JSONB-stored field still enriches normally.
+    assert "JSON_FIELD" in optimizer.field_index
+
+    warned = [
+        rec for rec in caplog.records
+        if "expects a native column" in rec.getMessage()
+    ]
+    assert {rec.args[0] if rec.args else "" for rec in warned} >= {"FAST_COL", "REQ_COL"}
+
+
+def test_items_schema_rejects_reserved_root_names():
+    """Reserved-name validator fires at config-save when ``ItemsSchema.fields``
+    declares a key that collides with the tenant feature mapping root
+    (``geoid``, ``geometry``, ``bbox`` …). Fail-fast — never silently shadow
+    a system field."""
+    import asyncio
+
+    from dynastore.modules.storage.driver_config import (
+        ItemsSchema,
+        _validate_items_schema_reserved_names,
+    )
+
+    schema = ItemsSchema(
+        fields={
+            "CODE": FieldDefinition(name="CODE", data_type="string"),
+            "geometry": FieldDefinition(name="geometry", data_type="string"),
+        },
+    )
+    with pytest.raises(ValueError, match="reserved root name"):
+        asyncio.run(_validate_items_schema_reserved_names(schema, None, None, None))
