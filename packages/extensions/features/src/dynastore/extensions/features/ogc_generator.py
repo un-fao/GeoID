@@ -28,7 +28,7 @@ from dynastore.tools.geospatial import process_geometry, GeometryProcessingError
 from fastapi import Request, HTTPException, status
 from datetime import datetime, timezone
 from shapely import wkb
-from dynastore.models.protocols import ItemsProtocol
+from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.elasticsearch.items_projection import strip_reserved_members
 from dynastore.modules.db_config.tools import map_pg_to_json_type
@@ -44,8 +44,6 @@ from dynastore.models.localization import LocalizedText, Language
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.shared_models import Link
 from dynastore.extensions.tools.conformance import get_active_conformance, Conformance
-from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
-from dynastore.tools.discovery import get_protocol
 from dynastore.extensions.tools.url import get_parent_from_url, get_url
 
 

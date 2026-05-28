@@ -42,7 +42,6 @@ from dynastore.modules.db_config.query_executor import (
 )
 from geoalchemy2 import Geometry
 
-# import dynastore.modules.catalog.catalog_module as catalog_manager
 from .tools import (
     get_xsd_type_from_python_type,
     get_xsd_type_from_attribute_schema_type,
