@@ -487,10 +487,38 @@ class CatalogModule(ModuleProtocol):
                     list(routing_cfg.event_consumer_services) if routing_cfg else None,
                 )
 
+            # 7. Start soft-delete TTL reaper background loop.
+            # Leader-elected (pg advisory lock) — only one pod runs scans.
+            from dynastore.modules.catalog.soft_delete_reaper import (
+                SoftDeleteReaper,
+                load_reaper_config,
+            )
+            _reaper_shutdown = asyncio.Event()
+            _reaper: Optional[SoftDeleteReaper] = None
+            try:
+                reaper_cfg = await load_reaper_config()
+                _reaper = SoftDeleteReaper(reaper_cfg)
+                _reaper.start(_reaper_shutdown)
+                logger.info(
+                    "CatalogModule: soft-delete reaper started "
+                    "(grace=%ds, interval=%ds).",
+                    reaper_cfg.soft_grace_period_seconds,
+                    reaper_cfg.reaper_interval_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "CatalogModule: soft-delete reaper failed to start: %s — "
+                    "soft-deleted entities will not be automatically promoted.",
+                    exc,
+                )
+
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
+                _reaper_shutdown.set()
+                if _reaper is not None:
+                    await _reaper.stop()
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
                 # Remove the services from the discovery registry so a future
