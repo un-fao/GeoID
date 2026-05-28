@@ -54,11 +54,14 @@ cross-test contamination.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import defaultdict
 from typing import Iterator
 
 from dynastore.modules.catalog.resource_owner import ResourceOwnerProtocol, ResourceScope
+
+logger = logging.getLogger(__name__)
 
 
 class CascadeCleanupRegistry:
@@ -83,6 +86,19 @@ class CascadeCleanupRegistry:
         """
         with self._lock:
             if self._frozen:
+                # ERROR (not WARNING): a register() after the freeze fence means
+                # the owning module/extension started too late, so its resources
+                # silently leak on cascade delete. Surface it as a CI-detectable
+                # signal. See geoid#1468.
+                logger.error(
+                    "CascadeCleanupRegistry.register(owner_id=%r) called AFTER "
+                    "freeze — owner NOT registered; %s resources will leak on "
+                    "cascade delete. The owning module/extension lifespan must "
+                    "run before the application-level finalize_cascade_registry() "
+                    "fence (main.py).",
+                    getattr(owner, "owner_id", "<unknown>"),
+                    getattr(owner, "owner_id", "<unknown>"),
+                )
                 raise RuntimeError(
                     "CascadeCleanupRegistry is frozen — register() is not allowed "
                     "after startup has completed."
@@ -180,3 +196,25 @@ class CascadeCleanupRegistry:
 # ---------------------------------------------------------------------------
 _default_registry = CascadeCleanupRegistry()
 cascade_cleanup_registry = _default_registry
+
+
+def finalize_cascade_registry() -> None:
+    """Freeze the application singleton — the cascade registry startup fence.
+
+    Call exactly once, as the **last** startup step, from the application
+    composition root (``main.py``), after *all* module and extension lifespans
+    have run.  Idempotent.
+
+    Until this runs, any module or extension may register a cascade owner during
+    its own lifespan.  Previously the freeze lived inside ``CatalogModule.lifespan``,
+    which locked out any owner whose lifespan happened to run later — a fragile,
+    registration-order-dependent failure that silently leaked resources on
+    cascade delete.  Moving the fence here removes that ordering coupling.
+    See geoid#1468.
+    """
+    cascade_cleanup_registry.freeze()
+    logger.info(
+        "CascadeCleanupRegistry frozen by application finalize fence "
+        "(%d owner(s) registered).",
+        len(cascade_cleanup_registry),
+    )

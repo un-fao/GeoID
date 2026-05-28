@@ -197,6 +197,19 @@ class TestRegistryFreeze:
         with pytest.raises(RuntimeError, match="frozen"):
             reg.register(_make_owner("es.items"))
 
+    def test_register_after_freeze_logs_error(self, caplog) -> None:
+        # Register-after-freeze must be an ERROR (CI-detectable), not a silent
+        # drop — a late owner means its resources leak on cascade delete (#1468).
+        reg = CascadeCleanupRegistry()
+        reg.freeze()
+        with caplog.at_level("ERROR"):
+            with pytest.raises(RuntimeError):
+                reg.register(_make_owner("gcs.prefix"))
+        assert any(
+            r.levelname == "ERROR" and "gcs.prefix" in r.getMessage()
+            for r in caplog.records
+        ), "register-after-freeze must log an ERROR naming the dropped owner"
+
     def test_unregister_after_freeze_raises(self) -> None:
         reg = CascadeCleanupRegistry()
         reg.register(_make_owner("es.items"))
@@ -271,3 +284,49 @@ class TestThreadSafety:
         assert len(reg) == len(owner_ids)
         catalog_owners = reg.owners_for_scope(ResourceScope.CATALOG)
         assert len(catalog_owners) == len(owner_ids)
+
+
+# ---------------------------------------------------------------------------
+# finalize_cascade_registry — the application-level startup fence (#1468)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeCascadeRegistry:
+    def test_finalize_freezes_the_singleton(self, monkeypatch, caplog) -> None:
+        # Point the module singleton at a fresh registry so we don't pollute
+        # global state, then prove the app-level fence freezes exactly it.
+        import dynastore.modules.catalog.cascade_registry as cr
+
+        fresh = CascadeCleanupRegistry()
+        fresh.register(_make_owner("es.items", (ResourceScope.CATALOG,)))
+        monkeypatch.setattr(cr, "cascade_cleanup_registry", fresh)
+
+        assert fresh.is_frozen is False
+        with caplog.at_level("INFO"):
+            cr.finalize_cascade_registry()
+        assert fresh.is_frozen is True
+        # The log line surfaces the owner count for operational visibility.
+        assert any("frozen by application finalize fence" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_finalize_is_idempotent(self, monkeypatch) -> None:
+        import dynastore.modules.catalog.cascade_registry as cr
+
+        fresh = CascadeCleanupRegistry()
+        monkeypatch.setattr(cr, "cascade_cleanup_registry", fresh)
+
+        cr.finalize_cascade_registry()
+        cr.finalize_cascade_registry()  # second call must not raise
+        assert fresh.is_frozen is True
+
+    def test_owner_registered_before_finalize_survives(self, monkeypatch) -> None:
+        # The whole point of #1468: an owner registered any time before the
+        # app-level fence (e.g. by a late module/extension lifespan) is kept.
+        import dynastore.modules.catalog.cascade_registry as cr
+
+        fresh = CascadeCleanupRegistry()
+        monkeypatch.setattr(cr, "cascade_cleanup_registry", fresh)
+
+        fresh.register(_make_owner("late.module.owner", (ResourceScope.CATALOG,)))
+        cr.finalize_cascade_registry()
+        assert fresh.get("late.module.owner") is not None

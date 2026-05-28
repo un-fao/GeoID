@@ -354,9 +354,11 @@ class CatalogModule(ModuleProtocol):
                 ),
             ]
             _register_cascade_owners(cascade_cleanup_registry, _owner_modules)
-
-            cascade_cleanup_registry.freeze()
-            logger.info("CatalogModule: cascade_cleanup_registry frozen.")
+            # The registry is NOT frozen here. It is frozen by the
+            # application-level finalize_cascade_registry() fence in main.py,
+            # AFTER all module and extension lifespans have run, so a
+            # module/extension that registers its own cascade owner in its own
+            # lifespan is not locked out by registration order. See geoid#1468.
 
             # Wire AssetEntitySyncSubscriber to drive AssetIndexer fan-out
             # from the events bus. Replaces the legacy per-driver listener
