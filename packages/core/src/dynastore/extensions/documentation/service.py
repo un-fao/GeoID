@@ -30,6 +30,64 @@ from dynastore.extensions.documentation._fastapi_docs import custom_swagger_ui_h
 
 logger = logging.getLogger(__name__)
 
+# Styling for the standalone rendered-README page served at ``/_help/{name}``.
+# Kept as a module-level constant (rather than inline in the handler) so the
+# look-and-feel lives in one place; intentionally a plain string — no
+# templating engine is warranted for a single static stylesheet.
+_HELP_PAGE_CSS = """
+                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }
+                    header { margin-bottom: 30px; padding-bottom: 10px; border-bottom: 1px solid #eaeaea; }
+                    a { color: #007bff; text-decoration: none; }
+                    a:hover { text-decoration: underline; }
+                    pre { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; }
+                    code { background: #eaeaea; padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
+                    pre code { background: transparent; color: inherit; padding: 0; }
+                    table { border-collapse: collapse; width: 100%; margin: 20px 0; background: white; }
+                    th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+                    th { background-color: #f2f2f2; font-weight: 600; }
+                    blockquote { border-left: 4px solid #007bff; margin: 0; padding-left: 15px; color: #555; }
+                    img { max-width: 100%; height: auto; }
+"""
+
+# Wraps the markdown-rendered README in a full HTML document. Placeholders:
+# ``{title}`` (page title), ``{css}`` (the stylesheet above), ``{docs_url}``
+# (link back to the main API docs) and ``{body}`` (rendered markdown).
+_HELP_PAGE_TEMPLATE = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>{title}</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>{css}</style>
+            </head>
+            <body>
+                <header>
+                    <p><a href="#" onclick="window.close(); return false;">&larr; Close Window</a> | <a href="{docs_url}">Back to Main API Docs</a></p>
+                </header>
+                {body}
+            </body>
+            </html>
+            """
+
+# Markdown extensions used wherever a README is rendered to HTML.
+_MARKDOWN_EXTENSIONS = ["fenced_code", "tables"]
+
+
+def _render_help_box(help_url: str) -> str:
+    """Right-aligned "Documentation" link injected into OpenAPI tag descriptions.
+
+    ``help_url`` points at the extension's rendered README page. The ``help-box``
+    class is also the idempotency marker used to avoid prepending the box twice
+    when the lifespan re-runs.
+    """
+    return (
+        '<div class="help-box" style="display: flex; justify-content: flex-end;">'
+        f'<a href="{help_url}" target="_blank" title="Open documentation in a new tab" '
+        'style="display: inline-flex; align-items: center; gap: 6px;">'
+        '<b>Documentation</b> ❓</a>'
+        '</div>'
+    )
+
 
 def configure_swagger_ui(app: FastAPI):
     """
@@ -52,6 +110,10 @@ def configure_swagger_ui(app: FastAPI):
     # uses it to start the Authorization Code + PKCE flow against Keycloak.
     # If unset, omit ``clientId`` entirely so the user notices the missing
     # config in the popup rather than authenticating as a stale default.
+    #
+    # ``usePkceWithAuthorizationCodeGrant`` is a current Swagger UI v5 OAuth2
+    # field (bundled via swagger-ui-dist@5); it enables PKCE for the public
+    # SPA client and is required by our Keycloak Authorization Code flow.
     init_oauth: dict = {
         "usePkceWithAuthorizationCodeGrant": True,
         "scopes": "openid email profile",
@@ -77,13 +139,13 @@ def configure_swagger_ui(app: FastAPI):
     # attribute and threads it into get_swagger_ui_html().
     app.swagger_ui_oauth2_redirect_url = "/docs/oauth2-redirect"
 
-    # --- CRITICAL FIX: Remove existing /docs route ---
+    # Remove FastAPI's default /docs route so our custom Swagger UI wrapper
+    # (which injects the dark-theme CSS/JS) can take its place below.
     for route in list(app.router.routes):
         if getattr(route, "path", "") == "/docs":
             app.router.routes.remove(route)
             logger.info("Removed default FastAPI /docs route to inject custom Swagger UI wrapper.")
 
-    # Now we can safely add our own /docs handler using the extracted function
     async def _docs_handler(req: Request):
         return await custom_swagger_ui_html(app, req)
 
@@ -126,35 +188,12 @@ def setup_global_help_endpoint(app: FastAPI):
             with open(readme_path, "r", encoding="utf-8") as f:
                 md_content = f.read()
 
-            html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>{name.capitalize()} Extension Help</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>
-                    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f9f9f9; }}
-                    header {{ margin-bottom: 30px; padding-bottom: 10px; border-bottom: 1px solid #eaeaea; }}
-                    a {{ color: #007bff; text-decoration: none; }}
-                    a:hover {{ text-decoration: underline; }}
-                    pre {{ background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 5px; overflow-x: auto; }}
-                    code {{ background: #eaeaea; padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; }}
-                    pre code {{ background: transparent; color: inherit; padding: 0; }}
-                    table {{ border-collapse: collapse; width: 100%; margin: 20px 0; background: white; }}
-                    th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
-                    th {{ background-color: #f2f2f2; font-weight: 600; }}
-                    blockquote {{ border-left: 4px solid #007bff; margin: 0; padding-left: 15px; color: #555; }}
-                    img {{ max-width: 100%; height: auto; }}
-                </style>
-            </head>
-            <body>
-                <header>
-                    <p><a href="#" onclick="window.close(); return false;">&larr; Close Window</a> | <a href="{get_root_url(request=request)}/docs">Back to Main API Docs</a></p>
-                </header>
-                {markdown.markdown(md_content, extensions=['fenced_code', 'tables'])}
-            </body>
-            </html>
-            """
+            html_content = _HELP_PAGE_TEMPLATE.format(
+                title=f"{name.capitalize()} Extension Help",
+                css=_HELP_PAGE_CSS,
+                docs_url=f"{get_root_url(request=request)}/docs",
+                body=markdown.markdown(md_content, extensions=_MARKDOWN_EXTENSIONS),
+            )
             return HTMLResponse(content=html_content)
         except Exception as e:
             return HTMLResponse(content=f"Error reading docs: {e}", status_code=500)
@@ -181,12 +220,12 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
         readme_path = os.path.join(extension_dir, "readme.md")
 
         if os.path.exists(readme_path):
-            # 1. Register path in registry
+            # Register the README path so the help routes can serve it.
             if not hasattr(app.state, "extension_docs_registry"):
                 app.state.extension_docs_registry = {}
             app.state.extension_docs_registry[extension_name] = readme_path
 
-            # 2. Read content
+            # Read content for the OpenAPI tag description.
             readme_content = ""
             try:
                 with open(readme_path, "r", encoding="utf-8") as f:
@@ -204,7 +243,8 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
 
             safe_help_url = f"{root_path_prefix.rstrip('/')}/extension-docs/{extension_name}"
 
-            # --- 4. Determine Tags (MOVED UP for Header generation) ---
+            # Determine the tags this extension contributes; the help box is
+            # injected into each tag's description below.
             tags_to_enrich = set()
             if router.tags:
                 tags_to_enrich.update(router.tags)
@@ -216,17 +256,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                 tags_to_enrich.add(extension_name)
 
             # --- HEADER GENERATION ---
-            help_link = (
-                f'<a href="{safe_help_url}" target="_blank" title="Open documentation in a new tab" '
-                f'style="display: inline-flex; align-items: center; gap: 6px;">'
-                f'<b>Documentation</b> \u2753</a>'
-            )
-
-            header_html = (
-                f'<div class="help-box" style="display: flex; justify-content: flex-end;">'
-                f'{help_link}'
-                f'</div>'
-            )
+            header_html = _render_help_box(safe_help_url)
 
             # Prepend header to content
             readme_content = header_html + "\n\n" + readme_content
@@ -239,7 +269,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
 
             readme_content = re.sub(r'\[([^\]]+)\]\((#[^)]+)\)', replace_anchor, readme_content)
 
-            # 3. Add visible endpoint to "Help" section
+            # Add the visible endpoint to the "Help" section of the docs.
             async def _specific_help_handler(request: Request, ext_name: str = extension_name):
                 registry = getattr(request.app.state, "extension_docs_registry", {})
                 path = registry.get(ext_name)
@@ -251,9 +281,7 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                     return HTMLResponse("Markdown renderer not installed", 500)
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-                return HTMLResponse(markdown.markdown(content, extensions=['fenced_code', 'tables']))
-
-            op_id = f"read_{extension_name}_docs"
+                return HTMLResponse(markdown.markdown(content, extensions=_MARKDOWN_EXTENSIONS))
 
             app.add_api_route(
                 f"/extension-docs/{extension_name}",
@@ -261,11 +289,11 @@ def enrich_extension_metadata(app: FastAPI, config: ExtensionConfig, router: API
                 methods=["GET"],
                 tags=["Help"],
                 summary=f"Read {extension_name} documentation",
-                operation_id=op_id,
+                operation_id=f"read_{extension_name}_docs",
                 description=readme_content,
             )
 
-            # 5. Enrich Tags Metadata
+            # Enrich each tag's OpenAPI description with the help box.
             if not app.openapi_tags:
                 app.openapi_tags = []
 
