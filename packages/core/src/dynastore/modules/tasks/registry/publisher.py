@@ -31,11 +31,12 @@ _PUBLISH_DIGEST_TTL_SECONDS = 3600.0
 
 
 def _observed_modes(task_key: str) -> List[str]:
-    """Modes this pod can currently serve the task in.
+    """In-process fallback modes this pod can serve the task in.
 
-    This records the conservative in-process capability (async) so the table
-    is populated and inspectable. The full {off_load, async, sync} taxonomy is
-    supplied later by the placement resolver, which overrides this from config.
+    Records the conservative in-process capability (async/sync) so the table is
+    populated even before placement config is readable. The authoritative
+    {off_load, async, sync} taxonomy comes from the placement resolver, which
+    overrides this at publish time (see :func:`_overlay_placement_modes`).
     """
     from dynastore.modules.tasks.runners import capability_map  # local import: avoid cycle
     modes: List[str] = []
@@ -44,6 +45,37 @@ def _observed_modes(task_key: str) -> List[str]:
     if task_key in capability_map.sync_types:
         modes.append("sync")
     return modes or ["async"]
+
+
+async def _overlay_placement_modes(rows: List[CapabilityRow]) -> None:
+    """Override each row's observed modes with the placement-resolved mode.
+
+    The placement config is the deployment SSOT for how a task runs (off_load /
+    async / sync); the in-process observed modes are only the fallback used when
+    placement has no opinion. Mutates ``rows`` in place.
+
+    Fail-open: any resolver error (or no entry) leaves the observed modes
+    untouched — a degraded placement read must never distort or block
+    publication. The resolved mode is informational in the registry (no consumer
+    keys on ``modes``), and the publish digest is keyed on task_keys only, so a
+    placement change that does not roll the build is reflected on the next
+    build-digest re-assert rather than immediately — acceptable for an
+    inspect-only field.
+    """
+    try:
+        from dynastore.modules.tasks.placement import resolver as placement_resolver
+    except Exception as exc:  # noqa: BLE001 — placement module optional/absent
+        logger.debug("task-registry: placement resolver unavailable (%s)", exc)
+        return
+    for row in rows:
+        try:
+            entry = await placement_resolver.resolved_entry(row.task_key)
+        except Exception as exc:  # noqa: BLE001 — fail-open per row
+            logger.debug("task-registry: placement resolve failed for %r (%s)", row.task_key, exc)
+            continue
+        mode = getattr(entry, "mode", None) if entry is not None else None
+        if mode:
+            row.modes = [mode]
 
 
 def _safe_describe(cls):
@@ -163,6 +195,7 @@ async def publish_inventory(engine) -> None:
         return
     if not service or not rows:
         return
+    await _overlay_placement_modes(rows)
     digest = compute_publish_digest(commit, version, rows)
     try:
         await _publish_if_new(service, digest, engine=engine, rows=rows)
