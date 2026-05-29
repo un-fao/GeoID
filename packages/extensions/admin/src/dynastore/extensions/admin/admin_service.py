@@ -424,15 +424,17 @@ async def list_catalog_dead_letter(catalog_id: str) -> list[dict]:
 async def requeue_catalog_dead_letter(catalog_id: str, task_id: str) -> dict:
     """One-shot recall of a dead-lettered task (catalog-admin).
 
-    ``requeue_dead_letter_task`` keys solely on ``task_id`` (no tenant filter),
-    so the requeue is by task id. The LIST view above is catalog-scoped, so a
-    catalog admin only discovers their own task ids in-band; cross-catalog
-    requeue by guessed UUID is a low-risk hardening follow-up.
+    Tenant-scoped: resolves the catalog's task ``schema_name`` and passes it to
+    ``requeue_dead_letter_task``, whose UPDATE then only matches a task carrying
+    that tag. A catalog admin therefore cannot requeue another catalog's task
+    even by guessing its id — the UPDATE matches nothing and returns
+    ``requeued: false``.
     """
     engine = _platform_engine()
     if engine is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    ok = await _dlq_requeue(engine, task_id, reset_retries=True)
+    schema = await _catalog_task_schema(catalog_id, engine)
+    ok = await _dlq_requeue(engine, task_id, reset_retries=True, schema_name=schema)
     return {"task_id": task_id, "requeued": bool(ok)}
 
 

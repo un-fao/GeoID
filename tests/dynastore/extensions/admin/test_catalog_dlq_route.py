@@ -29,11 +29,25 @@ async def test_list_catalog_dead_letter_is_scoped(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_requeue_catalog_dead_letter_one_shot(monkeypatch):
+async def test_requeue_catalog_dead_letter_is_tenant_scoped(monkeypatch):
+    # The requeue MUST pass the catalog's resolved schema_name through to the
+    # maintenance primitive, so a catalog admin cannot recall another catalog's
+    # task by guessing its id (cross-tenant IDOR guard).
+    captured = {}
+
     async def _requeue(_engine, task_id, **kw):
+        captured["task_id"] = task_id
+        captured["schema_name"] = kw.get("schema_name")
         return True
+
+    async def _schema(_cid, _engine):
+        return f"cat_{_cid}"
+
     monkeypatch.setattr(admin_service, "_dlq_requeue", _requeue)
     monkeypatch.setattr(admin_service, "_platform_engine", lambda: object())
+    monkeypatch.setattr(admin_service, "_catalog_task_schema", _schema)
 
     out = await admin_service.requeue_catalog_dead_letter("acme", "t1")
     assert out == {"task_id": "t1", "requeued": True}
+    assert captured["task_id"] == "t1"
+    assert captured["schema_name"] == "cat_acme"  # tenant-scoped — no cross-catalog requeue
