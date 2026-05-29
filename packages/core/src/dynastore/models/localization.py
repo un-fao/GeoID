@@ -23,6 +23,7 @@ from typing import (
     List,
     Optional,
     Tuple,
+    cast,
     TypeVar,
     Generic,
     Union,
@@ -532,7 +533,13 @@ class LocalizableModelMixin:
                     del data[serialization_alias]
 
             elif hasattr(original_value, "localize") and callable(original_value.localize):
-                localized_data, sub_langs = original_value.localize(lang, include_language_keys=include_language_keys)
+                # ``original_value`` is duck-typed (hasattr-narrowed to ``object``),
+                # so pyright cannot see that ``.localize`` returns a 2-tuple; cast
+                # to the known runtime contract (same shape as ``localize`` above).
+                localized_data, sub_langs = cast(
+                    "Tuple[Dict[str, Any], Set[str]]",
+                    original_value.localize(lang, include_language_keys=include_language_keys),
+                )
                 data[serialization_alias] = localized_data
                 available_languages.update(sub_langs)
 
