@@ -177,8 +177,8 @@ class TilesExportTask(
             if not tms_def:
                 try:
                     tms_def = morecantile.tms.get(request.tms_id)
-                except Exception:
-                    raise ValueError(f"TMS {request.tms_id!r} not found.")
+                except Exception as exc:
+                    raise ValueError(f"TMS {request.tms_id!r} not found.") from exc
 
             # Convert internal TileMatrixSet model to morecantile if needed.
             if not hasattr(tms_def, "tiles"):
@@ -192,7 +192,7 @@ class TilesExportTask(
                 except Exception as exc:
                     raise ValueError(
                         f"Failed to convert TMS {request.tms_id!r} to morecantile: {exc}"
-                    )
+                    ) from exc
             # Both code paths above leave tms_def structurally compatible with
             # the local ``TileMatrixSet`` (same OGC ``tileMatrices`` shape) and
             # carrying morecantile's ``.tiles()`` / ``.crs`` API. Narrow for the

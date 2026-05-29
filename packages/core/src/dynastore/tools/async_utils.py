@@ -34,7 +34,7 @@ class SyncQueueIterator:
             raise
         except Exception as e:
             logger.error(f"Error retrieving item from queue: {e}")
-            raise StopIteration
+            raise StopIteration from e
 
 class LoopLocalLock:
     """An ``asyncio.Lock`` proxy that is safe to instantiate at module-level or

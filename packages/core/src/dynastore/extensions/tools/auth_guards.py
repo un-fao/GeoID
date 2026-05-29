@@ -86,8 +86,8 @@ async def ensure_privileged_role_assignment(
     ctx = security_context_from_request(request)
     try:
         await require_permission(ctx, Permission.SYSADMIN)
-    except PermissionError:
+    except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only System Administrators can manage privileged-role principals.",
-        )
+        ) from exc

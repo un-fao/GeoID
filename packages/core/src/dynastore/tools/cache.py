@@ -194,11 +194,11 @@ class MsgPackSerializer:
         try:
             import msgpack  # noqa: F401
             self._msgpack = msgpack
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "msgpack is required for MsgPackSerializer. "
                 "Install it with: pip install msgpack"
-            )
+            ) from e
 
     def dumps(self, value: Any) -> bytes:
         result = self._msgpack.packb(value, use_bin_type=True)

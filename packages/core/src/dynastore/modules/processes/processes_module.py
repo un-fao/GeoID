@@ -106,7 +106,7 @@ def _validate_process_inputs(
             if is_jsonschema_error or isinstance(
                 e, (ValidationError, ValueError)
             ):
-                raise ValueError(f"Invalid input for '{input_name}': {e}")
+                raise ValueError(f"Invalid input for '{input_name}': {e}") from e
             raise
 
 

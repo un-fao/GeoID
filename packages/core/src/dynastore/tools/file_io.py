@@ -136,7 +136,7 @@ def get_file_reader(
             except Exception as e:
                 message = f"Unable to use gs:// file source:{e}"
                 logger.error(message)
-                raise ValueError(message)
+                raise ValueError(message) from e
         elif file_path_or_buffer.startswith(("https://", "http://")):
             logger.warning(
                 "Direct HTTP/HTTPS streaming not fully implemented. Ensure file_path_or_buffer is a local path or GCS for now."

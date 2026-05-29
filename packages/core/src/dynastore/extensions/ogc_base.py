@@ -424,11 +424,11 @@ class OGCTransactionMixin:
             # on_batch_conflict=refuse_batch: duplicate detected → abort batch → 409.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-            )
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            )
+            ) from exc
 
         # Drain per-row rejections delivered via the DriverContext out-list.
         for entry in ctx.extensions.pop("_rejections", []) or []:
