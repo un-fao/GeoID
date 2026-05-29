@@ -226,7 +226,6 @@ class IamBaseline:
     tier: ClassVar[PresetTier] = PresetTier.PLATFORM
     catalog_scopable: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = IamBaselineParams
-    is_async: ClassVar[bool] = False
 
     async def dry_run(
         self,
@@ -315,11 +314,24 @@ class IamBaseline:
             p.allowed_preset_names,
         )
 
-        # Upsert role bindings (existing roles get the new policy merged in).
+        # Bind the IAM-service policies onto their roles ADDITIVELY.
+        # ``bind_policy_to_role`` atomically appends (dedupe by id); we MUST
+        # NOT use ``update_role`` here, which REPLACES the whole policies
+        # column. The ``unauthenticated`` role also carries ``public_access``
+        # (from public_access_baseline) gating the anonymous Cloud Run
+        # ``/health`` probe — a full-replace on re-apply (or as a composite
+        # child) would wipe it and 403 every anonymous request, making the
+        # service undeployable. Additive binding is symmetric with this
+        # preset's revoke(), which strips only the policy ids it added.
         for role in _iam_service_role_bindings():
-            await iam_service.update_role(role)
+            for policy_id in role.policies:
+                await iam_service.bind_policy_to_role(role.name, {"id": policy_id})
             applied_role_names.append(role.name)
-            logger.debug("iam_baseline: upserted role binding %s", role.name)
+            logger.debug(
+                "iam_baseline: bound policies %s onto role %s",
+                role.policies,
+                role.name,
+            )
 
         return AppliedDescriptor(payload={
             "policy_ids": applied_policy_ids,

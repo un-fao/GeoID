@@ -359,10 +359,13 @@ class QueryOptimizer:
                     continue
 
             _, field_def = self.field_index[filt.field]
-            if FieldCapability.FILTERABLE not in field_def.capabilities:
-                # errors.append(f"Field {filt.field} is not filterable")
-                # Temporarily allow until capability propagation is fully rigorous
-                pass
+            # Filterable by default (see FieldDefinition.is_filterable): a field
+            # is rejected only when it declares an explicit capability set that
+            # omits FILTERABLE — the deliberate opt-out. Fields that leave their
+            # capabilities unspecified stay filterable, so authors need not spell
+            # out FILTERABLE on every field.
+            if not field_def.is_filterable():
+                errors.append(f"Field {filt.field} is not filterable")
 
         # Validate sort
         if query.sort:
@@ -389,7 +392,11 @@ class QueryOptimizer:
                         continue
 
                 _, field_def = self.field_index[sort.field]
-                if FieldCapability.SORTABLE not in field_def.capabilities:
+                # Sortable by default, mirroring is_filterable: only an explicit
+                # capability set that omits SORTABLE blocks ordering. Avoids the
+                # surprise of a field being filterable-by-default but not
+                # sortable.
+                if not field_def.is_sortable():
                     errors.append(f"Field {sort.field} is not sortable")
 
         # Validate group by

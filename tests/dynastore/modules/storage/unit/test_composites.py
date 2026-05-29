@@ -63,7 +63,6 @@ class _RecordingChild:
     tier: ClassVar[PresetTier] = PresetTier.PLATFORM
     catalog_scopable: ClassVar[bool] = False
     params_model = NoParams
-    is_async: ClassVar[bool] = False
     compose = None
 
     def __init__(self, name: str, call_log: List[str]) -> None:

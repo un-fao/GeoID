@@ -26,12 +26,23 @@ from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from dynastore.tools.json import CustomJSONEncoder
 from dynastore.modules import get_protocol
+from dynastore.modules.concurrency import run_in_thread
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
 from dynastore.tasks.reporters import ReportingInterface
 from dynastore.tasks.ingestion.reporters import ingestion_reporter
 from dynastore.tools.path import insert_before_extension
 
 logger = logging.getLogger(__name__)
+
+
+def _gzip_compress(src_path: str, dst_path: str) -> None:
+    """Gzip-compress ``src_path`` to ``dst_path``.
+
+    Blocking (whole-file read + gzip); call via ``run_in_thread`` from async
+    code so the event loop is not stalled for the duration of the compress.
+    """
+    with open(src_path, "rb") as f_in, gzip.open(dst_path, "wb") as f_out:
+        f_out.writelines(f_in)
 
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, List, Any, Dict
@@ -363,11 +374,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         if self.config.compress_output:
             chunk_report_path += ".gz"
             gzipped_file_path = temp_chunk_file_path + ".gz"
-            with (
-                open(temp_chunk_file_path, "rb") as f_in,
-                gzip.open(gzipped_file_path, "wb") as f_out,
-            ):
-                f_out.writelines(f_in)
+            await run_in_thread(_gzip_compress, temp_chunk_file_path, gzipped_file_path)
             upload_file_path = gzipped_file_path
             content_type = "application/gzip"
 
@@ -472,13 +479,20 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
 
         return filtered_result
 
-    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
+    async def task_finished(
+        self,
+        final_status: str,
+        error_message: Optional[str] = None,
+        summary: Optional[Dict[str, Any]] = None,
+    ):
         if not self.config:
             return
 
         # If reporting per chunk, the main report is already uploaded.
         if self.config.report_per_chunk:
-            return await self._upload_summary_report(final_status, error_message)
+            return await self._upload_summary_report(
+                final_status, error_message, extra_summary=summary
+            )
 
         assert self._temp_report_file is not None
         if self.config.output_format == "JSON":
@@ -499,9 +513,7 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             report_path += ".gz"
             gzipped_file_path = self._temp_report_file.name + ".gz"
 
-            with open(self._temp_report_file.name, "rb") as f_in:
-                with gzip.open(gzipped_file_path, "wb") as f_out:
-                    f_out.writelines(f_in)
+            await run_in_thread(_gzip_compress, self._temp_report_file.name, gzipped_file_path)
 
             upload_file_path = gzipped_file_path
             content_type = "application/gzip"
@@ -523,7 +535,9 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
 
         # --- Upload the summary report ---
         await self._upload_summary_report(
-            final_status, error_message, final_detailed_report_path=report_path
+            final_status, error_message,
+            final_detailed_report_path=report_path,
+            extra_summary=summary,
         )
 
     async def _upload_summary_report(
@@ -531,8 +545,14 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         final_status: str,
         error_message: Optional[str],
         final_detailed_report_path: Optional[str] = None,
+        extra_summary: Optional[Dict[str, Any]] = None,
     ):
-        """Generates and uploads the final summary report."""
+        """Generates and uploads the final summary report.
+
+        ``extra_summary`` (e.g. ``{"proposed_items_schema": {...}}`` from
+        geoid#1216) is merged into the summary document so task-level findings
+        ride along in the report tail.
+        """
         assert self.config is not None
         # If reporting per chunk, the detailed_report_path is a template. Otherwise, it's the specific file path.
         summary = {
@@ -545,6 +565,11 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             else self.report_path,
             "report_generated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if extra_summary:
+            # Task-level findings (e.g. proposed_items_schema) ride in the tail;
+            # never clobber the core summary keys above.
+            for key, value in extra_summary.items():
+                summary.setdefault(key, value)
         summary_content = json.dumps(summary, indent=2, cls=CustomJSONEncoder)
         summary_report_path = insert_before_extension(self.report_path, f"_summary")
         self._upload_to_gcs(summary_report_path, content=summary_content)

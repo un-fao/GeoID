@@ -2,7 +2,7 @@
 
 Tests cover:
 - Factory invocation timing (constructed at apply/revoke/dry_run, not at registration).
-- Adapter metadata (name, tier, keywords, is_async, catalog_scopable).
+- Adapter metadata (name, tier, keywords, catalog_scopable).
 - apply: upserts all policies and roles; returns correct AppliedDescriptor.
 - revoke: deletes non-shared roles; strips policies from shared roles.
 - dry_run: no DB writes; lists expected operations.
@@ -206,7 +206,6 @@ def test_preset_metadata():
     assert preset.keywords == ("iam", "test")
     assert preset.tier == PresetTier.PLATFORM
     assert preset.catalog_scopable is False
-    assert preset.is_async is False
     assert preset.params_model is NoParams
 
 

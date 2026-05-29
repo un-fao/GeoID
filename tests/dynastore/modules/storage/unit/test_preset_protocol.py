@@ -15,7 +15,6 @@ from dynastore.modules.storage.presets.preset import (
     PresetContext,
     PresetPlan,
     PresetPlanEntry,
-    TaskHandle,
 )
 from dynastore.modules.storage.presets.protocol import PresetTier
 from dynastore.modules.storage.presets.registry import (
@@ -38,7 +37,6 @@ def _unique_name(base: str) -> str:
 class _MinimalPreset:
     """Minimal new-style Preset implementation for shape tests."""
 
-    is_async: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
     catalog_scopable: ClassVar[bool] = False
 
@@ -78,14 +76,6 @@ def test_applied_descriptor_round_trip():
 def test_applied_descriptor_from_none():
     d = AppliedDescriptor.from_json(None)
     assert d.payload == {}
-
-
-def test_task_handle_stores_task_id():
-    import uuid
-    tid = uuid.uuid4()
-    h = TaskHandle(task_id=tid)
-    assert h.task_id == tid
-    assert h.revoke_descriptor is None
 
 
 def test_preset_plan_entries_tuple():
@@ -233,7 +223,6 @@ def test_search_result_entry_shape():
     assert "keywords" in entry
     assert "tier" in entry
     assert "catalog_scopable" in entry
-    assert "is_async" in entry
     assert "params_schema" in entry
 
 
@@ -253,7 +242,6 @@ async def test_composite_apply_calls_children_forward():
         tier = PresetTier.PLATFORM
         catalog_scopable = False
         params_model = NoParams
-        is_async = False
         compose = None
 
         async def dry_run(self, params, scope, ctx): return PresetPlan(preset_name=self.name, scope_key=scope)
@@ -267,7 +255,6 @@ async def test_composite_apply_calls_children_forward():
         tier = PresetTier.PLATFORM
         catalog_scopable = False
         params_model = NoParams
-        is_async = False
         compose = None
 
         async def dry_run(self, params, scope, ctx): return PresetPlan(preset_name=self.name, scope_key=scope)
@@ -312,7 +299,6 @@ async def test_composite_revoke_calls_children_reverse():
         tier = PresetTier.PLATFORM
         catalog_scopable = False
         params_model = NoParams
-        is_async = False
         compose = None
 
         async def dry_run(self, params, scope, ctx): return PresetPlan(preset_name=self.name, scope_key=scope)
@@ -328,7 +314,6 @@ async def test_composite_revoke_calls_children_reverse():
         tier = PresetTier.PLATFORM
         catalog_scopable = False
         params_model = NoParams
-        is_async = False
         compose = None
 
         async def dry_run(self, params, scope, ctx): return PresetPlan(preset_name=self.name, scope_key=scope)

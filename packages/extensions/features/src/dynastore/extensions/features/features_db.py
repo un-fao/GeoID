@@ -19,7 +19,6 @@
 # dynastore/extensions/features/features_db.py
 
 import logging
-import asyncio
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -27,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
-from dynastore.modules.catalog.validation import get_valid_properties
 from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder, FilterCondition, FilterOperator
 
 logger = logging.getLogger(__name__)
@@ -35,11 +33,9 @@ logger = logging.getLogger(__name__)
 from dynastore.modules.tools.cql import parse_cql_filter
 
 
-from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder, FilterCondition
 
 logger = logging.getLogger(__name__)
 
-from dynastore.modules.tools.cql import parse_cql_filter
 from fastapi import HTTPException, status
 
 
@@ -162,12 +158,12 @@ async def get_items_filtered(
                 request.raw_params.update(cql_params)
 
         except ValueError as ve:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-        except ImportError:
-            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="CQL filtering is not available on this server.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve)) from ve
+        except ImportError as e:
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=f"CQL filtering is not available on this server. ({e})") from e
         except Exception as e:
             logger.error(f"Failed to parse CQL2 filter: {e}", exc_info=True)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid CQL2-TEXT filter: {e}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid CQL2-TEXT filter: {e}") from e
 
     if raw_where_parts:
         request.raw_where = " AND ".join(raw_where_parts)

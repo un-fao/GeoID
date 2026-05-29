@@ -27,6 +27,7 @@ from dynastore.tasks import get_task_instance
 import asyncio
 from dynastore.tools.plugin import ProtocolPlugin
 from dynastore.tools.discovery import register_plugin
+from dynastore.tools.async_utils import LoopLocalLock, LoopLocalSemaphore
 from dynastore.modules.concurrency import get_background_executor
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,12 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     def __init__(self):
         self._running_tasks = set()
         self._max_concurrency = int(os.getenv("BACKGROUND_RUNNER_CONCURRENCY", "100"))
-        self._semaphore = asyncio.Semaphore(self._max_concurrency)
+        # BackgroundRunner is registered as a module-level singleton at import
+        # (register_default_runners()), so a raw asyncio.Semaphore() here would
+        # bind to the first loop that blocks on it and break when reused from
+        # another loop (tests; re-created runtime loops). LoopLocalSemaphore
+        # keeps one real semaphore per running loop. See #1640.
+        self._semaphore = LoopLocalSemaphore(self._max_concurrency)
 
     def can_handle(self, task_type: str) -> bool:
         return get_task_instance(task_type) is not None
@@ -794,7 +800,11 @@ class CapabilityMap:
     def __init__(self):
         self._async_types: set = set()
         self._sync_types: set = set()
-        self._lock = asyncio.Lock()
+        # ``capability_map`` is a module-level singleton (created at import),
+        # so a raw asyncio.Lock() would bind to the first loop and break when
+        # refresh() is awaited from another loop (tests). LoopLocalLock keeps
+        # one real lock per running loop. See #1640.
+        self._lock = LoopLocalLock()
 
     async def refresh(self) -> None:
         """Rebuild capability map from current runners, loaded task types,

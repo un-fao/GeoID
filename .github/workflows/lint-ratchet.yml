@@ -1,0 +1,44 @@
+name: Lint Ratchet
+
+# Ratcheting anti-regression gate for the antipattern-cleanup campaign
+# (refs #1547, #1504). Fails a PR only when one of a curated set of rules
+# rises ABOVE its committed ceiling in scripts/check_lint_ceilings.py —
+# blocking NEW violations without requiring the existing backlog to be zero.
+# The ceilings only ever ratchet down.
+#
+# Cheap (ruff over source, a few seconds) so — unlike the heavy test.yml which
+# is nightly/dispatch-only to save minutes — this runs on every PR touching
+# Python. ruff is pinned: rule behaviour drifts across releases (0.15.13 and
+# 0.15.15 already disagree on F401 counts), so the version here MUST match
+# PINNED_RUFF in scripts/check_lint_ceilings.py.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/**/*.py'
+      - 'scripts/check_lint_ceilings.py'
+      - '.github/workflows/lint-ratchet.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: lint-ratchet-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Exact pin — keep in lockstep with PINNED_RUFF in the gate script.
+      - name: Install pinned ruff
+        run: pip install ruff==0.15.15
+
+      - name: Check lint ceilings
+        run: python scripts/check_lint_ceilings.py

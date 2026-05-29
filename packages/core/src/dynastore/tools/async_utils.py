@@ -2,16 +2,9 @@ import logging
 import asyncio
 from contextlib import AbstractAsyncContextManager
 from typing import Optional, Any, Iterator, Callable, List, Awaitable, Dict, Tuple
-from dynastore.modules.db_config.query_executor import run_in_event_loop as _real_run
 
 logger = logging.getLogger(__name__)
 
-def run_in_event_loop(awaitable: Awaitable[Any]) -> Any:
-    """
-    Deprecated bridge: Runs an awaitable from a synchronous context.
-    Use `dynastore.modules.db_config.query_executor.run_in_event_loop` directly.
-    """
-    return _real_run(awaitable)
 
 class SyncQueueIterator:
     """
@@ -95,6 +88,48 @@ class LoopLocalLock:
             return False
         lock = self._locks.get(loop)
         return lock.locked() if lock is not None else False
+
+
+class LoopLocalSemaphore:
+    """An ``asyncio.Semaphore`` proxy that is safe to instantiate at module-level,
+    class-body, or ``__init__`` scope of an import-time singleton.
+
+    Same hazard and fix as :class:`LoopLocalLock`: a raw ``asyncio.Semaphore()``
+    created before any loop is running binds to whichever loop first awaits it
+    (on the first blocking ``acquire``) and then breaks if the same object is
+    reused from another loop (function-scoped test loops; a re-created runtime
+    loop). This proxy keeps one real semaphore *per running loop*, created
+    lazily on first use, each with the same ``value`` capacity. Drop-in for
+    ``async with``::
+
+        self._semaphore = LoopLocalSemaphore(max_concurrency)  # safe in __init__
+        ...
+        async with self._semaphore:
+            ...
+    """
+
+    __slots__ = ("_value", "_semaphores")
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+        self._semaphores: Dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+    def _for_running_loop(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        sem = self._semaphores.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(self._value)
+            self._semaphores[loop] = sem
+        return sem
+
+    async def __aenter__(self) -> "LoopLocalSemaphore":
+        await self._for_running_loop().acquire()
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        # Same task/loop as ``__aenter__`` (``async with``), so this resolves to
+        # the very semaphore that was acquired.
+        self._for_running_loop().release()
 
 
 class AsyncBufferAggregator:

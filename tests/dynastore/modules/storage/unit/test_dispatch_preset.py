@@ -32,7 +32,6 @@ class _FakeGeneralisedPreset:
     tier = PresetTier.PLATFORM
     catalog_scopable = False
     params_model = NoParams
-    is_async = False
 
     def __init__(self):
         self.apply_called_with: Any = None

@@ -15,7 +15,7 @@
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
-from typing import ClassVar, Optional, Tuple
+from typing import ClassVar, Tuple
 
 
 class EDRConfig(ExposableConfigMixin, PluginConfig):

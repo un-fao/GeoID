@@ -18,7 +18,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
+# Conformance is re-exported here (used at runtime as coverages_models.Conformance
+# by coverages_service); LandingPage is used directly below.
+from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage  # noqa: F401
 from dynastore.models.shared_models import Link
 
 

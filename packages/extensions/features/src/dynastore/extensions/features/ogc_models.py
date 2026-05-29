@@ -18,8 +18,8 @@
 
 # dynastore/extensions/features/ogc_models.py
 
-from typing import List, Optional, Dict, Any, Literal, Union
-from pydantic import BaseModel, Field, ConfigDict, AliasChoices
+from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field, ConfigDict
 from dynastore.models.shared_models import Link, Extent, Provider, Internationalized
 
 # --- OGC API Common / Features DTOs ---
@@ -87,8 +87,9 @@ _OGC_COLLECTION_EXAMPLES = [
 ]
 
 
-# Canonical Conformance — single source in ogc_common_models
-from dynastore.extensions.tools.ogc_common_models import Conformance
+# Canonical Conformance — single source in ogc_common_models; re-exported here
+# (referenced at runtime as ``ogc_models.Conformance``).
+from dynastore.extensions.tools.ogc_common_models import Conformance  # noqa: F401
 
 
 class CatalogDefinition(BaseModel):
@@ -168,8 +169,9 @@ class CollectionDefinition(BaseModel):
     )
 
 
-# Canonical LandingPage — single source in ogc_common_models
-from dynastore.extensions.tools.ogc_common_models import LandingPage
+# Canonical LandingPage — single source in ogc_common_models; re-exported here
+# (referenced at runtime as ``ogc_models.LandingPage``).
+from dynastore.extensions.tools.ogc_common_models import LandingPage  # noqa: F401
 
 
 class OGCCollection(BaseModel):
@@ -233,7 +235,7 @@ class Queryables(BaseModel):
     link: Optional[str] = Field(None, alias="$id")
 
 
-from dynastore.models.ogc import Feature, FeatureCollection, GeoJSONGeometry
+from dynastore.models.ogc import Feature, FeatureCollection
 
 
 class FeatureDefinition(Feature):

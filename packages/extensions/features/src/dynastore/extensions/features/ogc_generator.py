@@ -22,29 +22,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import uuid
 from typing import Dict, Any, Optional, List, Union, cast
-from dynastore.tools.geospatial import process_geometry, GeometryProcessingError
 from fastapi import Request, HTTPException, status
-from datetime import datetime, timezone
-from shapely import wkb
 from dynastore.models.protocols import CatalogsProtocol, ItemsProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.elasticsearch.items_projection import strip_reserved_members
 from dynastore.modules.db_config.tools import map_pg_to_json_type
-from shapely.geometry import shape, mapping
 
 from . import ogc_models
-from dynastore.tools.geospatial import calculate_spatial_indices
 from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 from dynastore.modules.catalog.models import (
     Collection as CoreCollection,
 )  # Import CoreCollection for type hinting
-from dynastore.models.localization import LocalizedText, Language
+from dynastore.models.localization import Language
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.shared_models import Link
-from dynastore.extensions.tools.conformance import get_active_conformance, Conformance
-from dynastore.extensions.tools.url import get_parent_from_url, get_url
+from dynastore.extensions.tools.url import get_url
 
 
 def create_landing_page(
@@ -319,10 +312,10 @@ def _process_feature_for_db(
         return feature.model_dump(by_alias=True, exclude_unset=True)
     except ValueError as e:
         logger.error(f"Failed to process feature: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except KeyError as e:
         logger.error(f"Failed to process feature due to KeyError: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal config error: Missing key {e}",
-        )
+        ) from e
