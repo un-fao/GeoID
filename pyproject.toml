@@ -357,7 +357,17 @@ outbox_drain = ["dynastore[task_base]"]
 # discovery ("No module named 'dynastore.extensions.dwh'") and every async job died
 # with "Task 'dwh_join' not found or failed to initialize". extension_dwh is a
 # superset (it includes `dwh` + geospatial_io) and matches what scope_worker uses.
-worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,extension_dwh,module_storage_postgresql]"]
+# module_gcp (google-cloud-storage + google-cloud-bigquery client init): without it
+# GCPModule.reinitialize_clients bails ("google-cloud-storage/pubsub not installed;
+# storage/BigQuery clients will be unavailable"), so the task fails at run time with
+# "GCPModule has not been initialized or failed to create a storage client" and the
+# BigQuery client built without the resolved Cloud Run SA credentials hits a
+# `403 bigquery.jobs.create` even though the runtime SA holds bigquery.jobUser. The
+# task both queries BigQuery (execute_bigquery_async) and uploads its export to GCS
+# (upload_stream_to_gcs), exactly like worker_task_export_features — which carries
+# module_gcp for the same reason. Confirmed on dynastore-dwh-join-export-job-5k56c,
+# review, 2026-05-29.
+worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,extension_dwh,module_gcp,module_storage_postgresql]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal,drivers_grp]"]
 # export_features: writes feature output to GCS (`gs://...` destination_uri)
 # via dynastore.modules.gcp clients. Without module_gcp the worker raises
