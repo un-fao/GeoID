@@ -19,6 +19,7 @@ from dynastore.modules.processes.models import (
 from dynastore.tasks.tools import initialize_reporters
 from dynastore.tools.async_utils import SyncQueueIterator
 from dynastore.tools.file_io import get_features_as_byte_stream
+from dynastore.tools.enrichment import enrich_features
 from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
 from dynastore.modules.tools.features import FeatureStreamConfig, stream_features
 from dynastore.modules.tools.field_categories import resolve_category_field_names
@@ -115,28 +116,29 @@ class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optio
                         target_srid=request.destination_crs
                     )
                     
-                    # Stream features and join with DWH data. Hint.JOIN forces
-                    # the full-precision PG read path (ES carries only simplified
-                    # geometry and cannot project ST_Transform), matching the
-                    # synchronous /dwh/join endpoint.
-                    async for feature in stream_features(
+                    # Stream features and join with DWH data via the shared
+                    # ``enrich_features`` helper — the exact streaming O(1) merge
+                    # the synchronous /dwh/join endpoint uses (dwh.py). The base
+                    # stream yields ``Feature`` objects, not dicts, so the merge
+                    # must read ``feature.properties`` rather than ``feature.get``;
+                    # enrich_features merges DWH columns into ``feature.properties``
+                    # and, with ``inner_join=True``, drops features lacking a DWH
+                    # match (the inner-join semantics this task expects).
+                    #
+                    # Hint.JOIN forces the full-precision PG read path (ES carries
+                    # only simplified geometry and cannot project ST_Transform),
+                    # matching the synchronous endpoint.
+                    feature_stream = stream_features(
                         stream_config, engine, hints=frozenset({Hint.JOIN})
+                    )
+                    async for feature in enrich_features(
+                        feature_stream,
+                        join_values,
+                        join_column=request.join_column,
+                        inner_join=True,
                     ):
-                        # Apply Join
-                        join_key_value = feature.get(request.join_column)
-                        if join_key_value is not None:
-                            supp_row = join_values.get(join_key_value)
-                            if supp_row:
-                                # Merge DWH data into attributes
-                                attrs = feature.get("attributes", {})
-                                if not isinstance(attrs, dict):
-                                    attrs = {}
-                                attrs.update(supp_row)
-                                feature["attributes"] = attrs
-                                
-                                await queue.put(feature)
-                        # If no join match, feature is skipped (Inner Join behavior)
-                        
+                        await queue.put(feature)
+
                 except Exception as e:
                     logger.error(f"Producer failed: {e}", exc_info=True)
                     raise e

@@ -11,7 +11,7 @@ Used by export tasks, WFS service, and other components that need to stream feat
 """
 
 import logging
-from typing import AsyncIterator, Dict, Any, Optional, List, FrozenSet, TYPE_CHECKING
+from typing import AsyncIterator, Optional, List, FrozenSet, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from sqlalchemy import literal_column
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.models.driver_context import DriverContext
+from dynastore.models.ogc import Feature
 from dynastore.models.protocols import ItemsProtocol
 from dynastore.models.query_builder import QueryRequest, FieldSelection
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
@@ -54,7 +55,7 @@ async def stream_features(
     config: FeatureStreamConfig,
     db_resource: DbResource,
     hints: "FrozenSet[Hint]" = frozenset(),
-) -> AsyncIterator[Dict[str, Any]]:
+) -> AsyncIterator[Feature]:
     """
     Stream features from a collection with optional filtering and projection.
 
