@@ -20,8 +20,8 @@ def test_geoid_preset_registered():
 def test_geoid_bundle_inherits_private_catalog_routing():
     """Storage tiers must match the private_catalog baseline — geoid only
     layers audience opt-ins on top; it does not relax the cascade."""
-    geoid = get_preset("geoid").build("cat-fao")
-    priv = get_preset("private_catalog").build("cat-fao")
+    geoid = get_preset("geoid").build(catalog_id="cat-fao")
+    priv = get_preset("private_catalog").build(catalog_id="cat-fao")
 
     assert geoid.catalog_routing == priv.catalog_routing
     assert geoid.collection_template == priv.collection_template
@@ -32,13 +32,13 @@ def test_geoid_bundle_inherits_private_catalog_routing():
 def test_geoid_items_routing_is_private():
     """Items tier must pin the private ES driver — catalog/collection envelopes
     are PG-only (#1047)."""
-    bundle = get_preset("geoid").build("cat-fao")
+    bundle = get_preset("geoid").build(catalog_id="cat-fao")
     assert _items_routing_has_private_driver(bundle.items_template)
 
 
 def test_geoid_catalog_collection_routing_pg_only():
     """Catalog and collection envelopes are PG-only for the geoid preset."""
-    bundle = get_preset("geoid").build("cat-fao")
+    bundle = get_preset("geoid").build(catalog_id="cat-fao")
     cat_refs = [
         e.driver_ref
         for entries in bundle.catalog_routing.operations.values()
@@ -56,7 +56,7 @@ def test_geoid_catalog_collection_routing_pg_only():
 def test_geoid_asset_routing_is_pg_only():
     """Assets must be PG-only for the geoid flagship profile too — they
     must not inherit the public asset ES driver and leak into search."""
-    bundle = get_preset("geoid").build("cat-fao")
+    bundle = get_preset("geoid").build(catalog_id="cat-fao")
     asset_refs = [
         e.driver_ref
         for entries in bundle.asset_template.operations.values()
@@ -76,7 +76,7 @@ def test_geoid_audience_configs_open_anonymous_lookup_only():
     covers the item-POST path, and deny-precedence makes it beat any
     anonymous-create ALLOW — so the opt-in would be inert config and
     contradicts the no-public-insert posture (un-fao/GeoID#1204)."""
-    bundle = get_preset("geoid").build("cat-fao")
+    bundle = get_preset("geoid").build(catalog_id="cat-fao")
 
     assert set(bundle.audience_configs) == {"catalog_lookup_audience"}
     assert "collection_write_audience" not in bundle.audience_configs

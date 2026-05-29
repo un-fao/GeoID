@@ -140,10 +140,14 @@ def _make_ctx() -> tuple["PresetContext", "List[tuple]"]:
 
     policy_svc = MagicMock()
     policy_svc.update_policy = _update_policy
+    # apply() awaits get_policy (existing-policy probe) and create_role
+    # (create-then-bind for sentinel roles) — both must be awaitable.
+    policy_svc.get_policy = AsyncMock(return_value=None)
 
     iam_svc = MagicMock()
     iam_svc.bind_policy_to_role = _bind
     iam_svc.update_role = AsyncMock()
+    iam_svc.create_role = AsyncMock()
 
     ctx = PresetContext(
         db=MagicMock(),

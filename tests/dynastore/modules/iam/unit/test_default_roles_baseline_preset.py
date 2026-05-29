@@ -174,10 +174,13 @@ async def test_dry_run_returns_plan_without_writes():
     iam.update_role.assert_not_called()
     iam.add_role_hierarchy.assert_not_called()
 
-    # Plan describes all roles and hierarchy edges.
+    # Plan describes all roles. No hierarchy edges are seeded by default: the
+    # baseline seeds are flat (all parent=None) since the editor/user trim
+    # (bd7b14e7), so _HIERARCHY_EDGES is empty and the plan carries no
+    # add_role_hierarchy entries.
     kinds = [e.kind for e in plan.entries]
     assert "upsert_role" in kinds
-    assert "add_role_hierarchy" in kinds
+    assert "add_role_hierarchy" not in kinds
 
 
 # ---------------------------------------------------------------------------

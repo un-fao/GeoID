@@ -37,7 +37,12 @@ def test_register_and_get_round_trip():
     name = "round-trip-preset"
     preset = _DummyPreset(name=name)
     register_preset(preset)
-    assert get_preset(name) is preset
+    # Shape-A routing presets (build() but no apply()) are auto-wrapped in a
+    # RoutingPresetAdapter at registration so every registered preset exposes
+    # the unified apply/revoke/dry_run interface — object identity is therefore
+    # not preserved, but the name round-trips and the preset stays retrievable.
+    got = get_preset(name)
+    assert got.name == name
     assert name in list_presets()
 
 
