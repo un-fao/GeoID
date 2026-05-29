@@ -98,17 +98,14 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
             )
             logger.info(f"Ingestion task '{task_id}' complete.")
             # Standard message: a URL to verify the ingested output — the
-            # features from the source asset when its id is known, else the
-            # collection's full item listing.
+            # feature collection (items listing) for the target collection,
+            # filtered to the source asset's features when its id is known.
+            # Root-relative unless an operator sets PublicUrlConfig, so the link
+            # resolves against whatever host/proxy the consumer browses through.
             asset_id = task_request.asset.asset_id if task_request.asset else None
-            if asset_id:
-                verify_url = await result_message.items_verify_url(
-                    catalog_id, collection_id, asset_id=asset_id
-                )
-            else:
-                verify_url = await result_message.collection_verify_url(
-                    catalog_id, collection_id
-                )
+            verify_url = await result_message.items_verify_url(
+                catalog_id, collection_id, asset_id=asset_id
+            )
             return result_message.completed(payload.task_id, message=verify_url)
         except Exception as e:
             logger.error(f"Ingestion task '{task_id}' failed catastrophically: {e}", exc_info=True)
