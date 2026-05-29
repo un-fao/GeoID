@@ -183,9 +183,6 @@ class DatabaseInputExceptionHandler(ExceptionHandler):
     ) -> Optional[HTTPException]:
         # Clean up the error message for the user
         msg = str(exception)
-        if "UndefinedColumnError" in msg:
-            # Extract the column name if possible or just return a generic message
-            pass
 
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

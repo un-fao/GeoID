@@ -75,21 +75,9 @@ class IngestionAsset(BaseModel):
     uri: Optional[str] = Field(None, description="The URI of a file to ingest. If the asset doesn't exist, it will be created.")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Metadata to be attached to the asset upon creation or update.")
 
-    @model_validator(mode='before')
-    @classmethod
-    def check_code_or_uri(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            code_provided = data.get('asset_id')
-            uri_provided = data.get('uri')
-
-            if code_provided and uri_provided:
-                # Relaxed validation: If both are provided, we accept it.
-                # The logic in main_ingestion will handle priority (lookup by asset_id, if missing create from uri).
-                pass 
-            if not code_provided and not uri_provided:
-                # Instead of raising an error immediately, we allow it to pass if it's going to be populated later
-                pass
-        return data
+    # Note: asset_id / uri presence is intentionally NOT validated here — the
+    # ingestion task resolves priority (asset_id lookup, else create from uri)
+    # and tolerates a payload populated later in the pipeline.
 
 # ... (rest of the file)
 
