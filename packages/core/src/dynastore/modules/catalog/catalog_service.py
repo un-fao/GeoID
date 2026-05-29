@@ -2051,13 +2051,14 @@ class CatalogService(CatalogsProtocol):
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
         consumer: "Optional[ConsumerType]" = None,
+        hints: "FrozenSet[Hint]" = frozenset(),
     ) -> QueryResponse:
         """Stream search results using an async iterator."""
         from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType as _CT
         return await self._item_svc.stream_items(
             catalog_id, collection_id, request,
             config=config, ctx=ctx,
-            consumer=consumer or _CT.GENERIC,
+            consumer=consumer or _CT.GENERIC, hints=hints,
         )
 
     async def get_collection_fields(

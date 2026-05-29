@@ -11,9 +11,12 @@ Used by export tasks, WFS service, and other components that need to stream feat
 """
 
 import logging
-from typing import AsyncIterator, Dict, Any, Optional, List
+from typing import AsyncIterator, Dict, Any, Optional, List, FrozenSet, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from sqlalchemy import literal_column
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.hints import Hint  # noqa: F401
 
 from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.models.driver_context import DriverContext
@@ -48,7 +51,9 @@ class FeatureStreamConfig(BaseModel):
 
 
 async def stream_features(
-    config: FeatureStreamConfig, db_resource: DbResource
+    config: FeatureStreamConfig,
+    db_resource: DbResource,
+    hints: "FrozenSet[Hint]" = frozenset(),
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     Stream features from a collection with optional filtering and projection.
@@ -56,6 +61,11 @@ async def stream_features(
     Args:
         config: Configuration for the feature stream
         db_resource: Database engine or connection
+        hints: Routing hints forwarded to ``stream_items``. Export callers pass
+            ``{Hint.JOIN}`` (or ``{Hint.GEOMETRY_EXACT}``) to force the
+            full-precision PG read path; ES only serves simplified geometry and
+            cannot project ``ST_Transform``. Default empty preserves the
+            ES-first public read default.
 
     Yields:
         Feature dictionaries with selected properties
@@ -185,6 +195,7 @@ async def stream_features(
             request=req,
             ctx=DriverContext(db_resource=db_resource) if db_resource else None,
             consumer=ConsumerType.OGC_FEATURES,
+            hints=hints,
         )
         async for item in response.items:
             yield item

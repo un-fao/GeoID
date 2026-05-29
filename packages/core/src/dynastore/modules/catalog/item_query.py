@@ -8,9 +8,12 @@ inherits from this mixin.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional, Any, Dict, Tuple, AsyncIterator
+from typing import List, Optional, Any, Dict, Tuple, AsyncIterator, FrozenSet, TYPE_CHECKING
 
 from sqlalchemy import literal_column, text
+
+if TYPE_CHECKING:
+    from dynastore.modules.storage.hints import Hint  # noqa: F401
 
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -118,6 +121,7 @@ async def _try_driver_dispatch(
     limit: int,
     offset: int,
     entity_ids: Optional[List[str]] = None,
+    hints: "FrozenSet[Hint]" = frozenset(),
 ) -> Optional[QueryResponse]:
     """Try to resolve and dispatch to a non-PG storage driver.
 
@@ -128,6 +132,13 @@ async def _try_driver_dispatch(
     - No routing config exists for this collection (legacy PG-only setup).
     - The resolved driver is ``postgresql`` (PG path is the correct path).
     - Driver resolution raises any exception.
+
+    ``hints`` are forwarded to driver resolution. A caller that needs the
+    full-precision PG geometry path (e.g. the DWH join / feature export) passes
+    ``{Hint.JOIN}`` (or ``{Hint.GEOMETRY_EXACT}``): only PG advertises those, so
+    resolution yields the PG read-primary, ``is_query_fallback_driver`` is True,
+    and this returns ``None`` to hand the read to the inline PG SQL path. With
+    the default empty hints the public default routing (ES-first) is preserved.
     """
     try:
         from dynastore.modules.storage.router import get_driver
@@ -135,7 +146,7 @@ async def _try_driver_dispatch(
         return None
 
     try:
-        resolved = await get_driver(operation, catalog_id, collection_id)
+        resolved = await get_driver(operation, catalog_id, collection_id, hints=hints)
     except Exception:
         return None
 
@@ -1083,6 +1094,7 @@ class ItemQueryMixin:
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional[DriverContext] = None,
         consumer: ConsumerType = ConsumerType.GENERIC,
+        hints: "FrozenSet[Hint]" = frozenset(),
     ) -> QueryResponse:
         """
         Stream search results using an async iterator (O(1) Memory).
@@ -1090,6 +1102,12 @@ class ItemQueryMixin:
         Dispatches to the configured storage driver first.  Falls back to the
         PostgreSQL path when no routing config exists or when ``postgresql``
         is the configured driver.
+
+        ``hints`` are forwarded to driver resolution. Geometry exports (the DWH
+        join, feature export) pass ``{Hint.JOIN}`` to force the full-precision
+        PG path rather than the public ES-first read default — ES only carries
+        simplified geometry and cannot run the ``ST_Transform`` projection these
+        exports build into the request.
         """
         # --- Non-PG driver dispatch (streaming, O(1) memory) ---
         operation = _pick_operation(request)
@@ -1097,6 +1115,7 @@ class ItemQueryMixin:
         offset = request.offset if request and request.offset else 0
         driver_response = await _try_driver_dispatch(
             catalog_id, collection_id, operation, request, limit, offset,
+            hints=hints,
         )
         if driver_response is not None:
             return driver_response

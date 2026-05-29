@@ -21,6 +21,7 @@ from dynastore.tools.async_utils import SyncQueueIterator
 from dynastore.tools.file_io import get_features_as_byte_stream
 from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
 from dynastore.modules.tools.features import FeatureStreamConfig, stream_features
+from dynastore.modules.storage.hints import Hint
 from dynastore.extensions.dwh.dwh import execute_bigquery_async
 from dynastore.modules.concurrency import get_concurrency_backend
 from dynastore.extensions.tools.formatters import format_map
@@ -97,8 +98,13 @@ class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optio
                         target_srid=request.destination_crs
                     )
                     
-                    # Stream features and join with DWH data
-                    async for feature in stream_features(stream_config, engine):
+                    # Stream features and join with DWH data. Hint.JOIN forces
+                    # the full-precision PG read path (ES carries only simplified
+                    # geometry and cannot project ST_Transform), matching the
+                    # synchronous /dwh/join endpoint.
+                    async for feature in stream_features(
+                        stream_config, engine, hints=frozenset({Hint.JOIN})
+                    ):
                         # Apply Join
                         join_key_value = feature.get(request.join_column)
                         if join_key_value is not None:

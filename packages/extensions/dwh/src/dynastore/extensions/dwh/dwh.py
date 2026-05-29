@@ -47,6 +47,7 @@ from dynastore.models.protocols import (
     ItemsProtocol,
 )
 from dynastore.models.driver_context import DriverContext
+from dynastore.modules.storage.hints import Hint  # noqa: E402  # after pyproj SCOPE-gate stmt
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -239,12 +240,18 @@ class DwhService(ExtensionProtocol):
             select=selects, limit=req.limit, offset=req.offset
         )
 
-        # Stream via ItemService
+        # Stream via ItemService. Force the full-precision PG read path with
+        # Hint.JOIN: the public default routing puts Elasticsearch first for
+        # READ, but ES only carries simplified geometry and cannot run the
+        # ST_Transform projection this join builds into the request — only the
+        # PG driver advertises Hint.JOIN, so resolution selects it (and, being
+        # the read-primary fallback, hands the read to the inline PG SQL path).
         query_context = await items_svc.stream_items(
             catalog_id=catalog_id,
             collection_id=req.collection,
             request=query_req,
             ctx=DriverContext(db_resource=conn),
+            hints=frozenset({Hint.JOIN}),
         )
 
         # Enrich streamed features with DWH data (O(1) dict lookup per feature)
