@@ -18,6 +18,7 @@
 
 # dynastore/extensions/tools/formatters.py
 
+import asyncio
 import logging
 import re
 from typing import Iterable, Any, Optional, cast
@@ -205,22 +206,49 @@ def format_response(
         return StreamingResponse(content=_byte_streamer(), media_type=formatter["media_type"])
 
     # 3. Handle Other Formats (CSV, GPKG, etc.) - BRIDGE SYNC WRITERS
-    # These writers currently expect a sync Generator[Feature, None, None]
+    # These writers consume a *sync* Generator[Feature, None, None]. When the
+    # upstream is an async iterator (the asyncpg/Elasticsearch item stream) it is
+    # bound to the event loop that is running *now* — the request loop. The sync
+    # writer below is driven later by Starlette inside a worker thread, where no
+    # loop is running. Spinning a brand-new loop there and re-driving the async
+    # source on it re-uses asyncpg/aiohttp objects across loops and raises
+    # "got Future attached to a different loop" /
+    # "Timeout context manager should be used inside a task". So capture the
+    # request loop now and marshal the drain back onto it with
+    # run_coroutine_threadsafe — the same idiom as
+    # tools.async_utils.SyncQueueIterator.
+    request_loop: Optional[asyncio.AbstractEventLoop] = None
+    if hasattr(features, "__aiter__"):
+        try:
+            request_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (a purely synchronous caller handing us an async
+            # source with nothing loop-bound) — a throwaway loop is safe.
+            request_loop = None
+
     def _get_sync_gen():
         src = cast(Any, features)
-        if hasattr(features, '__aiter__'):
-            # This is slow but necessary if the upstream is async and we need sync
-            import asyncio
-            loop = asyncio.new_event_loop()
+        if hasattr(features, "__aiter__"):
             async def _consume():
-                res = []
-                async for f in src: res.append(f)
-                return res
-            items = loop.run_until_complete(_consume())
-            loop.close()
-            for x in items: yield x
+                return [f async for f in src]
+
+            if request_loop is not None and request_loop.is_running():
+                # Drain on the loop that owns the async resources, blocking this
+                # worker thread until the full batch has been collected.
+                items = asyncio.run_coroutine_threadsafe(
+                    _consume(), request_loop
+                ).result()
+            else:
+                loop = asyncio.new_event_loop()
+                try:
+                    items = loop.run_until_complete(_consume())
+                finally:
+                    loop.close()
+            for x in items:
+                yield x
         else:
-            for x in src: yield x
+            for x in src:
+                yield x
 
     feature_dicts = (f.model_dump(by_alias=True) if hasattr(f, 'model_dump') else f for f in _get_sync_gen())
 

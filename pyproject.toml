@@ -342,14 +342,24 @@ outbox_drain = ["dynastore[task_base]"]
 # every worker scope must therefore declare it can host the PG items driver
 # class even when the task itself does not exercise items WRITE — module
 # imports still resolve through ItemsRoutingConfig instantiation.
-worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,dwh,module_storage_postgresql]"]
+# geospatial_io (geopandas + pyogrio) is REQUIRED at run time: every output
+# format except raw GeoJSON/JSON routes through `_prepare_gdf_chunk_for_writing`
+# in tools/file_io.py, which `import geopandas` and writes via the pyogrio/GDAL
+# drivers (shp/gpkg/csv/parquet/geoparquet). geopandas is imported lazily inside
+# the writer functions, so the task still registers and the entry point loads —
+# the failure only surfaces at run time as `ModuleNotFoundError: No module named
+# 'geopandas'` when the export actually writes a non-GeoJSON file.
+worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,dwh,geospatial_io,module_storage_postgresql]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal,drivers_grp]"]
 # export_features: writes feature output to GCS (`gs://...` destination_uri)
 # via dynastore.modules.gcp clients. Without module_gcp the worker raises
 # at task run time: "GCPModule has not been initialized or failed to
 # create a storage client." Confirmed by 019dda8e-a239-7bd8-...
 # OGC poll on 2026-04-29.
-worker_task_export_features = ["dynastore[task_base_async,module_gcp,stac,geospatial_core,module_storage_postgresql]"]
+# geospatial_io: same lazy-geopandas writer path as worker_task_dwh_join — the
+# feature export produces shp/gpkg/csv/parquet via tools/file_io.py, so without
+# geopandas + pyogrio it fails at write time for every format except GeoJSON.
+worker_task_export_features = ["dynastore[task_base_async,module_gcp,stac,geospatial_core,geospatial_io,module_storage_postgresql]"]
 worker_task_tiles_preseed = ["dynastore[task_base,module_catalog,tiles,crs,module_storage_postgresql]", "morecantile>=7.0.3,<8"]
 worker_task_gdal = ["dynastore[task_base,module_catalog,gdal,module_storage_postgresql]"]
 worker_task_dimensions_materialize = ["dynastore[task_base,module_catalog,extension_dimensions,module_storage_postgresql]"]
