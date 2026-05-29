@@ -110,7 +110,6 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/web/admin",
                 "/web/admin/",
                 "/web/admin/.*",
-                "/web/pages/demo_manager",
                 "/web/pages/exposure",
                 "/web/pages/configuration",
                 "/web/pages/governance",
@@ -986,116 +985,6 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         </div>
         """
 
-    @expose_web_page(
-        page_id="demo_manager",
-        title="Demo Data",
-        icon="fa-flask",
-        description="Provision or clean up the demo catalog for testing.",
-        audience_policy_id="web_sysadmin_access",
-        section="admin",
-        priority=40,
-    )
-    def demo_manager_page(self, language: str = "en"):
-        return """
-<div class="space-y-8 max-w-2xl">
-  <div>
-    <h2 class="text-2xl font-bold text-white mb-1">Demo Data Manager</h2>
-    <p class="text-slate-400 text-sm">
-      Provision a <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code> with sample
-      geospatial points, or wipe it to start fresh. Requires <strong class="text-white">sysadmin</strong> role.
-    </p>
-  </div>
-
-  <div class="grid md:grid-cols-2 gap-6">
-    <!-- Provision -->
-    <div class="glass-panel p-6 rounded-2xl border border-emerald-500/20">
-      <div class="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-4">
-        <i class="fa-solid fa-database-plus text-xl"></i>
-      </div>
-      <h3 class="font-semibold text-white mb-1">Provision Demo Data</h3>
-      <p class="text-slate-400 text-sm mb-4">
-        Creates <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code> with
-        <code class="bg-slate-800 px-1 rounded text-xs">demo_collection</code> containing a 2×3 grid of
-        tile polygons covering Italy. Any existing demo catalog is replaced.
-      </p>
-      <button id="btn-populate"
-        onclick="demoAction('populate')"
-        class="w-full px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-all flex items-center justify-center gap-2">
-        <i class="fa-solid fa-plus-circle"></i> Provision Demo Data
-      </button>
-    </div>
-
-    <!-- Cleanup -->
-    <div class="glass-panel p-6 rounded-2xl border border-red-500/20">
-      <div class="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 mb-4">
-        <i class="fa-solid fa-trash-alt text-xl"></i>
-      </div>
-      <h3 class="font-semibold text-white mb-1">Clean Up Demo Data</h3>
-      <p class="text-slate-400 text-sm mb-4">
-        Permanently deletes <code class="bg-slate-800 px-1 rounded text-xs">demo_catalog</code>
-        and all its collections and items. This action cannot be undone.
-      </p>
-      <button id="btn-cleanup"
-        onclick="demoAction('cleanup')"
-        class="w-full px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm font-medium transition-all flex items-center justify-center gap-2">
-        <i class="fa-solid fa-trash-alt"></i> Clean Up Demo Data
-      </button>
-    </div>
-  </div>
-
-  <div id="demo-result" class="hidden glass-panel p-4 rounded-xl border border-white/5 text-sm"></div>
-</div>
-
-<script>
-async function demoAction(action) {
-  const labels = { populate: 'provision demo data', cleanup: 'DELETE the demo catalog' };
-  if (!confirm(`Are you sure you want to ${labels[action]}?\\nThis cannot be undone.`)) return;
-
-  const btnId = action === 'populate' ? 'btn-populate' : 'btn-cleanup';
-  const btn = document.getElementById(btnId);
-  const resultDiv = document.getElementById('demo-result');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Working…'; }
-  if (resultDiv) resultDiv.classList.add('hidden');
-
-  const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
-  const token = (typeof authToken !== 'undefined' && authToken) || localStorage.getItem(tkey);
-  try {
-    const res = await fetch(`/web/admin/demo/${action}`, {
-      method: 'POST',
-      headers: token ? { 'Authorization': 'Bearer ' + token } : {}
-    });
-    const data = await res.json();
-    if (resultDiv) {
-      resultDiv.classList.remove('hidden', 'border-red-500/20', 'border-emerald-500/20');
-      if (res.ok) {
-        const msg = action === 'populate'
-          ? `Demo catalog provisioned: <strong>${data.items}</strong> items in <code>${data.catalog_id} / ${data.collection_id}</code>.`
-          : `Demo catalog <code>${data.deleted}</code> deleted successfully.`;
-        resultDiv.className = 'glass-panel p-4 rounded-xl border border-emerald-500/20 text-emerald-300 text-sm';
-        resultDiv.innerHTML = '<i class="fa-solid fa-check-circle mr-2"></i>' + msg;
-      } else {
-        resultDiv.className = 'glass-panel p-4 rounded-xl border border-red-500/20 text-red-400 text-sm';
-        resultDiv.innerHTML = '<i class="fa-solid fa-exclamation-triangle mr-2"></i>' + (data.detail || JSON.stringify(data));
-      }
-    }
-  } catch (e) {
-    if (resultDiv) {
-      resultDiv.className = 'glass-panel p-4 rounded-xl border border-red-500/20 text-red-400 text-sm';
-      resultDiv.innerHTML = '<i class="fa-solid fa-exclamation-triangle mr-2"></i>' + e.message;
-      resultDiv.classList.remove('hidden');
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = action === 'populate'
-        ? '<i class="fa-solid fa-plus-circle"></i> Provision Demo Data'
-        : '<i class="fa-solid fa-trash-alt"></i> Clean Up Demo Data';
-    }
-  }
-}
-</script>
-"""
-
     @staticmethod
     def _serve_html_template(html_path: str) -> HTMLResponse:
         """Read an HTML file and replace {{VERSION}} with the running package version."""
@@ -1543,99 +1432,10 @@ async function demoAction(action) {
             
             return HTMLResponse(content=content)
 
-        # ------------------------------------------------------------------ #
-        #  Demo Data Management (sysadmin only)                               #
-        # ------------------------------------------------------------------ #
-
-        DEMO_CATALOG_ID = "demo_catalog"
-        DEMO_COLLECTION_ID = "demo_collection"
-
-        @self.router.post("/admin/demo/populate", response_class=JSONResponse, tags=["Dynastore Web Service"])
-        async def demo_populate(request: Request):
-            """Provision demo catalog, collection and sample items."""
-            from dynastore.models.protocols import CatalogsProtocol as _CatProt
-            cats = get_protocol(_CatProt)
-            if not cats:
-                raise HTTPException(status_code=500, detail="Catalog service not available")
-            try:
-                await cats.delete_catalog(DEMO_CATALOG_ID, force=True)
-            except Exception:
-                pass
-            await cats.create_catalog({
-                "id": DEMO_CATALOG_ID,
-                "title": {"en": "Demo Catalog", "it": "Catalogo Demo"},
-                "description": {"en": "Demo catalog for testing purposes.", "it": "Catalogo demo per scopi di test."},
-                "keywords": ["demo", "dynastore", "geospatial"],
-                "license": "CC-BY-4.0",
-            }, lang="*")
-            await cats.create_collection(DEMO_CATALOG_ID, {
-                "id": DEMO_COLLECTION_ID,
-                "title": {"en": "Italy Tile Grid"},
-                "description": {"en": "A 2×3 grid of map-tile polygons covering the Italian peninsula."},
-                "type": "Feature",
-            }, lang="*")
-            # 2 columns × 3 rows covering Italy's bounding box
-            # lon: 6.6 – 18.5  (col width ≈ 5.95°)
-            # lat: 37.9 – 47.1 (row height ≈ 3.07°)
-            def _tile_polygon(col: int, row: int) -> dict:
-                lon0 = 6.6  + col * 5.95
-                lon1 = lon0 + 5.95
-                lat0 = 37.9 + row * 3.07
-                lat1 = lat0 + 3.07
-                return {
-                    "type": "Polygon",
-                    "coordinates": [[
-                        [lon0, lat0], [lon1, lat0],
-                        [lon1, lat1], [lon0, lat1],
-                        [lon0, lat0],   # close ring
-                    ]],
-                }
-            _row_labels = ["south", "centre", "north"]
-            _col_labels = ["west", "east"]
-            demo_items = [
-                {
-                    "id": f"tile_{_col_labels[c]}_{_row_labels[r]}",
-                    "type": "Feature",
-                    "geometry": _tile_polygon(c, r),
-                    "properties": {
-                        "name": f"Italy – {_row_labels[r].capitalize()} {_col_labels[c].capitalize()}",
-                        "description": f"Map tile column {c} row {r} over Italy",
-                        "col": c, "row": r,
-                    },
-                }
-                for r in range(3) for c in range(2)
-            ]
-            result = await cats.upsert(DEMO_CATALOG_ID, DEMO_COLLECTION_ID, demo_items)
-            logger.info(f"Demo data provisioned: {len(result)} items in '{DEMO_CATALOG_ID}'")
-            return {"status": "ok", "catalog_id": DEMO_CATALOG_ID,
-                    "collection_id": DEMO_COLLECTION_ID, "items": len(result)}
-
-        @self.router.post("/admin/demo/cleanup", response_class=JSONResponse, tags=["Dynastore Web Service"])
-        async def demo_cleanup(request: Request):
-            """Delete only the demo collection and catalog, leaving all other data intact."""
-            from dynastore.models.protocols import CatalogsProtocol as _CatProt
-            cats = get_protocol(_CatProt)
-            if not cats:
-                raise HTTPException(status_code=500, detail="Catalog service not available")
-            deleted = []
-            errors = []
-            # Delete the demo collection (cascades to its items) first
-            try:
-                await cats.delete_collection(DEMO_CATALOG_ID, DEMO_COLLECTION_ID, force=True)
-                deleted.append(f"{DEMO_CATALOG_ID}/{DEMO_COLLECTION_ID}")
-                logger.info(f"Demo collection '{DEMO_COLLECTION_ID}' deleted from '{DEMO_CATALOG_ID}'.")
-            except Exception as e:
-                errors.append(f"collection: {e}")
-                logger.warning(f"Demo cleanup — collection: {e}")
-            # Then delete the catalog shell (no force needed; collection is already gone)
-            try:
-                await cats.delete_catalog(DEMO_CATALOG_ID)
-                deleted.append(DEMO_CATALOG_ID)
-                logger.info(f"Demo catalog '{DEMO_CATALOG_ID}' deleted.")
-            except Exception as e:
-                errors.append(f"catalog: {e}")
-                logger.warning(f"Demo cleanup — catalog: {e}")
-            return {"status": "ok" if deleted else "not_found", "deleted": deleted, "errors": errors}
+        # Demo-data provisioning is no longer a bespoke /admin/demo/* route.
+        # Apply the standard `demo_data` preset instead:
+        #   POST   /admin/presets/demo_data   (provision)
+        #   DELETE /admin/presets/demo_data   (clean up)
 
         @self.router.get("/docs-manifest", response_class=JSONResponse)
         async def get_docs_manifest():
