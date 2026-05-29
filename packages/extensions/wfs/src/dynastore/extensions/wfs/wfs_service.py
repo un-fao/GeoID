@@ -17,23 +17,20 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 # dynastore/extensions/wfs/wfs_service.py
-import asyncio
 
 from dynastore.models.driver_context import DriverContext
-from ...tools.features import Feature, FeatureCollection
 import logging
 import re
-from typing import List, Optional, cast, Any
+from typing import Optional, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query, FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, FastAPI
 from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
 
 from dynastore.modules.db_config.query_executor import managed_transaction
 from dynastore.modules.db_config.exceptions import TableNotFoundError, SchemaNotFoundError
 
-from dynastore.extensions.tools.db import get_async_connection, get_async_engine
+from dynastore.extensions.tools.db import get_async_connection
 from dynastore.models.protocols import ItemsProtocol
 from . import wfs_generator, wfs_db
 from .wfs_models import WFSException
@@ -48,14 +45,12 @@ from dynastore.extensions.ogc_base import OGCServiceMixin
 
 # --- Refactoring Step ---
 # Import the centralized formatting tools.
-from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
-from dynastore.extensions.tools.fast_api import _parse_srid_from_srs_name
+from dynastore.extensions.tools.formatters import OutputFormatEnum
 import pyproj as _pyproj_scope_gate  # noqa: F401  # SCOPE gate: extension_wfs requires pyproj
 _ = _pyproj_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.extensions.tools.language_utils import get_language
 
-from dynastore.modules.catalog.models import Catalog, Collection
 from dynastore.models.shared_models import Link
 from dynastore.models.localization import LocalizedText
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features

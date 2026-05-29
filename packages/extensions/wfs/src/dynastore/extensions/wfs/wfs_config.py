@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import ClassVar, List, Optional, Tuple
+from typing import ClassVar, List, Tuple
 from pydantic import Field
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig

@@ -17,13 +17,9 @@
 #    Contact: copyright@fao.org - http://fa.org/contact-us/terms/en/
 
 # dynastore/extensions/wfs/wfs_db.py
-from datetime import datetime
 import logging
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional
 from sqlalchemy import (
-    text,
-    Dialect,
-    Column,
     Integer,
     String,
     Float,
@@ -32,30 +28,19 @@ from sqlalchemy import (
     JSON,
 )
 from sqlalchemy.dialects.postgresql import UUID  # Use specific type for UUID
-from pydantic import create_model, StrictInt, StrictFloat, StrictBool, StrictStr
 from sqlalchemy.ext.asyncio import AsyncConnection
-from dynastore.modules.db_config import shared_queries
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
-    DbResource,
 )
 from geoalchemy2 import Geometry
 
 from .tools import (
     get_xsd_type_from_python_type,
-    get_xsd_type_from_attribute_schema_type,
 )
-import uuid
-from pydantic import BaseModel
-from dynastore.modules.tools.cql import parse_cql_filter
-from ...tools.features import FeatureCollection
-from ...tools.features import FeatureProperties
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import (
     ItemsProtocol,
-    CatalogsProtocol,
-    CollectionsProtocol,
 )
 
 logger = logging.getLogger(__name__)
