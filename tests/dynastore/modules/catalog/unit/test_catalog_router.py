@@ -479,5 +479,15 @@ def test_catalog_routing_config_defaults_use_canonical_names():
     cfg = CatalogRoutingConfig()
     write_ids = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
     read_ids = {e.driver_ref for e in cfg.operations[Operation.READ]}
-    assert write_ids == {"catalog_postgresql_driver"}
-    assert read_ids == {"catalog_postgresql_driver"}
+    # The PG CatalogStore must always be present and named canonically. The ES
+    # catalog driver may also appear when it is discoverable (the routing
+    # config's model_validator self-registers discoverable indexers/searchers,
+    # #1180) — that is a legitimate, canonical ref, not drift. The drift this
+    # test guards against is a NON-canonical name like
+    # ``catalog_core_postgresql_driver`` / ``catalog_stac_postgresql_driver``
+    # (never registered as entry-points), so assert the canonical superset.
+    _CANONICAL = {"catalog_postgresql_driver", "catalog_elasticsearch_driver"}
+    assert "catalog_postgresql_driver" in write_ids
+    assert write_ids <= _CANONICAL, f"non-canonical WRITE driver_ref drift: {write_ids - _CANONICAL}"
+    assert "catalog_postgresql_driver" in read_ids
+    assert read_ids <= _CANONICAL, f"non-canonical READ driver_ref drift: {read_ids - _CANONICAL}"

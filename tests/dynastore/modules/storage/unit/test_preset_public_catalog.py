@@ -17,7 +17,7 @@ def test_public_catalog_preset_registered():
 
 
 def test_public_catalog_bundle_shape():
-    bundle = get_preset("public_catalog").build("cat-pub")
+    bundle = get_preset("public_catalog").build(catalog_id="cat-pub")
     assert isinstance(bundle.catalog_routing, CatalogRoutingConfig)
     assert isinstance(bundle.collection_template, CollectionRoutingConfig)
     assert isinstance(bundle.items_template, ItemsRoutingConfig)
@@ -25,12 +25,12 @@ def test_public_catalog_bundle_shape():
 
 
 def test_public_catalog_items_not_private():
-    bundle = get_preset("public_catalog").build("cat-pub")
+    bundle = get_preset("public_catalog").build(catalog_id="cat-pub")
     assert not _items_routing_has_private_driver(bundle.items_template)
 
 
 def test_public_catalog_uses_expected_driver_ids():
-    bundle = get_preset("public_catalog").build("cat-pub")
+    bundle = get_preset("public_catalog").build(catalog_id="cat-pub")
     cat_refs = [
         e.driver_ref
         for entries in bundle.catalog_routing.operations.values()
