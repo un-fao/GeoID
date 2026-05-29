@@ -160,7 +160,6 @@ class StacVirtualMixin(_Host):
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
-        catalogs_svc = await self._get_catalogs_service()
 
         async with managed_transaction(engine) as conn:
             stac_config = await self._get_stac_config(
@@ -365,8 +364,9 @@ class StacVirtualMixin(_Host):
                     status_code=500, detail="Items protocol not available."
                 )
 
-            # Resolve col_config for sidecar resolution
-            col_config = await catalogs_svc.get_collection_config(
+            # Touch the collection config to guard existence before querying
+            # (result unused; sidecar resolution happens inside stream_items).
+            await catalogs_svc.get_collection_config(
                 catalog_id, collection_id, ctx=DriverContext(db_resource=conn)
             )
 

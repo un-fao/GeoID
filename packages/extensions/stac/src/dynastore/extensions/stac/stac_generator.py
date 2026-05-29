@@ -148,7 +148,6 @@ def create_catalog_summary(
     request: Request, catalog_model: Any, lang: str = "en"
 ) -> Dict[str, Any]:
     """Generates a lightweight STAC Catalog summary (no child links)."""
-    base_url = get_url(request)
 
     # Localize metadata
     meta_dict, available_langs = stac_localize(catalog_model, lang)
@@ -566,7 +565,6 @@ async def create_collection(
     )
     collection.set_root(root_catalog)
 
-    base_url = get_url(request)
     root_url = get_root_url(request)
 
     # Ensure correct Self and Items URLs regardless of calling endpoint
@@ -1275,9 +1273,6 @@ async def _process_stac_item_for_db(
         )
 
     try:
-        # Pydantic/PySTAC Item.geometry is already a dict
-        geom_dict = item.geometry
-
         # Return the item as a GeoJSON dictionary
         return item.to_dict()
 
