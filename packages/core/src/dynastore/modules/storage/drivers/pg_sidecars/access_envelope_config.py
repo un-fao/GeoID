@@ -91,10 +91,16 @@ class AccessEnvelopeSidecarConfig(SidecarConfig):
     """Create a GIN index on the JSONB envelope column for fast containment queries."""
 
     btree_attrs_index: bool = False
-    """Create a btree index on individual top-level attrs keys (reserved for future use)."""
+    """Emit a btree expression index per ``known_attrs_keys`` entry on the JSONB
+    path ``access_envelope->'attrs'->>'<key>'`` (#1453). Accelerates the ABAC
+    read filter's equality/range predicates without promoting attrs to real
+    columns. No-op unless ``known_attrs_keys`` is also non-empty."""
 
     known_attrs_keys: List[str] = []
-    """Declared attribute keys for documentation / schema hints (not enforced at DB level)."""
+    """Attribute keys to index when ``btree_attrs_index`` is True. Each becomes a
+    btree expression index matching the read filter's ``->'attrs'->>'<key>'``
+    access pattern. Keys must be ``[A-Za-z0-9_]`` identifiers; others are skipped
+    with a warning at DDL build time."""
 
 
 SidecarConfigRegistry.register("access_envelope", AccessEnvelopeSidecarConfig)
