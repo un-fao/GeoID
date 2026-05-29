@@ -597,9 +597,6 @@ async def search_items(
         params.update(hierarchy_params)
 
     # Resolve physical schema via routing
-    from dynastore.modules.storage.router import get_driver
-    from dynastore.modules.storage.routing_config import Operation
-
     catalogs2 = get_protocol(CatalogsProtocol)
     assert catalogs2 is not None, "CatalogsProtocol not registered"
     phys_schema = await catalogs2.resolve_physical_schema(
@@ -844,12 +841,19 @@ async def search_items(
             offset=None,
         )
 
-        try:
-            _driver = await get_driver(Operation.READ, cat_id, collection_id)
-            _location = await _driver.location(cat_id, collection_id)
-            phys_table = _location.identifiers.get("table")
-        except (ValueError, Exception):
-            phys_table = None
+        # Physical table for this collection. Resolve from the per-collection
+        # driver config already loaded above (``collection_configs``, fetched
+        # with the live ``db_resource``). ``driver.location()`` must NOT be used
+        # here: it takes no ``db_resource`` and re-resolves the config with
+        # none, yielding a default config whose ``physical_table`` is ``None``,
+        # so ``location()`` raises and the collection is silently skipped —
+        # COLUMNAR attribute search then returns an empty page (#1641).
+        # ``phys_schema`` above is likewise resolved with the live resource.
+        phys_table = getattr(config, "physical_table", None)
+        if phys_table:
+            from dynastore.tools.db import validate_sql_identifier
+
+            phys_table = validate_sql_identifier(phys_table)
         if not phys_table or not phys_schema:
             continue
 
