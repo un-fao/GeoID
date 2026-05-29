@@ -30,7 +30,7 @@ PINNED_RUFF = "0.15.15"
 # Current counts as of the gate's introduction. Ratchet DOWN as rules improve;
 # never raise a ceiling to make a regression pass.
 CEILINGS: dict[str, int] = {
-    "F401": 273,    # unused-import
+    "F401": 233,    # unused-import
     "F811": 11,     # redefined-while-unused (duplicate imports)
     "F841": 35,     # unused-variable
     "B904": 167,    # raise-without-from (broken exception chain)
