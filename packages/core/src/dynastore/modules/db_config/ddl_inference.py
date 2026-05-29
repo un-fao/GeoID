@@ -72,20 +72,22 @@ def _infer_existence_check(sql_template: str):
     if not first_stmt_upper.startswith("CREATE"):
         return None
 
-    # Multi-statement DDL: refuse to infer a check. Inferring from only the
-    # FIRST statement is unsound — e.g. PLATFORM_SCHEMAS_DDL begins with
-    # ``CREATE SCHEMA IF NOT EXISTS configs`` but its load-bearing object is the
-    # ``configs.platform_configs`` TABLE created in a later statement. If a
-    # caller (or a prior test) drops+recreates only the schema, the
-    # first-statement schema check — cached positive process-wide in
-    # ``_ddl_existence_cache`` — returns True and the executor skips the WHOLE
-    # batch, leaving the table missing. Every statement in these batches is
-    # idempotent (CREATE … IF NOT EXISTS), so running unconditionally is cheap
-    # and correct; returning None forces that.
-    create_count = sum(
-        1 for s in upper.split(";") if s.strip().startswith("CREATE")
-    )
-    if create_count > 1:
+    # Multi-statement DDL whose FIRST statement creates a SCHEMA but whose
+    # load-bearing objects (tables) come in LATER statements: refuse to infer.
+    # A first-statement schema-existence check is unsound here — the schema can
+    # exist while a contained table was dropped (e.g. a test drops+recreates the
+    # ``configs`` schema), and ``_ddl_existence_cache`` caches the positive
+    # schema result process-wide, so the executor would skip the WHOLE batch and
+    # never recreate the table (the "configs.platform_configs does not exist"
+    # cascade). PLATFORM_SCHEMAS_DDL is fully CREATE … IF NOT EXISTS, so running
+    # it unconditionally is cheap and correct. Multi-statement DDL whose first
+    # statement is a CREATE TABLE keeps its sound first-object (table) check —
+    # load-bearing because some such batches add a non-idempotent constraint
+    # after a CREATE TABLE IF NOT EXISTS and rely on the table check to gate the
+    # whole batch (e.g. the geometries sidecar's ADD CONSTRAINT fk_*_hub).
+    if first_stmt_upper.startswith("CREATE SCHEMA") and any(
+        s.strip().startswith("CREATE") for s in upper.split(";")[1:]
+    ):
         return None
 
     # Skip UPSERT patterns disguised as DDLQuery (INSERT ... ON CONFLICT)
