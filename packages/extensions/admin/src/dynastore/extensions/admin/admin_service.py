@@ -805,6 +805,7 @@ class AdminService(ExtensionProtocol):
         summary="List dead-lettered tasks for this catalog (catalog-admin).",
     )
     async def list_catalog_dead_letter_view(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
+        await _assert_catalog_exists(catalog_id)
         return await list_catalog_dead_letter(catalog_id)
 
     @router.post(
@@ -812,6 +813,7 @@ class AdminService(ExtensionProtocol):
         summary="One-shot recall of a dead-lettered task (catalog-admin).",
     )
     async def requeue_catalog_dead_letter_view(catalog_id: str, task_id: str):  # type: ignore[reportGeneralTypeIssues]
+        await _assert_catalog_exists(catalog_id)
         return await requeue_catalog_dead_letter(catalog_id, task_id)
 
     @router.post(
