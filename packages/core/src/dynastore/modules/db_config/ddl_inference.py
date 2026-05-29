@@ -68,9 +68,24 @@ def _infer_existence_check(sql_template: str):
     upper = trimmed.upper()
 
     # Skip non-CREATE DDL (INSERT, DROP, ALTER, GRANT, etc.)
-    # Multi-statement DDL: check only the first statement
     first_stmt_upper = upper.split(";")[0].strip()
     if not first_stmt_upper.startswith("CREATE"):
+        return None
+
+    # Multi-statement DDL: refuse to infer a check. Inferring from only the
+    # FIRST statement is unsound — e.g. PLATFORM_SCHEMAS_DDL begins with
+    # ``CREATE SCHEMA IF NOT EXISTS configs`` but its load-bearing object is the
+    # ``configs.platform_configs`` TABLE created in a later statement. If a
+    # caller (or a prior test) drops+recreates only the schema, the
+    # first-statement schema check — cached positive process-wide in
+    # ``_ddl_existence_cache`` — returns True and the executor skips the WHOLE
+    # batch, leaving the table missing. Every statement in these batches is
+    # idempotent (CREATE … IF NOT EXISTS), so running unconditionally is cheap
+    # and correct; returning None forces that.
+    create_count = sum(
+        1 for s in upper.split(";") if s.strip().startswith("CREATE")
+    )
+    if create_count > 1:
         return None
 
     # Skip UPSERT patterns disguised as DDLQuery (INSERT ... ON CONFLICT)
