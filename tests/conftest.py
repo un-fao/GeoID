@@ -241,11 +241,6 @@ async def _bootstrap_foundational_schemas(engine) -> None:
     from dynastore.modules.iam.applied_presets_service import AppliedPresetsService
     from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.tasks.tasks_module import (
-        ensure_task_storage_exists,
-        get_task_schema,
-    )
-
     # configs schema + platform_configs table (delegates to PlatformConfigService
     # so the DDL stays inside the module, not here).
     await PlatformConfigService.initialize_storage(engine)
@@ -256,15 +251,31 @@ async def _bootstrap_foundational_schemas(engine) -> None:
         svc = AppliedPresetsService(engine)
         await svc.ensure_table(conn=conn)
 
-    # tasks schema + tasks.tasks partitioned table. delete_catalog(force=True)
-    # enqueues a cascade-cleanup task, so any test that force-deletes a catalog
-    # touches tasks.tasks even when it does not enable the tasks module. Bootstrap
-    # it here (idempotent) so the template clone every xdist worker forks already
-    # contains it. DDL stays inside TasksModule.
-    async with managed_transaction(engine) as conn:
-        task_schema = get_task_schema()
-        await ensure_schema_exists(conn, task_schema)
-        await ensure_task_storage_exists(conn, task_schema)
+    # tasks schema + tasks.tasks partitioned table (BEST-EFFORT). delete_catalog
+    # (force=True) enqueues a cascade-cleanup task that touches tasks.tasks even
+    # when a test does not enable the tasks module. This block must NEVER abort
+    # the foundational bootstrap or crash the xdist worker: platform_configs and
+    # applied_presets above are the load-bearing tables, and a failure here that
+    # propagated out of pytest_sessionstart would restart the worker onto a
+    # freshly-cloned template that lacks platform_configs (mass false-positive
+    # 'foundational schema regression'). Tests that truly need tasks enable the
+    # module explicitly.
+    try:
+        from dynastore.modules.tasks.tasks_module import (
+            ensure_task_storage_exists,
+            get_task_schema,
+        )
+
+        async with managed_transaction(engine) as conn:
+            task_schema = get_task_schema()
+            await ensure_schema_exists(conn, task_schema)
+            await ensure_task_storage_exists(conn, task_schema)
+    except Exception as _exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Foundational tasks.tasks bootstrap skipped (non-fatal): %s", _exc
+        )
 
 
 async def _assert_foundational_schemas(engine) -> None:
@@ -323,6 +334,17 @@ async def _bootstrap_worker_foundational_schemas() -> None:
     engine = create_async_engine(db_url, poolclass=NullPool)
     try:
         await _bootstrap_foundational_schemas(engine)
+    except Exception as exc:
+        # Never let a bootstrap hiccup raise out of pytest_sessionstart: that
+        # crashes the worker, xdist restarts it onto a fresh template clone, and
+        # the cycle yields a mass of false 'foundational schema regression'
+        # failures. Degrade to a warning — the per-test guard still reports a
+        # genuine missing table with a clear message.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Per-worker foundational bootstrap failed (non-fatal): %s", exc
+        )
     finally:
         await engine.dispose()
 
