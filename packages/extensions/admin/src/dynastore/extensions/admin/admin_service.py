@@ -370,6 +370,32 @@ async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
     return await dispatch_preset(preset, "unapply", base_scope=base_scope)
 
 
+from dynastore.modules.tasks.registry import repository as _registry_repo  # noqa: E402
+
+# Small indirections so the read view is unit-testable without a DB/app and so
+# the platform-engine accessor matches the rest of this module.
+_registry_list_all = _registry_repo.list_all
+
+
+def _platform_engine():
+    from dynastore.models.protocols import DatabaseProtocol
+
+    db = get_protocol(DatabaseProtocol)
+    return db.engine if db is not None else None
+
+
+async def list_task_registry() -> list[dict]:
+    """Return all observed task-capability registry rows.
+
+    Sysadmin-gated by the broad ``admin_access`` policy on ``/admin/.*``; this
+    view exposes only observed platform facts (no mutation).
+    """
+    engine = _platform_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return await _registry_list_all(engine)
+
+
 class AdminService(ExtensionProtocol):
     always_on = True
     priority: int = 200
@@ -388,6 +414,17 @@ class AdminService(ExtensionProtocol):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         yield
+
+    # -------------------------------------------------------------------------
+    # Task-Capability Registry (/admin/task-registry)
+    # -------------------------------------------------------------------------
+
+    @router.get(
+        "/task-registry",
+        summary="Sysadmin view of the durable task-capability registry (observed facts).",
+    )
+    async def list_task_registry_view():  # type: ignore[reportGeneralTypeIssues]
+        return await list_task_registry()
 
     # -------------------------------------------------------------------------
     # Principal Management (/admin/principals)
