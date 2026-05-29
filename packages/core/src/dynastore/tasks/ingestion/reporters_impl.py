@@ -83,9 +83,16 @@ class DatabaseStatusReporter(ReportingInterface):
         update = TaskUpdate(progress=progress_value)
         await self._update_task_async(update)
 
-    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
+    async def task_finished(
+        self,
+        final_status: str,
+        error_message: Optional[str] = None,
+        summary: Optional[Dict[str, Any]] = None,
+    ):
+        # The DB status reporter records lifecycle only; ``summary`` (e.g. a
+        # proposed_items_schema) is surfaced by the detailed report, not here.
         if not self.task_id: return
-        
+
         update_data = {
             "status": final_status,
             "finished_at": datetime.now(timezone.utc),

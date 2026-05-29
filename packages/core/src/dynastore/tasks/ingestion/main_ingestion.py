@@ -370,6 +370,12 @@ async def run_ingestion_task(
         # arbitrary formats. A resolution failure (or a schema with no temporal
         # field) simply degrades to "no coercion".
         temporal_fields: dict = {}
+        # #1216: propose-only schema derivation. When the collection has no
+        # items_schema yet, derive one from the source asset's OGR/gdalinfo and
+        # surface it in the report tail for an admin to apply — never written to
+        # config here. Set once below; emitted via task_finished(summary=...).
+        items_schema_present = False
+        proposed_items_schema: Optional[dict] = None
         try:
             from dynastore.modules.storage.driver_config import ItemsSchema
 
@@ -377,6 +383,7 @@ async def run_ingestion_task(
                 ItemsSchema, catalog_id, collection_id
             )
             if items_schema and items_schema.fields:
+                items_schema_present = True
                 temporal_fields = {
                     name: (
                         fdef.data_type,
@@ -493,6 +500,42 @@ async def run_ingestion_task(
         # object HEAD for legacy rows whose metadata pre-dates the
         # ``content_type`` injection in ``GcpStorageOpsMixin.initiate_upload``.
         source_content_type = _resolve_source_content_type(asset)
+
+        # #1216: derive a proposed items_schema when the collection has none.
+        # Best-effort and propose-only — failures (no libgdal in this SCOPE,
+        # unreadable source, raster asset) just skip; nothing is written to
+        # config. The result rides in the report tail via task_finished(summary).
+        if not items_schema_present:
+            try:
+                from dynastore.tasks.ingestion.schema_introspect import (
+                    extract_ogr_schema,
+                )
+
+                derived = extract_ogr_schema(source_file_path)
+                if derived:
+                    proposed_items_schema = {
+                        "class_key": "items_schema",
+                        "fields": {
+                            name: fd.model_dump(mode="json", exclude_none=True)
+                            for name, fd in derived.items()
+                        },
+                        "note": (
+                            "Derived from the source via OGR/gdalinfo because the "
+                            "collection has no items_schema. PROPOSAL ONLY — not "
+                            "applied. PATCH it to the ItemsSchema config "
+                            "(items_schema) for this collection to adopt it."
+                        ),
+                    }
+                    logger.info(
+                        "Task '%s': proposed items_schema derived (%d fields) — "
+                        "surfaced in report, not applied.",
+                        task_id, len(derived),
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Task '%s': items_schema derivation skipped (%s).",
+                    task_id, exc,
+                )
 
         # --- Process and Ingest Features ---
         total_features = None
@@ -759,8 +802,20 @@ async def run_ingestion_task(
                 f"({asset.asset_id} → {collection_id}): {ref_err}"
             )
 
+        # Only pass ``summary`` when there's something to carry, so the common
+        # path stays signature-identical to the pre-#1216 call (a custom reporter
+        # that doesn't accept ``summary`` is unaffected unless a schema is
+        # actually proposed).
+        _summary_kw = (
+            {"summary": {"proposed_items_schema": proposed_items_schema}}
+            if proposed_items_schema
+            else {}
+        )
         await asyncio.gather(
-            *(reporter.task_finished("COMPLETED") for reporter in reporters)
+            *(
+                reporter.task_finished("COMPLETED", **_summary_kw)
+                for reporter in reporters
+            )
         )
 
         # --- Run Post-Operations ---

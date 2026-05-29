@@ -70,6 +70,17 @@ class ReportingInterface(Generic[T_CONFIG], ABC):
         pass
 
     @abstractmethod
-    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
-        """Called once when the task concludes, successfully or with an error."""
+    async def task_finished(
+        self,
+        final_status: str,
+        error_message: Optional[str] = None,
+        summary: Optional[Dict[str, Any]] = None,
+    ):
+        """Called once when the task concludes, successfully or with an error.
+
+        ``summary`` carries optional task-level findings to fold into the final
+        report (e.g. a ``proposed_items_schema`` derived from the source when the
+        collection has no schema yet — geoid#1216). Reporters that don't surface
+        a summary may ignore it.
+        """
         pass
