@@ -31,6 +31,7 @@ import geopandas  # noqa: F401
 
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
+from dynastore.tasks import result_message
 from dynastore.tasks.ingestion.main_ingestion import run_ingestion_task
 from dynastore.tasks.ingestion.ingestion_models import TaskIngestionRequest
 from dynastore.tools.protocol_helpers import get_engine
@@ -96,7 +97,19 @@ class IngestionTask(ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Op
                 caller_id=caller_id
             )
             logger.info(f"Ingestion task '{task_id}' complete.")
-            return StatusInfo(jobID=payload.task_id, status="successful", message="Ingestion task completed successfully.", progress=100, links=[])
+            # Standard message: a URL to verify the ingested output — the
+            # features from the source asset when its id is known, else the
+            # collection's full item listing.
+            asset_id = task_request.asset.asset_id if task_request.asset else None
+            if asset_id:
+                verify_url = await result_message.items_verify_url(
+                    catalog_id, collection_id, asset_id=asset_id
+                )
+            else:
+                verify_url = await result_message.collection_verify_url(
+                    catalog_id, collection_id
+                )
+            return result_message.completed(payload.task_id, message=verify_url)
         except Exception as e:
             logger.error(f"Ingestion task '{task_id}' failed catastrophically: {e}", exc_info=True)
             # The DatabaseStatusReporter will catch this exception and mark the task as FAILED.

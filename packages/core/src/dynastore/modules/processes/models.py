@@ -331,9 +331,20 @@ def task_to_status_info(task: "Task", links: Optional[List[Link]] = None) -> Sta
     # jobs a task may return a human-facing message (e.g. a signed result URL)
     # in its ``outputs`` StatusInfo, which the runner persists. Surface that
     # when there is no error_message, so successful jobs aren't left blank.
+    # The shared ``tasks.result_message`` helpers are how tasks populate this.
     status_message = task.error_message
     if status_message is None and isinstance(task.outputs, dict):
         status_message = task.outputs.get("message")
+    # Never leave a *terminal* job message-less: synthesise a default from the
+    # status so clients always have something to show. Non-terminal states
+    # (created/accepted/running) legitimately have no message yet.
+    if status_message is None:
+        if task.status == TaskStatusEnum.COMPLETED:
+            status_message = f"Job '{task.task_type}' completed."
+        elif task.status in (TaskStatusEnum.FAILED, TaskStatusEnum.DEAD_LETTER):
+            status_message = f"Job '{task.task_type}' failed."
+        elif task.status == TaskStatusEnum.DISMISSED:
+            status_message = f"Job '{task.task_type}' was dismissed."
 
     info = StatusInfo(
         jobID=task.jobID,

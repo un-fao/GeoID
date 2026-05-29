@@ -26,7 +26,11 @@ class ExportFeaturesRequest(BaseModel):
     catalog: str = Field(..., description="Catalog ID")
     collection: str = Field(..., description="Collection ID")
     output_format: OutputFormatEnum = Field(..., description="Output file format")
-    destination_uri: str = Field(..., description="GCS URI for output (gs://...)")
+    # NOTE: the output location is NOT a client input. Per OGC API - Processes
+    # the server owns result storage; the task derives a per-job key in the
+    # catalog's own bucket and returns the artifact as a signed URL. The
+    # destination is passed to ``export_features`` by the caller, not carried
+    # on this request.
     encoding: str = Field(default="utf-8", description="Character encoding for output")
     cql_filter: Optional[str] = Field(None, description="CQL2/ECQL filter expression")
     property_names: Optional[List[str]] = Field(

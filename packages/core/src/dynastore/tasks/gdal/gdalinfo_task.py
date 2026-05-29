@@ -36,6 +36,7 @@ from dynastore.modules.catalog.asset_service import (
 )
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.modules.processes.models import ExecuteRequest, Process
+from dynastore.tasks import result_message
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.models.protocols import AssetsProtocol
 from dynastore.modules import get_protocol
@@ -171,7 +172,13 @@ class GdalInfoTask(TaskProtocol):
             )
             logger.info(f"Asset '{asset_id}' metadata enriched with GDAL info.")
 
-            return {"info": info}
+            # Keep the gdalinfo payload (the job's data result) and attach the
+            # standard message: a URL to the enriched asset so the caller can
+            # verify the metadata that was just written.
+            asset_url = await result_message.asset_verify_url(
+                catalog_id, collection_id, asset_id
+            )
+            return result_message.with_message({"info": info}, asset_url)
 
         except Exception as e:
             msg = str(e)

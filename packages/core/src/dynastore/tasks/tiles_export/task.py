@@ -22,11 +22,13 @@ import morecantile
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
 from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler, managed_transaction
+from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
 from dynastore.modules.processes.models import Process, StatusInfo
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks import tasks_module
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum, TaskUpdate
 from dynastore.modules.tiles import tiles_db, tiles_module
+from dynastore.tasks import result_message
 from dynastore.modules.tiles.tiles_config import TilesConfig
 from dynastore.modules.tiles.tms_definitions import BUILTIN_TILE_MATRIX_SETS
 from dynastore.modules.tiles.writers.pmtiles_writer import write_pmtiles
@@ -313,6 +315,36 @@ class TilesExportTask(
                     data=pmtiles_bytes,
                 )
 
+            # Deliver the archive the same way as the other export processes:
+            # push a copy to the catalog bucket under a per-job key and return a
+            # 7-day signed URL as the job message. The PG ``pmtiles_exports`` row
+            # above stays the system-of-record, so this delivery copy is
+            # best-effort — a storage hiccup degrades the message, never the job.
+            message = (
+                f"PMTiles export complete: {stats['n_tiles']} tiles "
+                f"(export_id={export_id})."
+            )
+            try:
+                output_uri = await result_message.server_output_uri(
+                    request.catalog_id,
+                    TILES_EXPORT_PROCESS_DEFINITION.id,
+                    str(payload.task_id),
+                    f"{request.collection_id}.pmtiles",
+                )
+                upload_stream_to_gcs(
+                    byte_stream=iter([pmtiles_bytes]),
+                    destination_uri=output_uri,
+                    content_type="application/octet-stream",
+                )
+                message = await result_message.signed_result_url(
+                    output_uri, "application/octet-stream"
+                )
+            except Exception as e:  # delivery copy must never sink a built export
+                logger.warning(
+                    "tiles_export: could not deliver signed PMTiles URL "
+                    "(export_id=%s): %s", export_id, e
+                )
+
             outputs = {
                 "export_id": export_id,
                 "n_tiles": stats["n_tiles"],
@@ -321,6 +353,7 @@ class TilesExportTask(
                 "tms_id": request.tms_id,
                 "min_zoom": min_zoom,
                 "max_zoom": max_zoom,
+                "message": message,
             }
 
             if payload.task_id:

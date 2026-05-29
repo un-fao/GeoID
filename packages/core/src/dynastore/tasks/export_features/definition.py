@@ -28,16 +28,17 @@ EXPORT_FEATURES_PROCESS_DEFINITION = Process(
     version="1.0.0",
     title="Export Features",
     description=(
-        "Exports features from a collection to a file in Cloud Storage with "
-        "optional CQL filtering and property projection."
+        "Exports features from a collection to a file in server-owned Cloud "
+        "Storage with optional CQL filtering and property projection. The "
+        "artifact is returned as a time-limited signed URL in the job message."
     ),
     scopes=[ProcessScope.COLLECTION],
     inputs=pydantic_to_process_inputs(ExportFeaturesRequest),
     outputs={
         "result": ProcessOutput.model_validate(
-            {"title": "Result", "schema": {"type": "object"}}
+            {"title": "Result", "schema": {"type": "string", "format": "uri"}}
         )
     },
     jobControlOptions=[JobControlOptions.ASYNC_EXECUTE],
-    outputTransmission=[TransmissionMode.VALUE],
+    outputTransmission=[TransmissionMode.REFERENCE],
 )
