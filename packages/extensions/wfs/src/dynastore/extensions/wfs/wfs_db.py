@@ -29,10 +29,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID  # Use specific type for UUID
 from sqlalchemy.ext.asyncio import AsyncConnection
-from dynastore.modules.db_config.query_executor import (
-    DQLQuery,
-    ResultHandler,
-)
 from geoalchemy2 import Geometry
 
 from .tools import (
@@ -71,24 +67,6 @@ def _map_protocol_type_to_sqlalchemy(proto_type: str) -> Any:
         "binary": String,
         "jsonb": JSON,
     }.get(pt, String)  # Fallback
-
-
-# 1. New query to get both column name and data type
-# _get_table_columns_query was moved to dynastore.modules.db_config.tools
-
-# 1. New query to get both column name and data type
-# _get_table_columns_query was moved to dynastore.modules.db_config.tools
-
-# _map_pg_type_to_sqlalchemy_type was moved to dynastore.modules.db_config.tools
-
-# _get_dynamic_field_mapping was removed in favor of ItemService.get_collection_fields
-
-
-
-_get_first_attributes_json_query = DQLQuery(
-    "SELECT attributes FROM {schema}.{table} WHERE attributes IS NOT NULL AND attributes != '{{}}'::jsonb LIMIT 1;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
 
 
 async def introspect_feature_type_schema(

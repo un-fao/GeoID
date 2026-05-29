@@ -126,23 +126,9 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
         Registers the WFS-specific exception handler with the main FastAPI application.
         This is the correct lifecycle hook for adding app-level configurations.
         """
-        # Register WFS handler with global registry.
-        # We prepend to ensure it takes precedence over generic handlers
-        # (in case WFSException inherits from generic types like ValueError).
-        # Note: This technically places it before the Logging handler if both are prepended,
-        # but the logging handler is registered during app startup (setup_exception_handlers).
-        # Extensions initialize later.
-        # If we prepend now, WFS comes before Logging.
-        # To fix this, we'll append, but we must verify WFSException inheritance.
-        # Assuming for now we append to play nice with Logging handler which is at index 0.
-        # Wait, if WFSException inherits ValueError, we MUST prepend or be before ValidationHandler.
-        # ValidationHandler is last in builtin list.
-        # So appending puts WFS AFTER ValidationHandler.
-        # This is RISKY if inheritance exists.
-
-        # Safe bet: Prepend, and add DB logging inside WFS handler or accept that WFS uses its own logging for now.
-        # The WFS handler *does* log to logger.warning.
-        # Let's prepend to be safe for WFS XML requirement.
+        # Prepend so the WFS handler runs before the generic handlers and can
+        # emit the OGC ExceptionReport XML that WFS clients require. The handler
+        # logs client errors to logger.warning itself.
         register_extension_handler(WFSGlobalExceptionHandler(), prepend=True)
 
     @staticmethod

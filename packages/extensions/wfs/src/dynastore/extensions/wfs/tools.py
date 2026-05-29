@@ -74,18 +74,3 @@ def get_xsd_type_from_python_type(py_type: type) -> str:
 
     logger.warning(f"No direct XSD mapping for Python type '{py_type}'. Using xs:string.")
     return "xs:string"
-
-
-def get_xsd_type_from_attribute_schema_type(schema_type: str) -> str:
-    """Maps our internal schema type strings to XSD types."""
-    type_map = {
-        "string": "xs:string",
-        "number": "xs:double", # Use double for generic numbers
-        "integer": "xs:int",
-        "boolean": "xs:boolean",
-        "date": "xs:date",
-        "datetime": "xs:dateTime",
-        "array": "xs:anyType", # Generic for arrays, could be more specific if needed
-        "object": "xs:anyType", # Generic for objects, could be more specific if needed
-    }
-    return type_map.get(schema_type, "xs:string") # Default to string if unknown
