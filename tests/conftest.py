@@ -241,6 +241,10 @@ async def _bootstrap_foundational_schemas(engine) -> None:
     from dynastore.modules.iam.applied_presets_service import AppliedPresetsService
     from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
     from dynastore.modules.db_config.query_executor import managed_transaction
+    from dynastore.modules.tasks.tasks_module import (
+        ensure_task_storage_exists,
+        get_task_schema,
+    )
 
     # configs schema + platform_configs table (delegates to PlatformConfigService
     # so the DDL stays inside the module, not here).
@@ -251,6 +255,16 @@ async def _bootstrap_foundational_schemas(engine) -> None:
         await ensure_schema_exists(conn, "iam")
         svc = AppliedPresetsService(engine)
         await svc.ensure_table(conn=conn)
+
+    # tasks schema + tasks.tasks partitioned table. delete_catalog(force=True)
+    # enqueues a cascade-cleanup task, so any test that force-deletes a catalog
+    # touches tasks.tasks even when it does not enable the tasks module. Bootstrap
+    # it here (idempotent) so the template clone every xdist worker forks already
+    # contains it. DDL stays inside TasksModule.
+    async with managed_transaction(engine) as conn:
+        task_schema = get_task_schema()
+        await ensure_schema_exists(conn, task_schema)
+        await ensure_task_storage_exists(conn, task_schema)
 
 
 async def _assert_foundational_schemas(engine) -> None:
@@ -799,6 +813,20 @@ async def reset_dynastore_state(engine=None):
     
     lifecycle_registry.soft_clear()
     logger.info("LifecycleRegistry soft-cleared (framework hooks preserved).")
+
+    # 9b. Clear the provisioning registry (module-level singleton). A module
+    # lifespan (e.g. GCP) registers a per-catalog provisioner here; if it
+    # survives teardown, the NEXT test's freshly-created catalog inherits that
+    # provisioner in its checklist and gets stuck in `provisioning` (→ 409 on
+    # reads) even though that test never enabled the module.
+    try:
+        from dynastore.modules.catalog.provisioning_registry import (
+            provisioning_registry,
+        )
+
+        provisioning_registry.clear()
+    except Exception as e:  # noqa: BLE001 — best-effort isolation reset
+        logger.debug(f"provisioning_registry clear skipped: {e}")
 
     # 10. Clear Log Service (Crucial for connection isolation)
     from dynastore.modules.catalog.log_manager import LOG_SERVICE

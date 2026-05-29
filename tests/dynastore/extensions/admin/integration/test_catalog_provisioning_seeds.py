@@ -2,10 +2,14 @@
 Catalog-provisioning seed assertions for the Option B unified-grants model.
 
 A freshly-provisioned catalog must arrive with:
-  - ``{schema}.roles``     — table exists, contains the four seeded rows
-                             (admin / editor / user / unauthenticated).
+  - ``{schema}.roles``     — table exists, contains the two seeded rows
+                             (admin / unauthenticated). Default catalog roles
+                             were trimmed to these two (bd7b14e7); editor/user
+                             are no longer seeded.
   - ``{schema}.grants``    — table exists, count(*) == 0.
-  - ``{schema}.role_hierarchy`` — table exists with the seeded admin→editor edge.
+  - ``{schema}.role_hierarchy`` — table exists and is empty: no hierarchy edges
+                             are seeded by default (the seeds are flat, all
+                             ``parent=None``); operators add edges explicitly.
 
 These tests reach into the database directly (rather than hitting the REST
 layer) because the goal is to pin the **provisioning lifecycle**: any
@@ -28,7 +32,7 @@ from dynastore.modules.db_config.query_executor import managed_transaction
 
 MARKER = pytest.mark.enable_extensions("features")
 
-EXPECTED_SEED_ROLES = {"admin", "editor", "user", "unauthenticated"}
+EXPECTED_SEED_ROLES = {"admin", "unauthenticated"}
 
 
 async def _resolve_schema(catalog_id: str) -> str:
@@ -44,8 +48,9 @@ async def _resolve_schema(catalog_id: str) -> str:
 
 @MARKER
 @pytest.mark.asyncio
-async def test_fresh_catalog_seeds_four_default_roles(setup_catalogs):
-    """{schema}.roles holds the four seeded rows on a fresh catalog."""
+async def test_fresh_catalog_seeds_default_roles(setup_catalogs):
+    """{schema}.roles holds the default seeded rows on a fresh catalog
+    (admin + unauthenticated; editor/user were removed in bd7b14e7)."""
     catalog_id = setup_catalogs[0]
     schema = await _resolve_schema(catalog_id)
     db = get_protocol(DatabaseProtocol)
@@ -86,12 +91,13 @@ async def test_fresh_catalog_grants_table_starts_empty(setup_catalogs):
 
 @MARKER
 @pytest.mark.asyncio
-async def test_fresh_catalog_role_hierarchy_seeded(setup_catalogs):
-    """{schema}.role_hierarchy carries the admin→editor seed edge.
+async def test_fresh_catalog_role_hierarchy_starts_empty(setup_catalogs):
+    """{schema}.role_hierarchy exists and is empty on a fresh catalog.
 
-    Encodes D5: the chain of authority `admin → editor` is established
-    on every fresh catalog so an admin's policies cascade to editor
-    capabilities without requiring tenants to wire it themselves.
+    Default catalog roles are flat (all ``parent=None``), so no hierarchy
+    edges are seeded — the prior ``admin→editor`` edge went away with the
+    ``editor`` seed (bd7b14e7). Operators add edges explicitly via
+    ``IamProtocol.add_role_hierarchy``.
     """
     catalog_id = setup_catalogs[0]
     schema = await _resolve_schema(catalog_id)
@@ -100,16 +106,13 @@ async def test_fresh_catalog_role_hierarchy_seeded(setup_catalogs):
 
     async with managed_transaction(db.engine) as conn:
         result = await conn.execute(
-            text(
-                f'SELECT parent_role, child_role FROM "{schema}".role_hierarchy '
-                f"WHERE parent_role = 'admin' AND child_role = 'editor';"
-            )
+            text(f'SELECT COUNT(*) FROM "{schema}".role_hierarchy;')
         )
-        rows = result.fetchall()
+        count = result.scalar_one()
 
-    assert rows, (
-        f"Catalog {catalog_id!r} schema {schema!r}: "
-        f"missing the seeded admin→editor role-hierarchy edge."
+    assert count == 0, (
+        f"Catalog {catalog_id!r} schema {schema!r}: role_hierarchy should "
+        f"start empty (no edges seeded by default); got {count} row(s)."
     )
 
 
