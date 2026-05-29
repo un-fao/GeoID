@@ -17,13 +17,12 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import Dict, List, Any, Tuple
+from typing import Any
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import (
     String, Text, BigInteger, Integer, Boolean, TIMESTAMP, Float, Numeric, Date
 )
 from geoalchemy2 import Geometry
-import json # Import json for GeoJSON processing
 
 logger = logging.getLogger(__name__)
 
