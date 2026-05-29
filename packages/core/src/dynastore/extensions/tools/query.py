@@ -430,7 +430,7 @@ async def dispatch_or_stream_items(
             consumer=consumer,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def parse_ogc_query_request(
@@ -508,7 +508,7 @@ def parse_ogc_query_request(
                 )
             )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid BBOX: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid BBOX: {e}") from e
 
     if datetime_param:
         try:
@@ -549,7 +549,7 @@ def parse_ogc_query_request(
                     FilterCondition(field="validity", operator="@>", value=dt)
                 )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}") from e
     else:
         request_obj.filters.append(
             FilterCondition(

@@ -250,7 +250,7 @@ class LocalUploadModule(ModuleProtocol):
                 raise HTTPException(
                     status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to write upload to staging: {exc}",
-                )
+                ) from exc
 
             # 2. Register asset (moves file + creates DB record)
             try:
@@ -264,7 +264,7 @@ class LocalUploadModule(ModuleProtocol):
                 raise HTTPException(
                     status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Asset registration failed: {exc}",
-                )
+                ) from exc
 
             return UploadStatusResponse(
                 ticket_id=ticket_id,
@@ -334,7 +334,7 @@ class LocalUploadModule(ModuleProtocol):
             file_path = Path(unquote(parsed.path)).resolve()
             try:
                 file_path.relative_to(asset_root)
-            except ValueError:
+            except ValueError as exc:
                 logger.error(
                     "LocalUploadModule: refusing to serve %s — outside asset root %s",
                     file_path, asset_root,
@@ -342,7 +342,7 @@ class LocalUploadModule(ModuleProtocol):
                 raise HTTPException(
                     status_code=http_status.HTTP_403_FORBIDDEN,
                     detail="Asset path is outside the local asset store.",
-                )
+                ) from exc
             if not file_path.is_file():
                 raise HTTPException(
                     status_code=http_status.HTTP_404_NOT_FOUND,

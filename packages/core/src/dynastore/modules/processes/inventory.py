@@ -152,7 +152,7 @@ def parse_scope_filter(raw: Optional[str]) -> Optional[Set[models.ProcessScope]]
             f"Invalid scope filter {raw!r}: {e}. "
             f"Expected comma-separated values in "
             f"{[s.value for s in models.ProcessScope]} or 'all'."
-        )
+        ) from e
 
 
 def parse_runner_filter(raw: Optional[str]) -> Optional[Set[str]]:

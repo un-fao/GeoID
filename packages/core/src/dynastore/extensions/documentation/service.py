@@ -56,8 +56,8 @@ def render_extension_readme_body(registry: dict, name: str) -> str:
     """
     try:
         import markdown
-    except ImportError:
-        raise RendererUnavailable("markdown package is not installed")
+    except ImportError as exc:
+        raise RendererUnavailable("markdown package is not installed") from exc
 
     readme_path = registry.get(name)
     if not readme_path or not os.path.exists(readme_path):

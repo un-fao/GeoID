@@ -743,7 +743,7 @@ def auto_handle_exceptions(
                     resource_name=resource_name,
                     resource_id=extracted_resource_id,
                     operation=operation,
-                )
+                ) from e
 
         return wrapper  # type: ignore
 

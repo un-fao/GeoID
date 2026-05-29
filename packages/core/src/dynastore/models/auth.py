@@ -119,8 +119,8 @@ class Policy(BaseModel):
         for pattern in v:
             try:
                 re.compile(pattern)
-            except re.error:
-                raise ValueError(f"Invalid regex in policy pattern: {pattern}")
+            except re.error as e:
+                raise ValueError(f"Invalid regex in policy pattern: {pattern}") from e
             if _REDOS_PATTERN.search(pattern):
                 raise ValueError(
                     f"Potentially unsafe regex pattern (nested quantifiers): {pattern}"
