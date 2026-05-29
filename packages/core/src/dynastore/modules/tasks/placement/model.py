@@ -24,7 +24,10 @@ class PlacementEntry(BaseModel):
     mode: str = OFF_LOAD
 
 
-DEFAULT_PLACEMENT_PRESET = "cloud"
+# geoid's primary distribution is on-prem via docker compose, so off_load
+# resolves to a worker queue by default; the GCP deploy opts into "cloud"
+# (off_load -> Cloud Run job) by shipping a placement seed.
+DEFAULT_PLACEMENT_PRESET = "onprem"
 
 
 class TaskPlacementConfig(PluginConfig):

@@ -23,6 +23,8 @@ def test_overrides_layer_over_placements():
     assert resolved.consumers == ["maps"]   # override wins
 
 
-def test_default_preset_is_cloud():
+def test_default_preset_is_onprem():
+    # geoid's default distribution is on-prem (docker compose); the GCP deploy
+    # opts into "cloud" via a placement seed.
     cfg = TaskPlacementConfig(placements={"gdal": PlacementEntry(consumers=["worker"], mode=OFF_LOAD)})
-    assert cfg.placement_preset == "cloud"
+    assert cfg.placement_preset == "onprem"
