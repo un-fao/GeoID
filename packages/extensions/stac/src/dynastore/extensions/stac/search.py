@@ -603,49 +603,10 @@ async def search_items(
         cat_id, ctx=DriverContext(db_resource=db_resource)
     )
 
-    # --- Query Planner: Dependency Analysis ---
-    # Detect which sidecars are strictly required by the filter criteria
-
-    req_geometry = bool(
-        search_request.bbox
-        or search_request.intersects
-        or (hierarchy_sql and "geom" in hierarchy_sql)
-        or "geom" in where_sql
-    )
-
-    req_stac = bool(
-        "stac_" in where_sql
-        or "external_extensions" in where_sql
-        or "external_assets" in where_sql
-    )
-
-    # "Attributes" sidecar is needed if we filter on properties, IDs, or datetime (validity)
-    req_attributes = bool(
-        search_request.ids
-        or search_request.datetime
-        or search_request.filter
-        or "attributes" in where_sql
-        or "external_id" in where_sql
-    )
-
-    # --- Query Planner: Sort Strategy Optimization ---
-    # If we are in "Spatial Only" mode (Geometry query, no attribute filters),
-    # we can optimize by sorting on Hub columns (transaction_time) instead of joining Attributes (validity).
-    # Otherwise, we default to standard STAC sorting (validity, external_id) which requires Attributes.
-
-    if req_geometry and not req_attributes and not req_stac:
-        # Optimization: Spatial Only Mode
-        # Sort by Hub columns to avoid extra join
-        sort_mode = "hub"
-        sort_col = "h.transaction_time"
-        sort_id = "h.geoid::text"
-    else:
-        # Standard Mode
-        # Sort by Attributes (validity)
-        sort_mode = "attributes"
-        sort_col = "lower(s.validity)"  # Assumes 's' alias for attributes
-        sort_id = "s.external_id"
-        req_attributes = True  # Force attributes join for sorting
+    # Sidecar requirements and sort strategy are resolved per-collection inside
+    # the loop below (``req_attributes``/``req_stac`` recomputed from each
+    # collection's WHERE), and the final ORDER BY is built by
+    # ``_parse_collection_sort_sql`` over the unioned ``all_matches`` CTE.
 
     candidate_fragments = []
 

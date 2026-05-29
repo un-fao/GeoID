@@ -920,7 +920,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
     ):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
-        catalogs_svc = await self._get_catalogs_service()
 
         if not engine:
             from dynastore.models.protocols import DatabaseProtocol
@@ -1106,15 +1105,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         if not items_svc:
             raise HTTPException(status_code=500, detail="Items protocol not available.")
 
-        catalogs_svc = await self._get_catalogs_service()
-
         try:
-            # from .metadata_helpers import prune_managed_content # Removed
-            from .stac_extension_protocol import StacExtensionProtocol
-
-            # Prune managed content (assets/extensions) from the payload before storage
-            # This is handled by sidecar prepare_upsert_payload (in-place pruning)
-            providers = get_protocols(StacExtensionProtocol)
+            # Managed content (assets/extensions) is pruned from the payload by
+            # the sidecar prepare_upsert_payload (in-place); no pruning here.
 
             async with managed_transaction(engine) as conn:
                 # PUT-by-geoid resolution (#1367). Post-#1212 the canonical
