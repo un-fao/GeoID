@@ -20,6 +20,18 @@ class TaskConfig:
     definition: Any = None
     instance: TaskProtocol | None = None
 
+
+def task_kind(cfg: TaskConfig) -> str:
+    """Derive a task's invocation kind from its registry entry.
+
+    ``process`` iff the task ships a Process ``definition`` (and is therefore
+    reachable via the OGC Processes API under policy); ``task`` otherwise
+    (system task — enqueueable only by events/listeners/system orchestration).
+    This is the SSOT consulted by the autodiscovery publisher and the
+    Processes invocation guard; no separate field is stored.
+    """
+    return "process" if cfg.definition is not None else "task"
+
 _DYNASTORE_TASKS: Dict[str, TaskConfig] = {}
 
 # Module-level handle to the runtime app_state so ``get_task_instance`` can

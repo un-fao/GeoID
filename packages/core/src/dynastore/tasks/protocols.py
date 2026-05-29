@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import abc
-from typing import Protocol, AsyncGenerator, Optional, TypeVar, Generic, runtime_checkable, Any
+from typing import ClassVar, Protocol, AsyncGenerator, Optional, TypeVar, Generic, runtime_checkable, Any
 from contextlib import asynccontextmanager
 from dynastore.modules.protocols import HasConfigService
 
@@ -38,6 +38,11 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
     """
 
     priority: int = 0
+    # Declared-once class attributes consumed by the durable task-capability
+    # registry and the mandatory-ownership guarantee. Defaults make every existing
+    # task a non-mandatory, tier-agnostic participant with zero edits.
+    mandatory: ClassVar[bool] = False
+    affinity_tier: ClassVar[Optional[str]] = None
 
     def is_available(self) -> bool:
         """
