@@ -2,7 +2,7 @@
 
 The warner is a periodic read-only scan that logs WARN lines for tasks that
 have been PENDING with retry_count=0 for too long — typically caused by a
-TaskRoutingConfig typo or a service that should claim them but isn't deployed.
+TaskPlacementConfig typo or a service that should claim them but isn't deployed.
 
 We mock the SQL execution so the test doesn't need a real PG. The contract:
 - when ``shutdown_event`` fires immediately, the loop returns cleanly.

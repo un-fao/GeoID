@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from dynastore.modules.db_config import config_seeder as seeder
-from dynastore.modules.tasks.tasks_config import TaskRoutingConfig
+from dynastore.modules.tasks.placement.model import TaskPlacementConfig
 
 
 @asynccontextmanager
@@ -42,9 +42,9 @@ async def test_no_files_is_noop(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_applies_when_no_existing_config(monkeypatch, tmp_path):
-    _write_seed(tmp_path / "defaults", "task-routing.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["catalog"]}},
+    _write_seed(tmp_path / "defaults", "task-placement.json", {
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["catalog"], "mode": "off_load"}}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
@@ -58,22 +58,22 @@ async def test_applies_when_no_existing_config(monkeypatch, tmp_path):
 
     config_mgr.set_config.assert_awaited_once()
     cls_arg, cfg_arg = config_mgr.set_config.await_args.args
-    assert cls_arg is TaskRoutingConfig
-    assert isinstance(cfg_arg, TaskRoutingConfig)
-    assert cfg_arg.routing == {"t_a": ["catalog"]}
+    assert cls_arg is TaskPlacementConfig
+    assert isinstance(cfg_arg, TaskPlacementConfig)
+    assert cfg_arg.placements["t_a"].consumers == ["catalog"]
 
 
 @pytest.mark.asyncio
 async def test_skip_when_existing_no_override(monkeypatch, tmp_path):
-    _write_seed(tmp_path / "defaults", "task-routing.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["maps"]}},
+    _write_seed(tmp_path / "defaults", "task-placement.json", {
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["maps"], "mode": "off_load"}}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
     config_mgr = AsyncMock()
     config_mgr.list_configs = AsyncMock(
-        return_value={TaskRoutingConfig: TaskRoutingConfig()},
+        return_value={TaskPlacementConfig: TaskPlacementConfig()},
     )
     config_mgr.set_config = AsyncMock()
 
@@ -86,16 +86,16 @@ async def test_skip_when_existing_no_override(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_override_forces_apply(monkeypatch, tmp_path):
-    _write_seed(tmp_path / "defaults", "task-routing.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["maps"]}},
+    _write_seed(tmp_path / "defaults", "task-placement.json", {
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["maps"], "mode": "off_load"}}},
         "override": True,
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
     config_mgr = AsyncMock()
     config_mgr.list_configs = AsyncMock(
-        return_value={TaskRoutingConfig: TaskRoutingConfig()},
+        return_value={TaskPlacementConfig: TaskPlacementConfig()},
     )
     config_mgr.set_config = AsyncMock()
 
@@ -109,12 +109,12 @@ async def test_override_forces_apply(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_lexical_overlay_last_wins(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "10-base.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["catalog"]}},
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["catalog"], "mode": "off_load"}}},
     })
     _write_seed(tmp_path / "defaults", "20-overlay.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["maps"]}},
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["maps"], "mode": "off_load"}}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 
@@ -128,7 +128,7 @@ async def test_lexical_overlay_last_wins(monkeypatch, tmp_path):
 
     config_mgr.set_config.assert_awaited_once()
     _, cfg_arg = config_mgr.set_config.await_args.args
-    assert cfg_arg.routing == {"t_a": ["maps"]}
+    assert cfg_arg.placements["t_a"].consumers == ["maps"]
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_missing_class_key_raises_in_non_prod(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_bad_value_raises_in_non_prod(monkeypatch, tmp_path):
     _write_seed(tmp_path / "defaults", "bad-value.json", {
-        "class_key": "task_routing_config",
+        "class_key": "task_placement_config",
         "value": "not-an-object",
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
@@ -243,9 +243,9 @@ async def test_malformed_json_raises_in_non_prod(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_protocol_registered_returns(monkeypatch, tmp_path, caplog):
-    _write_seed(tmp_path / "defaults", "task-routing.json", {
-        "class_key": "task_routing_config",
-        "value": {"routing": {"t_a": ["catalog"]}},
+    _write_seed(tmp_path / "defaults", "task-placement.json", {
+        "class_key": "task_placement_config",
+        "value": {"placements": {"t_a": {"consumers": ["catalog"], "mode": "off_load"}}},
     })
     monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
 

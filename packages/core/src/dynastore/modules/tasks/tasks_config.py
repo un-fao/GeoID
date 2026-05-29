@@ -1,6 +1,6 @@
 # dynastore/modules/tasks/tasks_config.py
 import os
-from typing import ClassVar, Dict, List, Tuple
+from typing import ClassVar, Tuple
 from pydantic import Field, model_validator
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
@@ -108,55 +108,3 @@ class TasksPluginConfig(PluginConfig):
                 "sweeper can DLQ rows targeting it."
             )
         return self
-
-
-class TaskRoutingConfig(PluginConfig):
-    """Service-affinity routing for the global task queue.
-
-    Sibling to ``ItemsRoutingConfig`` but for the tasks tier. Maps
-    ``task_type`` → ordered list of service names allowed to claim it.
-    Empty/missing entry → any service whose runner can handle the task may
-    claim (legacy behaviour).
-
-    Each process compares the configured service names against its own
-    ``service_name`` resolved from ``${DYNASTORE_CONFIG_ROOT}/instance.json``
-    (see ``modules/db_config/instance.py``).  Per-deployment defaults are
-    seeded by dropping a JSON file into ``${DYNASTORE_CONFIG_ROOT}/defaults/``;
-    runtime changes go through the standard ``PUT /configs/plugins/task_routing_config``
-    admin route and trigger the apply-handler that re-narrows the dispatcher's
-    CapabilityMap.
-    """
-    _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
-
-
-    routing: Mutable[Dict[str, List[str]]] = Field(
-        default_factory=dict,
-        description=(
-            "task_type → list of logical service names. Missing key or empty "
-            "list = any capable service may claim. Set per deployment via the "
-            "JSON files mounted into ${DYNASTORE_CONFIG_ROOT}/defaults/."
-        ),
-    )
-
-    routing_disabled: Mutable[bool] = Field(
-        default=False,
-        description=(
-            "Operator kill-switch — when true, the routing filter is a no-op "
-            "and any service claims anything its CapabilityMap accepts. Use "
-            "for emergency triage."
-        ),
-    )
-
-    event_consumer_services: Mutable[List[str]] = Field(
-        default_factory=list,
-        description=(
-            "Logical service names that run the catalog event consumer "
-            "(durable 16-shard outbox loop in CatalogModule). Empty list = "
-            "no service consumes — events accumulate in the outbox until a "
-            "service is added. Default-empty is intentional: an unconfigured "
-            "deployment fails noisy (queue depth visible in monitoring) "
-            "rather than fails silent (connection storm everywhere). Set per "
-            "deployment via the JSON files mounted into "
-            "${DYNASTORE_CONFIG_ROOT}/defaults/."
-        ),
-    )

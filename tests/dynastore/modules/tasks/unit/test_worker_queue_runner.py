@@ -10,13 +10,14 @@ launching a Cloud Run Job. It is the fallback that makes asset-scoped OGC
 This suite asserts the contract:
 
 - ``can_handle`` gating: True only when (a) no in-process task instance exists
-  here AND (b) the task type is routed to a worker via ``TaskRoutingConfig``.
+  here AND (b) the task type is placed on a worker via task placement
+  (``TaskPlacementConfig``).
 - REST-path invocation (no ``task_id`` in extra_context) enqueues exactly one
   ``PENDING`` row via ``create_task`` and returns the ``Task``.
 - Dispatcher-path invocation (``task_id`` present) refuses to re-enqueue.
 - Dedup hit (``create_task`` -> None) returns None.
 - Priority ranks below every in-process runner and below ``GcpJobRunner``.
-- The worker-routed snapshot refreshes from ``TaskRoutingConfig``.
+- The worker-routed snapshot refreshes from task placement.
 """
 
 from __future__ import annotations

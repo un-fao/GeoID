@@ -13,21 +13,17 @@ These pure-static checks (no app boot, no editable reinstall needed) pin the
 two knobs that make the task claimable by exactly one capable consumer:
 
 1. the entry-point declaration (so the class is discovered + registered), and
-2. the routing pin to ``catalog`` — the SAME tier that enqueues the row, so
-   the registered cleanup owners match the snapshotted refs. A wrong-tier
+2. the placement to the ``catalog`` tier — the SAME tier that enqueues the row,
+   so the registered cleanup owners match the snapshotted refs. A wrong-tier
    claim raises ``KeyError`` per ref → marks them DEAD → permanent loss.
 """
 from __future__ import annotations
 
-import json
 import tomllib
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _CORE_PYPROJECT = _REPO_ROOT / "packages" / "core" / "pyproject.toml"
-_CONFIG_ROOT = (
-    _REPO_ROOT / "packages" / "core" / "src" / "dynastore" / "docker" / "config"
-)
 
 _EXPECTED_TARGET = "dynastore.tasks.cascade_cleanup.task:CascadeCleanupTask"
 _EXPECTED_CONSUMER = "catalog"
@@ -58,33 +54,25 @@ def test_cascade_cleanup_entrypoint_declared() -> None:
     )
 
 
-def _full_routing_configs() -> list[Path]:
-    """task-routing.json defaults that carry the full pin table.
+def test_cascade_cleanup_placed_on_catalog_async() -> None:
+    """cascade_cleanup must resolve to the catalog tier in async mode — the same
+    tier that enqueues it, so the cleanup-owner registry matches. Pure-static via
+    the matrix builder (no DB, no app boot).
 
-    The minimal ``example`` service config is intentionally a reduced sample
-    and is excluded.
+    cascade_cleanup is a system task (kind="task") with affinity_tier="catalog",
+    so the default placement matrix pins its consumer to the catalog tier and
+    runs it in-process (async). Routing it elsewhere would mark every cleanup
+    ref DEAD and lose the cleanup.
     """
-    return sorted(
-        p
-        for p in _CONFIG_ROOT.glob("*/defaults/task-routing.json")
-        if p.parent.parent.name != "example"
+    from dynastore.modules.tasks.placement.matrix import (
+        InventoryItem,
+        build_placement_matrix,
     )
+    from dynastore.modules.tasks.placement.model import ASYNC
 
-
-def test_cascade_cleanup_routing_pinned_to_catalog() -> None:
-    """Every full routing default pins cascade_cleanup to exactly the catalog tier.
-
-    catalog is the tier that runs the cascade orchestrator (enqueue side) and
-    therefore holds the matching cleanup-owner registry. Pinning the consumer
-    to the same tier guarantees the snapshotted refs have registered owners;
-    routing it elsewhere would mark every ref DEAD and lose the cleanup.
-    """
-    configs = _full_routing_configs()
-    assert configs, f"no full task-routing.json defaults found under {_CONFIG_ROOT}"
-    for cfg_path in configs:
-        routing = json.loads(cfg_path.read_text())["value"]["routing"]
-        assert routing.get("cascade_cleanup") == [_EXPECTED_CONSUMER], (
-            f"{cfg_path} must pin cascade_cleanup to [{_EXPECTED_CONSUMER!r}]; "
-            f"got {routing.get('cascade_cleanup')!r}. The consumer must equal the "
-            "enqueuing tier (catalog) so cleanup-owner sets match."
-        )
+    matrix = build_placement_matrix([
+        InventoryItem(task_key="cascade_cleanup", kind="task", affinity_tier="catalog"),
+    ])
+    entry = matrix["cascade_cleanup"]
+    assert entry.consumers == [_EXPECTED_CONSUMER]
+    assert entry.mode == ASYNC
