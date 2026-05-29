@@ -5,6 +5,7 @@
       "gcp_provision_catalog":                 ["catalog"],
       "gcp_destroy_catalog":                   ["catalog"],
       "gcp_catalog_cleanup":                   ["catalog"],
+      "cascade_cleanup":                       ["catalog"],
       "elasticsearch_index":                   ["catalog"],
       "elasticsearch_delete":                  ["catalog"],
       "elasticsearch_private_index":           ["catalog"],
