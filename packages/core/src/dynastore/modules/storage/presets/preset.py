@@ -25,8 +25,6 @@ Key types:
 * ``PresetContext``   — the narrow surface a preset is allowed to touch.
 * ``AppliedDescriptor`` — opaque JSON payload stored in the audit row; used
   by ``revoke`` to undo exactly what ``apply`` introduced.
-* ``TaskHandle``      — returned by async presets instead of an
-  ``AppliedDescriptor``; the worker callback fills in the final descriptor.
 * ``PresetPlan``      — dry-run output describing what ``apply`` would do.
 * ``NoParams``        — default empty Pydantic params model.
 """
@@ -43,7 +41,6 @@ from typing import (
     Type,
     runtime_checkable,
 )
-from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -81,19 +78,6 @@ class AppliedDescriptor:
     @classmethod
     def from_json(cls, data: Optional[Dict[str, Any]]) -> "AppliedDescriptor":
         return cls(payload=data or {})
-
-
-@dataclass(frozen=True)
-class TaskHandle:
-    """Returned by async presets; the worker callback populates the final
-    descriptor when the background task finishes.
-
-    ``task_id`` is the task row PK in ``tasks.tasks``.
-    ``revoke_descriptor`` is ``None`` until the task completes.
-    """
-
-    task_id: UUID
-    revoke_descriptor: Optional[AppliedDescriptor] = None
 
 
 @dataclass(frozen=True)
@@ -251,8 +235,6 @@ class Preset(Protocol):
 
     ``"iam" in keywords`` triggers the self-lockout guard on DELETE. No
     separate flag is needed — keywords are the classifier.
-    ``is_async=True`` means ``apply`` / ``revoke`` return a ``TaskHandle``
-    instead of an ``AppliedDescriptor``; the audit lifecycle differs.
     """
 
     name: ClassVar[str]
@@ -261,7 +243,6 @@ class Preset(Protocol):
     tier: ClassVar[PresetTier]
     catalog_scopable: ClassVar[bool]
     params_model: ClassVar[Type[BaseModel]]
-    is_async: ClassVar[bool]
 
     async def dry_run(
         self,
@@ -275,13 +256,13 @@ class Preset(Protocol):
         params: BaseModel,
         scope: str,
         ctx: PresetContext,
-    ) -> "AppliedDescriptor | TaskHandle": ...
+    ) -> AppliedDescriptor: ...
 
     async def revoke(
         self,
         applied_descriptor: AppliedDescriptor,
         ctx: PresetContext,
-    ) -> "None | TaskHandle": ...
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +282,6 @@ class CompositePreset:
 
     ``compose`` references are validated at registration time by the
     registry — an unknown child name raises ``ValueError``.
-
-    Async children cause the composite to transition to ``state=partial``
-    on failure (not auto-rollback); see spec section on async composites.
     """
 
     name: ClassVar[str]
@@ -312,7 +290,6 @@ class CompositePreset:
     tier: ClassVar[PresetTier]
     catalog_scopable: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
-    is_async: ClassVar[bool] = False
     compose: ClassVar[Tuple[str, ...]]
 
     async def dry_run(
@@ -344,10 +321,10 @@ class CompositePreset:
         params: BaseModel,
         scope: str,
         ctx: PresetContext,
-    ) -> "AppliedDescriptor | TaskHandle":
+    ) -> AppliedDescriptor:
         from .registry import find_preset
 
-        applied_children: list[tuple[str, AppliedDescriptor | TaskHandle]] = []
+        applied_children: list[tuple[str, AppliedDescriptor]] = []
 
         for child_name in self.compose:
             child = find_preset(child_name)
@@ -355,19 +332,18 @@ class CompositePreset:
                 result = await child.apply(params, scope, ctx)
                 applied_children.append((child_name, result))
             except Exception as exc:
-                # Synchronous failure: reverse-rollback all prior children.
+                # On failure: reverse-rollback all prior children (best-effort).
                 for prior_name, prior_result in reversed(applied_children):
-                    if isinstance(prior_result, AppliedDescriptor):
-                        prior_child = find_preset(prior_name)
-                        try:
-                            await prior_child.revoke(prior_result, ctx)
-                        except Exception:
-                            pass  # best-effort
+                    prior_child = find_preset(prior_name)
+                    try:
+                        await prior_child.revoke(prior_result, ctx)
+                    except Exception:
+                        pass  # best-effort
                 raise exc
 
         # Build composite descriptor listing successful children.
         child_pairs = [
-            {"name": name, "descriptor": res.payload if isinstance(res, AppliedDescriptor) else {"task_id": str(res.task_id)}}
+            {"name": name, "descriptor": res.payload}
             for name, res in applied_children
         ]
         return AppliedDescriptor(payload={"children": child_pairs, "scope": scope})
@@ -376,7 +352,7 @@ class CompositePreset:
         self,
         applied_descriptor: AppliedDescriptor,
         ctx: PresetContext,
-    ) -> "None | TaskHandle":
+    ) -> None:
         from .registry import find_preset
 
         children = applied_descriptor.payload.get("children", [])

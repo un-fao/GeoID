@@ -83,7 +83,6 @@ class PublicAccessBaseline:
     tier: ClassVar[PresetTier] = PresetTier.PLATFORM
     catalog_scopable: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
-    is_async: ClassVar[bool] = False
 
     async def dry_run(
         self,
