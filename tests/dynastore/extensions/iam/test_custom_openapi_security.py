@@ -21,7 +21,11 @@
 Exercises ``build_iam_openapi_schema`` directly so the IamMiddleware /
 TenantScopeMiddleware stack does not need to be booted. Also verifies
 that ``install_filtered_openapi`` (the platform-disable filter wrapper)
-preserves the security schemes and the top-level ``security`` field.
+preserves the security scheme and the top-level ``security`` field.
+
+The non-working frontend OAuth2 authorization-code flow was removed
+(``OAuth2AuthorizationCode`` scheme dropped); Swagger now exposes a
+single ``HTTPBearer`` scheme — paste a JWT obtained from Keycloak.
 """
 
 from types import SimpleNamespace
@@ -49,7 +53,8 @@ def test_security_schemes_present(monkeypatch):
     schema = build_iam_openapi_schema(_fresh_app())
     schemes = schema["components"]["securitySchemes"]
     assert "HTTPBearer" in schemes
-    assert "OAuth2AuthorizationCode" in schemes
+    # The OAuth2 authorization-code flow was removed — bearer-only now.
+    assert "OAuth2AuthorizationCode" not in schemes
     # HTTPBearer description should reference Keycloak login, not /auth/token.
     assert "Keycloak" in schemes["HTTPBearer"]["description"]
 
@@ -59,54 +64,7 @@ def test_top_level_security_requirement(monkeypatch):
     monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
 
     schema = build_iam_openapi_schema(_fresh_app())
-    assert schema["security"] == [
-        {"HTTPBearer": []},
-        {"OAuth2AuthorizationCode": ["openid", "email", "profile"]},
-    ]
-
-
-def test_oauth2_absolute_urls_when_idp_set(monkeypatch):
-    monkeypatch.setenv("IDP_ISSUER_URL", "https://kc.example.com/realms/test")
-    monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
-
-    schema = build_iam_openapi_schema(_fresh_app())
-    flow = schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"]["flows"][
-        "authorizationCode"
-    ]
-    assert flow["authorizationUrl"] == (
-        "https://kc.example.com/realms/test/protocol/openid-connect/auth"
-    )
-    assert flow["tokenUrl"] == (
-        "https://kc.example.com/realms/test/protocol/openid-connect/token"
-    )
-
-
-def test_oauth2_falls_back_to_relative_when_idp_unset(monkeypatch):
-    monkeypatch.delenv("IDP_ISSUER_URL", raising=False)
-    monkeypatch.delenv("IDP_PUBLIC_URL", raising=False)
-
-    schema = build_iam_openapi_schema(_fresh_app())
-    flow = schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"]["flows"][
-        "authorizationCode"
-    ]
-    assert flow["authorizationUrl"] == "/auth/authorize"
-    assert flow["tokenUrl"] == "/auth/token"
-
-
-def test_oauth2_uses_public_url_when_set(monkeypatch):
-    monkeypatch.setenv("IDP_ISSUER_URL", "http://internal-kc:8080/realms/test")
-    monkeypatch.setenv("IDP_PUBLIC_URL", "https://kc.public.example.com")
-
-    schema = build_iam_openapi_schema(_fresh_app())
-    flow = schema["components"]["securitySchemes"]["OAuth2AuthorizationCode"]["flows"][
-        "authorizationCode"
-    ]
-    assert flow["authorizationUrl"] == (
-        "https://kc.public.example.com/realms/test/protocol/openid-connect/auth"
-    )
-    assert flow["tokenUrl"] == (
-        "https://kc.public.example.com/realms/test/protocol/openid-connect/token"
-    )
+    assert schema["security"] == [{"HTTPBearer": []}]
 
 
 def test_install_filtered_openapi_preserves_security(monkeypatch):
@@ -134,10 +92,5 @@ def test_install_filtered_openapi_preserves_security(monkeypatch):
     schema = app.openapi()
     schemes = schema["components"]["securitySchemes"]
     assert "HTTPBearer" in schemes
-    assert "OAuth2AuthorizationCode" in schemes
-    assert schema["security"] == [
-        {"HTTPBearer": []},
-        {"OAuth2AuthorizationCode": ["openid", "email", "profile"]},
-    ]
-    flow = schemes["OAuth2AuthorizationCode"]["flows"]["authorizationCode"]
-    assert flow["authorizationUrl"].startswith("https://kc.example.com/realms/test/")
+    assert "OAuth2AuthorizationCode" not in schemes
+    assert schema["security"] == [{"HTTPBearer": []}]

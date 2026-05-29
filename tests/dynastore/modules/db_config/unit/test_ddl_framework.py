@@ -127,7 +127,7 @@ class _FakeConn:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_ddlquery_accepts_zero_arg_check_query():

@@ -745,9 +745,7 @@ class TestCascadeCleanupTaskPerRefRetry:
         ):
             with patch("dynastore.tasks.cascade_cleanup.task._persist_updated_refs", new=AsyncMock()):
                 try:
-                    return asyncio.get_event_loop().run_until_complete(
-                        CascadeCleanupTask().run(payload)
-                    ), None
+                    return asyncio.run(CascadeCleanupTask().run(payload)), None
                 except RuntimeError as exc:
                     return None, exc
 

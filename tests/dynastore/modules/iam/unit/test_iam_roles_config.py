@@ -56,7 +56,7 @@ def test_canonical_catalog_seeds_contain_two_roles() -> None:
 def test_canonical_catalog_chain_no_default_edges() -> None:
     """Catalog tier has no default inheritance edges — admin and
     unauthenticated are both top-level. Operators can add edges via
-    ``IamProtocol.add_role_hierarchy``."""
+    ``RoleAdminProtocol.add_role_hierarchy``."""
     parents = {r.name: r.parent for r in DEFAULT_CATALOG_ROLES}
     assert parents == {
         "admin": None,

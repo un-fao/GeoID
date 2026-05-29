@@ -265,7 +265,7 @@ async def test_delete_enqueues_prior_bbox_tile_invalidation(
         return True
 
     async def _capture_enqueue(
-        cat, col, features, *, engine, schema, prior_bboxes=None,
+        cat, col, features, *, engine, schema, prior_bboxes=None, caller_id=None,
     ):
         captured.append((cat, col, list(features), prior_bboxes))
         return len(prior_bboxes or [])

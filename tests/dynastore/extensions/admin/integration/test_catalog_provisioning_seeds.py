@@ -97,7 +97,7 @@ async def test_fresh_catalog_role_hierarchy_starts_empty(setup_catalogs):
     Default catalog roles are flat (all ``parent=None``), so no hierarchy
     edges are seeded — the prior ``admin→editor`` edge went away with the
     ``editor`` seed (bd7b14e7). Operators add edges explicitly via
-    ``IamProtocol.add_role_hierarchy``.
+    ``RoleAdminProtocol.add_role_hierarchy``.
     """
     catalog_id = setup_catalogs[0]
     schema = await _resolve_schema(catalog_id)

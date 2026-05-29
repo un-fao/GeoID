@@ -131,8 +131,8 @@ async def test_aud_array_with_match_passes(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_extract_roles_default_path() -> None:
     provider = _build_provider(audience="geoid-be")
-    # Default path resolves to ``resource_access.geoid-be.roles``.
-    claims = {"resource_access": {"geoid-be": {"roles": ["sysadmin"]}}}
+    # Default path resolves to ``realm_access.roles`` (Keycloak realm roles).
+    claims = {"realm_access": {"roles": ["sysadmin"]}}
 
     assert provider.extract_roles(claims) == ["sysadmin"]
 
@@ -158,7 +158,8 @@ def test_extract_roles_realm_path() -> None:
 
 
 def test_extract_roles_no_silent_merge() -> None:
-    """Default path must NOT pull realm_access roles when resource_access has its own list."""
+    """Default path (``realm_access.roles``) must NOT silently merge the
+    ``resource_access`` client roles when realm_access has its own list."""
     provider = _build_provider(audience="geoid-be")
     claims = {
         "resource_access": {"geoid-be": {"roles": ["other"]}},
@@ -166,13 +167,13 @@ def test_extract_roles_no_silent_merge() -> None:
     }
 
     roles = provider.extract_roles(claims)
-    assert roles == ["other"]
-    assert "sysadmin" not in roles
+    assert roles == ["sysadmin"]
+    assert "other" not in roles
 
 
 def test_extract_roles_missing_path_returns_empty() -> None:
     provider = _build_provider(audience="geoid-be")
-    # Audience client absent from resource_access — must yield [].
+    # ``realm_access`` absent (the default path) — must yield [].
     claims = {"resource_access": {"some-other-client": {"roles": ["x"]}}}
 
     assert provider.extract_roles(claims) == []

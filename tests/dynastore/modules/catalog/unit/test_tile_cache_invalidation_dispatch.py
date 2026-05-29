@@ -37,6 +37,7 @@ async def test_dispatch_enqueues_invalidate_task_with_engine_and_schema(monkeypa
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         calls.append((catalog_id, collection_id, list(features), engine, schema))
         return len(features)
@@ -69,6 +70,7 @@ async def test_dispatch_uses_explicit_db_resource(monkeypatch):
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         seen.append(engine)
         return 0
@@ -132,6 +134,7 @@ async def test_dispatch_passes_prior_bboxes_with_empty_results(monkeypatch):
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         seen.append((list(features), prior_bboxes))
         return 1

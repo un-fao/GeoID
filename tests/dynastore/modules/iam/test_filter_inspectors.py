@@ -215,7 +215,7 @@ class TestCustomInspectorRegistration:
         import asyncio
 
         ctx = _make_ctx()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             handler.evaluate({"inspector": "always_deny"}, ctx)
         )
         assert result is False

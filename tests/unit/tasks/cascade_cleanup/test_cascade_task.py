@@ -81,7 +81,7 @@ def _run_with_registry(task: CascadeCleanupTask, payload: Any, registry: Cascade
         new=registry,
     ):
         import asyncio
-        return asyncio.get_event_loop().run_until_complete(task.run(payload))
+        return asyncio.run(task.run(payload))
 
 
 # ---------------------------------------------------------------------------

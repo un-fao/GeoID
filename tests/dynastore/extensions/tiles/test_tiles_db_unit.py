@@ -19,7 +19,9 @@ async def test_get_features_as_mvt_filtered_query_structure():
     # Mock dependencies
     conn = AsyncMock()
 
-    # Mock DQLQuery execute return values
+    # Mock DQLQuery execute return values. Column resolution is no longer done
+    # in tiles_db (it moved into ItemsService.get_features_query, mocked below),
+    # so there is no get_table_column_names to patch here.
     with patch("dynastore.modules.tiles.tiles_db.DQLQuery") as MockDQLQuery:
         mock_query_instance = MockDQLQuery.return_value
 
@@ -31,79 +33,67 @@ async def test_get_features_as_mvt_filtered_query_structure():
         ]
         mock_query_instance.execute = mock_execute
 
-        # Mock table column names
-        with patch(
-            "dynastore.modules.tiles.tiles_db.get_table_column_names",
-            new_callable=AsyncMock,
-        ) as mock_cols:
-            mock_cols.return_value = {"id", "geom", "attributes"}
+        # Setup TMS
+        tms_def = MagicMock(spec=TileMatrixSet)
+        tms_def.tileMatrices = [
+            MagicMock(
+                id="0",
+                pointOfOrigin=[-180, 90],
+                tileWidth=256,
+                tileHeight=256,
+                cellSize=0.703125,
+            )
+        ]
 
-            # Setup TMS
-            tms_def = MagicMock(spec=TileMatrixSet)
-            tms_def.tileMatrices = [
-                MagicMock(
-                    id="0",
-                    pointOfOrigin=[-180, 90],
-                    tileWidth=256,
-                    tileHeight=256,
-                    cellSize=0.703125,
+        # Mock get_protocol for CatalogModule config lookup fallback
+        with patch("dynastore.modules.get_protocol") as mock_get_module:
+            mock_catalog_module = MagicMock()
+            mock_config_manager = AsyncMock()
+            mock_config_manager.get_config.return_value = None  # No special config
+            mock_catalog_module.get_config_manager.return_value = mock_config_manager
+            mock_get_module.return_value = mock_catalog_module
+
+            # Mock get_protocol for ItemsService
+            with patch("dynastore.tools.discovery.get_protocol") as mock_get_proto:
+                mock_items = AsyncMock()
+                # Mock get_features_query to return a fake SQL and params
+                mock_items.get_features_query.return_value = ("SELECT 1", {})
+                mock_get_proto.return_value = mock_items
+
+                # Call function
+                result = await tiles_db.get_features_as_mvt_filtered(
+                    conn=conn,
+                    resolved_collections=[
+                        {
+                            "phys_schema": "s_test",
+                            "phys_table": "my_table",
+                            "source_srid": 4326,
+                            "simplification_by_zoom": {},
+                            "catalog_id": "my_catalog",
+                            "collection_id": "my_collection",
+                            "col_config": MagicMock(),
+                        }
+                    ],
+                    tms_def=tms_def,
+                    target_srid=3857,
+                    z="0",
+                    x=0,
+                    y=0,
                 )
-            ]
 
-            # Mock get_protocol for CatalogModule config lookup fallback
-            with patch(
-                "dynastore.modules.get_protocol"
-            ) as mock_get_module:
-                mock_catalog_module = MagicMock()
-                mock_config_manager = AsyncMock()
-                mock_config_manager.get_config.return_value = None  # No special config
-                mock_catalog_module.get_config_manager.return_value = (
-                    mock_config_manager
-                )
-                mock_get_module.return_value = mock_catalog_module
+        # Assertions
+        assert result == b"fake_mvt_bytes"
 
-                # Mock get_protocol for ItemsService
-                with patch("dynastore.tools.discovery.get_protocol") as mock_get_proto:
-                    mock_items = AsyncMock()
-                    # Mock get_features_query to return a fake SQL and params
-                    mock_items.get_features_query.return_value = ("SELECT 1", {})
-                    mock_get_proto.return_value = mock_items
+        # Verify the SQL constructed passed to DQLQuery.
+        # The last call should be the MVT query.
+        call_args = MockDQLQuery.call_args_list[-1]
+        sql_query = call_args[0][0]  # First arg of constructor
 
-                    # Call function
-                    result = await tiles_db.get_features_as_mvt_filtered(
-                        conn=conn,
-                        resolved_collections=[
-                            {
-                                "phys_schema": "s_test",
-                                "phys_table": "my_table",
-                                "source_srid": 4326,
-                                "simplification_by_zoom": {},
-                                "catalog_id": "my_catalog",
-                                "collection_id": "my_collection",
-                                "col_config": MagicMock(),
-                            }
-                        ],
-                        tms_def=tms_def,
-                        target_srid=3857,
-                        z="0",
-                        x=0,
-                        y=0,
-                    )
-
-            # Assertions
-            assert result == b"fake_mvt_bytes"
-
-            # Verify the SQL constructed passed to DQLQuery
-            # The last call should be the MVT query
-            call_args = MockDQLQuery.call_args_list[-1]
-            sql_query = call_args[0][0]  # First arg of constructor
-
-            # Check for optimizations
-            # Since we mocked get_features_query, we only check the outer MVT wrapper query
-            assert "WITH" in sql_query
-            assert "mvtgeom" in sql_query
-            # assert "UNION ALL" in sql_query # Removed: join logic only adds separator if >1 query
-            assert "SELECT ST_AsMVT" in sql_query
+        # Check for optimizations. Since we mocked get_features_query, we only
+        # check the outer MVT wrapper query.
+        assert "WITH" in sql_query
+        assert "mvtgeom" in sql_query
+        assert "SELECT ST_AsMVT" in sql_query
 
 
 @pytest.mark.asyncio
