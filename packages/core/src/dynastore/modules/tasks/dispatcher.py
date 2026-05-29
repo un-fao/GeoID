@@ -78,6 +78,12 @@ from dynastore.modules.db_config.exceptions import (
 )
 from dynastore.modules.tasks.mandatory import (
     find_unclaimable_task_types as _find_unclaimable_task_types,
+    _live_owners_for,
+    _mandatory_specs,
+    _has_correct_tier_owner,
+)
+from dynastore.modules.tasks.maintenance import (
+    requeue_dead_letter_tasks_by_type as _requeue_dead_letter_tasks_by_type,
 )
 from dynastore.tools.async_utils import signal_bus
 
@@ -667,6 +673,26 @@ async def sweep_unclaimable_rows(
     if n:
         logger.error("backstop: dead-lettered %d unclaimable row(s) types=%s", n, unclaimable)
     return n
+
+
+async def auto_requeue_recovered_mandatory(engine, *, ttl_grace_seconds: float) -> int:
+    """Requeue DEAD_LETTER rows of mandatory tasks that now have a live
+    correct-tier owner. The mandatory self-heal: a cleanup dead-lettered during a
+    deploy is recalled automatically when its tier comes back."""
+    total = 0
+    for task_key, tier in _mandatory_specs():
+        owners = await _live_owners_for(engine, task_key, ttl_grace_seconds)
+        if _has_correct_tier_owner(owners, tier):
+            n = await _requeue_dead_letter_tasks_by_type(
+                engine, task_key, reset_retries=True,
+            )
+            if n:
+                logger.info(
+                    "auto-requeue: %d DEAD_LETTER %r row(s) recalled — owner back",
+                    n, task_key,
+                )
+            total += n
+    return total
 
 
 # ---------------------------------------------------------------------------

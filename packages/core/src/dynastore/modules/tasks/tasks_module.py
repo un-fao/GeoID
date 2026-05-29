@@ -826,6 +826,7 @@ async def _run_mandatory_backstop_pass(
     )
     from dynastore.modules.tasks.dispatcher import (
         _stable_advisory_lock_key, sweep_unclaimable_rows,
+        auto_requeue_recovered_mandatory,
     )
     from dynastore.modules.tasks.mandatory import check_mandatory_ownership
 
@@ -843,6 +844,9 @@ async def _run_mandatory_backstop_pass(
             await check_mandatory_ownership(engine, ttl_grace_seconds=ttl_grace_seconds)
             await sweep_unclaimable_rows(
                 engine, schema, ttl_grace_seconds=ttl_grace_seconds, min_age_s=min_age_s,
+            )
+            await auto_requeue_recovered_mandatory(
+                engine, ttl_grace_seconds=ttl_grace_seconds,
             )
     except Exception as exc:  # noqa: BLE001 — never crash the sweep loop
         logger.warning("proactive_sweep: mandatory backstop pass failed: %s", exc)
