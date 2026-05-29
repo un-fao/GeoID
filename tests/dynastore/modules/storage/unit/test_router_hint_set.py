@@ -194,6 +194,42 @@ class TestBestOverlapMatcher:
         assert [t[0] for t in out] == ["postgresql"]
 
     @pytest.mark.asyncio
+    async def test_join_hint_selects_pg_over_es_via_supported_hints(self):
+        # Public default items READ lists ES + PG with no explicit entry hints,
+        # so each entry's effective surface is its driver's ``supported_hints``.
+        # Only PG advertises ``Hint.JOIN`` (ES tops out at GEOMETRY_SIMPLIFIED),
+        # so the DWH-join / feature-export request ``{Hint.JOIN}`` resolves to PG
+        # alone — the full-precision read path, bypassing the ES-first default.
+        routing = _make_routing({
+            Operation.READ: [
+                ("elasticsearch", set()),
+                ("postgresql", set()),
+            ],
+        })
+        mock_configs = _mock_configs_protocol(routing)
+        es = _mock_driver(
+            "elasticsearch",
+            supported_hints=frozenset({Hint.GEOMETRY_SIMPLIFIED, Hint.SEARCH}),
+        )
+        pg = _mock_driver(
+            "postgresql",
+            supported_hints=frozenset({Hint.JOIN, Hint.GEOMETRY_EXACT, Hint.FEATURES}),
+        )
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        with (
+            patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs),
+            patch("dynastore.tools.discovery.get_protocols", return_value=[es, pg]),
+        ):
+            out = await _resolve_driver_ids_cached(
+                ItemsRoutingConfig, "datamgr10", "region", Operation.READ,
+                frozenset({Hint.JOIN}),
+            )
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        assert [t[0] for t in out] == ["postgresql"]
+
+    @pytest.mark.asyncio
     async def test_request_hint_unsatisfiable_returns_empty(self):
         routing = _make_routing({
             Operation.READ: [
