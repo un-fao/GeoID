@@ -32,8 +32,8 @@ class TaskProtocol(HasConfigService, Protocol, Generic[DefinitionType, PayloadTy
     Defines the contract for a DynaStore Background Task.
 
     Service-affinity placement (which service may claim a given task_type)
-    is controlled by ``TaskRoutingConfig`` — see
-    ``modules/tasks/tasks_config.py``. There is intentionally no
+    is controlled by ``TaskPlacementConfig`` — see
+    ``modules/tasks/placement/model.py``. There is intentionally no
     source-level routing decoration: routing is deployment, not code.
     """
 

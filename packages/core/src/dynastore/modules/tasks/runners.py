@@ -657,7 +657,8 @@ class WorkerQueueRunner(RunnerProtocol, ProtocolPlugin[Any]):
     INSERT fires the ``on_task_insert`` trigger
     (``WHEN NEW.status = 'PENDING'``) → ``pg_notify('new_task_queued', ...)`` →
     the worker service's dispatcher claims the row (filtered by
-    ``TaskRoutingConfig`` service-affinity, e.g. ``{"gdal": ["worker"]}``) and
+    task placement (``TaskPlacementConfig``) service-affinity, e.g.
+    ``{"gdal": ["worker"]}``) and
     runs the registered task instance (``worker_task_gdal``) via the standard
     claim path. This is the canonical enqueue route already used by every
     worker-routed task type (ingestion, indexers, …) — no second dispatch
@@ -687,7 +688,7 @@ class WorkerQueueRunner(RunnerProtocol, ProtocolPlugin[Any]):
        where the instance *is* loaded, this runner returns False and the
        in-process ``BackgroundRunner`` claims the row).
     2. ``task_type`` appears in :data:`_WORKER_ROUTED_TYPES` — some service is
-       configured to claim it (non-empty ``TaskRoutingConfig`` entry), so a
+       configured to claim it (a non-empty placement consumer list), so a
        remote worker is actually expected to pick it up. This stops the runner
        enqueueing rows that would sit forever unclaimed.
     """

@@ -140,7 +140,7 @@ async def test_warner_swallows_query_errors(caplog):
 
 def test_hint_falls_back_to_routing_check_when_no_capability():
     msg = _stuck_pending_hint("tile_preseed", None, None)
-    assert "TaskRoutingConfig.routing['tile_preseed']" in msg
+    assert "TaskPlacementConfig.placements['tile_preseed']" in msg
 
 
 def test_hint_surfaces_dead_capability_reaper_signal():
