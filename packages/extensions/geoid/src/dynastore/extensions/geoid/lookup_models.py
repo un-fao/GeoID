@@ -2,10 +2,10 @@
 
 These shapes are part of the customer-facing contract for
 ``POST /search/catalogs/{catalog_id}/items-search`` (PG-backed). The route
-resolves an item within a catalog by exactly one of ``geoid`` or
+resolves items within a catalog by exactly one of ``geoid`` or
 ``external_id`` and returns a :class:`GeoidCollection`.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -13,11 +13,13 @@ from pydantic import BaseModel, Field
 class ItemsSearchBody(BaseModel):
     """Body for ``POST /search/catalogs/{catalog_id}/items-search`` (#1210).
 
-    Resolve an item within the path catalog by **exactly one** of:
+    Resolve items within the path catalog by **exactly one** of:
 
-    * ``geoid`` — the platform-assigned id; resolved across all collections of
-      the catalog (geoid is unique within a catalog), so ``collection_id`` is
-      not needed.
+    * ``geoid`` — the platform-assigned id(s). Accepts a single geoid **or an
+      array of geoids**; each is resolved across all collections of the catalog
+      (geoid is unique within a catalog), so ``collection_id`` is not needed.
+      When resolving many at once, raise ``limit`` to return them all — results
+      are capped at ``limit`` and geoids with no match are silently skipped.
     * ``external_id`` — the tenant's own id; resolved **within a single named
       ``collection_id``**, which is required when ``external_id`` is supplied.
       external_id is not globally unique, so resolving it without a collection
@@ -28,8 +30,12 @@ class ItemsSearchBody(BaseModel):
     without ``collection_id`` is a 400 — the route enforces these at the
     handler.
     """
-    geoid: Optional[str] = Field(
-        None, description="Platform-assigned geoid to resolve (xor external_id).",
+    geoid: Optional[Union[str, List[str]]] = Field(
+        None,
+        description=(
+            "Platform-assigned geoid, or an array of geoids, to resolve "
+            "catalog-wide (xor external_id)."
+        ),
     )
     external_id: Optional[str] = Field(
         None,

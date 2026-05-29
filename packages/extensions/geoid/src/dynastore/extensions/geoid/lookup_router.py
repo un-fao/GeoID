@@ -8,7 +8,8 @@ on Elasticsearch availability.
 URL contract (#1210 — replaces the former GET/POST .../geoid routes):
   POST /search/catalogs/{catalog_id}/items-search
     body: exactly one of
-      {"geoid": ...}                              # resolved catalog-wide
+      {"geoid": ...}                              # one geoid, resolved catalog-wide
+      {"geoid": [..., ...]}                       # many geoids, resolved catalog-wide
       {"external_id": ..., "collection_id": ...}  # collection_id required
 """
 import logging
@@ -48,7 +49,10 @@ async def items_search(catalog_id: str, body: ItemsSearchBody) -> GeoidCollectio
                 status_code=400,
                 detail="Provide exactly one of 'geoid' or 'external_id'.",
             )
-        rows = await lookup_by_geoids(catalog_id, [geoid], limit=body.limit)
+        # ``geoid`` accepts a single id or an array — normalise to a list so the
+        # service resolves them all in one ANY(:geoids) scan across collections.
+        geoids = [geoid] if isinstance(geoid, str) else list(geoid)
+        rows = await lookup_by_geoids(catalog_id, geoids, limit=body.limit)
     elif external_id is not None:
         # external_id is not globally unique, so it is resolved within a single
         # named collection only — a bare external_id would mean a cross-collection
