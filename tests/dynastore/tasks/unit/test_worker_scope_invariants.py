@@ -148,6 +148,30 @@ def test_dwh_join_scope_includes_crs() -> None:
     )
 
 
+def test_dwh_join_scope_includes_dwh_extension() -> None:
+    """Phase H fourth follow-up: the dwh_join task module imports the dwh
+    *extension* package directly — `dynastore.extensions.dwh.models`
+    (DWHJoinRequest, at tasks/dwh_join/models.py) and
+    `dynastore.extensions.dwh.dwh` (execute_bigquery_async, at
+    tasks/dwh_join/dwh_join_export_task.py). The bare `dwh` extra only pulls the
+    BigQuery join-query deps (dynastore-ext-joins), NOT the `dynastore-ext-dwh`
+    distribution that provides the `dynastore.extensions.dwh` package. With only
+    `dwh`, discovery logs `Skipping dynastore.tasks plugin 'dwh_join': No module
+    named 'dynastore.extensions.dwh'` and every async job dies with `Task
+    'dwh_join' not found or failed to initialize`. Confirmed by
+    `dynastore-dwh-join-export-job-fljr4` container log on 2026-05-29. Fix: use
+    `extension_dwh` (a superset of `dwh` that bundles `dynastore-ext-dwh`)."""
+    line = _scope_definition("worker_task_dwh_join")
+    extras = _extract_dynastore_extras(line)
+    assert "extension_dwh" in extras or "dynastore-ext-dwh" in line, (
+        f"worker_task_dwh_join SCOPE does not pull the dwh extension package. "
+        f"The bare `dwh` extra installs only BigQuery query deps, not "
+        f"`dynastore-ext-dwh`, so the dwh_join task plugin is silently skipped at "
+        f"discovery and the async job reports 'Task dwh_join not found'. Use "
+        f"`extension_dwh`. Current extras: {extras}"
+    )
+
+
 def test_export_features_scope_includes_gcp() -> None:
     """Phase H third follow-up: ExportFeaturesTask writes its output bytes
     to GCS via dynastore.modules.gcp clients. Without module_gcp the

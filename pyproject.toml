@@ -349,7 +349,15 @@ outbox_drain = ["dynastore[task_base]"]
 # the writer functions, so the task still registers and the entry point loads —
 # the failure only surfaces at run time as `ModuleNotFoundError: No module named
 # 'geopandas'` when the export actually writes a non-GeoJSON file.
-worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,dwh,geospatial_io,module_storage_postgresql]"]
+# extension_dwh (NOT the bare `dwh` query-deps extra): the dwh_join task module
+# imports the dwh *extension* package directly — `dynastore.extensions.dwh.models`
+# (DWHJoinRequest) and `dynastore.extensions.dwh.dwh` (execute_bigquery_async). The
+# `dwh` extra only pulls the BigQuery join-query deps (dynastore-ext-joins), NOT the
+# `dynastore-ext-dwh` distribution, so the task plugin was silently skipped at
+# discovery ("No module named 'dynastore.extensions.dwh'") and every async job died
+# with "Task 'dwh_join' not found or failed to initialize". extension_dwh is a
+# superset (it includes `dwh` + geospatial_io) and matches what scope_worker uses.
+worker_task_dwh_join = ["dynastore[task_base_async,module_catalog,module_crs,extension_dwh,module_storage_postgresql]"]
 worker_task_ingestion = ["dynastore[ingestion,catalog_grp,google_grp,gdal,drivers_grp]"]
 # export_features: writes feature output to GCS (`gs://...` destination_uri)
 # via dynastore.modules.gcp clients. Without module_gcp the worker raises
