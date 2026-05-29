@@ -25,6 +25,8 @@ class CapabilityRow(BaseModel):
     service_version: str
     service_commit: str
     version: str  # generic task version — build commit/version for now
+    description: str = ""
+    payload_schema: Optional[dict] = None
 
 
 def compute_publish_digest(

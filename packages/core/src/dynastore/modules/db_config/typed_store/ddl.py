@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS configs.task_capability_registry (
     service_version     text        NOT NULL DEFAULT 'unknown',
     service_commit      text        NOT NULL DEFAULT 'unknown',
     version             text        NOT NULL DEFAULT 'unknown',
+    description         text        NOT NULL DEFAULT '',
+    payload_schema      jsonb       NULL,
     last_seen           timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (service, task_key)

@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
+import dynastore.tasks as tasks_pkg
 from dynastore._version import get_git_commit, get_version
 from dynastore.modules.db_config.instance import get_service_name
 from dynastore.modules.tasks.registry import repository
 from dynastore.modules.tasks.registry.model import CapabilityRow, compute_publish_digest
-from dynastore.tasks import _DYNASTORE_TASKS, task_kind
+from dynastore.tasks import task_kind
 from dynastore.tools.cache import CacheIgnore, cached
 
 logger = logging.getLogger(__name__)
@@ -45,28 +46,77 @@ def _observed_modes(task_key: str) -> List[str]:
     return modes or ["async"]
 
 
+def _safe_describe(cls):
+    """Return cls.describe() or None — self-description must never break publish."""
+    fn = getattr(cls, "describe", None)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("task-registry: describe() failed for %r (%s)", cls, exc)
+        return None
+
+
+def _process_payload_schema(definition) -> Optional[dict]:
+    """Best-effort JSON-Schema-ish view of a Process definition's inputs."""
+    try:
+        inputs = getattr(definition, "inputs", None)
+        if not inputs:
+            return None
+        return {
+            "type": "object",
+            "properties": {name: inp.schema_ for name, inp in inputs.items()},
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("task-registry: process schema extract failed (%s)", exc)
+        return None
+
+
 def collect_local_inventory() -> Tuple[str, str, str, List[CapabilityRow]]:
-    """Return (service, commit, version, rows) for this pod, or skip if no identity."""
+    """Return (service, commit, version, rows) for this pod, or skip if no identity.
+
+    Each row is built FROM the task's ``describe()`` self-description (the SSOT
+    for code-level facets), with getattr fallbacks so a task without a working
+    describe() still publishes. Process tasks have no payload model on the class
+    — their schema is derived from the Process definition's inputs.
+    """
     service = get_service_name()
     commit = get_git_commit()
     version = get_version()
     rows: List[CapabilityRow] = []
     if not service:
         return ("", commit, version, rows)
-    for task_key, cfg in _DYNASTORE_TASKS.items():
+    for task_key, cfg in tasks_pkg._DYNASTORE_TASKS.items():
         cls = cfg.cls
+        kind = task_kind(cfg)
+        descriptor = _safe_describe(cls)
+        description = descriptor.description if descriptor is not None else ""
+        payload_schema = descriptor.payload_schema if descriptor is not None else None
+        if payload_schema is None and kind == "process":
+            payload_schema = _process_payload_schema(cfg.definition)
+        mandatory = (
+            descriptor.mandatory if descriptor is not None
+            else bool(getattr(cls, "mandatory", False))
+        )
+        affinity_tier = (
+            descriptor.affinity_tier if descriptor is not None
+            else getattr(cls, "affinity_tier", None)
+        )
         rows.append(
             CapabilityRow(
                 service=service,
                 task_key=task_key,
-                kind=task_kind(cfg),
+                kind=kind,
                 modes=_observed_modes(task_key),
                 required_capability=None,  # payload-dependent; not summarizable per row
-                mandatory=bool(getattr(cls, "mandatory", False)),
-                affinity_tier=getattr(cls, "affinity_tier", None),
+                mandatory=mandatory,
+                affinity_tier=affinity_tier,
                 service_version=version,
                 service_commit=commit,
                 version=commit,  # generic version == build commit for now
+                description=description,
+                payload_schema=payload_schema,
             )
         )
     return (service, commit, version, rows)
