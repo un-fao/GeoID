@@ -39,6 +39,79 @@ def _reporter(**config_kwargs) -> GcsDetailedReporter:
     return reporter
 
 
+def _summary_reporter():
+    """A bare reporter wired to capture the uploaded summary content."""
+    r = _reporter()
+    r.task_id = "task-1"
+    r.report_path = "gs://bucket/path/report.json"
+    r.processed_chunks = 2
+    r._client_provider = None
+    captured: dict = {}
+
+    def _fake_upload(gcs_path, content=None, file_path=None,
+                     content_type="application/json"):
+        captured["path"] = gcs_path
+        captured["content"] = content
+
+    r._upload_to_gcs = _fake_upload  # type: ignore[method-assign]
+    return r, captured
+
+
+def test_summary_report_includes_proposed_items_schema() -> None:
+    # #1216: the proposed items_schema rides in the report tail (summary doc).
+    import asyncio
+    import json
+
+    r, captured = _summary_reporter()
+    extra = {"proposed_items_schema": {"class_key": "items_schema",
+                                       "fields": {"name": {"data_type": "string"}}}}
+    asyncio.run(
+        r._upload_summary_report(
+            "COMPLETED", None,
+            final_detailed_report_path="gs://bucket/path/report.json",
+            extra_summary=extra,
+        )
+    )
+    doc = json.loads(captured["content"])
+    assert doc["final_status"] == "COMPLETED"
+    assert doc["proposed_items_schema"] == extra["proposed_items_schema"]
+
+
+def test_summary_extra_cannot_clobber_core_keys() -> None:
+    # extra_summary merges via setdefault — it must never overwrite the core
+    # summary keys (final_status, task_id, ...).
+    import asyncio
+    import json
+
+    r, captured = _summary_reporter()
+    asyncio.run(
+        r._upload_summary_report(
+            "COMPLETED", None,
+            final_detailed_report_path="gs://bucket/path/report.json",
+            extra_summary={"final_status": "HACKED", "task_id": "evil"},
+        )
+    )
+    doc = json.loads(captured["content"])
+    assert doc["final_status"] == "COMPLETED"
+    assert doc["task_id"] == "task-1"
+
+
+def test_summary_no_extra_is_unchanged() -> None:
+    import asyncio
+    import json
+
+    r, captured = _summary_reporter()
+    asyncio.run(
+        r._upload_summary_report(
+            "COMPLETED", None,
+            final_detailed_report_path="gs://bucket/path/report.json",
+        )
+    )
+    doc = json.loads(captured["content"])
+    assert "proposed_items_schema" not in doc
+    assert doc["final_status"] == "COMPLETED"
+
+
 def _feature_record() -> dict:
     return {
         "type": "Feature",

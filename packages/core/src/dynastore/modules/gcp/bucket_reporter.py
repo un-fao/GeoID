@@ -472,13 +472,20 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
 
         return filtered_result
 
-    async def task_finished(self, final_status: str, error_message: Optional[str] = None):
+    async def task_finished(
+        self,
+        final_status: str,
+        error_message: Optional[str] = None,
+        summary: Optional[Dict[str, Any]] = None,
+    ):
         if not self.config:
             return
 
         # If reporting per chunk, the main report is already uploaded.
         if self.config.report_per_chunk:
-            return await self._upload_summary_report(final_status, error_message)
+            return await self._upload_summary_report(
+                final_status, error_message, extra_summary=summary
+            )
 
         assert self._temp_report_file is not None
         if self.config.output_format == "JSON":
@@ -523,7 +530,9 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
 
         # --- Upload the summary report ---
         await self._upload_summary_report(
-            final_status, error_message, final_detailed_report_path=report_path
+            final_status, error_message,
+            final_detailed_report_path=report_path,
+            extra_summary=summary,
         )
 
     async def _upload_summary_report(
@@ -531,8 +540,14 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
         final_status: str,
         error_message: Optional[str],
         final_detailed_report_path: Optional[str] = None,
+        extra_summary: Optional[Dict[str, Any]] = None,
     ):
-        """Generates and uploads the final summary report."""
+        """Generates and uploads the final summary report.
+
+        ``extra_summary`` (e.g. ``{"proposed_items_schema": {...}}`` from
+        geoid#1216) is merged into the summary document so task-level findings
+        ride along in the report tail.
+        """
         assert self.config is not None
         # If reporting per chunk, the detailed_report_path is a template. Otherwise, it's the specific file path.
         summary = {
@@ -545,6 +560,11 @@ class GcsDetailedReporter(ReportingInterface[GcsDetailedReporterConfig]):
             else self.report_path,
             "report_generated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if extra_summary:
+            # Task-level findings (e.g. proposed_items_schema) ride in the tail;
+            # never clobber the core summary keys above.
+            for key, value in extra_summary.items():
+                summary.setdefault(key, value)
         summary_content = json.dumps(summary, indent=2, cls=CustomJSONEncoder)
         summary_report_path = insert_before_extension(self.report_path, f"_summary")
         self._upload_to_gcs(summary_report_path, content=summary_content)
