@@ -129,18 +129,53 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
             Policy(
                 id="geoid_anonymous_create_per_collection",
                 description=(
-                    "Allow anonymous POST to /stac/catalogs/{cat}/collections/{col}/items "
-                    "when the collection has opted in via "
-                    "CollectionWriteAudience.allow_anonymous_create. "
-                    "Note: DENY policies take precedence (deny-wins)."
+                    "Allow anonymous POST of a new item to "
+                    "/stac/catalogs/{cat}/collections/{col}/items or "
+                    "/features/catalogs/{cat}/collections/{col}/items when the "
+                    "collection has opted in via "
+                    "CollectionWriteAudience.allow_anonymous_create. Carries a "
+                    "higher priority than the enumeration DENYs so the opted-in "
+                    "item-POST wins the #915 ranking, while every browse/list/"
+                    "search verb stays denied (the DENYs keep full coverage)."
                 ),
                 actions=["POST"],
-                resources=[r"/stac/catalogs/[^/]+/collections/[^/]+/items"],
+                # Both intake paths: STAC transactions and OGC Features. The
+                # enumeration DENYs match this same item-POST (they cover
+                # GET/POST/.../items), so this ALLOW MUST outrank them — see
+                # ``priority`` below.
+                resources=[
+                    r"/stac/catalogs/[^/]+/collections/[^/]+/items",
+                    r"/features/catalogs/[^/]+/collections/[^/]+/items",
+                ],
                 conditions=_COLLECTION_WRITE_CONDITION,
                 effect="ALLOW",
+                # The STAC/Features enumeration DENYs default to priority 0 and
+                # cover the item-POST path. Evaluation is highest-priority-wins
+                # with DENY-on-tie (PermissionService.evaluate_access, #915), so
+                # an equal-priority ALLOW would lose to the DENY. Priority 10
+                # lets the create win — but ONLY for a request that also passes
+                # the per-collection ``collection_write_anonymous_allowed`` gate.
+                # Browse/list/search verbs never match this POST-only ALLOW, so
+                # they remain denied: the "blind dropbox" stays blind.
+                priority=10,
             ),
         ]
-        
+
+        # Pin every policy to this catalog's partition. The IAM evaluator reads
+        # per-catalog policies with ``partition_key=catalog_id`` (see
+        # ``PolicyService.get_policy`` / ``_resolve_effective_policies``), but
+        # the ``Policy`` model defaults ``partition_key`` to ``"global"``. Left
+        # at the default, ``create_policy(..., catalog_id=cat)`` writes these
+        # rows into the tenant schema's ``policies_global`` partition while
+        # every read looks in ``policies_{catalog_id}`` — so the policies are
+        # created yet never found, and the whole lookup/deny/create posture
+        # silently never takes effect. ``partition_key == catalog_id`` is also
+        # the convention the catalog cascade-cleanup relies on
+        # (``IamCatalogScopedOwner`` deletes ``WHERE partition_key = catalog_id``).
+        for _policy in policies_to_create:
+            _policy.partition_key = catalog_id
+
+
         # Create policies, skipping if they already exist (idempotent)
         created_count = 0
         for policy in policies_to_create:
