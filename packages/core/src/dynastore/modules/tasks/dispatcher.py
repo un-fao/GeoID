@@ -49,8 +49,6 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
-from sqlalchemy import text
-
 
 def _stable_advisory_lock_key(*parts: str) -> int:
     """Process-stable signed bigint for ``pg_try_advisory_xact_lock``.
@@ -638,6 +636,7 @@ WHERE status = 'PENDING'
   AND retry_count = 0
   AND task_type = ANY(:task_types)
   AND timestamp < NOW() - make_interval(secs => :min_age_s)
+RETURNING task_id
 """
 
 
@@ -665,11 +664,14 @@ async def sweep_unclaimable_rows(
         return 0
     sql = _BACKSTOP_DLQ_SQL.format(schema=schema)
     err = _unclaimable_error(",".join(sorted(unclaimable)))
-    async with engine.begin() as conn:
-        result = await conn.execute(
-            text(sql), {"err": err, "task_types": unclaimable, "min_age_s": min_age_s}
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    async with managed_transaction(engine) as conn:
+        rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+            conn, err=err, task_types=unclaimable, min_age_s=min_age_s,
         )
-        n = getattr(result, "rowcount", 0) or 0
+    n = len(rows or [])
     if n:
         logger.error("backstop: dead-lettered %d unclaimable row(s) types=%s", n, unclaimable)
     return n

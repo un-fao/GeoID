@@ -9,34 +9,39 @@ from dynastore.modules.tasks import dispatcher
 
 @pytest.mark.asyncio
 async def test_capabilityless_unclaimable_rows_are_dlqd(monkeypatch):
-    executed = {"sql": None, "params": None}
+    captured = {}
 
-    class _Result:
-        rowcount = 3
-
-    class _Conn:
-        async def execute(self, sql, params=None):
-            executed["sql"] = str(sql)
-            executed["params"] = params
-            return _Result()
+    class _FakeConn:
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
 
-    class _Engine:
-        def begin(self): return _Conn()
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _fake_managed_transaction(_engine):
+        yield object()
+
+    class _FakeQuery:
+        def __init__(self, sql, result_handler=None):
+            captured["sql"] = sql
+        async def execute(self, _conn, **params):
+            captured["params"] = params
+            return [{"task_id": "a"}, {"task_id": "b"}, {"task_id": "c"}]  # 3 rows
+
+    import dynastore.modules.db_config.query_executor as qe
+    monkeypatch.setattr(qe, "managed_transaction", _fake_managed_transaction)
+    monkeypatch.setattr(qe, "DQLQuery", _FakeQuery)
 
     async def _unclaimable(_engine, *, ttl_grace_seconds):
         return ["cascade_cleanup"]
     monkeypatch.setattr(dispatcher, "_find_unclaimable_task_types", _unclaimable)
 
-    n = await dispatcher.sweep_unclaimable_rows(
-        _Engine(), schema="system", ttl_grace_seconds=90, min_age_s=300
-    )
+    n = await dispatcher.sweep_unclaimable_rows(object(), schema="system", ttl_grace_seconds=90, min_age_s=300)
     assert n == 3
-    assert "dead_letter" in executed["sql"].lower()
-    assert "cascade_cleanup" in str(executed["params"])
-    assert "min_age_s" in str(executed["params"])
-    assert "make_interval" in executed["sql"]
+    assert "dead_letter" in captured["sql"].lower()
+    assert "make_interval" in captured["sql"]
+    assert captured["params"].get("min_age_s") == 300
+    assert "cascade_cleanup" in str(captured["params"].get("task_types"))
 
 
 @pytest.mark.asyncio
@@ -45,11 +50,7 @@ async def test_no_unclaimable_types_is_a_noop(monkeypatch):
         return []
     monkeypatch.setattr(dispatcher, "_find_unclaimable_task_types", _none)
 
-    class _Engine:
-        def begin(self):  # must NOT be called
-            raise AssertionError("should not open a transaction when nothing is unclaimable")
-
     n = await dispatcher.sweep_unclaimable_rows(
-        _Engine(), schema="system", ttl_grace_seconds=90, min_age_s=300
+        object(), schema="system", ttl_grace_seconds=90, min_age_s=300
     )
     assert n == 0
