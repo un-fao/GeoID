@@ -305,7 +305,7 @@ async def _render_process_list(
     try:
         scope_filter = parse_scope_filter(scope_param)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     runner_filter = parse_runner_filter(runner_param)
 
     if scope_filter is None and scope_param is None:
@@ -997,8 +997,8 @@ async def dismiss_job(
     engine = get_async_engine(request)
     try:
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema="public")
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(task, request)
 
 
@@ -1018,8 +1018,8 @@ async def dismiss_job_catalog(
     schema = await _resolve_catalog_schema(catalog_id, conn)
     try:
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(task, request)
 
 
@@ -1043,8 +1043,8 @@ async def dismiss_job_collection(
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' does not belong to collection '{collection_id}'.")
     try:
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(task, request)
 
 
@@ -1183,8 +1183,8 @@ async def update_job(
     engine = get_async_engine(request)
     try:
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema="public")
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(job, request)
 
 
@@ -1205,8 +1205,8 @@ async def update_job_catalog(
     schema = await _resolve_catalog_schema(catalog_id, conn)
     try:
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(job, request)
 
 
@@ -1228,8 +1228,8 @@ async def update_job_collection(
     schema = await _resolve_catalog_schema(catalog_id, conn)
     try:
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _task_to_status_info(job, request)
 
 
@@ -1256,8 +1256,8 @@ async def start_job(
             job_id, engine=engine, mode=mode, db_schema="public",
             background_tasks=background_tasks,
         )
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _handle_execution_result(result, request)
 
 
@@ -1285,8 +1285,8 @@ async def start_job_catalog(
             job_id, engine=engine, mode=mode, db_schema=schema,
             background_tasks=background_tasks,
         )
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _handle_execution_result(result, request)
 
 
@@ -1315,8 +1315,8 @@ async def start_job_collection(
             job_id, engine=engine, mode=mode, db_schema=schema,
             background_tasks=background_tasks,
         )
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
     return _handle_execution_result(result, request)
 
 
