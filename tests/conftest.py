@@ -48,6 +48,15 @@ def _worker_db_url(base_url: str) -> str:
     base_db = p.path.lstrip("/")
     if not base_db:
         return base_url
+    # Idempotent: strip any already-applied worker suffix(es) before
+    # re-appending. A crashed xdist worker that xdist restarts can re-enter
+    # this with an already-suffixed DATABASE_URL inherited from the prior
+    # process; without this guard the suffix stacks into
+    # ``gis_dev_gw3_gw3_gw3…`` — a database that never exists, so DBConfigModule
+    # fails at startup and every test routed to that worker errors (#1027).
+    suffix = f"_{worker}"
+    while base_db.endswith(suffix):
+        base_db = base_db[: -len(suffix)]
     return urlunparse(p._replace(path=f"/{base_db}_{worker}"))
 
 
