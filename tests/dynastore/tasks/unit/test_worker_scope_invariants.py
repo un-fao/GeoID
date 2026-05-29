@@ -187,6 +187,30 @@ def test_export_features_scope_includes_gcp() -> None:
     )
 
 
+def test_dwh_join_scope_includes_gcp() -> None:
+    """Phase H fifth follow-up: DwhJoinExportTask both queries BigQuery
+    (execute_bigquery_async) and uploads its export bytes to GCS
+    (tasks/dwh_join/dwh_join_export_task.py:22 upload_stream_to_gcs). Both
+    need module_gcp (google-cloud-storage + google-cloud-bigquery client
+    init). Without it, GCPModule.reinitialize_clients bails
+    ('google-cloud-storage/pubsub not installed; storage/BigQuery clients
+    will be unavailable'), the task fails with 'GCPModule has not been
+    initialized or failed to create a storage client', and the BigQuery
+    client built without the resolved Cloud Run SA credentials hits a
+    `403 bigquery.jobs.create` even though the runtime SA holds
+    bigquery.jobUser. Mirrors worker_task_export_features, which carries
+    module_gcp for the same GCS-write reason. Confirmed by
+    `dynastore-dwh-join-export-job-5k56c` container log on 2026-05-29."""
+    line = _scope_definition("worker_task_dwh_join")
+    extras = _extract_dynastore_extras(line)
+    assert "module_gcp" in extras, (
+        f"worker_task_dwh_join SCOPE is missing module_gcp. Without it the "
+        f"GCP client init bails (no google-cloud-storage), the task crashes "
+        f"creating a storage client, and the BigQuery client 403s on "
+        f"jobs.create. Current extras: {extras}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mapping invariants — tighten the scope ↔ entry-point ↔ meta-extra wiring
 # so a typo or missing entry-point breaks CI before it breaks deploy.
