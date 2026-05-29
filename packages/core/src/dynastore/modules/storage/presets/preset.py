@@ -96,6 +96,72 @@ class TaskHandle:
     revoke_descriptor: Optional[AppliedDescriptor] = None
 
 
+@dataclass(frozen=True)
+class DataSeed:
+    """One unit of seed data a *data contributor* asks a preset to apply.
+
+    A data contributor exposes ``get_data() -> Iterable[DataSeed]`` (see
+    ``MultiContributorPreset``). At apply time the preset ensures the catalog
+    and collection exist — creating each only if absent — then upserts
+    ``items``. ``revoke`` removes exactly what apply created: items first, then
+    the collection, then the catalog, but only the ones this preset itself
+    created. A catalog or collection that pre-existed (``manage_catalog`` /
+    ``manage_collection`` resolved to a no-op because it was already there), or
+    that is explicitly flagged shared, is never deleted on revoke — only the
+    items this preset upserted are pulled back out. This mirrors the
+    "never delete what the operator owns" rule the routing and policy
+    contributors already follow.
+
+    ``catalog_data`` / ``collection_data`` are the create payloads handed to
+    ``CatalogsProtocol.create_catalog`` / ``create_collection``; they are
+    ignored when the target already exists.
+    """
+
+    catalog_id: str
+    collection_id: str
+    catalog_data: Dict[str, Any] = field(default_factory=dict)
+    collection_data: Dict[str, Any] = field(default_factory=dict)
+    items: Tuple[Dict[str, Any], ...] = ()
+    # When False, revoke leaves a shared/operator-owned catalog or collection
+    # in place and only removes the items this preset upserted.
+    manage_catalog: bool = True
+    manage_collection: bool = True
+    lang: str = "*"
+
+
+@dataclass(frozen=True)
+class TaskSeed:
+    """One background job a *task contributor* asks a preset to trigger.
+
+    A task contributor exposes ``get_tasks() -> Iterable[TaskSeed]`` (see
+    ``MultiContributorPreset``). At apply time — after every synchronous
+    contribution (policies, configs, seed data) is in place — the preset
+    submits each ``process_id`` to the OGC Process execution engine and records
+    the returned job id in its ``AppliedDescriptor`` so callers can poll the
+    job's status.
+
+    This is how a *synchronous* preset delegates heavy work to the *existing*
+    async OGC Process machinery without itself becoming an async preset: it
+    kicks the job off, records the reference, and returns ``applied``. The job
+    runs in the background with its own status lifecycle, queryable through the
+    normal task-status endpoint.
+
+    ``revoke`` does NOT cancel or undo a triggered job — a job that has already
+    run cannot be un-run. Any data the job produced is governed by the
+    data-seed revoke rules (a collection that still holds items is never
+    deleted; see ``DataSeed``).
+
+    ``async_mode`` picks ``ASYNC_EXECUTE`` (default) vs ``SYNC_EXECUTE`` as the
+    preferred execution mode. ``dedup_key`` collapses redelivered triggers onto
+    a single in-flight job (the execution engine returns no new job on a hit).
+    """
+
+    process_id: str
+    inputs: Dict[str, Any] = field(default_factory=dict)
+    async_mode: bool = True
+    dedup_key: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Dry-run plan
 # ---------------------------------------------------------------------------
@@ -161,6 +227,14 @@ class PresetContext:
     # Resolved scope string, e.g. "platform", "catalog:cat-7",
     # "catalog:cat-7/collection:coll-3".
     scope: str
+
+    # CatalogsProtocol — the data-contributor surface (seed catalogs /
+    # collections / items). Optional with a ``None`` default so the dozens of
+    # existing positional/keyword constructors (mostly IAM unit tests) keep
+    # working unchanged; only ``_build_context`` and data-seeding presets pass
+    # it. Dataclass default-ordering forces a defaulted field to the end, which
+    # is why this sits after ``scope`` rather than next to ``config``.
+    catalogs: Any = None  # CatalogsProtocol or None
 
 
 # ---------------------------------------------------------------------------

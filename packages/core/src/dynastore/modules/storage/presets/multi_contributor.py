@@ -29,10 +29,36 @@ subset — only the methods present are invoked):
                              ``ctx.iam.bind_policy_to_role``
   - ConfigContributor   : ``get_configs()``
                           -> ``ctx.config.set_config(type(c), c, scope...)``
+  - DataContributor     : ``get_data() -> Iterable[DataSeed]``
+                          -> ``ctx.catalogs`` ensures each seed's catalog +
+                             collection exist (created only when absent) and
+                             upserts the seed items.  Revoke removes only what
+                             apply created — items are always pulled back out,
+                             but a catalog/collection is deleted only if THIS
+                             apply created it and ``DataSeed.manage_catalog`` /
+                             ``manage_collection`` allow it (never a shared or
+                             pre-existing one).  A collection this preset
+                             created but that now holds items added after apply
+                             (e.g. members a background job materialised) is
+                             left in place — revoke never deletes a non-empty
+                             collection.
+  - TaskContributor     : ``get_tasks() -> Iterable[TaskSeed]``
+                          -> after all synchronous contributions are applied,
+                             submits each ``process_id`` to the OGC Process
+                             execution engine via ``ctx.db`` and records the
+                             returned job id so callers can poll it.  This lets
+                             a synchronous preset delegate heavy work to the
+                             existing async OGC Process machinery.  Revoke does
+                             NOT cancel a triggered job (it cannot be un-run);
+                             data it produced is governed by the data-seed
+                             revoke rules above.
 
-Routing / data contributor kinds are reserved for future expansion —
-add the new ``get_routing()`` / ``get_data()`` branches alongside the
-existing two when their backing ``PresetContext`` surface lands.
+The routing contributor kind (``get_routing()``) is still reserved for
+future expansion — add it alongside the others when its backing
+``PresetContext`` surface lands.  ``DataContributor`` requires
+``PresetContext.catalogs`` (the ``CatalogsProtocol``); ``TaskContributor``
+requires ``PresetContext.db`` (the engine): a preset that ships either must
+run where those are available, and raises ``RuntimeError`` otherwise.
 
 ``PolicyContributorPreset`` (single-policy adapter, predates this
 module) remains the simpler tool for IAM-only presets.  Use
@@ -152,6 +178,283 @@ async def _apply_config_kind(
         applied_config_qualnames.append(qualname)
 
 
+async def _apply_data_kind(
+    preset_name: str,
+    contributor: Any,
+    ctx: PresetContext,
+    applied_data: List[dict],
+) -> None:
+    """Apply a data contributor: ensure catalog + collection exist, upsert items.
+
+    Each ``DataSeed`` is applied idempotently — the catalog and collection are
+    created only when absent (existence probed via ``get_catalog_model`` /
+    ``get_collection``). What this call actually created is recorded in
+    ``applied_data`` so ``revoke`` can undo exactly that and nothing the
+    operator owns.
+    """
+    if not hasattr(contributor, "get_data"):
+        return
+    if ctx.catalogs is None:
+        raise RuntimeError(
+            f"{preset_name}: data contributor present but PresetContext.catalogs "
+            "is None — the catalogs service is not registered in this context."
+        )
+    catalogs = ctx.catalogs
+    for seed in (contributor.get_data() or []):
+        record: dict = {
+            "catalog_id": seed.catalog_id,
+            "collection_id": seed.collection_id,
+            "created_catalog": False,
+            "created_collection": False,
+            "item_ids": [],
+            "manage_catalog": seed.manage_catalog,
+            "manage_collection": seed.manage_collection,
+        }
+
+        # --- Catalog (create only if absent) ---
+        existing_catalog = await catalogs.get_catalog_model(seed.catalog_id)
+        if existing_catalog is None:
+            cat_payload = dict(seed.catalog_data)
+            cat_payload.setdefault("id", seed.catalog_id)
+            await catalogs.create_catalog(cat_payload, lang=seed.lang)
+            record["created_catalog"] = True
+
+        # --- Collection (create only if absent) ---
+        existing_collection = await catalogs.get_collection(
+            seed.catalog_id, seed.collection_id, lang=seed.lang,
+        )
+        if existing_collection is None:
+            coll_payload = dict(seed.collection_data)
+            coll_payload.setdefault("id", seed.collection_id)
+            await catalogs.create_collection(
+                seed.catalog_id, coll_payload, lang=seed.lang,
+            )
+            record["created_collection"] = True
+
+        # --- Items ---
+        if seed.items:
+            await catalogs.upsert(
+                seed.catalog_id, seed.collection_id, list(seed.items),
+            )
+            record["item_ids"] = [
+                it["id"] for it in seed.items if isinstance(it, dict) and "id" in it
+            ]
+
+        applied_data.append(record)
+
+
+def _caller_id(ctx: PresetContext) -> str:
+    """Resolve the caller id for task submission — the principal's id when one
+    is attached, otherwise the platform system user."""
+    from dynastore.models.auth_models import SYSTEM_USER_ID
+
+    principal = ctx.principal
+    if principal is not None:
+        pid = getattr(principal, "id", None) or getattr(principal, "principal_id", None)
+        if pid is not None:
+            return str(pid)
+    return SYSTEM_USER_ID
+
+
+def _extract_job_id(result: Any) -> Any:
+    """Pull the job/task id out of whatever ``execute_process`` returned.
+
+    Async execution returns a ``StatusInfo`` (``jobID``) or ``Task``
+    (``task_id``); be defensive across both shapes. Returns ``None`` when no
+    id can be found (e.g. a dedup hit returns ``None``)."""
+    if result is None:
+        return None
+    for attr in ("jobID", "job_id", "task_id", "id"):
+        val = getattr(result, attr, None)
+        if val is not None:
+            return str(val)
+    if isinstance(result, dict):
+        for key in ("jobID", "job_id", "task_id", "id"):
+            if result.get(key) is not None:
+                return str(result[key])
+    return None
+
+
+async def _apply_task_kind(
+    preset_name: str,
+    contributor: Any,
+    ctx: PresetContext,
+    applied_tasks: List[dict],
+) -> None:
+    """Trigger a task contributor's background jobs.
+
+    Each ``TaskSeed`` is submitted to the OGC Process execution engine; the
+    returned job id is recorded in ``applied_tasks`` so the descriptor carries
+    a pollable reference. The preset stays synchronous — it kicks the jobs off
+    and returns; the heavy work runs in the background task.
+
+    Fail-fast (``RuntimeError``) when ``ctx.db`` is ``None`` — a task
+    contributor cannot submit a job without the engine.
+    """
+    if not hasattr(contributor, "get_tasks"):
+        return
+    seeds = list(contributor.get_tasks() or [])
+    if not seeds:
+        return
+    if ctx.db is None:
+        raise RuntimeError(
+            f"{preset_name}: task contributor present but PresetContext.db "
+            "(the engine) is None — cannot trigger background jobs."
+        )
+
+    from dynastore.modules.processes.processes_module import execute_process
+    from dynastore.modules.processes import models as _proc_models
+
+    caller_id = _caller_id(ctx)
+    for seed in seeds:
+        mode = (
+            _proc_models.JobControlOptions.ASYNC_EXECUTE
+            if getattr(seed, "async_mode", True)
+            else _proc_models.JobControlOptions.SYNC_EXECUTE
+        )
+        exec_request = _proc_models.ExecuteRequest(inputs=dict(seed.inputs or {}))
+        result = await execute_process(
+            seed.process_id,
+            exec_request,
+            engine=ctx.db,
+            caller_id=caller_id,
+            preferred_mode=mode,
+            dedup_key=getattr(seed, "dedup_key", None),
+        )
+        job_id = _extract_job_id(result)
+        applied_tasks.append({
+            "process_id": seed.process_id,
+            "job_id": job_id,
+            "deduped": result is None,
+        })
+        logger.info(
+            "%s: triggered process %r -> job_id=%s%s",
+            preset_name, seed.process_id, job_id,
+            " (dedup hit, no new job scheduled)" if result is None else "",
+        )
+
+
+async def _revoke_task_kind(preset_name: str, task_records: List[dict]) -> None:
+    """Triggered background jobs are not undone on revoke — a job that has run
+    cannot be un-run, and any data it produced is governed by the data-seed
+    revoke guard. Log each for audit visibility."""
+    for record in task_records:
+        logger.info(
+            "%s: revoke does not cancel triggered job %s (process=%s); data it "
+            "produced is preserved by the non-empty-collection revoke guard.",
+            preset_name, record.get("job_id"), record.get("process_id"),
+        )
+
+
+async def _collection_has_items(
+    catalogs: Any, catalog_id: str, collection_id: str,
+) -> bool:
+    """Best-effort emptiness probe — ``True`` if the collection still holds at
+    least one item.
+
+    Fail-safe: on any error (driver lacks ``search_items``, query blows up,
+    etc.) returns ``True`` so revoke never deletes a collection it cannot
+    confirm is empty."""
+    try:
+        from dynastore.models.query_builder import QueryRequest
+
+        features = await catalogs.search_items(
+            catalog_id, collection_id, QueryRequest(limit=1),
+        )
+        return bool(features)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "emptiness probe for %s/%s failed (%s) — assuming non-empty to be safe",
+            catalog_id, collection_id, exc,
+        )
+        return True
+
+
+async def _catalog_has_collections(catalogs: Any, catalog_id: str) -> bool:
+    """Best-effort probe — ``True`` if the catalog still holds at least one
+    collection.
+
+    Fail-safe: on any error returns ``True`` so revoke never deletes a catalog
+    it cannot confirm is empty (e.g. one whose collection it just preserved)."""
+    try:
+        collections = await catalogs.list_collections(catalog_id, limit=1)
+        return bool(collections)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "collection probe for catalog %s failed (%s) — assuming non-empty to be safe",
+            catalog_id, exc,
+        )
+        return True
+
+
+async def _revoke_data_kind(
+    preset_name: str,
+    ctx: PresetContext,
+    data_records: List[dict],
+) -> None:
+    """Undo a data contributor's seeds — items first, then collection, then
+    catalog, but only the catalog/collection rows THIS preset created and is
+    allowed to manage.  Reverse-iterates so later seeds unwind before earlier
+    ones (e.g. the seed that created a shared catalog is processed last)."""
+    if ctx.catalogs is None:
+        logger.warning(
+            "%s: cannot revoke data seeds — PresetContext.catalogs is None", preset_name,
+        )
+        return
+    catalogs = ctx.catalogs
+    for record in reversed(data_records):
+        catalog_id = record["catalog_id"]
+        collection_id = record["collection_id"]
+
+        # --- Items ---
+        for item_id in record.get("item_ids", []):
+            try:
+                await catalogs.delete_item(catalog_id, collection_id, item_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "%s: delete_item %s/%s/%s failed: %s",
+                    preset_name, catalog_id, collection_id, item_id, exc,
+                )
+
+        # --- Collection (only if we created it, may manage it, and it is
+        #     empty — never delete a collection that still holds items added
+        #     after apply, e.g. members a background job materialised) ---
+        if record.get("created_collection") and record.get("manage_collection", True):
+            if await _collection_has_items(catalogs, catalog_id, collection_id):
+                logger.warning(
+                    "%s: collection %s/%s was created by this preset but still "
+                    "holds items added after apply — leaving it in place "
+                    "instead of deleting.",
+                    preset_name, catalog_id, collection_id,
+                )
+            else:
+                try:
+                    await catalogs.delete_collection(catalog_id, collection_id, force=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "%s: delete_collection %s/%s failed: %s",
+                        preset_name, catalog_id, collection_id, exc,
+                    )
+
+        # --- Catalog (only if we created it, may manage it, and it no longer
+        #     holds any collection — never delete a catalog whose collection we
+        #     just preserved, or one the operator has added collections to) ---
+        if record.get("created_catalog") and record.get("manage_catalog", True):
+            if await _catalog_has_collections(catalogs, catalog_id):
+                logger.warning(
+                    "%s: catalog %s was created by this preset but still holds "
+                    "collections — leaving it in place instead of deleting.",
+                    preset_name, catalog_id,
+                )
+            else:
+                try:
+                    await catalogs.delete_catalog(catalog_id, force=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "%s: delete_catalog %s failed: %s", preset_name, catalog_id, exc,
+                    )
+
+
 def _resolve_config_class(qualname: str) -> Any:
     """Import a config class by its ``module.QualName`` string.
 
@@ -261,6 +564,23 @@ class MultiContributorPreset:
                         target=qualname,
                         detail={"scope": scope},
                     ))
+            if hasattr(contributor, "get_data"):
+                for seed in (contributor.get_data() or []):
+                    entries.append(PresetPlanEntry(
+                        kind="seed_data",
+                        target=f"{seed.catalog_id}/{seed.collection_id}",
+                        detail={"items": len(seed.items)},
+                    ))
+            if hasattr(contributor, "get_tasks"):
+                for tseed in (contributor.get_tasks() or []):
+                    entries.append(PresetPlanEntry(
+                        kind="trigger_task",
+                        target=tseed.process_id,
+                        detail={
+                            "async": getattr(tseed, "async_mode", True),
+                            "inputs": dict(tseed.inputs or {}),
+                        },
+                    ))
         return PresetPlan(
             preset_name=self.name,
             scope_key=scope,
@@ -276,6 +596,8 @@ class MultiContributorPreset:
         applied_policy_ids: List[str] = []
         applied_role_names: List[str] = []
         applied_config_qualnames: List[str] = []
+        applied_data: List[dict] = []
+        applied_tasks: List[dict] = []
 
         for contributor in self._contributors_factory():
             await _apply_policy_kind(
@@ -287,12 +609,22 @@ class MultiContributorPreset:
             await _apply_config_kind(
                 self.name, contributor, ctx, scope, applied_config_qualnames,
             )
+            await _apply_data_kind(
+                self.name, contributor, ctx, applied_data,
+            )
+            # Tasks last: every synchronous contribution (incl. the skeleton
+            # collections a job will fill) is in place before the job fires.
+            await _apply_task_kind(
+                self.name, contributor, ctx, applied_tasks,
+            )
 
         return AppliedDescriptor(payload={
             "preset_name": self.name,
             "policy_ids": applied_policy_ids,
             "role_names": applied_role_names,
             "config_qualnames": applied_config_qualnames,
+            "data": applied_data,
+            "tasks": applied_tasks,
             "scope": scope,
         })
 
@@ -305,10 +637,18 @@ class MultiContributorPreset:
         policy_ids: List[str] = payload.get("policy_ids", [])
         role_names: List[str] = payload.get("role_names", [])
         config_qualnames: List[str] = payload.get("config_qualnames", [])
+        data_records: List[dict] = payload.get("data", [])
+        task_records: List[dict] = payload.get("tasks", [])
         scope: str = payload.get("scope", "platform")
 
         # Reverse the apply order so unwinding mirrors application:
-        # configs first, then role bindings, then policies.
+        # tasks first (no-op log), then data, configs, role bindings, policies.
+
+        # --- Tasks (triggered jobs are not undone) ---
+        await _revoke_task_kind(self.name, task_records)
+
+        # --- Data seeds ---
+        await _revoke_data_kind(self.name, ctx, data_records)
 
         # --- Configs ---
         catalog_id, collection_id = _scope_to_catalog_collection(scope)
