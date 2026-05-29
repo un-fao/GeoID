@@ -90,6 +90,51 @@ class LoopLocalLock:
         return lock.locked() if lock is not None else False
 
 
+class LoopLocalSemaphore:
+    """An ``asyncio.Semaphore`` proxy that is safe to instantiate at module-level
+    or class-body scope — the counting-semaphore sibling of :class:`LoopLocalLock`.
+
+    A raw ``asyncio.Semaphore(n)`` created at import time (e.g. in the
+    ``__init__`` of a plugin instantiated at module load) binds to whichever
+    event loop first awaits it and then raises ``RuntimeError`` if reused from a
+    different loop — breaking under multiple loops (a fresh loop per test case,
+    multi-worker processes) and silently sharing one counter across loops.
+
+    This proxy keeps one real semaphore *per running loop*, created lazily on
+    first use with the same ``maxsize``, so a single module- or class-level
+    instance caps concurrency correctly within each loop while never sharing a
+    primitive across loops. Usage is drop-in::
+
+        _SLOTS = LoopLocalSemaphore(100)   # safe at module/class-body scope
+        async def f():
+            async with _SLOTS:
+                ...
+    """
+
+    __slots__ = ("_maxsize", "_sems")
+
+    def __init__(self, maxsize: int = 1) -> None:
+        self._maxsize = maxsize
+        self._sems: Dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+    def _for_running_loop(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        sem = self._sems.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(self._maxsize)
+            self._sems[loop] = sem
+        return sem
+
+    async def __aenter__(self) -> "LoopLocalSemaphore":
+        await self._for_running_loop().acquire()
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        # Runs in the same task and loop as ``__aenter__``, so this resolves to
+        # the very semaphore that was acquired and releases exactly one slot.
+        self._for_running_loop().release()
+
+
 class AsyncBufferAggregator:
     """
     Generic aggregator that buffers items and flushes them in batches.
