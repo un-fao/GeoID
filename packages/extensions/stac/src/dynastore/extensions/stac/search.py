@@ -794,11 +794,27 @@ async def search_items(
         from dynastore.modules.storage.drivers.pg_sidecars import (
             driver_sidecars as _driver_sidecars,
         )
-        coll_has_validity = any(
-            getattr(sc, "enable_validity", False)
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributeStorageMode,
+        )
+        _attr_sidecars = [
+            sc
             for sc in _driver_sidecars(config)
             if sc.enabled
             and getattr(sc, "sidecar_type", "") in ("attributes", "feature_attributes")
+        ]
+        coll_has_validity = any(
+            getattr(sc, "enable_validity", False) for sc in _attr_sidecars
+        )
+        # COLUMNAR sidecars store each declared property as a physical column
+        # and have NO ``attributes`` JSONB blob — so the
+        # ``attributes->>'datetime'`` sort key below would reference a column
+        # that does not exist. The optimizer swallows that error and skips the
+        # collection, yielding an empty (HTTP 200) result set.
+        coll_is_columnar = any(
+            getattr(sc, "resolved_storage_mode", getattr(sc, "storage_mode", None))
+            == AttributeStorageMode.COLUMNAR
+            for sc in _attr_sidecars
         )
 
         # Select & Sort Strategy
@@ -808,8 +824,13 @@ async def search_items(
                 query_selects.append(
                     FieldSelection(field="validity", alias="valid_from")
                 )
+            elif coll_is_columnar:
+                # COLUMNAR + no validity column: the attributes blob does not
+                # exist, so sort on the hub's transaction_time (the same key the
+                # spatial-only optimization uses) instead of a missing column.
+                raw_selects.append("h.transaction_time as valid_from")
             else:
-                # No validity column → sort by the item's datetime.
+                # JSONB + no validity column → sort by the item's datetime.
                 raw_selects.append(
                     "(sc_attributes.attributes->>'datetime')::timestamptz as valid_from"
                 )
