@@ -23,11 +23,19 @@ pytestmark = pytest.mark.enable_modules(
 )
 
 
+@pytest.mark.elasticsearch
 @pytest.mark.asyncio
 async def test_create_collection_attaches_asset_trigger_integration(app_lifespan, catalog_id, collection_id):
     """
-    Integration test verifying that creating a collection 
+    Integration test verifying that creating a collection
     correctly attaches the asset cleanup trigger.
+
+    Gated as ``elasticsearch``: loading the ``elasticsearch`` module registers
+    ``catalog_elasticsearch_driver`` as the catalog-metadata WRITE driver
+    (ES-primary routing, PR #185), so ``ensure_catalog_exists`` →
+    ``upsert_catalog_metadata`` makes a live ``indices.exists`` call to
+    Elasticsearch. The non-ES integration stack has no ES, so this test only
+    runs in the advisory ``integration-tests-elasticsearch`` job.
     """
     catalogs = get_protocol(CatalogsProtocol)
     

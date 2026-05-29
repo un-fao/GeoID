@@ -176,7 +176,7 @@ jobs:
             -e DYNASTORE_ASSERT_ALL_EXTENSIONS=true \
             geoid-test-runner:ci \
             /opt/venv/bin/pytest tests/ --ignore-glob="**/integration/*" \
-              --maxfail=300 \
+              -x \
               --durations=20 \
               --junitxml=/dynastore/workspace/unit-test-results.xml
 
@@ -323,7 +323,7 @@ jobs:
             -e PYTEST_CURRENT_TEST=true \
             -e DYNASTORE_TEST_SENTINEL=/dynastore/workspace/last-test.txt \
             geoid-test-runner:ci \
-            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; PYTHONUNBUFFERED=1 /opt/venv/bin/pytest "${TESTS[@]}" --maxfail=300 -v --tb=short -p no:cacheprovider --durations=20 --junitxml=/dynastore/workspace/test-results.xml 2>&1 | tee /dynastore/workspace/integration-tests.log'
+            bash -c 'set -euo pipefail; mapfile -d "" -t TESTS < <(find tests -path "*/integration/*" -name "test_*.py" -type f -print0 | sort -z); test "${#TESTS[@]}" -gt 0 || { echo "no integration tests found"; exit 1; }; PYTHONUNBUFFERED=1 /opt/venv/bin/pytest "${TESTS[@]}" -x -v --tb=short -p no:cacheprovider --durations=20 --junitxml=/dynastore/workspace/test-results.xml 2>&1 | tee /dynastore/workspace/integration-tests.log'
 
       - name: Display db logs on failure
         if: failure()

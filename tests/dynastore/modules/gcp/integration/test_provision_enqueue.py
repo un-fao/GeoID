@@ -69,5 +69,12 @@ async def test_create_catalog_enqueues_gcp_provision_task(app_lifespan):
         assert len(prov) == 1, f"expected one provision task, got {len(prov)}"
         assert prov[0].inputs == {"catalog_id": catalog_id}
     finally:
-        await catalogs.delete_catalog(catalog_id, force=True)
+        # Drain the background gcp_provision_catalog task BEFORE the hard delete.
+        # With no GCP creds the task fails and CatalogModule._handle_task_failure
+        # UPDATEs provisioning_status on the catalog.catalogs row, holding that
+        # tuple lock. Deleting first makes `DELETE FROM catalog.catalogs` wait on
+        # the row lock until statement_timeout (row-level DML waits are bounded by
+        # statement_timeout, not the 5 s lock_timeout). Wait for the task to settle
+        # and release the lock, then delete.
         await lifecycle_registry.wait_for_all_tasks()
+        await catalogs.delete_catalog(catalog_id, force=True)
