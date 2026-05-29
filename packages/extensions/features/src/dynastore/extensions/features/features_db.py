@@ -19,7 +19,6 @@
 # dynastore/extensions/features/features_db.py
 
 import logging
-import asyncio
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -27,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
-from dynastore.modules.catalog.validation import get_valid_properties
 from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder, FilterCondition, FilterOperator
 
 logger = logging.getLogger(__name__)
@@ -35,11 +33,9 @@ logger = logging.getLogger(__name__)
 from dynastore.modules.tools.cql import parse_cql_filter
 
 
-from dynastore.models.query_builder import QueryRequest, FieldSelection, SortOrder, FilterCondition
 
 logger = logging.getLogger(__name__)
 
-from dynastore.modules.tools.cql import parse_cql_filter
 from fastapi import HTTPException, status
 
 

@@ -18,8 +18,6 @@
 
 # dynastore/extensions/wfs/wfs_generator.py
 from datetime import datetime, timezone, UTC
-import orjson
-from fastapi import Request, Response
 
 import logging
 from typing import Iterable, List, Dict, Any, Optional
@@ -32,10 +30,7 @@ from xml.etree.ElementTree import (
     register_namespace,
 )
 from xml.dom.minidom import parseString
-from datetime import datetime
 import html  # For unescaping GML fragments
-from dynastore.tools.features import FeatureCollection
-from dynastore.extensions.tools.formatters import OutputFormatEnum
 
 logger = logging.getLogger(__name__)
 

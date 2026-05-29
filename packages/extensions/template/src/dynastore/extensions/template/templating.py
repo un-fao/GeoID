@@ -27,20 +27,19 @@ import ast
 import asyncio
 from typing_extensions import Annotated
 from dynastore.tools.pydantic import FlexibleDictParam, TemplateParam
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException, Query, status, Request, Body, APIRouter
-from typing import Optional, Dict, Any, AsyncGenerator
+from pydantic import Field
+from fastapi import FastAPI, status, Request, Body, APIRouter
+from typing import Dict, Any, AsyncGenerator
 import xml.sax
 import xml.sax.handler
 import httpx
-from pydantic import AnyUrl, HttpUrl
+from pydantic import AnyUrl
 from contextlib import asynccontextmanager
 # LooseHeaders / LooseCookies from aiohttp are incompatible with httpx; define as plain dict aliases
 LooseHeaders = Dict[str, Any]
 LooseCookies = Dict[str, Any]
 
 import xml.etree.ElementTree as ET
-from pydantic import AnyUrl
 from dynastore.tools.cache import cached
 from dynastore.extensions.protocols import ExtensionProtocol
 
