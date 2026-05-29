@@ -500,6 +500,11 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
             if match:
                 bbox_crs_srid = int(match.group(1))
 
+        # WFS ``propertyName`` -> the shared driver-level projection
+        # (``select_fields``), exactly as features/records/STAC narrow their
+        # attribute output. Geometry is governed separately and is retained.
+        property_names = property_name_str.split(",") if property_name_str else None
+
         request_obj = parse_ogc_query_request(
             bbox=bbox_val,
             datetime_param=time_str,
@@ -510,6 +515,7 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
             offset=start_index,
             bbox_crs_srid=bbox_crs_srid,
             include_total_count=True,
+            select_fields=property_names,
         )
 
         target_namespace_url = f"{root_wfs_url}/{schema_prefix}"
@@ -553,8 +559,6 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
             return Response(
                 content=xml_content, media_type="application/gml+xml; version=3.2"
             )
-
-        property_names = property_name_str.split(",") if property_name_str else None
 
         # --- Unified Response Construction ---
         if format_enum == OutputFormatEnum.GML:
