@@ -61,6 +61,18 @@ class FieldCapability(str, Enum):
     INDEXED = "indexed"             # Driver-REPORTED only: storage has a backing index (NOT an authoring knob — use FieldAccess.FAST)
 
 
+# Capabilities that let a field appear in a filter predicate: exact/keyword
+# (FILTERABLE), spatial (SPATIAL — ST_* / bbox) or analyzed free-text (FULLTEXT
+# — ES ``match``). Used by ``FieldDefinition.is_filterable`` to decide, read-side
+# only, whether a field with an *explicit* capability set is filterable. A field
+# with no explicit capabilities is filterable by default (see is_filterable).
+_FILTERING_CAPABILITIES: "frozenset[FieldCapability]" = frozenset({
+    FieldCapability.FILTERABLE,
+    FieldCapability.SPATIAL,
+    FieldCapability.FULLTEXT,
+})
+
+
 class FieldAccess(str, Enum):
     """How aggressively a field should be optimised for query access — driver-agnostic.
 
@@ -231,6 +243,44 @@ class FieldDefinition(BaseModel):
         if self.transformations is None or "*" in (self.transformations or []):
             return True
         return transform_func in (self.transformations or [])
+
+    def is_filterable(self) -> bool:
+        """Whether this field may be used in a filter predicate — read-side only.
+
+        Filterable by default: a field with an *unspecified* (empty) capability
+        set is treated as filterable, so a config author does not have to spell
+        out ``FILTERABLE`` on every field. A field is non-filterable only when it
+        declares an explicit, non-empty capability set that contains none of the
+        filtering capabilities (:data:`_FILTERING_CAPABILITIES`) — the deliberate
+        opt-out (e.g. ``capabilities=[SORTABLE]`` to allow sort but block
+        filtering).
+
+        Any one filtering capability suffices: ``FILTERABLE`` (exact/keyword),
+        ``SPATIAL`` (a spatial predicate such as ``ST_Intersects`` / bbox) or
+        ``FULLTEXT`` (an analyzed ``match``). So a geometry field declared
+        ``[SPATIAL]`` is still filterable via its spatial predicate.
+
+        This reads ``capabilities`` without mutating it. The stored set is left
+        untouched on purpose: the write/DDL access rules treat ``FILTERABLE`` as
+        a *column-implying* capability (see ``field_constraints._COLUMN_CAPS``),
+        so injecting a default ``FILTERABLE`` into the stored set would flip
+        AUTO-access JSONB fields into native columns — an unwanted schema change
+        on existing collections. Defaulting lives here, on the read path, where
+        it has no storage-layout effect.
+        """
+        return not self.capabilities or any(
+            c in _FILTERING_CAPABILITIES for c in self.capabilities
+        )
+
+    def is_sortable(self) -> bool:
+        """Whether this field may be used in an ORDER BY — read-side only.
+
+        Same default-capable semantics as :meth:`is_filterable`: an unspecified
+        capability set is sortable; an explicit, non-empty set that omits
+        ``SORTABLE`` is the opt-out. Read-only over ``capabilities`` for the same
+        write/DDL-safety reason described there.
+        """
+        return not self.capabilities or FieldCapability.SORTABLE in self.capabilities
 
 
 class EntityLevel(str, Enum):

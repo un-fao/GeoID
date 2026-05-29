@@ -5,6 +5,7 @@ from dynastore.models.query_builder import (
     QueryRequest,
     FieldSelection,
     FilterCondition,
+    SortOrder,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.base import FieldDefinition, FieldCapability
 from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
@@ -1057,3 +1058,167 @@ def test_items_schema_rejects_reserved_root_names():
     )
     with pytest.raises(ValueError, match="reserved root name"):
         asyncio.run(_validate_items_schema_reserved_names(schema, None, None, None))
+
+
+# ---------------------------------------------------------------------------
+# Filterable/sortable-by-default (#1628)
+#
+# The read-side query validator (query_optimizer.validate_query) treats a field
+# with an *unspecified* capability set as both filterable and sortable, so a
+# config author need not spell out FILTERABLE/SORTABLE on every field. A field
+# is rejected only when it declares an explicit capability set that omits the
+# relevant capability — the deliberate opt-out. The defaulting lives on the read
+# path only (FieldDefinition.is_filterable / is_sortable); the stored
+# ``capabilities`` are never mutated, so the write/DDL column-implying rules are
+# unaffected.
+# ---------------------------------------------------------------------------
+def test_field_definition_filterable_sortable_defaults():
+    """Pure FieldDefinition semantics — no DB, no optimizer."""
+
+    # Unspecified capabilities → filterable AND sortable by default.
+    empty = FieldDefinition(name="f", data_type="string")
+    assert empty.is_filterable() is True
+    assert empty.is_sortable() is True
+
+    # Explicit FILTERABLE → filterable; (no SORTABLE) → not sortable.
+    filt = FieldDefinition(
+        name="f", data_type="string", capabilities=[FieldCapability.FILTERABLE]
+    )
+    assert filt.is_filterable() is True
+    assert filt.is_sortable() is False
+
+    # Explicit SORTABLE-only → the deliberate filter opt-out.
+    sort_only = FieldDefinition(
+        name="f", data_type="string", capabilities=[FieldCapability.SORTABLE]
+    )
+    assert sort_only.is_filterable() is False
+    assert sort_only.is_sortable() is True
+
+    # SPATIAL and FULLTEXT are filtering capabilities (spatial predicate / ES
+    # match), so a field carrying only one of them is still filterable.
+    spatial = FieldDefinition(
+        name="g", data_type="geometry", capabilities=[FieldCapability.SPATIAL]
+    )
+    assert spatial.is_filterable() is True
+    fulltext = FieldDefinition(
+        name="t", data_type="string", capabilities=[FieldCapability.FULLTEXT]
+    )
+    assert fulltext.is_filterable() is True
+
+    # An explicit set with no filtering/sorting capability → opt-out of both.
+    agg_only = FieldDefinition(
+        name="n", data_type="double", capabilities=[FieldCapability.AGGREGATABLE]
+    )
+    assert agg_only.is_filterable() is False
+    assert agg_only.is_sortable() is False
+
+
+def _optimizer_with_fields(mock_col_config, mock_registry, fields):
+    """Build a QueryOptimizer whose field_index is exactly ``fields``."""
+    sidecar = MagicMock()
+    sidecar.sidecar_id = "test"
+    sidecar.config.sidecar_id = "test"
+    sidecar.get_queryable_fields.return_value = fields
+    sidecar.get_dynamic_field_definition.return_value = None
+    mock_registry.get_sidecar.side_effect = lambda sc, lenient=True: sidecar
+    return QueryOptimizer(mock_col_config)
+
+
+def test_validate_query_filter_allowed_when_capabilities_unspecified(
+    mock_col_config, mock_registry
+):
+    """A filter on a field with no declared capabilities must validate — the
+    re-enabled guard (#1628) defaults unspecified fields to filterable."""
+    optimizer = _optimizer_with_fields(
+        mock_col_config,
+        mock_registry,
+        {
+            "code": FieldDefinition(
+                name="code", sql_expression="sc_test.code", data_type="string"
+            ),
+        },
+    )
+    req = QueryRequest(filters=[FilterCondition(field="code", operator="=", value="x")])
+    errors = optimizer.validate_query(req)
+    assert not any("not filterable" in e for e in errors), errors
+
+
+def test_validate_query_rejects_filter_on_explicit_non_filterable(
+    mock_col_config, mock_registry
+):
+    """A field declared with an explicit capability set that omits the filtering
+    capabilities is the deliberate opt-out — filtering on it is rejected."""
+    optimizer = _optimizer_with_fields(
+        mock_col_config,
+        mock_registry,
+        {
+            "rank": FieldDefinition(
+                name="rank",
+                sql_expression="sc_test.rank",
+                data_type="integer",
+                capabilities=[FieldCapability.SORTABLE],
+            ),
+        },
+    )
+    req = QueryRequest(filters=[FilterCondition(field="rank", operator="=", value=1)])
+    errors = optimizer.validate_query(req)
+    assert any("rank" in e and "not filterable" in e for e in errors), errors
+
+
+def test_validate_query_spatial_filter_on_spatial_field_allowed(
+    mock_col_config, mock_registry
+):
+    """A spatial predicate on a geometry field declared SPATIAL must validate —
+    SPATIAL is a filtering capability, so the re-enabled guard does not reject
+    it (regression guard against breaking bbox/ST_* queries)."""
+    optimizer = _optimizer_with_fields(
+        mock_col_config,
+        mock_registry,
+        {
+            "geom": FieldDefinition(
+                name="geom",
+                sql_expression="sc_test.geom",
+                data_type="geometry",
+                capabilities=[FieldCapability.SPATIAL],
+            ),
+        },
+    )
+    req = QueryRequest(
+        filters=[
+            FilterCondition(
+                field="geom", operator="ST_Intersects", value="POINT(0 0)", spatial_op=True
+            )
+        ]
+    )
+    errors = optimizer.validate_query(req)
+    assert not any("not filterable" in e for e in errors), errors
+
+
+def test_validate_query_sort_defaults_and_optout(mock_col_config, mock_registry):
+    """Sort mirrors filter: unspecified caps → sortable; an explicit set that
+    omits SORTABLE → rejected."""
+    optimizer = _optimizer_with_fields(
+        mock_col_config,
+        mock_registry,
+        {
+            "code": FieldDefinition(
+                name="code", sql_expression="sc_test.code", data_type="string"
+            ),
+            "blob": FieldDefinition(
+                name="blob",
+                sql_expression="sc_test.blob",
+                data_type="string",
+                capabilities=[FieldCapability.FILTERABLE],
+            ),
+        },
+    )
+    # Unspecified caps → sortable.
+    ok = optimizer.validate_query(
+        QueryRequest(sort=[SortOrder(field="code", direction="ASC")])
+    )
+    assert not any("not sortable" in e for e in ok), ok
+    # FILTERABLE-only (no SORTABLE) → sort rejected.
+    bad = optimizer.validate_query(
+        QueryRequest(sort=[SortOrder(field="blob", direction="ASC")])
+    )
+    assert any("blob" in e and "not sortable" in e for e in bad), bad
