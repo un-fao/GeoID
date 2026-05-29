@@ -8,6 +8,7 @@ import logging
 from typing import Type, Dict, Any, get_origin, get_args
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -87,17 +88,23 @@ def _type_to_json_schema(field_type: Type, field_info: FieldInfo) -> Dict[str, A
         args = get_args(field_type)
         if args:
             field_type = args[0] if args[0] is not type(None) else args[1] if len(args) > 1 else str
-    
-    # Handle List types
-    if origin is list:
+        # Re-derive the origin from the unwrapped (non-Optional) type. Without this,
+        # Optional[List[...]] / Optional[Dict] keep the outer Union origin and fall
+        # through to the scalar branch, emitting {"type": "string"} instead of an
+        # array/object schema — which makes OGC Process input validation reject the
+        # very arrays the Pydantic model accepts.
+        origin = get_origin(field_type)
+
+    # Handle List types (parameterized List[...] or bare list)
+    if origin is list or field_type is list:
         args = get_args(field_type)
         item_type = args[0] if args else str
         schema["type"] = "array"
         schema["items"] = _type_to_json_schema(item_type, field_info)
         return schema
-    
-    # Handle Dict types
-    if origin is dict:
+
+    # Handle Dict types (parameterized Dict[...] or bare dict)
+    if origin is dict or field_type is dict:
         schema["type"] = "object"
         return schema
     
@@ -118,15 +125,17 @@ def _type_to_json_schema(field_type: Type, field_info: FieldInfo) -> Dict[str, A
     json_type = type_mapping.get(field_type, "string")
     schema["type"] = json_type
     
-    # Add default if present
-    if field_info.default is not None and field_info.default != ...:
-        schema["default"] = field_info.default
-    elif field_info.default_factory is not None:
-        # Call factory to get default value
-        try:
-            default_value = field_info.default_factory()  # type: ignore[call-arg]
-            schema["default"] = default_value
-        except Exception:
-            pass  # Skip if factory fails
-    
+    # Add default only for optional fields that declare a concrete one. Required
+    # fields carry the ``PydanticUndefined`` sentinel (Pydantic v2) — never emit it,
+    # or it leaks a non-serializable value into the process description schema.
+    if not field_info.is_required():
+        if field_info.default is not None and field_info.default is not PydanticUndefined:
+            schema["default"] = field_info.default
+        elif field_info.default_factory is not None:
+            # Call factory to get default value
+            try:
+                schema["default"] = field_info.default_factory()  # type: ignore[call-arg]
+            except Exception:
+                pass  # Skip if factory fails
+
     return schema
