@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
+from dynastore.extensions.tools.ogc_common_models import LandingPage
 from dynastore.models.shared_models import Link
 
 

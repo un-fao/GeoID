@@ -18,7 +18,7 @@
 
 # dynastore/extensions/features/features_service.py
 
-from typing import Optional, List, Dict, Any, Tuple, Union, cast
+from typing import Optional, List, Any, Union, cast
 
 import logging
 
@@ -27,7 +27,6 @@ from dynastore.extensions.tools.ondemand_cache import ondemand_cache_lookup
 import pygeofilter as _pygeofilter_scope_gate  # noqa: F401  # SCOPE gate: extension_features requires pygeofilter
 _ = _pygeofilter_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
 
-from dynastore.modules.db_config.exceptions import ImmutableConfigError
 from dynastore.models.driver_context import DriverContext
 from fastapi import (
     APIRouter,
@@ -44,10 +43,7 @@ from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.extensions.tools.exception_handlers import handle_or_raise
 from dynastore.models.localization import LocalizedText
 from contextlib import asynccontextmanager
-import asyncio
 from dynastore.models.protocols import (
-    CatalogsProtocol,
-    ConfigsProtocol,
     ItemsProtocol,
     CRSProtocol,
 )
@@ -57,28 +53,23 @@ from dynastore.extensions.features.features_config import (
 )
 from dynastore.extensions.features import ogc_generator, ogc_models
 
-from datetime import datetime, timezone, UTC
 from dynastore.models.shared_models import (
     Link,
     FunctionDescription,
     FunctionsResponse,
-    ItemDataForDB,
     Catalog,
-    Collection,
 )
 from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.localization_utils import detect_use_lang
-from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.tools import managed_transaction
 from dynastore.modules.db_config.query_executor import DbResource
 import re
-from . import features_db
-from dynastore.extensions.tools.formatters import OutputFormatEnum, format_response
+from dynastore.extensions.tools.formatters import OutputFormatEnum
 from dynastore.extensions.tools.query import (
     parse_ogc_query_request,
     stream_ogc_features,

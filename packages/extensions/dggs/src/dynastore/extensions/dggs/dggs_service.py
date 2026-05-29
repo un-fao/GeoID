@@ -29,7 +29,7 @@ Implements the following endpoints:
 
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional, Set
+from typing import Optional, Set
 
 # Dependency-free helper (no h3/s2sphere): safe to import before the SCOPE gate.
 from dynastore.modules.dggs.bbox import parse_bbox
