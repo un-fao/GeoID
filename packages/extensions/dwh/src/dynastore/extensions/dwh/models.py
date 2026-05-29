@@ -18,7 +18,7 @@
 
 from dynastore.models.shared_models import OutputFormatEnum
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
 class DWHJoinRequestBase(BaseModel):
@@ -49,15 +49,32 @@ class DWHJoinRequestBase(BaseModel):
         json_schema_extra={"example": "geoid"},
         description="Common column name for joining, present in DynaStore table attributes.",
     )
-    geospatial_attributes: Optional[List[str]] = Field(
+    properties: Optional[List[str]] = Field(
         None,
         json_schema_extra={"example": ["code", "region"]},
-        description="List of attribute names from the original ingested feature (from JSONB 'attributes' column) to return.",
+        description=(
+            "User-facing attribute fields that populate feature.properties. "
+            "Storage-agnostic: works for both JSONB and COLUMNAR collections. "
+            "Use ['*'] to include all available property fields; omit to include none."
+        ),
     )
-    attributes: Optional[List[str]] = Field(
+    stats: Optional[List[str]] = Field(
         None,
-        json_schema_extra={"example": ["geoid", "external_id"]},
-        description="List of additional DynaStore table attributes (e.g., geoid, h3_lvlX) to return.",
+        json_schema_extra={"example": ["area_ha", "perimeter_m", "h3_lvl5"]},
+        description=(
+            "Computed/statistic fields produced by the collection's sidecars "
+            "(area, perimeter, centroid, geohash, h3 cells, …). "
+            "Use ['*'] to include all producible stats; omit to include none."
+        ),
+    )
+    system: Optional[List[str]] = Field(
+        None,
+        json_schema_extra={"example": ["external_id", "geoid", "validity"]},
+        description=(
+            "Identity and lifecycle fields (external_id, geoid, asset_id, "
+            "geometry_hash, attributes_hash, validity, transaction_time, deleted_at). "
+            "Use ['*'] to include all available system fields; omit to include none."
+        ),
     )
     where: Optional[str] = Field(
         None,

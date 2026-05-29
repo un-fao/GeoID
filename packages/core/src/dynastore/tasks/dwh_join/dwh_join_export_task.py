@@ -21,6 +21,7 @@ from dynastore.tools.async_utils import SyncQueueIterator
 from dynastore.tools.file_io import get_features_as_byte_stream
 from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
 from dynastore.modules.tools.features import FeatureStreamConfig, stream_features
+from dynastore.modules.tools.field_categories import resolve_category_field_names
 from dynastore.modules.storage.hints import Hint
 from dynastore.extensions.dwh.dwh import execute_bigquery_async
 from dynastore.modules.concurrency import get_concurrency_backend
@@ -86,12 +87,28 @@ class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optio
                     if not join_values:
                         return
 
+                    # Resolve field names from the three storage-aware categories
+                    try:
+                        field_names = await resolve_category_field_names(
+                            request.catalog,
+                            request.collection,
+                            properties=request.properties,
+                            stats=request.stats,
+                            system=request.system,
+                            join_column=request.join_column,
+                        )
+                    except ValueError as e:
+                        raise RuntimeError(
+                            f"Invalid field selection for DWH export "
+                            f"{request.catalog}/{request.collection}: {e}"
+                        ) from e
+
                     # Configure base feature stream
                     stream_config = FeatureStreamConfig(
                         catalog=request.catalog,
                         collection=request.collection,
-                        cql_filter=request.where, # DWHJoinRequest uses 'where' field for CQL
-                        property_names=request.attributes, # Map to attributes
+                        cql_filter=request.where,
+                        property_names=field_names or None,
                         limit=request.limit,
                         offset=request.offset,
                         include_geometry=request.with_geometry,

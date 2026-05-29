@@ -22,7 +22,7 @@ import logging
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, Optional, Any, Dict, Union, Sequence, Tuple
+from typing import TYPE_CHECKING, FrozenSet, List, Optional, Any, Dict, Union, Sequence, Tuple
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.router import ResolvedDriver
@@ -2478,6 +2478,45 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 )
 
         return fields
+
+    async def get_categorized_fields(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[Any] = None,
+    ) -> Tuple[FrozenSet[str], FrozenSet[str], FrozenSet[str]]:
+        """Return ``(system, stats, properties)`` field-name sets for the collection.
+
+        Derives category membership from the collection's PG sidecar contracts.
+        Falls back to empty sets when no PG driver config is available.
+        """
+        from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+        from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+
+        system_keys: FrozenSet[str] = frozenset(SYSTEM_FIELD_KEYS)
+
+        col_config = await self._get_collection_config(
+            catalog_id, collection_id, db_resource=db_resource
+        )
+        if not col_config:
+            return (system_keys, frozenset(), frozenset())
+
+        stats_names: set[str] = set()
+        prop_names: set[str] = set()
+
+        for sc_config in driver_sidecars(col_config):
+            sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+            if not sidecar:
+                continue
+            for name in sidecar.producible_computed_names():
+                if name not in system_keys:
+                    stats_names.add(name)
+            for name in sidecar.get_property_field_names():
+                if name not in system_keys and name not in stats_names:
+                    prop_names.add(name)
+
+        return (system_keys, frozenset(stats_names), frozenset(prop_names))
 
     async def get_collection_schema(
         self,

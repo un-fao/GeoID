@@ -111,6 +111,7 @@ async def execute_bigquery_async(
 
 
 from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterCondition
+from dynastore.modules.tools.field_categories import resolve_category_field_names  # noqa: E402
 
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -192,38 +193,23 @@ class DwhService(ExtensionProtocol):
             else:
                 selects.append(FieldSelection(field="geom"))
 
-        if req.geospatial_attributes:
-            if "*" in req.geospatial_attributes:
-                selects.append(FieldSelection(field="attributes"))
-            else:
-                for attr in req.geospatial_attributes:
-                    selects.append(FieldSelection(field=attr))
+        # Resolve field names from three storage-aware categories, then project
+        # each as a plain FieldSelection. join_column is guaranteed to be included.
+        try:
+            field_names = await resolve_category_field_names(
+                catalog_id,
+                req.collection,
+                properties=req.properties,
+                stats=req.stats,
+                system=req.system,
+                join_column=req.join_column,
+                db_resource=conn,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
 
-        if req.attributes:
-            for pg_attr in req.attributes:
-                if pg_attr == "bbox_geom":
-                    if req.destination_crs:
-                        selects.append(
-                            FieldSelection(
-                                field="bbox",
-                                alias="bbox_geom",
-                                transformation="ST_Transform",
-                                transform_args={"srid": req.destination_crs},
-                            )
-                        )
-                    else:
-                        selects.append(FieldSelection(field="bbox", alias="bbox_geom"))
-                else:
-                    selects.append(FieldSelection(field=pg_attr))
-
-        # Ensure join column is selected
-        # We need it to perform the join in python
-        # We assume it's available as a field (either column or json property)
-        # We check if it's already in selects to avoid dupes (though QueryBuilder handles dupes gracefully usually)
-        if req.join_column not in [
-            s.field for s in selects
-        ] and req.join_column not in [s.alias for s in selects]:
-            selects.append(FieldSelection(field=req.join_column))
+        for name in field_names:
+            selects.append(FieldSelection(field=name))
 
         # Reject user-supplied raw SQL to prevent SQL injection.
         # Use the structured `filters` mechanism (FilterCondition) instead.

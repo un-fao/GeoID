@@ -23,7 +23,7 @@ Used by WFS (DescribeFeatureType), OGC Features (field capability validation),
 and any extension that needs to know which fields a collection exposes.
 """
 
-from typing import TYPE_CHECKING, Protocol, Optional, Any, Dict, runtime_checkable
+from typing import TYPE_CHECKING, FrozenSet, Protocol, Optional, Any, Dict, Tuple, runtime_checkable
 
 from dynastore.models.ogc import Feature
 
@@ -54,6 +54,26 @@ class ItemIntrospectionProtocol(Protocol):
         Each ``FieldDefinition`` carries the field's SQL expression and its
         ``FieldCapability`` flags (FILTERABLE, SORTABLE, AGGREGATABLE, …).
         Used by WFS DescribeFeatureType and CQL2 filter validation.
+        """
+        ...
+
+    async def get_categorized_fields(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[Any] = None,
+    ) -> Tuple[FrozenSet[str], FrozenSet[str], FrozenSet[str]]:
+        """Return ``(system, stats, properties)`` field-name sets for the collection.
+
+        Derives category membership from the collection's sidecar contracts:
+
+        - ``system``     — names that match ``SYSTEM_FIELD_KEYS``.
+        - ``stats``      — names producible by sidecars, minus system keys.
+        - ``properties`` — user-facing attribute names from sidecars, minus system
+                          and stats keys.
+
+        Falls back to empty sets when no PG driver config is available (e.g. DuckDB
+        or Elasticsearch collections that have no sidecar concept).
         """
         ...
 

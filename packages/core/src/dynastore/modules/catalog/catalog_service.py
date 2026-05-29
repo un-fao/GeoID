@@ -2082,6 +2082,19 @@ class CatalogService(CatalogsProtocol):
             db_resource=db_resource,
         )
 
+    async def get_categorized_fields(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        db_resource: Optional[Any] = None,
+    ) -> Tuple[FrozenSet[str], FrozenSet[str], FrozenSet[str]]:
+        """Return ``(system, stats, properties)`` field-name sets. Delegates to ItemService."""
+        return await self._item_svc.get_categorized_fields(
+            catalog_id,
+            collection_id,
+            db_resource=db_resource,
+        )
+
     async def update_provisioning_status(
         self, catalog_id: str, status: str, ctx: Optional["DriverContext"] = None
     ) -> bool:
