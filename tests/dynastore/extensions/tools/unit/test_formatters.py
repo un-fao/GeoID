@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import json
 import pytest
 from pathlib import Path
@@ -203,3 +204,84 @@ class TestParseSridFromSrsName:
         """Test parsing invalid format returns None."""
         assert _parse_srid_from_srs_name("invalid") is None
         assert _parse_srid_from_srs_name("EPSG:4326") is None  # Missing double colon
+
+
+# --- Async-source regression: cross-event-loop drain for file formats ---
+
+
+class TestFormatResponseAsyncSource:
+    """Non-JSON file formats must drain an ASYNC feature source on the request
+    loop, never on a freshly-created loop.
+
+    The DWH-join ``shp`` export streams items from an asyncpg/Elasticsearch async
+    iterator. Those drivers are bound to the request event loop. The file-format
+    branch of ``format_response`` hands a *sync* generator to Starlette, which
+    drives it in a worker thread; the previous implementation spun up a brand-new
+    ``asyncio.new_event_loop()`` there and re-drove the async source on it, which
+    raised "got Future attached to a different loop" /
+    "Timeout context manager should be used inside a task" the moment a real
+    asyncpg/aiohttp object was touched. These tests pin the invariant: the source
+    is consumed on the *running* loop, and valid bytes come out.
+    """
+
+    async def test_shapefile_async_source_consumed_on_request_loop(self):
+        request_loop = asyncio.get_running_loop()
+        consumed_on: list = []
+
+        async def async_features():
+            # Touch the running loop so we can prove which loop drained us; in
+            # production this is where asyncpg/aiohttp I/O happens.
+            await asyncio.sleep(0)
+            consumed_on.append(asyncio.get_running_loop())
+            yield {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [12.49, 41.90]},
+                "properties": {"name": "Rome"},
+            }
+
+        response = format_response(
+            features=async_features(),
+            output_format=OutputFormatEnum.SHAPEFILE,
+            collection_id="region",
+        )
+
+        # Consume the body exactly as Starlette does (sync writer -> threadpool).
+        body = b"".join([chunk async for chunk in response.body_iterator])
+
+        assert consumed_on, "async source was never consumed"
+        assert consumed_on[0] is request_loop, (
+            "async feature source must be drained on the request loop, "
+            f"not a foreign loop {consumed_on[0]!r}"
+        )
+
+        import io
+        import zipfile
+
+        assert body, "shapefile body must not be empty"
+        with zipfile.ZipFile(io.BytesIO(body)) as zf:
+            names = zf.namelist()
+        assert any(n.endswith(".shp") for n in names), names
+
+    async def test_csv_async_source_consumed_on_request_loop(self):
+        request_loop = asyncio.get_running_loop()
+        consumed_on: list = []
+
+        async def async_features():
+            await asyncio.sleep(0)
+            consumed_on.append(asyncio.get_running_loop())
+            yield {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {"name": "Rome", "pop": 2},
+            }
+
+        response = format_response(
+            features=async_features(),
+            output_format=OutputFormatEnum.CSV,
+            collection_id="region",
+        )
+
+        body = b"".join([chunk async for chunk in response.body_iterator])
+
+        assert consumed_on and consumed_on[0] is request_loop
+        assert b"Rome" in body
