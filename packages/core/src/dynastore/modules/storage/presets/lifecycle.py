@@ -39,7 +39,7 @@ from pydantic import BaseModel
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource, DQLQuery, ResultHandler
 from dynastore.modules.iam.applied_presets_service import AppliedPresetsService, AppliedRow
 
-from .preset import AppliedDescriptor, PresetContext, PresetPlan, TaskHandle
+from .preset import AppliedDescriptor, PresetContext, PresetPlan
 from .registry import find_preset
 
 logger = logging.getLogger(__name__)
@@ -165,11 +165,6 @@ async def apply_preset(
             detail={"message": f"Preset {name!r} apply failed.", "error": err_msg},
         ) from exc
 
-    if isinstance(result, TaskHandle):
-        # Async preset: stay in_progress; worker callback will finalise.
-        return (await audit.mark_in_progress(name, scope_key, task_id=result.task_id)) or {}
-
-    # Sync preset: mark applied.
     final = await audit.mark_applied(
         name, scope_key, revoke_descriptor=result.to_json()
     )
@@ -223,7 +218,7 @@ async def revoke_preset(
     await audit.mark_revoke_pending(name, scope_key)
 
     try:
-        result = await preset.revoke(descriptor, ctx)
+        await preset.revoke(descriptor, ctx)
     except Exception as exc:
         err_msg = str(exc)[:2000]
         logger.error("preset=%s scope=%s revoke failed: %s", name, scope_key, err_msg, exc_info=True)
@@ -232,9 +227,6 @@ async def revoke_preset(
             status_code=500,
             detail={"message": f"Preset {name!r} revoke failed.", "error": err_msg},
         ) from exc
-
-    if isinstance(result, TaskHandle):
-        return (await audit.mark_revoke_pending(name, scope_key, task_id=result.task_id)) or {}
 
     final = await audit.mark_revoked(name, scope_key)
     return final or {}

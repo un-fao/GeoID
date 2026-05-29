@@ -46,7 +46,6 @@ from .preset import (  # noqa: F401
     PresetContext,
     PresetPlan,
     PresetPlanEntry,
-    TaskHandle,
 )
 from .registry import find_preset, get_preset, list_presets, register_preset, search_presets  # noqa: F401
 from .routing_adapter import RoutingPresetAdapter  # noqa: F401
@@ -97,7 +96,6 @@ __all__ = [
     "PublicCatalogPreset",
     "RoutingPreset",
     "RoutingPresetAdapter",
-    "TaskHandle",
     "find_preset",
     "get_preset",
     "list_presets",

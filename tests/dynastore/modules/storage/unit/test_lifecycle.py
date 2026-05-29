@@ -22,7 +22,6 @@ from dynastore.modules.storage.presets.preset import (
     NoParams,
     PresetContext,
     PresetPlan,
-    TaskHandle,
 )
 from dynastore.modules.storage.presets.protocol import PresetTier
 
@@ -77,7 +76,6 @@ class _SyncPreset:
     tier: ClassVar[PresetTier] = PresetTier.PLATFORM
     catalog_scopable: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
-    is_async: ClassVar[bool] = False
 
     async def dry_run(self, params, scope, ctx) -> PresetPlan:
         return PresetPlan(preset_name=self.name, scope_key=scope)

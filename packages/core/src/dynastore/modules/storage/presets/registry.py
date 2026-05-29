@@ -187,7 +187,6 @@ def search_presets(
             "keywords": list(getattr(p, "keywords", ())),
             "tier": _tier_value(getattr(p, "tier", None)),
             "catalog_scopable": bool(getattr(p, "catalog_scopable", False)),
-            "is_async": bool(getattr(p, "is_async", False)),
             "params_schema": params_schema,
         }
 

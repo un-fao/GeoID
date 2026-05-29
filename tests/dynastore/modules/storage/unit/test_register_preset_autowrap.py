@@ -121,7 +121,6 @@ def test_register_preset_does_not_wrap_generalised_preset() -> None:
         keywords: ClassVar[Tuple[str, ...]] = ()
         catalog_scopable: ClassVar[bool] = False
         params_model = NoParams
-        is_async: ClassVar[bool] = False
 
         async def dry_run(self, params, scope, ctx) -> PresetPlan:
             return PresetPlan(preset_name=name, scope_key=scope, entries=())

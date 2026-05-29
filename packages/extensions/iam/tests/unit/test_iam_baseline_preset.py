@@ -117,10 +117,6 @@ def test_preset_keywords_include_iam():
     assert "iam" in IamBaseline.keywords
 
 
-def test_preset_is_not_async():
-    assert IamBaseline.is_async is False
-
-
 def test_params_model():
     assert IamBaseline.params_model is IamBaselineParams
 

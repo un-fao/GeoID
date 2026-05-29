@@ -46,7 +46,7 @@ from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, Tuple, Ty
 
 from pydantic import BaseModel
 
-from .preset import AppliedDescriptor, NoParams, PresetContext, PresetPlan, PresetPlanEntry, TaskHandle
+from .preset import AppliedDescriptor, NoParams, PresetContext, PresetPlan, PresetPlanEntry
 from .protocol import PresetTier, RoutingPreset
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,6 @@ class RoutingPresetAdapter:
     because the adapter exposes ``build`` and ``on_applied`` by delegation.
     """
 
-    is_async: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
 
     def __init__(
@@ -171,7 +170,7 @@ class RoutingPresetAdapter:
         params: BaseModel,  # noqa: ARG002
         scope: str,
         ctx: PresetContext,
-    ) -> AppliedDescriptor | TaskHandle:
+    ) -> AppliedDescriptor:
         from dynastore.modules import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
 
@@ -218,7 +217,7 @@ class RoutingPresetAdapter:
         self,
         applied_descriptor: AppliedDescriptor,
         ctx: PresetContext,
-    ) -> None | TaskHandle:
+    ) -> None:
         from dynastore.modules import get_protocol
         from dynastore.models.protocols.configs import ConfigsProtocol
 
