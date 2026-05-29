@@ -720,6 +720,21 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                     ),
                     task_name="service:capability_publisher",
                 )
+                # Durable task-capability registry: self-publish this pod's task
+                # inventory (version-gated via the shared cache, so the structural
+                # write happens ~once per deploy) and heartbeat last_seen on the
+                # same cadence as the capability publisher.
+                from dynastore.modules.tasks.registry.publisher import (
+                    run_registry_heartbeat,
+                )
+                executor.submit(
+                    run_registry_heartbeat(
+                        engine,
+                        shutdown_event,
+                        refresh_seconds=cap_refresh,
+                    ),
+                    task_name="service:task_registry_heartbeat",
+                )
                 logger.info(f"TasksModule: QueueListener (poll_interval={poll_interval}s) and Multi-Tenant Dispatcher launched.")
             else:
                 logger.warning(
