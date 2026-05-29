@@ -31,6 +31,7 @@ from typing import (
     List,
     Dict,
     Tuple,
+    FrozenSet,
     runtime_checkable,
 )
 
@@ -43,6 +44,7 @@ from dynastore.models.protocols.configs import ConfigsProtocol
 if TYPE_CHECKING:
     from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
     from dynastore.models.driver_context import DriverContext  # noqa: F401
+    from dynastore.modules.storage.hints import Hint  # noqa: F401
 
 
 @runtime_checkable
@@ -84,6 +86,7 @@ class ItemQueryProtocol(Protocol):
         config: Optional[ConfigsProtocol] = None,
         ctx: Optional["DriverContext"] = None,
         consumer: "Optional[ConsumerType]" = None,
+        hints: "FrozenSet[Hint]" = frozenset(),
     ) -> QueryResponse:
         """
         Stream features as an async iterator with O(1) memory footprint.
