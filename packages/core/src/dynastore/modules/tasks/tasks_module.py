@@ -710,6 +710,7 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                         engine, schema, shutdown_event,
                         interval_s=sweep_interval,
                         min_age_s=sweep_min_age,
+                        capability_ttl_s=cap_ttl,
                     ),
                     task_name="service:proactive_capability_sweep",
                 )
@@ -813,6 +814,40 @@ async def _warn_stuck_pending_tasks(
             logger.warning("stuck-pending warner: scan failed: %s", exc)
 
 
+async def _run_mandatory_backstop_pass(
+    engine: DbResource, schema: str, *, ttl_grace_seconds: float, min_age_s: float
+) -> None:
+    """Leader-coordinated (advisory-locked) backstop pass: log mandatory-ownership
+    violations and DLQ capability-less unclaimable PENDING rows. Runs on whichever
+    pod wins ``pg_try_advisory_xact_lock`` for this pass; others return immediately.
+    Fail-open: any error is logged and swallowed."""
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    from dynastore.modules.tasks.dispatcher import (
+        _stable_advisory_lock_key, sweep_unclaimable_rows,
+    )
+    from dynastore.modules.tasks.mandatory import check_mandatory_ownership
+
+    lock_key = _stable_advisory_lock_key("dynastore.mandatory.backstop")
+    try:
+        async with managed_transaction(engine) as conn:
+            got = await DQLQuery(
+                "SELECT pg_try_advisory_xact_lock(:k) AS got",
+                result_handler=ResultHandler.ONE_DICT,
+            ).execute(conn, k=lock_key)
+            if not got or not got.get("got"):
+                return  # another pod owns this pass; advisory xact lock held until txn end
+            # Lock held for the whole block below (sub-calls open their own pooled
+            # connections; the global advisory lock still serializes the pass).
+            await check_mandatory_ownership(engine, ttl_grace_seconds=ttl_grace_seconds)
+            await sweep_unclaimable_rows(
+                engine, schema, ttl_grace_seconds=ttl_grace_seconds, min_age_s=min_age_s,
+            )
+    except Exception as exc:  # noqa: BLE001 — never crash the sweep loop
+        logger.warning("proactive_sweep: mandatory backstop pass failed: %s", exc)
+
+
 async def _run_proactive_capability_sweep(
     engine: DbResource,
     schema: str,
@@ -821,6 +856,7 @@ async def _run_proactive_capability_sweep(
     interval_s: float = 60.0,
     min_age_s: float = 300.0,
     max_caps_per_pass: int = 50,
+    capability_ttl_s: float = 90.0,
 ) -> None:
     """Periodically DLQ PENDING/retry=0 rows whose required capability
     has no live worker (issue #524).
@@ -889,6 +925,13 @@ async def _run_proactive_capability_sweep(
                             "(capability=%s task_type=%s): %s",
                             cap_id, task_type, exc,
                         )
+            # Capability-less backstop + mandatory-ownership invariant. Runs on
+            # one pod per pass (advisory-locked inside the helper) so it covers
+            # task types the capability reaper skips for required_capability=None
+            # rows.
+            await _run_mandatory_backstop_pass(
+                engine, schema, ttl_grace_seconds=capability_ttl_s, min_age_s=min_age_s,
+            )
         except Exception as exc:  # noqa: BLE001 — never crash the loop
             logger.warning("proactive_sweep: pass failed: %s", exc)
 

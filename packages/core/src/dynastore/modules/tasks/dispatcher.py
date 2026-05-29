@@ -49,6 +49,8 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
+from sqlalchemy import text
+
 
 def _stable_advisory_lock_key(*parts: str) -> int:
     """Process-stable signed bigint for ``pg_try_advisory_xact_lock``.
@@ -73,6 +75,9 @@ from dynastore.modules.db_config.query_executor import DbResource
 from dynastore.modules.db_config.exceptions import (
     DatabaseConnectionError,
     TableNotFoundError,
+)
+from dynastore.modules.tasks.mandatory import (
+    find_unclaimable_task_types as _find_unclaimable_task_types,
 )
 from dynastore.tools.async_utils import signal_bus
 
@@ -606,6 +611,62 @@ async def sweep_dead_capability_rows(
             capability_id, task_type, exc,
         )
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Capability-less backstop — DLQ PENDING rows whose task_type has no live
+# correct-tier owner, regardless of required_capability. This is the escape
+# the capability-keyed reaper skips for required_capability=None rows (the
+# class of bug behind a registered task with no live consumer sitting PENDING
+# forever).
+# ---------------------------------------------------------------------------
+
+_BACKSTOP_DLQ_SQL = """
+UPDATE "{schema}".tasks
+SET status        = 'DEAD_LETTER',
+    error_message = :err,
+    finished_at   = NOW(),
+    owner_id      = NULL,
+    locked_until  = NULL
+WHERE status = 'PENDING'
+  AND retry_count = 0
+  AND task_type = ANY(:task_types)
+  AND timestamp < NOW() - make_interval(secs => :min_age_s)
+"""
+
+
+def _unclaimable_error(task_types: str) -> str:
+    return (
+        f"reaped: task_type(s) {task_types} have no live correct-tier consumer "
+        f"(capability-less backstop) — restore a correct-tier owner and requeue "
+        f"via the catalog-admin dead-letter view or the requeue_dead_letter process"
+    )
+
+
+async def sweep_unclaimable_rows(
+    engine, schema: str, *, ttl_grace_seconds: float, min_age_s: float
+) -> int:
+    """DLQ PENDING rows whose task_type has no live correct-tier owner.
+
+    Uniform DEAD_LETTER for ordinary AND mandatory tasks (recall beats
+    hold-forever). Unlike the capability reaper, this requires no
+    required_capability — it closes the #1647 escape for capability-less rows.
+    Only rows PENDING (retry_count=0) longer than ``min_age_s`` are swept, so a
+    transient owner gap during a deploy does not dead-letter freshly-enqueued
+    work (mirrors the capability sweep's age floor)."""
+    unclaimable = await _find_unclaimable_task_types(engine, ttl_grace_seconds=ttl_grace_seconds)
+    if not unclaimable:
+        return 0
+    sql = _BACKSTOP_DLQ_SQL.format(schema=schema)
+    err = _unclaimable_error(",".join(sorted(unclaimable)))
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text(sql), {"err": err, "task_types": unclaimable, "min_age_s": min_age_s}
+        )
+        n = getattr(result, "rowcount", 0) or 0
+    if n:
+        logger.error("backstop: dead-lettered %d unclaimable row(s) types=%s", n, unclaimable)
+    return n
 
 
 # ---------------------------------------------------------------------------
