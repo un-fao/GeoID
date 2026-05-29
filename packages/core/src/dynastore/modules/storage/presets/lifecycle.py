@@ -335,14 +335,24 @@ async def bootstrap_preset_if_absent(
     preset_name: str,
     scope_key: str = "platform",
     lock_key: Optional[str] = None,
+    force: bool = False,
 ) -> bool:
     """Apply a preset once per DB on cold-boot if no sentinel row exists.
 
     Uses ``iam.applied_presets`` as a sentinel so subsequent restarts are
     no-ops.  A PostgreSQL advisory lock serialises concurrent first boots.
 
-    Returns ``True`` if the preset was applied this call, ``False`` if a
-    sentinel already existed (idempotent no-op).
+    When ``force`` is set the sentinel check is skipped and the preset is
+    re-applied on every call (the sentinel INSERT remains
+    ``ON CONFLICT DO NOTHING``, so the audit row is preserved). This is for
+    load-bearing, idempotent presets that MUST self-heal a drifted DB on
+    restart — e.g. ``public_access_baseline``, whose anonymous ``/health``
+    grant gates the Cloud Run startup probe: if that grant is ever lost the
+    sentinel would otherwise skip re-application and the service could never
+    pass its probe again.
+
+    Returns ``True`` if the preset was applied this call, ``False`` if it was
+    skipped (sentinel already existed and ``force`` is False).
     """
     from dynastore.modules.db_config.locking_tools import acquire_startup_lock
     from dynastore.modules.storage.presets.preset import NoParams
@@ -378,13 +388,20 @@ async def bootstrap_preset_if_absent(
             return False
 
         row = await _select_sentinel.execute(conn, preset_name=preset_name, scope_key=scope_key)
-        if row is not None:
+        if row is not None and not force:
             logger.debug(
                 "bootstrap_preset_if_absent: sentinel present for %r at %r — skipping",
                 preset_name,
                 scope_key,
             )
             return False
+        if row is not None and force:
+            logger.debug(
+                "bootstrap_preset_if_absent: sentinel present for %r at %r — "
+                "re-applying (force=True) to self-heal",
+                preset_name,
+                scope_key,
+            )
 
         preset = find_preset(preset_name)
         if preset is None:

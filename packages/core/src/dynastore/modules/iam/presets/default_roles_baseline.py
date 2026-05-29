@@ -202,8 +202,35 @@ class DefaultRolesBaseline:
         return None
 
 
+async def _get_role_by_name(iam: object, role_name: str) -> "Role | None":
+    """Fetch a role by name via the IamService list_roles API."""
+    roles: List[Role] = await iam.list_roles()  # type: ignore[union-attr]
+    return next((r for r in roles if r.name == role_name), None)
+
+
 async def _upsert_role(iam: object, role: Role) -> None:
-    """Update role if it exists; create it otherwise."""
-    result = await iam.update_role(role)  # type: ignore[union-attr]
-    if result is None:
+    """Ensure the role exists WITHOUT clobbering its policy bindings.
+
+    This preset guarantees the *existence* of the platform role shells
+    (sysadmin / admin / unauthenticated); their policy bindings are
+    contributed by OTHER presets — e.g. ``public_access_baseline`` unions
+    ``public_access`` into ``unauthenticated`` to keep the Cloud Run
+    ``/health`` startup probe reachable anonymously, and ``iam_baseline``
+    binds the self-service surface. The seed roles carry ``policies=[]``,
+    so a blind ``update_role`` would REPLACE the column (full-replace
+    semantics) and wipe those bindings — re-applying this preset directly
+    or as a composite child would then deny-by-default every anonymous
+    request (``/health`` 403, undeployable on Cloud Run). So on an existing
+    role we preserve its current policies and metadata and only refresh the
+    description.
+    """
+    existing = await _get_role_by_name(iam, role.name)
+    if existing is None:
         await iam.create_role(role)  # type: ignore[union-attr]
+        return
+    if list(existing.policies) == list(role.policies) and existing.metadata == role.metadata:
+        return
+    merged = role.model_copy(
+        update={"policies": list(existing.policies), "metadata": dict(existing.metadata)}
+    )
+    await iam.update_role(merged)  # type: ignore[union-attr]

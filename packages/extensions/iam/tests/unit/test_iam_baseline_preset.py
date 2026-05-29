@@ -5,7 +5,7 @@ All tests mock the PresetContext to avoid any DB dependency.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from dynastore.extensions.iam.presets.iam_baseline import (
@@ -36,8 +36,13 @@ def _make_context(
     updated_roles: Optional[List[str]] = None,
     deleted_policies: Optional[List[str]] = None,
     existing_roles: Optional[Dict[str, Any]] = None,
+    bound_roles: Optional[List[str]] = None,
 ) -> PresetContext:
-    """Build a mock PresetContext with tracking collections."""
+    """Build a mock PresetContext with tracking collections.
+
+    ``bound_roles`` records the role names that received an additive
+    ``bind_policy_to_role`` call (the non-destructive apply path).
+    """
     if updated_policies is None:
         updated_policies = []
     if updated_roles is None:
@@ -46,6 +51,8 @@ def _make_context(
         deleted_policies = []
     if existing_roles is None:
         existing_roles = {}
+    if bound_roles is None:
+        bound_roles = []
 
     policy_svc = MagicMock()
     iam_svc = MagicMock()
@@ -61,6 +68,9 @@ def _make_context(
     async def _update_role(role: Any) -> Any:
         updated_roles.append(role.name)
         return role
+
+    async def _bind_policy_to_role(role_name: str, policy_entry: Any, catalog_id: Any = None) -> None:
+        bound_roles.append(role_name)
 
     async def _list_roles() -> List[Any]:
         roles = []
@@ -81,6 +91,7 @@ def _make_context(
     policy_svc.update_policy = _update_policy
     policy_svc.delete_policy = _delete_policy
     iam_svc.update_role = _update_role
+    iam_svc.bind_policy_to_role = _bind_policy_to_role
     iam_svc.list_roles = _list_roles
     iam_svc.delete_role = _delete_role
 
@@ -156,7 +167,7 @@ async def test_apply_upserts_iam_service_policies():
     ctx = _make_context(updated_policies=updated_policies)
     params = IamBaselineParams()
 
-    result = await preset.apply(params, "platform", ctx)
+    await preset.apply(params, "platform", ctx)
 
     # All IAM service policy ids must appear.
     iam_ids = {p.id for p in _iam_service_policies()}
@@ -217,25 +228,70 @@ async def test_apply_descriptor_contains_all_policy_ids():
 
 
 @pytest.mark.asyncio
-async def test_apply_upserts_iam_role_bindings():
+async def test_apply_binds_iam_role_bindings_additively():
     preset = _make_preset()
+    bound_roles: List[str] = []
     updated_roles: List[str] = []
-    ctx = _make_context(updated_roles=updated_roles)
+    ctx = _make_context(bound_roles=bound_roles, updated_roles=updated_roles)
     params = IamBaselineParams()
 
     await preset.apply(params, "platform", ctx)
 
+    # Role policies are attached via the additive bind_policy_to_role path,
+    # NOT a destructive update_role (which would replace the whole list).
     expected_roles = {r.name for r in _iam_service_role_bindings()}
     for rname in expected_roles:
-        assert rname in updated_roles, f"role {rname!r} not upserted"
+        assert rname in bound_roles, f"role {rname!r} not bound additively"
+    assert updated_roles == [], "apply must not replace role policy lists"
+
+
+@pytest.mark.asyncio
+async def test_apply_preserves_preexisting_public_access_on_unauthenticated():
+    """Regression for the /health 403 outage.
+
+    ``unauthenticated`` already carries ``public_access`` (the anonymous
+    /health grant from public_access_baseline). Re-applying iam_baseline must
+    leave that binding intact — it may only ADD ``self_service_authorization_api``.
+    A destructive update_role here is what wiped /health and broke the deploy.
+    """
+    bound: List[tuple] = []
+
+    policy_svc = MagicMock()
+    policy_svc.update_policy = AsyncMock(side_effect=lambda p: p)
+    policy_svc.delete_policy = AsyncMock(return_value=True)
+
+    # Live role with the anonymous /health grant already present.
+    live_policies = {"unauthenticated": ["public_access"]}
+
+    async def _bind(role_name: str, policy_entry: Any, catalog_id: Any = None) -> None:
+        pid = policy_entry["id"]
+        bound.append((role_name, pid))
+        live_policies.setdefault(role_name, [])
+        if pid not in live_policies[role_name]:
+            live_policies[role_name].append(pid)
+
+    iam_svc = MagicMock()
+    iam_svc.bind_policy_to_role = _bind
+    iam_svc.update_role = AsyncMock(side_effect=AssertionError("update_role must not be used to bind"))
+    iam_svc.list_roles = AsyncMock(return_value=[])
+    iam_svc.delete_role = AsyncMock(return_value=True)
+
+    ctx = PresetContext(
+        db=MagicMock(), iam=iam_svc, policy=policy_svc, config=MagicMock(),
+        tasks=None, cron=None, libs=None, principal=None, scope="platform",
+    )
+
+    await _make_preset().apply(IamBaselineParams(), "platform", ctx)
+
+    # public_access survived AND self_service was added.
+    assert "public_access" in live_policies["unauthenticated"]
+    assert "self_service_authorization_api" in live_policies["unauthenticated"]
 
 
 @pytest.mark.asyncio
 async def test_apply_custom_delegation_role_names():
     """Custom delegation_role_names propagate into admin_catalog_access."""
     preset = _make_preset()
-    captured_configs: Dict[str, Any] = {}
-
     policies_written: Dict[str, Any] = {}
 
     policy_svc = MagicMock()
@@ -248,6 +304,7 @@ async def test_apply_custom_delegation_role_names():
 
     iam_svc = MagicMock()
     iam_svc.update_role = AsyncMock()
+    iam_svc.bind_policy_to_role = AsyncMock()
 
     ctx = PresetContext(
         db=MagicMock(),
@@ -504,6 +561,7 @@ async def test_apply_writes_allowlist_into_catalog_preset_delegation():
     policy_svc.delete_policy = AsyncMock(return_value=True)
     iam_svc = MagicMock()
     iam_svc.update_role = AsyncMock()
+    iam_svc.bind_policy_to_role = AsyncMock()
     iam_svc.list_roles = AsyncMock(return_value=[])
     iam_svc.delete_role = AsyncMock(return_value=True)
 
@@ -544,6 +602,7 @@ async def test_apply_does_not_set_allowlist_on_admin_catalog_access():
     policy_svc.delete_policy = AsyncMock(return_value=True)
     iam_svc = MagicMock()
     iam_svc.update_role = AsyncMock()
+    iam_svc.bind_policy_to_role = AsyncMock()
     iam_svc.list_roles = AsyncMock(return_value=[])
     iam_svc.delete_role = AsyncMock(return_value=True)
 
