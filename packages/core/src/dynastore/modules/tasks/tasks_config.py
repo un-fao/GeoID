@@ -85,6 +85,19 @@ class TasksPluginConfig(PluginConfig):
         ),
     )
 
+    background_runner_concurrency: Mutable[int] = Field(
+        default=100, ge=1,
+        description="Max concurrent in-process background tasks per pod.")
+    dispatcher_batch_size: Mutable[int] = Field(
+        default=10, ge=1,
+        description="Rows claimed per dispatcher tick.")
+    dispatcher_claim_reject_backoff_seconds: Mutable[int] = Field(
+        default=30, ge=0,
+        description="Back-off before re-claiming a rejected row.")
+    task_timeout_seconds: Mutable[int] = Field(
+        default=3600, ge=1,
+        description="Cloud Run Job lease duration for an off_loaded task.")
+
     @model_validator(mode="after")
     def _enforce_refresh_le_half_ttl(self) -> "TasksPluginConfig":
         if self.capability_publisher_refresh_seconds > self.capability_publisher_ttl_seconds / 2:

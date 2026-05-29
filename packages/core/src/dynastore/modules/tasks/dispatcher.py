@@ -139,13 +139,6 @@ from dynastore.modules.db_config.instance import get_service_name as _get_servic
 
 _SERVICE_NAME: Optional[str] = _get_service_name()
 
-# Back-off applied to a row when a worker's payload-aware ``can_claim``
-# refuses it.  Keeps the same worker from immediately re-claiming on the
-# next poll while leaving the row visible to any other worker (whose
-# ``claim_batch`` filter is ``locked_until IS NULL OR locked_until <= NOW()``).
-_CLAIM_REJECT_BACKOFF = timedelta(
-    seconds=int(os.environ.get("DISPATCHER_CLAIM_REJECT_BACKOFF_SECONDS", "30")),
-)
 if _SERVICE_NAME:
     logger.info("Dispatcher: service_name=%r (from instance.json)", _SERVICE_NAME)
 else:
@@ -693,7 +686,7 @@ async def run_dispatcher(
     shutdown_event: asyncio.Event,
     visibility_timeout: timedelta = timedelta(minutes=5),
     signal_timeout: float = 35.0,
-    batch_size: int = int(os.getenv("DISPATCHER_BATCH_SIZE", "10")),
+    batch_size: Optional[int] = None,
 ) -> None:
     """
     Main dispatcher loop.
@@ -714,7 +707,9 @@ async def run_dispatcher(
                             Janitor can reclaim it (heartbeat extends this).
         signal_timeout:     Max seconds to wait for a signal before running
                             the Janitor anyway (defensive polling).
-        batch_size:         Max tasks to claim per batch (env: DISPATCHER_BATCH_SIZE).
+        batch_size:         Max tasks to claim per batch. When ``None`` (the
+                            default), resolved from
+                            ``TasksPluginConfig.dispatcher_batch_size``.
     """
     from dynastore.modules.tasks.runners import capability_map
     from dynastore.modules.tasks.models import PermanentTaskFailure
@@ -726,6 +721,26 @@ async def run_dispatcher(
 
     # Refresh capability map at startup
     await capability_map.refresh()
+
+    # Resolve runtime tunables from TasksPluginConfig once per run (not per
+    # tick): the batch size and the back-off applied when a worker's
+    # payload-aware ``can_claim`` refuses a row (keeps the same worker from
+    # immediately re-claiming while the row stays visible to other workers).
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+    from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+    _tcfg = None
+    _cm = get_protocol(PlatformConfigsProtocol)
+    if _cm is not None:
+        try:
+            _tcfg = await _cm.get_config(TasksPluginConfig)
+        except Exception:  # noqa: BLE001
+            _tcfg = None
+    if batch_size is None:
+        batch_size = _tcfg.dispatcher_batch_size if isinstance(_tcfg, TasksPluginConfig) else 10
+    claim_reject_backoff = timedelta(
+        seconds=(_tcfg.dispatcher_claim_reject_backoff_seconds if isinstance(_tcfg, TasksPluginConfig) else 30)
+    )
 
     logger.info(
         f"Dispatcher: Started (runner={_RUNNER_ID!r}, batch_size={batch_size}, "
@@ -817,7 +832,7 @@ async def run_dispatcher(
 
                         await bump_claim_rejected(cap_id, row["task_type"])
                     await reset_task_to_pending(
-                        engine, task_id, backoff=_CLAIM_REJECT_BACKOFF,
+                        engine, task_id, backoff=claim_reject_backoff,
                     )
                     return
 

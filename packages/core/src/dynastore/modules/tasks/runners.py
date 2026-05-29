@@ -17,7 +17,6 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-import os
 from typing import Any, List, Optional, Union, Tuple, Protocol, runtime_checkable, AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -256,7 +255,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     """
     def __init__(self):
         self._running_tasks = set()
-        self._max_concurrency = int(os.getenv("BACKGROUND_RUNNER_CONCURRENCY", "100"))
+        self._max_concurrency = 100
         # BackgroundRunner is registered as a module-level singleton at import
         # (register_default_runners()), so a raw asyncio.Semaphore() here would
         # bind to the first loop that blocks on it and break when reused from
@@ -269,6 +268,18 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
 
     @asynccontextmanager
     async def lifespan(self, app_state: object) -> AsyncGenerator[None, None]:
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+            from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+            config_mgr = get_protocol(PlatformConfigsProtocol)
+            if config_mgr is not None:
+                cfg = await config_mgr.get_config(TasksPluginConfig)
+                if isinstance(cfg, TasksPluginConfig):
+                    self._max_concurrency = cfg.background_runner_concurrency
+                    self._semaphore = LoopLocalSemaphore(self._max_concurrency)
+        except Exception as exc:  # noqa: BLE001 — keep default concurrency on any read failure
+            logger.debug("BackgroundRunner: concurrency config unavailable (%s) — default %d", exc, self._max_concurrency)
         try:
             yield
         finally:
