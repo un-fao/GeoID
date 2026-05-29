@@ -451,6 +451,17 @@ async def test_catalog_role_grant_does_not_leak_across_catalogs(
     catalog_a, catalog_b = setup_catalogs[0], setup_catalogs[1]
     pid = created_principal.principal_id
 
+    # `editor` is no longer a default seed role (default catalog roles were
+    # trimmed to admin + unauthenticated). Register it on catalog A before
+    # granting so the grant can validate the role exists. Accept 201 (created)
+    # or 409 (left over from a prior run) so the test stays re-runnable.
+    r = await sysadmin_in_process_client.post(
+        "/admin/roles",
+        params={"catalog_id": catalog_a},
+        json={"name": "editor", "description": "Editor", "permissions": []},
+    )
+    assert r.status_code in (201, 409), f"Role create failed: {r.status_code} {r.text}"
+
     # Grant on catalog A only
     r = await sysadmin_in_process_client.post(
         f"/admin/catalogs/{catalog_a}/principals/{pid}/roles",

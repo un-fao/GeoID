@@ -316,9 +316,10 @@ async def test_apply_deny_policy_uses_ogc_prefix_registry():
     captured: list = []
 
     fake_perm = MagicMock()
-    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    # The driver persists DENY policies via the async ``create_policy`` (not the
+    # legacy in-memory ``register_policy``), so capture there.
+    fake_perm.create_policy = AsyncMock(side_effect=lambda p: captured.append(p) or p)
     fake_perm.register_role.return_value = None
-    fake_perm.create_policy = AsyncMock()
 
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=fake_perm,
@@ -352,9 +353,10 @@ async def test_apply_deny_policy_falls_back_to_wildcard_when_registry_empty():
     captured: list = []
 
     fake_perm = MagicMock()
-    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    # The driver persists DENY policies via the async ``create_policy`` (not the
+    # legacy in-memory ``register_policy``), so capture there.
+    fake_perm.create_policy = AsyncMock(side_effect=lambda p: captured.append(p) or p)
     fake_perm.register_role.return_value = None
-    fake_perm.create_policy = AsyncMock()
 
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=fake_perm,
@@ -378,9 +380,10 @@ async def test_apply_deny_policy_pattern_matches_singular_catalog_and_item_urls(
     captured: list = []
 
     fake_perm = MagicMock()
-    fake_perm.register_policy.side_effect = lambda p: captured.append(p) or p
+    # The driver persists DENY policies via the async ``create_policy`` (not the
+    # legacy in-memory ``register_policy``), so capture there.
+    fake_perm.create_policy = AsyncMock(side_effect=lambda p: captured.append(p) or p)
     fake_perm.register_role.return_value = None
-    fake_perm.create_policy = AsyncMock()
 
     with patch(
         "dynastore.tools.discovery.get_protocol", return_value=fake_perm,

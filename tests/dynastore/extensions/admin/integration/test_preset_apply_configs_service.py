@@ -166,11 +166,11 @@ class TestPresetApplyAgainstRealConfigsService:
         body = resp.json()
         assert body["preset"] == "public_catalog"
         assert body["catalog_id"] == catalog_id
-        assert body["applied"] == [
-            "catalog_routing",
-            "collection_template",
-            "items_template",
-        ]
+        # Apply now routes through the audit-backed preset lifecycle
+        # (dispatch_preset → apply_preset), which returns the operator-visible
+        # state instead of the old slot list. The persisted tiers are asserted
+        # below via get_persisted_config, which is the real proof of effect.
+        assert body["state"] == "applied"
 
         configs = get_protocol(ConfigsProtocol)
         assert configs is not None, "ConfigsProtocol not registered"

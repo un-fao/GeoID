@@ -284,6 +284,35 @@ async def _assert_foundational_schemas(engine) -> None:
                 )
 
 
+async def _bootstrap_worker_foundational_schemas() -> None:
+    """Bootstrap the foundational tables in this xdist worker's cloned DB.
+
+    The per-worker DB is cloned from the ``gis_dev`` TEMPLATE in
+    ``_ensure_worker_db`` *before* any module lifespan runs, and the
+    session-level ``db_reset_session`` bootstrap is skipped on xdist workers
+    (it only runs on the controller / serial mode).  So a freshly-cloned
+    worker DB lacks ``configs.platform_configs`` and ``iam.applied_presets``
+    unless a test happens to enable both owning modules — and
+    ``_assert_foundational_schemas`` requires both after every app lifespan,
+    regardless of the enabled module set.  Create them here, per-worker, right
+    after the clone.  Idempotent (CREATE … IF NOT EXISTS); DDL stays inside
+    each owning module's bootstrap entry-point (reuses
+    ``_bootstrap_foundational_schemas``).
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://testuser:testpassword@localhost:54320/gis_dev",
+    ).replace("postgresql://", "postgresql+asyncpg://")
+    engine = create_async_engine(db_url, poolclass=NullPool)
+    try:
+        await _bootstrap_foundational_schemas(engine)
+    finally:
+        await engine.dispose()
+
+
 def pytest_sessionstart(session):
     """Per-worker DB provisioning. No-op outside xdist."""
     if not os.environ.get("PYTEST_XDIST_WORKER"):
@@ -291,6 +320,10 @@ def pytest_sessionstart(session):
     import asyncio
 
     asyncio.run(_ensure_worker_db())
+    # The clone above predates any module lifespan, and the controller-side
+    # foundational-schema bootstrap (db_reset_session) is skipped on workers —
+    # so bootstrap the two foundational tables directly into this worker's DB.
+    asyncio.run(_bootstrap_worker_foundational_schemas())
 
 
 def pytest_sessionfinish(session, exitstatus):
