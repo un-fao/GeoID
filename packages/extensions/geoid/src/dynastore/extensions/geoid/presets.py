@@ -14,30 +14,34 @@
 
 """``geoid`` routing preset (#847) — flagship FAO GeoID profile.
 
-Composes the ``private_catalog`` bundle (PG-first storage, private ES
-indexers on every tier, IAM DENY on default routes) and opts the catalog
-in to a single anonymous audience:
+Composes the ``private_catalog`` bundle (PG-first storage, per-tenant
+private ES indexers on the items tier, IAM DENY on the catalog's routes)
+and opts the catalog in to a single anonymous audience:
 
-  * ``CatalogLookupAudience.is_public=True`` — opens the lookup-only
-    search surface (``/search`` + ``/search/catalogs/{cat}``) that the
-    ``lookup_only_search`` policy gates, and arms the geoid extension's
-    anonymous STAC/Features enumeration DENY so the catalog is reachable
-    only by exact geoid / external_id lookup, never by enumeration.
+  * ``CatalogLookupAudience.is_public=True`` — opens the anonymous
+    lookup-only needle endpoint ``POST /search/catalogs/{cat}/items-search``
+    (resolve one item by exact ``geoid`` / ``external_id``, gated by the
+    ``lookup_only_search`` handler so a broadening request never matches),
+    and arms the geoid extension's anonymous STAC/Features enumeration DENY
+    so the catalog is reachable only by exact lookup — never by browsing,
+    listing, or filterable search.
 
-The opt-in is a higher-priority ALLOW layered over the ``private_catalog``
-DENY baseline (#915 priority), so anonymous lookup reaches the opened
-routes while everything else stays denied by the private cascade.
+``on_applied`` installs the per-catalog IAM policies in the catalog's
+tenant schema (see ``catalog_policies.register_geoid_policies_for_catalog``):
+the lookup ALLOW, the STAC + Features enumeration DENYs, and a dormant
+per-collection anonymous-create ALLOW.
 
-This profile deliberately does NOT open anonymous writes. Lookup-only mode
-(``is_public=True``) and anonymous create cannot coexist on one catalog:
-the enumeration DENY arms under ``is_public`` and covers the item-POST
-path, and deny-precedence (``PermissionService.evaluate_access``) makes it
-beat any anonymous-create ALLOW. A geoid catalog therefore refuses
-anonymous inserts by construction — which is the intended posture
-(un-fao/GeoID#1204: public users must not insert). Genuine anonymous-intake
-catalogs are a different shape: ``is_public=False`` plus a per-collection
-``CollectionWriteAudience.allow_anonymous_create=True``, configured
-directly rather than via this preset.
+Anonymous *writes* are off by default: no collection opts in, so the catalog
+refuses anonymous inserts (un-fao/GeoID#1204 — public users must not insert
+by default). A catalog admin turns a single intake collection into a "blind
+dropbox" by setting ``CollectionWriteAudience.allow_anonymous_create=True``
+on it (PUT ``/configs/catalogs/{cat}/collections/{col}/plugins/collection_write_audience``).
+For that collection only, anonymous ``POST .../items`` is then allowed: the
+create ALLOW carries a higher priority than the enumeration DENY, so it wins
+the #915 ranking (highest priority wins; DENY only wins on a tie) — while
+every browse / list / search verb stays denied because the ALLOW is
+POST-only. The two halves compose on one catalog: contribute an item and
+resolve it later by a known ``geoid``, but never enumerate what is there.
 
 Auto-registers on extension import.
 """
@@ -62,9 +66,12 @@ class GeoidPreset(BundlePreset):
         "default routes) with one anonymous opt-in: catalog-level "
         "lookup_audience.is_public=True. That arms lookup-only mode — "
         "anonymous callers can resolve a single record by geoid or "
-        "external_id but cannot enumerate or insert. Use for catalogs that "
-        "serve anonymous lookup while keeping the read/index/write surface "
-        "private."
+        "external_id but cannot enumerate. Anonymous insert stays off unless "
+        "a catalog admin opts a specific collection in via "
+        "CollectionWriteAudience.allow_anonymous_create (per-collection "
+        "blind-dropbox intake). Use for catalogs that serve anonymous lookup "
+        "— and optionally anonymous contribution to chosen collections — "
+        "while keeping the read/index/browse surface private."
     )
 
     def build(self, catalog_id: str, **_scope: str) -> PresetBundle:
