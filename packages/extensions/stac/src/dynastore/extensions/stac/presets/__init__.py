@@ -22,7 +22,7 @@ from dynastore.extensions.stac.policies import stac_policies, stac_role_bindings
 from dynastore.modules.storage.presets.policy_contributor_adapter import (
     PolicyContributorPreset,
 )
-from dynastore.modules.storage.presets.registry import register_preset
+from dynastore.modules.storage.presets.registry import list_presets, register_preset
 
 
 class _STACPolicyContributor:
@@ -33,9 +33,14 @@ class _STACPolicyContributor:
         return stac_role_bindings()
 
 
-register_preset(PolicyContributorPreset(
-    name="stac_enable",
-    description="STAC extension IAM policies + anonymous read access",
-    keywords=("iam", "stac", "platform"),
-    contributor_factory=_STACPolicyContributor,
-))
+# Idempotent against re-import. This module's import re-executes if the package
+# is evicted from ``sys.modules`` (cold-worker re-import via the sidecar-config
+# backstop, or test isolation). ``register_preset`` itself stays strict about
+# genuine duplicate names — only this bootstrap call guards on the registry.
+if "stac_enable" not in list_presets():
+    register_preset(PolicyContributorPreset(
+        name="stac_enable",
+        description="STAC extension IAM policies + anonymous read access",
+        keywords=("iam", "stac", "platform"),
+        contributor_factory=_STACPolicyContributor,
+    ))

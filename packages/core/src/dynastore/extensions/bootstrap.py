@@ -62,3 +62,20 @@ def bootstrap_app(
             status_code=400,
             content={"detail": str(exc)},
         )
+
+    # 7. Liveness / build-info probe. Registered here (not as a decorator on the
+    # module-level ``main.app``) so every bootstrapped app — including the
+    # in-process test apps built via this same function — exposes ``/health``.
+    from dynastore._version import get_build_info
+
+    @app.get("/health", tags=["Web Health"])
+    async def health_check():
+        info = get_build_info()
+        return {
+            "name": app.title,
+            "description": app.description,
+            "version": info["version"],
+            "commit": info["commit"],
+            "build_time": info["build_time"],
+            "status": "ok",
+        }

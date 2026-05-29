@@ -37,7 +37,7 @@ from dynastore.modules import (
     get_protocol,
 )
 from dynastore.extensions.lifespan import lifespan as extensions_lifespan
-from dynastore._version import VERSION, get_build_info
+from dynastore._version import VERSION
 from dynastore.extensions.tools.fast_api import ORJSONResponse
 from dynastore.extensions.bootstrap import bootstrap_app
 from dynastore.modules.concurrency import set_concurrency_backend
@@ -228,17 +228,8 @@ async def get_api_document(f: Optional[str] = None, request: Request = None):  #
     return ORJSONResponse(content=schema)
 
 
-@app.get("/health", tags=["Web Health"])
-async def health_check():
-    info = get_build_info()
-    return {
-        "name": app.title,
-        "description": app.description,
-        "version": info["version"],
-        "commit": info["commit"],
-        "build_time": info["build_time"],
-        "status": "ok",
-    }
+# /health (liveness + build-info) is registered inside ``bootstrap_app`` so it
+# is present on every bootstrapped app, including in-process test apps.
 
 # /docs is registered later by ``documentation.service.configure_swagger_ui``,
 # which builds the custom Swagger UI (theme + OAuth2 redirect handler).

@@ -28,7 +28,6 @@ from fastapi import (
 from fastapi.openapi.utils import get_openapi
 from typing import Optional, Any, Dict
 
-import os
 from fastapi.responses import HTMLResponse
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_web_page
@@ -41,59 +40,6 @@ from dynastore.extensions.iam.middleware import IamMiddleware
 from dynastore.extensions.iam.authorization_api import me_router
 logger = logging.getLogger(__name__)
 
-
-
-def _build_oauth2_endpoints() -> tuple[str, str]:
-    """Resolve absolute Keycloak ``authorize`` / ``token`` URLs from env.
-
-    Resolution order:
-    1. If ``IDP_ISSUER_URL`` is set, derive the realm path from it (e.g.
-       ``/realms/fao-aip-auth-review``).
-    2. If ``IDP_PUBLIC_URL`` is also set and points at a different scheme+
-       host than the issuer URL, swap the host so the browser hits the
-       public-reachable Keycloak instead of an internal hostname.
-    3. If ``IDP_ISSUER_URL`` is unset, fall back to the relative paths
-       ``/auth/authorize`` + ``/auth/token`` (development default — Swagger
-       UI's Authorize button will be non-functional but the schema still
-       renders) and emit a one-shot warning.
-    """
-    issuer = os.getenv("IDP_ISSUER_URL")
-    if not issuer:
-        logger.warning(
-            "IDP_ISSUER_URL not set; Swagger Authorize button will use "
-            "relative URLs and may not work end-to-end."
-        )
-        return "/auth/authorize", "/auth/token"
-
-    from urllib.parse import urlparse, urlunparse
-
-    issuer = issuer.rstrip("/")
-    parsed = urlparse(issuer)
-    realm_path = parsed.path  # e.g. ``/realms/fao-aip-auth-review``
-
-    public = os.getenv("IDP_PUBLIC_URL")
-    if public:
-        public = public.rstrip("/")
-        public_parsed = urlparse(public)
-        # Only swap when the public URL actually differs in scheme+host;
-        # otherwise the issuer URL is already browser-reachable.
-        same_origin = (
-            public_parsed.scheme == parsed.scheme
-            and public_parsed.netloc == parsed.netloc
-        )
-        if not same_origin:
-            base = urlunparse(
-                (public_parsed.scheme, public_parsed.netloc, realm_path, "", "", "")
-            )
-        else:
-            base = issuer
-    else:
-        base = issuer
-
-    return (
-        f"{base}/protocol/openid-connect/auth",
-        f"{base}/protocol/openid-connect/token",
-    )
 
 
 def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
@@ -114,8 +60,6 @@ def build_iam_openapi_schema(app: FastAPI) -> Dict[str, Any]:
         openapi_schema["components"] = {}
     if "securitySchemes" not in openapi_schema["components"]:
         openapi_schema["components"]["securitySchemes"] = {}
-
-    auth_url, token_url = _build_oauth2_endpoints()
 
     openapi_schema["components"]["securitySchemes"]["HTTPBearer"] = {
         "type": "http",
