@@ -65,6 +65,10 @@ def _make_iam(
     async def _remove_role_hierarchy(parent_role: str, child_role: str, catalog_id: Any = None) -> bool:
         return True
 
+    async def _list_roles(catalog_id: Any = None) -> List[Role]:
+        return list(roles.values())
+
+    iam.list_roles = AsyncMock(side_effect=_list_roles)
     iam.update_role = AsyncMock(side_effect=_update_role)
     iam.create_role = AsyncMock(side_effect=_create_role)
     iam.delete_role = AsyncMock(side_effect=_delete_role)
@@ -148,8 +152,10 @@ async def test_apply_is_idempotent_when_roles_exist():
 
     descriptor = await _PRESET.apply(NoParams(), "platform", ctx)
 
-    # update_role called for each seed, create_role never called (all existed).
-    assert iam.update_role.await_count == len(_ALL_EXPECTED_ROLE_NAMES)
+    # Non-destructive upsert: when an existing role already matches the seed
+    # (same policies + metadata) it is left untouched — no update_role call,
+    # no create_role call. Re-apply is a true no-op on the role rows.
+    assert iam.update_role.await_count == 0
     assert iam.create_role.await_count == 0
 
     # Descriptor still lists all role names.
@@ -174,10 +180,13 @@ async def test_dry_run_returns_plan_without_writes():
     iam.update_role.assert_not_called()
     iam.add_role_hierarchy.assert_not_called()
 
-    # Plan describes all roles and hierarchy edges.
+    # Plan describes all roles, and hierarchy edges only when the seeds
+    # declare any (the platform seeds currently have parent=None, so
+    # _HIERARCHY_EDGES is empty — guard the assertion on it).
     kinds = [e.kind for e in plan.entries]
     assert "upsert_role" in kinds
-    assert "add_role_hierarchy" in kinds
+    if _HIERARCHY_EDGES:
+        assert "add_role_hierarchy" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -215,14 +224,38 @@ def test_keywords_contain_iam():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_upsert_role_calls_update_when_role_exists():
+async def test_upsert_role_preserves_existing_policies_on_update():
+    """Re-applying must NOT clobber bindings other presets added.
+
+    Regression for the ``/health`` 403 outage: ``default_roles_baseline``
+    seeds ``unauthenticated`` with ``policies=[]``; if upsert blindly
+    replaced the column it would wipe ``public_access`` (the anonymous
+    /health grant) on every re-apply / composite child. The upsert must
+    preserve the live policy list and only refresh the description.
+    """
+    existing = Role(name="unauthenticated", policies=["public_access"])
+    iam = _make_iam(existing_roles={"unauthenticated": existing})
+
+    # Seed shape: empty policy list + a (possibly new) description.
+    role = Role(name="unauthenticated", description="updated", policies=[])
+    await _upsert_role(iam, role)
+
+    iam.create_role.assert_not_called()
+    iam.update_role.assert_awaited_once()
+    written = iam.update_role.await_args.args[0]
+    assert written.policies == ["public_access"]  # preserved, not wiped
+    assert written.description == "updated"        # description still synced
+
+
+@pytest.mark.asyncio
+async def test_upsert_role_noop_when_identical():
+    """Existing role identical to the seed → no write at all."""
     existing = Role(name="admin", policies=[])
     iam = _make_iam(existing_roles={"admin": existing})
 
-    role = Role(name="admin", description="updated", policies=["new_policy"])
-    await _upsert_role(iam, role)
+    await _upsert_role(iam, Role(name="admin", policies=[]))
 
-    iam.update_role.assert_awaited_once()
+    iam.update_role.assert_not_called()
     iam.create_role.assert_not_called()
 
 
@@ -238,4 +271,4 @@ async def test_upsert_role_calls_create_when_role_absent():
     await _upsert_role(iam, role)
 
     iam.create_role.assert_awaited_once()
-    iam.update_role.assert_awaited_once()
+    iam.update_role.assert_not_called()

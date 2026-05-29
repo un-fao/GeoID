@@ -141,6 +141,60 @@ async def test_bootstrap_noop_when_sentinel_present() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: force=True → re-applies even when sentinel present (self-heal)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bootstrap_force_reapplies_when_sentinel_present() -> None:
+    """force=True re-applies a load-bearing preset despite an existing sentinel.
+
+    This is the /health self-heal path: a DB whose `unauthenticated` role lost
+    `public_access` still has the public_access_baseline sentinel, so the normal
+    path would skip and the probe would 403 forever. force=True must re-run
+    apply() to restore the grant, and the sentinel INSERT (ON CONFLICT DO
+    NOTHING) is still issued.
+    """
+    from dynastore.modules.storage.presets.lifecycle import bootstrap_preset_if_absent
+
+    execute_calls: list = []
+
+    class _MockDQL:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            execute_calls.append(kw)
+            if len(execute_calls) == 1:
+                return (1,)  # SELECT sentinel → PRESENT
+            return None  # INSERT sentinel (ON CONFLICT DO NOTHING)
+
+    preset = _make_preset("public_access_baseline")
+
+    with patch(
+        "dynastore.modules.db_config.locking_tools.acquire_startup_lock",
+        _FakeLockAcquired,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        return_value=preset,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle._build_context",
+        return_value=MagicMock(),
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
+        _MockDQL,
+    ):
+        result = await bootstrap_preset_if_absent(
+            MagicMock(), preset_name="public_access_baseline", force=True
+        )
+
+    assert result is True
+    # Despite the sentinel being present, apply() ran (self-heal) and the
+    # sentinel INSERT was still issued (SELECT + INSERT = 2 calls).
+    preset.apply.assert_awaited_once()
+    assert len(execute_calls) == 2
+
+
+# ---------------------------------------------------------------------------
 # Test: advisory lock timeout → returns False without apply
 # ---------------------------------------------------------------------------
 

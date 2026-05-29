@@ -164,7 +164,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             for _preset_name in (
                 "default_roles_baseline",
                 "iam_baseline",
-                "public_access_baseline",
             ):
                 try:
                     await bootstrap_preset_if_absent(engine, preset_name=_preset_name)
@@ -177,6 +176,30 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                         exc,
                         exc_info=True,
                     )
+
+            # public_access_baseline gates the anonymous Cloud Run /health
+            # startup probe. Re-assert it on EVERY cold-boot (force=True) — not
+            # just the first — so a DB whose `unauthenticated` role lost the
+            # `public_access` binding (a pre-fix destructive re-bind, a composite
+            # preset re-applying default_roles_baseline / iam_baseline without it,
+            # or an operator edit) SELF-HEALS on the next restart. Without this
+            # the sentinel skips re-application and the probe 403s forever — the
+            # revision can never become healthy and the service is undeployable.
+            # apply() is idempotent (unions the policy into the role), so once the
+            # grant is present this is a no-op. It MUST run AFTER the two presets
+            # above so a same-boot re-seed of those roles cannot clobber it.
+            try:
+                await bootstrap_preset_if_absent(
+                    engine, preset_name="public_access_baseline", force=True
+                )
+            except Exception as exc:
+                logger.error(
+                    "IamModule: cold-boot re-assert of 'public_access_baseline' "
+                    "failed; the anonymous /health probe may 403 and the service "
+                    "may fail its Cloud Run startup probe: %s",
+                    exc,
+                    exc_info=True,
+                )
 
             # Register plugins
             register_plugin(self._iam_manager)
