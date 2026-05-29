@@ -25,12 +25,9 @@ Replaces scattered ``getattr(request.state, "field", default)`` and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from starlette.requests import Request
-
-if TYPE_CHECKING:
-    pass
 
 
 def get_principal(request: Request) -> Optional[Any]:

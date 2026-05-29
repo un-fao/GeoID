@@ -18,7 +18,7 @@
 
 import logging
 import json
-from typing import Optional, Dict, Any, Type, Union, TYPE_CHECKING
+from typing import Optional, Dict, Any, Type, Union
 from dynastore.tools.cache import cached
 from dynastore.modules.storage.router import invalidate_router_cache
 
@@ -87,9 +87,6 @@ from dynastore.modules.db_config.typed_store.ddl import (
 from dynastore.modules.db_config.typed_store import config_queries as _cq
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
