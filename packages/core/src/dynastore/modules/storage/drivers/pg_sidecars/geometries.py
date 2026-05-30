@@ -1035,7 +1035,10 @@ class GeometriesSidecar(SidecarProtocol):
                 write_behavior=write_behavior,
             )
         except Exception as e:
-            raise ValueError(f"Geometry preparation failed: {e}")
+            # Preserve the cause (e.g. InvalidGeometryError carrying the
+            # explain_validity reason) so it survives the ValueError wrap the
+            # write path maps to a 422 / 207 per-item rejection.
+            raise ValueError(f"Geometry preparation failed: {e}") from e
 
     def _get_val(self, obj, key, default=None):
         if isinstance(obj, dict):

@@ -103,7 +103,7 @@ def process_geometry(
     behavior = write_behavior or GeometriesWriteBehavior()
     import shapely
     from shapely import wkb
-    from shapely.validation import make_valid
+    from shapely.validation import make_valid, explain_validity
     from shapely.ops import transform
 
     try:
@@ -158,15 +158,23 @@ def process_geometry(
 
     # 2. Handle Invalid Geometries
     if not processed_geom.is_valid:
+        # ``explain_validity`` names the defect and its location (e.g.
+        # "Self-intersection[12.3 45.6]") so a rejected caller learns *why*
+        # the geometry was refused, not merely that it was. The reason is
+        # carried in the raised message and surfaces in the write-path
+        # rejection (HTTP 422 / 207 per-item) the caller receives.
+        reason = explain_validity(processed_geom)
         if behavior.invalid_geom_policy == InvalidGeometryPolicy.REJECT:
-            raise InvalidGeometryError("Geometry is invalid and policy is REJECT.")
+            raise InvalidGeometryError(
+                f"Geometry is invalid and policy is REJECT: {reason}"
+            )
         elif behavior.invalid_geom_policy == InvalidGeometryPolicy.ATTEMPT_FIX:
             # Shapely's make_valid is not as robust as PostGIS ST_MakeValid,
             # but it's the best we can do in Python without PostGIS.
             processed_geom = make_valid(processed_geom)
             if not processed_geom.is_valid:
                 raise UnfixableGeometryError(
-                    "Geometry remains invalid after attempt to fix."
+                    f"Geometry remains invalid after attempt to fix: {reason}"
                 )
 
     # 3. Force Dimension
