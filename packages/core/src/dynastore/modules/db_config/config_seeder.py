@@ -26,11 +26,19 @@ overrides) just drop a JSON file alongside it.
 Invoked once during catalog/db_config startup, after ``PlatformConfigsProtocol``
 is registered. Idempotent — safe to re-run on every boot.
 
-Fail-fast posture: when a seed is rejected (unknown class_key, missing key,
-non-object ``value``, malformed JSON), the rejection is summarised at ERROR
-and — in non-production tiers — raised as ``ConfigSeederError``. Production
-startup keeps going so a bad seed cannot take a service down. Validate seed
-files in CI via ``scripts/validate_config_defaults.py``.
+Fail-fast posture: when a seed is rejected (missing key, non-object
+``value``, malformed JSON), the rejection is summarised at ERROR and — in
+non-production tiers — raised as ``ConfigSeederError``. Production startup
+keeps going so a bad seed cannot take a service down. Validate seed files in
+CI via ``scripts/validate_config_defaults.py``.
+
+Unknown ``class_key`` is *tolerated*, not rejected: it is logged at WARNING
+and skipped in every tier. A seed file may legitimately reference a config
+class this build doesn't register — e.g. mid cross-repo rename, when one repo
+ships the new class while a not-yet-redeployed sibling still carries the old
+seed file. Treating that as fatal would couple deploy ordering across repos;
+warn-and-skip keeps boot order-independent. Remove the stale seed file once
+every service is on the new build.
 """
 from __future__ import annotations
 
@@ -73,9 +81,11 @@ async def seed_default_configs(engine: DbResource) -> None:
       too early; logged as a warning, returns silently).
     - Another process holds the advisory lock (no contention; we just skip).
 
-    Rejected seeds (unknown class_key, missing class_key, bad value, bad JSON)
-    are collected and surfaced together: ERROR-logged in production, raised
-    as ``ConfigSeederError`` in non-production tiers (fail-fast).
+    Rejected seeds (missing class_key, bad value, bad JSON) are collected and
+    surfaced together: ERROR-logged in production, raised as
+    ``ConfigSeederError`` in non-production tiers (fail-fast). An unknown
+    class_key is tolerated — logged at WARNING and skipped in every tier — so
+    a stale seed from a not-yet-redeployed sibling repo can't abort boot.
     Per-row ``set_config`` failures are logged at WARNING and never abort.
     """
     if not DEFAULTS_DIR.exists():
@@ -128,6 +138,7 @@ async def seed_default_configs(engine: DbResource) -> None:
             merged[class_key] = payload  # last-write-wins per class_key
 
         applied = 0
+        skipped_unknown = 0
         for class_key, payload in merged.items():
             try:
                 outcome = await _apply_one(config_mgr, class_key, payload)
@@ -139,14 +150,20 @@ async def seed_default_configs(engine: DbResource) -> None:
                 continue
             if outcome == "applied":
                 applied += 1
-            elif outcome == "rejected_unknown_class":
-                rejections.append(f"{class_key}: unknown class_key (not registered)")
+            elif outcome == "skipped_unknown_class":
+                skipped_unknown += 1
+                logger.warning(
+                    "config_seeder: %s: unknown class_key (not registered) — "
+                    "skipping. Expected mid cross-repo config rename; remove "
+                    "the stale seed file once every service is on the new build.",
+                    class_key,
+                )
             elif outcome == "rejected_bad_value":
                 rejections.append(f"{class_key}: 'value' must be a JSON object")
 
         logger.info(
-            "config_seeder: applied %d/%d seed(s) from %s",
-            applied, len(merged), DEFAULTS_DIR,
+            "config_seeder: applied %d/%d seed(s) from %s (%d unknown skipped)",
+            applied, len(merged), DEFAULTS_DIR, skipped_unknown,
         )
 
         if rejections:
@@ -168,11 +185,11 @@ async def _apply_one(
     """Apply a single seed payload.
 
     Returns one of: ``"applied"``, ``"skipped_existing"``,
-    ``"rejected_unknown_class"``, ``"rejected_bad_value"``.
+    ``"skipped_unknown_class"``, ``"rejected_bad_value"``.
     """
     cls: Optional[type[PluginConfig]] = resolve_config_class(class_key)
     if cls is None:
-        return "rejected_unknown_class"
+        return "skipped_unknown_class"
 
     value = payload.get("value")
     if not isinstance(value, dict):
