@@ -22,9 +22,11 @@ from typing import Optional
 # the CapabilityMap doesn't list this task as claimable on services lacking it.
 import shapely  # noqa: F401
 
+from dynastore.extensions.tools.formatters import format_map
 from dynastore.modules.features_exporter import export_features
 from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
-from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
+from dynastore.modules.tasks.models import TaskPayload
+from dynastore.tasks import result_message
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.tasks.tools import initialize_reporters
 from dynastore.tools.protocol_helpers import get_engine
@@ -70,16 +72,29 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
             reporting_config=request.reporting,
         )
 
+        # Server-owned result storage (OGC API - Processes): derive a per-job
+        # key in the catalog's own bucket; the location is never client-supplied.
+        formatter = format_map.get(request.output_format)
+        if formatter is None:
+            raise RuntimeError(f"No formatter registered for {request.output_format}")
+        content_type = formatter["media_type"]
+        extension = formatter.get("extension") or request.output_format.value
+        filename = f"{request.collection}.{extension}"
+        output_uri = await result_message.server_output_uri(
+            request.catalog,
+            EXPORT_FEATURES_PROCESS_DEFINITION.id,
+            str(task_id),
+            filename,
+        )
+
         await export_features(
             engine,
             request,
+            destination_uri=output_uri,
             reporters=reporters,
             task_id=str(task_id),
         )
 
-        return StatusInfo(
-            jobID=task_id,
-            status=TaskStatusEnum.COMPLETED,
-            message="Export completed",
-            links=[],
-        )
+        # Return the artifact as a time-limited signed URL (OGC output by ref).
+        result_url = await result_message.signed_result_url(output_uri, content_type)
+        return result_message.completed(task_id, message=result_url)

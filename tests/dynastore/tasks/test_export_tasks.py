@@ -1,42 +1,51 @@
-import asyncio
+"""``ExportFeaturesTask.run`` server-owned output contract.
+
+The export tasks no longer accept a client ``destination_uri``: per OGC API -
+Processes the server owns result storage. The task derives a per-job key in the
+catalog's own bucket (via ``result_message.server_output_uri``), passes it to
+the consolidated ``modules.features_exporter.export_features`` pipeline, and
+returns the artifact as a 7-day signed URL in the job message.
+
+(The ``dwh_join`` export's end-to-end behaviour is covered by
+``unit/test_dwh_join_export_enrich.py``.)
+"""
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from dynastore.tasks.export_features.export_features_task import ExportFeaturesTask
-from dynastore.tasks.dwh_join.dwh_join_export_task import DwhJoinExportTask
-from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from dynastore.modules.processes.models import ExecuteRequest
+from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum
+from dynastore.tasks.export_features.export_features_task import (
+    EXPORT_FEATURES_PROCESS_DEFINITION,
+    ExportFeaturesTask,
+)
+
+_TASK_MOD = "dynastore.tasks.export_features.export_features_task"
+_RESOLVED_URI = (
+    "gs://cat-bucket/processes/outputs/export_features/job-1/test_collection.geojson"
+)
+_SIGNED_URL = "https://storage.googleapis.com/signed?token=abc&X-Goog-Expires=604800"
 
 
 @pytest.mark.asyncio
-async def test_export_features_task_run():
-    """The task is a thin wrapper that delegates to
-    ``modules.features_exporter.export_features``.  A previous
-    implementation interleaved ``stream_features`` /
-    ``get_features_as_byte_stream`` / ``upload_stream_to_gcs`` inside
-    the task; a refactor moved that pipeline into the module.  This
-    test patches the ``export_features`` symbol the task module
-    imports and verifies the task forwards engine + request + task_id
-    correctly.
-    """
-    mock_app_state = MagicMock()
+async def test_export_features_task_run_server_owned_output_and_signed_url():
     mock_engine = AsyncMock()
+    # format_map drives content-type/extension; stub it so the test doesn't
+    # depend on the registered formatter table.
+    fmt = MagicMock()
+    fmt.get.return_value = {"media_type": "application/geo+json", "extension": "geojson"}
 
     with (
-        patch(
-            "dynastore.tasks.export_features.export_features_task.get_engine",
-            return_value=mock_engine,
-        ),
-        patch(
-            "dynastore.tasks.export_features.export_features_task.export_features",
-            new_callable=AsyncMock,
-        ) as mock_export,
-        patch(
-            "dynastore.tasks.export_features.export_features_task.initialize_reporters",
-            return_value=[],
-        ),
+        patch(f"{_TASK_MOD}.get_engine", return_value=mock_engine),
+        patch(f"{_TASK_MOD}.initialize_reporters", return_value=[]),
+        patch(f"{_TASK_MOD}.format_map", fmt),
+        patch(f"{_TASK_MOD}.export_features", new_callable=AsyncMock) as mock_export,
+        patch("dynastore.tasks.result_message.server_output_uri",
+              new_callable=AsyncMock, return_value=_RESOLVED_URI),
+        patch("dynastore.tasks.result_message.signed_result_url",
+              new_callable=AsyncMock, return_value=_SIGNED_URL),
     ):
-        task = ExportFeaturesTask(mock_app_state)
-
+        task = ExportFeaturesTask(MagicMock())
         payload = TaskPayload(
             task_id="123e4567-e89b-12d3-a456-426614174000",
             caller_id="tester",
@@ -45,87 +54,31 @@ async def test_export_features_task_run():
                     "catalog": "test_catalog",
                     "collection": "test_collection",
                     "output_format": "geojson",
-                    "destination_uri": "gs://test-bucket/output.geojson",
+                    # NOTE: no destination_uri — the server derives it.
                 }
             ),
         )
-
         result = await task.run(payload)
 
-        assert result.status == TaskStatusEnum.COMPLETED
+    # The signed URL is the job message; status is COMPLETED.
+    assert result is not None
+    assert result.status == TaskStatusEnum.COMPLETED
+    assert result.message == _SIGNED_URL
 
-        # Task delegates to the consolidated ``export_features`` call
-        # in ``modules.features_exporter``.  Verify it fires once with
-        # engine + a materialised ``ExportFeaturesRequest`` + task_id.
-        assert mock_export.await_count == 1
-        call_engine, call_request = mock_export.await_args.args
-        assert call_engine is mock_engine
-        assert call_request.destination_uri == "gs://test-bucket/output.geojson"
-        assert mock_export.await_args.kwargs["task_id"] == (
-            "123e4567-e89b-12d3-a456-426614174000"
-        )
+    # The pipeline was handed the server-derived destination, not a client one.
+    assert mock_export.await_count == 1
+    assert mock_export.await_args.kwargs["destination_uri"] == _RESOLVED_URI
+    assert mock_export.await_args.kwargs["task_id"] == (
+        "123e4567-e89b-12d3-a456-426614174000"
+    )
 
 
-@pytest.mark.asyncio
-async def test_dwh_join_export_task_run():
-    # Mock Dependencies
-    mock_app_state = MagicMock()
-    mock_engine = AsyncMock()
+def test_export_features_request_has_no_destination_uri_field():
+    """The output location is server-owned, so it is not a request field."""
+    from dynastore.modules.features_exporter.models import ExportFeaturesRequest
 
-    # Mock BigQuery Result
-    mock_bq_result = {"A": {"dwh_col": 100}, "B": {"dwh_col": 200}}
+    assert "destination_uri" not in ExportFeaturesRequest.model_fields
 
-    # Mock stream_features
-    async def mock_stream_features(*args, **kwargs):
-        # We need to return features that have join_column 'join_col'
-        yield {"id": 1, "join_col": "A", "attributes": {"some": "attr"}}
-        yield {"id": 2, "join_col": "B", "attributes": {"some": "other"}}
 
-    with (
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.get_engine",
-            return_value=mock_engine,
-        ),
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.stream_features",
-            side_effect=mock_stream_features,
-        ),
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.execute_bigquery_async",
-            return_value=mock_bq_result,
-        ),
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.get_features_as_byte_stream",
-            return_value=[b"chunk"],
-        ) as mock_get_stream,
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.upload_stream_to_gcs"
-        ) as mock_upload,
-        patch(
-            "dynastore.tasks.dwh_join.dwh_join_export_task.initialize_reporters",
-            return_value=[],
-        ),
-    ):
-        task = DwhJoinExportTask(mock_app_state)
-
-        payload = TaskPayload(
-            task_id="123e4567-e89b-12d3-a456-426614174001",
-            caller_id="tester",
-            inputs=ExecuteRequest(
-                inputs={
-                    "dwh_project_id": "p",
-                    "dwh_query": "SELECT ...",
-                    "catalog": "c",
-                    "collection": "l",
-                    "dwh_join_column": "J",
-                    "join_column": "join_col",
-                    "output_format": "geojson",
-                    "destination_uri": "gs://bucket/out.json",
-                }
-            ),
-        )
-
-        result = await task.run(payload)
-
-        assert result.status == TaskStatusEnum.COMPLETED
-        assert mock_upload.called
+def test_export_features_definition_id():
+    assert EXPORT_FEATURES_PROCESS_DEFINITION.id == "export_features"

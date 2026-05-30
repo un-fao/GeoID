@@ -39,11 +39,16 @@ async def export_features(
     engine: Any,
     request: ExportFeaturesRequest,
     *,
+    destination_uri: str,
     reporters: Optional[Sequence[Reporter]] = None,
     task_id: Optional[str] = None,
     on_started: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
-    """Stream ``request.catalog/collection`` features to ``request.destination_uri``.
+    """Stream ``request.catalog/collection`` features to ``destination_uri``.
+
+    ``destination_uri`` is supplied by the caller, not the client: per OGC API -
+    Processes the server owns result storage, so the task derives a per-job key
+    in the catalog's own bucket and passes it here.
 
     ``reporters`` is optional — callers that don't track task state (e.g. a
     sync REST route) simply omit it. ``task_id`` is propagated to reporters
@@ -53,7 +58,7 @@ async def export_features(
 
     logger.info(
         f"Exporting features {request.catalog}:{request.collection} "
-        f"→ {request.destination_uri}"
+        f"→ {destination_uri}"
     )
 
     for r in reporters:
@@ -61,7 +66,7 @@ async def export_features(
             task_id or "",
             request.collection,
             request.catalog,
-            request.destination_uri,
+            destination_uri,
         )
     if on_started is not None:
         await on_started()
@@ -100,7 +105,7 @@ async def export_features(
             raise RuntimeError(f"No formatter registered for {request.output_format}")
         upload_stream_to_gcs(
             byte_stream=byte_stream,
-            destination_uri=request.destination_uri,
+            destination_uri=destination_uri,
             content_type=formatter["media_type"],
         )
 
@@ -118,4 +123,8 @@ async def export_features(
         raise
 
     for r in reporters:
-        await r.task_finished("SUCCESS")
+        # "COMPLETED"/"FAILED" are the valid TaskStatusEnum values the reporter
+        # feeds into TaskUpdate; "SUCCESS" fails that enum validation (and would
+        # mark the job failed after a clean upload). String literals keep this
+        # module free of a hard tasks-subsystem import (see Reporter above).
+        await r.task_finished("COMPLETED")
