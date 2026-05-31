@@ -35,8 +35,9 @@ from dynastore.extensions.maps.format_convert import (
     convert_png_to_format as _convert_png_to_format,
 )
 from dynastore.extensions.maps.renderer import render_map_image
-import dynastore.modules.catalog.catalog_module as catalog_manager
 import dynastore.modules.tiles.tiles_module as tms_manager
+from dynastore.models.protocols import CatalogsProtocol
+from dynastore.tools.discovery import get_protocol
 from dynastore.modules.db_config import shared_queries
 from dynastore.tools.ogc_common import parse_subset_parameter
 from . import maps_db
@@ -85,7 +86,6 @@ async def _get_style_to_render(conn: AsyncConnection, dataset: str, collection_i
         return None
 
     from dynastore.models.protocols import StylesProtocol
-    from dynastore.tools.discovery import get_protocol
     styles_ext = get_protocol(StylesProtocol)
     if not styles_ext:
         return None # Styles extension is not enabled
@@ -107,12 +107,16 @@ async def _get_style_to_render(conn: AsyncConnection, dataset: str, collection_i
 
 async def _validate_collections_helper(conn, dataset, requested_collections):
     """Shared helper to check logical and physical existence of collections."""
-    collection_metadata_coroutines = []
-    for coll_id in requested_collections:
-        collection_metadata_coroutines.append(catalog_manager.get_collection(catalog_id=dataset, collection_id=coll_id))
-    
+    catalogs_svc = get_protocol(CatalogsProtocol)
+    if not catalogs_svc:
+        return []
+
+    collection_metadata_coroutines = [
+        catalogs_svc.get_collection(catalog_id=dataset, collection_id=coll_id)
+        for coll_id in requested_collections
+    ]
     collection_metadata_results = await asyncio.gather(*collection_metadata_coroutines)
-    
+
     # Sequential — every check runs `.execute(conn, ...)` on the SAME asyncpg
     # Connection.  Concurrent SELECTs on a single wire deadlock asyncpg's
     # single-stream protocol (regression observed in PRs #28, #32, #43).
@@ -209,8 +213,8 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
 
     @router.get("/", response_model=MapsLandingPage)
     async def get_maps_landing_page(request: Request):  # type: ignore[reportGeneralTypeIssues]
-        # Correctly discover catalogs from the catalog_module
-        catalogs = await catalog_manager.list_catalogs(limit=1000)
+        catalogs_svc = get_protocol(CatalogsProtocol)
+        catalogs = await catalogs_svc.list_catalogs(limit=1000) if catalogs_svc else []
         links = [Link(href=str(request.url), rel="self", type="application/json", title=LocalizedText(en="this document"))]
         for cat in catalogs:
             links.append(Link(
@@ -238,10 +242,11 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
 
     @router.get("/{dataset}", response_model=DatasetMaps)
     async def get_dataset_maps(dataset: str, request: Request):  # type: ignore[reportGeneralTypeIssues]
-        if not await catalog_manager.get_catalog(dataset):
+        catalogs_svc = get_protocol(CatalogsProtocol)
+        if not catalogs_svc or not await catalogs_svc.get_catalog_model(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
-        
-        collections = await catalog_manager.list_collections(dataset, limit=1000)
+
+        collections = await catalogs_svc.list_collections(dataset, limit=1000)
         maps = []
         for coll in collections:
             map_links = [
@@ -258,7 +263,8 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
     @router.get("/{dataset}/map/tiles", response_model=TileMatrixSetList, summary="Retrieve available Map Tile Matrix Sets")
     async def get_map_tilesets(dataset: str, request: Request):  # type: ignore[reportGeneralTypeIssues]
         """List all supported Tile Matrix Sets for rendering raster map tiles."""
-        if not await catalog_manager.get_catalog(dataset):
+        catalogs_svc = get_protocol(CatalogsProtocol)
+        if not catalogs_svc or not await catalogs_svc.get_catalog_model(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
         tms_refs = []
@@ -368,9 +374,12 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
 
             # 7. Fetch Features (Optimized for Render)
             # Note: We pass the Tile Width/Height and the TMS SRID (target_srid) as the BBOX SRID
+            catalogs_svc = get_protocol(CatalogsProtocol)
+            if not catalogs_svc:
+                raise HTTPException(status_code=500, detail="Catalogs service not available.")
             try:
                 layer_config, layers_data = await asyncio.gather(
-                    catalog_manager.get_collection_config(dataset, valid_collections[0], ctx=ctx),
+                    catalogs_svc.get_collection_config(dataset, valid_collections[0], ctx=ctx),
                     maps_db.get_features_for_rendering(
                         conn=conn,
                         schema=dataset,
@@ -440,7 +449,8 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
                 status_code=415, detail=f"Unsupported map format: {f!r}",
             )
         # ... (Existing validation logic) ...
-        if not await catalog_manager.get_catalog(dataset):
+        catalogs_svc = get_protocol(CatalogsProtocol)
+        if not catalogs_svc or not await catalogs_svc.get_catalog_model(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")
 
         requested_collections = [c.strip() for c in collections.split(',')]
@@ -476,9 +486,11 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
                 raise HTTPException(status_code=404, detail="One or more collections not found.")
 
             # Fetch Data with Updated DB Signature
+            if not catalogs_svc:
+                raise HTTPException(status_code=500, detail="Catalogs service not available.")
             try:
                 layer_config, layers_data = await asyncio.gather(
-                    catalog_manager.get_collection_config(dataset, valid_collections[0], ctx=ctx),
+                    catalogs_svc.get_collection_config(dataset, valid_collections[0], ctx=ctx),
                     maps_db.get_features_for_rendering(
                         conn=conn,
                         schema=dataset,
