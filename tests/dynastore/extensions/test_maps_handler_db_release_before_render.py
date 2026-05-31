@@ -58,14 +58,12 @@ def _patch_db_layer(monkeypatch, recorder: Dict[str, Any]) -> None:
         ms, "_validate_collections_helper", AsyncMock(return_value=["c1"])
     )
     monkeypatch.setattr(ms, "_get_style_to_render", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        ms.catalog_manager,
-        "get_collection_config",
-        AsyncMock(return_value=layer_cfg),
-    )
-    monkeypatch.setattr(
-        ms.catalog_manager, "get_catalog", AsyncMock(return_value=MagicMock())
-    )
+
+    mock_catalogs_svc = MagicMock(name="catalogs_svc")
+    mock_catalogs_svc.get_collection_config = AsyncMock(return_value=layer_cfg)
+    mock_catalogs_svc.get_catalog_model = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(ms, "get_protocol", lambda _proto: mock_catalogs_svc)
+
     monkeypatch.setattr(
         ms.maps_db,
         "get_features_for_rendering",
