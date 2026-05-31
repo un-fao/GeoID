@@ -18,77 +18,16 @@
 
 # dynastore/extensions/wfs/wfs_db.py
 import logging
-from typing import Dict, Any, Optional
-from sqlalchemy import (
-    Integer,
-    String,
-    Float,
-    Boolean,
-    DateTime,
-    JSON,
-)
-from sqlalchemy.dialects.postgresql import UUID  # Use specific type for UUID
+from typing import Dict, Optional
 from sqlalchemy.ext.asyncio import AsyncConnection
-from dynastore.modules.db_config.query_executor import (
-    DQLQuery,
-    ResultHandler,
-)
-from geoalchemy2 import Geometry
 
-from .tools import (
-    get_xsd_type_from_python_type,
-)
+from .tools import canonical_data_type_to_xsd
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols import (
     ItemsProtocol,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _map_protocol_type_to_sqlalchemy(proto_type: str) -> Any:
-    """Map a canonical ``data_type`` (see ``dynastore.models.field_types``) to a
-    SQLAlchemy type for WFS DescribeFeatureType / GML XSD generation.
-
-    Inputs are the canonical vocabulary only — there is no legacy alias layer.
-    ``date``/``time``/``timestamp`` all surface as ``xs:dateTime`` (GML has no
-    finer split here); ``binary`` surfaces as text (base64 in the GML body).
-    """
-    pt = (proto_type or "").lower()
-    if pt.startswith("geometry"):
-        return Geometry
-    return {
-        "string": String,
-        "uuid": UUID,
-        "integer": Integer,
-        "bigint": Integer,
-        "double": Float,
-        "numeric": Float,
-        "boolean": Boolean,
-        "date": DateTime,
-        "time": DateTime,
-        "timestamp": DateTime,
-        "binary": String,
-        "jsonb": JSON,
-    }.get(pt, String)  # Fallback
-
-
-# 1. New query to get both column name and data type
-# _get_table_columns_query was moved to dynastore.modules.db_config.tools
-
-# 1. New query to get both column name and data type
-# _get_table_columns_query was moved to dynastore.modules.db_config.tools
-
-# _map_pg_type_to_sqlalchemy_type was moved to dynastore.modules.db_config.tools
-
-# _get_dynamic_field_mapping was removed in favor of ItemService.get_collection_fields
-
-
-
-_get_first_attributes_json_query = DQLQuery(
-    "SELECT attributes FROM {schema}.{table} WHERE attributes IS NOT NULL AND attributes != '{{}}'::jsonb LIMIT 1;",
-    result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-)
 
 
 async def introspect_feature_type_schema(
@@ -116,16 +55,11 @@ async def introspect_feature_type_schema(
         )
         return None
 
-    # Map proto-types to XSD types for WFS GML
+    # Map each canonical ``data_type`` straight to its WFS/GML XSD type
+    # (geometry included — handled inside the mapper).
     feature_schema = {}
     for name, definition in field_definitions.items():
-        # Special case for geometry
-        if definition.data_type.lower() == "geometry":
-            feature_schema[name] = "gml:GeometryPropertyType"
-        else:
-            feature_schema[name] = get_xsd_type_from_python_type(
-                _map_protocol_type_to_sqlalchemy(definition.data_type)
-            )
+        feature_schema[name] = canonical_data_type_to_xsd(definition.data_type)
 
     # Ensure standardized WFS ID field is present
     if "id" not in feature_schema:
