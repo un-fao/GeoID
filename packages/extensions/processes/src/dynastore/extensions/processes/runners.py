@@ -131,6 +131,3 @@ class FastAPIBackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
         logger.info(f"Scheduled task '{new_task.task_id}' to run in the background.")
 
         return new_task
-
-# Register the runner
-register_plugin(FastAPIBackgroundRunner())

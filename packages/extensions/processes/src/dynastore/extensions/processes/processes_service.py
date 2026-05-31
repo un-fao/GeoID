@@ -19,6 +19,7 @@
 import logging
 import json
 import uuid
+from contextlib import asynccontextmanager
 from typing import List, Union, Any, Optional, cast
 
 import jsonschema as _jsonschema_scope_gate  # noqa: F401  # SCOPE gate: extension_processes requires jsonschema
@@ -29,6 +30,7 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    FastAPI,
     HTTPException,
     Query,
     Request,
@@ -1347,6 +1349,13 @@ class ProcessesService(ExtensionProtocol, OGCServiceMixin):
     protocol_title = "DynaStore OGC API - Processes"
     protocol_description = "Process discovery and execution per OGC API - Processes"
     router = router
+
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        from dynastore.tools.discovery import register_plugin
+        from dynastore.extensions.processes.runners import FastAPIBackgroundRunner
+        register_plugin(FastAPIBackgroundRunner())
+        yield
 
 
 

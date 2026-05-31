@@ -21,11 +21,13 @@ _ = _pyproj_scope_gate  # silence pyright "unused" — load-bearing for SCOPE fi
 
 from dynastore.tools.discovery import get_protocol
 import logging
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from dynastore.tools.cache import cached
 from dynastore.tools.enrichment import enrich_features
 
 from fastapi import (
+    FastAPI,
     HTTPException,
     status,
     Depends,
@@ -122,11 +124,14 @@ class DwhService(ExtensionProtocol):
         self.router = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])
         self._register_routes()
 
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
         from dynastore.tools.discovery import register_plugin
         from .link_contrib import DwhLinkContributor
         from .query_transform import DWHJoinQueryTransform
         register_plugin(DWHJoinQueryTransform())
         register_plugin(DwhLinkContributor())
+        yield
 
     async def _dwh_join_impl(
         self,
