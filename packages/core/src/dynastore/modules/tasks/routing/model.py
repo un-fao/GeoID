@@ -1,0 +1,187 @@
+"""Task routing model — value objects and the platform-tier PluginConfig.
+
+``RunnerTarget`` is the per-entry value object (mirrors
+``OperationDriverEntry`` from storage routing). ``TaskRoutingConfig`` is
+the platform-tier, sysadmin-mutable config that maps each task/process key
+to an ordered list of ``RunnerTarget`` entries (mirrors ``TaskPlacementConfig``
+but expresses the full routing intent, not just placement mode + consumers).
+
+Key design decisions
+--------------------
+- ``tasks``     — system/listener/loop tasks not directly API-callable.
+- ``processes`` — OGC-Process-API jobs, callable via ``/processes/{id}/execution``.
+- Selection semantics mirror the storage router: consumers + can_handle +
+  hint superset match; longest-hints wins on tie; first viable wins.
+- ``_materialize_if_empty`` fills both maps from the live registry via
+  ``build_routing_matrix`` when the operator left them empty, exactly as
+  ``TaskPlacementConfig._materialize_if_empty`` did for placements.
+"""
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+
+from pydantic import BaseModel, Field, model_validator
+
+from dynastore.models.mutability import Mutable
+from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.modules.tasks.routing.exec_hints import ExecHint
+
+
+class ActionVerb(StrEnum):
+    """What the routing engine does after the target completes (or fails)."""
+
+    ROUTE = "route"             # hand off to a named task/process
+    REPORT = "report"           # write completion status back to the caller
+    DEAD_LETTER = "dead_letter" # move to the dead-letter queue
+    FAIL = "fail"               # propagate failure to the caller immediately
+
+
+class Action(BaseModel):
+    """Post-execution action attached to a RunnerTarget on_success / on_failure."""
+
+    action: ActionVerb = ActionVerb.REPORT
+    process: Optional[str] = None      # target task/process key when action==ROUTE
+    hints: Set[ExecHint] = Field(default_factory=set)
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_process_field(self) -> "Action":
+        if self.action == ActionVerb.ROUTE and not self.process:
+            raise ValueError(
+                "Action.process must be a non-empty string when action=='route'"
+            )
+        if self.action != ActionVerb.ROUTE and self.process is not None:
+            raise ValueError(
+                "Action.process must be None when action is not 'route'; "
+                f"got action={self.action!r}, process={self.process!r}"
+            )
+        return self
+
+
+class RunnerTarget(BaseModel):
+    """A single execution target in a task routing entry.
+
+    ``consumers`` names the logical service tiers allowed to claim and run
+    the task (e.g. ``["catalog"]``, ``["maps"]``); an empty list means any
+    capable service may claim it.
+
+    ``runner`` is the runner-type identifier the claiming service resolves
+    against its own runner registry (e.g. ``"background"``,
+    ``"gcp_cloud_run"``).
+
+    ``hints`` is the set of ``ExecHint`` values this target serves.  An
+    empty hints set is treated as "serves any hint" (matches all callers),
+    mirroring the storage-router effective-hint semantics.
+    """
+
+    consumers: List[str] = Field(
+        default_factory=list,
+        description="Service tiers that may claim this target; [] = any capable service.",
+    )
+    runner: str = Field(
+        ...,
+        min_length=1,
+        description='Runner-type identifier, e.g. "background", "gcp_cloud_run".',
+    )
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Runner-specific options (e.g. timeout, memory). Discovery supplies job name.",
+    )
+    hints: Set[ExecHint] = Field(
+        default_factory=set,
+        description=(
+            "Execution hints this target serves.  Empty = matches any caller hint "
+            "(no preference filtering)."
+        ),
+    )
+    on_success: Action = Field(
+        default_factory=lambda: Action(action=ActionVerb.REPORT),
+        description="Action to take when the task completes successfully.",
+    )
+    on_failure: Action = Field(
+        default_factory=lambda: Action(action=ActionVerb.DEAD_LETTER),
+        description="Action to take when the task fails after all retries.",
+    )
+
+
+class TaskRoutingConfig(PluginConfig):
+    """Platform-tier, sysadmin-mutable task/process routing (replaces TaskPlacementConfig).
+
+    Split by kind: ``tasks`` for system/listener/loop tasks (not API-callable but
+    fully routable), ``processes`` for OGC-Process-API jobs. Each maps a key to an
+    ORDERED list of ``RunnerTarget``; selection mirrors the storage router
+    (consumers + can_handle + hint superset match).
+
+    The config is materialized non-empty from the registered task inventory by
+    ``build_routing_matrix`` when the operator leaves both maps empty — the same
+    fail-safe that ``TaskPlacementConfig._materialize_if_empty`` provided.
+
+    Identity: ``class_key()`` derives to ``"task_routing_config"``.
+    """
+
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
+    _freeze_at: ClassVar[Optional[str]] = "platform"
+
+    tasks: Mutable[Dict[str, List[RunnerTarget]]] = Field(
+        default_factory=dict,
+        description=(
+            "Routing matrix for system tasks (kind='task').  Key = task_key from "
+            "the registry; value = ordered list of RunnerTarget entries."
+        ),
+    )
+    processes: Mutable[Dict[str, List[RunnerTarget]]] = Field(
+        default_factory=dict,
+        description=(
+            "Routing matrix for OGC processes (kind='process').  Key = task_key; "
+            "value = ordered list of RunnerTarget entries."
+        ),
+    )
+
+    def resolved_targets(self, task_key: str) -> List[RunnerTarget]:
+        """Return the target list for ``task_key``, bucket-first.
+
+        Checks the ``tasks`` bucket first (consistent with ``task_kind()``
+        semantics), falls back to ``processes``, returns ``[]`` when the
+        key is unknown in both.
+        """
+        if task_key in self.tasks:
+            return list(self.tasks[task_key])
+        if task_key in self.processes:
+            return list(self.processes[task_key])
+        return []
+
+    @model_validator(mode="after")
+    def _materialize_if_empty(self) -> "TaskRoutingConfig":
+        """Fill both maps from the live registry when the operator left them empty.
+
+        Mirrors TaskPlacementConfig._materialize_if_empty: a TaskRoutingConfig
+        is never null — it always has at least the registry-derived defaults.
+        The registry import is lazy (same pattern as placement/model.py) so
+        test fixtures that construct TaskRoutingConfig() without a live registry
+        get an empty config rather than an import error.
+        """
+        if self.tasks or self.processes:
+            return self
+        try:
+            from dynastore.modules.tasks.routing.matrix import (
+                InventoryItem,
+                build_routing_matrix,
+            )
+            from dynastore.tasks import _DYNASTORE_TASKS, task_kind
+
+            inventory = [
+                InventoryItem(
+                    task_key=key,
+                    kind=task_kind(cfg),
+                    affinity_tier=getattr(cfg.cls, "affinity_tier", None),
+                )
+                for key, cfg in _DYNASTORE_TASKS.items()
+            ]
+            if inventory:
+                tasks_map, processes_map = build_routing_matrix(inventory)
+                object.__setattr__(self, "tasks", tasks_map)
+                object.__setattr__(self, "processes", processes_map)
+        except Exception:
+            pass  # empty registry or import error at bootstrap — safe to leave maps empty
+        return self
