@@ -13,11 +13,14 @@ Replaces the weakly-typed `db_resource: Optional[Any]` and `processing_context:
 Optional[Dict[str, Any]]` pair that currently threads through call sites.
 """
 
-from typing import Any, Dict, Literal, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dynastore.modules.db_config.query_executor import DbResource
+if TYPE_CHECKING:
+    from dynastore.modules.db_config.query_executor import DbResource
 
 
 OperationKind = Literal["insert", "update", "upsert", "delete"]
