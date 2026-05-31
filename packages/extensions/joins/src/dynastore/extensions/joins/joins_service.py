@@ -123,12 +123,11 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
         self.router = APIRouter(prefix=self.prefix, tags=["OGC API - Joins"])
         self._register_routes()
 
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
         from dynastore.tools.discovery import register_plugin
         from .link_contrib import JoinsLinkContributor
         register_plugin(JoinsLinkContributor())
-
-    @asynccontextmanager
-    async def lifespan(self, app: FastAPI):
         yield
 
     def _register_routes(self) -> None:
