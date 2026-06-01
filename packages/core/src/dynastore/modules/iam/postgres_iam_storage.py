@@ -65,6 +65,26 @@ EFFECT_ALLOW = "allow"
 EFFECT_DENY = "deny"
 
 
+def _reject_platform_schema(
+    catalog_schema: str, action: str, role_name: str, principal_id: "UUID"
+) -> None:
+    """Refuse a catalog-scoped role ``action`` aimed at the platform schema.
+
+    Catalog grants/revokes are inherently tenant-scoped, so ``"iam"`` is
+    never a valid target — it only arises when tenant-schema resolution
+    silently fell back (see #1698). Raising here turns that silent
+    misroute into a loud, debuggable error instead of a 204 over an empty
+    write.
+    """
+    if catalog_schema == "iam":
+        raise ValueError(
+            f"Refusing to {action} catalog-scoped role against the platform "
+            f"'iam' schema (role={role_name!r}, principal={principal_id}). "
+            "The tenant schema failed to resolve — resolve it with "
+            "strict=True before calling (see #1698)."
+        )
+
+
 class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
     engine: Optional[DbResource] = None
 
@@ -1047,6 +1067,13 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         collection within the catalog; ``None`` (default) is a
         whole-catalog grant.
         """
+        # Defense-in-depth for the #1698 silent-misroute class: a
+        # catalog-scoped grant resolved to the platform 'iam' schema would
+        # be written where the catalog never reads it back, while the
+        # endpoint still returns 204. Refuse it loudly. The caller is
+        # expected to resolve the tenant schema with ``strict=True``; this
+        # guard catches any path that did not.
+        _reject_platform_schema(catalog_schema, "grant", role_name, principal_id)
         resource_kind = SUBJECT_COLLECTION if collection_id else None
         await self.grant(
             scope_schema=catalog_schema,
@@ -1073,6 +1100,10 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         ``collection_id`` (optional) targets a collection-scoped grant;
         ``None`` (default) targets the whole-catalog grant.
         """
+        # Symmetric guard with ``grant_catalog_role`` (see #1698): a
+        # catalog revoke that resolved to 'iam' would target the wrong
+        # table and silently report success against no rows.
+        _reject_platform_schema(catalog_schema, "revoke", role_name, principal_id)
         resource_kind = SUBJECT_COLLECTION if collection_id else None
         count = await self.revoke_by_match(
             scope_schema=catalog_schema,
