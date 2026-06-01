@@ -16,6 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import os
 import glob
 import hashlib
@@ -1015,11 +1016,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         """
 
     @staticmethod
-    def _serve_html_template(html_path: str) -> HTMLResponse:
+    async def _serve_html_template(html_path: str) -> HTMLResponse:
         """Read an HTML file and replace {{VERSION}} with the running package version."""
         from dynastore._version import VERSION
-        with open(html_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(f.read().replace("{{VERSION}}", VERSION))
+        content = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
+        return HTMLResponse(content.replace("{{VERSION}}", VERSION))
 
     @expose_web_page(
         page_id="exposure",
@@ -1036,7 +1037,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "exposure.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="configuration",
@@ -1058,7 +1059,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "configuration.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="governance",
@@ -1077,7 +1078,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "governance.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Governance page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="access-bindings",
@@ -1106,7 +1107,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(
                 status_code=404, detail="Access & Bindings page template not found."
             )
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="stac-authoring",
@@ -1123,7 +1124,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "stac-authoring.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="STAC authoring template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="presets",
@@ -1150,7 +1151,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "presets.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Presets page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="ingest",
@@ -1169,7 +1170,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "ingest.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Ingest page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
@@ -1308,8 +1309,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         media_type = mime_types.get(ext.lower(), "application/octet-stream")
 
         try:
-            with open(file_path, "rb") as f:
-                content = f.read()
+            content = await asyncio.to_thread(Path(file_path).read_bytes)
             return Response(
                 content=content, media_type=media_type, headers=extra_headers or None
             )
@@ -1387,7 +1387,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             caller can see (filtered downstream by IAM) and lets them pick
             a per-catalog dashboard."""
             if os.path.exists(_dashboard_index):
-                return self._serve_html_template(_dashboard_index)
+                return await self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/")
@@ -1397,7 +1397,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             uses relative URLs (``stats``, ``logs``, ``events``) which
             resolve against this base path."""
             if os.path.exists(_dashboard_index):
-                return self._serve_html_template(_dashboard_index)
+                return await self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/processes/")
@@ -1522,8 +1522,9 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 )
 
             try:
-                with open(doc_item["path"], "r", encoding="utf-8") as f:
-                    md_content = f.read()
+                md_content = await asyncio.to_thread(
+                    Path(doc_item["path"]).read_text, encoding="utf-8"
+                )
 
                 # Convert to HTML
                 html_content = markdown.markdown(
