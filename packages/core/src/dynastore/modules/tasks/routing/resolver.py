@@ -44,7 +44,7 @@ async def resolved_targets(task_key: str) -> List[RunnerTarget]:
 
     A failure to load the config (network error, DB unavailable, corrupt config)
     returns [] and logs a WARNING so the caller can degrade gracefully --
-    identical to the placement resolver's fail-open contract.
+    identical to the routing resolver's fail-open contract.
     """
     try:
         cfg = await _load_config()
