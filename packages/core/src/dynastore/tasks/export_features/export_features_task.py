@@ -77,7 +77,6 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
         formatter = format_map.get(request.output_format)
         if formatter is None:
             raise RuntimeError(f"No formatter registered for {request.output_format}")
-        content_type = formatter["media_type"]
         extension = formatter.get("extension") or request.output_format.value
         filename = f"{request.collection}.{extension}"
         output_uri = await result_message.server_output_uri(
@@ -96,5 +95,5 @@ class ExportFeaturesTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Opti
         )
 
         # Return the artifact as a time-limited signed URL (OGC output by ref).
-        result_url = await result_message.signed_result_url(output_uri, content_type)
+        result_url = await result_message.signed_result_url(output_uri)
         return result_message.completed(task_id, message=result_url)

@@ -336,9 +336,7 @@ class TilesExportTask(
                     destination_uri=output_uri,
                     content_type="application/octet-stream",
                 )
-                message = await result_message.signed_result_url(
-                    output_uri, "application/octet-stream"
-                )
+                message = await result_message.signed_result_url(output_uri)
             except Exception as e:  # delivery copy must never sink a built export
                 logger.warning(
                     "tiles_export: could not deliver signed PMTiles URL "

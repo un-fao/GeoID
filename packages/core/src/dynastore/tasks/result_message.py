@@ -162,13 +162,19 @@ async def server_output_uri(
     return f"gs://{bucket}/processes/outputs/{process_id}/{job_id}/{filename}"
 
 
-async def signed_result_url(gs_uri: str, content_type: Optional[str] = None) -> str:
+async def signed_result_url(gs_uri: str) -> str:
     """Best-effort 7-day GET signed URL for ``gs_uri``.
 
     Reuses the shared ``generate_gcs_signed_url`` helper (V4, IAM signing on
     Cloud Run via ``CloudIdentityProtocol``). Falls back to the raw ``gs://``
     URI when signing is unavailable, so a successful export still reports a
     usable location rather than failing after the upload.
+
+    The download URL is signed WITHOUT ``content_type``: pinning it would add
+    ``content-type`` to ``X-Goog-SignedHeaders``, forcing every client (e.g. a
+    browser GET) to echo a byte-identical ``Content-Type`` request header or be
+    rejected with ``MalformedSecurityHeader``. The object's stored MIME — set at
+    upload time — is what GCS returns as the response ``Content-Type`` anyway.
     """
     client_provider = get_protocol(CloudStorageClientProtocol)
     if client_provider is None:
@@ -183,7 +189,6 @@ async def signed_result_url(gs_uri: str, content_type: Optional[str] = None) -> 
             expiration=_SIGNED_URL_TTL,
             client_provider=client_provider,
             identity_provider=get_protocol(CloudIdentityProtocol),
-            content_type=content_type,
             check_exists=True,
         )
     except Exception as e:  # signing must never sink a successful export

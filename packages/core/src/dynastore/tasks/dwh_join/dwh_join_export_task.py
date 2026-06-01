@@ -191,7 +191,7 @@ class DwhJoinExportTask(TaskProtocol[Process, TaskPayload[ExecuteRequest], Optio
 
             # Surface the artifact as a time-limited signed URL (the standard
             # OGC way of returning a file output by reference).
-            result_url = await result_message.signed_result_url(output_uri, content_type)
+            result_url = await result_message.signed_result_url(output_uri)
 
             for r in reporters:
                 await r.task_finished(TaskStatusEnum.COMPLETED.value)
