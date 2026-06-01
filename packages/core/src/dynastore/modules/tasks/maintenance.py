@@ -149,7 +149,8 @@ async def requeue_dead_letter_task(
             {retry_clause}
             locked_until = NULL,
             finished_at  = NULL,
-            error_message = NULL
+            error_message = NULL,
+            owner_id     = NULL
         WHERE task_id = :task_id
           AND status  = 'DEAD_LETTER'
           {tenant_clause}
@@ -233,7 +234,8 @@ async def requeue_dead_letter_tasks_by_type(
             {retry_clause}
             locked_until  = NULL,
             finished_at   = NULL,
-            error_message = NULL
+            error_message = NULL,
+            owner_id      = NULL
         FROM victims v
         WHERE t.task_id   = v.task_id
           AND t.timestamp = v.timestamp
