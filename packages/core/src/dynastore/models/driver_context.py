@@ -22,6 +22,15 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from dynastore.modules.db_config.query_executor import DbResource
 
+    # Static checkers see the precise union; pydantic (runtime) sees ``Any``
+    # below. This keeps #1680's models→modules layering fix (no runtime
+    # import of ``DbResource``) while still letting pydantic build the model
+    # schema — without the runtime alias the forward ref is unresolvable and
+    # every ``DriverContext(...)`` raises ``PydanticUserError`` (see #1680).
+    _DbResource = DbResource
+else:
+    _DbResource = Any
+
 
 OperationKind = Literal["insert", "update", "upsert", "delete"]
 
@@ -61,7 +70,7 @@ class DriverContext(BaseModel):
         override, DuckDB pragma, …). Kept explicit so grep-ability survives.
     """
 
-    db_resource: Optional[DbResource] = None
+    db_resource: Optional[_DbResource] = None
     processing: Optional[ProcessingHints] = None
     sidecar_data: Dict[str, Any] = Field(default_factory=dict)
     extensions: Dict[str, Any] = Field(default_factory=dict)
