@@ -153,18 +153,39 @@ class IamService:
         }
 
     async def resolve_schema(
-        self, catalog_id: Optional[str] = None, conn: Optional[Any] = None
+        self,
+        catalog_id: Optional[str] = None,
+        conn: Optional[Any] = None,
+        *,
+        strict: bool = False,
     ) -> str:
         """
         Determines the database schema.
         If catalog_id is provided, resolves the physical tenant schema.
         Otherwise, defaults to the global 'iam' schema.
+
+        ``strict`` (keyword-only, default ``False``) governs what happens
+        when a *catalog* schema cannot be resolved. The default keeps the
+        historical, deliberately-defensive fallback to the platform ``iam``
+        schema — correct for read/middleware paths, where an unresolvable
+        tenant simply yields no catalog-scoped policies. WRITE paths
+        (granting/revoking a catalog role) MUST pass ``strict=True``:
+        silently retargeting a tenant write to ``iam`` persists the grant
+        where the catalog never reads it back, while the endpoint still
+        returns a misleading 204 success (the #1698 failure mode). With
+        ``strict=True`` the resolution failure is raised so the caller
+        surfaces a real error instead of writing nowhere.
         """
         if not catalog_id or catalog_id == "_system_":
             return "iam"
 
         catalogs = get_protocol(CatalogsProtocol)
         if not catalogs:
+            if strict:
+                raise ValueError(
+                    f"Cannot resolve tenant schema for catalog '{catalog_id}': "
+                    "CatalogsProtocol is unavailable."
+                )
             logger.warning(
                 f"CatalogsProtocol not available for schema resolution of '{catalog_id}'. Falling back to 'iam'."
             )
@@ -177,13 +198,24 @@ class IamService:
                 catalog_id,
                 ctx=DriverContext(db_resource=conn or catalogs.engine),  # type: ignore[attr-defined]
             )
-            if res:
-                return res
         except Exception as e:
+            if strict:
+                # Surface the real cause to the write caller instead of
+                # silently writing the grant into 'iam'.
+                raise
             logger.warning(
                 f"Error resolving schema for '{catalog_id}': {e}. Falling back to 'iam'."
             )
+            return "iam"
 
+        if res:
+            return res
+
+        if strict:
+            raise ValueError(
+                f"Cannot resolve tenant schema for catalog '{catalog_id}': "
+                "no physical schema found (catalog missing or not provisioned)."
+            )
         return "iam"
 
     # Internal alias used by extensions and multi_catalog_helpers

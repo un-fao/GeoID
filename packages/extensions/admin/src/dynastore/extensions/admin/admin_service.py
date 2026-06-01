@@ -854,7 +854,9 @@ class AdminService(ExtensionProtocol):
             await mgr.storage.grant_catalog_role(
                 principal_id=principal_id,
                 role_name=body.role,
-                catalog_schema=await mgr.resolve_schema(catalog_id),
+                # strict=True: a write must never silently retarget to the
+                # platform 'iam' schema (see #1698) — fail loudly instead.
+                catalog_schema=await mgr.resolve_schema(catalog_id, strict=True),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -886,7 +888,8 @@ class AdminService(ExtensionProtocol):
             await mgr.storage.revoke_catalog_role(
                 principal_id=principal_id,
                 role_name=role_name,
-                catalog_schema=await mgr.resolve_schema(catalog_id),
+                # strict=True: same as the grant path (see #1698).
+                catalog_schema=await mgr.resolve_schema(catalog_id, strict=True),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
