@@ -76,19 +76,29 @@ _INCR_AND_RETURN = DQLQuery(
 # The wrapping CTE falls back to ``SELECT count`` so the caller always
 # sees the current value in one round trip, whether the CAS succeeded,
 # was blocked by the predicate, or never ran (insert blocked).
+#
+# The ``CAST(... AS bigint)`` on the cap predicate is load-bearing, not
+# decorative: the insert-branch guard ``WHERE :amount <= :limit`` compares
+# two free bind parameters with no column to anchor their type, so the
+# driver (asyncpg) cannot decide whether ``<=`` is the integer or text
+# operator and raises ``AmbiguousParameterError: inconsistent types
+# deduced for parameter`` at prepare time. Anchoring both sides to
+# ``bigint`` (the ``count`` column type) removes the ambiguity. The
+# ``VALUES`` form in ``_INCR_AND_RETURN`` needs no cast because ``:amount``
+# is anchored there by the ``count`` column directly.
 _INCR_IF_BELOW = DQLQuery(
     """
     WITH cas AS (
         INSERT INTO {schema}.usage_counters AS u
             (policy_id, principal_key, window_start, count, expires_at, last_seen_at)
-        SELECT :policy_id, :principal_key, :window_start, :amount, :expires_at, NOW()
-         WHERE :amount <= :limit
+        SELECT :policy_id, :principal_key, :window_start, CAST(:amount AS bigint), :expires_at, NOW()
+         WHERE CAST(:amount AS bigint) <= CAST(:limit AS bigint)
         ON CONFLICT (policy_id, principal_key, window_start)
         DO UPDATE SET
             count        = u.count + EXCLUDED.count,
             last_seen_at = NOW(),
             expires_at   = COALESCE(u.expires_at, EXCLUDED.expires_at)
-        WHERE u.count + EXCLUDED.count <= :limit
+        WHERE u.count + EXCLUDED.count <= CAST(:limit AS bigint)
         RETURNING count
     ),
     fallback AS (
