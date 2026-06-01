@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 class _TaskRoutingPreset:
     """Minimal RoutingPreset: materializes a TaskRoutingConfig at platform tier.
 
-    Mirrors the shape of ``_PlacementRoutingPreset`` in
-    ``placement/presets.py``: a thin factory that emits a validated
-    ``PresetBundle`` whose single entry carries the ``TaskRoutingConfig``
-    for the active deployment profile.
+    A thin factory that emits a validated ``PresetBundle`` whose single
+    entry carries the ``TaskRoutingConfig`` for the active deployment
+    profile.
     """
 
     catalog_scopable = False
