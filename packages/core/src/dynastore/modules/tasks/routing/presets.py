@@ -70,6 +70,7 @@ class _TaskRoutingPreset:
 
 CloudTaskRoutingPreset = _TaskRoutingPreset("cloud")
 OnpremTaskRoutingPreset = _TaskRoutingPreset("onprem")
+ReviewTaskRoutingPreset = _TaskRoutingPreset("review")
 
 
 def _register() -> None:
@@ -77,6 +78,7 @@ def _register() -> None:
         from dynastore.modules.storage.presets import register_preset
         register_preset(CloudTaskRoutingPreset)
         register_preset(OnpremTaskRoutingPreset)
+        register_preset(ReviewTaskRoutingPreset)
     except Exception:
         logger.warning(
             "task routing presets not registered in storage registry",

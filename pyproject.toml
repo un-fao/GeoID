@@ -480,6 +480,10 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
 scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp]"]
+# scope_catalog_review: scope_catalog + gdal running in-process as a background
+# async runner on the catalog pod.  For review / local images ONLY — not
+# referenced by scope_catalog, scope_geoid, or any production scope.
+scope_catalog_review = ["dynastore[scope_catalog,module_gdal,worker_task_gdal]"]
 # scope_geoid: catalog + geoid UI + auth/iam — maps to geospatial-auth in cloud
 scope_geoid = ["dynastore[scope_catalog,extension_geoid,auth_grp]"]
 # scope_worker: background task processor — headless Cloud Run job runner

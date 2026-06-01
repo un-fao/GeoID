@@ -53,7 +53,7 @@ def build_routing_matrix(
 
     Args:
         inventory: Iterable of ``InventoryItem`` from the task registry.
-        preset:    ``"cloud"`` (default) or ``"onprem"``.
+        preset:    ``"cloud"`` (default), ``"onprem"``, or ``"review"``.
 
     Returns:
         A 2-tuple ``(tasks_map, processes_map)`` where each map is
@@ -62,7 +62,7 @@ def build_routing_matrix(
     Selection semantics (per preset)
     ---------------------------------
 
-    **System tasks** (``kind == "task"``), both presets:
+    **System tasks** (``kind == "task"``), all presets:
         A single ``background`` entry whose ``consumers`` list contains the
         task's ``affinity_tier`` (falls back to ``"catalog"`` for
         tier-agnostic tasks).
@@ -82,6 +82,15 @@ def build_routing_matrix(
         tier.  Lightweight processes get ``hints={BACKGROUND}``; heavy
         processes get ``hints={HEAVY}`` to signal they should be deferred
         to a dedicated worker queue.
+
+    **Processes** (``kind == "process"``), review preset:
+        Mirrors the cloud preset for every process EXCEPT ``gdal``, which
+        runs as an in-process async background task on the catalog pod:
+        ``background`` runner, ``consumers=["catalog"]``,
+        ``hints={BACKGROUND, INTERACTIVE}``.  All other processes keep the
+        same cloud target (``gcp_cloud_run`` + ``{OFFLOAD, HEAVY}``).
+        Intended for review and local images only; production images use the
+        cloud preset unchanged.
     """
     tasks_map: Dict[str, List[RunnerTarget]] = {}
     processes_map: Dict[str, List[RunnerTarget]] = {}
@@ -100,6 +109,33 @@ def build_routing_matrix(
             # kind == "process"
             if preset == "cloud":
                 if item.task_key in LIGHTWEIGHT_PROCESSES:
+                    processes_map[item.task_key] = [
+                        RunnerTarget(
+                            consumers=["catalog"],
+                            runner="background",
+                            hints={ExecHint.BACKGROUND},
+                        )
+                    ]
+                else:
+                    consumers = CLOUD_PROCESS_CONSUMERS.get(item.task_key, ["catalog"])
+                    processes_map[item.task_key] = [
+                        RunnerTarget(
+                            consumers=list(consumers),
+                            runner="gcp_cloud_run",
+                            hints={ExecHint.OFFLOAD, ExecHint.HEAVY},
+                        )
+                    ]
+            elif preset == "review":
+                if item.task_key == "gdal":
+                    # gdal runs in-process on the catalog pod in review/local images.
+                    processes_map[item.task_key] = [
+                        RunnerTarget(
+                            consumers=["catalog"],
+                            runner="background",
+                            hints={ExecHint.BACKGROUND, ExecHint.INTERACTIVE},
+                        )
+                    ]
+                elif item.task_key in LIGHTWEIGHT_PROCESSES:
                     processes_map[item.task_key] = [
                         RunnerTarget(
                             consumers=["catalog"],
