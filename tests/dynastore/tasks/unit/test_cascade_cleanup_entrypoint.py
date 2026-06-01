@@ -13,7 +13,7 @@ These pure-static checks (no app boot, no editable reinstall needed) pin the
 two knobs that make the task claimable by exactly one capable consumer:
 
 1. the entry-point declaration (so the class is discovered + registered), and
-2. the placement to the ``catalog`` tier — the SAME tier that enqueues the row,
+2. the routing to the ``catalog`` tier — the SAME tier that enqueues the row,
    so the registered cleanup owners match the snapshotted refs. A wrong-tier
    claim raises ``KeyError`` per ref → marks them DEAD → permanent loss.
 """
@@ -54,25 +54,24 @@ def test_cascade_cleanup_entrypoint_declared() -> None:
     )
 
 
-def test_cascade_cleanup_placed_on_catalog_async() -> None:
-    """cascade_cleanup must resolve to the catalog tier in async mode — the same
+def test_cascade_cleanup_routed_to_catalog_background() -> None:
+    """cascade_cleanup must resolve to the catalog tier in-process — the same
     tier that enqueues it, so the cleanup-owner registry matches. Pure-static via
     the matrix builder (no DB, no app boot).
 
     cascade_cleanup is a system task (kind="task") with affinity_tier="catalog",
-    so the default placement matrix pins its consumer to the catalog tier and
-    runs it in-process (async). Routing it elsewhere would mark every cleanup
-    ref DEAD and lose the cleanup.
+    so the default routing matrix pins its consumer to the catalog tier and runs
+    it in-process (background runner). Routing it elsewhere would mark every
+    cleanup ref DEAD and lose the cleanup.
     """
-    from dynastore.modules.tasks.placement.matrix import (
+    from dynastore.modules.tasks.routing.matrix import (
         InventoryItem,
-        build_placement_matrix,
+        build_routing_matrix,
     )
-    from dynastore.modules.tasks.placement.model import ASYNC
 
-    matrix = build_placement_matrix([
+    tasks_map, _processes_map = build_routing_matrix([
         InventoryItem(task_key="cascade_cleanup", kind="task", affinity_tier="catalog"),
     ])
-    entry = matrix["cascade_cleanup"]
-    assert entry.consumers == [_EXPECTED_CONSUMER]
-    assert entry.mode == ASYNC
+    targets = tasks_map["cascade_cleanup"]
+    assert targets[0].consumers == [_EXPECTED_CONSUMER]
+    assert targets[0].runner == "background"

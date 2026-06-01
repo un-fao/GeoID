@@ -18,7 +18,7 @@ class CapabilityRow(BaseModel):
     service: str
     task_key: str
     kind: str  # "process" | "task"
-    modes: List[str] = Field(default_factory=list)  # subset of {off_load, async, sync}
+    modes: List[str] = Field(default_factory=list)  # runner-name label(s), informational only
     required_capability: Optional[str] = None
     mandatory: bool = False
     affinity_tier: Optional[str] = None

@@ -3,8 +3,7 @@
 ``RunnerTarget`` is the per-entry value object (mirrors
 ``OperationDriverEntry`` from storage routing). ``TaskRoutingConfig`` is
 the platform-tier, sysadmin-mutable config that maps each task/process key
-to an ordered list of ``RunnerTarget`` entries (mirrors ``TaskPlacementConfig``
-but expresses the full routing intent, not just placement mode + consumers).
+to an ordered list of ``RunnerTarget`` entries.
 
 Key design decisions
 --------------------
@@ -13,8 +12,7 @@ Key design decisions
 - Selection semantics mirror the storage router: consumers + can_handle +
   hint superset match; longest-hints wins on tie; first viable wins.
 - ``_materialize_if_empty`` fills both maps from the live registry via
-  ``build_routing_matrix`` when the operator left them empty, exactly as
-  ``TaskPlacementConfig._materialize_if_empty`` did for placements.
+  ``build_routing_matrix`` when the operator left them empty.
 """
 from __future__ import annotations
 
@@ -106,7 +104,7 @@ class RunnerTarget(BaseModel):
 
 
 class TaskRoutingConfig(PluginConfig):
-    """Platform-tier, sysadmin-mutable task/process routing (replaces TaskPlacementConfig).
+    """Platform-tier, sysadmin-mutable task/process routing.
 
     Split by kind: ``tasks`` for system/listener/loop tasks (not API-callable but
     fully routable), ``processes`` for OGC-Process-API jobs. Each maps a key to an
@@ -114,8 +112,7 @@ class TaskRoutingConfig(PluginConfig):
     (consumers + can_handle + hint superset match).
 
     The config is materialized non-empty from the registered task inventory by
-    ``build_routing_matrix`` when the operator leaves both maps empty — the same
-    fail-safe that ``TaskPlacementConfig._materialize_if_empty`` provided.
+    ``build_routing_matrix`` when the operator leaves both maps empty.
 
     Identity: ``class_key()`` derives to ``"task_routing_config"``.
     """
@@ -155,10 +152,9 @@ class TaskRoutingConfig(PluginConfig):
     def _materialize_if_empty(self) -> "TaskRoutingConfig":
         """Fill both maps from the live registry when the operator left them empty.
 
-        Mirrors TaskPlacementConfig._materialize_if_empty: a TaskRoutingConfig
-        is never null — it always has at least the registry-derived defaults.
-        The registry import is lazy (same pattern as placement/model.py) so
-        test fixtures that construct TaskRoutingConfig() without a live registry
+        A TaskRoutingConfig is never null — it always has at least the
+        registry-derived defaults. The registry import is lazy so test
+        fixtures that construct TaskRoutingConfig() without a live registry
         get an empty config rather than an import error.
         """
         if self.tasks or self.processes:

@@ -558,48 +558,48 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
                     except Exception as e:
                         logger.warning(f"TasksModule: Failed to load TasksPluginConfig, defaulting to {poll_interval}s / hard_cap={hard_cap}: {e}")
 
-                # TaskPlacementConfig is consumed lazily by CapabilityMap.refresh()
+                # TaskRoutingConfig is consumed lazily by CapabilityMap.refresh()
                 # via PlatformConfigsProtocol; nothing to load eagerly here.
                 # Register an apply-handler so live PUT /configs updates trigger
                 # a re-narrowing of the dispatcher's capability set without
                 # process restart. The handler also validates the new config
-                # against this process's loaded task types (warns on placement
+                # against this process's loaded task types (warns on routing
                 # keys only loaded by other services) and emits an INFO summary
                 # of what this service will claim post-refresh.
                 from dynastore.modules.tasks.runners import capability_map as _capability_map
                 from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
-                from dynastore.modules.tasks.placement.model import TaskPlacementConfig
+                from dynastore.modules.tasks.routing.model import TaskRoutingConfig
 
-                async def _on_placement_change(cfg, _catalog_id, _collection_id, _conn):
-                    logger.info("TaskPlacementConfig changed — refreshing CapabilityMap.")
+                async def _on_routing_change(cfg, _catalog_id, _collection_id, _conn):
+                    logger.info("TaskRoutingConfig changed — refreshing CapabilityMap.")
                     # Typo / cross-service-only diagnostic — informational only,
                     # since each service loads only the task types its SCOPE
                     # pulls in. A WARN here is the cheapest way to surface
-                    # placement keys that nothing in this deployment can claim.
+                    # routing keys that nothing in this deployment can claim.
                     try:
                         from dynastore.tasks import get_loaded_task_types
                         known = set(get_loaded_task_types())
                         keys = (
-                            set(getattr(cfg, "placements", {}) or {})
-                            | set(getattr(cfg, "overrides", {}) or {})
+                            set(getattr(cfg, "tasks", {}) or {})
+                            | set(getattr(cfg, "processes", {}) or {})
                         )
                         unknown = sorted(t for t in keys if t not in known)
                         if unknown:
                             logger.warning(
-                                "TaskPlacementConfig: %d placement key(s) not loaded "
+                                "TaskRoutingConfig: %d routing key(s) not loaded "
                                 "on this service ('%s') — likely typos OR types "
                                 "only loaded elsewhere: %s",
                                 len(unknown), _SERVICE_NAME, unknown,
                             )
                     except Exception as exc:  # noqa: BLE001 — never fail apply
-                        logger.debug("Placement-key validation skipped: %s", exc)
+                        logger.debug("Routing-key validation skipped: %s", exc)
                     await _capability_map.refresh()
                     logger.info(
                         "Service '%s' will claim async types: %s",
                         _SERVICE_NAME, _capability_map.async_types,
                     )
 
-                TaskPlacementConfig.register_apply_handler(_on_placement_change)
+                TaskRoutingConfig.register_apply_handler(_on_routing_change)
 
                 async def _on_tasks_config_change(cfg, _catalog_id, _collection_id, _conn):
                     if not isinstance(cfg, TasksPluginConfig):
@@ -773,7 +773,7 @@ async def _warn_stuck_pending_tasks(
     PENDING with ``retry_count = 0`` for more than ``min_age_s`` seconds.
 
     The most common cause is operator misconfiguration of
-    :class:`TaskPlacementConfig` — a typo in a service name or a target that
+    :class:`TaskRoutingConfig` — a typo in a service name or a target that
     no deployed service maps to — which leaves tasks sitting unclaimable
     forever. Today the dispatcher's CapabilityMap silently excludes them;
     this coroutine surfaces the silence.
@@ -1076,8 +1076,8 @@ def _stuck_pending_hint(
             f"but none has claimed yet."
         )
     return (
-        f"check TaskPlacementConfig.placements[{task_type!r}] for typos or for "
-        f"a service that should claim it but isn't deployed."
+        f"check TaskRoutingConfig.tasks[{task_type!r}] / .processes[{task_type!r}] "
+        f"for typos or for a service that should claim it but isn't deployed."
     )
 
 

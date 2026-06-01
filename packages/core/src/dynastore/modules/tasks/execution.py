@@ -21,7 +21,8 @@ OGC-aligned job lifecycle engine.
 
 Consolidates task lifecycle logic previously duplicated across runners
 (SyncRunner, BackgroundRunner, FastAPIBackgroundRunner) and callers
-(processes_module, dispatcher).
+(processes_module, dispatcher).  Runner selection is governed by the
+platform-tier TaskRoutingConfig.
 
 Execution paths:
   - Immediate (OGC Part 1):  execute()  → accepted → running → successful/failed
@@ -68,49 +69,85 @@ _TERMINAL_STATUSES = frozenset({
 
 
 # ----------------------------------------------------------------------
-# Placement-mode-aware runner preference (module-level seams)
+# Routing-aware runner selection (module-level seam)
 #
-# A task's resolved placement *mode* steers runner choice:
-#   - "sync"     → SYNCHRONOUS runners
-#   - "async"    → top-priority ASYNCHRONOUS runner
-#   - "off_load" → the preset's off_load runner_type (gcp_cloud_run for
-#                  cloud, worker_queue for onprem) when available, else
-#                  fail-open to the existing priority chain.
+# ``select_runner_for`` resolves the ordered RunnerTarget list from the
+# platform-tier TaskRoutingConfig and picks the best matching runner
+# instance registered in this process.
 #
-# These are module-level so they can be exercised in isolation.
+# Fail-open contract: when routing has no opinion (empty targets, no
+# matching target, or resolver error) the function falls back to the
+# highest-priority async runner whose ``can_handle`` returns True.
+# This preserves the queue's forward-progress guarantee — a degraded
+# config or missing routing entry must never brick the dispatcher.
 # ----------------------------------------------------------------------
 
 
-async def _resolved_mode(task_key: str) -> str:
-    from dynastore.modules.tasks.placement.resolver import resolved_entry
-    entry = await resolved_entry(task_key)
-    return entry.mode if entry is not None else "async"  # fail-open to today's async path
-
-
-async def _off_load_runner_type() -> str:
-    from dynastore.modules.tasks.placement.resolver import off_load_runner_type
-    return await off_load_runner_type()
-
-
-def _candidate_runners(mode: str):
-    from dynastore.modules.tasks.runners import TaskExecutionMode, get_runners
-    exec_mode = TaskExecutionMode.SYNCHRONOUS if mode == "sync" else TaskExecutionMode.ASYNCHRONOUS
-    return sorted(get_runners(exec_mode), key=lambda r: r.priority, reverse=True)
-
 
 async def select_runner_for(task_key: str):
-    """Pick a runner honoring the resolved placement mode; fail-open to priority."""
-    mode = await _resolved_mode(task_key)
-    candidates = [r for r in _candidate_runners(mode) if r.can_handle(task_key)]
-    if not candidates:
-        return None
-    if mode == "off_load":
-        target = await _off_load_runner_type()
-        for r in candidates:
-            if getattr(r, "runner_type", None) == target:
+    """Pick a runner using the routing config; fail-open to priority order.
+
+    Resolution order:
+    1. Load the ordered RunnerTarget list from TaskRoutingConfig via routing.resolver.
+    2. Call routing.select_target with this service's identity and a can_handle
+       predicate over the registered async runners.
+    3. If a target is matched, return the runner instance whose runner_type matches.
+       Attach the target's options to the runner context via RunnerContext.extra_context
+       (see ExecutionEngine.execute — the caller injects runner_options from here).
+    4. Fail-open: if no target matches (no config, no viable runner), return the
+       highest-priority async runner whose can_handle is True.  The queue must
+       never brick because of a missing routing entry.
+
+    Payload-level hints are wired in a later unit; for now request_hints=frozenset().
+    """
+    from dynastore.modules.tasks.routing import resolver as routing_resolver
+    from dynastore.modules.tasks.routing.model import RunnerTarget
+    from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    from dynastore.modules.tasks.runners import get_runners
+
+    try:
+        targets = await routing_resolver.resolved_targets(task_key)
+    except Exception:  # noqa: BLE001 — resolver is best-effort
+        targets = []
+
+    async_runners = get_runners(TaskExecutionMode.ASYNCHRONOUS)
+
+    def _can_handle(runner_type: str) -> bool:
+        return any(
+            getattr(r, "runner_type", None) == runner_type and r.can_handle(task_key)
+            for r in async_runners
+        )
+
+    # payload hints wired in a later unit
+    target: "Optional[RunnerTarget]" = None
+    if targets:
+        try:
+            target = routing_resolver.select_target(
+                targets,
+                frozenset(),
+                _SERVICE_NAME or "",
+                _can_handle,
+            )
+        except Exception:  # noqa: BLE001 — selection is best-effort
+            target = None
+
+    if target is not None:
+        for r in async_runners:
+            if getattr(r, "runner_type", None) == target.runner and r.can_handle(task_key):
+                # Carry routing options so GcpJobRunner can read target.options.job.
+                # The caller (ExecutionEngine.execute) stores this on the RunnerContext
+                # extra_context under "runner_options" before calling runner.run().
+                r._routing_options = target.options  # type: ignore[attr-defined]
                 return r
-        # fail-open: off_load runner unavailable -> highest-priority capable runner
-    return candidates[0]
+
+    # Fail-open: fall back to the highest-priority capable async runner.
+    candidates = sorted(
+        [r for r in async_runners if r.can_handle(task_key)],
+        key=lambda r: r.priority,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
 
 
 class ExecutionEngine:
@@ -203,12 +240,18 @@ class ExecutionEngine:
                 f"with mode '{mode.value}'."
             )
 
-        # Honor placement mode: when a task is placed off_load, prefer its
-        # external-executor runner over the higher-priority in-process runner.
-        # Fail-open — any miss (no opinion, runner not in the context-filtered
-        # set, or selection error) leaves the existing priority order intact.
+        # Use routing config to pick the preferred runner and carry its options
+        # into the RunnerContext so runners like GcpJobRunner can access them.
+        # Fail-open: any miss (no config, no matching target, or selection error)
+        # leaves the existing priority order intact.
+        runner_options: Optional[dict] = None
         try:
             preferred = await select_runner_for(task_type)
+            if preferred is not None:
+                # select_runner_for stores routing options as a transient attr
+                runner_options = getattr(preferred, "_routing_options", None)
+                if hasattr(preferred, "_routing_options"):
+                    del preferred._routing_options  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 — selection is best-effort
             preferred = None
         if preferred is not None and any(preferred is r for r in runners):
@@ -224,6 +267,7 @@ class ExecutionEngine:
             dedup_key=dedup_key,
             extra_context={
                 "background_tasks": background_tasks,
+                **({"runner_options": runner_options} if runner_options else {}),
                 **{k: v for k, v in extras.items() if v is not None},
             },
         )

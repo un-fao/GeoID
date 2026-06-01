@@ -4,10 +4,10 @@
 ``TaskRoutingConfig`` from the live task registry using
 ``build_routing_matrix``, matching the two deployment topologies.
 
-The preset objects are module-level singletons ready to be registered.
-Registration is intentionally NOT called at import time in this unit:
-the legacy ``placement/presets.py`` still owns platform-tier preset
-registration; wiring happens once placement is removed (Unit 2).
+The preset objects are module-level singletons. ``_register()`` runs at
+import time (bottom of this module), publishing both presets into the
+storage preset registry at ``PresetTier.PLATFORM`` so they surface in the
+admin presets UI and ``/admin/presets`` with dry-run/apply/rollback.
 """
 from __future__ import annotations
 
@@ -30,7 +30,12 @@ class _TaskRoutingPreset:
     def __init__(self, name: str) -> None:
         self.name = name
         self.description = f"Task routing profile: {name}"
-        self.tier = None  # set lazily on first build() to avoid import-time cycle
+        # ``tier`` MUST be concrete at registration time: list_presets /
+        # search_presets (and the admin presets UI) filter on ``preset.tier``,
+        # so a None here would hide the preset from the platform-tier view.
+        # PresetTier is imported in ``_get_tier`` to avoid a top-level import
+        # cycle; calling it here is safe (protocol.py imports no tasks modules).
+        self.tier = self._get_tier()
 
     def _get_tier(self):
         from dynastore.modules.storage.presets.protocol import PresetTier
@@ -68,7 +73,6 @@ OnpremTaskRoutingPreset = _TaskRoutingPreset("onprem")
 
 
 def _register() -> None:
-    # Registration wired in the wire-in step once the legacy placement presets are removed.
     try:
         from dynastore.modules.storage.presets import register_preset
         register_preset(CloudTaskRoutingPreset)
@@ -78,3 +82,6 @@ def _register() -> None:
             "task routing presets not registered in storage registry",
             exc_info=True,
         )
+
+
+_register()
