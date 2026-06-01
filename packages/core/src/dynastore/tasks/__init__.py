@@ -360,7 +360,16 @@ def hydrate_task_payload(task_instance: TaskProtocol, raw_payload: Dict[str, Any
 
     # 2. Extract raw inputs
     inputs = raw_payload.get("inputs", {})
-    
+
+    # 2b. Strip reserved routing breadcrumbs (e.g. the ``_route_depth`` ROUTE
+    # continuation hop counter) so task input models never see them.  These
+    # ride in the persisted ``inputs`` column — the only free-form persisted
+    # surface — purely to survive the queue boundary between routed hops; the
+    # task payload must stay clean (rebinding a filtered copy leaves the
+    # caller's dict, used by the terminal-routing read, untouched).
+    if isinstance(inputs, dict) and any(k.startswith("_route_") for k in inputs):
+        inputs = {k: v for k, v in inputs.items() if not k.startswith("_route_")}
+
     # 3. Hydrate inputs if they are expected to be a Pydantic model
     if input_model and inspect.isclass(input_model) and issubclass(input_model, BaseModel) and isinstance(inputs, dict):
         try:

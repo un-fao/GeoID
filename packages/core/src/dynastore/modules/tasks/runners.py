@@ -131,6 +131,16 @@ class RunnerProtocol(Protocol):
         """
         return True
 
+    def declared_tasks(self) -> list:
+        """Return a list of dicts describing tasks this runner explicitly handles.
+
+        Each dict has at minimum ``task_key`` and ``runner_type`` keys. Runners
+        backed by external systems (e.g. ``GcpJobRunner``) fill additional keys
+        like ``job``. The default returns an empty list — most in-process runners
+        do not publish a static task manifest.
+        """
+        return []
+
     async def run(self, context: RunnerContext) -> Union[Task, Any]:
         """
         The core execution logic for the runner. This method is required.
@@ -248,6 +258,7 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
 class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
     mode = TaskExecutionMode.ASYNCHRONOUS
     priority = 100
+    runner_type = "background"
     """
     Runs a task asynchronously in the background.
     Uses Starlette/FastAPI BackgroundTasks if available in context, otherwise asyncio.create_task.
@@ -487,10 +498,36 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             complete_task as _complete_task,
             fail_task as _fail_task,
         )
+        from dynastore.modules.tasks.execution import (
+            apply_terminal_action as _apply_terminal_action,
+            resolve_routing_terminal as _resolve_routing_terminal,
+        )
         from datetime import datetime as _dt, timezone as _tz
+
+        async def _apply_terminal(outcome: str, action: Any) -> None:
+            # Mirror of the dispatcher's terminal-action hook for the deferred
+            # background path: realise on_success pipelines / on_failure
+            # compensation by enqueuing the routed follow-on.  Fail-soft inside
+            # ``apply_terminal_action`` — never re-fails the claimed row.
+            # ``scope`` is not carried on RunnerContext; the follow-on defaults
+            # to the TaskCreate scope (CATALOG).
+            await _apply_terminal_action(
+                context.engine,
+                task_id=claimed_task_id,
+                task_type=context.task_type,
+                inputs=context.inputs,
+                caller_id=context.caller_id,
+                collection_id=context.collection_id,
+                schema=context.db_schema,
+                scope=None,
+                outcome=outcome,
+                action=action,
+            )
 
         async def _execute_background_claimed() -> None:
             async with self._semaphore:
+                # Terminal routing policy for this task (fail-open to defaults).
+                _terminal = await _resolve_routing_terminal(context.task_type)
                 # Re-register on the heartbeat so the row keeps extending
                 # ``locked_until`` while the actual work runs.  The dispatcher
                 # will skip its own ``unregister`` when it sees
@@ -519,6 +556,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                         _dt.now(_tz.utc), outputs=result,
                     )
                     logger.info(f"BackgroundRunner: claimed task '{claimed_task_id}' completed.")
+                    await _apply_terminal("success", _terminal.on_success)
 
                 except asyncio.CancelledError:
                     # SIGTERM / shutdown.  Reset to PENDING via fail_task
@@ -565,6 +603,8 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                             exc_info=True,
                         )
                     await _emit_task_failure(context, None, error_message, e)
+                    # Permanent failure is terminal (FAILED) — fire on_failure.
+                    await _apply_terminal("failure", _terminal.on_failure)
 
                 except Exception as e:
                     logger.error(
@@ -587,6 +627,11 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                             exc_info=True,
                         )
                     await _emit_task_failure(context, None, error_message, e)
+                    # Transient failure: ROUTE fires only if this attempt was
+                    # the terminal one (DEAD_LETTER at cap) — apply_terminal_action
+                    # re-reads ground-truth status, so a mid-retry PENDING reset
+                    # does not trigger compensation.
+                    await _apply_terminal("failure", _terminal.on_failure)
 
                 finally:
                     if heartbeat is not None:
@@ -620,14 +665,14 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
 # Worker-routed task-type snapshot (sync read for can_handle)
 # ---------------------------------------------------------------------------
 #
-# ``WorkerQueueRunner.can_handle`` is a *sync* method but the placement intent
+# ``WorkerQueueRunner.can_handle`` is a *sync* method but the routing intent
 # it consults lives behind an async resolver. We mirror the pattern
 # ``GcpJobRunner`` uses for its Cloud Run job map (``get_job_map_sync`` /
 # ``_JOB_MAP_SYNC``): keep a module-level snapshot that an async warm refreshes,
 # and read it synchronously from ``can_handle``.
 #
 # The snapshot holds the set of task types that *some* service is configured to
-# claim (placement returns a concrete, non-empty consumer list). Combined with
+# claim (routing returns a concrete, non-empty consumer list). Combined with
 # the "no in-process task instance here" gate, this bounds the runner to types
 # the deployment actually expects a remote worker to run — it never enqueues an
 # unknown type.
@@ -635,17 +680,22 @@ _WORKER_ROUTED_TYPES: set = set()
 
 
 async def refresh_worker_routed_types() -> None:
-    """Refresh the worker-routed task-type snapshot from placement.
+    """Refresh the worker-routed task-type snapshot from the routing config.
 
-    Best-effort: a task is "worker-routed" when placement returns a concrete,
-    non-empty consumer list for it. Never raises.
+    A task is "worker-routed" when the routing config returns at least one
+    RunnerTarget with a concrete, non-empty consumer list for it. Never raises.
     """
     global _WORKER_ROUTED_TYPES
     routed: set = set()
     for task_type in get_loaded_task_types():
         try:
-            from dynastore.modules.tasks.placement.resolver import resolved_consumers
-            consumers = await resolved_consumers(task_type)
+            from dynastore.modules.tasks.routing.resolver import resolved_targets
+            targets = await resolved_targets(task_type)
+            consumers: Optional[List[str]] = None
+            for t in targets:
+                if t.consumers:
+                    consumers = list(t.consumers)
+                    break
         except Exception:  # noqa: BLE001 — best-effort
             consumers = None
         if consumers:
@@ -668,8 +718,7 @@ class WorkerQueueRunner(RunnerProtocol, ProtocolPlugin[Any]):
     INSERT fires the ``on_task_insert`` trigger
     (``WHEN NEW.status = 'PENDING'``) → ``pg_notify('new_task_queued', ...)`` →
     the worker service's dispatcher claims the row (filtered by
-    task placement (``TaskPlacementConfig``) service-affinity, e.g.
-    ``{"gdal": ["worker"]}``) and
+    task routing service-affinity, e.g. ``consumers: ["worker"]``) and
     runs the registered task instance (``worker_task_gdal``) via the standard
     claim path. This is the canonical enqueue route already used by every
     worker-routed task type (ingestion, indexers, …) — no second dispatch
@@ -785,10 +834,21 @@ class WorkerQueueRunner(RunnerProtocol, ProtocolPlugin[Any]):
         return job
 
 
-async def _placement_consumers(task_key: str) -> Optional[List[str]]:
-    """None == no placement opinion -> do not filter (fail-open)."""
-    from dynastore.modules.tasks.placement.resolver import resolved_consumers
-    return await resolved_consumers(task_key)
+async def _routed_consumers(task_key: str) -> Optional[List[str]]:
+    """Return the first non-empty consumer list from the routing config, or None.
+
+    None means no routing opinion (fail-open: do not filter this service out).
+    The caller interprets a concrete non-empty list as an authoritative allow-list.
+    """
+    try:
+        from dynastore.modules.tasks.routing.resolver import resolved_targets
+        targets = await resolved_targets(task_key)
+        for t in targets:
+            if t.consumers:
+                return list(t.consumers)
+        return None
+    except Exception:  # noqa: BLE001 — routing read is best-effort
+        return None
 
 
 def _service_can_run_async(task_type: str) -> bool:
@@ -818,7 +878,7 @@ class CapabilityMap:
 
     async def refresh(self) -> None:
         """Rebuild capability map from current runners, loaded task types,
-        and the placement resolver (service-affinity narrowing).
+        and the routing resolver (service-affinity narrowing).
 
         Filtering precedence:
 
@@ -827,7 +887,7 @@ class CapabilityMap:
            a service without the dep won't even register the task.
         2. ``runner.can_handle(task_type)`` — at least one runner of the
            required execution mode admits the type.
-        3. Placement consumers for the type — when the resolver returns a
+        3. Routing consumers for the type — when the resolver returns a
            concrete, non-empty consumer list, this process's
            ``service_name`` must appear in it; otherwise the type is not
            claimable here.
@@ -845,13 +905,13 @@ class CapabilityMap:
             for task_type in get_loaded_task_types():
                 consumers = None
                 try:
-                    consumers = await _placement_consumers(task_type)
-                except Exception:  # noqa: BLE001 — placement read is best-effort
+                    consumers = await _routed_consumers(task_type)
+                except Exception:  # noqa: BLE001 — routing read is best-effort
                     logger.warning(
-                        "CapabilityMap: placement read failed for %r — failing open", task_type
+                        "CapabilityMap: routing read failed for %r — failing open", task_type
                     )
                     consumers = None
-                # Filter ONLY when placement gives a concrete, non-empty consumer list
+                # Filter ONLY when routing gives a concrete, non-empty consumer list
                 # that excludes this service. None/empty == no opinion -> stay claimable.
                 if consumers and _SERVICE_NAME is not None and _SERVICE_NAME not in consumers:
                     continue

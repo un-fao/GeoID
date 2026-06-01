@@ -21,7 +21,8 @@ OGC-aligned job lifecycle engine.
 
 Consolidates task lifecycle logic previously duplicated across runners
 (SyncRunner, BackgroundRunner, FastAPIBackgroundRunner) and callers
-(processes_module, dispatcher).
+(processes_module, dispatcher).  Runner selection is governed by the
+platform-tier TaskRoutingConfig.
 
 Execution paths:
   - Immediate (OGC Part 1):  execute()  → accepted → running → successful/failed
@@ -42,6 +43,7 @@ OGC Job State Machine::
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Dict, Optional, List
 from uuid import UUID
@@ -68,49 +70,354 @@ _TERMINAL_STATUSES = frozenset({
 
 
 # ----------------------------------------------------------------------
-# Placement-mode-aware runner preference (module-level seams)
+# Routing-aware runner selection (module-level seam)
 #
-# A task's resolved placement *mode* steers runner choice:
-#   - "sync"     → SYNCHRONOUS runners
-#   - "async"    → top-priority ASYNCHRONOUS runner
-#   - "off_load" → the preset's off_load runner_type (gcp_cloud_run for
-#                  cloud, worker_queue for onprem) when available, else
-#                  fail-open to the existing priority chain.
+# ``select_runner_for`` resolves the ordered RunnerTarget list from the
+# platform-tier TaskRoutingConfig and picks the best matching runner
+# instance registered in this process.
 #
-# These are module-level so they can be exercised in isolation.
+# Fail-open contract: when routing has no opinion (empty targets, no
+# matching target, or resolver error) the function falls back to the
+# highest-priority async runner whose ``can_handle`` returns True.
+# This preserves the queue's forward-progress guarantee — a degraded
+# config or missing routing entry must never brick the dispatcher.
 # ----------------------------------------------------------------------
 
 
-async def _resolved_mode(task_key: str) -> str:
-    from dynastore.modules.tasks.placement.resolver import resolved_entry
-    entry = await resolved_entry(task_key)
-    return entry.mode if entry is not None else "async"  # fail-open to today's async path
-
-
-async def _off_load_runner_type() -> str:
-    from dynastore.modules.tasks.placement.resolver import off_load_runner_type
-    return await off_load_runner_type()
-
-
-def _candidate_runners(mode: str):
-    from dynastore.modules.tasks.runners import TaskExecutionMode, get_runners
-    exec_mode = TaskExecutionMode.SYNCHRONOUS if mode == "sync" else TaskExecutionMode.ASYNCHRONOUS
-    return sorted(get_runners(exec_mode), key=lambda r: r.priority, reverse=True)
-
 
 async def select_runner_for(task_key: str):
-    """Pick a runner honoring the resolved placement mode; fail-open to priority."""
-    mode = await _resolved_mode(task_key)
-    candidates = [r for r in _candidate_runners(mode) if r.can_handle(task_key)]
-    if not candidates:
-        return None
-    if mode == "off_load":
-        target = await _off_load_runner_type()
-        for r in candidates:
-            if getattr(r, "runner_type", None) == target:
+    """Pick a runner using the routing config; fail-open to priority order.
+
+    Resolution order:
+    1. Load the ordered RunnerTarget list from TaskRoutingConfig via routing.resolver.
+    2. Call routing.select_target with this service's identity and a can_handle
+       predicate over the registered async runners.
+    3. If a target is matched, return the runner instance whose runner_type matches.
+       Attach the target's options to the runner context via RunnerContext.extra_context
+       (see ExecutionEngine.execute — the caller injects runner_options from here).
+    4. Fail-open: if no target matches (no config, no viable runner), return the
+       highest-priority async runner whose can_handle is True.  The queue must
+       never brick because of a missing routing entry.
+
+    Payload-level hints are wired in a later unit; for now request_hints=frozenset().
+    """
+    from dynastore.modules.tasks.routing import resolver as routing_resolver
+    from dynastore.modules.tasks.routing.model import RunnerTarget
+    from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    from dynastore.modules.tasks.runners import get_runners
+
+    try:
+        targets = await routing_resolver.resolved_targets(task_key)
+    except Exception:  # noqa: BLE001 — resolver is best-effort
+        targets = []
+
+    async_runners = get_runners(TaskExecutionMode.ASYNCHRONOUS)
+
+    def _can_handle(runner_type: str) -> bool:
+        return any(
+            getattr(r, "runner_type", None) == runner_type and r.can_handle(task_key)
+            for r in async_runners
+        )
+
+    # payload hints wired in a later unit
+    target: "Optional[RunnerTarget]" = None
+    if targets:
+        try:
+            target = routing_resolver.select_target(
+                targets,
+                frozenset(),
+                _SERVICE_NAME or "",
+                _can_handle,
+            )
+        except Exception:  # noqa: BLE001 — selection is best-effort
+            target = None
+
+    if target is not None:
+        for r in async_runners:
+            if getattr(r, "runner_type", None) == target.runner and r.can_handle(task_key):
+                # Carry routing options so GcpJobRunner can read target.options.job.
+                # The caller (ExecutionEngine.execute) stores this on the RunnerContext
+                # extra_context under "runner_options" before calling runner.run().
+                r._routing_options = target.options  # type: ignore[attr-defined]
                 return r
-        # fail-open: off_load runner unavailable -> highest-priority capable runner
-    return candidates[0]
+
+    # Fail-open: fall back to the highest-priority capable async runner.
+    candidates = sorted(
+        [r for r in async_runners if r.can_handle(task_key)],
+        key=lambda r: r.priority,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+# ----------------------------------------------------------------------
+# Terminal-outcome routing (on_success / on_failure / on_timeout)
+#
+# When a task reaches a terminal state the dispatcher (sync / non-deferred)
+# and the BackgroundRunner coroutine (deferred) consult the routed
+# RunnerTarget's terminal Action for that outcome and apply it.  The only
+# Action with a side effect is ROUTE — it enqueues a follow-on task,
+# realising pipelines (ingestion -> dwh_join) and compensation/fallback
+# (on_failure / on_timeout -> a recovery process).  REPORT / DEAD_LETTER /
+# FAIL are descriptors of the terminal status the caller already wrote and
+# trigger no follow-on.
+#
+# Offloaded Cloud Run Jobs finalize in the GcpLivenessReconciler, a separate
+# loop with its own owner_id race guards; wiring terminal Actions there (and
+# a background-runtime timeout) is a tracked follow-up.
+# ----------------------------------------------------------------------
+
+# Reserved inputs key carrying the ROUTE continuation hop count.  Persisted in
+# the task's ``inputs`` (the only free-form persisted column — no schema
+# change), stripped from the typed payload in ``hydrate_task_payload`` so task
+# input models never see it.
+_ROUTE_DEPTH_KEY = "_route_depth"
+
+# Hard ceiling on ROUTE continuation hops.  Guards against on_success /
+# on_failure ROUTE cycles (A->B->A) and runaway fan-out: once a chain reaches
+# this depth the continuation is refused and logged rather than enqueued.
+_MAX_ROUTE_DEPTH = 16
+
+
+@dataclass(frozen=True)
+class RoutingTerminal:
+    """Resolved terminal policy for one task_key in this process.
+
+    ``on_success`` / ``on_failure`` / ``on_timeout`` are the selected target's
+    terminal Actions (model defaults when routing has no opinion).
+    ``timeout_seconds`` is the sync-runner execution ceiling (per-target
+    ``options['timeout_seconds']`` falling back to
+    ``TasksPluginConfig.task_timeout_seconds``), or ``None`` when unknown.
+    """
+
+    on_success: "Any"
+    on_failure: "Any"
+    on_timeout: "Any"
+    timeout_seconds: Optional[float]
+
+
+async def resolve_routing_terminal(task_key: str) -> RoutingTerminal:
+    """Resolve the terminal Actions + sync timeout for ``task_key``.
+
+    Re-resolves the SAME RunnerTarget that :func:`select_runner_for` picked
+    (empty request hints, this service) and reads its terminal Action triple.
+    Fail-open to the model defaults (REPORT / DEAD_LETTER / DEAD_LETTER) when
+    routing has no opinion — identical contract to ``select_runner_for`` so a
+    degraded config can never brick terminal handling.
+    """
+    from dynastore.modules.tasks.routing import resolver as routing_resolver
+    from dynastore.modules.tasks.routing.model import Action, ActionVerb
+    from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
+    from dynastore.modules.tasks.models import TaskExecutionMode
+    from dynastore.modules.tasks.runners import get_runners
+
+    default = RoutingTerminal(
+        on_success=Action(action=ActionVerb.REPORT),
+        on_failure=Action(action=ActionVerb.DEAD_LETTER),
+        on_timeout=Action(action=ActionVerb.DEAD_LETTER),
+        timeout_seconds=await _default_task_timeout(),
+    )
+
+    try:
+        targets = await routing_resolver.resolved_targets(task_key)
+    except Exception:  # noqa: BLE001 — resolver is best-effort
+        return default
+    if not targets:
+        return default
+
+    async_runners = get_runners(TaskExecutionMode.ASYNCHRONOUS)
+
+    def _can_handle(runner_type: str) -> bool:
+        return any(
+            getattr(r, "runner_type", None) == runner_type and r.can_handle(task_key)
+            for r in async_runners
+        )
+
+    target = None
+    try:
+        target = routing_resolver.select_target(
+            targets, frozenset(), _SERVICE_NAME or "", _can_handle,
+        )
+    except Exception:  # noqa: BLE001 — selection is best-effort
+        target = None
+    # No runner in THIS process matched, but the first configured target still
+    # describes the policy (e.g. when the row ran on a fail-open fallback
+    # runner). Terminal Actions are policy keyed by task, not by which concrete
+    # runner served it.
+    if target is None:
+        target = targets[0]
+
+    per_target_timeout = target.options.get("timeout_seconds")
+    timeout_seconds = (
+        float(per_target_timeout)
+        if isinstance(per_target_timeout, (int, float))
+        else await _default_task_timeout()
+    )
+    return RoutingTerminal(
+        on_success=target.on_success,
+        on_failure=target.on_failure,
+        on_timeout=target.on_timeout,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def _default_task_timeout() -> Optional[float]:
+    """Platform-default task timeout from TasksPluginConfig, or None."""
+    try:
+        from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
+        from dynastore.modules.tasks.tasks_config import TasksPluginConfig
+        from dynastore.tools.discovery import get_protocol
+
+        mgr = get_protocol(PlatformConfigsProtocol)
+        if mgr is None:
+            return None
+        cfg = await mgr.get_config(TasksPluginConfig)
+        if isinstance(cfg, TasksPluginConfig):
+            return float(cfg.task_timeout_seconds)
+    except Exception:  # noqa: BLE001 — best-effort; timeout is a safety net
+        return None
+    return None
+
+
+async def _read_task_status(engine: DbResource, task_id: Any) -> Optional[str]:
+    """Read a task's current status from the global tasks table; None on error."""
+    try:
+        from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+        from dynastore.modules.tasks.tasks_module import (
+            get_task_schema,
+            managed_transaction,
+        )
+
+        task_schema = get_task_schema()
+        sql = f"SELECT status FROM {task_schema}.tasks WHERE task_id = :task_id;"
+        async with managed_transaction(engine) as conn:
+            row = await DQLQuery(
+                sql, result_handler=ResultHandler.ONE_DICT
+            ).execute(conn, task_id=task_id)
+        return row.get("status") if row else None
+    except Exception:  # noqa: BLE001 — read is best-effort
+        logger.warning(
+            "terminal routing: status read failed for task %s", task_id,
+            exc_info=True,
+        )
+        return None
+
+
+async def apply_terminal_action(
+    engine: DbResource,
+    *,
+    task_id: Any,
+    task_type: str,
+    inputs: Optional[Dict[str, Any]],
+    caller_id: Optional[str],
+    collection_id: Optional[str],
+    schema: str,
+    scope: Optional[str],
+    outcome: str,
+    action: "Any",
+) -> None:
+    """Apply one terminal-outcome Action for a finished task.
+
+    The caller has already written the base terminal status (COMPLETED for
+    ``success``; FAILED / DEAD_LETTER for ``failure``; DEAD_LETTER for
+    ``timeout``).  This performs only the follow-on side effect:
+
+    * ROUTE  — enqueue ``action.process`` with the original inputs merged with
+      ``action.payload``, carrying a ``_route_depth`` cycle guard; refuses to
+      chain past ``_MAX_ROUTE_DEPTH``.
+    * REPORT / DEAD_LETTER / FAIL — no follow-on (the base status already
+      encodes the terminal outcome).
+
+    For ``failure`` / ``timeout`` outcomes the ROUTE continuation fires ONLY
+    when the row actually reached a terminal failed state (DEAD_LETTER /
+    FAILED).  A transient retry (status reset to PENDING) must not fire it,
+    otherwise compensation would run on every attempt; terminality is read from
+    ground truth rather than re-deriving the dual-gate retry arithmetic.
+
+    Fail-soft: a broken continuation is logged at WARNING and swallowed — it
+    must never re-fail the original row or brick the loop.
+    """
+    from dynastore.modules.tasks.routing.model import ActionVerb
+
+    if action is None or action.action != ActionVerb.ROUTE:
+        return
+    process = action.process
+    if not process:
+        return
+
+    if outcome in ("failure", "timeout"):
+        status = await _read_task_status(engine, task_id)
+        if status not in ("DEAD_LETTER", "FAILED"):
+            # Not terminal yet (transient retry pending) — do not chain.
+            return
+
+    base_inputs: Dict[str, Any] = dict(inputs) if isinstance(inputs, dict) else {}
+    depth = base_inputs.get(_ROUTE_DEPTH_KEY, 0)
+    try:
+        depth = int(depth)
+    except (TypeError, ValueError):
+        depth = 0
+    if depth >= _MAX_ROUTE_DEPTH:
+        logger.warning(
+            "terminal routing: refusing ROUTE %s -> %s (outcome=%s): "
+            "_route_depth=%d reached _MAX_ROUTE_DEPTH=%d (cycle guard)",
+            task_type, process, outcome, depth, _MAX_ROUTE_DEPTH,
+        )
+        return
+
+    forwarded = {
+        **base_inputs,
+        **(action.payload or {}),
+        _ROUTE_DEPTH_KEY: depth + 1,
+    }
+
+    try:
+        from dynastore.models.tasks import TaskCreate, TaskScope
+        from dynastore.modules.tasks.tasks_module import create_task
+
+        ttype = _route_target_kind(process)
+        task_data = TaskCreate(
+            task_type=process,
+            type=ttype,
+            caller_id=caller_id or SYSTEM_USER_ID,
+            inputs=forwarded,
+            collection_id=collection_id,
+            scope=scope or TaskScope.CATALOG,
+        )
+        created = await create_task(engine, task_data, schema=schema)
+        if created is None:
+            logger.info(
+                "terminal routing: ROUTE %s -> %s (outcome=%s) deduplicated "
+                "(non-terminal twin already queued)",
+                task_type, process, outcome,
+            )
+        else:
+            logger.info(
+                "terminal routing: %s of %s ROUTED -> %s (depth=%d)",
+                outcome, task_type, process, depth + 1,
+            )
+    except Exception:  # noqa: BLE001 — continuation must not brick the loop
+        logger.warning(
+            "terminal routing: ROUTE continuation %s -> %s failed; original "
+            "row remains terminal (outcome=%s)",
+            task_type, process, outcome, exc_info=True,
+        )
+
+
+def _route_target_kind(process_key: str) -> str:
+    """Best-effort 'task' | 'process' label for a ROUTE target; defaults 'task'.
+
+    Informational only — the dispatcher claims by task_type + execution_mode,
+    not by this column — so an unknown key safely defaults to 'task'.
+    """
+    try:
+        from dynastore.tasks import _DYNASTORE_TASKS, task_kind
+
+        cfg = _DYNASTORE_TASKS.get(process_key)
+        return task_kind(cfg) if cfg is not None else "task"
+    except Exception:  # noqa: BLE001
+        return "task"
 
 
 class ExecutionEngine:
@@ -203,12 +510,18 @@ class ExecutionEngine:
                 f"with mode '{mode.value}'."
             )
 
-        # Honor placement mode: when a task is placed off_load, prefer its
-        # external-executor runner over the higher-priority in-process runner.
-        # Fail-open — any miss (no opinion, runner not in the context-filtered
-        # set, or selection error) leaves the existing priority order intact.
+        # Use routing config to pick the preferred runner and carry its options
+        # into the RunnerContext so runners like GcpJobRunner can access them.
+        # Fail-open: any miss (no config, no matching target, or selection error)
+        # leaves the existing priority order intact.
+        runner_options: Optional[dict] = None
         try:
             preferred = await select_runner_for(task_type)
+            if preferred is not None:
+                # select_runner_for stores routing options as a transient attr
+                runner_options = getattr(preferred, "_routing_options", None)
+                if hasattr(preferred, "_routing_options"):
+                    del preferred._routing_options  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 — selection is best-effort
             preferred = None
         if preferred is not None and any(preferred is r for r in runners):
@@ -224,6 +537,7 @@ class ExecutionEngine:
             dedup_key=dedup_key,
             extra_context={
                 "background_tasks": background_tasks,
+                **({"runner_options": runner_options} if runner_options else {}),
                 **{k: v for k, v in extras.items() if v is not None},
             },
         )

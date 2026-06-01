@@ -153,6 +153,23 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
         from dynastore.modules.gcp.tools.jobs import get_job_map_sync
         return task_type in get_job_map_sync()
 
+    def declared_tasks(self) -> list:
+        """Return one entry per discovered Cloud Run Job mapping.
+
+        Each entry has ``task_key``, ``runner_type``, and ``job`` so Unit 4
+        can build a routing matrix from the live GCP job configuration.
+        """
+        try:
+            from dynastore.modules.gcp.tools.jobs import get_job_map_sync
+            job_map = get_job_map_sync()
+            return [
+                {"task_key": task_key, "runner_type": self.runner_type, "job": job_name}
+                for task_key, job_name in job_map.items()
+            ]
+        except Exception as e:  # noqa: BLE001 — declared_tasks must never raise
+            logger.debug("GcpJobRunner.declared_tasks: job map unavailable (%s)", e)
+            return []
+
     async def run(self, context: RunnerContext) -> Optional[Any]:
         """Dispatch the task to a Cloud Run Job.
 
@@ -181,8 +198,19 @@ class GcpJobRunner(RunnerProtocol, ProtocolPlugin[Any]):
             get_job_max_retries,
         )
 
-        job_map = await load_job_config()
-        job_name = job_map.get(context.task_type)
+        # options.job pin from routing config takes precedence over discovery.
+        # When a RunnerTarget carries options={"job": "my-job-name"} the routing
+        # engine injects it via extra_context["runner_options"]. If absent or
+        # unset, fall back to the standard Cloud Run job-map discovery path so
+        # existing deployments that carry no routing config are unaffected.
+        _runner_options: dict = (context.extra_context or {}).get("runner_options") or {}
+        _pinned_job: Optional[str] = _runner_options.get("job") or None
+
+        if _pinned_job:
+            job_name = _pinned_job
+        else:
+            job_map = await load_job_config()
+            job_name = job_map.get(context.task_type)
         if not job_name:
             return None
         # Coerce inputs to a plain dict — caller may have passed an

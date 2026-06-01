@@ -4,8 +4,8 @@ Reads every ``*.json`` file under ``${DYNASTORE_CONFIG_ROOT}/defaults/`` and
 applies it via ``PlatformConfigsProtocol.set_config``. Each file shape:
 
     {
-      "class_key": "task_placement_config",
-      "value":     { "placements": { ... } },
+      "class_key": "task_routing_config",
+      "value":     { "tasks": { ... }, "processes": { ... } },
       "override":  false                       // optional, default false
     }
 
@@ -20,7 +20,7 @@ PostgreSQL advisory lock so only one process per cluster runs the seeder at
 a time.
 
 This module owns no domain knowledge — it works for any ``PluginConfig``.
-``task_placement_config`` is one user; others (e.g. ``tasks_plugin_config``
+``task_routing_config`` is one user; others (e.g. ``tasks_plugin_config``
 overrides) just drop a JSON file alongside it.
 
 Invoked once during catalog/db_config startup, after ``PlatformConfigsProtocol``

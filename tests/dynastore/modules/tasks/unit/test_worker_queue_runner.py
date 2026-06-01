@@ -10,8 +10,8 @@ launching a Cloud Run Job. It is the fallback that makes asset-scoped OGC
 This suite asserts the contract:
 
 - ``can_handle`` gating: True only when (a) no in-process task instance exists
-  here AND (b) the task type is placed on a worker via task placement
-  (``TaskPlacementConfig``).
+  here AND (b) the task type is routed to a worker via task routing
+  (``TaskRoutingConfig``).
 - REST-path invocation (no ``task_id`` in extra_context) enqueues exactly one
   ``PENDING`` row via ``create_task`` and returns the ``Task``.
 - Dispatcher-path invocation (``task_id`` present) refuses to re-enqueue.
@@ -256,20 +256,25 @@ def test_runner_does_not_require_request_context():
 
 
 @pytest.mark.asyncio
-async def test_refresh_worker_routed_types_from_placement(monkeypatch):
-    """``refresh_worker_routed_types`` collects task types whose placement
-    returns a concrete, non-empty consumer list into the sync snapshot."""
+async def test_refresh_worker_routed_types_from_routing(monkeypatch):
+    """``refresh_worker_routed_types`` collects task types whose routing config
+    yields a target with a concrete, non-empty consumer list into the snapshot."""
     import dynastore.modules.tasks.runners as runners_mod
-    from dynastore.modules.tasks.placement import resolver as placement_resolver
+    from dynastore.modules.tasks.routing import resolver as routing_resolver
+    from dynastore.modules.tasks.routing.model import RunnerTarget
 
     monkeypatch.setattr(
         runners_mod, "get_loaded_task_types", lambda: ["gdal", "ingestion", "noop"]
     )
 
-    async def _consumers(task_key):
-        return {"gdal": ["worker"], "ingestion": ["worker"], "noop": []}.get(task_key)
+    async def _targets(task_key):
+        return {
+            "gdal": [RunnerTarget(runner="worker_queue", consumers=["worker"])],
+            "ingestion": [RunnerTarget(runner="worker_queue", consumers=["worker"])],
+            "noop": [RunnerTarget(runner="background", consumers=[])],
+        }.get(task_key, [])
 
-    monkeypatch.setattr(placement_resolver, "resolved_consumers", _consumers)
+    monkeypatch.setattr(routing_resolver, "resolved_targets", _targets)
 
     await runners_mod.refresh_worker_routed_types()
 

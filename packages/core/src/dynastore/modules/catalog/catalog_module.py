@@ -90,9 +90,17 @@ logger = logging.getLogger(__name__)
 EVENT_TASK_KEY = "outbox_drain"
 
 
-async def _placement_consumers(task_key: str) -> Optional[List[str]]:
-    from dynastore.modules.tasks.placement.resolver import resolved_consumers
-    return await resolved_consumers(task_key)
+async def _routed_consumers(task_key: str) -> Optional[List[str]]:
+    """Return first non-empty consumer list from routing config, or None (fail-open)."""
+    try:
+        from dynastore.modules.tasks.routing.resolver import resolved_targets
+        targets = await resolved_targets(task_key)
+        for t in targets:
+            if t.consumers:
+                return list(t.consumers)
+        return None
+    except Exception:  # noqa: BLE001 — routing read is best-effort
+        return None
 
 
 def _service_name() -> Optional[str]:
@@ -101,14 +109,14 @@ def _service_name() -> Optional[str]:
 
 
 async def is_event_consumer() -> bool:
-    """True iff this service is a placement consumer of the event/outbox task.
+    """True iff this service is a routing consumer of the event/outbox task.
 
     Fail-closed: a missing/empty consumer list or unknown service name means
     "not a consumer" — an unconfigured or degraded deployment never starts a
     durable consumer (avoids a connection storm; outbox depth stays visible in
     monitoring instead).
     """
-    consumers = await _placement_consumers(EVENT_TASK_KEY)
+    consumers = await _routed_consumers(EVENT_TASK_KEY)
     svc = _service_name()
     if not consumers or svc is None:
         return False

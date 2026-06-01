@@ -1,0 +1,205 @@
+"""Tests for the review routing preset and the scope_catalog_review extra.
+
+Covers four concerns:
+(a) review preset routes gdal to background runner on catalog with BACKGROUND hint.
+(b) cloud preset remains unchanged — gdal still gcp_cloud_run with {OFFLOAD, HEAVY}.
+(c) ReviewTaskRoutingPreset is registered in the platform-tier preset registry.
+(d) Prod-bleed guard: scope_catalog and scope_geoid do NOT pull in scope_catalog_review
+    or the gdal sub-extras (module_gdal / worker_task_gdal).
+"""
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+from dynastore.modules.tasks.routing.exec_hints import ExecHint
+from dynastore.modules.tasks.routing.matrix import (
+    CLOUD_PROCESS_CONSUMERS,
+    InventoryItem,
+    build_routing_matrix,
+)
+
+
+def _proc(key: str) -> InventoryItem:
+    return InventoryItem(task_key=key, kind="process", affinity_tier=None)
+
+
+def _task(key: str, affinity: str | None = None) -> InventoryItem:
+    return InventoryItem(task_key=key, kind="task", affinity_tier=affinity)
+
+
+# ---------------------------------------------------------------------------
+# (a) review preset — gdal target
+# ---------------------------------------------------------------------------
+
+
+def test_review_gdal_runner_is_background():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="review")
+    t = procs["gdal"][0]
+    assert t.runner == "background"
+
+
+def test_review_gdal_consumers_is_catalog_only():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="review")
+    assert procs["gdal"][0].consumers == ["catalog"]
+
+
+def test_review_gdal_hints_contain_background():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="review")
+    assert ExecHint.BACKGROUND in procs["gdal"][0].hints
+
+
+def test_review_gdal_hints_contain_interactive():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="review")
+    assert ExecHint.INTERACTIVE in procs["gdal"][0].hints
+
+
+def test_review_gdal_no_offload_hint():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="review")
+    assert ExecHint.OFFLOAD not in procs["gdal"][0].hints
+
+
+def test_review_non_gdal_process_still_gcp_cloud_run():
+    """Non-gdal processes keep the cloud target under the review preset."""
+    _, procs = build_routing_matrix([_proc("ingestion")], preset="review")
+    t = procs["ingestion"][0]
+    assert t.runner == "gcp_cloud_run"
+    assert ExecHint.OFFLOAD in t.hints
+    assert ExecHint.HEAVY in t.hints
+
+
+def test_review_tiles_preseed_consumers_unchanged():
+    _, procs = build_routing_matrix([_proc("tiles_preseed")], preset="review")
+    assert procs["tiles_preseed"][0].consumers == ["maps"]
+
+
+def test_review_system_task_gets_background():
+    tasks, _ = build_routing_matrix([_task("heartbeat", affinity="catalog")], preset="review")
+    t = tasks["heartbeat"][0]
+    assert t.runner == "background"
+    assert ExecHint.BACKGROUND in t.hints
+    assert t.consumers == ["catalog"]
+
+
+# ---------------------------------------------------------------------------
+# (b) cloud preset unchanged — gdal still gcp_cloud_run
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_gdal_runner_unchanged():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="cloud")
+    t = procs["gdal"][0]
+    assert t.runner == "gcp_cloud_run"
+
+
+def test_cloud_gdal_consumers_unchanged():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="cloud")
+    assert procs["gdal"][0].consumers == CLOUD_PROCESS_CONSUMERS["gdal"]
+    assert "catalog" in procs["gdal"][0].consumers
+    assert "maps" in procs["gdal"][0].consumers
+
+
+def test_cloud_gdal_hints_offload_heavy():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="cloud")
+    hints = procs["gdal"][0].hints
+    assert ExecHint.OFFLOAD in hints
+    assert ExecHint.HEAVY in hints
+
+
+def test_cloud_gdal_no_background_hint():
+    _, procs = build_routing_matrix([_proc("gdal")], preset="cloud")
+    assert ExecHint.BACKGROUND not in procs["gdal"][0].hints
+
+
+# ---------------------------------------------------------------------------
+# (c) ReviewTaskRoutingPreset registered
+# ---------------------------------------------------------------------------
+
+
+def test_review_preset_registered():
+    from dynastore.modules.storage.presets.registry import list_presets
+    # Importing presets triggers _register() as a side-effect.
+    from dynastore.modules.tasks.routing import presets as _  # noqa: F401
+    assert "review" in list_presets()
+
+
+def test_review_preset_get_returns_review_object():
+    from dynastore.modules.storage.presets.registry import get_preset
+    from dynastore.modules.tasks.routing.presets import ReviewTaskRoutingPreset
+    assert get_preset("review") is ReviewTaskRoutingPreset
+
+
+def test_review_preset_platform_tier():
+    from dynastore.modules.storage.presets.protocol import PresetTier
+    from dynastore.modules.tasks.routing.presets import ReviewTaskRoutingPreset
+    assert ReviewTaskRoutingPreset.tier == PresetTier.PLATFORM
+
+
+# ---------------------------------------------------------------------------
+# (d) Prod-bleed guard — pyproject.toml dependency check
+# ---------------------------------------------------------------------------
+
+_PYPROJECT = Path(__file__).parents[6] / "pyproject.toml"
+# Resolve to absolute (the worktree root is 6 levels up from this file):
+# tests/dynastore/modules/tasks/routing/ -> tests/dynastore/modules/tasks/
+# -> tests/dynastore/modules/ -> tests/dynastore/ -> tests/ -> <root>
+# Fallback: walk upward until pyproject.toml is found.
+def _find_pyproject() -> Path:
+    candidate = Path(__file__).resolve()
+    for _ in range(10):
+        candidate = candidate.parent
+        p = candidate / "pyproject.toml"
+        if p.exists():
+            return p
+    raise FileNotFoundError("pyproject.toml not found above test file")
+
+
+def _load_extras() -> dict:
+    pyproject = _find_pyproject()
+    with pyproject.open("rb") as f:
+        data = tomllib.load(f)
+    return data["project"]["optional-dependencies"]
+
+
+def test_scope_catalog_does_not_include_gdal_extras():
+    extras = _load_extras()
+    scope_catalog_deps = " ".join(extras.get("scope_catalog", []))
+    assert "module_gdal" not in scope_catalog_deps, (
+        "scope_catalog must not pull in module_gdal (prod-bleed guard)"
+    )
+    assert "worker_task_gdal" not in scope_catalog_deps, (
+        "scope_catalog must not pull in worker_task_gdal (prod-bleed guard)"
+    )
+    assert "scope_catalog_review" not in scope_catalog_deps, (
+        "scope_catalog must not include scope_catalog_review (prod-bleed guard)"
+    )
+
+
+def test_scope_geoid_does_not_include_gdal_extras():
+    extras = _load_extras()
+    scope_geoid_deps = " ".join(extras.get("scope_geoid", []))
+    # scope_geoid extends scope_catalog; verify it also doesn't directly add gdal
+    assert "module_gdal" not in scope_geoid_deps, (
+        "scope_geoid must not directly pull in module_gdal (prod-bleed guard)"
+    )
+    assert "worker_task_gdal" not in scope_geoid_deps, (
+        "scope_geoid must not directly pull in worker_task_gdal (prod-bleed guard)"
+    )
+    assert "scope_catalog_review" not in scope_geoid_deps, (
+        "scope_geoid must not include scope_catalog_review (prod-bleed guard)"
+    )
+
+
+def test_scope_catalog_review_contains_gdal_extras():
+    """Positive check: scope_catalog_review does carry both gdal sub-extras."""
+    extras = _load_extras()
+    review_deps = " ".join(extras.get("scope_catalog_review", []))
+    assert "module_gdal" in review_deps
+    assert "worker_task_gdal" in review_deps
+
+
+def test_scope_catalog_review_extends_scope_catalog():
+    """scope_catalog_review must be a strict superset of scope_catalog."""
+    extras = _load_extras()
+    review_deps = " ".join(extras.get("scope_catalog_review", []))
+    assert "scope_catalog" in review_deps
