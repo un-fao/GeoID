@@ -181,7 +181,11 @@ async def provision_dashboards() -> None:
                     "dashboards_provisioner: provisioned %s saved objects into %s",
                     success_count, base_url,
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # resp.json() raised — body was not valid JSON.  The import still
+            # succeeded (HTTP 2xx was already verified above); log at INFO and
+            # continue so a non-standard Dashboards response body doesn't fail
+            # the provisioning step.
             logger.info(
                 "dashboards_provisioner: POST _import OK (%d) — unparsed body",
                 resp.status_code,

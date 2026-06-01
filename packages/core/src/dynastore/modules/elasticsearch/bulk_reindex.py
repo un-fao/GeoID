@@ -83,7 +83,16 @@ async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
             catalog_id=catalog_id,
             collection_id=collection_id,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Routing config unavailable (missing config row, cold boot, test
+        # environment without a live DB).  Safe to skip: the caller uses
+        # False to gate bulk-reindex, so a config miss just leaves the
+        # collection out of the run — it will be picked up on the next
+        # scheduled sweep once the config is available.
+        logger.debug(
+            "is_es_active_for: could not resolve routing config for %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
         return False
     return any(
         entry.driver_ref == "items_elasticsearch_driver"

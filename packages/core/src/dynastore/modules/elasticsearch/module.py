@@ -139,11 +139,16 @@ async def _is_data_stream(es: Any, name: str) -> bool:
     """
     try:
         result = await es.indices.get_data_stream(name=name)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         # 404 = no data stream by that name (regular index or no index).
         # Any other transport error is also "not provably a stream"; the
         # broader except in the caller will surface real connectivity
         # issues via the warning path.
+        logger.debug(
+            "_is_data_stream: get_data_stream probe for %r returned an "
+            "error (treating as non-stream): %s",
+            name, exc,
+        )
         return False
     streams = (result or {}).get("data_streams", []) if isinstance(result, dict) else []
     return any((s or {}).get("name") == name for s in streams)

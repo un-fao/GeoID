@@ -255,7 +255,15 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
         try:
             resp = await client.get(index=index_name, id=catalog_id)
             doc = resp["_source"]
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Document absent (404) or transient transport error.  The read
+            # contract allows None for "not found"; a missing catalog metadata
+            # document does not break the catalog itself (PG is the SoR).
+            logger.debug(
+                "CatalogElasticsearchDriver.get_catalog_metadata: ES get failed "
+                "for catalog=%r index=%r: %s",
+                catalog_id, index_name, exc,
+            )
             return None
 
         restore_chain = await get_output_transformers_for_search(
@@ -460,7 +468,14 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
                 catalog_id=catalog_id,
                 ctx=DriverContext(db_resource=db_resource),
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Config row absent or DB unavailable at call time.  Returning an
+            # empty dict lets the caller apply defaults without crashing.
+            logger.debug(
+                "CatalogElasticsearchDriver.get_driver_config: get_config failed "
+                "for catalog=%r: %s",
+                catalog_id, exc,
+            )
             return {}
 
     async def is_available(self) -> bool:
@@ -470,5 +485,11 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
         try:
             info = await client.info()
             return bool(info)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Transport error on the info probe — cluster unreachable or auth
+            # rejected.  Return False so callers can degrade gracefully.
+            logger.debug(
+                "CatalogElasticsearchDriver.is_available: info probe failed: %s",
+                exc,
+            )
             return False
