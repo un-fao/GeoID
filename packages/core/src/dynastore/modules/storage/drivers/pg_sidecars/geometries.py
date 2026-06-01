@@ -613,7 +613,19 @@ class GeometriesSidecar(SidecarProtocol):
         sidecar_alias: Optional[str] = None,
         include_all: bool = False,
     ) -> List[str]:
-        """Returns SELECT field expressions for geometry sidecar."""
+        """Returns SELECT field expressions for geometry sidecar.
+
+        Every emitted column carries an explicit ``as {name}`` alias — geometry,
+        bbox, H3/S2 index columns, centroid, COLUMNAR statistics, and the JSONB
+        ``geom_stats`` blob. A single canonical output name per field means that
+        when the optimizer also projects the same field through an explicit
+        ``FieldSelection`` (rendered ``{alias}.{name} as {name}``) the two paths
+        emit identical strings and collapse to one column. Emitting a bare
+        ``{alias}.{name}`` here instead would survive the optimizer's
+        output-name dedup as a second column with the same name and trigger
+        PostgreSQL ``column reference "{name}" is ambiguous`` on the wrapping
+        MVT SELECT (the original ``area`` tile failure).
+        """
         alias = sidecar_alias or f"sc_{self.sidecar_id}"
 
         # OGC API Features ``skipGeometry=true`` (de-facto pygeoapi convention)
@@ -647,13 +659,13 @@ class GeometriesSidecar(SidecarProtocol):
             if self.config.h3_resolutions:
                 for res in self.config.h3_resolutions:
                     if f"h3_res{res}" in all_needed or "*" in requested:
-                        fields.append(f"{alias}.h3_res{res}")
+                        fields.append(f"{alias}.h3_res{res} as h3_res{res}")
 
             if self.config.s2_resolutions:
                 for res in self.config.s2_resolutions:
                     if f"s2_res{res}" in all_needed or "*" in requested:
-                        fields.append(f"{alias}.s2_res{res}")
-                        
+                        fields.append(f"{alias}.s2_res{res} as s2_res{res}")
+
             # Add Statistics if requested — overlay-driven, COLUMNAR fields
             # surface per resolved name, JSONB stats project the shared
             # ``geom_stats`` column.
@@ -664,11 +676,11 @@ class GeometriesSidecar(SidecarProtocol):
                 if f.kind == ComputedKind.CENTROID:
                     fields.append(self._centroid_select_field(f, alias))
                 else:
-                    fields.append(f"{alias}.{key}")
+                    fields.append(f"{alias}.{key} as {key}")
             if self._has_jsonb_stats() and (
                 "geom_stats" in all_needed or "*" in requested
             ):
-                fields.append(f"{alias}.geom_stats")
+                fields.append(f"{alias}.geom_stats as geom_stats")
 
         else:
             # Full mode (existing behavior)
@@ -681,11 +693,11 @@ class GeometriesSidecar(SidecarProtocol):
 
             if self.config.h3_resolutions:
                 for res in self.config.h3_resolutions:
-                    fields.append(f"{alias}.h3_res{res}")
+                    fields.append(f"{alias}.h3_res{res} as h3_res{res}")
 
             if self.config.s2_resolutions:
                 for res in self.config.s2_resolutions:
-                    fields.append(f"{alias}.s2_res{res}")
+                    fields.append(f"{alias}.s2_res{res} as s2_res{res}")
 
             # Add Statistics — full mode projects all storage-bearing fields.
             for f in self._columnar_fields():
@@ -693,9 +705,9 @@ class GeometriesSidecar(SidecarProtocol):
                 if f.kind == ComputedKind.CENTROID:
                     fields.append(self._centroid_select_field(f, alias))
                 else:
-                    fields.append(f"{alias}.{key}")
+                    fields.append(f"{alias}.{key} as {key}")
             if self._has_jsonb_stats():
-                fields.append(f"{alias}.geom_stats")
+                fields.append(f"{alias}.geom_stats as geom_stats")
 
         return fields
 
@@ -1071,16 +1083,9 @@ class GeometriesSidecar(SidecarProtocol):
         shapely_geom = None
 
         if wkb_hex:
-            # Trusted pre-processed path
-            feature_srid = self._get_val(feature, "srid", 4326)
-            if (
-                self.config.target_srid != 4326
-                and feature_srid != self.config.target_srid
-            ):
-                # Ingestion usually targets 3857 or configured SRID.
-                # If mismatch, we might need to re-process, but for now assume ingestion did it right.
-                pass
-
+            # Trusted pre-processed path: ingestion is assumed to have already
+            # projected the WKB to the configured target SRID. A source-SRID
+            # mismatch is not re-projected here — tracked in #1707.
             geom_data = {
                 "wkb_hex_processed": wkb_hex,
                 "geom_type": self._get_val(feature, "geom_type", "UNKNOWN"),

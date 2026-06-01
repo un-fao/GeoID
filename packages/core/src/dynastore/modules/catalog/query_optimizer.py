@@ -148,7 +148,6 @@ class QueryOptimizer:
                 )
                 continue
 
-            # Use new protocol method get_queryable_fields()
             for field_name, field_def in sidecar.get_queryable_fields().items():
                 self.field_index[field_name] = (sidecar, field_def)
                 # Also index by alias if present
@@ -927,13 +926,22 @@ class QueryOptimizer:
         if query_context["joins"]:
             joins.extend(query_context["joins"])
             
-        # Deduplicate select fields while preserving order
+        # Deduplicate select fields by their logical OUTPUT column name (not by
+        # exact SQL string), preserving order and keeping the first occurrence.
+        # Two fragments that resolve to the same output name — e.g. an explicit
+        # ``sc_geometries.area as area`` from a FieldSelection plus a sidecar's
+        # own projection of the same column — would otherwise both reach the
+        # SELECT, and the wrapping ``SELECT "area" FROM (...)`` would fail with
+        # PostgreSQL ``column reference "area" is ambiguous``. ``_extract_alias``
+        # maps both ``... as name`` and bare ``tbl.col`` to ``name``; ``tbl.*``
+        # maps to the sentinel ``*``, which never collides with a real column.
         unique_selects = []
-        seen = set()
+        seen_names: set[str] = set()
         for field in query_context["select_fields"]:
-            if field not in seen:
+            name = _extract_alias(field)
+            if name not in seen_names:
                 unique_selects.append(field)
-                seen.add(field)
+                seen_names.add(name)
         select_fields = unique_selects
 
         # Resolve the feature-ID expression. ``provides_feature_id`` on the
