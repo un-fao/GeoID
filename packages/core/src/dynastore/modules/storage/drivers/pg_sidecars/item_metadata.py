@@ -210,7 +210,6 @@ class ItemMetadataSidecar(SidecarProtocol):
     def get_select_fields(
         self,
         request: Optional[Any] = None,
-        hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
         include_all: bool = False,
     ) -> List[str]:
@@ -306,7 +305,7 @@ class ItemMetadataSidecar(SidecarProtocol):
             sc_alias = f"sc_{self.sidecar_id}"
             context["select_fields"].extend(
                 self.get_select_fields(
-                    request, hub_alias="h", sidecar_alias=sc_alias
+                    request, sidecar_alias=sc_alias
                 )
             )
 

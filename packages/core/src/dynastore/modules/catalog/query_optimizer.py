@@ -670,7 +670,7 @@ class QueryOptimizer:
                 if sidecar:
                     sc_alias = f"sc_{sidecar.sidecar_id}"
                     for f in sidecar.get_select_fields(
-                        request=query, hub_alias="h", sidecar_alias=sc_alias, include_all=True
+                        request=query, sidecar_alias=sc_alias, include_all=True
                     ):
                         logical_name = _extract_alias(f)
                         if logical_name in explicit_field_names:

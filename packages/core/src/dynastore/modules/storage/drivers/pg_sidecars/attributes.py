@@ -666,7 +666,6 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
     def get_select_fields(
         self,
         request: Optional[QueryRequest] = None,
-        hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
         include_all: bool = False,
     ) -> List[str]:

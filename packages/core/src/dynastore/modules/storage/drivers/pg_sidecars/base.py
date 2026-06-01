@@ -944,19 +944,17 @@ class SidecarProtocol(ABC):
     def get_select_fields(
         self,
         request: Optional[QueryRequest] = None,
-        hub_alias: str = "h",
         sidecar_alias: Optional[str] = None,
         include_all: bool = False,
     ) -> List[str]:
         """
         Returns list of SELECT field expressions.
-        
-        This method MUST be stateless and only use the request/config to 
+
+        This method MUST be stateless and only use the request/config to
         determine which fields to return.
-        
+
         Args:
             request: The QueryRequest containing selection/filter/sort info.
-            hub_alias: Alias of the hub table.
             sidecar_alias: Alias of the sidecar table.
             include_all: If True, returns all available fields regardless of request.
         """
