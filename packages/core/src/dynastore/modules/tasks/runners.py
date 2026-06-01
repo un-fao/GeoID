@@ -498,10 +498,36 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
             complete_task as _complete_task,
             fail_task as _fail_task,
         )
+        from dynastore.modules.tasks.execution import (
+            apply_terminal_action as _apply_terminal_action,
+            resolve_routing_terminal as _resolve_routing_terminal,
+        )
         from datetime import datetime as _dt, timezone as _tz
+
+        async def _apply_terminal(outcome: str, action: Any) -> None:
+            # Mirror of the dispatcher's terminal-action hook for the deferred
+            # background path: realise on_success pipelines / on_failure
+            # compensation by enqueuing the routed follow-on.  Fail-soft inside
+            # ``apply_terminal_action`` — never re-fails the claimed row.
+            # ``scope`` is not carried on RunnerContext; the follow-on defaults
+            # to the TaskCreate scope (CATALOG).
+            await _apply_terminal_action(
+                context.engine,
+                task_id=claimed_task_id,
+                task_type=context.task_type,
+                inputs=context.inputs,
+                caller_id=context.caller_id,
+                collection_id=context.collection_id,
+                schema=context.db_schema,
+                scope=None,
+                outcome=outcome,
+                action=action,
+            )
 
         async def _execute_background_claimed() -> None:
             async with self._semaphore:
+                # Terminal routing policy for this task (fail-open to defaults).
+                _terminal = await _resolve_routing_terminal(context.task_type)
                 # Re-register on the heartbeat so the row keeps extending
                 # ``locked_until`` while the actual work runs.  The dispatcher
                 # will skip its own ``unregister`` when it sees
@@ -530,6 +556,7 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                         _dt.now(_tz.utc), outputs=result,
                     )
                     logger.info(f"BackgroundRunner: claimed task '{claimed_task_id}' completed.")
+                    await _apply_terminal("success", _terminal.on_success)
 
                 except asyncio.CancelledError:
                     # SIGTERM / shutdown.  Reset to PENDING via fail_task
@@ -576,6 +603,8 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                             exc_info=True,
                         )
                     await _emit_task_failure(context, None, error_message, e)
+                    # Permanent failure is terminal (FAILED) — fire on_failure.
+                    await _apply_terminal("failure", _terminal.on_failure)
 
                 except Exception as e:
                     logger.error(
@@ -598,6 +627,11 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                             exc_info=True,
                         )
                     await _emit_task_failure(context, None, error_message, e)
+                    # Transient failure: ROUTE fires only if this attempt was
+                    # the terminal one (DEAD_LETTER at cap) — apply_terminal_action
+                    # re-reads ground-truth status, so a mid-retry PENDING reset
+                    # does not trigger compensation.
+                    await _apply_terminal("failure", _terminal.on_failure)
 
                 finally:
                     if heartbeat is not None:

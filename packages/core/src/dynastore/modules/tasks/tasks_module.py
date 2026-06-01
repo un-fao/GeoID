@@ -2025,6 +2025,53 @@ async def fail_task(
     return bool(rowcount and rowcount > 0)
 
 
+async def dead_letter_task(
+    engine: DbResource,
+    task_id: uuid.UUID,
+    timestamp: Any,
+    error_message: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> bool:
+    """Move a claimed task directly to DEAD_LETTER (no retry).
+
+    Distinct from ``fail_task(retry=False)`` (which writes ``FAILED``): this
+    parks the row in the dead-letter queue, where it is visible to
+    ``requeue_dead_letter_tasks`` for manual/automated replay.  It is the
+    terminal write for a timed-out task whose routing ``on_timeout`` action is
+    the default ``DEAD_LETTER`` — a timeout is an operational outcome (the work
+    may still be valid), not a logic error, so it belongs in the DLQ rather
+    than ``FAILED``.
+
+    Returns ``True`` when a row was updated, ``False`` when none matched.
+    ``owner_id`` is the same optional race guard documented on
+    :func:`complete_task` / :func:`fail_task`.
+    """
+    task_schema = get_task_schema()
+    owner_guard = " AND owner_id = :owner_id" if owner_id is not None else ""
+    sql = f"""
+        UPDATE {task_schema}.tasks
+        SET status = 'DEAD_LETTER',
+            error_message = :error_message,
+            finished_at = :finished_at,
+            locked_until = NULL,
+            owner_id = NULL
+        WHERE task_id = :task_id{owner_guard};
+    """
+    params: Dict[str, Any] = {
+        "task_id": task_id,
+        "error_message": error_message,
+        "finished_at": timestamp,
+    }
+    if owner_id is not None:
+        params["owner_id"] = owner_id
+    async with managed_transaction(engine) as conn:
+        rowcount = await DQLQuery(
+            sql, result_handler=ResultHandler.ROWCOUNT
+        ).execute(conn, **params)
+    return bool(rowcount and rowcount > 0)
+
+
 async def heartbeat_tasks(
     engine: DbResource,
     task_ids: List[uuid.UUID],

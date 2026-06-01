@@ -101,6 +101,19 @@ class RunnerTarget(BaseModel):
         default_factory=lambda: Action(action=ActionVerb.DEAD_LETTER),
         description="Action to take when the task fails after all retries.",
     )
+    on_timeout: Action = Field(
+        default_factory=lambda: Action(action=ActionVerb.DEAD_LETTER),
+        description=(
+            "Action to take when the task exceeds its timeout — a DISTINCT "
+            "terminal outcome from on_failure.  A sync runner times out when "
+            "execution exceeds options['timeout_seconds'] (falling back to "
+            "TasksPluginConfig.task_timeout_seconds); an offloaded Cloud Run "
+            "Job times out when its execution lease lapses.  Defaulting to "
+            "DEAD_LETTER keeps a timed-out task off the queue; set action="
+            "'route' to re-route only on timeout (e.g. to a heavier target) "
+            "without conflating it with a logic-error failure."
+        ),
+    )
 
 
 class TaskRoutingConfig(PluginConfig):

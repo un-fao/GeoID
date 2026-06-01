@@ -735,9 +735,12 @@ async def run_dispatcher(
     from dynastore.modules.tasks.runners import capability_map
     from dynastore.modules.tasks.models import PermanentTaskFailure
     from dynastore.modules.tasks.tasks_module import (
-        claim_batch, complete_task, fail_task, reset_task_to_pending,
+        claim_batch, complete_task, dead_letter_task, fail_task,
+        reset_task_to_pending,
     )
-    from dynastore.modules.tasks.execution import execution_engine
+    from dynastore.modules.tasks.execution import (
+        apply_terminal_action, execution_engine, resolve_routing_terminal,
+    )
     from dynastore.tasks import get_task_instance
 
     # Refresh capability map at startup
@@ -857,16 +860,50 @@ async def run_dispatcher(
                     )
                     return
 
+        task_type = row["task_type"]
+        # Resolve terminal routing once per task: the selected target's
+        # on_success / on_failure / on_timeout Actions plus the sync timeout
+        # ceiling.  Fail-open (model defaults) so a degraded config never
+        # bricks terminal handling.
+        terminal = await resolve_routing_terminal(task_type)
+        is_sync = task_type in capability_map.sync_types
+
+        def _action_fields() -> Dict:
+            return dict(
+                task_id=task_id,
+                task_type=task_type,
+                inputs=row.get("inputs"),
+                caller_id=row.get("caller_id"),
+                collection_id=row.get("collection_id"),
+                schema=row.get("schema_name", "tasks"),
+                scope=row.get("scope"),
+            )
+
         await heartbeat.register(str(task_id), timestamp)
         try:
-            result = await execution_engine.dispatch(
-                row, engine=engine, heartbeat=heartbeat,
-            )
+            if is_sync and terminal.timeout_seconds:
+                # Sync runners block the dispatch await until the work returns,
+                # so a wall-clock ceiling here is a genuine task timeout (a
+                # DISTINCT terminal outcome from a logic-error failure).  Async
+                # runners defer (DEFERRED_COMPLETION) and are bounded by the
+                # heartbeat lease + reaper instead; offloaded jobs by the
+                # liveness reconciler — neither is wrapped here.
+                result = await asyncio.wait_for(
+                    execution_engine.dispatch(
+                        row, engine=engine, heartbeat=heartbeat,
+                    ),
+                    timeout=terminal.timeout_seconds,
+                )
+            else:
+                result = await execution_engine.dispatch(
+                    row, engine=engine, heartbeat=heartbeat,
+                )
             if result is DEFERRED_COMPLETION:
                 # Background runner scheduled async work against the SAME
                 # claimed row and will update complete_task / fail_task
-                # itself.  Heartbeat ownership has been transferred — the
-                # coroutine unregisters in its ``finally`` block.
+                # (and apply its own terminal Action) itself.  Heartbeat
+                # ownership has been transferred — the coroutine unregisters
+                # in its ``finally`` block.
                 deferred = True
                 logger.debug(
                     f"Dispatcher: task {task_id} deferred to background runner "
@@ -879,8 +916,12 @@ async def run_dispatcher(
             # (replaces the prior "completed successfully" INFO). Per-task_type
             # so the metric works for every TaskProtocol implementation.
             _log_task_terminal(
-                row["task_type"], task_id, timestamp,
+                task_type, task_id, timestamp,
                 outcome="success", error=None,
+            )
+            await apply_terminal_action(
+                engine, outcome="success",
+                action=terminal.on_success, **_action_fields(),
             )
 
         except asyncio.CancelledError:
@@ -894,10 +935,35 @@ async def run_dispatcher(
                 retry=True,
             )
             _log_task_terminal(
-                row["task_type"], task_id, timestamp,
+                task_type, task_id, timestamp,
                 outcome="cancelled", error="SIGTERM",
             )
             raise
+
+        except asyncio.TimeoutError:
+            # Sync task exceeded its timeout ceiling — a DISTINCT terminal
+            # outcome.  Park it in the DLQ (default) and fire on_timeout, which
+            # may re-route to a heavier target without conflating timeout with
+            # a logic-error failure.  (wait_for has already cancelled the inner
+            # dispatch; a thread-backed sync runner may keep running, but the
+            # row is now terminal and the loop moves on.)
+            timeout_s = terminal.timeout_seconds
+            logger.error(
+                "Dispatcher: Task %s (%s) timed out after %ss — dead-lettering.",
+                task_id, task_type, timeout_s,
+            )
+            await dead_letter_task(
+                engine, task_id, timestamp,
+                f"Runner timed out after {timeout_s}s",
+            )
+            _log_task_terminal(
+                task_type, task_id, timestamp,
+                outcome="timeout", error=f"timeout {timeout_s}s",
+            )
+            await apply_terminal_action(
+                engine, outcome="timeout",
+                action=terminal.on_timeout, **_action_fields(),
+            )
 
         except PermanentTaskFailure as e:
             logger.error(
@@ -910,8 +976,12 @@ async def run_dispatcher(
                 retry=False,
             )
             _log_task_terminal(
-                row["task_type"], task_id, timestamp,
+                task_type, task_id, timestamp,
                 outcome="permanent_failure", error=str(e),
+            )
+            await apply_terminal_action(
+                engine, outcome="failure",
+                action=terminal.on_failure, **_action_fields(),
             )
 
         except Exception as e:
@@ -926,8 +996,15 @@ async def run_dispatcher(
                 retry=True,
             )
             _log_task_terminal(
-                row["task_type"], task_id, timestamp,
+                task_type, task_id, timestamp,
                 outcome="transient_failure", error=str(e),
+            )
+            # ROUTE continuation fires only if this attempt was the terminal
+            # one (DEAD_LETTER at cap); apply_terminal_action re-reads ground
+            # truth, so a mid-retry PENDING reset does not trigger it.
+            await apply_terminal_action(
+                engine, outcome="failure",
+                action=terminal.on_failure, **_action_fields(),
             )
 
         finally:
