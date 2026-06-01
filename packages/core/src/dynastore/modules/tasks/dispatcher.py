@@ -746,6 +746,19 @@ async def run_dispatcher(
     # Refresh capability map at startup
     await capability_map.refresh()
 
+    # Reconcile the catalogue against live runners and WARN on any task routed
+    # here that no runner can claim — the #1647 starvation signal, made visible
+    # at startup (#1675). Fail-open: a degraded registry must never block the
+    # dispatcher from coming up.
+    try:
+        from dynastore.modules.tasks.routing.reconcile import (
+            reconcile_routing_capabilities,
+        )
+
+        await reconcile_routing_capabilities()
+    except Exception:  # noqa: BLE001 — reconcile is observability, never load-bearing
+        logger.debug("Dispatcher: routing reconcile at startup skipped", exc_info=True)
+
     # Resolve runtime tunables from TasksPluginConfig once per run (not per
     # tick): the batch size and the back-off applied when a worker's
     # payload-aware ``can_claim`` refuses a row (keeps the same worker from

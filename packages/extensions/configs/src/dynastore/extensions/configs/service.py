@@ -128,6 +128,30 @@ class ConfigsService(ExtensionProtocol):
                 "compatibility (Cycle F.4c.0)"
             ),
         )
+        # ---- Task routing discovery (read-only; the #1647/#1675 surfaces) ----
+        # ``catalogue`` = the in-process task/process registry, kind-split.
+        # ``runners``   = registered runners + what each declares it can run
+        #                 (incl. discovered Cloud Run Jobs).
+        # ``capabilities`` = the live claim map for THIS service + a fail-open
+        #                 reconcile of catalogued items that would starve here.
+        self.router.add_api_route(
+            "/tasks/catalogue",
+            self.get_tasks_catalogue,
+            methods=["GET"],
+            summary="Task/process registry (kind-split) — the routable inventory",
+        )
+        self.router.add_api_route(
+            "/tasks/runners",
+            self.get_tasks_runners,
+            methods=["GET"],
+            summary="Registered task runners + their declared task manifests",
+        )
+        self.router.add_api_route(
+            "/tasks/capabilities",
+            self.get_tasks_capabilities,
+            methods=["GET"],
+            summary="Live claim map for this service + starvation reconcile (#1647/#1675)",
+        )
         # ---- Composed (waterfall-resolved) tree views ----
         self.router.add_api_route(
             "/",
@@ -654,6 +678,86 @@ class ConfigsService(ExtensionProtocol):
                 "compatible_driver_classes": compat.get(eng_cls.engine_class, []),
             }
         return {"engines": out}
+
+    # --- Task routing discovery (read-only; #1647/#1675) ---
+
+    async def get_tasks_catalogue(self) -> Dict[str, Any]:
+        """The routable task/process inventory, split by kind.
+
+        Backed by the in-process registry introspection primitive
+        ``describe_all()`` — no DB, no I/O.  ``tasks`` are system/listener/loop
+        tasks (not API-callable but routable); ``processes`` are OGC-Process-API
+        jobs.  Each entry is the task's static descriptor (name, schema, kind,
+        ``task_key``).  This is the SSOT a routing audit joins against
+        ``/tasks/runners`` and ``/tasks/capabilities``.
+        """
+        from dynastore.tasks import describe_all
+
+        try:
+            items = describe_all()
+        except Exception:  # noqa: BLE001 — discovery must not 500 on one bad entry
+            logger.warning("tasks catalogue: describe_all() failed", exc_info=True)
+            items = []
+        tasks = [i for i in items if i.get("kind") == "task"]
+        processes = [i for i in items if i.get("kind") == "process"]
+        return {
+            "tasks": tasks,
+            "processes": processes,
+            "counts": {"tasks": len(tasks), "processes": len(processes)},
+        }
+
+    async def get_tasks_runners(self) -> Dict[str, Any]:
+        """Registered runners on this service + what each declares it can run.
+
+        Keyed by ``runner_type`` (e.g. ``background``, ``gcp_cloud_run``).  The
+        ``declared_tasks`` manifest is how a delegating runner publishes its
+        concrete coverage — ``GcpJobRunner`` enumerates the deployed Cloud Run
+        Jobs it discovered, so an empty manifest there means "no Job deployed",
+        the gap ``/tasks/capabilities`` reconciles.
+        """
+        from dynastore.modules.tasks.dispatcher import _SERVICE_NAME
+        from dynastore.modules.tasks.models import TaskExecutionMode
+        from dynastore.modules.tasks.runners import get_runners
+
+        out: Dict[str, Any] = {}
+        for mode in (TaskExecutionMode.ASYNCHRONOUS, TaskExecutionMode.SYNCHRONOUS):
+            for r in get_runners(mode):
+                runner_type = getattr(r, "runner_type", type(r).__name__)
+                if runner_type in out:
+                    continue
+                try:
+                    declared = r.declared_tasks() or []
+                except Exception:  # noqa: BLE001
+                    declared = []
+                out[runner_type] = {
+                    "mode": str(getattr(r, "mode", mode)),
+                    "priority": getattr(r, "priority", None),
+                    "declared_tasks": declared,
+                }
+        return {"service": _SERVICE_NAME or "", "runners": out}
+
+    async def get_tasks_capabilities(self) -> Dict[str, Any]:
+        """The live claim map for this service + a fail-open starvation reconcile.
+
+        ``async_types`` / ``sync_types`` are the task types this service's
+        dispatcher will actually claim (the ``CapabilityMap``).  ``starving``
+        lists catalogued items routed here that no registered runner can claim —
+        the #1647 condition — computed and WARN-logged by
+        ``reconcile_routing_capabilities`` (#1675).  An empty ``starving`` list
+        is the green signal that every routed task has a live consumer here.
+        """
+        from dynastore.modules.tasks.routing.reconcile import (
+            reconcile_routing_capabilities,
+        )
+        from dynastore.modules.tasks.runners import capability_map
+
+        rec = await reconcile_routing_capabilities()
+        return {
+            "service": rec.get("service", ""),
+            "async_types": capability_map.async_types,
+            "sync_types": capability_map.sync_types,
+            "starving": rec.get("starving", []),
+        }
 
     # --- Specific Plugin Configuration (GET/PUT) ---
 
