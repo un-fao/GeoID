@@ -16,10 +16,9 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import os
-import glob
 import hashlib
-import inspect
 import itertools
 import logging
 import re
@@ -33,19 +32,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.gzip import GZipMiddleware
 from dynastore.extensions.web.cors_middleware import DynamicCORSMiddleware
-from fastapi.routing import APIRoute
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin
-from dynastore.extensions.tools.conformance import (
-    get_active_conformance,
-    Conformance,
-)
 from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.models.auth import Condition
 from dynastore.models.protocols.authorization import IamRolesConfig
-from dynastore.models.protocols.policies import PermissionProtocol, Policy, Role, Principal
+from dynastore.models.protocols.policies import Policy, Role, Principal
 from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
 
 # Register public access policy for web extension
@@ -283,7 +277,7 @@ WEB_CONFORMANCE_URIS = [
 ]
 
 from pydantic import Field
-from dynastore.models.protocols.web import WebModuleProtocol, WebPageProtocol, StaticFilesProtocol
+from dynastore.models.protocols.web import WebModuleProtocol, StaticFilesProtocol
 from dynastore.models.mutability import Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 
@@ -462,6 +456,35 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         if _cors_instance is not None:
             await _cors_instance.initialize_from_db()
         logger.info("WebService: CORS push handler registered.")
+
+        # Login-page reachability: re-assert the anonymous ALLOW for the /web
+        # shell + static assets (the login UI itself) on every cold-boot —
+        # exactly like public_access_baseline does for /health — so a DB whose
+        # policy rows were wiped while the iam.applied_presets sentinel survived
+        # self-heals on restart instead of leaving /web 403 forever for
+        # anonymous users. The apply is idempotent (upsert policy + additive
+        # role binding); wrapped so seeding can never abort boot (a SCOPE that
+        # loads web without the iam tables just logs and continues).
+        try:
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.storage.presets.lifecycle import (
+                bootstrap_preset_if_absent,
+            )
+
+            _db = get_protocol(DatabaseProtocol)
+            await bootstrap_preset_if_absent(
+                _db.engine if _db else None,
+                preset_name="web_enable",
+                force=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — login seeding must not abort boot
+            logger.error(
+                "WebService: cold-boot re-assert of 'web_enable' public-access "
+                "policy failed; anonymous users may get 403 on /web (login UI) "
+                "until it is applied manually: %s",
+                exc,
+                exc_info=True,
+            )
 
         yield
 
@@ -986,11 +1009,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         """
 
     @staticmethod
-    def _serve_html_template(html_path: str) -> HTMLResponse:
+    async def _serve_html_template(html_path: str) -> HTMLResponse:
         """Read an HTML file and replace {{VERSION}} with the running package version."""
         from dynastore._version import VERSION
-        with open(html_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(f.read().replace("{{VERSION}}", VERSION))
+        content = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
+        return HTMLResponse(content.replace("{{VERSION}}", VERSION))
 
     @expose_web_page(
         page_id="exposure",
@@ -1007,7 +1030,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "exposure.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Service exposure panel template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="configuration",
@@ -1029,7 +1052,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "configuration.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="governance",
@@ -1048,7 +1071,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "governance.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Governance page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="access-bindings",
@@ -1077,7 +1100,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             raise HTTPException(
                 status_code=404, detail="Access & Bindings page template not found."
             )
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="stac-authoring",
@@ -1094,7 +1117,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "stac-authoring.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="STAC authoring template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="presets",
@@ -1121,7 +1144,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "presets.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Presets page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(
         page_id="ingest",
@@ -1140,7 +1163,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "ingest.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="Ingest page template not found.")
-        return self._serve_html_template(html_path)
+        return await self._serve_html_template(html_path)
 
     @expose_web_page(page_id="docs", title="Documentation", icon="fa-book", priority=-100)
     def docs_page(self, language: str = "en"):
@@ -1279,8 +1302,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         media_type = mime_types.get(ext.lower(), "application/octet-stream")
 
         try:
-            with open(file_path, "rb") as f:
-                content = f.read()
+            content = await asyncio.to_thread(Path(file_path).read_bytes)
             return Response(
                 content=content, media_type=media_type, headers=extra_headers or None
             )
@@ -1358,7 +1380,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             caller can see (filtered downstream by IAM) and lets them pick
             a per-catalog dashboard."""
             if os.path.exists(_dashboard_index):
-                return self._serve_html_template(_dashboard_index)
+                return await self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/")
@@ -1368,7 +1390,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             uses relative URLs (``stats``, ``logs``, ``events``) which
             resolve against this base path."""
             if os.path.exists(_dashboard_index):
-                return self._serve_html_template(_dashboard_index)
+                return await self._serve_html_template(_dashboard_index)
             return HTMLResponse("Dashboard Not Found", status_code=404)
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/processes/")
@@ -1493,8 +1515,9 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 )
 
             try:
-                with open(doc_item["path"], "r", encoding="utf-8") as f:
-                    md_content = f.read()
+                md_content = await asyncio.to_thread(
+                    Path(doc_item["path"]).read_text, encoding="utf-8"
+                )
 
                 # Convert to HTML
                 html_content = markdown.markdown(
@@ -1597,7 +1620,7 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             offset: int = Query(0, ge=0),
         ):
             from dynastore.models.protocols import CollectionsProtocol
-            from dynastore.tools.discovery import get_protocol, register_plugin
+            from dynastore.tools.discovery import get_protocol
 
             collections_provider: Optional[CollectionsProtocol] = get_protocol(
                 CollectionsProtocol

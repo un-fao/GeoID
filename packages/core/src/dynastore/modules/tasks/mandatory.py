@@ -25,7 +25,7 @@ its PENDING rows are dead-lettered by the backstop branch.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +51,34 @@ def _has_correct_tier_owner(owners, affinity_tier: Optional[str]) -> bool:
     return any(o.get("affinity_tier") == affinity_tier for o in owners)
 
 
-async def check_mandatory_ownership(engine, *, ttl_grace_seconds: float) -> List[str]:
-    """Return task_keys of mandatory tasks lacking a live correct-tier owner."""
+async def _fetch_live_owners_map(
+    engine, conn: Optional[Any], ttl_grace_seconds: float
+) -> Dict[str, List[dict]]:
+    """Return all live registry rows grouped by task_key.
+
+    Uses ``conn`` directly when supplied (avoids a pool round-trip); falls
+    back to opening its own engine connection otherwise.
+    """
+    if conn is not None:
+        from dynastore.modules.tasks.registry.repository import live_owners_all_conn
+        return await live_owners_all_conn(conn, ttl_grace_seconds)
+    from dynastore.modules.tasks.registry.repository import live_owners_all
+    return await live_owners_all(engine, ttl_grace_seconds)
+
+
+async def check_mandatory_ownership(
+    engine, *, ttl_grace_seconds: float, conn: Optional[Any] = None
+) -> List[str]:
+    """Return task_keys of mandatory tasks lacking a live correct-tier owner.
+
+    When ``conn`` is supplied the registry SELECT runs on that connection
+    (avoids an extra pool acquire); callers without one still work via the
+    ``conn=None`` default.
+    """
+    live_map = await _fetch_live_owners_map(engine, conn, ttl_grace_seconds)
     violations: List[str] = []
     for task_key, tier in _mandatory_specs():
-        owners = await _live_owners_for(engine, task_key, ttl_grace_seconds)
+        owners = live_map.get(task_key, [])
         if not _has_correct_tier_owner(owners, tier):
             logger.error(
                 "MANDATORY TASK UNOWNED: %r has no live %s-tier owner "
@@ -67,17 +90,27 @@ async def check_mandatory_ownership(engine, *, ttl_grace_seconds: float) -> List
     return violations
 
 
-async def find_unclaimable_task_types(engine, *, ttl_grace_seconds: float) -> List[str]:
+async def find_unclaimable_task_types(
+    engine, *, ttl_grace_seconds: float, conn: Optional[Any] = None
+) -> List[str]:
     """Loaded task types with no live correct-tier owner — backstop DLQ targets.
+
+    Issues a single batch SELECT for all live registry rows, then filters in
+    Python — one round-trip regardless of how many task types are registered.
 
     Independent of required_capability: this is exactly the escape the
     capability-keyed reaper skips for required_capability = None rows.
+
+    When ``conn`` is supplied the SELECT runs on that connection (avoids an
+    extra pool acquire); callers without one still work via the ``conn=None``
+    default.
     """
     from dynastore.tasks import _DYNASTORE_TASKS
+    live_map = await _fetch_live_owners_map(engine, conn, ttl_grace_seconds)
     unclaimable: List[str] = []
     for task_key, cfg in _DYNASTORE_TASKS.items():
         tier = getattr(cfg.cls, "affinity_tier", None)
-        owners = await _live_owners_for(engine, task_key, ttl_grace_seconds)
+        owners = live_map.get(task_key, [])
         if not _has_correct_tier_owner(owners, tier):
             unclaimable.append(task_key)
     return unclaimable

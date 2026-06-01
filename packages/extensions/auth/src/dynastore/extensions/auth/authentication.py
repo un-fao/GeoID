@@ -341,4 +341,34 @@ class Authentication(ExtensionProtocol):
         self._setup_routes()
         logger.info("✓ Authentication routes configured")
 
+        # Login-page reachability: re-assert the anonymous ALLOW for the /auth
+        # OIDC endpoints (/auth/authorize, /auth/token, /auth/refresh …) on every
+        # cold-boot — exactly like public_access_baseline does for /health — so a
+        # DB whose policy rows were wiped while the iam.applied_presets sentinel
+        # survived self-heals on restart instead of leaving the login flow 403
+        # forever for anonymous users. The apply is idempotent (upsert policy +
+        # additive role binding); wrapped so seeding can never abort boot (a
+        # SCOPE that loads auth without the iam tables just logs and continues).
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.storage.presets.lifecycle import (
+                bootstrap_preset_if_absent,
+            )
+
+            _db = get_protocol(DatabaseProtocol)
+            await bootstrap_preset_if_absent(
+                _db.engine if _db else None,
+                preset_name="auth_enable",
+                force=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — login seeding must not abort boot
+            logger.error(
+                "Authentication: cold-boot re-assert of 'auth_enable' public-access "
+                "policy failed; anonymous users may get 403 on /auth login endpoints "
+                "until it is applied manually: %s",
+                exc,
+                exc_info=True,
+            )
+
         yield

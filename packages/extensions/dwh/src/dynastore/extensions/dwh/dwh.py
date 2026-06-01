@@ -21,11 +21,13 @@ _ = _pyproj_scope_gate  # silence pyright "unused" — load-bearing for SCOPE fi
 
 from dynastore.tools.discovery import get_protocol
 import logging
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import Any, Dict
 from dynastore.tools.cache import cached
 from dynastore.tools.enrichment import enrich_features
 
 from fastapi import (
+    FastAPI,
     HTTPException,
     status,
     Depends,
@@ -33,7 +35,6 @@ from fastapi import (
     Request,
     APIRouter,
 )
-from dynastore.models.shared_models import OutputFormatEnum
 
 from dynastore.extensions.dwh.models import (
     DWHJoinRequest,
@@ -110,7 +111,7 @@ async def execute_bigquery_async(
         raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}")
 
 
-from dynastore.models.query_builder import QueryRequest, FieldSelection, FilterCondition
+from dynastore.models.query_builder import QueryRequest, FieldSelection
 from dynastore.modules.tools.field_categories import resolve_category_field_names  # noqa: E402
 
 
@@ -122,11 +123,14 @@ class DwhService(ExtensionProtocol):
         self.router = APIRouter(prefix="/dwh", tags=["Data Warehouse API"])
         self._register_routes()
 
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
         from dynastore.tools.discovery import register_plugin
         from .link_contrib import DwhLinkContributor
         from .query_transform import DWHJoinQueryTransform
         register_plugin(DWHJoinQueryTransform())
         register_plugin(DwhLinkContributor())
+        yield
 
     async def _dwh_join_impl(
         self,
