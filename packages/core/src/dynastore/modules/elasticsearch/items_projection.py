@@ -42,7 +42,10 @@ survive the reshape.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +357,15 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             ItemsElasticsearchDriverConfig,
         )
         from dynastore.tools.discovery import get_protocol
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Import failure means the configs or storage.driver_config module is
+        # not available in this process scope (e.g. a minimal SCOPE without the
+        # full platform stack).  Tier-1 fields are always safe as a fallback.
+        logger.debug(
+            "resolve_catalog_known_fields: import error for catalog %r; "
+            "falling back to Tier-1 only: %s",
+            catalog_id, exc,
+        )
         return dict(TIER_1_FIELDS)
 
     configs = get_protocol(ConfigsProtocol)
@@ -365,7 +376,15 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             ItemsElasticsearchDriverConfig,
             catalog_id=catalog_id,
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Config row absent or DB unavailable.  The Tier-2 overlay is an
+        # optional enrichment; writes proceed with Tier-1 only and will
+        # pick up the overlay once the config is stored.
+        logger.debug(
+            "resolve_catalog_known_fields: get_config failed for catalog %r; "
+            "falling back to Tier-1 only: %s",
+            catalog_id, exc,
+        )
         return dict(TIER_1_FIELDS)
     return build_known_fields(cfg)
 
