@@ -8,10 +8,13 @@ Silently accepting a mis-projected WKB would corrupt every downstream spatial
 query and pre-computed statistic because the pipeline skips re-projection on
 this path.
 
-Three cases are covered:
-1. Declared source SRID != target_srid  -> SridMismatchError raised.
-2. Declared source SRID == target_srid  -> no raise, payload returned.
+Cases covered:
+1. Declared source SRID (int) != target_srid  -> SridMismatchError raised.
+2. Declared source SRID (int) == target_srid  -> no raise, payload returned.
 3. ``srid`` absent entirely (common trusted-path)  -> no raise (no-regression).
+4. Declared source SRID as STRING matching target_srid -> no raise (coercion).
+5. Declared source SRID as STRING not matching target_srid -> SridMismatchError.
+6. Declared source SRID as unparseable string -> SridMismatchError.
 """
 
 import pytest
@@ -85,3 +88,50 @@ class TestTrustedPathSridMismatchGuard:
         # Must not raise
         result = sidecar.prepare_upsert_payload(feature, ctx)
         assert result is not None
+
+    def test_declared_srid_string_matching_target_no_raise(self):
+        """String SRID equal to target_srid after int coercion must be accepted."""
+        sidecar = _make_sidecar(target_srid=3857)
+        ctx: dict = {"geoid": "g4"}
+        feature = {
+            "wkb_hex_processed": _square_wkb_hex(),
+            "geom_type": "Polygon",
+            "srid": "3857",  # string, but coerces to int 3857 == target_srid
+        }
+
+        # Must not raise
+        result = sidecar.prepare_upsert_payload(feature, ctx)
+        assert result is not None
+
+    def test_declared_srid_string_mismatch_raises(self):
+        """String SRID that, after coercion, differs from target_srid must be rejected."""
+        sidecar = _make_sidecar(target_srid=3857)
+        ctx: dict = {"geoid": "g5"}
+        feature = {
+            "wkb_hex_processed": _square_wkb_hex(),
+            "geom_type": "Polygon",
+            "srid": "4326",  # coerces to int 4326 != 3857
+        }
+
+        with pytest.raises(SridMismatchError) as exc_info:
+            sidecar.prepare_upsert_payload(feature, ctx)
+
+        msg = str(exc_info.value)
+        assert "4326" in msg
+        assert "3857" in msg
+
+    def test_declared_srid_unparseable_string_raises(self):
+        """A garbage SRID value that cannot be coerced to int must raise SridMismatchError."""
+        sidecar = _make_sidecar(target_srid=3857)
+        ctx: dict = {"geoid": "g6"}
+        feature = {
+            "wkb_hex_processed": _square_wkb_hex(),
+            "geom_type": "Polygon",
+            "srid": "abc",  # not a valid integer
+        }
+
+        with pytest.raises(SridMismatchError) as exc_info:
+            sidecar.prepare_upsert_payload(feature, ctx)
+
+        msg = str(exc_info.value)
+        assert "unparseable" in msg
