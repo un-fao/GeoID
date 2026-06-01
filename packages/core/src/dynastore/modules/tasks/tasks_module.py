@@ -839,14 +839,14 @@ async def _run_mandatory_backstop_pass(
             ).execute(conn, k=lock_key)
             if not got or not got.get("got"):
                 return  # another pod owns this pass; advisory xact lock held until txn end
-            # Lock held for the whole block below (sub-calls open their own pooled
-            # connections; the global advisory lock still serializes the pass).
-            await check_mandatory_ownership(engine, ttl_grace_seconds=ttl_grace_seconds)
+            # All three sub-calls receive the locked connection so the whole pass
+            # runs on one pool slot instead of opening three additional connections.
+            await check_mandatory_ownership(engine, ttl_grace_seconds=ttl_grace_seconds, conn=conn)
             await sweep_unclaimable_rows(
-                engine, schema, ttl_grace_seconds=ttl_grace_seconds, min_age_s=min_age_s,
+                engine, schema, ttl_grace_seconds=ttl_grace_seconds, min_age_s=min_age_s, conn=conn,
             )
             await auto_requeue_recovered_mandatory(
-                engine, ttl_grace_seconds=ttl_grace_seconds,
+                engine, ttl_grace_seconds=ttl_grace_seconds, conn=conn,
             )
     except Exception as exc:  # noqa: BLE001 — never crash the sweep loop
         logger.warning("proactive_sweep: mandatory backstop pass failed: %s", exc)

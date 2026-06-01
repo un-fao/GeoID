@@ -649,7 +649,8 @@ def _unclaimable_error(task_types: str) -> str:
 
 
 async def sweep_unclaimable_rows(
-    engine, schema: str, *, ttl_grace_seconds: float, min_age_s: float
+    engine, schema: str, *, ttl_grace_seconds: float, min_age_s: float,
+    conn=None,
 ) -> int:
     """DLQ PENDING rows whose task_type has no live correct-tier owner.
 
@@ -658,8 +659,15 @@ async def sweep_unclaimable_rows(
     required_capability — it closes the #1647 escape for capability-less rows.
     Only rows PENDING (retry_count=0) longer than ``min_age_s`` are swept, so a
     transient owner gap during a deploy does not dead-letter freshly-enqueued
-    work (mirrors the capability sweep's age floor)."""
-    unclaimable = await _find_unclaimable_task_types(engine, ttl_grace_seconds=ttl_grace_seconds)
+    work (mirrors the capability sweep's age floor).
+
+    When ``conn`` is supplied, both the registry SELECT and the DLQ UPDATE run
+    on that connection (avoids two extra pool acquires); callers without one
+    still work via the ``conn=None`` default.
+    """
+    unclaimable = await _find_unclaimable_task_types(
+        engine, ttl_grace_seconds=ttl_grace_seconds, conn=conn,
+    )
     if not unclaimable:
         return 0
     sql = _BACKSTOP_DLQ_SQL.format(schema=schema)
@@ -667,23 +675,37 @@ async def sweep_unclaimable_rows(
     from dynastore.modules.db_config.query_executor import (
         DQLQuery, ResultHandler, managed_transaction,
     )
-    async with managed_transaction(engine) as conn:
+    if conn is not None:
         rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
             conn, err=err, task_types=unclaimable, min_age_s=min_age_s,
         )
+    else:
+        async with managed_transaction(engine) as _conn:
+            rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+                _conn, err=err, task_types=unclaimable, min_age_s=min_age_s,
+            )
     n = len(rows or [])
     if n:
         logger.error("backstop: dead-lettered %d unclaimable row(s) types=%s", n, unclaimable)
     return n
 
 
-async def auto_requeue_recovered_mandatory(engine, *, ttl_grace_seconds: float) -> int:
+async def auto_requeue_recovered_mandatory(
+    engine, *, ttl_grace_seconds: float, conn=None,
+) -> int:
     """Requeue DEAD_LETTER rows of mandatory tasks that now have a live
     correct-tier owner. The mandatory self-heal: a cleanup dead-lettered during a
-    deploy is recalled automatically when its tier comes back."""
+    deploy is recalled automatically when its tier comes back.
+
+    When ``conn`` is supplied, the registry SELECT runs on that connection
+    (avoids an extra pool acquire per mandatory task type); callers without one
+    still work via the ``conn=None`` default.
+    """
+    from dynastore.modules.tasks.mandatory import _fetch_live_owners_map
+    live_map = await _fetch_live_owners_map(engine, conn, ttl_grace_seconds)
     total = 0
     for task_key, tier in _mandatory_specs():
-        owners = await _live_owners_for(engine, task_key, ttl_grace_seconds)
+        owners = live_map.get(task_key, [])
         if _has_correct_tier_owner(owners, tier):
             n = await _requeue_dead_letter_tasks_by_type(
                 engine, task_key, reset_retries=True,

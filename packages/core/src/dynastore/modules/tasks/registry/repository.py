@@ -63,6 +63,13 @@ WHERE task_key = :task_key
   AND last_seen > now() - make_interval(secs => :ttl_grace_seconds)
 """
 
+# Batch: all live rows across every task_key in one round-trip.
+_LIVE_OWNERS_ALL_SQL = f"""
+SELECT task_key, service, affinity_tier, last_seen
+FROM {TASK_CAPABILITY_REGISTRY_TABLE}
+WHERE last_seen > now() - make_interval(secs => :ttl_grace_seconds)
+"""
+
 
 def _coerce_payload_schema(d: dict) -> dict:
     """asyncpg may hand back jsonb as a JSON string under a raw text() query;
@@ -110,3 +117,36 @@ async def live_owners_for(engine, task_key: str, ttl_grace_seconds: float) -> Li
             {"task_key": task_key, "ttl_grace_seconds": ttl_grace_seconds},
         )
         return [dict(row._mapping) for row in result]
+
+
+async def live_owners_for_conn(conn, task_key: str, ttl_grace_seconds: float) -> List[dict]:
+    """Same as ``live_owners_for`` but uses a caller-supplied connection."""
+    result = await conn.execute(
+        text(_LIVE_OWNERS_SQL),
+        {"task_key": task_key, "ttl_grace_seconds": ttl_grace_seconds},
+    )
+    return [dict(row._mapping) for row in result]
+
+
+async def live_owners_all(engine, ttl_grace_seconds: float) -> dict:
+    """Return all live registry rows in one round-trip, grouped by task_key.
+
+    Returns a ``{task_key: [row, ...]}`` dict; every row has the same
+    shape as ``live_owners_for`` (service, affinity_tier, last_seen).
+    """
+    async with engine.connect() as conn:
+        return await live_owners_all_conn(conn, ttl_grace_seconds)
+
+
+async def live_owners_all_conn(conn, ttl_grace_seconds: float) -> dict:
+    """Same as ``live_owners_all`` but uses a caller-supplied connection."""
+    result = await conn.execute(
+        text(_LIVE_OWNERS_ALL_SQL),
+        {"ttl_grace_seconds": ttl_grace_seconds},
+    )
+    grouped: dict = {}
+    for row in result:
+        d = dict(row._mapping)
+        key = d.pop("task_key")
+        grouped.setdefault(key, []).append(d)
+    return grouped
