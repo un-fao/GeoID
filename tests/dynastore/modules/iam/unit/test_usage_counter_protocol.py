@@ -129,9 +129,11 @@ class TestIncrIfBelowSqlShape:
         # Postgres' ``ON CONFLICT DO UPDATE … WHERE`` predicate only
         # applies to the update branch. The fix uses ``INSERT … SELECT
         # … WHERE :amount <= :limit`` so the insert branch is gated too.
+        # Both operands are CAST to bigint — see the type-anchoring guard
+        # below for why the bare comparison cannot be used.
         sql = self._sql().lower()
-        assert ":amount <= :limit" in sql, (
-            "INSERT branch must be gated by :amount <= :limit so the "
+        assert "cast(:amount as bigint) <= cast(:limit as bigint)" in sql, (
+            "INSERT branch must be gated by amount <= limit so the "
             "first hit cannot bypass the cap"
         )
         # Sanity: the form used for the gate is INSERT…SELECT, not
@@ -142,8 +144,23 @@ class TestIncrIfBelowSqlShape:
     def test_update_path_gated_by_running_total_predicate(self):
         sql = self._sql().lower()
         # ``u.count + excluded.count <= :limit`` blocks the increment
-        # once a row exists and the sum would exceed the cap.
-        assert "u.count + excluded.count <= :limit" in sql
+        # once a row exists and the sum would exceed the cap. ``:limit``
+        # is CAST to bigint to stay consistent with its other use site.
+        assert "u.count + excluded.count <= cast(:limit as bigint)" in sql
+
+    def test_cap_predicate_is_type_anchored_for_asyncpg(self):
+        # Regression guard for #1709. The insert-branch gate compares two
+        # free bind parameters (``:amount`` and ``:limit``) with no column
+        # to anchor their type. Without an explicit CAST, asyncpg cannot
+        # decide whether ``<=`` resolves to the integer or text operator
+        # and raises ``AmbiguousParameterError`` at prepare time, so every
+        # quota check (rate_limit / max_count) fails. Both operands must be
+        # cast to bigint (the ``count`` column type).
+        sql = self._sql().lower()
+        assert "cast(:amount as bigint)" in sql
+        assert "cast(:limit as bigint)" in sql
+        # The pre-fix bare comparison must never come back.
+        assert ":amount <= :limit" not in sql
 
     def test_returns_count_and_allowed(self):
         sql = self._sql().lower()
