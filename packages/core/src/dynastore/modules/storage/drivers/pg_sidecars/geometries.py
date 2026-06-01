@@ -54,6 +54,7 @@ from dynastore.modules.storage.drivers.pg_sidecars.geometries_config import (
     TargetDimension,
     SimplificationAlgorithm,
 )
+from dynastore.tools.geospatial_exceptions import SridMismatchError
 from dynastore.modules.db_config.query_executor import DbResource, DQLQuery, ResultHandler
 
 logger = logging.getLogger(__name__)
@@ -1067,9 +1068,24 @@ class GeometriesSidecar(SidecarProtocol):
         shapely_geom = None
 
         if wkb_hex:
-            # Trusted pre-processed path: ingestion is assumed to have already
-            # projected the WKB to the configured target SRID. A source-SRID
-            # mismatch is not re-projected here — tracked in #1707.
+            # Trusted pre-processed WKB path: the WKB is stored as-is without
+            # any re-projection. Contract: the WKB MUST already be in
+            # target_srid. When the caller declares an explicit source SRID that
+            # differs from target_srid we raise immediately — silently storing
+            # a mis-projected geometry would corrupt every subsequent spatial
+            # query and pre-computed stat. If srid is absent (the common
+            # trusted-path case) the caller asserts the WKB is already correct.
+            declared_srid = self._get_val(feature, "srid", None)
+            if declared_srid is not None and declared_srid != self.config.target_srid:
+                raise SridMismatchError(
+                    f"Pre-processed geometry declares source SRID {declared_srid} "
+                    f"but collection target_srid is {self.config.target_srid}. "
+                    "The trusted/pre-processed WKB path stores geometry as-is and "
+                    "does NOT re-project; pre-computed stats would otherwise be stale. "
+                    "Re-project upstream to the target SRID before ingest, or use "
+                    "the standard path (omit wkb_hex_processed) so the pipeline "
+                    "transforms it."
+                )
             geom_data = {
                 "wkb_hex_processed": wkb_hex,
                 "geom_type": self._get_val(feature, "geom_type", "UNKNOWN"),
