@@ -93,7 +93,7 @@ async def test_server_output_uri_raises_without_bucket(monkeypatch):
 @pytest.mark.asyncio
 async def test_signed_result_url_falls_back_when_no_client(monkeypatch):
     _patch_protocols(monkeypatch, {})  # no CloudStorageClientProtocol
-    assert await rm.signed_result_url("gs://b/x.zip", "application/zip") == "gs://b/x.zip"
+    assert await rm.signed_result_url("gs://b/x.zip") == "gs://b/x.zip"
 
 
 @pytest.mark.asyncio
@@ -105,10 +105,14 @@ async def test_signed_result_url_signs_when_available(monkeypatch):
 
     async def _fake_sign(gs_uri, **kw):
         assert kw["method"] == "GET"
+        # Download URLs must NOT pin content-type: doing so adds it to
+        # X-Goog-SignedHeaders and breaks a plain browser GET with
+        # MalformedSecurityHeader.
+        assert "content_type" not in kw
         return gs_uri + "?X-Goog-Expires=604800"
 
     monkeypatch.setattr(rm, "generate_gcs_signed_url", _fake_sign)
-    signed = await rm.signed_result_url("gs://b/x.zip", "application/zip")
+    signed = await rm.signed_result_url("gs://b/x.zip")
     assert signed == "gs://b/x.zip?X-Goog-Expires=604800"
 
 
