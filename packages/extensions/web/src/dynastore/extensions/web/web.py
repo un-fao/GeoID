@@ -463,6 +463,35 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             await _cors_instance.initialize_from_db()
         logger.info("WebService: CORS push handler registered.")
 
+        # Login-page reachability: re-assert the anonymous ALLOW for the /web
+        # shell + static assets (the login UI itself) on every cold-boot —
+        # exactly like public_access_baseline does for /health — so a DB whose
+        # policy rows were wiped while the iam.applied_presets sentinel survived
+        # self-heals on restart instead of leaving /web 403 forever for
+        # anonymous users. The apply is idempotent (upsert policy + additive
+        # role binding); wrapped so seeding can never abort boot (a SCOPE that
+        # loads web without the iam tables just logs and continues).
+        try:
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.storage.presets.lifecycle import (
+                bootstrap_preset_if_absent,
+            )
+
+            _db = get_protocol(DatabaseProtocol)
+            await bootstrap_preset_if_absent(
+                _db.engine if _db else None,
+                preset_name="web_enable",
+                force=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — login seeding must not abort boot
+            logger.error(
+                "WebService: cold-boot re-assert of 'web_enable' public-access "
+                "policy failed; anonymous users may get 403 on /web (login UI) "
+                "until it is applied manually: %s",
+                exc,
+                exc_info=True,
+            )
+
         yield
 
     # NotebookContributorProtocol — opt-in surface picked up by
