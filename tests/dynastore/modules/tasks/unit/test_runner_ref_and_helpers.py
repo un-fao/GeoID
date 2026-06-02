@@ -61,14 +61,18 @@ def test_select_lapsed_gcp_tasks_exists_and_is_async():
 def test_select_lapsed_gcp_tasks_sql_shape():
     """Single scan: ACTIVE + lapsed lease + gcp_cloud_run owner, FOR UPDATE
     SKIP LOCKED so the reconciler and the pg_cron reaper never fight a row.
-    Must surface runner_ref / started_at / outputs for the verdict actions."""
+    Must surface runner_ref / started_at / outputs for the verdict actions,
+    and inputs / caller_id / collection_id / scope for ROUTE continuations."""
     src = inspect.getsource(_tasks_module().select_lapsed_gcp_tasks)
     normalised = " ".join(src.split()).upper()
     assert "STATUS = 'ACTIVE'" in normalised
     assert "LOCKED_UNTIL < NOW()" in normalised
     assert "OWNER_ID LIKE 'GCP_CLOUD_RUN_%'" in normalised
     assert "FOR UPDATE SKIP LOCKED" in normalised
-    for col in ("RUNNER_REF", "STARTED_AT", "OUTPUTS"):
+    for col in (
+        "RUNNER_REF", "STARTED_AT", "OUTPUTS",
+        "INPUTS", "CALLER_ID", "COLLECTION_ID", "SCOPE",
+    ):
         assert col in normalised, f"select must return {col}"
 
 

@@ -164,8 +164,8 @@ async def select_runner_for(task_key: str):
 # trigger no follow-on.
 #
 # Offloaded Cloud Run Jobs finalize in the GcpLivenessReconciler, a separate
-# loop with its own owner_id race guards; wiring terminal Actions there (and
-# a background-runtime timeout) is a tracked follow-up.
+# loop with its own owner_id race guards; terminal Actions and the
+# background-runtime timeout are both wired there (landed in PR #1720).
 # ----------------------------------------------------------------------
 
 # Reserved inputs key carrying the ROUTE continuation hop count.  Persisted in

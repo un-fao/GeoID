@@ -2213,13 +2213,15 @@ async def select_lapsed_gcp_tasks(engine: DbResource) -> List[Dict[str, Any]]:
     SKIP LOCKED`` so the reconciler and the reaper never fight over a row.
 
     Surfaces ``runner_ref`` (the probe handle), ``started_at`` (young-row grace
-    check) and ``outputs`` (TERMINAL_SUCCEEDED reconciliation) so the caller
-    has everything it needs without a second round-trip.
+    check), ``outputs`` (TERMINAL_SUCCEEDED reconciliation), ``inputs``,
+    ``caller_id``, ``collection_id``, and ``scope`` (ROUTE continuation payload)
+    so the caller has everything it needs without a second round-trip.
     """
     task_schema = get_task_schema()
     sql = f"""
         SELECT task_id, schema_name, task_type, owner_id, runner_ref,
-               started_at, locked_until, retry_count, max_retries, outputs
+               started_at, locked_until, retry_count, max_retries, outputs,
+               inputs, caller_id, collection_id, scope
         FROM {task_schema}.tasks
         WHERE status = 'ACTIVE'
           AND locked_until < NOW()
@@ -2229,7 +2231,16 @@ async def select_lapsed_gcp_tasks(engine: DbResource) -> List[Dict[str, Any]]:
     """
     async with managed_transaction(engine) as conn:
         rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(conn)
-    return rows or []
+    decoded: List[Dict[str, Any]] = []
+    for row in rows or []:
+        inputs_raw = row.get("inputs")
+        if isinstance(inputs_raw, str):
+            try:
+                row = {**row, "inputs": json.loads(inputs_raw)}
+            except Exception:  # noqa: BLE001
+                row = {**row, "inputs": None}
+        decoded.append(row)
+    return decoded
 
 
 async def claim_by_id(
