@@ -873,6 +873,18 @@ async function refreshUserProfile(alreadyRefreshed = false) {
             } else {
                 handleLogout();
             }
+        } else {
+            // Any other non-OK (403 authorization denial, 5xx, …) must NOT be
+            // swallowed: the login bootstrap gates the UI on this call, so a
+            // silent fall-through leaves the page in a half-logged-in, grayed
+            // and locked state with no way forward. A refresh would not help a
+            // 403 (the token is valid but the principal is denied), so sign out
+            // to a clean signed-out shell — a clear, recoverable signal instead
+            // of a stuck page. Distinct from the 401 path, which retries once.
+            console.warn(
+                `/userinfo returned ${response.status}; signing out to avoid a locked UI.`
+            );
+            handleLogout();
         }
     } catch (e) {
         console.error("Failed to fetch user profile", e);
