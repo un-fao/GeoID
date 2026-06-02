@@ -377,6 +377,7 @@ async def test_gcp_runner_returns_none_when_job_not_in_map():
 def test_should_register_skips_when_task_type_env_is_set(monkeypatch):
     """Cloud Run Job containers (which set ``TASK_TYPE``) must not register
     the dispatcher runner — they are themselves the runtime."""
+    pytest.importorskip("requests")  # gcp_module imports the Cloud Run HTTP client
     from dynastore.modules.gcp import gcp_module
 
     monkeypatch.setenv("TASK_TYPE", "ingestion")
@@ -388,6 +389,7 @@ def test_should_register_skips_when_explicit_opt_out(monkeypatch):
     """Operators set ``DYNASTORE_DISABLE_GCP_JOB_RUNNER=true`` on services
     that should not race the catalog for ingestion task claims (auth,
     geoid)."""
+    pytest.importorskip("requests")  # gcp_module imports the Cloud Run HTTP client
     from dynastore.modules.gcp import gcp_module
 
     monkeypatch.delenv("TASK_TYPE", raising=False)
@@ -401,6 +403,7 @@ def test_should_register_skips_when_explicit_opt_out(monkeypatch):
 def test_should_register_default_is_enabled(monkeypatch):
     """In a process with neither flag set (e.g. catalog service), register
     so OGC ``/processes`` ``/execution`` calls can dispatch Cloud Run jobs."""
+    pytest.importorskip("requests")  # gcp_module imports the Cloud Run HTTP client
     from dynastore.modules.gcp import gcp_module
 
     monkeypatch.delenv("TASK_TYPE", raising=False)

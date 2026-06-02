@@ -692,7 +692,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 resource_name="Asset",
                 resource_id=f"{catalog_id}:{asset_in.asset_id}",
                 operation="Catalog asset creation",
-            )
+            ) from e
 
     async def create_catalog_virtual_asset(
         self,
@@ -710,7 +710,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 resource_name="Asset",
                 resource_id=f"{catalog_id}:{asset_in.asset_id}",
                 operation="Catalog virtual-asset registration",
-            )
+            ) from e
 
 
     async def delete_catalog_assets(
@@ -762,7 +762,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 catalog_id=catalog_id, asset_id=asset_id, update=asset_in
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
     async def patch_catalog_asset(
         self,
@@ -777,7 +777,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 catalog_id=catalog_id, asset_id=asset_id, patch=patch,
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
 
     async def delete_catalog_asset_by_id(
@@ -806,7 +806,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                         r.model_dump(mode="json") for r in e.blocking_refs
                     ],
                 },
-            )
+            ) from e
         if success == 0:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -852,7 +852,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 resource_name="Asset",
                 resource_id=f"{catalog_id}:{collection_id}:{asset_in.asset_id}",
                 operation="Collection asset creation",
-            )
+            ) from e
 
     async def create_collection_virtual_asset(
         self,
@@ -872,7 +872,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 resource_name="Asset",
                 resource_id=f"{catalog_id}:{collection_id}:{asset_in.asset_id}",
                 operation="Collection virtual-asset registration",
-            )
+            ) from e
 
 
     async def delete_collection_assets(
@@ -935,7 +935,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 collection_id=collection_id,
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
     async def patch_collection_asset(
         self,
@@ -954,7 +954,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 collection_id=collection_id,
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
 
     async def delete_collection_asset_by_id(
@@ -988,7 +988,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                         r.model_dump(mode="json") for r in e.blocking_refs
                     ],
                 },
-            )
+            ) from e
         if success == 0:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -1283,7 +1283,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             )
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     async def advanced_search_collection(
         self,
@@ -1304,7 +1304,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             )
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     async def advanced_search_global(
         self,
@@ -1334,7 +1334,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             catalogs = await catalogs_svc.list_catalogs(limit=1000)
         except Exception as e:
             logger.error(f"Global search: list_catalogs failed: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
         aggregated: List[Asset] = []
         remaining = query.limit
@@ -1638,7 +1638,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Upload initiation failed: {exc}",
-            )
+            ) from exc
 
         # 8. Stamp the ticket onto the row's metadata so the Stage 4.2
         #    finalize handler can correlate.
@@ -1947,7 +1947,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
-            )
+            ) from exc
 
         inputs = BucketReconcileInputs(
             catalog_id=catalog_id,

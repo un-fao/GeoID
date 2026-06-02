@@ -3,6 +3,9 @@ converted to Pydantic models for all task types, including those that
 inherit from Protocol-based generics (ProcessTaskProtocol)."""
 
 import pytest
+
+pytest.importorskip("morecantile")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tools.identifiers import generate_task_id
 
 from dynastore.tasks import hydrate_task_payload

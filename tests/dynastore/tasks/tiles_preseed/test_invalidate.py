@@ -24,6 +24,8 @@ from typing import List, Sequence, Tuple
 
 import pytest
 
+pytest.importorskip("morecantile")  # optional dep — skip when SCOPE excludes it
+
 import dynastore.tasks.tiles_preseed.task as task_mod
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest

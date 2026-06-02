@@ -228,8 +228,19 @@ async def test_select_lapsed_gcp_tasks_picks_lapsed_gcp_active_rows(_gcp_row_fac
     assert row["owner_id"] == owner_id
     assert row["runner_ref"] == runner_ref
     # The verdict actions need these columns:
-    for col in ("schema_name", "task_type", "started_at", "outputs", "retry_count"):
+    for col in (
+        "schema_name", "task_type", "started_at", "outputs", "retry_count",
+        "scope", "caller_id", "inputs", "collection_id",
+    ):
         assert col in row, f"select_lapsed_gcp_tasks must surface {col!r}"
+    # ``inputs`` must arrive decoded: asyncpg returns JSONB as a JSON *string*
+    # under the raw DQLQuery read, and apply_terminal_action only spreads it
+    # when isinstance(inputs, dict) — a raw string silently drops the ROUTE
+    # continuation payload (geoid#1743). Pin that it is never a bare str.
+    assert not isinstance(row["inputs"], str), (
+        "select_lapsed_gcp_tasks must decode JSONB inputs to a dict, not leave "
+        "it as a raw JSON string (apply_terminal_action would drop it)"
+    )
 
 
 async def test_select_lapsed_gcp_tasks_skips_unexpired_lease(_gcp_row_factory):

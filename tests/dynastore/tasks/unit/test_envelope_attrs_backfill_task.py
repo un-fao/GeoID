@@ -34,6 +34,8 @@ from uuid import uuid4
 
 import pytest
 
+pytest.importorskip("opensearchpy")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.tasks.elasticsearch_indexer.envelope_backfill_task import (
     EnvelopeAttrsBackfillTask,

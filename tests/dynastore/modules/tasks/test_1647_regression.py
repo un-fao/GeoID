@@ -26,9 +26,9 @@ class _FakeCfg:
 @pytest.mark.asyncio
 async def test_capabilityless_mandatory_is_flagged_unowned(monkeypatch):
     # No owner advertises the task at all -> violation (the starvation state).
-    async def _no_owners(_engine, _task_key, _grace):
-        return []
-    monkeypatch.setattr(mandatory, "_live_owners_for", _no_owners)
+    async def _no_owners(_engine, _conn, _grace):
+        return {}
+    monkeypatch.setattr(mandatory, "_fetch_live_owners_map", _no_owners)
     monkeypatch.setattr(mandatory, "_mandatory_specs", lambda: [("cascade_cleanup", "catalog")])
 
     violations = await mandatory.check_mandatory_ownership(engine=object(), ttl_grace_seconds=90)
@@ -40,9 +40,9 @@ async def test_capabilityless_mandatory_is_unclaimable(monkeypatch):
     # find_unclaimable_task_types walks the real task registry, so inject a fake
     # one holding the mandatory catalog-tier task; with no live owner it is a
     # backstop DLQ target (no silent starvation).
-    async def _no_owners(_engine, _task_key, _grace):
-        return []
-    monkeypatch.setattr(mandatory, "_live_owners_for", _no_owners)
+    async def _no_owners(_engine, _conn, _grace):
+        return {}
+    monkeypatch.setattr(mandatory, "_fetch_live_owners_map", _no_owners)
     monkeypatch.setattr(tasks_pkg, "_DYNASTORE_TASKS", {"cascade_cleanup": _FakeCfg()})
 
     unclaimable = await mandatory.find_unclaimable_task_types(engine=object(), ttl_grace_seconds=90)
@@ -53,9 +53,9 @@ async def test_capabilityless_mandatory_is_unclaimable(monkeypatch):
 async def test_wrong_tier_owner_still_unclaimable(monkeypatch):
     # Advertised only by a wrong-tier service: "has an owner" but not the
     # correct-tier owner — the subtle variant of the starvation bug.
-    async def _worker_only(_engine, _task_key, _grace):
-        return [{"service": "worker", "affinity_tier": None}]
-    monkeypatch.setattr(mandatory, "_live_owners_for", _worker_only)
+    async def _worker_only(_engine, _conn, _grace):
+        return {"cascade_cleanup": [{"service": "worker", "affinity_tier": None}]}
+    monkeypatch.setattr(mandatory, "_fetch_live_owners_map", _worker_only)
     monkeypatch.setattr(mandatory, "_mandatory_specs", lambda: [("cascade_cleanup", "catalog")])
 
     violations = await mandatory.check_mandatory_ownership(engine=object(), ttl_grace_seconds=90)

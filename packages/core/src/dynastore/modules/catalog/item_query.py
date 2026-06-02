@@ -610,7 +610,7 @@ class ItemQueryMixin:
                     query_request.raw_params.update(cql_params)
             except ValueError as e:
                 # Re-raise as ValueError so it can be caught and returned as 400
-                raise ValueError(f"Invalid CQL filter: {e}")
+                raise ValueError(f"Invalid CQL filter: {e}") from e
 
         # Resolve physical storage and generate SQL.  Thread the caller's
         # in-flight conn through so resolution shares the warm transaction

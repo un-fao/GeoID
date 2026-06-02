@@ -250,7 +250,7 @@ class GcpStorageOpsMixin:
             raise HTTPException(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"GCS upload session creation failed: {e}",
-            )
+            ) from e
 
         if not session_uri:
             raise HTTPException(

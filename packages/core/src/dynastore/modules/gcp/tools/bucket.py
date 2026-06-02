@@ -195,7 +195,7 @@ def _create_bucket_sync(
             bucket.patch()
 
         return bucket, True
-    except Conflict:
+    except Conflict as conflict_err:
         logger.warning(f"Bucket {bucket_name} already exists.")
         # GCS eventual consistency: the bucket was just created (by another process/request)
         # but metadata may not yet be visible. Retry get_bucket with backoff.
@@ -228,7 +228,7 @@ def _create_bucket_sync(
                         f"Bucket {bucket_name} still not visible after 5 retries. Raising."
                     )
                     raise
-        raise RuntimeError(f"Unreachable: bucket {bucket_name} retry exhausted")
+        raise RuntimeError(f"Unreachable: bucket {bucket_name} retry exhausted") from conflict_err
     except Exception as e:
         logger.error(f"Failed to create bucket {bucket_name}: {e}", exc_info=True)
         raise
