@@ -30,6 +30,7 @@ from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import create_engine
 
 from dynastore.modules.iam import iam_service as iam_service_mod
 from dynastore.modules.iam.iam_service import IamService
@@ -45,7 +46,12 @@ def _fake_catalogs(
     *, returns: Optional[str] = None, raises: Optional[Exception] = None
 ) -> MagicMock:
     catalogs = MagicMock()
-    catalogs.engine = object()
+    # Use a real SQLAlchemy Engine: DriverContext.db_resource is typed as
+    # DbResource (a Union of SQLAlchemy types) so a plain object() is no
+    # longer accepted after #1555 moved the field type from Any.
+    catalogs.engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
     if raises is not None:
         catalogs.resolve_physical_schema = AsyncMock(side_effect=raises)
     else:

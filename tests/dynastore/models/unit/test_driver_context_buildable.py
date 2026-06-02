@@ -15,15 +15,21 @@
 """Regression guard: ``DriverContext`` must be validate-constructable.
 
 #1680 moved ``DbResource`` under ``TYPE_CHECKING`` to break a
-models→modules import. Without a runtime fallback for the forward ref,
+models->modules import. Without a runtime fallback for the forward ref,
 pydantic 2.12 can no longer build the model's schema, so *every*
 ``DriverContext(db_resource=...)`` raises ``PydanticUserError`` — which
 ``IamService.resolve_schema`` silently swallows, collapsing all
-catalog-scoped auth to the platform ``iam`` schema. This pins that the
-model stays constructable with no explicit ``model_rebuild()`` call by the
-caller.
+catalog-scoped auth to the platform ``iam`` schema.
+
+#1555 replaced the ``_DbResource = Any`` runtime fallback with a real
+runtime import from ``dynastore.models.db_resource``, so the field is now
+properly typed. This file pins that the model stays constructable and that
+the import path works without ``model_rebuild()`` by the caller.
 """
 from __future__ import annotations
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 
 from dynastore.models.driver_context import DriverContext
 
@@ -33,7 +39,20 @@ def test_driver_context_constructs_with_none_db_resource():
     assert ctx.db_resource is None
 
 
-def test_driver_context_constructs_with_arbitrary_db_resource():
-    sentinel = object()
-    ctx = DriverContext(db_resource=sentinel)
-    assert ctx.db_resource is sentinel
+def test_driver_context_constructs_with_real_db_resource():
+    """DriverContext must accept a valid DbResource (Engine) without error.
+
+    Replaces the pre-#1555 ``object()`` sentinel test: with a real DbResource
+    type union, Pydantic validates the value; plain ``object()`` is not a
+    valid DbResource member.
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    ctx = DriverContext(db_resource=engine)
+    assert ctx.db_resource is engine
+
+
+def test_db_resource_type_is_real_import():
+    """The DbResource field type must be the real SQLAlchemy union, not Any."""
+    engine = create_engine("sqlite:///:memory:")
+    ctx = DriverContext(db_resource=engine)
+    assert isinstance(ctx.db_resource, Engine)

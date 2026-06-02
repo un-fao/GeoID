@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from dynastore.models.protocols.authorization_context import SecurityContext
 from dynastore.models.mutability import Immutable, Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 
 
 # --- Effective-permissions trace types (public protocol surface) ---

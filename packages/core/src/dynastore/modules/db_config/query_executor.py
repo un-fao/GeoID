@@ -156,13 +156,18 @@ def _is_duplicate_object_error(exc: Optional[BaseException]) -> bool:
     return False
 
 # --- Type Definitions ---
-DbSyncConnection = Union[SAConnection, SASession]
-DbAsyncConnection = Union[AsyncConnection, AsyncSession]
-DbEngine = Union[Engine, AsyncEngine]
-DbConnection = Union[DbSyncConnection, DbAsyncConnection]
-DbSyncResource = Union[Engine, DbSyncConnection]
-DbAsyncResource = Union[AsyncEngine, DbAsyncConnection]
-DbResource = Union[DbSyncResource, DbAsyncResource]
+# Canonical definitions live in dynastore.models.db_resource (#1555).
+# Re-exported here for backward compatibility — all existing callers that
+# import from this module continue to work without changes.
+from dynastore.models.db_resource import (  # noqa: E402, F401
+    DbSyncConnection,
+    DbAsyncConnection,
+    DbEngine,
+    DbConnection,
+    DbSyncResource,
+    DbAsyncResource,
+    DbResource,
+)
 BuilderResult = Tuple[TextClause, dict]
 QueryBuilderFunction: TypeAlias = Callable[
     [DbResource, dict], Union[BuilderResult, Awaitable[BuilderResult]]
