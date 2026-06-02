@@ -208,14 +208,14 @@ def test_resolve_es_field_path_top_level_passthrough() -> None:
 
 
 def test_parse_sort_routes_unknown_field_to_extras() -> None:
-    """End-to-end sort rewrite through the search service.
+    """End-to-end sort rewrite through the items-query SSOT.
 
     Pinning here (and not just in resolve_es_field_path) catches a future
-    refactor that bypasses the resolver in ``_parse_sort``.
+    refactor that bypasses the resolver in ``parse_sort``.
     """
-    from dynastore.extensions.search.search_service import _parse_sort
+    from dynastore.modules.elasticsearch.items_query import parse_sort
 
-    clause = _parse_sort("properties.foo:bar")
+    clause = parse_sort("properties.foo:bar")
     # Returns [{<field>: {order}}, {_score: {order}}]
     field_clause = clause[0]
     assert "properties.extras.foo:bar" in field_clause
@@ -223,9 +223,9 @@ def test_parse_sort_routes_unknown_field_to_extras() -> None:
 
 
 def test_parse_sort_known_field_passthrough() -> None:
-    from dynastore.extensions.search.search_service import _parse_sort
+    from dynastore.modules.elasticsearch.items_query import parse_sort
 
-    clause = _parse_sort("-properties.datetime")
+    clause = parse_sort("-properties.datetime")
     field_clause = clause[0]
     assert "properties.datetime" in field_clause
     assert field_clause["properties.datetime"]["order"] == "desc"
