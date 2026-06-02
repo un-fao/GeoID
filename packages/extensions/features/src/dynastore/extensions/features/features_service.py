@@ -66,8 +66,7 @@ from dynastore.extensions.tools.localization_utils import detect_use_lang
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
-from dynastore.modules.db_config.tools import managed_transaction
-from dynastore.modules.db_config.query_executor import DbResource
+from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 import re
 from dynastore.extensions.tools.formatters import OutputFormatEnum
 from dynastore.extensions.tools.query import (
