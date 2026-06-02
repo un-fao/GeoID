@@ -1059,30 +1059,50 @@ class IamService:
 
     def _normalize_authenticated_roles(self, raw: Any) -> List[str]:
         """Normalise the raw ``roles`` field from a JWT payload or Principal
-        into a non-empty ``List[str]`` with the configured USER default applied.
+        into the effective role list, always including the baseline role.
 
-        Single source of truth for the "an authenticated principal with zero
-        declared roles still gets the configured user role" rule. Without this
-        default, an HS256 token signed with ``roles=[]`` (or a Principal
-        whose ``.roles`` is ``None``/empty) would surface as ANONYMOUS-
-        equivalent at the policy layer — breaking ``/iam/me/*`` self-service
-        endpoints that any authenticated user should reach. The default
-        role name is read from ``self._role_config.default_user_role_name``.
+        Single source of truth for the "every authenticated principal carries
+        the baseline self-service role" rule. The baseline
+        (``self._role_config.default_user_role_name``, which by default
+        collapses onto ``anonymous_role_name`` == ``"unauthenticated"``) is the
+        role the platform's public + self-info policies bind to:
+        ``self_service_authorization_api`` (``/iam/me``, ``/iam/me/*``,
+        ``/auth/userinfo``), ``auth_extension_public`` (``/auth/*``),
+        ``public_access`` (``/health`` …) and ``web_public_access``
+        (``/web/*``).
+
+        It MUST be appended to the principal's declared realm roles, not just
+        substituted in when the declared list is empty. A role-carrying user
+        (e.g. ``admin``/``user``/``viewer``) otherwise resolves to its realm
+        roles ONLY — dropping the baseline the moment it authenticates — and is
+        then locked out of its own profile endpoints with a deny-by-default
+        403, which surfaces as a grayed/stuck UI right after login. Declared
+        realm roles still grant their elevated access on top of the baseline;
+        appending the baseline only restores the public/self-info floor and
+        never elevates (deny-precedence still applies).
+
+        Anonymous (token-less) requests get ``[anonymous_role_name]`` upstream
+        in ``authenticate_and_get_role``; authenticated-vs-anonymous is decided
+        by the presence of a ``Principal`` object, never by inspecting this
+        role list — so carrying the baseline here cannot misclassify a
+        logged-in user as anonymous.
 
         Accepts:
-          - ``None``                  → ``[default_user_role_name]``
-          - missing / empty list      → ``[default_user_role_name]``
-          - a single role as ``str``  → ``[role]``
-          - a list of role names      → returned verbatim
+          - ``None`` / missing / empty list → ``[default_user_role_name]``
+          - a single role as ``str``        → ``[role, default_user_role_name]``
+          - a list of role names            → ``[*roles, default_user_role_name]``
 
-        Pinned by tests in
+        (the baseline is de-duplicated when the declared roles already include
+        it). Pinned by tests in
         ``tests/dynastore/modules/iam/unit/test_authenticate_default_user_role.py``.
         """
         if isinstance(raw, str):
-            return [raw]
-        roles = list(raw or [])
-        if not roles:
-            roles = [self._role_config.default_user_role_name]
+            roles = [raw]
+        else:
+            roles = list(raw or [])
+        baseline = self._role_config.default_user_role_name
+        if baseline not in roles:
+            roles.append(baseline)
         return roles
 
     async def _expand_role_hierarchy_dual_scope(

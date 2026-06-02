@@ -1,20 +1,27 @@
-"""Regression: HS256 fallback path defaults empty roles to ``["user"]``.
+"""Regression: every authenticated principal carries the baseline role.
 
-PR #198 fixed an asymmetry between the OIDC and HS256 token verification
-branches in ``IamService.authenticate_and_get_role``. The OIDC branch
-already defaulted to ``DefaultRole.USER`` when the principal carried no
-realm roles (line 716), but the HS256 fallback branch — used by test
-fixtures and internal services — preserved an empty role list verbatim
-when the JWT payload's ``roles`` field was either missing OR explicitly
-set to ``[]``. That left an authenticated principal with zero effective
-roles, surfacing as ANONYMOUS-equivalent at the policy layer and
-returning 403 from every ``/iam/me/*`` self-service endpoint.
+PR #198 first fixed an asymmetry between the OIDC and HS256 token
+verification branches in ``IamService.authenticate_and_get_role``: a JWT
+with a missing or empty ``roles`` field left an authenticated principal
+with zero effective roles, surfacing as ANONYMOUS-equivalent at the
+policy layer and returning 403 from every ``/iam/me/*`` self-service
+endpoint.
 
-These tests pin the default-to-user behaviour so a future refactor of
-the role-resolution path can't silently regress SelfServiceAPI access.
+The rule has since broadened: the baseline ``default_user_role_name`` is
+the public/self-info FLOOR — the role that ``self_service_authorization_api``
+(``/iam/me``, ``/auth/userinfo``), ``auth_extension_public`` (``/auth/*``)
+and the public-access policies bind to — so ``_normalize_authenticated_roles``
+now appends it to a principal's declared realm roles, not only when the
+declared list is empty. Without that, a role-carrying user (``admin`` /
+``user`` / ``viewer``) dropped the baseline the instant it logged in and
+was denied-by-default on its own profile endpoints, leaving the web UI
+grayed/locked right after login.
+
+These tests pin that contract so a future refactor of the role-resolution
+path can't silently regress SelfServiceAPI access.
 """
 
-from typing import Any, List, Tuple
+from typing import Any, List
 
 import pytest
 
@@ -168,21 +175,26 @@ def test_normalize_authenticated_roles_helper_defaults() -> None:
     svc = object.__new__(IamService)
     svc._role_config = IamRolesConfig()
     norm = svc._normalize_authenticated_roles
-    # None / empty list → default-user role
-    assert norm(None) == [_DEFAULTS.default_user_role_name]
-    assert norm([]) == [_DEFAULTS.default_user_role_name]
-    # Single-string role → wrapped, NOT defaulted
-    assert norm("editor") == ["editor"]
-    # Non-empty list → returned verbatim
-    assert norm(["sysadmin", "admin"]) == ["sysadmin", "admin"]
-    # Single role in a list → preserved (NOT defaulted)
-    assert norm(["editor"]) == ["editor"]
+    baseline = _DEFAULTS.default_user_role_name
+    # None / empty list → just the baseline role
+    assert norm(None) == [baseline]
+    assert norm([]) == [baseline]
+    # Single-string role → wrapped AND carries the baseline floor
+    assert norm("editor") == ["editor", baseline]
+    # Non-empty list → declared roles PLUS the baseline floor (order preserved)
+    assert norm(["sysadmin", "admin"]) == ["sysadmin", "admin", baseline]
+    assert norm(["editor"]) == ["editor", baseline]
+    # Baseline already declared → not duplicated
+    assert norm([baseline]) == [baseline]
+    assert norm([baseline, "admin"]) == [baseline, "admin"]
 
 
 @pytest.mark.asyncio
 async def test_hs256_jwt_with_explicit_roles_preserves_them() -> None:
-    """Negative case: an HS256 JWT that DOES carry roles must keep them
-    verbatim — the default only fires for the empty/missing case."""
+    """An HS256 JWT that DOES carry roles must keep them — and ALSO carry the
+    baseline self-service role alongside them (the baseline is the public/
+    self-info floor every authenticated principal holds, not a fallback that
+    only fires when the declared list is empty)."""
     import jwt as pyjwt
     from datetime import datetime, timezone, timedelta
 
@@ -202,4 +214,41 @@ async def test_hs256_jwt_with_explicit_roles_preserves_them() -> None:
     assert principal is not None
     assert "sysadmin" in effective_roles, (
         f"Expected sysadmin role to be preserved, got {effective_roles!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_role_carrying_principal_retains_self_service_baseline() -> None:
+    """Regression: a role-carrying authenticated principal must STILL carry
+    the baseline self-service role.
+
+    A token mapping to a realm role (``admin``/``user``/``viewer``) used to
+    resolve to that role ONLY — dropping the baseline ``default_user_role_name``
+    the instant it authenticated. Since ``self_service_authorization_api``
+    (``/iam/me``, ``/iam/me/*``, ``/auth/userinfo``) and ``auth_extension_public``
+    (``/auth/*``) bind to that baseline, the user was then denied-by-default
+    (403) on its OWN profile endpoints — the SPA's post-login profile fetch
+    failed and left the page grayed/locked. The baseline must accompany the
+    declared role so the self-info contract holds for every logged-in user."""
+    import jwt as pyjwt
+    from datetime import datetime, timezone, timedelta
+
+    secret = "test-secret-role-carrying-padded-to-32-chars-x"
+    payload = {
+        "sub": "test-user-admin",
+        "roles": ["admin"],
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "iss": "regression-test",
+    }
+    token = pyjwt.encode(payload, secret, algorithm="HS256")
+
+    svc = _build_iam_service_for_hs256(secret)
+    effective_roles, principal = await svc.authenticate_and_get_role(_make_request(token))
+
+    assert principal is not None
+    assert "admin" in effective_roles, f"declared role lost: {effective_roles!r}"
+    assert _DEFAULTS.default_user_role_name in effective_roles, (
+        "authenticated role-carrying principal dropped the self-service baseline "
+        f"role — /iam/me + /auth/userinfo would 403: {effective_roles!r}"
     )
