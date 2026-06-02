@@ -351,6 +351,28 @@ export const fetchGrantUsage = ({
   return getJSON(`/admin/iam/usage/grants${query}`);
 };
 
+// ----- IAM usage counter reset (#1346) -----
+//
+// DELETE /admin/policies/{policy_id}/usage/{principal_key}
+// For grant-scoped counters, policy_id = "grant:" + grant_id (the quota
+// namespace stamped at policy-evaluation time). principal_key is the
+// principal UUID string (scope=principal). Pass window_seconds for rate_limit
+// counters; omit (null/undefined) for lifetime max_count quotas.
+// Returns UsageResetResponse {policy_id, principal_key, reset_count}.
+export const resetGrantUsage = ({ policyId, principalKey, windowSeconds, catalogId } = {}) => {
+  const params = [];
+  if (windowSeconds != null) {
+    params.push(`window_seconds=${encodeURIComponent(windowSeconds)}`);
+  }
+  if (catalogId != null && catalogId !== "") {
+    params.push(`catalog_id=${encodeURIComponent(catalogId)}`);
+  }
+  const query = params.length ? `?${params.join("&")}` : "";
+  return deleteJSON(
+    `/admin/policies/${encodeURIComponent(policyId)}/usage/${encodeURIComponent(principalKey)}${query}`,
+  );
+};
+
 // ----- STAC write endpoints (create catalog / collection / features) -----
 
 export const createStacCatalog = (definition) => postJSON(`/stac/catalogs`, definition);

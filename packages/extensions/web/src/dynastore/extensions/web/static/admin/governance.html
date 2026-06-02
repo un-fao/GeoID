@@ -307,10 +307,10 @@
     </section>
 
     <div id="footnote" class="footnote" style="display:none">
-      <strong>Rate limits &amp; quotas.</strong> Backend handlers
-      <code>RateLimitHandler</code> and <code>MaxCountHandler</code> are
-      currently no-ops; the corresponding UI is intentionally omitted until
-      persistence lands. Tracked as a separate follow-up.
+      <strong>Rate limits &amp; quotas.</strong> Per-binding
+      <code>rate_limit</code> and <code>max_count</code> quota conditions
+      are enforced and persisted. Live counter state and reset controls are
+      available via the <em>Usage</em> button on each binding row.
     </div>
 
     <!-- Effective-permissions explainer (#1390) — per-row "Why?" affordance

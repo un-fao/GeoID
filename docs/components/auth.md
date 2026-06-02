@@ -105,8 +105,8 @@ handlers — and the authoritative spec for each one's config keys — live in
 
 | `type` | Config keys | Description |
 |--------|-------------|-------------|
-| `rate_limit` | `limit`, `window_seconds`, `scope` | Per-window token-bucket limit. `scope`: `principal` (default), `role`, `client_ip`, `catalog` |
-| `max_count` | `limit`, `scope` (+ optional `path_pattern`, `methods`, `mode`) | Lifetime quota on matched requests |
+| `rate_limit` | `limit`, `window_seconds`, `scope` (+ optional `path_pattern`, `methods`, `mode`) | Per-window token-bucket limit. `scope`: `principal` (default), `role`, `client_ip`, `catalog`. `mode`: `graceful` (default, allow when no counter backend) or `strict` (fail-closed) |
+| `max_count` | `limit`, `scope` (+ optional `path_pattern`, `methods`, `mode`) | Lifetime quota on matched requests. `mode`: same `graceful`/`strict` semantics as `rate_limit` |
 | `query_match` | `param`, `pattern` | Require a query parameter to match a regex |
 | `lookup_only_search` | _(none)_ | Allow `/search` only as retrieve-by-id — request must carry `geoid` or `external_id`; blocks enumeration |
 | `time_window` | `start`, `end` | Absolute ISO-8601 validity window |
