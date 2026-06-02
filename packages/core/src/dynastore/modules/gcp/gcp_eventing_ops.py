@@ -645,7 +645,7 @@ class GcpEventingOpsMixin:
             logger.info(
                 f"Created Pub/Sub push subscription '{subscription_path}' to endpoint '{push_endpoint}' with attributes {list(attributes.keys())}."
             )
-        except google_exceptions.AlreadyExists:
+        except google_exceptions.AlreadyExists as already_exists_err:
             # Pub/Sub binds subscription→topic immutably. Before refreshing
             # push_config, verify the existing subscription is bound to the
             # topic we expect; otherwise modify_push_config would silently
@@ -670,7 +670,7 @@ class GcpEventingOpsMixin:
                     bound_to=existing.topic or "<unknown>",
                     expected=topic_path,
                     project_id=project_id,
-                )
+                ) from already_exists_err
 
             logger.debug(
                 f"Pub/Sub subscription '{subscription_path}' already exists and is "

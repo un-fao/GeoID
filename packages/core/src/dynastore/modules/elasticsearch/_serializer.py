@@ -53,4 +53,4 @@ class CustomOpenSearchSerializer(JSONSerializer):
                 separators=(",", ":"),
             )
         except (ValueError, TypeError) as exc:
-            raise SerializationError(data, exc)
+            raise SerializationError(data, exc) from exc

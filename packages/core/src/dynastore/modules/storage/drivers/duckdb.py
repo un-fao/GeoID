@@ -193,11 +193,11 @@ def _borrow_conn(timeout: Optional[int] = None):
     t = timeout if timeout is not None else DuckDBConfig.read_timeout
     try:
         conn = _pool.get(timeout=t)
-    except queue.Empty:
+    except queue.Empty as e:
         raise TimeoutError(
             f"DuckDB: no connection available within {t}s "
             f"(pool_size={_pool_size})"
-        )
+        ) from e
     try:
         yield conn
     finally:
