@@ -38,7 +38,6 @@ from dynastore.tools.discovery import get_protocol
 from dynastore.tools.db import validate_sql_identifier
 from dynastore.models.query_builder import QueryRequest, QueryResponse
 from dynastore.modules.catalog.query_optimizer import QueryOptimizer
-from dynastore.modules.catalog.query_orchestrator import CatalogQueryOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -1332,97 +1331,3 @@ class ItemQueryMixin:
                 self.map_row_to_feature(row, col_config, read_policy=read_policy)
                 for row in rows
             ]
-
-    async def stream_items_from_query(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        where_clause: str,
-        query_params: Optional[Dict[str, Any]] = None,
-        select_columns: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        db_resource: Optional[Any] = None,
-    ) -> AsyncIterator[Feature]:
-        """
-        Stream search results from a raw SQL WHERE clause, leveraging the QueryOrchestrator.
-
-        This method builds a query with sidecar JOINs. The user provides the WHERE clause content.
-
-        **NOTE**: The `where_clause` must use the correct table aliases:
-        - `h` for the main items (hub) table.
-        - `g` for the geometry sidecar.
-        - `a` for the attributes sidecar.
-
-        Example: `where_clause="a.external_id = :ext_id AND ST_Intersects(g.geom, ST_MakeEnvelope(...))"`
-
-        WARNING: The caller is responsible for ensuring that if `select_columns` is provided,
-        it includes all columns whose sidecars are referenced in the `where_clause`.
-        If `select_columns` is None, all sidecars are joined, which is safer but may be less performant.
-
-        Args:
-            catalog_id: The catalog ID.
-            collection_id: The collection ID.
-            where_clause: The content of the SQL WHERE clause.
-            query_params: A dictionary of parameters to bind to the query.
-            select_columns: Optional list of columns to select. If None, selects all available fields.
-            limit: Optional limit for the query.
-            offset: Optional offset for the query.
-            db_resource: Optional database resource.
-
-        Yields:
-            An async iterator of result dictionaries.
-        """
-        validate_sql_identifier(catalog_id)
-        validate_sql_identifier(collection_id)
-
-        async with managed_transaction(db_resource or self.engine) as conn:
-            from dynastore.modules.storage.router import get_driver as _get_driver
-            from dynastore.modules.storage.routing_config import Operation
-            _driver = await _get_driver(Operation.READ, catalog_id, collection_id)
-            col_config = await _driver.get_driver_config(catalog_id, collection_id)
-            phys_schema = await self._resolve_physical_schema(catalog_id)
-            phys_table = await self._resolve_physical_table(catalog_id, collection_id)
-
-            if not phys_schema or not phys_table:
-                raise ValueError(
-                    f"Collection '{catalog_id}/{collection_id}' not found."
-                )
-
-            orchestrator = CatalogQueryOrchestrator(col_config)
-
-            columns_to_select = select_columns
-            if not columns_to_select:
-                from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-
-                all_fields = {"geoid", "deleted_at"}
-                if driver_sidecars(col_config):
-                    for sc_config in driver_sidecars(col_config):
-                        sidecar = SidecarRegistry.get_sidecar(sc_config)
-                        if sidecar is not None:
-                            all_fields.update(sidecar.get_field_definitions().keys())
-                columns_to_select = list(all_fields)
-
-            where_clauses = [where_clause] if where_clause else []
-
-            query_string = orchestrator.build_select_query(
-                schema=phys_schema,
-                table=phys_table,
-                columns=columns_to_select,
-                where_clauses=where_clauses,
-                limit=limit,
-            )
-
-            bind_params = dict(query_params or {})
-            if limit is not None:
-                bind_params["_qo_limit"] = limit
-            if offset is not None:
-                query_string += " OFFSET :_qo_offset"
-                bind_params["_qo_offset"] = offset
-
-            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
-            query = GeoDQLQuery(text(query_string), result_handler=ResultHandler.ALL)
-            async for item in await query.stream(conn, **bind_params):
-                yield self.map_row_to_feature(
-                    item, col_config, read_policy=read_policy
-                )
