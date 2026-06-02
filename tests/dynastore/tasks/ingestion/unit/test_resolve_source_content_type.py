@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dynastore.modules.catalog.asset_service import Asset
 from dynastore.tasks.ingestion.main_ingestion import _resolve_source_content_type
 
@@ -19,6 +21,7 @@ def _asset(uri: str, metadata: dict | None) -> Asset:
 
 
 def test_metadata_content_type_is_primary():
+    pytest.importorskip("google.cloud.storage")  # patches the GCS client
     asset = _asset(
         "gs://bucket/key",
         {"content_type": "application/zip", "asset_id": "x"},
@@ -37,6 +40,7 @@ def test_metadata_contentType_camelCase_also_recognised():
 def test_falls_back_to_gcs_head_for_legacy_bare_uri():
     """Legacy assets uploaded before GcpStorageOpsMixin.initiate_upload persisted
     content_type into custom metadata: recover via GCS HEAD."""
+    pytest.importorskip("google.cloud.storage")  # patches the GCS client
     asset = _asset(
         "gs://d88971-test-catalog-19/collections/test_collection_19/aoi_oasis",
         {"asset_id": "aoi_oasis", "asset_type": "ASSET"},  # no content_type
@@ -56,6 +60,7 @@ def test_falls_back_to_gcs_head_for_legacy_bare_uri():
 
 
 def test_returns_none_when_blob_missing():
+    pytest.importorskip("google.cloud.storage")  # patches the GCS client
     asset = _asset("gs://nonexistent/key", {})
     fake_bucket = MagicMock()
     fake_bucket.get_blob.return_value = None
@@ -66,6 +71,7 @@ def test_returns_none_when_blob_missing():
 
 
 def test_non_gcs_uri_does_not_attempt_head():
+    pytest.importorskip("google.cloud.storage")  # patches the GCS client
     asset = _asset("/data/local/file.shp", {})
     with patch("google.cloud.storage.Client") as gcs_client:
         assert _resolve_source_content_type(asset) is None
@@ -75,6 +81,7 @@ def test_non_gcs_uri_does_not_attempt_head():
 def test_gcs_exception_swallowed_and_logged():
     """A bad GCS path / missing creds must not crash the ingestion task —
     helper returns None and the reader resolution falls back to URI suffix."""
+    pytest.importorskip("google.cloud.storage")  # patches the GCS client
     asset = _asset("gs://bad/key", {})
     with patch("google.cloud.storage.Client", side_effect=RuntimeError("boom")):
         assert _resolve_source_content_type(asset) is None

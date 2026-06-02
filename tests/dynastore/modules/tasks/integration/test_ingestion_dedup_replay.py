@@ -32,6 +32,10 @@ from __future__ import annotations
 
 import pytest
 
+# These integration tests drive the app through the in-process httpx client
+# fixture (conftest ``sysadmin_in_process_client``), which needs httpx.
+pytest.importorskip("httpx")
+
 from tests.dynastore.test_utils import generate_test_id
 
 from dynastore.models.driver_context import DriverContext

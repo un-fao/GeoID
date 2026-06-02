@@ -3,6 +3,9 @@
 import pytest
 
 from tests.dynastore.test_utils import generate_test_id
+
+pytest.importorskip("morecantile")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tasks.tiles_export.task import TilesExportTask
 from dynastore.tasks.tiles_export.models import TilesExportRequest
 from dynastore.modules.tasks.models import TaskPayload, TaskStatusEnum, TaskCreate

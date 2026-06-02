@@ -36,6 +36,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytest.importorskip("google")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tasks.gcp import bucket_reconcile_task as brt_module
 from dynastore.tasks.gcp.bucket_reconcile_task import (
     BucketReconcileInputs,

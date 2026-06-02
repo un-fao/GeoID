@@ -1,6 +1,9 @@
 import pytest
 import os
 from sqlalchemy import text
+
+pytest.importorskip("geopandas")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tools.identifiers import generate_task_id
 from tests.dynastore.test_utils import generate_test_id
 from dynastore.tasks.ingestion.ingestion_task import IngestionTask
