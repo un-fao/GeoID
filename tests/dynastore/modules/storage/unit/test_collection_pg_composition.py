@@ -10,6 +10,7 @@ entry-point registration as a one-line change.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -205,10 +206,44 @@ def test_capabilities_union_covers_inner_capabilities():
 # ---------------------------------------------------------------------------
 
 
-def test_default_sidecars_includes_core_and_stac_when_both_registered():
+@contextmanager
+def _operator_sidecars(*sidecar_configs):
+    """Force the per-catalog resolver to use an explicit operator override.
+
+    Post-opt-in, STAC is no longer a *default* slice — the composition
+    fan-out tests below exercise the multi-inner write/read mechanism, which
+    now requires an explicit ``[core, stac]`` configuration.  (Resolution of
+    the STAC slice *from* a ``StacStorageConfig`` is asserted directly in
+    ``test_stac_storage_config_enables_stac_slice``.)
+    """
+    from dynastore.models.protocols.configs import ConfigsProtocol
+
+    cfg = CollectionPostgresqlDriverConfig(sidecars=list(sidecar_configs))
+    fake = MagicMock()
+    fake.get_config = AsyncMock(return_value=cfg)
+    with patch(
+        "dynastore.tools.discovery.get_protocol",
+        side_effect=lambda p: fake if p is ConfigsProtocol else None,
+    ):
+        CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()
+        try:
+            yield
+        finally:
+            CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()
+
+
+def test_default_sidecars_is_core_only_even_when_stac_registered():
+    """Opt-in flip: STAC is no longer a default slice.
+
+    Even though the autouse fixture registers ``collection_stac``, the
+    default slice list is CORE only.  The ``collection_stac`` slice is
+    materialized per collection by ``_resolve_sidecars_for_catalog`` when a
+    ``StacStorageConfig`` enables the collection tier with PG storage (see
+    ``test_stac_storage_config_enables_stac_slice``).
+    """
     sidecars = CollectionPgSidecarRegistry.default_sidecars()
     types = [s.sidecar_type for s in sidecars]
-    assert types == ["collection_core", "collection_stac"]
+    assert types == ["collection_core"]
 
 
 def test_default_sidecars_omits_stac_when_unregistered():
@@ -236,9 +271,10 @@ def test_unknown_sidecar_type_skipped_with_warning(caplog):
 
 
 async def test_upsert_metadata_fans_out_to_every_configured_sidecar():
-    driver = CollectionPostgresqlDriver()
     payload = {"title": "T", "description": "D", "extent": {"bbox": [[0, 0, 1, 1]]}}
-    await driver.upsert_metadata("cat-a", "col-a", payload)
+    with _operator_sidecars(CollectionCoreSidecarConfig(), CollectionStacSidecarConfig()):
+        driver = CollectionPostgresqlDriver()
+        await driver.upsert_metadata("cat-a", "col-a", payload)
     core = _FakeCoreCls()
     stac = _FakeStacCls()
     assert len(core.upsert_calls) == 1
@@ -251,8 +287,9 @@ async def test_upsert_metadata_fans_out_to_every_configured_sidecar():
 
 
 async def test_delete_metadata_fans_out_with_soft_flag_preserved():
-    driver = CollectionPostgresqlDriver()
-    await driver.delete_metadata("cat-a", "col-a", soft=True)
+    with _operator_sidecars(CollectionCoreSidecarConfig(), CollectionStacSidecarConfig()):
+        driver = CollectionPostgresqlDriver()
+        await driver.delete_metadata("cat-a", "col-a", soft=True)
     core, stac = _FakeCoreCls(), _FakeStacCls()
     assert core.delete_calls == [{"catalog_id": "cat-a", "collection_id": "col-a", "soft": True}]
     assert stac.delete_calls == [{"catalog_id": "cat-a", "collection_id": "col-a", "soft": True}]
@@ -264,8 +301,9 @@ async def test_delete_metadata_fans_out_with_soft_flag_preserved():
 
 
 async def test_get_metadata_merges_slices_from_every_inner():
-    driver = CollectionPostgresqlDriver()
-    out = await driver.get_metadata("cat-a", "col-a")
+    with _operator_sidecars(CollectionCoreSidecarConfig(), CollectionStacSidecarConfig()):
+        driver = CollectionPostgresqlDriver()
+        out = await driver.get_metadata("cat-a", "col-a")
     assert out is not None
     # Both slices present in the merge.
     assert out["title"] == "core-title"
@@ -293,8 +331,9 @@ async def test_get_metadata_swallows_per_inner_failure_and_returns_other_slices(
             return failing
 
     CollectionPgSidecarRegistry._registry["collection_core"] = _FailingCls  # type: ignore[assignment]
-    driver = CollectionPostgresqlDriver()
-    out = await driver.get_metadata("cat-a", "col-a")
+    with _operator_sidecars(CollectionCoreSidecarConfig(), CollectionStacSidecarConfig()):
+        driver = CollectionPostgresqlDriver()
+        out = await driver.get_metadata("cat-a", "col-a")
     assert out is not None
     # Only the STAC slice survived.
     assert "extent" in out
@@ -539,10 +578,12 @@ async def test_operator_override_actually_changes_runtime_fanout():
     assert len(_FakeStacCls().upsert_calls) == 0
 
 
-async def test_registry_default_used_when_no_operator_override():
-    """When ConfigsProtocol.get_config returns a config with EMPTY
-    sidecars (or fetch fails / no ConfigsProtocol), wrapper falls back
-    to CollectionPgSidecarRegistry.default_sidecars — both inners get fanned.
+async def test_registry_default_is_core_only_without_stac_storage_config():
+    """No operator override AND no ``StacStorageConfig`` → CORE only.
+
+    Opt-in default: even with ``collection_stac`` registered, the
+    per-collection write path fans out to CORE only until a
+    ``StacStorageConfig`` enables the collection tier.
     """
     empty_cfg = CollectionPostgresqlDriverConfig()  # no sidecars
     fake_configs = MagicMock()
@@ -558,7 +599,43 @@ async def test_registry_default_used_when_no_operator_override():
         driver = CollectionPostgresqlDriver()
         await driver.upsert_metadata("cat-a", "col-a", {"title": "T"})
 
-    # Both inners reached (registry default).
+    assert len(_FakeCoreCls().upsert_calls) == 1
+    assert len(_FakeStacCls().upsert_calls) == 0
+
+
+async def test_stac_storage_config_enables_stac_slice():
+    """Opt-in resolution path: a ``StacStorageConfig`` with the collection
+    tier enabled AND PG storage makes the per-collection write path fan out
+    to the ``collection_stac`` slice — no operator ``sidecars`` override
+    required.
+    """
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.modules.stac.stac_storage_config import (
+        StacLevel,
+        StacStorageBackend,
+        StacStorageConfig,
+    )
+
+    async def _get_config(cfg_cls, **_kw):
+        if cfg_cls is StacStorageConfig:
+            return StacStorageConfig(
+                stac_level=StacLevel.COLLECTION,
+                stac_storage=StacStorageBackend.ES_PG,
+            )
+        # Wrapper config fetch — no explicit operator sidecars override.
+        return CollectionPostgresqlDriverConfig()
+
+    fake_configs = MagicMock()
+    fake_configs.get_config = AsyncMock(side_effect=_get_config)
+
+    with patch(
+        "dynastore.tools.discovery.get_protocol",
+        side_effect=lambda p: fake_configs if p is ConfigsProtocol else None,
+    ):
+        CollectionPostgresqlDriver._resolve_sidecars_for_catalog.cache_clear()
+        driver = CollectionPostgresqlDriver()
+        await driver.upsert_metadata("cat-a", "col-a", {"title": "T"})
+
     assert len(_FakeCoreCls().upsert_calls) == 1
     assert len(_FakeStacCls().upsert_calls) == 1
 

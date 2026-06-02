@@ -276,12 +276,29 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
 
     @cached_property
     def _default_inner_drivers(self) -> List[CatalogStore]:
-        """Cached registry-default resolution — used by code paths that
-        have no ``catalog_id`` in scope (``is_available``,
-        ``stac_metadata_columns``).  Per-catalog paths go through
-        :meth:`_resolve_sidecars_for_catalog`.
+        """Cached INSTALL-level resolution — used by code paths that have
+        no ``catalog_id`` in scope (``is_available``,
+        ``stac_metadata_columns``).
+
+        This is the install-level capability surface, distinct from
+        per-catalog materialization: it includes the ``catalog_stac`` inner
+        whenever the stac extra is installed (the slice is registered), so
+        ``stac_service._has_stac`` correctly reports STAC as *available* for
+        a deployment that ships the extra — even though STAC sidecars are
+        opt-in per catalog via ``StacStorageConfig`` / ``StacPreset``.  The
+        catalog-scoped read/write fan-out goes through
+        :meth:`_resolve_sidecars_for_catalog`, which stays opt-in (core-only
+        until a ``StacStorageConfig`` enables the catalog tier).
         """
-        return self._resolve_inner_drivers(None)
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+            SidecarRegistry,
+        )
+        sidecars: List[_PgCatalogSidecarConfigBase] = list(
+            SidecarRegistry.default_catalog_sidecars()
+        )
+        if SidecarRegistry.has_catalog_store("catalog_stac"):
+            sidecars.append(CatalogStacSidecarConfig())
+        return self._resolve_inner_drivers(sidecars)
 
     @cached(
         maxsize=128, ttl=60, jitter=5,

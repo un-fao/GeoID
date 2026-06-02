@@ -387,13 +387,26 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
 
     @cached_property
     def _default_inner_drivers(self) -> List[CollectionStore]:
-        """Cached registry-default resolution — used by code paths that
-        have NO ``catalog_id`` in scope (``is_available``,
-        ``stac_metadata_columns``).  Per-catalog paths go through
-        :meth:`_resolve_sidecars_for_catalog` which honors operator
-        overrides via ``ConfigsProtocol``.
+        """Cached INSTALL-level resolution — used by code paths that have
+        NO ``catalog_id`` in scope (``is_available``,
+        ``stac_metadata_columns``).
+
+        Install-level capability surface, distinct from per-catalog
+        materialization: includes the ``collection_stac`` inner whenever the
+        stac extra is installed (the slice is registered), so
+        ``stac_service._has_stac`` correctly reports STAC as *available* for
+        a deployment that ships the extra — even though STAC sidecars are
+        opt-in per collection via ``StacStorageConfig`` / ``StacPreset``.
+        Per-catalog read/write fan-out goes through
+        :meth:`_resolve_sidecars_for_catalog`, which stays opt-in (core-only
+        until a ``StacStorageConfig`` enables the collection tier).
         """
-        return self._resolve_inner_drivers(None)
+        sidecars: List[_PgCollectionSidecarConfigBase] = list(
+            CollectionPgSidecarRegistry.default_sidecars()
+        )
+        if "collection_stac" in CollectionPgSidecarRegistry._registry:
+            sidecars.append(CollectionStacSidecarConfig())
+        return self._resolve_inner_drivers(sidecars)
 
     @cached(
         maxsize=128, ttl=60, jitter=5,
