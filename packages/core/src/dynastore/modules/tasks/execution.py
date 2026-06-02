@@ -164,8 +164,11 @@ async def select_runner_for(task_key: str):
 # trigger no follow-on.
 #
 # Offloaded Cloud Run Jobs finalize in the GcpLivenessReconciler, a separate
-# loop with its own owner_id race guards; wiring terminal Actions there (and
-# a background-runtime timeout) is a tracked follow-up.
+# loop with its own owner_id race guards.  The reconciler calls
+# apply_terminal_action directly after each owner-guarded write (complete_task
+# / fail_task) succeeds, using the inputs/caller_id/collection_id/scope
+# columns read from the row.  The background-runtime execution ceiling lives
+# in BackgroundRunner (asyncio.wait_for wrapping task_instance.run).
 # ----------------------------------------------------------------------
 
 # Reserved inputs key carrying the ROUTE continuation hop count.  Persisted in
