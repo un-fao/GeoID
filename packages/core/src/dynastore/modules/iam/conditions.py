@@ -556,9 +556,9 @@ class TimeExpirationHandler(ConditionHandler):
             now = datetime.now(timezone.utc)
             if now > exp_date:
                 raise IamError(f"Key expired at {exp_date.isoformat()}.")
-        except ValueError:
+        except ValueError as e:
             logger.error(f"Invalid date format in policy: {exp_str}")
-            raise IamError("Invalid expiration date format in policy.")
+            raise IamError("Invalid expiration date format in policy.") from e
         return True
     
     async def inspect(self, config: Dict[str, Any], ctx: EvaluationContext) -> Optional[Dict[str, Any]]:
