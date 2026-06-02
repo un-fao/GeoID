@@ -27,8 +27,11 @@ async def test_lookup_by_geoids_returns_empty_when_protocols_missing(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_lookup_by_external_id_calls_search_items_with_cql_filter(monkeypatch):
+async def test_lookup_by_external_id_calls_search_items_with_filter_condition(monkeypatch):
+    """lookup_by_external_id must pass a typed FilterCondition — not a raw
+    CQL2 string — so ES-backed collections honour the predicate (#1762)."""
     from dynastore.extensions.geoid.lookup_service import lookup_by_external_id
+    from dynastore.models.query_builder import FilterCondition
 
     fake_catalogs = MagicMock()
     fake_feature = MagicMock()
@@ -52,7 +55,14 @@ async def test_lookup_by_external_id_calls_search_items_with_cql_filter(monkeypa
     call_kwargs = fake_catalogs.items.search_items.call_args.kwargs
     assert call_kwargs["catalog_id"] == "cat"
     assert call_kwargs["collection_id"] == "col"
-    assert "external_id = 'ext-1'" in call_kwargs["request"].cql_filter
+    req = call_kwargs["request"]
+    # Must use a typed FilterCondition, NOT cql_filter (which ES silently drops).
+    assert req.cql_filter is None, "cql_filter must not be set — ES ignores it"
+    assert len(req.filters) == 1
+    fc = req.filters[0]
+    assert isinstance(fc, FilterCondition)
+    assert fc.field == "external_id"
+    assert fc.value == "ext-1"
 
 
 @pytest.mark.asyncio

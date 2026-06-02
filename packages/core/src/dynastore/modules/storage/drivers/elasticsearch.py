@@ -559,13 +559,26 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             fields=fields,
         )
 
+        # Build an alias map from logical field names to the resolved envelope
+        # field names for the active index.  Only the known identity-envelope
+        # fields are remapped; every other field (e.g. ``properties.*``) falls
+        # through unchanged.
+        _identity_remap = {
+            "external_id": fields.external_id,
+            "geoid": fields.geoid,
+            "id": fields.item_id,
+            "collection_id": fields.collection,
+            "collection": fields.collection,
+        }
+
         extra_must: list = []
         for f in request.filters:
             op = f.operator if isinstance(f.operator, str) else f.operator.value
+            resolved_field = _identity_remap.get(f.field, f.field)
             if op in ("eq", "="):
-                extra_must.append({"term": {f.field: f.value}})
+                extra_must.append({"term": {resolved_field: f.value}})
             elif op in ("like", "ilike"):
-                extra_must.append({"wildcard": {f.field: f.value}})
+                extra_must.append({"wildcard": {resolved_field: f.value}})
             elif op in ("bbox", "&&") and f.field == "geometry":
                 coords = f.value
                 if isinstance(coords, (list, tuple)) and len(coords) >= 4:
