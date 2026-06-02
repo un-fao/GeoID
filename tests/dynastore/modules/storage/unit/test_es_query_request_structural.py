@@ -185,3 +185,80 @@ def test_es_filter_combines_with_attribute_predicate():
     # attribute predicate stays in must; CQL clause folds into filter
     assert {"term": {"properties.x": 7}} in bool_body.get("must", [])
     assert clause in bool_body.get("filter", [])
+
+
+# ---------------------------------------------------------------------------
+# #1762 — identity-envelope field remap: FilterCondition on "external_id" must
+# address the correct physical field name for each index shape.
+# ---------------------------------------------------------------------------
+
+
+def test_external_id_filter_remaps_to_public_envelope_field():
+    """On the public (STAC-flavoured) index ``external_id`` is stored under the
+    prefixed name ``_external_id`` — the remap must produce a term on that name."""
+    from dynastore.modules.elasticsearch.items_query import PUBLIC_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="external_id", operator="=", value="ext-99")]),
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"_external_id": "ext-99"}} in _clauses(body)
+    assert {"term": {"external_id": "ext-99"}} not in _clauses(body)
+
+
+def test_external_id_filter_remaps_to_private_envelope_field():
+    """On the tenant-private index the doc carries the canonical ``external_id``
+    root keyword — the remap must NOT prefix it with an underscore."""
+    from dynastore.modules.elasticsearch.items_query import PRIVATE_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="external_id", operator="=", value="ext-99")]),
+        PRIVATE_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"external_id": "ext-99"}} in _clauses(body)
+    assert {"term": {"_external_id": "ext-99"}} not in _clauses(body)
+
+
+def test_external_id_like_filter_remaps_to_public_envelope_field():
+    """``like`` operator on ``external_id`` is also remapped on the public index."""
+    from dynastore.modules.elasticsearch.items_query import PUBLIC_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="external_id", operator="like", value="ext-*")]),
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert {"wildcard": {"_external_id": "ext-*"}} in _clauses(body)
+
+
+def test_non_identity_field_not_remapped():
+    """A predicate on ``properties.status`` must not be altered by the identity remap."""
+    from dynastore.modules.elasticsearch.items_query import PUBLIC_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="properties.status", operator="=", value="active")]),
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"properties.status": "active"}} in _clauses(body)
+
+
+def test_geoid_filter_remaps_on_private_envelope():
+    """``geoid`` as a FilterCondition field addresses the ``geoid`` keyword on the
+    private index (``fields.geoid = "geoid"`` on PRIVATE_ENVELOPE_FIELDS)."""
+    from dynastore.modules.elasticsearch.items_query import PRIVATE_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="geoid", operator="=", value="uuid-1")]),
+        PRIVATE_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"geoid": "uuid-1"}} in _clauses(body)
+
+
+def test_geoid_filter_remaps_on_public_envelope():
+    """``geoid`` on the public index maps to ``id`` (the STAC item id field)."""
+    from dynastore.modules.elasticsearch.items_query import PUBLIC_ENVELOPE_FIELDS
+
+    body = _ItemsElasticsearchBase._query_request_to_es(
+        QueryRequest(filters=[FilterCondition(field="geoid", operator="=", value="uuid-2")]),
+        PUBLIC_ENVELOPE_FIELDS,
+    )
+    assert {"term": {"id": "uuid-2"}} in _clauses(body)

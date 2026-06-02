@@ -522,17 +522,18 @@ async def lookup_by_external_id(
     external_id: str,
     limit: int = 1,
 ) -> List[Dict[str, Any]]:
-    """Per-collection lookup by external_id (PG-backed).
+    """Per-collection lookup by external_id.
 
-    Routes through the existing PG query path (``ItemsProtocol.search_items``
-    with a CQL2 filter on ``external_id``).  The CQL2 translator in
-    ``item_query.py`` converts ``external_id = 'X'`` to the appropriate
-    sidecar column expression.
+    Routes through ``ItemsProtocol.search_items`` with a typed
+    ``FilterCondition(field="external_id")`` — not a raw CQL2 string — so the
+    predicate survives ES dispatch.  The ES driver remaps ``external_id`` to the
+    correct envelope field name for whichever index is active (``_external_id``
+    on the public index, ``external_id`` on the private/envelope index).
 
     Returns at most ``limit`` rows shaped like ``GeoidResult``.
     """
     from dynastore.models.protocols import CatalogsProtocol
-    from dynastore.models.query_builder import QueryRequest
+    from dynastore.models.query_builder import FilterCondition, QueryRequest
 
     catalogs = get_protocol(CatalogsProtocol)
     if not catalogs:
@@ -540,7 +541,7 @@ async def lookup_by_external_id(
         return []
 
     request = QueryRequest(
-        cql_filter=f"external_id = '{external_id}'",
+        filters=[FilterCondition(field="external_id", operator="=", value=external_id)],
         limit=limit,
     )
     try:
