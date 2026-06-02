@@ -10,6 +10,7 @@ import {
   listGrants, createGrant, deleteGrant,
   fetchEffectivePermissions,
   fetchGrantUsage,
+  resetGrantUsage,
   getCatalogProvisioning,
 } from "../common/api.js";
 import { mountContextBar } from "../common/context-bar.js";
@@ -1021,6 +1022,35 @@ async function refreshUsagePanel() {
   }
 }
 
+async function handleResetCounter(grantId, windowSeconds) {
+  const kind = windowSeconds != null ? "rate_limit" : "max_count";
+  const msg = windowSeconds != null
+    ? `Reset the rate-limit counter (${windowSeconds}s window) for this binding?`
+    : "Reset the lifetime quota counter for this binding? This cannot be undone.";
+  if (!confirm(msg)) return;
+
+  // policy_id = "grant:" + grant_id (the quota namespace from quota_namespace()).
+  const policyId = `grant:${grantId}`;
+  const principalKey = usagePanel.principalId;
+  setStatus("#usage-status", "Resetting…", "");
+  try {
+    const result = await resetGrantUsage({
+      policyId,
+      principalKey,
+      windowSeconds: windowSeconds ?? undefined,
+      catalogId: usagePanel.catalogId ?? undefined,
+    });
+    setStatus(
+      "#usage-status",
+      `Reset ${kind}: cleared ${result.reset_count} hit(s).`,
+      "ok",
+    );
+    await refreshUsagePanel();
+  } catch (err) {
+    setStatus("#usage-status", `Reset failed: ${err.message}`, "err");
+  }
+}
+
 function renderUsagePanel(data) {
   // Stale-data banner — wire-flag drives visibility.
   const banner = $("#usage-stale-banner");
@@ -1087,7 +1117,7 @@ function renderUsagePanel(data) {
   table.className = "kv-table";
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["Kind", "Count", "Limit", "Remaining", "Window", "Window start"]
+  ["Kind", "Count", "Limit", "Remaining", "Window", "Window start", ""]
     .forEach((label) => {
       const th = document.createElement("th");
       th.textContent = label;
@@ -1107,6 +1137,7 @@ function renderUsagePanel(data) {
       remaining: counters.rate_limit.remaining,
       window: counters.rate_limit.window_seconds + "s",
       windowStart: counters.rate_limit.window_start || "—",
+      windowSeconds: counters.rate_limit.window_seconds,
     });
   }
   if (counters.max_count) {
@@ -1117,6 +1148,7 @@ function renderUsagePanel(data) {
       remaining: counters.max_count.remaining,
       window: "lifetime",
       windowStart: "—",
+      windowSeconds: null,
     });
   }
 
@@ -1124,7 +1156,7 @@ function renderUsagePanel(data) {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
     const td = document.createElement("td");
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.textContent = "No counter conditions configured on this binding.";
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -1137,6 +1169,17 @@ function renderUsagePanel(data) {
         td.textContent = v;
         tr.appendChild(td);
       });
+      // Reset action cell.
+      const actionTd = document.createElement("td");
+      actionTd.className = "table-actions";
+      const resetBtn = document.createElement("button");
+      resetBtn.className = "btn btn-danger btn-xs";
+      resetBtn.textContent = "Reset";
+      resetBtn.addEventListener("click", () =>
+        handleResetCounter(target.grant_id, r.windowSeconds),
+      );
+      actionTd.appendChild(resetBtn);
+      tr.appendChild(actionTd);
       tbody.appendChild(tr);
     });
   }
