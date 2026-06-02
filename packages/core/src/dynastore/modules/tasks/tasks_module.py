@@ -2218,6 +2218,12 @@ async def select_lapsed_gcp_tasks(engine: DbResource) -> List[Dict[str, Any]]:
     ``collection_id`` that ``apply_terminal_action`` threads into the
     ``on_success`` ROUTE follow-on — so the caller has everything it needs
     without a second round-trip (geoid#1743).
+
+    ``inputs`` is decoded back to a ``dict`` here: asyncpg hands JSONB back as a
+    JSON *string* under a raw ``text()``/``DQLQuery`` read, and the consumer
+    ``apply_terminal_action`` only spreads ``inputs`` when ``isinstance(inputs,
+    dict)`` — a raw string would silently fall through to ``{}`` and drop the
+    original payload (the very data loss geoid#1743 set out to fix).
     """
     task_schema = get_task_schema()
     sql = f"""
@@ -2233,6 +2239,13 @@ async def select_lapsed_gcp_tasks(engine: DbResource) -> List[Dict[str, Any]]:
     """
     async with managed_transaction(engine) as conn:
         rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(conn)
+    for row in rows or []:
+        inputs_raw = row.get("inputs")
+        if isinstance(inputs_raw, str):
+            try:
+                row["inputs"] = json.loads(inputs_raw)
+            except (ValueError, TypeError):
+                row["inputs"] = None
     return rows or []
 
 
