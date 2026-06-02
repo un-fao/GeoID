@@ -69,7 +69,6 @@ from dynastore.models.localization import normalize_i18n_for_replace
 
 logger = logging.getLogger(__name__)
 from dynastore.extensions.tools.language_utils import get_language
-from dynastore.extensions.tools.localization_utils import detect_use_lang
 from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.models.protocols.web import StaticFilesProtocol
 import os
@@ -326,6 +325,56 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             StacPluginConfig, catalog_id, collection_id, ctx=DriverContext(db_resource=db_resource
         ))
 
+    # ------------------------------------------------------------------
+    # OGCServiceMixin hook overrides — STAC-specific behaviour
+    # ------------------------------------------------------------------
+
+    def _validate_catalog_create(self) -> None:
+        """Verify the deployment can persist a STAC catalog envelope."""
+        _assert_stac_capable_collection_stack()
+
+    async def _require_catalog_write_ready(
+        self,
+        catalog_id: str,
+        catalogs_svc=None,
+    ) -> None:
+        """Reject writes against catalogs whose provisioning has not completed."""
+        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+    def _make_collection_create_kwargs(self) -> Dict[str, Any]:
+        """Signal to the collection manager that this is a STAC-context write."""
+        return {"stac_context": True}
+
+    def _localize_resource(self, model: Any, language: str) -> Tuple[Dict[str, Any], Any]:
+        """Use STAC-specific localization that preserves STAC envelope fields."""
+        return stac_localize(model, language)
+
+    async def _pre_update_collection_validate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        input_data: Dict[str, Any],
+        request=None,
+    ) -> None:
+        """Validate the merged STAC collection before committing the PATCH.
+
+        Fetches the current collection state and validates the dict that would
+        result from merging ``input_data`` on top of it.  Validation is lenient
+        (warnings only from ``validate_stac_collection``) because PATCH sends a
+        partial body whose required fields are satisfied by the already-stored
+        document.  Skipped when ``request`` is ``None`` or the existing
+        collection cannot be fetched.
+        """
+        if request is None:
+            return
+        existing = await stac_generator.create_collection(
+            request, catalog_id=catalog_id, collection_id=collection_id, lang="en"
+        )
+        if existing is not None:
+            from .stac_validator import validate_stac_collection
+            merged = {**existing.to_dict(), **input_data}
+            validate_stac_collection(merged)
+
     async def get_stac_root_catalog(
         self, request: Request, language: str = Depends(get_language)
     ):
@@ -479,31 +528,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         language: str = Depends(get_language),
     ):
         try:
-            # STAC precondition: at least one registered driver must declare
-            # the STAC metadata domain, so a STAC envelope (stac_version,
-            # stac_extensions, conforms_to, links, assets) actually lands
-            # somewhere.  Default PG config satisfies this via the
-            # composition wrappers CatalogPostgresqlDriver +
-            # CollectionPostgresqlDriver, which compose their tier's STAC
-            # sidecar via ``*CollectionPgSidecarRegistry`` try-import.
-            # Deployments pointing routing configs at STAC-blind drivers
-            # (e.g. ES-only without the stac extra installed) fail loudly
-            # here rather than silently dropping the STAC slice on write.
-            _assert_stac_capable_collection_stack()
-
-            # We use STACCatalog (DTO) for validation but the catalogs_svc expects the structure to be merged
-            # The definition is a Pydantic model with localized fields. model_dump() handles serialization.
             input_data = definition.model_dump(exclude_unset=True)
-            use_lang = detect_use_lang(input_data, language)
-
-            catalogs_svc = await self._get_catalogs_service()
-            created_catalog_model = await catalogs_svc.create_catalog(
-                input_data, lang=use_lang
-            )
-            localized_data, _ = stac_localize(created_catalog_model, language)
-            return JSONResponse(
-                content=localized_data, status_code=status.HTTP_201_CREATED
-            )
+            # Pass input_data as both the payload and the exclude_unset dump so
+            # detect_use_lang inside the shared body reads the same dict.
+            return await self._ogc_create_catalog(input_data, input_data, language, None)
         except Exception as e:
             return handle_or_raise(
                 e,
@@ -518,29 +546,13 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         request_body: STACCollectionRequest,
         language: str = Depends(get_language),
     ):
-        # Ensure that we pass the language and that request_body is converted to a dict including localized fields
-        # STACCollection inherits from CoreCollection -> BaseMetadata -> LocalizedFieldsBase
-        # model_dump will handle serialization
         try:
             input_data = request_body.model_dump(exclude_unset=True)
-
             # Write-time STAC validation (lenient — warnings only; pystac/stac-pydantic
             # are too strict on optional fields like `links` to gate the request).
             validate_stac_collection(input_data)
-
-            use_lang = detect_use_lang(input_data, language)
-
-            catalogs_svc = await self._get_catalogs_service()
-            # Fail-fast guard: reject writes against catalogs whose
-            # provisioning hasn't completed — the backing storage
-            # doesn't exist yet (or provisioning failed).
-            await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
-            created_collection_model = await catalogs_svc.create_collection(
-                catalog_id, input_data, lang=use_lang, stac_context=True
-            )
-            localized_data, _ = stac_localize(created_collection_model, language)
-            return JSONResponse(
-                content=localized_data, status_code=status.HTTP_201_CREATED
+            return await self._ogc_create_collection(
+                catalog_id, input_data, language, None
             )
         except Exception as e:
             return handle_or_raise(
@@ -568,24 +580,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     f"({catalog_id!r})."
                 ),
             )
-
-        # ``exclude_unset=False``: include every model field so absent
-        # optionals are written as None — true replace semantics.
         input_data = definition.model_dump(exclude_unset=False)
         input_data = normalize_i18n_for_replace(input_data, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
-        updated = await catalogs_svc.update_catalog(
-            catalog_id, input_data, lang="*"
-        )
-        if not updated:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Catalog '{catalog_id}' not found.",
-            )
-        localized_data, _ = stac_localize(updated, language)
-        return JSONResponse(content=localized_data)
+        return await self._ogc_replace_catalog(catalog_id, input_data, language, None)
 
     async def update_stac_catalog(
         self,
@@ -594,22 +591,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         language: str = Depends(get_language),
     ):
         input_data = definition.model_dump(exclude_unset=True)
-        use_lang = detect_use_lang(input_data, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        # Fail-fast guard: can't mutate metadata on a catalog whose
-        # backing storage isn't ready.
-        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
-        updated_catalog_model = await catalogs_svc.update_catalog(
-            catalog_id, input_data, lang=use_lang
-        )
-        if not updated_catalog_model:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Catalog '{catalog_id}' not found.",
-            )
-        localized_data, _ = stac_localize(updated_catalog_model, language)
-        return JSONResponse(content=localized_data)
+        return await self._ogc_update_catalog(catalog_id, input_data, language, None)
 
     async def delete_stac_catalog(
         self,
@@ -622,13 +604,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             ),
         ),
     ):
-        catalogs_svc = await self._get_catalogs_service()
-        if not await catalogs_svc.delete_catalog(catalog_id, force=force):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Catalog '{catalog_id}' not found.",
-            )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return await self._ogc_delete_catalog(catalog_id, force, None)
 
     async def replace_stac_collection(
         self,
@@ -649,23 +625,12 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     f"({collection_id!r})."
                 ),
             )
-
         input_data = request_body.model_dump(exclude_unset=False)
         validate_stac_collection(input_data)
         input_data = normalize_i18n_for_replace(input_data, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
-        updated = await catalogs_svc.update_collection(
-            catalog_id, collection_id, input_data, lang="*"
+        return await self._ogc_replace_collection(
+            catalog_id, collection_id, input_data, language
         )
-        if not updated:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
-            )
-        localized_data, _ = stac_localize(updated, language)
-        return JSONResponse(content=localized_data)
 
     async def update_stac_collection(
         self,
@@ -675,37 +640,11 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         request: Request,
         language: str = Depends(get_language),
     ):
+        # Sidecars are handled transparently by ItemsProtocol / LifecycleRegistry.
         input_data = request_body.model_dump(exclude_unset=True)
-
-        # Validate the *resulting* state (post-merge), not the raw partial body.
-        # PATCH sends a subset of fields; validating it in isolation fails
-        # required-field checks that the merged collection would pass.
-        existing_collection = await stac_generator.create_collection(
-            request, catalog_id=catalog_id, collection_id=collection_id, lang=language
+        return await self._ogc_update_collection(
+            catalog_id, collection_id, input_data, language, request
         )
-        if existing_collection is not None:
-            merged = {**existing_collection.to_dict(), **input_data}
-            validate_stac_collection(merged)
-
-        # Sidecars are now handled transparently by ItemsProtocol / LifecycleRegistry
-        # No need to manually inject them here.
-
-        use_lang = detect_use_lang(input_data, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        # Fail-fast guard: can't update a collection when the enclosing
-        # catalog isn't ready.
-        await self._require_catalog_ready(catalog_id, catalogs_svc=catalogs_svc)
-        updated_collection_model = await catalogs_svc.update_collection(
-            catalog_id, collection_id, input_data, lang=use_lang
-        )
-        if not updated_collection_model:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
-            )
-        localized_data, _ = stac_localize(updated_collection_model, language)
-        return JSONResponse(content=localized_data)
 
     async def delete_stac_collection(
         self,
@@ -721,13 +660,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             ),
         ),
     ):
-        catalogs_svc = await self._get_catalogs_service()
-        if not await catalogs_svc.delete_collection(catalog_id, collection_id, force=force):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
-            )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return await self._ogc_delete_collection(catalog_id, collection_id, force, None)
 
     async def get_stac_collection_items(
         self,
