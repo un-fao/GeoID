@@ -205,16 +205,17 @@ class CollectionPgSidecarRegistry:
 
     @classmethod
     def default_sidecars(cls) -> List[_PgCollectionSidecarConfigBase]:
-        """Built-in default — CORE always, STAC if the extra is installed.
+        """Built-in default — CORE only.
 
-        Mirrors the existing two-driver routing default (router fans out to
-        ``CollectionCorePostgresqlDriver`` + ``CollectionStacPostgresqlDriver``).
+        The STAC collection slice (``collection_stac``) is NOT included by
+        default.  It is added at runtime by
+        ``CollectionPostgresqlDriver._resolve_sidecars_for_catalog`` when the
+        scope's ``StacStorageConfig`` has collection-tier enabled AND includes
+        PG storage.  Absent a ``StacPreset``, no STAC slice is materialized
+        (opt-in default).
         """
         cls._ensure_defaults()
-        out: List[_PgCollectionSidecarConfigBase] = [CollectionCoreSidecarConfig()]
-        if "collection_stac" in cls._registry:
-            out.append(CollectionStacSidecarConfig())
-        return out
+        return [CollectionCoreSidecarConfig()]
 
     @classmethod
     def clear(cls) -> None:
@@ -412,8 +413,10 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
 
         Fetches the wrapper config via the 4-tier waterfall
         (``ConfigsProtocol.get_config``); if ``config.sidecars`` is
-        non-empty uses those, otherwise falls back to
-        :meth:`CollectionPgSidecarRegistry.default_sidecars`.
+        non-empty uses those, otherwise builds the effective set from
+        :meth:`CollectionPgSidecarRegistry.default_sidecars` plus the
+        ``collection_stac`` slice when the scope's ``StacStorageConfig``
+        has collection-tier enabled AND PG storage.
 
         Cached at TTL=60s with jitter — operator overrides propagate
         within ~60s of being persisted, OR immediately when the apply
@@ -441,6 +444,36 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
                 cfg = None
             if cfg is not None and cfg.sidecars:
                 sidecars = list(cfg.sidecars)
+
+        if sidecars is None:
+            # No explicit override — build from CORE default + optional STAC
+            # slice when StacStorageConfig signals collection-tier + PG.
+            sidecars = list(CollectionPgSidecarRegistry.default_sidecars())
+            if configs is not None:
+                try:
+                    from dynastore.modules.stac.stac_storage_config import (
+                        StacStorageConfig,
+                        collection_stac_enabled,
+                        pg_stac,
+                    )
+                    stac_cfg = await configs.get_config(
+                        StacStorageConfig,
+                        catalog_id=catalog_id,
+                    )
+                    if (
+                        isinstance(stac_cfg, StacStorageConfig)
+                        and collection_stac_enabled(stac_cfg.stac_level)
+                        and pg_stac(stac_cfg.stac_storage)
+                        and "collection_stac" in CollectionPgSidecarRegistry._registry
+                    ):
+                        sidecars.append(CollectionStacSidecarConfig())
+                except Exception as exc:
+                    logger.debug(
+                        "CollectionPostgresqlDriver: StacStorageConfig fetch "
+                        "failed for catalog %r (%s) — no stac slice added",
+                        catalog_id, exc,
+                    )
+
         return self._resolve_inner_drivers(sidecars)
 
     async def is_available(self) -> bool:

@@ -22,7 +22,7 @@ extension-protocol providers — those are not owned by this sidecar.
 
 import json
 import logging
-from typing import Dict, Any, List, Optional, Set, Tuple, Union
+from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime
 
 from geojson_pydantic import Feature
@@ -82,25 +82,27 @@ class StacItemsSidecar(SidecarProtocol):
     def get_default_config(
         cls, context: Dict[str, Any]
     ) -> Optional[StacItemsSidecarConfig]:
-        """Inject the STAC sidecar only when STAC is enabled for the collection.
+        """Inject the STAC sidecar only when the scope's StacStorageConfig
+        has items-tier enabled AND includes PG storage.
 
-        Two gates:
+        Gates (checked in order):
 
         - ``collection_type == "RECORDS"`` → skipped (RECORDS have no
           per-item descriptive layer).
-        - ``stac_enabled is False`` → skipped.  The injection call site
-          resolves ``StacPluginConfig.enabled`` from the config waterfall
-          and plumbs it into the context as ``stac_enabled`` so a
-          collection whose STAC extension is disabled at this scope
-          carries no STAC sidecar in its composed/materialised config.
+        - ``stac_items_pg is True`` in context → inject.  The injection
+          call site resolves ``StacStorageConfig`` from the config waterfall
+          and plumbs ``stac_items_pg=True`` when
+          ``items_stac_enabled(cfg.stac_level) and pg_stac(cfg.stac_storage)``
+          so a scope without the preset applied (default NONE level) carries
+          no ``stac_metadata`` sidecar.
 
-        When ``stac_enabled`` is absent from the context (callers that
-        don't resolve it), the sidecar still injects — matching the
-        ``StacPluginConfig.enabled`` default of ``True``.
+        When ``stac_items_pg`` is absent from the context (callers that
+        don't resolve it) the sidecar is NOT injected — matching the new
+        opt-in default (absent preset => no STAC).
         """
         if context.get("collection_type") == "RECORDS":
             return None
-        if context.get("stac_enabled") is False:
+        if context.get("stac_items_pg") is not True:
             return None
         return StacItemsSidecarConfig()
 
@@ -196,9 +198,9 @@ class StacItemsSidecar(SidecarProtocol):
         fk_sql = (
             f'\nALTER TABLE {{schema}}."{table_name}" '
             f'ADD CONSTRAINT "fk_{table_name}_hub" '
-            f"FOREIGN KEY ({', '.join([f'\"' + c + '\"' for c in ref_cols])}) "
+            f"FOREIGN KEY ({', '.join(['\"' + c + '\"' for c in ref_cols])}) "  # noqa: UP032
             f'REFERENCES {{schema}}."{physical_table}" '
-            f"({', '.join([f'\"' + c + '\"' for c in ref_cols])}) "
+            f"({', '.join(['\"' + c + '\"' for c in ref_cols])}) "  # noqa: UP032
             f"ON DELETE CASCADE;"
         )
 

@@ -113,6 +113,19 @@ class BundlePreset:
             f"{type(self).__name__}.build must be overridden"
         )
 
+    def _build_bundle(self, params: BaseModel, scope_kwargs: _Scope) -> PresetBundle:
+        """Resolve the bundle for ``params`` + scope.
+
+        Default ignores ``params`` (param-less presets) and delegates to
+        :meth:`build`. Parameterised presets override this to thread their
+        validated params into the bundle factory; the base
+        ``dry_run`` / ``apply`` / ``revoke`` then carry the params through
+        uniformly. On revoke the params are reconstructed from the persisted
+        descriptor (see ``apply`` / ``revoke``) so a preset applied with
+        non-default params is revoked against the SAME bundle it created.
+        """
+        return self.build(**scope_kwargs)
+
     async def on_applied(self, **scope_kwargs: str) -> None:
         """Hook called after the bundle entries are applied. No-op by default."""
 
@@ -142,12 +155,12 @@ class BundlePreset:
 
     async def dry_run(
         self,
-        params: BaseModel,  # noqa: ARG002 — bundle presets take no params
+        params: BaseModel,
         scope: str,
         ctx: PresetContext,  # noqa: ARG002
     ) -> PresetPlan:
         scope_kwargs = _scope_to_kwargs(scope)
-        bundle = self.build(**scope_kwargs)
+        bundle = self._build_bundle(params, scope_kwargs)
         entries = [
             PresetPlanEntry(
                 kind="set_config",
@@ -164,7 +177,7 @@ class BundlePreset:
 
     async def apply(
         self,
-        params: BaseModel,  # noqa: ARG002
+        params: BaseModel,
         scope: str,
         ctx: PresetContext,  # noqa: ARG002
     ) -> AppliedDescriptor:
@@ -176,7 +189,7 @@ class BundlePreset:
         if configs is None:
             raise RuntimeError("ConfigsProtocol not available.")
 
-        bundle = self.build(**scope_kwargs)
+        bundle = self._build_bundle(params, scope_kwargs)
         configs_any = cast(Any, configs)
 
         for entry in bundle.iter_apply():
@@ -195,7 +208,17 @@ class BundlePreset:
                 "rollback_priority": entry.rollback_priority,
             }
 
-        return AppliedDescriptor(payload={"slots": snapshot, "scope": scope})
+        # Persist the validated params so revoke reconstructs the SAME bundle
+        # (parameterised presets — e.g. the STAC preset — emit different
+        # entries per params; a param-less preset stores ``{}`` and is
+        # unaffected).
+        return AppliedDescriptor(
+            payload={
+                "slots": snapshot,
+                "scope": scope,
+                "params": params.model_dump(mode="json"),
+            }
+        )
 
     async def revoke(
         self,
@@ -210,7 +233,13 @@ class BundlePreset:
         if configs is None:
             raise RuntimeError("ConfigsProtocol not available.")
 
-        bundle = self.build(**scope_kwargs)
+        # Reconstruct the params used at apply so a parameterised preset is
+        # revoked against the same entries it created (param-less presets
+        # validate to an empty params model and rebuild deterministically).
+        params = self.params_model.model_validate(
+            applied_descriptor.payload.get("params") or {}
+        )
+        bundle = self._build_bundle(params, scope_kwargs)
         diverged: List[dict] = []
         to_delete: List[tuple] = []
 

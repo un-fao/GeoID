@@ -300,8 +300,13 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         platform scope.  Mirrors the collection wrapper's same-named
         method — TTL=60s + jitter, apply handler invalidates for instant
         effect, fetch failure falls back to registry default.
+
+        When no explicit ``sidecars`` override is present, builds from
+        CORE default plus the ``catalog_stac`` slice when the scope's
+        ``StacStorageConfig`` has catalog-tier enabled AND PG storage.
         """
         from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
         from dynastore.tools.discovery import get_protocol
 
         sidecars: Optional[List[_PgCatalogSidecarConfigBase]] = None
@@ -321,6 +326,36 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
                 cfg = None
             if cfg is not None and cfg.sidecars:
                 sidecars = list(cfg.sidecars)
+
+        if sidecars is None:
+            # No explicit override — build from CORE default + optional STAC
+            # slice when StacStorageConfig signals catalog-tier + PG.
+            sidecars = list(SidecarRegistry.default_catalog_sidecars())
+            if configs is not None:
+                try:
+                    from dynastore.modules.stac.stac_storage_config import (
+                        StacStorageConfig,
+                        catalog_stac_enabled,
+                        pg_stac,
+                    )
+                    stac_cfg = await configs.get_config(
+                        StacStorageConfig,
+                        catalog_id=catalog_id,
+                    )
+                    if (
+                        isinstance(stac_cfg, StacStorageConfig)
+                        and catalog_stac_enabled(stac_cfg.stac_level)
+                        and pg_stac(stac_cfg.stac_storage)
+                        and SidecarRegistry.has_catalog_store("catalog_stac")
+                    ):
+                        sidecars.append(CatalogStacSidecarConfig())
+                except Exception as exc:
+                    logger.debug(
+                        "CatalogPostgresqlDriver: StacStorageConfig fetch "
+                        "failed for catalog %r (%s) — no stac slice added",
+                        catalog_id, exc,
+                    )
+
         return self._resolve_inner_drivers(sidecars)
 
     async def is_available(self) -> bool:
