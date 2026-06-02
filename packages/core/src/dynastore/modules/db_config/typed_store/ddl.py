@@ -80,7 +80,14 @@ CREATE INDEX IF NOT EXISTS ix_platform_configs_class_key
 # (service, task_key). Created idempotently alongside the platform config
 # schemas; never ALTERed in place (hard invariant — new columns ship via a fresh
 # CREATE on a clean pre-prod DB, not ADD COLUMN).
+#
+# Self-contained like PLATFORM_SCHEMAS_DDL: it re-asserts the configs schema so
+# this table is never the lone victim when an earlier schema-create step is
+# skipped (e.g. a multi-worker cold-start race on the existence check). The
+# leading CREATE SCHEMA does not change the auto-inferred existence check, which
+# keys on the first CREATE TABLE (configs.task_capability_registry).
 TASK_CAPABILITY_REGISTRY_DDL = """
+CREATE SCHEMA IF NOT EXISTS configs;
 CREATE TABLE IF NOT EXISTS configs.task_capability_registry (
     service             text        NOT NULL,
     task_key            text        NOT NULL,
