@@ -68,6 +68,7 @@ from dynastore.modules.db_config.typed_store.ddl import (
 from dynastore.modules.db_config.typed_store import config_queries as _cq
 from dynastore.tools.plugin import ProtocolPlugin
 from .maintenance_tools import ensure_schema_exists
+from .ddl_inference import clear_ddl_existence_cache
 from dynastore.models.protocols.platform_configs import PlatformConfigsProtocol
 from dynastore.models.driver_context import DriverContext
 
@@ -607,6 +608,12 @@ class PlatformConfigService(ProtocolPlugin[object], PlatformConfigsProtocol):
     async def initialize_storage(cls, conn: DbResource):
         try:
             logger.info("Initializing Platform Config Storage (configs schema)...")
+            # Re-validate every existence check against the live catalog. A dev
+            # DB reset can drop the configs schema while this process keeps
+            # running under uvicorn --reload; a stale positive existence cache
+            # would otherwise skip the schema/table rebuild and let the DDL below
+            # run against a schema that no longer exists.
+            clear_ddl_existence_cache()
             await ensure_schema_exists(conn, "configs")
             await DDLQuery(PLATFORM_SCHEMAS_DDL).execute(conn)
             await DDLQuery(TASK_CAPABILITY_REGISTRY_DDL).execute(conn)

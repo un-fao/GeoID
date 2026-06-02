@@ -27,9 +27,28 @@ import re
 # Process-local cache for DDL existence check results.
 # Keyed by (object_type, schema, name).  Only positive results (exists=True)
 # are cached — a False result means the DDL must run, and once it does the
-# object will exist on the next check.  Cleared naturally on process restart
-# (which is the only time previously-existing objects could disappear).
+# object will exist on the next check.
+#
+# The cache assumes a once-created object never disappears for the life of the
+# process.  Process restart is the usual moment objects can vanish — but a
+# dev-mode DB reset (the reset entrypoint drops every managed schema) can also
+# drop objects while the same Python process keeps running under uvicorn
+# ``--reload``.  After such a reset, stale ``exists=True`` entries would make
+# the schema-rebuild skip ``CREATE SCHEMA``/``CREATE TABLE`` even though the
+# objects are gone, leaving a freshly-introduced table to fail with a missing
+# schema.  The DB-bootstrap path therefore calls ``clear_ddl_existence_cache()``
+# so every rebuild re-validates against the live catalog.
 _ddl_existence_cache: dict[tuple[str, ...], bool] = {}
+
+
+def clear_ddl_existence_cache() -> None:
+    """Drop all cached positive existence results.
+
+    Invoked at the start of the DB-bootstrap sequence so a schema rebuild after
+    a (possibly out-of-band) DB reset never trusts a stale ``exists=True`` entry
+    recorded before the reset.
+    """
+    _ddl_existence_cache.clear()
 
 
 async def _cached_check_async(object_type: str, schema: str, name: str, check_fn, *args):
