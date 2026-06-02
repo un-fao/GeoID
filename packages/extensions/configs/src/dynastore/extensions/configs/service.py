@@ -324,9 +324,9 @@ class ConfigsService(ExtensionProtocol):
         try:
             result = await self._config_api.patch_config(catalog_id=None, body=body.root)
         except ValidationError as e:
-            raise problem_details.validation_failed(e)
+            raise problem_details.validation_failed(e) from e
         except ValueError as e:
-            raise problem_details.value_error(e)
+            raise problem_details.value_error(e) from e
         await self._invalidate_exposure()
         return result
 
@@ -341,9 +341,9 @@ class ConfigsService(ExtensionProtocol):
                 catalog_id=catalog_id, body=body.root
             )
         except ValidationError as e:
-            raise problem_details.validation_failed(e)
+            raise problem_details.validation_failed(e) from e
         except ValueError as e:
-            raise problem_details.value_error(e)
+            raise problem_details.value_error(e) from e
         await self._invalidate_exposure()
         return result
 
@@ -367,9 +367,9 @@ class ConfigsService(ExtensionProtocol):
                 body=body.root,
             )
         except ValidationError as e:
-            raise problem_details.validation_failed(e)
+            raise problem_details.validation_failed(e) from e
         except ValueError as e:
-            raise problem_details.value_error(e)
+            raise problem_details.value_error(e) from e
         await self._invalidate_exposure()
         return result
 
@@ -783,10 +783,10 @@ class ConfigsService(ExtensionProtocol):
         except InvalidIdentifierError as e:
             # Malformed id (e.g. unsubstituted ``{{...}}`` placeholder) is a
             # client error -> 400, not a backend failure -> 500 (#1201).
-            raise problem_details.invalid_identifier(e)
+            raise problem_details.invalid_identifier(e) from e
         except Exception as e:
             logger.error(f"Error fetching collection config: {e}", exc_info=True)
-            raise problem_details.unexpected_failure(e)
+            raise problem_details.unexpected_failure(e) from e
 
 
     async def update_collection_config(
@@ -841,7 +841,7 @@ class ConfigsService(ExtensionProtocol):
                 resource_name="Collection Config",
                 resource_id=f"{catalog_id}:{collection_id}:{plugin_id}",
                 operation="Collection configuration update",
-            )
+            ) from e
 
 
     async def delete_collection_config(
@@ -922,7 +922,7 @@ class ConfigsService(ExtensionProtocol):
             try:
                 derived = derive_schema_from_gdalinfo(gdalinfo, layer_name=body.layer)
             except RuntimeError as e:
-                raise problem_details.cannot_derive_schema(str(e), instance=instance)
+                raise problem_details.cannot_derive_schema(str(e), instance=instance) from e
 
             current = await self.configs.get_config(
                 ItemsSchema, catalog_id, collection_id,
@@ -980,12 +980,12 @@ class ConfigsService(ExtensionProtocol):
         except problem_details.ProblemException:
             raise
         except InvalidIdentifierError as e:
-            raise problem_details.invalid_identifier(e)
+            raise problem_details.invalid_identifier(e) from e
         except Exception as e:
             logger.error(
                 f"Error deriving items_schema proposal: {e}", exc_info=True,
             )
-            raise problem_details.unexpected_failure(e)
+            raise problem_details.unexpected_failure(e) from e
 
     # Catalog Level
 
@@ -1009,10 +1009,10 @@ class ConfigsService(ExtensionProtocol):
         except InvalidIdentifierError as e:
             # Malformed id (e.g. unsubstituted ``{{...}}`` placeholder) is a
             # client error -> 400, not a backend failure -> 500 (#1201).
-            raise problem_details.invalid_identifier(e)
+            raise problem_details.invalid_identifier(e) from e
         except Exception as e:
             logger.error(f"Error fetching catalog config: {e}", exc_info=True)
-            raise problem_details.unexpected_failure(e)
+            raise problem_details.unexpected_failure(e) from e
 
 
     async def update_catalog_config(
@@ -1038,7 +1038,7 @@ class ConfigsService(ExtensionProtocol):
                 resource_name="Catalog Config",
                 resource_id=f"{catalog_id}:{plugin_id}",
                 operation="Catalog configuration update",
-            )
+            ) from e
 
 
     async def delete_catalog_config(self, catalog_id: str, plugin_id: str):
@@ -1074,10 +1074,10 @@ class ConfigsService(ExtensionProtocol):
         except InvalidIdentifierError as e:
             # Malformed id (e.g. unsubstituted ``{{...}}`` placeholder) is a
             # client error -> 400, not a backend failure -> 500 (#1201).
-            raise problem_details.invalid_identifier(e)
+            raise problem_details.invalid_identifier(e) from e
         except Exception as e:
             logger.error(f"Error fetching platform config: {e}", exc_info=True)
-            raise problem_details.unexpected_failure(e)
+            raise problem_details.unexpected_failure(e) from e
 
 
     async def update_platform_config(self, plugin_id: str, body: Dict[str, Any]):
@@ -1102,7 +1102,7 @@ class ConfigsService(ExtensionProtocol):
                 resource_name="Platform Config",
                 resource_id=plugin_id,
                 operation="Platform configuration update",
-            )
+            ) from e
 
 
     async def delete_platform_config(self, plugin_id: str):
