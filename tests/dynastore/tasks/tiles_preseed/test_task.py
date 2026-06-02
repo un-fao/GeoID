@@ -2,6 +2,9 @@
 import pytest
 import asyncio
 from tests.dynastore.test_utils import generate_test_id
+
+pytest.importorskip("morecantile")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tasks.tiles_preseed.task import TilePreseedTask
 from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
 from dynastore.modules.processes.models import ExecuteRequest

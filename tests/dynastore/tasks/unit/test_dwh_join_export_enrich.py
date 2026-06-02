@@ -82,6 +82,7 @@ async def test_dwh_join_export_signs_server_derived_uri_and_reports_completed():
     """End-to-end: Feature objects merge via enrich_features, the upload goes
     to the server-derived URI, the signed URL is the job message, and the
     terminal status reported is COMPLETED (not 'SUCCESS')."""
+    pytest.importorskip("google")  # dwh_join_export_task pulls in BigQuery/GCS
     from dynastore.tasks.dwh_join.dwh_join_export_task import DwhJoinExportTask
 
     matched = Feature(type="Feature", id="key1", geometry=None,
@@ -142,6 +143,7 @@ async def test_dwh_join_export_signs_server_derived_uri_and_reports_completed():
 async def test_dwh_join_export_empty_join_still_completes():
     """No DWH rows → nothing written, but the task still completes and reports
     COMPLETED (no crash, no spurious failure)."""
+    pytest.importorskip("google")  # dwh_join_export_task pulls in BigQuery/GCS
     from dynastore.tasks.dwh_join.dwh_join_export_task import DwhJoinExportTask
 
     def fake_stream_features(config, db_resource, hints=frozenset()):

@@ -3,6 +3,9 @@ import os
 import asyncio
 import logging
 from unittest.mock import MagicMock, patch, AsyncMock
+
+pytest.importorskip("geopandas")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tools.identifiers import generate_task_id
 from sqlalchemy import text
 

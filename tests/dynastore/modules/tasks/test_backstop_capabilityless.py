@@ -32,7 +32,7 @@ async def test_capabilityless_unclaimable_rows_are_dlqd(monkeypatch):
     monkeypatch.setattr(qe, "managed_transaction", _fake_managed_transaction)
     monkeypatch.setattr(qe, "DQLQuery", _FakeQuery)
 
-    async def _unclaimable(_engine, *, ttl_grace_seconds):
+    async def _unclaimable(_engine, *, ttl_grace_seconds, conn=None):
         return ["cascade_cleanup"]
     monkeypatch.setattr(dispatcher, "_find_unclaimable_task_types", _unclaimable)
 
@@ -46,7 +46,7 @@ async def test_capabilityless_unclaimable_rows_are_dlqd(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_unclaimable_types_is_a_noop(monkeypatch):
-    async def _none(_engine, *, ttl_grace_seconds):
+    async def _none(_engine, *, ttl_grace_seconds, conn=None):
         return []
     monkeypatch.setattr(dispatcher, "_find_unclaimable_task_types", _none)
 

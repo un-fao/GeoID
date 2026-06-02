@@ -16,6 +16,8 @@ from uuid import uuid4
 
 import pytest
 
+pytest.importorskip("opensearchpy")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.tasks.elasticsearch_indexer.indexer_models import (
     ElasticsearchIndexerRequest,

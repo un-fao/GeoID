@@ -58,6 +58,7 @@ async def test_clean_discovery_success_upgrade():
     """
     Verifies that if dependencies ARE present, the task is registered with full implementation.
     """
+    pytest.importorskip("morecantile")  # tiles_preseed needs it to register non-placeholder
     _DYNASTORE_TASKS.clear()
 
     discover_tasks()

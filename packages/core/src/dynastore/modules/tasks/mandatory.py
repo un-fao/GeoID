@@ -40,11 +40,6 @@ def _mandatory_specs() -> List[Tuple[str, Optional[str]]]:
     return specs
 
 
-async def _live_owners_for(engine, task_key: str, ttl_grace_seconds: float):
-    from dynastore.modules.tasks.registry.repository import live_owners_for
-    return await live_owners_for(engine, task_key, ttl_grace_seconds)
-
-
 def _has_correct_tier_owner(owners, affinity_tier: Optional[str]) -> bool:
     if affinity_tier is None:
         return bool(owners)  # tier-agnostic mandatory task: any live owner suffices

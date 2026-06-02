@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytest.importorskip("opensearchpy")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tasks.elasticsearch_indexer.tasks import (
     BulkCatalogReindexInputs,
     BulkCatalogReindexTask,

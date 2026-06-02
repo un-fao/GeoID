@@ -17,6 +17,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+pytest.importorskip("google")  # optional dep — skip when SCOPE excludes it
+
 from dynastore.tasks.gcp_provision.task import (
     _get_storage_protocol,
     ProvisioningTask,
