@@ -56,6 +56,7 @@ from .items_es_private import ItemsEsPrivatePreset  # noqa: E402
 from .private_catalog import PrivateCatalogPreset  # noqa: E402
 from .private_collection import PrivateCollectionPreset  # noqa: E402
 from .public_catalog import PublicCatalogPreset  # noqa: E402
+from .stac import StacPreset  # noqa: E402
 
 register_preset(PublicCatalogPreset())
 register_preset(PrivateCatalogPreset())
@@ -63,6 +64,7 @@ register_preset(DefaultsPostgresPreset())
 register_preset(PrivateCollectionPreset())
 register_preset(ItemsEsPrivatePreset())
 register_preset(DEMO_DATA_PRESET)
+register_preset(StacPreset())
 
 # Curated composite presets — imported after all routing presets so their
 # children are already registered when the composites/__init__.py runs.
@@ -94,6 +96,7 @@ __all__ = [
     "PrivateCatalogPreset",
     "PrivateCollectionPreset",
     "PublicCatalogPreset",
+    "StacPreset",
     "find_preset",
     "get_preset",
     "list_presets",

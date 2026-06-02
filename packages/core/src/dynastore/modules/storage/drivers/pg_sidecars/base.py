@@ -287,7 +287,7 @@ class FeaturePipelineContext:
 
 
 # Re-export protocol-level definitions for backward compatibility
-from dynastore.models.protocols.field_definition import (  # noqa: F401
+from dynastore.models.protocols.field_definition import (  # noqa: E402, F401
     FieldCapability,
     FieldDefinition as _ProtocolFieldDefinition,
 )
@@ -354,6 +354,18 @@ class SidecarConfig(BaseModel):
 
     sidecar_type: str  # Discriminator field — subclasses override with Literal[...]
     enabled: bool = True
+
+    # Descriptive marker clarifying at which tier this sidecar is relevant.
+    # Values: "catalog", "collection", "items".  Informational only — sidecar
+    # resolution keys off ``StacStorageConfig``, not this field.
+    level: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional marker indicating at which storage tier this sidecar "
+            "is relevant ('catalog', 'collection', 'items').  Surfaced in "
+            "config introspection; does not drive resolution logic."
+        ),
+    )
 
     # Per-sidecar indexing configuration
     # Note: IndexingConfig will be imported inside methods to avoid circular imports if needed

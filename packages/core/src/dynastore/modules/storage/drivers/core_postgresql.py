@@ -424,6 +424,26 @@ class _PgCollectionCoreBase:
         """
         return None
 
+    async def drop_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        soft: bool = False,
+    ) -> None:
+        """No-op counterpart to :meth:`ensure_storage`.
+
+        The per-tenant schema backing the CORE/STAC collection metadata
+        tables is dropped out-of-band when the catalog is deprovisioned;
+        individual collection rows are removed via :meth:`delete_metadata`
+        and by the routing-driven hard-delete cascade through the
+        collection-store index driver — never by a per-driver storage drop
+        here.  Declaring it keeps the inner driver structurally conformant
+        with the ``CollectionStore`` protocol (which gained ``drop_storage``
+        for that cascade).
+        """
+        return None
+
 
 class CollectionCorePostgresqlDriver(
     TypedDriver[CollectionCorePostgresqlDriverConfig], _PgCollectionCoreBase,

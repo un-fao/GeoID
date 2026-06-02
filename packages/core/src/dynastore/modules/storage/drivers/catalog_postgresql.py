@@ -276,12 +276,29 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
 
     @cached_property
     def _default_inner_drivers(self) -> List[CatalogStore]:
-        """Cached registry-default resolution — used by code paths that
-        have no ``catalog_id`` in scope (``is_available``,
-        ``stac_metadata_columns``).  Per-catalog paths go through
-        :meth:`_resolve_sidecars_for_catalog`.
+        """Cached INSTALL-level resolution — used by code paths that have
+        no ``catalog_id`` in scope (``is_available``,
+        ``stac_metadata_columns``).
+
+        This is the install-level capability surface, distinct from
+        per-catalog materialization: it includes the ``catalog_stac`` inner
+        whenever the stac extra is installed (the slice is registered), so
+        ``stac_service._has_stac`` correctly reports STAC as *available* for
+        a deployment that ships the extra — even though STAC sidecars are
+        opt-in per catalog via ``StacStorageConfig`` / ``StacPreset``.  The
+        catalog-scoped read/write fan-out goes through
+        :meth:`_resolve_sidecars_for_catalog`, which stays opt-in (core-only
+        until a ``StacStorageConfig`` enables the catalog tier).
         """
-        return self._resolve_inner_drivers(None)
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import (
+            SidecarRegistry,
+        )
+        sidecars: List[_PgCatalogSidecarConfigBase] = list(
+            SidecarRegistry.default_catalog_sidecars()
+        )
+        if SidecarRegistry.has_catalog_store("catalog_stac"):
+            sidecars.append(CatalogStacSidecarConfig())
+        return self._resolve_inner_drivers(sidecars)
 
     @cached(
         maxsize=128, ttl=60, jitter=5,
@@ -300,8 +317,13 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         platform scope.  Mirrors the collection wrapper's same-named
         method — TTL=60s + jitter, apply handler invalidates for instant
         effect, fetch failure falls back to registry default.
+
+        When no explicit ``sidecars`` override is present, builds from
+        CORE default plus the ``catalog_stac`` slice when the scope's
+        ``StacStorageConfig`` has catalog-tier enabled AND PG storage.
         """
         from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
         from dynastore.tools.discovery import get_protocol
 
         sidecars: Optional[List[_PgCatalogSidecarConfigBase]] = None
@@ -321,6 +343,36 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
                 cfg = None
             if cfg is not None and cfg.sidecars:
                 sidecars = list(cfg.sidecars)
+
+        if sidecars is None:
+            # No explicit override — build from CORE default + optional STAC
+            # slice when StacStorageConfig signals catalog-tier + PG.
+            sidecars = list(SidecarRegistry.default_catalog_sidecars())
+            if configs is not None:
+                try:
+                    from dynastore.modules.stac.stac_storage_config import (
+                        StacStorageConfig,
+                        catalog_stac_enabled,
+                        pg_stac,
+                    )
+                    stac_cfg = await configs.get_config(
+                        StacStorageConfig,
+                        catalog_id=catalog_id,
+                    )
+                    if (
+                        isinstance(stac_cfg, StacStorageConfig)
+                        and catalog_stac_enabled(stac_cfg.stac_level)
+                        and pg_stac(stac_cfg.stac_storage)
+                        and SidecarRegistry.has_catalog_store("catalog_stac")
+                    ):
+                        sidecars.append(CatalogStacSidecarConfig())
+                except Exception as exc:
+                    logger.debug(
+                        "CatalogPostgresqlDriver: StacStorageConfig fetch "
+                        "failed for catalog %r (%s) — no stac slice added",
+                        catalog_id, exc,
+                    )
+
         return self._resolve_inner_drivers(sidecars)
 
     async def is_available(self) -> bool:

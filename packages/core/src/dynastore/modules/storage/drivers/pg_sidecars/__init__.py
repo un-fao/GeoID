@@ -18,7 +18,7 @@ from .attributes_config import FeatureAttributeSidecarConfig
 from .item_metadata_config import ItemMetadataSidecarConfig
 from .access_envelope_config import AccessEnvelopeSidecarConfig
 from .registry import SidecarRegistry
-from .resolver import _effective_sidecars, resolve_stac_enabled
+from .resolver import _effective_sidecars
 
 
 def driver_sidecars(driver_or_config: Any) -> List[SidecarConfig]:
@@ -64,6 +64,5 @@ __all__ = [
     "AccessEnvelopeSidecarConfig",
     "SidecarRegistry",
     "_effective_sidecars",
-    "resolve_stac_enabled",
     "driver_sidecars",
 ]

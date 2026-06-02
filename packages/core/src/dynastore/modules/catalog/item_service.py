@@ -953,19 +953,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             from dynastore.modules.storage.drivers.pg_sidecars import (
                 SidecarRegistry,
                 _effective_sidecars,
-                resolve_stac_enabled,
+            )
+            from dynastore.modules.storage.drivers.postgresql import (
+                _resolve_stac_items_pg,
             )
             configs = get_protocol(ConfigsProtocol)
             ct = await configs.get_config(
                 CollectionInfo, catalog_id=catalog_id, collection_id=collection_id,
             ) if configs else CollectionInfo()
-            stac_enabled = await resolve_stac_enabled(catalog_id, collection_id)
+            stac_items_pg = await _resolve_stac_items_pg(
+                catalog_id, collection_id, configs=configs,
+            )
             sidecar_configs = _effective_sidecars(
                 col_config,
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 collection_type=ct.kind.value,
-                context={"stac_enabled": stac_enabled},
+                context={"stac_items_pg": stac_items_pg},
             )
 
             sidecars: List[Any] = []

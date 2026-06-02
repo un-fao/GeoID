@@ -205,16 +205,17 @@ class CollectionPgSidecarRegistry:
 
     @classmethod
     def default_sidecars(cls) -> List[_PgCollectionSidecarConfigBase]:
-        """Built-in default — CORE always, STAC if the extra is installed.
+        """Built-in default — CORE only.
 
-        Mirrors the existing two-driver routing default (router fans out to
-        ``CollectionCorePostgresqlDriver`` + ``CollectionStacPostgresqlDriver``).
+        The STAC collection slice (``collection_stac``) is NOT included by
+        default.  It is added at runtime by
+        ``CollectionPostgresqlDriver._resolve_sidecars_for_catalog`` when the
+        scope's ``StacStorageConfig`` has collection-tier enabled AND includes
+        PG storage.  Absent a ``StacPreset``, no STAC slice is materialized
+        (opt-in default).
         """
         cls._ensure_defaults()
-        out: List[_PgCollectionSidecarConfigBase] = [CollectionCoreSidecarConfig()]
-        if "collection_stac" in cls._registry:
-            out.append(CollectionStacSidecarConfig())
-        return out
+        return [CollectionCoreSidecarConfig()]
 
     @classmethod
     def clear(cls) -> None:
@@ -386,13 +387,26 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
 
     @cached_property
     def _default_inner_drivers(self) -> List[CollectionStore]:
-        """Cached registry-default resolution — used by code paths that
-        have NO ``catalog_id`` in scope (``is_available``,
-        ``stac_metadata_columns``).  Per-catalog paths go through
-        :meth:`_resolve_sidecars_for_catalog` which honors operator
-        overrides via ``ConfigsProtocol``.
+        """Cached INSTALL-level resolution — used by code paths that have
+        NO ``catalog_id`` in scope (``is_available``,
+        ``stac_metadata_columns``).
+
+        Install-level capability surface, distinct from per-catalog
+        materialization: includes the ``collection_stac`` inner whenever the
+        stac extra is installed (the slice is registered), so
+        ``stac_service._has_stac`` correctly reports STAC as *available* for
+        a deployment that ships the extra — even though STAC sidecars are
+        opt-in per collection via ``StacStorageConfig`` / ``StacPreset``.
+        Per-catalog read/write fan-out goes through
+        :meth:`_resolve_sidecars_for_catalog`, which stays opt-in (core-only
+        until a ``StacStorageConfig`` enables the collection tier).
         """
-        return self._resolve_inner_drivers(None)
+        sidecars: List[_PgCollectionSidecarConfigBase] = list(
+            CollectionPgSidecarRegistry.default_sidecars()
+        )
+        if "collection_stac" in CollectionPgSidecarRegistry._registry:
+            sidecars.append(CollectionStacSidecarConfig())
+        return self._resolve_inner_drivers(sidecars)
 
     @cached(
         maxsize=128, ttl=60, jitter=5,
@@ -412,8 +426,10 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
 
         Fetches the wrapper config via the 4-tier waterfall
         (``ConfigsProtocol.get_config``); if ``config.sidecars`` is
-        non-empty uses those, otherwise falls back to
-        :meth:`CollectionPgSidecarRegistry.default_sidecars`.
+        non-empty uses those, otherwise builds the effective set from
+        :meth:`CollectionPgSidecarRegistry.default_sidecars` plus the
+        ``collection_stac`` slice when the scope's ``StacStorageConfig``
+        has collection-tier enabled AND PG storage.
 
         Cached at TTL=60s with jitter — operator overrides propagate
         within ~60s of being persisted, OR immediately when the apply
@@ -441,6 +457,36 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
                 cfg = None
             if cfg is not None and cfg.sidecars:
                 sidecars = list(cfg.sidecars)
+
+        if sidecars is None:
+            # No explicit override — build from CORE default + optional STAC
+            # slice when StacStorageConfig signals collection-tier + PG.
+            sidecars = list(CollectionPgSidecarRegistry.default_sidecars())
+            if configs is not None:
+                try:
+                    from dynastore.modules.stac.stac_storage_config import (
+                        StacStorageConfig,
+                        collection_stac_enabled,
+                        pg_stac,
+                    )
+                    stac_cfg = await configs.get_config(
+                        StacStorageConfig,
+                        catalog_id=catalog_id,
+                    )
+                    if (
+                        isinstance(stac_cfg, StacStorageConfig)
+                        and collection_stac_enabled(stac_cfg.stac_level)
+                        and pg_stac(stac_cfg.stac_storage)
+                        and "collection_stac" in CollectionPgSidecarRegistry._registry
+                    ):
+                        sidecars.append(CollectionStacSidecarConfig())
+                except Exception as exc:
+                    logger.debug(
+                        "CollectionPostgresqlDriver: StacStorageConfig fetch "
+                        "failed for catalog %r (%s) — no stac slice added",
+                        catalog_id, exc,
+                    )
+
         return self._resolve_inner_drivers(sidecars)
 
     async def is_available(self) -> bool:
@@ -600,6 +646,38 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         provisioning time — same no-op as the inner drivers themselves.
         """
         return None
+
+    async def drop_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        soft: bool = False,
+    ) -> None:
+        """Symmetric counterpart to :meth:`ensure_storage`.
+
+        The PG metadata sidecars share the per-tenant schema, which is
+        created and dropped out-of-band by the catalog (de)provisioning
+        DDL — the composition wrapper owns no storage of its own to drop.
+        The collection-metadata rows themselves are removed by the
+        routing-driven hard-delete cascade through the collection-store
+        index driver, not here (see ``routing_driven_cascade_owner``).
+
+        Defining this method keeps the wrapper structurally conformant
+        with the ``CollectionStore`` protocol — which gained
+        ``drop_storage`` for that cascade — so the structural
+        ``isinstance`` check in ``get_protocols(CollectionStore)`` still
+        discovers the wrapper after it replaces the raw inner drivers in
+        the plugin registry.
+
+        Fan-out is fail-soft and idempotent: any inner driver that grows
+        its own ``drop_storage`` is delegated to; inners without one are
+        skipped.
+        """
+        for inner in self._default_inner_drivers:
+            drop = getattr(inner, "drop_storage", None)
+            if drop is not None:
+                await drop(catalog_id, collection_id, soft=soft)
 
     def stac_metadata_columns(self) -> Tuple[str, ...]:
         """Forward the STAC capability marker through to the first inner

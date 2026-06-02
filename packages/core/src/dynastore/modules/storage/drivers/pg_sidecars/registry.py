@@ -248,18 +248,19 @@ class SidecarRegistry:
 
     @classmethod
     def default_catalog_sidecars(cls) -> List[Any]:
-        """Built-in default catalog-tier slice list — CORE always, STAC if the
-        extra is installed. Returns ``_PgCatalogSidecarConfigBase`` instances.
+        """Built-in default catalog-tier slice list — CORE only.
+
+        The STAC catalog slice (``catalog_stac``) is NOT included by default.
+        It is added at runtime by ``CatalogPostgresqlDriver._resolve_sidecars_for_catalog``
+        when the scope's ``StacStorageConfig`` has catalog-tier enabled AND
+        includes PG storage.  Absent a ``StacPreset``, no STAC slice is
+        materialized (opt-in default).
         """
         cls._ensure_catalog_defaults()
         from dynastore.modules.storage.drivers.catalog_postgresql import (
             CatalogCoreSidecarConfig,
-            CatalogStacSidecarConfig,
         )
-        out: List[Any] = [CatalogCoreSidecarConfig()]
-        if "catalog_stac" in cls._catalog_registry:
-            out.append(CatalogStacSidecarConfig())
-        return out
+        return [CatalogCoreSidecarConfig()]
 
     @classmethod
     def clear_catalog_registry(cls) -> None:

@@ -498,10 +498,13 @@ def _patch_phase1_helpers(
 
     monkeypatch.setattr(svc, "fetch_features_bulk", _fake_fetch_bulk)
 
-    # resolve_stac_enabled — returns False (no STAC needed).
+    # _resolve_stac_items_pg — returns False (no STAC items sidecar needed).
+    # STAC is opt-in: the items sidecar is injected only when the scope's
+    # StacStorageConfig has items-tier + PG; this fake pins the "off" branch.
+    import dynastore.modules.storage.drivers.postgresql as _pg_drv
     monkeypatch.setattr(
-        _pg_sc, "resolve_stac_enabled",
-        lambda cat, col: _async_false(),
+        _pg_drv, "_resolve_stac_items_pg",
+        lambda *a, **k: _async_false(),
     )
 
 

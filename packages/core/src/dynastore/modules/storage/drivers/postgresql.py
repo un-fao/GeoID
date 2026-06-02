@@ -47,6 +47,46 @@ from dynastore.modules.storage.driver_config import ItemsPostgresqlDriverConfig
 logger = logging.getLogger(__name__)
 
 
+async def _resolve_stac_items_pg(
+    catalog_id: str,
+    collection_id: str = "",
+    *,
+    configs: "Any" = None,
+) -> bool:
+    """Return True iff the scope's ``StacStorageConfig`` has items-tier
+    enabled AND includes PostgreSQL storage.
+
+    Falls back to ``False`` (no STAC) on any resolution error or when no
+    config service is registered, matching the opt-in default posture so
+    a transient config-service hiccup never silently adds STAC sidecar
+    tables.  Replaces the former ``resolve_stac_enabled`` helper which
+    defaulted to ``True`` (opt-out) and read ``StacPluginConfig.enabled``.
+    """
+    from dynastore.modules.stac.stac_storage_config import (
+        StacStorageConfig,
+        items_stac_enabled,
+        pg_stac,
+    )
+
+    try:
+        if configs is None:
+            from dynastore.models.protocols.configs import ConfigsProtocol
+            from dynastore.tools.discovery import get_protocol
+            configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return False
+        cfg = await configs.get_config(
+            StacStorageConfig,
+            catalog_id=catalog_id or None,
+            collection_id=collection_id or None,
+        )
+        if not isinstance(cfg, StacStorageConfig):
+            return False
+        return items_stac_enabled(cfg.stac_level) and pg_stac(cfg.stac_storage)
+    except Exception:
+        return False
+
+
 class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProtocol):
     """PostgreSQL storage driver — delegates to existing ItemsProtocol.
 
@@ -144,7 +184,6 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         from dynastore.modules.catalog.catalog_config import CollectionInfo
         from dynastore.modules.storage.drivers.pg_sidecars import (
             _effective_sidecars,
-            resolve_stac_enabled,
         )
         from dynastore.tools.discovery import get_protocol
 
@@ -156,15 +195,15 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         ct = await configs.get_config(
             CollectionInfo, catalog_id=catalog_id, collection_id=collection_id,
         ) if configs else CollectionInfo()
-        stac_enabled = await resolve_stac_enabled(
-            catalog_id, collection_id or "",
+        stac_items_pg = await _resolve_stac_items_pg(
+            catalog_id, collection_id or "", configs=configs,
         )
         effective = _effective_sidecars(
             config,
             catalog_id=catalog_id,
             collection_id=collection_id or "",
             collection_type=ct.kind.value,
-            context={"stac_enabled": stac_enabled},
+            context={"stac_items_pg": stac_items_pg},
         )
         return config.model_copy(update={"sidecars": effective})
 
@@ -297,7 +336,7 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
     ) -> None:
         """Rename PG physical table and update driver config."""
 
-        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        schema = await self._resolve_schema(catalog_id, db_resource=db_resource)  # noqa: F841
         old_table = await self.resolve_physical_table(
             catalog_id, old_collection_id, db_resource=db_resource
         )
@@ -477,12 +516,15 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         # introspection all see the same materialised list.
         from dynastore.modules.storage.drivers.pg_sidecars import (
             _effective_sidecars,
-            resolve_stac_enabled,
         )
-        stac_enabled = await resolve_stac_enabled(catalog_id, collection_id or "")
+        from dynastore.models.protocols.configs import ConfigsProtocol as _ConfigsProtocol
+        _configs_for_stac = get_protocol(_ConfigsProtocol)
+        stac_items_pg = await _resolve_stac_items_pg(
+            catalog_id, collection_id or "", configs=_configs_for_stac,
+        )
         effective_sidecars = _effective_sidecars(
             col_config, catalog_id=catalog_id, collection_id=collection_id,
-            context={"stac_enabled": stac_enabled},
+            context={"stac_items_pg": stac_items_pg},
         )
         col_config = col_config.model_copy(update={"sidecars": effective_sidecars})
 
