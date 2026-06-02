@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.modules.tasks import dispatcher
+from dynastore.modules.tasks import dispatcher, mandatory
 
 
 @pytest.mark.asyncio
 async def test_owner_return_requeues_mandatory(monkeypatch):
     calls = {"requeued": []}
 
-    async def _owners(_engine, task_key, _grace):
-        return [{"service": "catalog", "affinity_tier": "catalog"}]  # owner back
-    monkeypatch.setattr(dispatcher, "_live_owners_for", _owners)
+    # auto_requeue_recovered_mandatory imports _fetch_live_owners_map from the
+    # mandatory module at call time, so patch it there (not on dispatcher).
+    async def _owners_map(_engine, _conn, _grace):
+        return {"cascade_cleanup": [{"service": "catalog", "affinity_tier": "catalog"}]}  # owner back
+    monkeypatch.setattr(mandatory, "_fetch_live_owners_map", _owners_map)
     monkeypatch.setattr(dispatcher, "_mandatory_specs", lambda: [("cascade_cleanup", "catalog")])
 
     async def _requeue_by_type(_engine, task_type, **kw):
@@ -28,9 +30,9 @@ async def test_owner_return_requeues_mandatory(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_requeue_when_owner_still_missing(monkeypatch):
-    async def _no_owners(_engine, _task_key, _grace):
-        return []
-    monkeypatch.setattr(dispatcher, "_live_owners_for", _no_owners)
+    async def _no_owners(_engine, _conn, _grace):
+        return {}
+    monkeypatch.setattr(mandatory, "_fetch_live_owners_map", _no_owners)
     monkeypatch.setattr(dispatcher, "_mandatory_specs", lambda: [("cascade_cleanup", "catalog")])
 
     async def _requeue_by_type(_engine, task_type, **kw):  # must NOT be called
