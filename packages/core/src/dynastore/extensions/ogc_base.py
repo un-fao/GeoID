@@ -165,6 +165,9 @@ class OGCServiceMixin:
             def get_role_bindings(self) -> List[Any]:
                 return _rb_factory()
 
+        _Contributor.__name__ = f"{name}PresetContributor"
+        _Contributor.__qualname__ = f"{name}PresetContributor"
+
         register_preset(PolicyContributorPreset(
             name=name,
             description=description,
@@ -318,6 +321,72 @@ class OGCServiceMixin:
     # ------------------------------------------------------------------
     # Shared CRUD helpers
     # ------------------------------------------------------------------
+
+    async def _collect_queryable_fields(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        conn: Any,
+    ) -> "Tuple[list, Any]":
+        """Collect driver-introspected field metadata for a queryables response.
+
+        Returns a 2-tuple ``(columns, driver_fields)`` where:
+
+        * ``columns`` is a list of column name strings from
+          ``driver.introspect_schema()``.
+        * ``driver_fields`` is the result of ``driver.get_entity_fields()``
+          when the driver exposes that method, otherwise ``None``.
+
+        Both values degrade gracefully to ``([], None)`` when the driver is
+        unavailable, lacks ``Capability.INTROSPECTION``, or raises during
+        introspection.  Failures are logged at DEBUG level so they are
+        visible in traces without polluting production logs.
+
+        Imports are kept local to avoid import-time coupling on the storage
+        router, which is an optional runtime dependency.
+        """
+        from dynastore.models.protocols.storage_driver import Capability
+        from dynastore.modules.storage.router import get_driver
+        from dynastore.modules.storage.routing_config import Operation
+
+        columns: list = []
+        driver_fields = None
+        try:
+            driver = await get_driver(Operation.READ, catalog_id, collection_id)
+            if (
+                driver is not None
+                and hasattr(driver, "capabilities")
+                and Capability.INTROSPECTION in driver.capabilities
+            ):
+                schema_info = await driver.introspect_schema(
+                    catalog_id, collection_id, db_resource=conn
+                )
+                columns = [entry.name for entry in schema_info] if schema_info else []
+                if hasattr(driver, "get_entity_fields"):
+                    try:
+                        driver_fields = await driver.get_entity_fields(
+                            catalog_id, collection_id, entity_level="item"
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "queryables field introspection failed for %s/%s: %s",
+                            catalog_id,
+                            collection_id,
+                            e,
+                            exc_info=True,
+                        )
+                        driver_fields = None
+        except Exception as e:
+            logger.debug(
+                "queryables field introspection failed for %s/%s: %s",
+                catalog_id,
+                collection_id,
+                e,
+                exc_info=True,
+            )
+            columns = []
+            driver_fields = None
+        return columns, driver_fields
 
     @staticmethod
     def _principal_caller_id(request: Request) -> Optional[str]:
