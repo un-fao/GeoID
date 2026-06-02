@@ -228,7 +228,10 @@ async def test_select_lapsed_gcp_tasks_picks_lapsed_gcp_active_rows(_gcp_row_fac
     assert row["owner_id"] == owner_id
     assert row["runner_ref"] == runner_ref
     # The verdict actions need these columns:
-    for col in ("schema_name", "task_type", "started_at", "outputs", "retry_count"):
+    for col in (
+        "schema_name", "task_type", "started_at", "outputs", "retry_count",
+        "scope", "caller_id", "inputs", "collection_id",
+    ):
         assert col in row, f"select_lapsed_gcp_tasks must surface {col!r}"
 
 
