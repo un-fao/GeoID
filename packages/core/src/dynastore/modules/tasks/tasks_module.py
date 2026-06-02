@@ -2213,13 +2213,17 @@ async def select_lapsed_gcp_tasks(engine: DbResource) -> List[Dict[str, Any]]:
     SKIP LOCKED`` so the reconciler and the reaper never fight over a row.
 
     Surfaces ``runner_ref`` (the probe handle), ``started_at`` (young-row grace
-    check) and ``outputs`` (TERMINAL_SUCCEEDED reconciliation) so the caller
-    has everything it needs without a second round-trip.
+    check) and ``outputs`` (TERMINAL_SUCCEEDED reconciliation), plus the
+    routing-continuation columns ``scope``, ``caller_id``, ``inputs`` and
+    ``collection_id`` that ``apply_terminal_action`` threads into the
+    ``on_success`` ROUTE follow-on — so the caller has everything it needs
+    without a second round-trip (geoid#1743).
     """
     task_schema = get_task_schema()
     sql = f"""
         SELECT task_id, schema_name, task_type, owner_id, runner_ref,
-               started_at, locked_until, retry_count, max_retries, outputs
+               started_at, locked_until, retry_count, max_retries, outputs,
+               scope, caller_id, inputs, collection_id
         FROM {task_schema}.tasks
         WHERE status = 'ACTIVE'
           AND locked_until < NOW()
