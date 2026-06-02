@@ -647,6 +647,38 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         """
         return None
 
+    async def drop_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        soft: bool = False,
+    ) -> None:
+        """Symmetric counterpart to :meth:`ensure_storage`.
+
+        The PG metadata sidecars share the per-tenant schema, which is
+        created and dropped out-of-band by the catalog (de)provisioning
+        DDL — the composition wrapper owns no storage of its own to drop.
+        The collection-metadata rows themselves are removed by the
+        routing-driven hard-delete cascade through the collection-store
+        index driver, not here (see ``routing_driven_cascade_owner``).
+
+        Defining this method keeps the wrapper structurally conformant
+        with the ``CollectionStore`` protocol — which gained
+        ``drop_storage`` for that cascade — so the structural
+        ``isinstance`` check in ``get_protocols(CollectionStore)`` still
+        discovers the wrapper after it replaces the raw inner drivers in
+        the plugin registry.
+
+        Fan-out is fail-soft and idempotent: any inner driver that grows
+        its own ``drop_storage`` is delegated to; inners without one are
+        skipped.
+        """
+        for inner in self._default_inner_drivers:
+            drop = getattr(inner, "drop_storage", None)
+            if drop is not None:
+                await drop(catalog_id, collection_id, soft=soft)
+
     def stac_metadata_columns(self) -> Tuple[str, ...]:
         """Forward the STAC capability marker through to the first inner
         driver that exposes it.
