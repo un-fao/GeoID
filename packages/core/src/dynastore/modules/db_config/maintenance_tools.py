@@ -33,6 +33,7 @@ from dynastore.modules.db_config.query_executor import (
 )
 from dynastore.modules.db_config.partition_tools import ensure_partition_exists
 from dynastore.modules.db_config.locking_tools import (
+    acquire_startup_lock,  # noqa: F401  # re-export: consumed as maintenance_tools.acquire_startup_lock by 6 module lifespans (crs, notebooks, styles, proxy, connected_systems, moving_features)
     check_cron_job_exists,
 )
 
