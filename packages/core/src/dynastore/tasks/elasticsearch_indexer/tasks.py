@@ -5,11 +5,11 @@ Two task types:
   elasticsearch_bulk_reindex_catalog    — full catalog reindex (Cloud Run Job)
   elasticsearch_bulk_reindex_collection — single collection reindex (Cloud Run Job)
 
-Both target the per-tenant index ``{prefix}-items-{catalog_id}`` (helper
-:func:`dynastore.modules.elasticsearch.mappings.get_tenant_items_index`)
-keyed by ``_routing=collection_id``. They are designed to be executed by
-the ``geospatial-elasticsearch-indexer`` Cloud Run Job (triggered by an
-admin reindex endpoint) and also run in the worker for smaller catalogs.
+Both use the routing-resolved source-of-truth reader (PG primary via
+GEOMETRY_EXACT hint) and the routing-resolved secondary-index writer (the
+items ES driver) rather than hardcoded driver references. The task
+``driver`` input field selects the WRITE target explicitly when supplied;
+otherwise the first ``is_item_indexer`` WRITE driver is used.
 
 Per-event private tasks (``elasticsearch_private_index`` /
 ``elasticsearch_private_delete``) live in the private driver
@@ -65,35 +65,18 @@ class BulkCollectionReindexInputs(BaseModel):
 # ---------------------------------------------------------------------------
 
 class BulkCatalogReindexTask(TaskProtocol):
-    """Reindex every collection of a catalog into the per-tenant items index.
+    """Reindex every collection of a catalog via routing-resolved drivers.
 
     Iterates the catalog's collections, skips those that don't route
     through the regular ES driver, and streams each collection's items
-    via the SoR into ``{prefix}-items-{catalog_id}`` with
-    ``_routing=collection_id``. Stale items for the catalog are removed
-    via ``delete_by_query`` before reindex begins.
+    from the routing-resolved source-of-truth reader (PG primary, via the
+    GEOMETRY_EXACT hint) into the routing-resolved secondary-index writer
+    (the items ES driver). Stale items for the catalog are removed via
+    ``delete_by_query`` before reindex begins.
 
-    Intentional dispatcher bypass (issue #507, Option B): this task
-    calls ``es.bulk`` directly via :func:`reindex_collection_into_index`
-    rather than routing through :class:`IndexDispatcher.fan_out_bulk`.
-    The bypass avoids per-chunk dispatcher overhead (transformer chain
-    resolution + routing-config lookup + per-entry fan-out loop) that
-    is deadweight on a long-running full-catalog reindex already inside
-    the right indexer process. The contract that both paths produce the
-    same ``es.bulk`` body shape (action keys ``_index``/``_id``/
-    ``routing``, doc with ``catalog_id``/``collection``) is pinned by
-    ``test_bypass_matches_dispatcher_bulk_contract`` in
-    ``tests/dynastore/tasks/unit/test_elasticsearch_bulk_reindex.py``.
-
-    Re-evaluate Option A (route through ``fan_out_bulk``) only when all
-    of the following hold: (1) #501 post-commit inline-bulk has shipped
-    (done — PR #589) and produced measured per-chunk overhead in
-    production; (2) the #504 counter set (``index_chunk_emitted``,
-    ``task_drained``, ``task_claim_rejected``, ``index_dispatch_path``
-    with mode label, ``index_chunk_size``) has ≥ 1 week of production
-    data showing reindex would not regress; and (3) reindex emissions
-    being invisible in ``index_chunks_emitted_total`` becomes a felt
-    operational need (alert misfire, capacity planning blind spot).
+    The optional ``driver`` input field pins the WRITE target by
+    ``driver_ref`` (e.g. ``"items_elasticsearch_driver"``); when omitted the
+    first ``is_item_indexer`` WRITE driver is selected automatically.
     """
 
     task_type = "elasticsearch_bulk_reindex_catalog"
@@ -106,6 +89,8 @@ class BulkCatalogReindexTask(TaskProtocol):
 
         inputs = BulkCatalogReindexInputs.model_validate(payload.inputs)
         catalog_id = inputs.catalog_id
+        driver_hint = inputs.driver  # optional explicit WRITE target
+
         index_name = get_tenant_items_index(_get_index_prefix(), catalog_id)
 
         catalogs_proto = get_protocol(CatalogsProtocol)
@@ -114,8 +99,8 @@ class BulkCatalogReindexTask(TaskProtocol):
 
         es = _build_es_client()
 
-        # Wipe stale items for this catalog. delete_by_query is bounded to
-        # the per-tenant index — other catalogs are unaffected.
+        # Wipe stale items for this catalog before reindexing. delete_by_query
+        # is bounded to the per-tenant index — other catalogs are unaffected.
         try:
             await es.delete_by_query(
                 index=index_name,
@@ -141,7 +126,9 @@ class BulkCatalogReindexTask(TaskProtocol):
                 if not collection_id:
                     continue
                 count = await _reindex_collection(
-                    es, catalogs_proto, catalog_id, collection_id, index_name,
+                    catalog_id,
+                    collection_id,
+                    driver_hint=driver_hint,
                 )
                 total_indexed += count
                 logger.info(
@@ -164,37 +151,34 @@ class BulkCatalogReindexTask(TaskProtocol):
 # ---------------------------------------------------------------------------
 
 class BulkCollectionReindexTask(TaskProtocol):
-    """Reindex one collection into the per-tenant items index.
+    """Reindex one collection via routing-resolved drivers.
 
     Triggered by the admin reindex endpoint at
     ``POST /search/reindex/catalogs/{id}/collections/{cid}``.
 
-    Intentional dispatcher bypass: see :class:`BulkCatalogReindexTask`
-    for the full rationale (issue #507, Option B). The two paths must
-    produce identical ``es.bulk`` body shape — pinned by
-    ``test_bypass_matches_dispatcher_bulk_contract``.
+    Reads from the routing-resolved source-of-truth (PG primary via the
+    GEOMETRY_EXACT hint) and writes to the routing-resolved secondary-index
+    writer (the items ES driver). The optional ``driver`` input field pins
+    the WRITE target by ``driver_ref``; when omitted the first
+    ``is_item_indexer`` WRITE driver is selected automatically.
     """
 
     task_type = "elasticsearch_bulk_reindex_collection"
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        from dynastore.models.protocols import CatalogsProtocol
         from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
         from dynastore.modules.elasticsearch.mappings import get_tenant_items_index
-        from dynastore.tools.discovery import get_protocol
 
         inputs = BulkCollectionReindexInputs.model_validate(payload.inputs)
         catalog_id = inputs.catalog_id
         collection_id = inputs.collection_id
-        index_name = get_tenant_items_index(_get_index_prefix(), catalog_id)
+        driver_hint = inputs.driver  # optional explicit WRITE target
 
-        catalogs_proto = get_protocol(CatalogsProtocol)
-        if not catalogs_proto:
-            raise RuntimeError("CatalogsProtocol not available.")
+        index_name = get_tenant_items_index(_get_index_prefix(), catalog_id)
 
         es = _build_es_client()
 
-        # Wipe stale items for just this collection.
+        # Wipe stale items for just this collection before reindexing.
         try:
             await es.delete_by_query(
                 index=index_name,
@@ -212,7 +196,9 @@ class BulkCollectionReindexTask(TaskProtocol):
             )
 
         count = await _reindex_collection(
-            es, catalogs_proto, catalog_id, collection_id, index_name,
+            catalog_id,
+            collection_id,
+            driver_hint=driver_hint,
         )
 
         return {
