@@ -3,9 +3,10 @@
 The 16 shard consumers exist to partition the outbox for lock-free SKIP LOCKED
 draining, NOT to each pin a pooled connection. Two invariants are pinned here:
 
-1. **Bounded checkout.** All 16 shards share one semaphore; only the active
-   pull + listener fan-out + ack hold a slot, so concurrent checkouts can never
-   exceed ``_EVENT_CONSUMER_MAX_CONCURRENCY`` regardless of shard count.
+1. **Bounded checkout.** All 16 shards share one ``LoopLocalSemaphore``
+   (``EventService._consume_semaphore``); only the active pull + listener fan-out
+   + ack hold a slot, so concurrent checkouts can never exceed
+   ``_EVENT_CONSUMER_MAX_CONCURRENCY`` regardless of shard count.
 
 2. **Correct pool-timeout classification.** Pool exhaustion surfaces as
    ``sqlalchemy.exc.TimeoutError`` (subclass of ``SQLAlchemyError`` — NOT the
@@ -21,13 +22,10 @@ import asyncio
 from typing import List
 from unittest.mock import AsyncMock
 
-import pytest
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
-from dynastore.modules.catalog.event_service import (
-    EventService,
-    _EVENT_CONSUMER_MAX_CONCURRENCY,
-)
+from dynastore.modules.catalog.event_service import EventService
+from dynastore.tools.async_utils import LoopLocalSemaphore
 
 
 class _Shutdown:
@@ -43,32 +41,33 @@ class _Shutdown:
         return False
 
 
-def _service() -> EventService:
+def _service(concurrency: int = 4) -> EventService:
     svc = EventService.__new__(EventService)
     svc._consumer_running = False
     svc._consumer_task = None
+    svc._consume_semaphore = LoopLocalSemaphore(concurrency)
     return svc
 
 
-@pytest.fixture
-def sleep_recorder(monkeypatch):
+def test_service_constructs_loop_local_consume_semaphore():
+    """Real ``__init__`` wires a loop-local bounded semaphore (idiomatic; #1640)."""
+    svc = EventService()
+    assert isinstance(svc._consume_semaphore, LoopLocalSemaphore)
+
+
+async def test_sqlalchemy_pool_timeout_backs_off_exponentially(monkeypatch):
+    """The REAL pool-exhaustion exception triggers exponential backoff.
+
+    Regression for: ``except (asyncio.TimeoutError, TimeoutError)`` did not
+    catch ``sqlalchemy.exc.TimeoutError`` ("QueuePool limit ... reached").
+    """
     sleeps: List[float] = []
 
     async def fake_sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    return sleeps
 
-
-async def test_sqlalchemy_pool_timeout_backs_off_exponentially(
-    sleep_recorder, monkeypatch
-):
-    """The REAL pool-exhaustion exception triggers exponential backoff.
-
-    Regression for: ``except (asyncio.TimeoutError, TimeoutError)`` did not
-    catch ``sqlalchemy.exc.TimeoutError`` ("QueuePool limit ... reached").
-    """
     svc = _service()
     driver = AsyncMock()
     driver.consume_batch = AsyncMock(
@@ -88,66 +87,17 @@ async def test_sqlalchemy_pool_timeout_backs_off_exponentially(
         shard_id=0,
         shutdown_event=_Shutdown(after_iters=4),
         scope="ALL",
-        semaphore=asyncio.Semaphore(4),
     )
 
     # Exponential pool-timeout backoff — NOT the generic constant 5 s path.
-    timeout_backoffs = [s for s in sleep_recorder if s in (5.0, 10.0, 20.0, 40.0, 60.0)]
+    timeout_backoffs = [s for s in sleeps if s in (5.0, 10.0, 20.0, 40.0, 60.0)]
     assert timeout_backoffs == [5.0, 10.0, 20.0]
 
 
-async def test_consume_batch_runs_inside_semaphore(monkeypatch):
-    """A shard holds its semaphore slot while doing DB work, releases after."""
-    svc = _service()
-    sem = asyncio.Semaphore(1)
-    observed: dict = {}
-
-    async def consume_batch(*, scope, batch_size=100, shard=0):
-        # Inside the ``async with semaphore`` block the only slot is taken.
-        observed["locked_during"] = sem.locked()
-        return []
-
-    driver = AsyncMock()
-    driver.consume_batch = consume_batch
-    driver.wait_for_events = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        "dynastore.modules.catalog.event_service.get_protocol", lambda _: driver
-    )
-
-    await svc._consume_shard(
-        shard_id=0,
-        shutdown_event=_Shutdown(after_iters=1),
-        scope="ALL",
-        semaphore=sem,
-    )
-
-    assert observed["locked_during"] is True  # DB work held the slot
-    assert sem.locked() is False  # slot released afterwards
-
-
-async def test_run_consume_loop_shares_one_bounded_semaphore(monkeypatch):
-    """All 16 shards receive the SAME semaphore, sized to the concurrency cap."""
-    svc = _service()
-    captured: List[asyncio.Semaphore] = []
-
-    async def fake_shard(shard_id, shutdown_event, *, scope, semaphore):
-        captured.append(semaphore)
-
-    monkeypatch.setattr(svc, "_consume_shard", fake_shard)
-
-    await svc._run_consume_loop(_Shutdown(after_iters=1), scope="ALL")
-
-    assert len(captured) == 16
-    assert all(s is captured[0] for s in captured), "shards must share one semaphore"
-    # Initial free slots == the configured cap (no shard has acquired yet).
-    assert captured[0]._value == _EVENT_CONSUMER_MAX_CONCURRENCY
-
-
 async def test_concurrent_db_checkouts_never_exceed_cap(monkeypatch):
-    """With a shared semaphore, observed concurrent pulls stay within the cap."""
-    svc = _service()
+    """With the shared semaphore, observed concurrent pulls stay within the cap."""
     cap = 2
-    sem = asyncio.Semaphore(cap)
+    svc = _service(concurrency=cap)
     state = {"cur": 0, "max": 0}
 
     async def consume_batch(*, scope, batch_size=100, shard=0):
@@ -172,7 +122,6 @@ async def test_concurrent_db_checkouts_never_exceed_cap(monkeypatch):
             shard_id=0,
             shutdown_event=_Shutdown(after_iters=1),
             scope="ALL",
-            semaphore=sem,
         )
 
     await asyncio.wait_for(

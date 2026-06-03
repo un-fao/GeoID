@@ -49,6 +49,7 @@ from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.concurrency import get_background_executor, run_in_background
 from dynastore.models.driver_context import DriverContext
+from dynastore.tools.async_utils import LoopLocalSemaphore
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 logger = logging.getLogger(__name__)
@@ -235,6 +236,13 @@ class EventService(EventBusProtocol):
     def __init__(self):
         self._consumer_running = False
         self._consumer_task = None
+        # Bounds how many of the 16 shard consumers hold a pooled DB connection
+        # at once (see ``_EVENT_CONSUMER_MAX_CONCURRENCY``). ``LoopLocalSemaphore``
+        # — not a raw ``asyncio.Semaphore`` — because EventService is constructed
+        # before any loop runs and is reused across loops (tests; leader
+        # re-election); it keeps one real semaphore per loop. Same primitive and
+        # rationale as the tasks ``BackgroundRunner`` (#1640).
+        self._consume_semaphore = LoopLocalSemaphore(_EVENT_CONSUMER_MAX_CONCURRENCY)
 
     def register(self, event_type: Union[EventType, str], listener: Listener):
         """Register an async listener for an event type (legacy, defaults to sync)."""
@@ -510,14 +518,13 @@ class EventService(EventBusProtocol):
         shutdown_event: Any,
         *,
         scope: str,
-        semaphore: asyncio.Semaphore,
     ) -> None:
         """One consumer task per shard — own SKIP LOCKED scan, bounded checkout.
 
-        ``semaphore`` (shared across all 16 shards) caps how many shards hold a
-        pooled DB connection at once, so the drainer cannot exhaust the request
-        pool. Only the active SKIP LOCKED pull + listener fan-out + ack hold a
-        slot; idle ``wait_for_events`` polling stays outside it.
+        ``self._consume_semaphore`` (shared across all 16 shards) caps how many
+        shards hold a pooled DB connection at once, so the drainer cannot exhaust
+        the request pool. Only the active SKIP LOCKED pull + listener fan-out +
+        ack hold a slot; idle ``wait_for_events`` polling stays outside it.
 
         On a pool-checkout timeout (``sqlalchemy.exc.TimeoutError`` — all
         connections in use — or the builtin ``TimeoutError``), back off
@@ -539,9 +546,10 @@ class EventService(EventBusProtocol):
                     await asyncio.sleep(5.0)
                     continue
 
-                # Bounded checkout: only ``semaphore`` shards may draw from the
-                # shared pool at once (pull + listener fan-out + ack/nack).
-                async with semaphore:
+                # Bounded checkout: only ``_EVENT_CONSUMER_MAX_CONCURRENCY``
+                # shards may draw from the shared pool at once (pull + listener
+                # fan-out + ack/nack).
+                async with self._consume_semaphore:
                     events = await driver.consume_batch(
                         scope=scope, batch_size=100, shard=shard_id
                     )
@@ -615,22 +623,19 @@ class EventService(EventBusProtocol):
     ) -> None:
         """Spawn 16 shard consumer tasks and wait for all to complete.
 
-        A single semaphore shared across the shards caps concurrent pool
-        checkouts (see ``_EVENT_CONSUMER_MAX_CONCURRENCY``); it is created here,
-        inside the consumer's running loop, so it binds to the correct event
-        loop regardless of when the service was constructed.
+        Concurrent DB checkouts across the shards are bounded by
+        ``self._consume_semaphore`` (a loop-local semaphore sized to
+        ``_EVENT_CONSUMER_MAX_CONCURRENCY``) so the 16 shards cannot exhaust the
+        shared request pool.
         """
         logger.info(
             "EventService: starting 16-shard consume loop "
             "(scope=%s, max_db_concurrency=%d).",
             scope, _EVENT_CONSUMER_MAX_CONCURRENCY,
         )
-        semaphore = asyncio.Semaphore(_EVENT_CONSUMER_MAX_CONCURRENCY)
         tasks = [
             asyncio.create_task(
-                self._consume_shard(
-                    shard_id, shutdown_event, scope=scope, semaphore=semaphore
-                ),
+                self._consume_shard(shard_id, shutdown_event, scope=scope),
                 name=f"EventShard:{shard_id}",
             )
             for shard_id in range(16)

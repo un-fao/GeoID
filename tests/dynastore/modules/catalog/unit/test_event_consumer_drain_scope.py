@@ -19,6 +19,7 @@ import asyncio
 from typing import List
 
 from dynastore.modules.catalog.event_service import EventService
+from dynastore.tools.async_utils import LoopLocalSemaphore
 
 
 class _ShutdownAfter:
@@ -38,6 +39,7 @@ def _service() -> EventService:
     svc = EventService.__new__(EventService)
     svc._consumer_running = False
     svc._consumer_task = None
+    svc._consume_semaphore = LoopLocalSemaphore(4)
     return svc
 
 
@@ -86,7 +88,6 @@ async def test_consume_shard_forwards_all_scope_to_driver(monkeypatch):
         shard_id=0,
         shutdown_event=_ShutdownAfter(after_iters=1),
         scope="ALL",
-        semaphore=asyncio.Semaphore(4),
     )
 
     assert driver.recorded_scopes == ["ALL"], (
@@ -114,7 +115,7 @@ async def test_run_consume_loop_default_scope_is_all(monkeypatch):
     # Capture scopes forwarded to shards without running 16 real tasks.
     captured: List[str] = []
 
-    async def _fake_consume_shard(shard_id, shutdown_event, *, scope, semaphore):
+    async def _fake_consume_shard(shard_id, shutdown_event, *, scope):
         captured.append(scope)
 
     monkeypatch.setattr(svc, "_consume_shard", _fake_consume_shard)

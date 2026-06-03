@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from dynastore.modules.catalog.event_service import EventService
+from dynastore.tools.async_utils import LoopLocalSemaphore
 
 
 class _Shutdown:
@@ -30,6 +31,7 @@ def _service() -> EventService:
     svc = EventService.__new__(EventService)
     svc._consumer_running = False
     svc._consumer_task = None
+    svc._consume_semaphore = LoopLocalSemaphore(4)
     return svc
 
 
@@ -65,7 +67,6 @@ async def test_pool_timeout_backs_off_exponentially(sleep_recorder, monkeypatch)
         shard_id=0,
         shutdown_event=_Shutdown(after_iters=4),
         scope="PLATFORM",
-        semaphore=asyncio.Semaphore(4),
     )
 
     # First entry is the shard-startup stagger (shard 0 → 0 s, no sleep
@@ -93,7 +94,6 @@ async def test_pool_timeout_backoff_caps_at_60s(sleep_recorder, monkeypatch):
         shard_id=0,
         shutdown_event=_Shutdown(after_iters=8),
         scope="PLATFORM",
-        semaphore=asyncio.Semaphore(4),
     )
 
     timeout_backoffs = [s for s in sleep_recorder if s in (5.0, 10.0, 20.0, 40.0, 60.0)]
@@ -121,7 +121,6 @@ async def test_successful_consume_resets_timeout_backoff(sleep_recorder, monkeyp
         shard_id=0,
         shutdown_event=_Shutdown(after_iters=4),
         scope="PLATFORM",
-        semaphore=asyncio.Semaphore(4),
     )
 
     timeout_backoffs = [s for s in sleep_recorder if s in (5.0, 10.0, 20.0, 40.0, 60.0)]
@@ -147,7 +146,6 @@ async def test_generic_exception_keeps_constant_5s_backoff(sleep_recorder, monke
         shard_id=0,
         shutdown_event=_Shutdown(after_iters=3),
         scope="PLATFORM",
-        semaphore=asyncio.Semaphore(4),
     )
 
     # All three failures use the constant 5 s backoff for non-pool errors.
