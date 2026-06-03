@@ -869,14 +869,23 @@ class QueryOptimizer:
             # substitution above, it means no sidecar exposes ``validity`` as
             # a queryable field (``ItemsWritePolicy.enable_validity`` is
             # False on this collection). Rewrite remaining references to the
-            # resolved hub/sidecar expression — or to ``NULL::tstzrange``
-            # when the column does not exist anywhere — so an upstream
-            # ``where_sql`` emitter (e.g. ``shared_queries.build_filter_clause``)
-            # that hard-codes ``validity`` does not produce
+            # resolved hub/sidecar expression — or to the unbounded range
+            # ``'(,)'::tstzrange`` when the column does not exist anywhere —
+            # so an upstream ``where_sql`` emitter (e.g.
+            # ``shared_queries.build_filter_clause``) that hard-codes
+            # ``validity`` does not produce
             # ``column "validity" does not exist``.
+            #
+            # ``NULL::tstzrange`` MUST NOT be used as the placeholder: under
+            # three-valued logic ``NULL && tstzrange(...)`` and
+            # ``NULL @> :dt`` both evaluate to NULL, so every row is silently
+            # dropped and a datetime-filtered PG-only /search returns nothing.
+            # A collection with no validity column is "always valid", so the
+            # all-of-time range ``'(,)'::tstzrange`` is the correct sentinel —
+            # it matches every temporal predicate and preserves the full result.
             if re.search(r"\bvalidity\b", processed_where):
                 resolved = self.resolve_validity_expression()
-                replacement = resolved if resolved is not None else "NULL::tstzrange"
+                replacement = resolved if resolved is not None else "'(,)'::tstzrange"
                 processed_where = re.sub(
                     r"\bvalidity\b", replacement, processed_where
                 )

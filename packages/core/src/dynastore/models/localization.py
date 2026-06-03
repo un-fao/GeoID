@@ -30,6 +30,7 @@ from typing import (
     TYPE_CHECKING,
     ClassVar,
     Protocol,
+    cast,
     runtime_checkable,
 )
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict, model_validator
@@ -532,7 +533,11 @@ class LocalizableModelMixin:
                     del data[serialization_alias]
 
             elif hasattr(original_value, "localize") and callable(original_value.localize):
-                localized_data, sub_langs = original_value.localize(lang, include_language_keys=include_language_keys)
+                # hasattr-narrows original_value to object; cast documents the known runtime contract
+                localized_data, sub_langs = cast(
+                    "Tuple[Dict[str, Any], Set[str]]",
+                    original_value.localize(lang, include_language_keys=include_language_keys),
+                )
                 data[serialization_alias] = localized_data
                 available_languages.update(sub_langs)
 
