@@ -19,6 +19,7 @@ import asyncio
 from typing import List
 
 from dynastore.modules.catalog.event_service import EventService
+from dynastore.tools.async_utils import LoopLocalSemaphore
 
 
 class _ShutdownAfter:
@@ -38,6 +39,7 @@ def _service() -> EventService:
     svc = EventService.__new__(EventService)
     svc._consumer_running = False
     svc._consumer_task = None
+    svc._consume_semaphore = LoopLocalSemaphore(4)
     return svc
 
 

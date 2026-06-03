@@ -19,10 +19,9 @@
 # dynastore/extensions/stac/all_langls.py
 
 import logging
-import os
 from typing import Annotated, Any, Dict, List, Optional, Set, Tuple, Union
 import pystac
-from pydantic import BaseModel, Field, model_validator, ConfigDict, AliasChoices
+from pydantic import BaseModel, Field, model_validator, ConfigDict
 
 logger = logging.getLogger(__name__)
 from dynastore.models.shared_models import LocalizableModelMixin

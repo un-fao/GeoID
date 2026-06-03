@@ -8,10 +8,9 @@ Provides utilities to:
 """
 
 import logging
-from typing import Dict, Any, List, Sequence, Set, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Sequence, Set, TYPE_CHECKING
 from dynastore.tools.language_utils import (
     resolve_localized_field,
-    inject_localized_field,
 )
 
 if TYPE_CHECKING:

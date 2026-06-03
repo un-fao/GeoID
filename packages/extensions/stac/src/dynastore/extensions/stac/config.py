@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Dict
+from typing import Dict
 
 class StacSettings(BaseSettings):
     """
