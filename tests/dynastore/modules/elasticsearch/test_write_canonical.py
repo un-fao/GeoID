@@ -104,14 +104,20 @@ def _bulk_ok_response(doc_id: str) -> Dict[str, Any]:
 
 
 def _make_driver():
-    """Return a driver instance with enough state for the test."""
+    """Return a driver instance with enough state for the test.
+
+    The driver resolves its index name via ``_items_index_name`` →
+    ``get_tenant_items_index(get_index_prefix(), catalog_id)``.
+    ``get_index_prefix()`` returns the module-level default ``"dynastore"``
+    when the ES module has not started — that is correct for unit tests.
+    The old ``driver._index_name_prefix`` assignment was dead code: no
+    driver method reads that attribute.
+    """
     from dynastore.modules.storage.drivers.elasticsearch import (
         ItemsElasticsearchDriver,
     )
 
-    driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
-    driver._index_name_prefix = "ds"
-    return driver
+    return ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
 
 
 def _make_ctx(catalog: str = "cat1", collection: str = "col1"):
@@ -372,8 +378,9 @@ class TestWriteEntitiesGeoidId:
             ItemsElasticsearchDriver,
         )
 
+        # The driver derives its index name via get_tenant_items_index(get_index_prefix(), ...)
+        # — no _index_name_prefix attribute exists on the driver.
         driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
-        driver._index_name_prefix = "ds"
 
         # Feature whose "id" is an external_id string (not a geoid).
         geoid = "aaaa-1111-bbbb-2222"
