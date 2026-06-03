@@ -671,6 +671,29 @@ class _PgCatalogCoreBase:
     ) -> Any:
         return None
 
+    async def ensure_storage(
+        self, catalog_id: Optional[str] = None, **kwargs: Any
+    ) -> None:
+        """No-op: the ``catalog.catalog_core`` / ``catalog.catalog_stac``
+        tables are created by the per-tenant provisioning DDL, not per
+        driver — same contract as :meth:`_PgCollectionCoreBase.ensure_storage`.
+        """
+        return None
+
+    async def drop_storage(
+        self, catalog_id: str, *, soft: bool = False
+    ) -> None:
+        """No-op counterpart to :meth:`ensure_storage`.
+
+        Catalog-tier PG metadata lives in the per-tenant schema, which is
+        dropped out-of-band (``DROP SCHEMA … CASCADE``) when the catalog is
+        deprovisioned; individual rows are removed via
+        :meth:`delete_catalog_metadata`.  Declaring it keeps the catalog PG
+        drivers structurally conformant with the ``CatalogStore`` lifecycle
+        contract.
+        """
+        return None
+
 
 class CatalogCorePostgresqlDriver(
     TypedDriver[CatalogCorePostgresqlDriverConfig], _PgCatalogCoreBase,
