@@ -829,6 +829,12 @@ class PolicyService:
                         trace_rec.why_not = f"path {path!r} not in policy resources"
                 continue
 
+            # Stamp the policy effect so condition handlers can resolve
+            # invalid-regex outcomes effect-aware: a DENY keeps denying,
+            # an ALLOW does not grant on a bad pattern (#1775).
+            if request_context is not None:
+                request_context.effect = p.effect
+
             conditions_met = True
             if p.conditions:
                 # Inject the owning policy id for every condition config dict so
