@@ -409,11 +409,14 @@ class TransformOnlyCollectionStoreMixin:
 class CatalogStore(Protocol):
     """Pluggable storage abstraction for catalog-level metadata.
 
-    **Status**: vocabulary only — no concrete implementer yet. The first
-    consumers will be ``CatalogMetadataCorePostgresDriver`` and
-    ``CatalogMetadataStacPostgresDriver``. Introduced early so
-    ``CatalogRoutingConfig`` can reference it at its apply handler without a
-    forward declaration.
+    **Implementers**: the PG ``CatalogCorePostgresqlDriver`` and
+    ``CatalogStacPostgresqlDriver`` (via ``_PgCatalogCoreBase``), the
+    ``CatalogPostgresqlDriver`` composition wrapper, the
+    ``CatalogElasticsearchDriver`` shared-index secondary, and the
+    diagnostic ``LogCatalogIndexer``.  All are discovered structurally via
+    ``get_protocols(CatalogStore)``, so every method below — including the
+    lifecycle pair — must be present on each or the driver silently drops
+    out of discovery.
 
     Mirrors :class:`CollectionStore` but scoped to the catalog tier.
     Drivers own a ``domain`` (CORE / STAC / future) and stamp ``updated_at``
@@ -488,4 +491,46 @@ class CatalogStore(Protocol):
 
     async def is_available(self) -> bool:
         """Health check — used for fallback logic on first resolution."""
+        ...
+
+    async def ensure_storage(
+        self, catalog_id: Optional[str] = None, **kwargs: Any
+    ) -> None:
+        """Provision this driver's catalog-tier storage (idempotent).
+
+        Catalog-scoped: unlike the collection / items / asset tiers there is
+        no ``collection_id`` (a catalog owns no per-collection storage at
+        this tier).  ``catalog_id`` is optional because some drivers
+        provision platform-shared storage (e.g. the single shared
+        ``{prefix}-catalogs`` ES index) independent of any one catalog and
+        ignore it.  PG drivers are a no-op — their per-tenant tables are
+        created out-of-band by the catalog-provisioning DDL.
+        """
+        ...
+
+    async def drop_storage(
+        self, catalog_id: str, *, soft: bool = False
+    ) -> None:
+        """Remove this driver's catalog-tier storage for ``catalog_id``
+        (idempotent, fail-soft).
+
+        Completes the lifecycle contract shared with the collection / items
+        / asset tiers.  A catalog owns no per-catalog *physical* storage —
+        only a platform-registry row plus a record in a shared index — so
+        per backend:
+
+        - shared-index drivers (ES) remove the catalog's record from the
+          shared index, delegating to :meth:`delete_catalog_metadata`;
+        - PG drivers are a no-op — the per-tenant schema is dropped
+          out-of-band when the catalog is deprovisioned.
+
+        ``soft=True`` marks the record deleted while retaining it where the
+        backend supports it (mirrors ``delete_catalog_metadata(soft=True)``).
+
+        NOTE: the live catalog-hard-delete path drives record cleanup through
+        the secondary-index DELETE fan-out (``delete_catalog_metadata``), not
+        through this method; ``drop_storage`` exists for a uniform four-tier
+        contract and delegates to the same primitive, so the two paths are
+        idempotent and cannot diverge.
+        """
         ...

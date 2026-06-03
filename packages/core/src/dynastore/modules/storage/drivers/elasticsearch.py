@@ -2086,7 +2086,7 @@ class AssetElasticsearchDriver(
         self,
         catalog_id: str,
         collection_id: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         from dynastore.modules.elasticsearch.mappings import (
             get_assets_index_name, ASSET_MAPPING,

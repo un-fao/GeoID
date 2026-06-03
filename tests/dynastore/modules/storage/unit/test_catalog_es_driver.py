@@ -114,6 +114,32 @@ async def test_delete_catalog_metadata_swallows_es_errors():
 
 
 # ---------------------------------------------------------------------------
+# Storage-lifecycle contract: drop_storage delegates to delete_catalog_metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_drop_storage_delegates_to_delete_catalog_metadata_hard():
+    """Catalog ``drop_storage`` removes the catalog's record from the shared
+    index by delegating to ``delete_catalog_metadata`` (hard by default)."""
+    driver = CatalogElasticsearchDriver()
+    with patch.object(
+        driver, "delete_catalog_metadata", new=AsyncMock()
+    ) as mock_del:
+        await driver.drop_storage("cat-a")
+    mock_del.assert_awaited_once_with("cat-a", soft=False)
+
+
+async def test_drop_storage_passes_soft_through():
+    """``soft=True`` is forwarded so the record is tombstoned, not removed."""
+    driver = CatalogElasticsearchDriver()
+    with patch.object(
+        driver, "delete_catalog_metadata", new=AsyncMock()
+    ) as mock_del:
+        await driver.drop_storage("cat-a", soft=True)
+    mock_del.assert_awaited_once_with("cat-a", soft=True)
+
+
+# ---------------------------------------------------------------------------
 # Index naming — single shared index across all catalogs
 # ---------------------------------------------------------------------------
 
