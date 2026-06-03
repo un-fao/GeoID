@@ -67,6 +67,30 @@ def _validate_schema_name(schema: str) -> str:
     return schema
 
 
+def _validate_policy_condition_types(policy: "Policy") -> None:
+    """Reject any condition whose type has no registered handler.
+
+    This is a write-time gate: an unknown condition type would silently deny
+    every policy match at evaluation time (fail-closed), so catching it here
+    surfaces the mis-configuration immediately with a clear error instead of
+    leaving operators debugging silent denials.
+
+    Does NOT run on policy reads so existing stored policies can always be
+    retrieved regardless of whether a handler was added or removed after they
+    were written.
+    """
+    if not policy.conditions:
+        return
+    from dynastore.modules.iam.conditions import known_condition_types
+    valid = known_condition_types()
+    unknown = [c.type for c in policy.conditions if c.type not in valid]
+    if unknown:
+        raise ValueError(
+            f"Policy contains unknown condition type(s) {unknown!r}. "
+            f"Valid types: {sorted(valid)}."
+        )
+
+
 def _find_trace_record_for_policy(
     collector: "_TraceCollector", pol: Policy,
 ) -> _GrantTraceRecord:
@@ -228,6 +252,7 @@ class PolicyService:
     async def create_policy(
         self, policy: Policy, catalog_id: Optional[str] = None
     ) -> Policy:
+        _validate_policy_condition_types(policy)
         schema = await self._resolve_schema(catalog_id)
         if not policy.partition_key:
             policy.partition_key = "global"
@@ -284,6 +309,7 @@ class PolicyService:
     async def update_policy(
         self, policy: Policy, catalog_id: Optional[str] = None
     ) -> Optional[Policy]:
+        _validate_policy_condition_types(policy)
         schema = await self._resolve_schema(catalog_id)
         res = await self.storage.update_policy(policy, schema=schema)
         self.invalidate_cache()
