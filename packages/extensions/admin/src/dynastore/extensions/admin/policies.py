@@ -60,11 +60,20 @@ def admin_policies() -> List[Policy]:
       sysadmin + admin so a catalog-admin who can reindex a whole
       catalog can also act on a single collection within it (the
       collection scope is a subset of the catalog scope — gating it more
-      tightly than the catalog route would be inconsistent). The
-      ``backfill_envelope_attrs`` action is thereby reachable by admin as
-      well; per-action privilege gating (keeping backfill sysadmin-only)
-      is not expressible with path-pattern policies alone and is tracked
-      as a follow-up.
+      tightly than the catalog route would be inconsistent).
+
+    - ``admin_task_dispatch_privileged_deny`` — DENY policy that restores
+      per-action privilege gating on both task-dispatch surfaces. Using
+      the ``request_action_privilege`` condition handler it denies any
+      principal that does NOT hold the sysadmin role when the request body
+      ``action`` is in the gated set (currently ``backfill_envelope_attrs``).
+      Sysadmin principals are exempt via the handler's ``allow_sysadmin``
+      bypass, so they can trigger all actions.  Admin principals are
+      allowed to trigger non-gated actions (e.g. ``reindex``) because the
+      condition returns ``False`` (DENY does not apply) for those.  The
+      policy is bound to BOTH sysadmin and admin so it appears in each
+      principal's effective policy set; the condition itself differentiates
+      between them at evaluation time.
     """
     return [
         Policy(
@@ -145,6 +154,34 @@ def admin_policies() -> List[Policy]:
             resources=[r"^/admin/catalogs/[^/]+/collections/[^/]+/tasks$"],
             effect="ALLOW",
         ),
+        Policy(
+            id="admin_task_dispatch_privileged_deny",
+            description=(
+                "Denies privileged task actions (e.g. backfill_envelope_attrs) "
+                "to principals who do not hold the sysadmin role. Applies to "
+                "both the catalog-scope and collection-scope task-dispatch "
+                "surfaces. The request_action_privilege condition reads the "
+                "POST body action field and only triggers the DENY when the "
+                "action is in the gated set AND the principal lacks sysadmin. "
+                "Admin principals may still trigger non-gated actions (e.g. "
+                "reindex) because the condition returns False for those."
+            ),
+            actions=["POST"],
+            resources=[
+                r"^/admin/catalogs/[^/]+/tasks$",
+                r"^/admin/catalogs/[^/]+/collections/[^/]+/tasks$",
+            ],
+            effect="DENY",
+            conditions=[
+                Condition(
+                    type="request_action_privilege",
+                    config={
+                        "gated_actions": ["backfill_envelope_attrs"],
+                        "required_role": IamRolesConfig().sysadmin_role_name,
+                    },
+                )
+            ],
+        ),
     ]
 
 
@@ -181,4 +218,10 @@ def admin_role_bindings(
         Role(name=admin_role_name, policies=["admin_task_dispatch"]),
         Role(name=sysadmin_role_name, policies=["admin_task_dispatch_collection"]),
         Role(name=admin_role_name, policies=["admin_task_dispatch_collection"]),
+        # Per-action privilege gate: the DENY policy must appear in the
+        # effective policy set of BOTH sysadmin and admin so it is evaluated.
+        # The request_action_privilege condition exempts sysadmin at evaluation
+        # time, so binding sysadmin here is harmless and keeps coverage symmetric.
+        Role(name=sysadmin_role_name, policies=["admin_task_dispatch_privileged_deny"]),
+        Role(name=admin_role_name, policies=["admin_task_dispatch_privileged_deny"]),
     ]

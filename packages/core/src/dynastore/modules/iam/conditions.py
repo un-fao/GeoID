@@ -954,6 +954,139 @@ class CatalogMembershipHandler(ConditionHandler):
         return catalog_id in (membership.get("catalogs") or [])
 
 
+class RequestActionPrivilegeHandler(ConditionHandler):
+    """Gate privileged actions in a request body by role.
+
+    Intended for use on a DENY policy.  Returns ``True`` (deny applies)
+    when the POST body's ``action`` field is in ``gated_actions`` AND the
+    principal does NOT hold ``required_role`` (and is not a sysadmin /
+    platform bypass).  Returns ``False`` (deny does not apply) in every
+    other case — including GET requests, unreadable bodies, and principals
+    that hold the required role — so the DENY is narrow and never
+    accidentally blocks unrelated traffic.
+
+    Fail direction: **fail OPEN** (return ``False``) when the body cannot
+    be read or the principal cannot be resolved.  A DENY that fails closed
+    on uncertainty would wrongly block non-gated actions (e.g. ``reindex``)
+    whenever the body is transiently unavailable.  The upstream ALLOW
+    policies still gate everything; this handler only ADDS a denial for the
+    specific gated-action + under-privileged case.
+
+    Config keys
+    -----------
+    * ``gated_actions`` (list[str], required) — action names that require
+      ``required_role``.  Requests whose ``action`` is not in this set are
+      never affected by this handler.
+    * ``required_role`` (str, required) — role name that exempts the
+      principal from the DENY.  Any principal holding this role is allowed
+      through regardless of ``gated_actions``.
+    * ``allow_sysadmin`` (bool, default True) — principals holding
+      ``sysadmin_role`` bypass the DENY unconditionally.
+    * ``sysadmin_role`` (str) — name of the platform super-user role for
+      the bypass check.  Defaults to ``IamRolesConfig().sysadmin_role_name``.
+
+    Semantics for the DENY effect
+    ------------------------------
+    When this handler returns ``True`` a DENY policy whose condition uses
+    it MATCHES → the principal is denied.  When it returns ``False`` the
+    DENY does not match → the request falls through to the ALLOW policies.
+
+    Example policy fragment::
+
+        Policy(
+            id="admin_task_dispatch_privileged_deny",
+            effect="DENY",
+            actions=["POST"],
+            resources=[r"^/admin/catalogs/[^/]+/tasks$",
+                       r"^/admin/catalogs/[^/]+/collections/[^/]+/tasks$"],
+            conditions=[Condition(
+                type="request_action_privilege",
+                config={
+                    "gated_actions": ["backfill_envelope_attrs"],
+                    "required_role": "sysadmin",
+                },
+            )],
+        )
+    """
+
+    @property
+    def type(self) -> str:
+        return "request_action_privilege"
+
+    async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
+        # Only applies to POST (task dispatch is POST only).
+        # Non-POST requests are never affected by this DENY — return False.
+        method = (ctx.method or "").upper()
+        if method != "POST":
+            return False
+
+        gated_actions = list(config.get("gated_actions") or [])
+        if not gated_actions:
+            # Mis-configured policy with empty gated_actions — nothing to gate.
+            return False
+
+        # Read the request body action field.
+        action = await self._read_action(ctx)
+        if action is None:
+            # Body unreadable or action field absent — fail open so the DENY
+            # does not accidentally block requests where the body cannot be
+            # inspected (e.g. streaming, already-consumed body edge cases).
+            return False
+
+        if action not in gated_actions:
+            # Action is not in the gated set — this DENY does not apply.
+            return False
+
+        # The action IS gated.  Now check whether the principal holds the
+        # required role (or a bypass role).
+        principal = (ctx.extras or {}).get("principal_obj")
+        if principal is None:
+            # No principal object — cannot confirm privilege; fail open so the
+            # DENY does not block requests that arrive before principal
+            # resolution.  The upstream ALLOW policies already require a
+            # principal.
+            return False
+
+        roles = getattr(principal, "roles", None) or []
+
+        # Sysadmin bypass.
+        sysadmin_role = str(
+            config.get("sysadmin_role", IamRolesConfig().sysadmin_role_name)
+        )
+        if config.get("allow_sysadmin", True) and sysadmin_role in roles:
+            return False  # Sysadmin exempt — DENY does not apply.
+
+        required_role = str(config.get("required_role", ""))
+        if required_role and required_role in roles:
+            return False  # Principal holds the required role — DENY does not apply.
+
+        # Principal lacks the required role AND the action is gated — DENY applies.
+        return True
+
+    @staticmethod
+    async def _read_action(ctx: EvaluationContext) -> Optional[str]:
+        """Read the ``action`` field from the POST JSON body.
+
+        Returns the action string on success, ``None`` on any failure
+        (no request, non-JSON body, missing ``action`` key, non-string
+        value).  Starlette caches the body so the downstream route handler
+        still sees it after this read.
+        """
+        request = ctx.request
+        if request is None:
+            return None
+        try:
+            body = await request.json()
+        except Exception:
+            return None
+        if not isinstance(body, dict):
+            return None
+        action = body.get("action")
+        if not isinstance(action, str) or not action:
+            return None
+        return action
+
+
 # --- Registry ---
 
 class ConditionRegistry:
@@ -973,6 +1106,7 @@ class ConditionRegistry:
         self.register(LogicalNotHandler())
         self.register(CatalogMembershipHandler())
         self.register(CatalogAdminHandler())
+        self.register(RequestActionPrivilegeHandler())
         # Audience handlers (per-catalog / per-collection anonymous opt-ins)
         from dynastore.modules.iam.audience_handlers import (
             CatalogLookupAudienceHandler,
