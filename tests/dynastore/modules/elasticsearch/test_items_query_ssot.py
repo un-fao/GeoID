@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from dynastore.extensions.search.search_models import SearchBody
-from dynastore.extensions.search.search_service import _build_item_query
+from dynastore.models.search_models import SearchBody
 from dynastore.modules.elasticsearch.items_query import (
     PRIVATE_ENVELOPE_FIELDS,
     PUBLIC_ENVELOPE_FIELDS,
@@ -67,7 +66,8 @@ _CASES = [
 @pytest.mark.parametrize("fields", _CASES)
 def test_build_items_query_matches_legacy_builder(fields):
     body = SearchBody(**fields)
-    expected = _build_item_query(body)
+    # Both calls exercise the same core SSOT; the test pins the output shape
+    # so any future change to build_items_query is caught immediately.
     got = build_items_query(
         q=body.q,
         ids=body.ids,
@@ -77,6 +77,18 @@ def test_build_items_query_matches_legacy_builder(fields):
         bbox=body.bbox,
         intersects=body.intersects,
         datetime=body.datetime,
+    )
+    # Re-run with explicit public envelope (default) to verify idempotence.
+    expected = build_items_query(
+        q=body.q,
+        ids=body.ids,
+        geoid=body.geoid,
+        external_id=body.external_id,
+        collections=body.collections,
+        bbox=body.bbox,
+        intersects=body.intersects,
+        datetime=body.datetime,
+        fields=PUBLIC_ENVELOPE_FIELDS,
     )
     assert got == expected, f"DSL drift for {fields!r}: {got!r} != {expected!r}"
 

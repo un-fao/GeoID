@@ -31,15 +31,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-# The ES items-query DSL now lives in the core single source of truth
-# (``dynastore.modules.elasticsearch.items_query``) so the routing-aware item
-# search dispatched through whichever driver a catalog pins for
-# ``Operation.SEARCH`` builds the same query as this extension (#989). These
-# module-level shims preserve the historical ``search_service`` import surface
-# (consumed by ``test_search_item_filters`` and ``test_items_projection``).
+# The ES items-query DSL lives in core
+# (``dynastore.modules.elasticsearch.items_query``); both the storage drivers
+# and this extension build the same query body (#989).
 from dynastore.modules.elasticsearch.items_query import (  # noqa: E402
-    PUBLIC_ENVELOPE_FIELDS,
-    EnvelopeFields,
     build_items_query as _build_items_query,
     parse_sort as _parse_sort,
 )
@@ -60,29 +55,6 @@ def _index_is_canonical(index: Any) -> bool:
     """
     name = str(index)
     return name.endswith("-private-items") or name.endswith("-envelope-items")
-
-
-def _build_item_query(
-    body: SearchBody, fields: EnvelopeFields = PUBLIC_ENVELOPE_FIELDS,
-) -> Dict[str, Any]:
-    """Build an Elasticsearch query DSL from a STAC SearchBody.
-
-    Thin adapter over the core :func:`build_items_query` SSOT. ``fields``
-    selects the envelope field names of the resolved index so a query against
-    the tenant-private index addresses its canonical ``collection_id`` /
-    ``geoid`` / ``external_id`` shape rather than the public one.
-    """
-    return _build_items_query(
-        q=body.q,
-        ids=body.ids,
-        geoid=body.geoid,
-        external_id=body.external_id,
-        collections=body.collections,
-        bbox=body.bbox,
-        intersects=body.intersects,
-        datetime=body.datetime,
-        fields=fields,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +282,17 @@ class SearchService(ExtensionProtocol):
             if _index_is_canonical(index)
             else PUBLIC_ENVELOPE_FIELDS
         )
-        query = _build_item_query(body, envelope_fields)
+        query = _build_items_query(
+            q=body.q,
+            ids=body.ids,
+            geoid=body.geoid,
+            external_id=body.external_id,
+            collections=body.collections,
+            bbox=body.bbox,
+            intersects=body.intersects,
+            datetime=body.datetime,
+            fields=envelope_fields,
+        )
 
         # CQL2 ``filter`` → ES Query DSL, ANDed into the structural query.
         # Raises 400 when present-but-untranslatable (no PG fallback on this path).
