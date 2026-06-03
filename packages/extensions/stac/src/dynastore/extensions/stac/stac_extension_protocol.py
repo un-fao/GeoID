@@ -5,11 +5,10 @@ Extensions implementing this protocol can contribute platform-managed assets
 and extensions to STAC Items and Collections.
 """
 
-from typing import Protocol, List, Set, runtime_checkable, Any, Literal, TYPE_CHECKING, Optional
+from typing import Protocol, List, Set, runtime_checkable, Literal, TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     import pystac
-    from dynastore.extensions.stac.stac_models import STACItem
 
 
 @runtime_checkable
