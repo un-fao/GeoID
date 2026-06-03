@@ -831,6 +831,26 @@ class PolicyService:
 
             conditions_met = True
             if p.conditions:
+                # Inject the owning policy id for every condition config dict so
+                # rate_limit / max_count handlers can namespace their usage-counter
+                # rows by policy id, not just by principal key.  The middleware does
+                # the same thing for inline principal custom_policies (it populates
+                # _policy_id_by_config_id keyed by id(c.config)).  Role-based
+                # policies reach evaluate_access WITHOUT that pre-population, so the
+                # handlers' _policy_id_for() lookup returns None and they silently
+                # skip enforcement.  Mirroring the middleware approach here fixes
+                # the gap without mutating condition.config (which may be shared
+                # across requests when the Policy object is cached).
+                if request_context is not None:
+                    extras = getattr(request_context, "extras", None)
+                    if extras is not None:
+                        mapping: Dict[int, str] = extras.setdefault(
+                            "_policy_id_by_config_id", {}
+                        )
+                        for _cond in p.conditions:
+                            if _cond.config is not None:
+                                mapping[id(_cond.config)] = p.id
+
                 for cond in p.conditions:
                     cond_ok = await self._evaluate_condition(cond, request_context)
                     if trace_rec is not None:
