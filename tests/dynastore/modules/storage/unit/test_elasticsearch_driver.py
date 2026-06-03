@@ -1015,6 +1015,17 @@ def _make_ctx():
     return IndexContext(catalog="cat1", collection="col1", entity_type="item")
 
 
+def _fake_canonical_inputs(catalog_id, collection_id, geoids):
+    """Stand in for the raw-PG read (#1800): one minimal canonical input per
+    geoid so ``build_canonical_index_doc`` runs for real with ``id``/
+    ``catalog_id``/``collection_id`` populated, exercising the same body
+    construction the response-shape assertions depend on. ``op.payload`` is
+    ignored by ``index_bulk`` (the canonical raw-row path supersedes it)."""
+    from dynastore.modules.catalog.canonical_index_read import CanonicalIndexInput
+
+    return {g: CanonicalIndexInput(row={"geoid": g}) for g in geoids}
+
+
 def _patch_bulk_dependencies(es):
     """Wire the module-level helpers used inside ``index_bulk``."""
     return [
@@ -1032,6 +1043,10 @@ def _patch_bulk_dependencies(es):
         patch(
             "dynastore.modules.elasticsearch.items_projection.resolve_catalog_known_fields",
             new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+            new=AsyncMock(side_effect=_fake_canonical_inputs),
         ),
     ]
 

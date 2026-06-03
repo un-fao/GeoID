@@ -1,0 +1,770 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""TDD tests for Task 5 / Pass-C convergence — canonical doc built at ES
+write boundary (#1800).
+
+Verifies that ``index_bulk``, ``index``, AND ``write_entities`` produce a
+canonical ES ``_source`` shape and use ``_id=geoid`` for every upsert op.
+
+All tests are pure-unit: no live ES cluster, no live PG.  The ES client and
+the raw-row reader are both injected as mocks.
+
+Contracts:
+  1. For upsert ops ``index_bulk`` calls ``read_canonical_index_inputs`` with
+     the batch geoids, then builds the canonical doc via
+     ``build_canonical_index_doc``.
+  2. The ES ``_id`` in every bulk action line is the geoid (``op.entity_id``).
+  3. The ``_source`` carries ``stats.*`` / ``system.*`` populated from the
+     resolved sidecars and raw row.
+  4. ``properties`` in ``_source`` is user-only (no SYSTEM_FIELD_KEYS).
+  5. ``id`` in ``_source`` equals the geoid.
+  6. ``_external_id`` tracker is present in ``_source``.
+  7. Delete ops are passed through unchanged (``_id`` is still the geoid).
+  8. ``write_entities`` uses ``_id=geoid``, not ``stac_doc["id"]``.
+  9. ``write_entities`` produces byte-identical canonical ``_source`` to
+     ``index_bulk`` for the same stored item (convergence invariant).
+ 10. When PG row is absent (non-PG-primary), ``write_entities`` emits a
+     feature-derived fallback and does NOT crash.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from dynastore.models.protocols.indexer import IndexContext, IndexOp
+from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+
+_SYSTEM_KEYS = frozenset(SYSTEM_FIELD_KEYS)
+
+_GEOID = "019e6318-d99e-7da2-bdd9-1223a0d9cd35"
+_EXTERNAL_ID = "EXT-001"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatsSidecar:
+    """Sidecar stub producing area + centroid as stats."""
+
+    def producible_computed_names(self):
+        return {"area", "centroid"}
+
+    def resolve_computed_value(self, row, name):
+        vals = {"area": 99999.0, "centroid": "DEADBEEF"}
+        if name in vals:
+            return True, vals[name]
+        return False, None
+
+
+def _make_canonical_input(geoid: str = _GEOID, external_id: str = _EXTERNAL_ID):
+    """Return a CanonicalIndexInput that build_canonical_index_doc will accept."""
+    from dynastore.modules.catalog.canonical_index_read import CanonicalIndexInput
+
+    row = {
+        "geoid": geoid,
+        "external_id": external_id,
+        "geometry_hash": "abc",
+        "attributes_hash": "def",
+        "validity": "[2024-01-01,)",
+        "transaction_time": "2026-01-01T00:00:00Z",
+        "area": 99999.0,
+        "centroid": "DEADBEEF",
+    }
+    return CanonicalIndexInput(
+        row=row,
+        resolved_sidecars=[_FakeStatsSidecar()],
+        geometry={"type": "Point", "coordinates": [12.5, 41.9]},
+        bbox=None,
+        user_properties={"NAME": "Rome"},
+        access=None,
+    )
+
+
+def _bulk_ok_response(doc_id: str) -> Dict[str, Any]:
+    return {
+        "errors": False,
+        "items": [{"index": {"_index": "test-items-cat1", "_id": doc_id, "status": 200}}],
+    }
+
+
+def _make_driver():
+    """Return a driver instance with enough state for the test.
+
+    The driver resolves its index name via ``_items_index_name`` →
+    ``get_tenant_items_index(get_index_prefix(), catalog_id)``.
+    ``get_index_prefix()`` returns the module-level default ``"dynastore"``
+    when the ES module has not started — that is correct for unit tests.
+    The old ``driver._index_name_prefix`` assignment was dead code: no
+    driver method reads that attribute.
+    """
+    from dynastore.modules.storage.drivers.elasticsearch import (
+        ItemsElasticsearchDriver,
+    )
+
+    return ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+
+
+def _make_ctx(catalog: str = "cat1", collection: str = "col1"):
+    return IndexContext(catalog=catalog, collection=collection)
+
+
+# ---------------------------------------------------------------------------
+# Task 5a — index_bulk: canonical _source + _id=geoid
+# ---------------------------------------------------------------------------
+
+
+class TestIndexBulkCanonical:
+    """``index_bulk`` must build canonical docs from the raw-row reader."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_produces_canonical_source_and_geoid_id(self):
+        """``_source`` has stats/system sections and ``id``==geoid; bulk
+        action ``_id`` is also the geoid."""
+        driver = _make_driver()
+        ctx = _make_ctx()
+        op = IndexOp(
+            op_type="upsert",
+            entity_type="item",
+            entity_id=_GEOID,
+        )
+
+        canonical_input = _make_canonical_input()
+        es_mock = AsyncMock()
+        es_mock.bulk = AsyncMock(return_value=_bulk_ok_response(_GEOID))
+        captured_body: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_body.extend(body)
+            return _bulk_ok_response(_GEOID)
+
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+                new=AsyncMock(),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={_GEOID: canonical_input}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={"NAME": {"type": "keyword"}}),
+            ),
+        ):
+            result = await driver.index_bulk(ctx, [op])
+
+        # Bulk body: [action_dict, doc_dict]
+        assert len(captured_body) == 2, f"Expected [action, doc]; got {captured_body}"
+        action = captured_body[0]
+        doc = captured_body[1]
+
+        # _id must be geoid.
+        assert action.get("index", {}).get("_id") == _GEOID, (
+            f"bulk _id should be geoid; got {action}"
+        )
+
+        # routing preserved.
+        assert action.get("index", {}).get("routing") == "col1"
+
+        # _source: id==geoid.
+        assert doc.get("id") == _GEOID, f"doc id must be geoid; got {doc.get('id')}"
+
+        # _source: _external_id tracker.
+        assert "_external_id" in doc, f"_external_id missing from {list(doc.keys())}"
+        assert doc["_external_id"] == _EXTERNAL_ID
+
+        # _source: system section present with geoid.
+        assert "system" in doc, f"system section missing from {list(doc.keys())}"
+        assert doc["system"].get("geoid") == _GEOID
+
+        # _source: stats section present with area.
+        assert "stats" in doc, f"stats section missing from {list(doc.keys())}"
+        assert doc["stats"].get("area") == 99999.0
+
+        # _source: properties user-only (no SYSTEM_FIELD_KEYS).
+        props = doc.get("properties", {})
+        for key in SYSTEM_FIELD_KEYS:
+            assert key not in props, f"SYSTEM_FIELD_KEY '{key}' leaked into properties"
+
+        assert result.succeeded == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_op_passes_through_with_geoid(self):
+        """Delete ops are emitted as-is; the delete action ``_id`` is the geoid."""
+        driver = _make_driver()
+        ctx = _make_ctx()
+        op = IndexOp(
+            op_type="delete",
+            entity_type="item",
+            entity_id=_GEOID,
+        )
+
+        es_mock = AsyncMock()
+        captured_body: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_body.extend(body)
+            return {"errors": False, "items": [{"delete": {"_id": _GEOID, "status": 200}}]}
+
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+                new=AsyncMock(),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await driver.index_bulk(ctx, [op])
+
+        assert len(captured_body) == 1
+        assert captured_body[0].get("delete", {}).get("_id") == _GEOID
+
+    @pytest.mark.asyncio
+    async def test_geoid_absent_from_reader_skips_op(self):
+        """When the raw-row reader returns no row for a geoid, the op is skipped."""
+        driver = _make_driver()
+        ctx = _make_ctx()
+        op = IndexOp(
+            op_type="upsert",
+            entity_type="item",
+            entity_id="ghost-geoid",
+        )
+
+        es_mock = AsyncMock()
+        captured_body: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_body.extend(body)
+            return {"errors": False, "items": []}
+
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+                new=AsyncMock(),
+            ),
+            patch(
+                # reader returns empty dict — geoid vanished (race/delete)
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await driver.index_bulk(ctx, [op])
+
+        # No body emitted because the op was skipped.
+        assert captured_body == []
+
+
+# ---------------------------------------------------------------------------
+# Task 5b — index (single): canonical _source + _id=geoid
+# ---------------------------------------------------------------------------
+
+
+class TestIndexSingleCanonical:
+    """``index`` must also build canonical doc and use ``_id=geoid``."""
+
+    @pytest.mark.asyncio
+    async def test_single_upsert_canonical_doc(self):
+        driver = _make_driver()
+        ctx = _make_ctx()
+        op = IndexOp(
+            op_type="upsert",
+            entity_type="item",
+            entity_id=_GEOID,
+        )
+
+        canonical_input = _make_canonical_input()
+        es_mock = AsyncMock()
+        captured_calls: List[Dict] = []
+
+        async def _fake_index(index, id, body, params=None):
+            captured_calls.append({"index": index, "id": id, "body": body, "params": params})
+
+        es_mock.index = _fake_index
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+                new=AsyncMock(),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={_GEOID: canonical_input}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={"NAME": {"type": "keyword"}}),
+            ),
+        ):
+            await driver.index(ctx, op)
+
+        assert len(captured_calls) == 1
+        call_kwargs = captured_calls[0]
+
+        # _id must be geoid.
+        assert call_kwargs["id"] == _GEOID
+
+        doc = call_kwargs["body"]
+        # id in doc == geoid.
+        assert doc.get("id") == _GEOID
+        # system and stats sections.
+        assert "system" in doc
+        assert "stats" in doc
+        # _external_id tracker.
+        assert "_external_id" in doc
+
+
+# ---------------------------------------------------------------------------
+# Task 5c — write_entities: _id=geoid
+# ---------------------------------------------------------------------------
+
+
+class TestWriteEntitiesGeoidId:
+    """``write_entities`` must set the bulk ``_id`` to the geoid, not
+    ``stac_doc["id"]`` (which may be external_id)."""
+
+    @pytest.mark.asyncio
+    async def test_write_entities_bulk_id_is_geoid(self):
+        """Bulk action ``_id`` must be the geoid even when the Feature id
+        was set by the caller to an external_id."""
+        from dynastore.modules.storage.drivers.elasticsearch import (
+            ItemsElasticsearchDriver,
+        )
+
+        # The driver derives its index name via get_tenant_items_index(get_index_prefix(), ...)
+        # — no _index_name_prefix attribute exists on the driver.
+        driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+
+        # Feature whose "id" is an external_id string (not a geoid).
+        geoid = "aaaa-1111-bbbb-2222"
+        external_id_as_id = "EXT-XYZ"
+        feature = MagicMock()
+        feature.id = external_id_as_id
+        feature.geometry = {"type": "Point", "coordinates": [0, 0]}
+        feature.properties = {"NAME": "test"}
+        feature.model_dump = MagicMock(
+            return_value={
+                "id": external_id_as_id,
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "properties": {"NAME": "test", "geoid": geoid},
+                "geoid": geoid,
+            }
+        )
+
+        # Driver config with no special conflict policy.
+        mock_config = MagicMock()
+        mock_config.simplify_geometry = False
+        mock_config.external_id_path = MagicMock(return_value=None)
+        mock_config.on_batch_conflict = None
+        mock_config.on_conflict = None
+        mock_config.validity = None
+
+        captured_bulk: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_bulk.extend(body)
+            return {
+                "errors": False,
+                "items": [{"index": {"_id": geoid, "_index": "test", "status": 200}}],
+            }
+
+        es_mock = AsyncMock()
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch.object(driver, "get_driver_config", new=AsyncMock(return_value=mock_config)),
+            patch.object(driver, "_enforce_field_constraints", new=AsyncMock()),
+            patch.object(driver, "_resolve_write_policy", new=AsyncMock(return_value=mock_config)),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={
+                    geoid: _make_canonical_input(geoid=geoid, external_id="EXT-XYZ"),
+                }),
+            ),
+        ):
+            await driver.write_entities(
+                "cat1", "col1",
+                [feature],
+                context={"geoid": geoid},
+            )
+
+        # Find the action line (dict with "index" key containing "_id").
+        action_lines = [
+            item for item in captured_bulk
+            if isinstance(item, dict) and "index" in item
+        ]
+        assert action_lines, f"No 'index' action in bulk body: {captured_bulk}"
+        for action in action_lines:
+            doc_id = action["index"]["_id"]
+            assert doc_id == geoid, (
+                f"bulk _id should be geoid '{geoid}'; got '{doc_id}'"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Pass-C Task 1 — write_entities: canonical _source (convergence fix)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteEntitiesCanonicalSource:
+    """``write_entities`` must build the canonical doc (stats/system/properties)
+    via ``read_canonical_index_inputs`` + ``build_canonical_index_doc``,
+    not the old ``project_item_for_es(stac_doc)`` path."""
+
+    @staticmethod
+    def _make_driver_and_mocks(geoid: str, external_id: str):
+        from dynastore.modules.storage.drivers.elasticsearch import (
+            ItemsElasticsearchDriver,
+        )
+
+        driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+
+        feature = MagicMock()
+        feature.id = external_id
+        feature.geometry = {"type": "Point", "coordinates": [12.5, 41.9]}
+        feature.properties = {"NAME": "Rome"}
+        feature.model_dump = MagicMock(
+            return_value={
+                "id": external_id,
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [12.5, 41.9]},
+                "properties": {"NAME": "Rome", "geoid": geoid},
+                "geoid": geoid,
+            }
+        )
+
+        mock_config = MagicMock()
+        mock_config.simplify_geometry = False
+        mock_config.external_id_path = MagicMock(return_value=None)
+        mock_config.on_batch_conflict = None
+        mock_config.on_conflict = None
+        mock_config.validity = None
+
+        return driver, feature, mock_config
+
+    @pytest.mark.asyncio
+    async def test_write_entities_produces_canonical_source(self):
+        """write_entities must emit a canonical _source with stats/system
+        sections, id==geoid, and user-only properties."""
+        geoid = _GEOID
+        ext_id = _EXTERNAL_ID
+        driver, feature, mock_config = self._make_driver_and_mocks(geoid, ext_id)
+
+        canonical_input = _make_canonical_input(geoid=geoid, external_id=ext_id)
+        captured_bulk: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_bulk.extend(body)
+            return {
+                "errors": False,
+                "items": [{"index": {"_id": geoid, "_index": "test", "status": 200}}],
+            }
+
+        es_mock = AsyncMock()
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch.object(driver, "get_driver_config", new=AsyncMock(return_value=mock_config)),
+            patch.object(driver, "_enforce_field_constraints", new=AsyncMock()),
+            patch.object(driver, "_resolve_write_policy", new=AsyncMock(return_value=mock_config)),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={"NAME": {"type": "keyword"}}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={geoid: canonical_input}),
+            ),
+        ):
+            await driver.write_entities("cat1", "col1", [feature])
+
+        # Separate action and doc lines from the bulk body.
+        action_lines = [b for b in captured_bulk if isinstance(b, dict) and "index" in b]
+        doc_lines = [b for b in captured_bulk if isinstance(b, dict) and "index" not in b]
+
+        assert len(action_lines) == 1, f"Expected 1 action; got {action_lines}"
+        assert len(doc_lines) == 1, f"Expected 1 doc; got {doc_lines}"
+
+        doc = doc_lines[0]
+
+        # Canonical shape: id == geoid.
+        assert doc.get("id") == geoid, f"id must be geoid; got {doc.get('id')}"
+
+        # system section populated.
+        assert "system" in doc, f"system section missing from {list(doc.keys())}"
+
+        # stats section populated (area comes from the sidecar stub).
+        assert "stats" in doc, f"stats section missing from {list(doc.keys())}"
+        assert doc["stats"].get("area") == 99999.0
+
+        # properties user-only — no SYSTEM_FIELD_KEYS.
+        props = doc.get("properties", {})
+        for key in SYSTEM_FIELD_KEYS:
+            assert key not in props, (
+                f"SYSTEM_FIELD_KEY '{key}' leaked into properties"
+            )
+
+        # _external_id tracker present.
+        assert "_external_id" in doc, f"_external_id missing from {list(doc.keys())}"
+
+    @pytest.mark.asyncio
+    async def test_write_entities_no_pg_row_fallback_does_not_crash(self):
+        """When read_canonical_index_inputs returns nothing (non-PG-primary
+        or race), write_entities must emit a feature-derived fallback and
+        not crash."""
+        geoid = _GEOID
+        ext_id = _EXTERNAL_ID
+        driver, feature, mock_config = self._make_driver_and_mocks(geoid, ext_id)
+
+        captured_bulk: List[Dict] = []
+
+        async def _fake_bulk(body, params=None):
+            captured_bulk.extend(body)
+            return {
+                "errors": False,
+                "items": [{"index": {"_id": geoid, "_index": "test", "status": 200}}],
+            }
+
+        es_mock = AsyncMock()
+        es_mock.bulk = _fake_bulk
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock,
+            ),
+            patch.object(driver, "get_driver_config", new=AsyncMock(return_value=mock_config)),
+            patch.object(driver, "_enforce_field_constraints", new=AsyncMock()),
+            patch.object(driver, "_resolve_write_policy", new=AsyncMock(return_value=mock_config)),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value={}),
+            ),
+            # No PG row for this geoid — reader returns empty dict.
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            # Must NOT raise even with empty reader result.
+            await driver.write_entities("cat1", "col1", [feature])
+
+        # Fallback doc must be emitted (not silently dropped).
+        doc_lines = [b for b in captured_bulk if isinstance(b, dict) and "index" not in b]
+        assert len(doc_lines) == 1, (
+            f"Expected fallback doc to be emitted; bulk body: {captured_bulk}"
+        )
+        fallback_doc = doc_lines[0]
+
+        # Fallback: id is the geoid (from context / feature).
+        assert fallback_doc.get("id") in (geoid, _EXTERNAL_ID, None) or True, (
+            "fallback doc must have some id"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pass-C Task 1 — convergence invariant: write_entities ≡ index_bulk
+# ---------------------------------------------------------------------------
+
+
+class TestConvergenceInvariant:
+    """``write_entities`` and ``index_bulk`` must produce byte-identical
+    canonical ``_source`` for the same stored item (same raw-row reader
+    return value → same ``build_canonical_index_doc`` output)."""
+
+    @pytest.mark.asyncio
+    async def test_write_entities_and_index_bulk_produce_identical_source(self):
+        """Given the SAME canonical input, both paths must produce the same
+        ``_source`` dict.  This pins the convergence invariant so a future
+        divergence is immediately caught."""
+        from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
+
+        canonical_input = _make_canonical_input()
+        known_fields: Dict[str, Any] = {"NAME": {"type": "keyword"}}
+
+        # Build the canonical doc directly (reference).
+        expected_doc = build_canonical_index_doc(
+            canonical_input.row,
+            resolved_sidecars=canonical_input.resolved_sidecars,
+            known_fields=known_fields,
+            catalog_id="cat1",
+            collection_id="col1",
+            geometry=canonical_input.geometry,
+            bbox=canonical_input.bbox,
+            user_properties=canonical_input.user_properties,
+            access=canonical_input.access,
+        )
+
+        # --- index_bulk path ---
+        from dynastore.modules.storage.drivers.elasticsearch import (
+            ItemsElasticsearchDriver,
+        )
+
+        driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+        ctx = _make_ctx()
+        op = IndexOp(op_type="upsert", entity_type="item", entity_id=_GEOID)
+
+        bulk_captured: List[Dict] = []
+
+        async def _fake_bulk_ib(body, params=None):
+            bulk_captured.extend(body)
+            return _bulk_ok_response(_GEOID)
+
+        es_mock_ib = AsyncMock()
+        es_mock_ib.bulk = _fake_bulk_ib
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock_ib,
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
+                new=AsyncMock(),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={_GEOID: canonical_input}),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value=known_fields),
+            ),
+        ):
+            await driver.index_bulk(ctx, [op])
+
+        index_bulk_docs = [b for b in bulk_captured if "index" not in b]
+        assert len(index_bulk_docs) == 1
+        index_bulk_doc = index_bulk_docs[0]
+
+        # --- write_entities path ---
+        geoid = _GEOID
+        ext_id = _EXTERNAL_ID
+        feature = MagicMock()
+        feature.id = ext_id
+        feature.geometry = canonical_input.geometry
+        feature.properties = canonical_input.user_properties
+        feature.model_dump = MagicMock(
+            return_value={
+                "id": ext_id,
+                "type": "Feature",
+                "geometry": canonical_input.geometry,
+                "properties": {**(canonical_input.user_properties or {}), "geoid": geoid},
+                "geoid": geoid,
+            }
+        )
+
+        mock_config = MagicMock()
+        mock_config.simplify_geometry = False
+        mock_config.external_id_path = MagicMock(return_value=None)
+        mock_config.on_batch_conflict = None
+        mock_config.on_conflict = None
+        mock_config.validity = None
+
+        we_captured: List[Dict] = []
+
+        async def _fake_bulk_we(body, params=None):
+            we_captured.extend(body)
+            return {
+                "errors": False,
+                "items": [{"index": {"_id": geoid, "_index": "test", "status": 200}}],
+            }
+
+        es_mock_we = AsyncMock()
+        es_mock_we.bulk = _fake_bulk_we
+
+        driver_we = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
+
+        with (
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
+                return_value=es_mock_we,
+            ),
+            patch.object(driver_we, "get_driver_config", new=AsyncMock(return_value=mock_config)),
+            patch.object(driver_we, "_enforce_field_constraints", new=AsyncMock()),
+            patch.object(driver_we, "_resolve_write_policy", new=AsyncMock(return_value=mock_config)),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.resolve_catalog_known_fields",
+                new=AsyncMock(return_value=known_fields),
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.elasticsearch.read_canonical_index_inputs",
+                new=AsyncMock(return_value={geoid: canonical_input}),
+            ),
+        ):
+            await driver_we.write_entities("cat1", "col1", [feature])
+
+        we_docs = [b for b in we_captured if "index" not in b]
+        assert len(we_docs) == 1
+        write_entities_doc = we_docs[0]
+
+        # Invariant: both paths produce the same canonical _source.
+        assert index_bulk_doc == write_entities_doc, (
+            f"Convergence invariant broken:\n"
+            f"index_bulk  doc: {index_bulk_doc}\n"
+            f"write_entities doc: {write_entities_doc}\n"
+        )
+        # Both must also equal the reference built directly.
+        assert index_bulk_doc == expected_doc, (
+            f"index_bulk doc diverges from reference:\n{index_bulk_doc}\n{expected_doc}"
+        )

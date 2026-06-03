@@ -1,0 +1,385 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Policy-free raw-row reader for the canonical ES index builder (#1800).
+
+Reads raw PG rows + resolves sidecars for a set of geoids in a single
+batched SELECT, WITHOUT applying any ``ItemsReadPolicy`` (no
+``external_id_as_feature_id`` id-flip, no ``expose`` filtering).
+
+The result feeds :func:`~dynastore.modules.elasticsearch.canonical_doc.build_canonical_index_doc`
+at the ES write boundary so the indexed document has the correct canonical
+envelope shape.
+
+Internal seams (_fetch_raw_rows, _resolve_sidecars_for, _get_col_config)
+are kept module-private but importable for test-injection via ``patch``.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public data type
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CanonicalIndexInput:
+    """All inputs required by :func:`build_canonical_index_doc` for one item.
+
+    Produced once per geoid by :func:`read_canonical_index_inputs`.  Callers
+    must not apply any read policy after this point — the data is already
+    policy-free and intended for the ES write boundary only.
+
+    Attributes:
+        row:               Raw PG row dict including all sidecar columnar
+                           columns (area, centroid, hashes, validity, …).
+        resolved_sidecars: Sidecar instances that can answer
+                           ``producible_computed_names`` /
+                           ``resolve_computed_value`` for this collection.
+        geometry:          GeoJSON geometry as a plain ``dict``, or ``None``
+                           when the collection has no geometry column.
+        bbox:              Bounding-box list ``[minx, miny, maxx, maxy]``, or
+                           ``None``.
+        user_properties:   User-facing attribute dict — only schema-declared /
+                           JSONB user fields.  No SYSTEM_FIELD_KEYS, no stats.
+        access:            Access-envelope dict for the access-aware ES driver
+                           variant.  Always ``None`` in this implementation;
+                           wired in a follow-up pass.
+    """
+
+    row: Dict[str, Any]
+    resolved_sidecars: List[Any] = field(default_factory=list)
+    geometry: Optional[Dict[str, Any]] = None
+    bbox: Optional[List[float]] = None
+    user_properties: Optional[Dict[str, Any]] = None
+    access: Optional[Dict[str, Any]] = None
+
+
+# ---------------------------------------------------------------------------
+# Internal seams (replaced by test patches)
+# ---------------------------------------------------------------------------
+
+
+async def _get_col_config(
+    catalog_id: str,
+    collection_id: str,
+    db_resource: Optional[Any] = None,
+) -> Optional[Any]:
+    """Resolve ``ItemsPostgresqlDriverConfig`` for a collection.
+
+    Delegates to the same config-waterfall the PG driver uses, preferring
+    the WRITE driver config (which always returns a PG config) so sidecars
+    are consistently resolved even when the READ driver is ES.
+    """
+    try:
+        from dynastore.modules.storage.router import get_write_drivers
+        write_drivers = await get_write_drivers(catalog_id, collection_id)
+        if not write_drivers:
+            return None
+        driver = write_drivers[0].driver
+        return await driver.get_driver_config(
+            catalog_id, collection_id, db_resource=db_resource,
+        )
+    except Exception as exc:
+        logger.warning(
+            "canonical_index_read._get_col_config: failed for %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
+        return None
+
+
+def _resolve_sidecars_for(col_config: Any, catalog_id: str, collection_id: str) -> List[Any]:
+    """Return the ordered list of resolved sidecar instances for a collection.
+
+    Uses the same ``_effective_sidecars`` + ``SidecarRegistry.get_sidecar``
+    path as :meth:`ItemService.map_row_to_feature` — without running the
+    pipeline so we can share the resolved list independently of a Feature.
+    """
+    try:
+        from dynastore.modules.storage.drivers.pg_sidecars import (
+            SidecarRegistry,
+            _effective_sidecars,
+        )
+        sidecar_configs = _effective_sidecars(
+            col_config,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        resolved: List[Any] = []
+        for sc_config in sidecar_configs:
+            sidecar = SidecarRegistry.get_sidecar(sc_config, lenient=True)
+            if sidecar is not None:
+                resolved.append(sidecar)
+        return resolved
+    except Exception as exc:
+        logger.warning(
+            "canonical_index_read._resolve_sidecars_for: %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
+        return []
+
+
+async def _fetch_raw_rows(
+    catalog_id: str,
+    collection_id: str,
+    geoids: List[str],
+    col_config: Any,
+    db_resource: Optional[Any] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Batch-fetch raw PG rows for *geoids*, keyed by geoid.
+
+    Reuses the same SQL-build infrastructure as ``ItemService.get_item``
+    (``_apply_query_transformations`` → raw ``text()`` execute) but issues a
+    single ``WHERE geoid = ANY(:ids)`` query for the whole batch, avoiding
+    N+1 round-trips on ``index_bulk`` calls.
+
+    Rows that are missing (deleted or never written) are simply absent from
+    the returned dict — callers skip those geoids.
+    """
+    if not geoids:
+        return {}
+
+    try:
+        from sqlalchemy import text as _sa_text
+
+        from dynastore.modules.catalog.item_service import ItemService
+        from dynastore.modules.db_config.query_executor import managed_transaction
+        from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+        from dynastore.models.query_builder import FieldSelection, QueryRequest
+        from dynastore.tools.db import validate_sql_identifier
+
+        validate_sql_identifier(catalog_id)
+        validate_sql_identifier(collection_id)
+
+        item_svc = ItemService()
+        async with managed_transaction(db_resource or item_svc.engine) as conn:
+            phys_schema = await item_svc._resolve_physical_schema(
+                catalog_id, db_resource=conn,
+            )
+            phys_table = await item_svc._resolve_physical_table(
+                catalog_id, collection_id, db_resource=conn,
+            )
+            if not phys_schema or not phys_table:
+                logger.warning(
+                    "canonical_index_read: cannot resolve physical table for %s/%s",
+                    catalog_id, collection_id,
+                )
+                return {}
+
+            if col_config is None:
+                col_config = await item_svc._get_collection_config(
+                    catalog_id, collection_id, db_resource=conn,
+                )
+
+            request = QueryRequest(
+                item_ids=[str(g) for g in geoids],
+                limit=len(geoids),
+                select=[FieldSelection(field="*")],
+            )
+            query_ctx: Dict[str, Any] = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+            }
+            sql, params = await item_svc._apply_query_transformations(
+                request, query_ctx, catalog_id, collection_id, col_config,
+                db_resource=conn, consumer=ConsumerType.GENERIC,
+            )
+            import inspect as _inspect
+
+            result = conn.execute(_sa_text(sql), params or {})
+            if _inspect.isawaitable(result):
+                result = await result
+
+            rows: Dict[str, Dict[str, Any]] = {}
+            for raw in result.mappings():
+                row_dict = dict(raw)
+                geoid = row_dict.get("geoid")
+                if geoid:
+                    rows[str(geoid)] = row_dict
+            return rows
+
+    except Exception as exc:
+        logger.warning(
+            "canonical_index_read._fetch_raw_rows: %s/%s: %s",
+            catalog_id, collection_id, exc,
+        )
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+async def read_canonical_index_inputs(
+    catalog_id: str,
+    collection_id: str,
+    geoids: List[str],
+    *,
+    db_resource: Optional[Any] = None,
+) -> Dict[str, CanonicalIndexInput]:
+    """Read raw PG rows + resolve sidecars for *geoids*, policy-free.
+
+    Returns a dict mapping geoid → :class:`CanonicalIndexInput`.  Geoids
+    that are absent in PG (deleted or race) are silently omitted — the
+    caller (ES write boundary) should skip those ops.
+
+    No ``ItemsReadPolicy`` is applied: ``id`` in the returned row is always
+    the geoid; ``external_id_as_feature_id`` is never flipped; ``expose``
+    filtering is never applied.  This is intentional — the ES canonical
+    doc must reflect the stored state, not any read-policy reshaping.
+
+    Args:
+        catalog_id:    Catalog identifier.
+        collection_id: Collection identifier.
+        geoids:        List of geoid strings to fetch (may be empty).
+        db_resource:   Optional existing DB connection/engine to reuse.
+
+    Returns:
+        Dict mapping each found geoid to its :class:`CanonicalIndexInput`.
+    """
+    if not geoids:
+        return {}
+
+    col_config = await _get_col_config(catalog_id, collection_id, db_resource=db_resource)
+    resolved_sidecars = _resolve_sidecars_for(col_config, catalog_id, collection_id)
+    raw_rows = await _fetch_raw_rows(
+        catalog_id, collection_id, geoids, col_config, db_resource=db_resource,
+    )
+
+    result: Dict[str, CanonicalIndexInput] = {}
+    for geoid, row in raw_rows.items():
+        geometry, bbox, user_properties = _extract_feature_parts(
+            row, col_config, resolved_sidecars, catalog_id, collection_id,
+        )
+        result[geoid] = CanonicalIndexInput(
+            row=row,
+            resolved_sidecars=resolved_sidecars,
+            geometry=geometry,
+            bbox=bbox,
+            user_properties=user_properties,
+            access=None,
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Feature-part extraction (no read policy)
+# ---------------------------------------------------------------------------
+
+
+def _extract_feature_parts(
+    row: Dict[str, Any],
+    col_config: Any,
+    resolved_sidecars: List[Any],
+    catalog_id: str,
+    collection_id: str,
+) -> tuple[Optional[Dict[str, Any]], Optional[List[float]], Optional[Dict[str, Any]]]:
+    """Extract geometry, bbox, and user-only properties from a raw PG row.
+
+    Does NOT apply any read policy:
+    - ``id`` stays as the geoid.
+    - ``expose`` filtering is not applied.
+    - Stats / system keys are excluded from ``user_properties``.
+
+    Strategy:
+    1. Run ``map_row_to_feature(row, col_config, read_policy=None)`` to
+       materialise geometry (geometry sidecar) and base attributes.
+    2. Scrub ``user_properties`` by removing any key that is either a
+       SYSTEM_FIELD_KEY or producible by the resolved sidecars as a
+       computed / stats value — those live in ``system`` / ``stats``
+       in the canonical doc, not in ``properties``.
+    3. Also exclude known sidecar internal columns that may have leaked
+       into properties via the JSONB fallback loop in the attributes sidecar.
+
+    Geometry is converted to a plain dict (no Pydantic type info).
+    """
+    from dynastore.modules.catalog.item_service import ItemService
+    from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+
+    _system_keys = frozenset(SYSTEM_FIELD_KEYS)
+
+    # Collect all internal columns from the resolved sidecars so they can
+    # be excluded from user_properties.
+    all_internal: set = set(_system_keys)
+    for sc in resolved_sidecars:
+        try:
+            all_internal.update(sc.get_internal_columns())
+        except Exception:
+            pass
+
+    # Collect all sidecar-producible computed names (stats + system) so they
+    # can be excluded from user_properties even when the JSONB fallback loop
+    # accidentally put them in.
+    all_computed: set = set(_system_keys)
+    for sc in resolved_sidecars:
+        try:
+            all_computed.update(sc.producible_computed_names())
+        except Exception:
+            pass
+
+    item_svc = ItemService()
+    # read_policy=None → no id-flip, no expose filtering.
+    feature = item_svc.map_row_to_feature(
+        row, col_config, read_policy=None,
+    )
+
+    # Geometry: convert from Pydantic geometry to plain dict.
+    geometry: Optional[Dict[str, Any]] = None
+    if feature.geometry is not None:
+        geom = feature.geometry
+        if isinstance(geom, dict):
+            geometry = geom
+        elif hasattr(geom, "model_dump"):
+            geometry = geom.model_dump(exclude_none=True)
+        elif hasattr(geom, "__geo_interface__"):
+            geometry = dict(geom.__geo_interface__)
+        else:
+            try:
+                geometry = dict(geom)
+            except Exception:
+                geometry = None
+
+    # BBox: geojson_pydantic Feature has a .bbox attribute.
+    bbox: Optional[List[float]] = None
+    raw_bbox = getattr(feature, "bbox", None)
+    if raw_bbox is not None:
+        try:
+            bbox = list(raw_bbox)
+        except Exception:
+            bbox = None
+
+    # User properties: scrub stats, system, and internal-column keys that
+    # the JSONB fallback loop may have mixed in.
+    user_properties: Optional[Dict[str, Any]] = None
+    if feature.properties is not None:
+        exclude = all_computed | all_internal
+        user_properties = {
+            k: v for k, v in feature.properties.items()
+            if k not in exclude
+        }
+
+    return geometry, bbox, user_properties
+
+
+__all__ = ["CanonicalIndexInput", "read_canonical_index_inputs"]

@@ -440,18 +440,26 @@ def build_es_field_mapping(
 
     Resolution rules:
 
-    * Envelope fields map to their document-root path:
-      ``external_id`` / ``asset_id`` / ``geoid`` / ``id`` → same name at root,
-      geometry → ``geometry``, ``datetime`` → ``properties.datetime``.
-    * Any field whose ``data_type`` is a geometry type maps to ``geometry``.
-    * The **private** flat tenant doc indexes every other attribute under
-      ``properties.<name>`` (dynamic ``properties.*`` mapping).
-    * The **public** doc keeps known queryables under ``properties.<name>`` and
-      routes unknown/extension fields to the ``properties.extras.<name>``
-      bucket the public projection writes them to.
+    * Geometry fields always resolve to the root ``geometry`` field.
+    * The ``datetime`` envelope path stays at ``properties.datetime`` (STAC
+      convention; both public and private docs write it there).
+    * Fields with a ``container`` tag route to their canonical ES path via
+      :func:`~dynastore.modules.storage.computed_fields.classify_container`
+      (refs #1800): ``stats`` → ``stats.<name>``; ``system`` → ``system.<name>``;
+      ``identity`` → flat ``<name>`` at root.
+    * Remaining fields (container="properties" or no tag): the **private** flat
+      tenant doc indexes them under ``properties.<name>``; the **public** doc
+      keeps known queryables under ``properties.<name>`` and routes
+      unexposed/extension fields to ``properties.extras.<name>``.
+    * String / uuid fields under a dynamic ``properties`` sub-tree carry a
+      ``.keyword`` suffix for exact CQL2 matches; numeric / temporal / boolean
+      don't. Stats and system fields already carry explicit typed mappings in the
+      ES index and do not need the ``.keyword`` suffix.
 
     The live target is the private flat doc; the public mapping is pragmatic.
     """
+    from dynastore.modules.storage.computed_fields import classify_container
+
     mapping: Dict[str, str] = {}
     for name, field_def in queryable_fields.items():
         data_type = str(getattr(field_def, "data_type", "") or "").lower()
@@ -461,13 +469,45 @@ def build_es_field_mapping(
             mapping[name] = "geometry"
             continue
 
-        # Explicit envelope fields keep their root / well-known path.
+        # ``datetime`` special-case: both public and private docs write it at
+        # ``properties.datetime`` regardless of container (mirrors the existing
+        # _ENVELOPE_FIELD_PATHS entry). Checked before the container router.
+        if name == "datetime":
+            mapping[name] = _ENVELOPE_FIELD_PATHS["datetime"]
+            continue
+
+        # Explicit envelope fields (external_id, asset_id, geoid, id) keep
+        # their root / well-known path regardless of any container tag on the
+        # FieldDefinition — these are already classified "identity" by
+        # classify_container, but the explicit map is the simpler fast path.
         if name in _ENVELOPE_FIELD_PATHS:
             mapping[name] = _ENVELOPE_FIELD_PATHS[name]
             continue
 
+        # Route tagged containers (stats/system/identity) to canonical paths.
+        container = classify_container(name, field_def)
+
+        if container == "stats":
+            # Stats fields carry an explicit typed mapping at ``stats.<name>``
+            # in the ES index; no ``.keyword`` suffix needed.
+            mapping[name] = f"stats.{name}"
+            continue
+
+        if container == "system":
+            # System fields carry an explicit typed mapping at ``system.<name>``.
+            mapping[name] = f"system.{name}"
+            continue
+
+        if container == "identity":
+            # Identity fields (external_id, asset_id, geoid) are flat at root
+            # and already handled by _ENVELOPE_FIELD_PATHS above; this branch
+            # is a safety net for any identity-tagged field NOT in that map.
+            mapping[name] = name
+            continue
+
+        # Default: user / STAC properties lane.
         # Strings under a dynamic ``properties`` sub-tree need the ``.keyword``
-        # sub-field for exact CQL matches; numeric / temporal / boolean don't.
+        # sub-field for exact CQL2 matches; numeric / temporal / boolean don't.
         suffix = (
             _KEYWORD_SUBFIELD
             if data_type in _KEYWORD_SUBFIELD_DATA_TYPES

@@ -579,7 +579,7 @@ def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
 
 def resolve_es_field_path(
     stac_path: str,
-    known_fields: Dict[str, Dict[str, Any]],
+    known_fields: Dict[str, Any],
 ) -> str:
     """Resolve a STAC field path to the ES path it actually lives at.
 
@@ -591,6 +591,8 @@ def resolve_es_field_path(
     * ``properties.title.en``  → ``properties.title.en`` (Tier 1; ES
       routes ``.en`` to the analyzer-tagged sub-property)
     * ``properties.eo:cloud_cover`` → ``properties.eo:cloud_cover``
+    * ``properties.area``      → ``stats.area`` (container="stats")
+    * ``properties.geometry_hash`` → ``system.geometry_hash`` (container="system")
     * ``properties.foo:bar``   → ``properties.extras.foo:bar``
     * ``_external_id``         → ``_external_id`` (top-level passthrough)
 
@@ -598,11 +600,38 @@ def resolve_es_field_path(
     unchanged. Sub-paths under a Tier-1 object field (e.g.
     ``properties.title.en``) keep their full path so ES can resolve the
     leaf via the parent's sub-properties.
+
+    When ``known_fields`` carries :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+    values with a ``container`` tag, the field is routed to its canonical
+    container (``stats.*`` / ``system.*`` / flat root for identity) via
+    :func:`~dynastore.modules.storage.computed_fields.classify_container`
+    — the single classification SSOT (refs #1800).
     """
     if not stac_path.startswith("properties."):
         return stac_path
     tail = stac_path[len("properties."):]
     head, _, _ = tail.partition(".")
-    if head in known_fields or head == "extras":
+
+    if head == "extras":
         return stac_path
-    return f"properties.extras.{tail}"
+
+    field_def = known_fields.get(head)
+    if field_def is None:
+        # Unknown field — route to the extras long-tail lane.
+        return f"properties.extras.{tail}"
+
+    # Route based on container classification.
+    from dynastore.modules.storage.computed_fields import classify_container
+    container = classify_container(head, field_def)
+
+    if container == "stats":
+        return f"stats.{tail}"
+    if container == "system":
+        return f"system.{tail}"
+    if container == "identity":
+        # Identity fields (external_id, asset_id, geoid) live flat at the
+        # document root; strip the ``properties.`` prefix.
+        return tail
+
+    # Default: keep the ``properties.<name>`` path unchanged (user attrs).
+    return stac_path
