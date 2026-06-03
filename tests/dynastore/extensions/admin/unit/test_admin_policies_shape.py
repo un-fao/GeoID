@@ -24,6 +24,7 @@ def test_admin_policies_ids_pinned():
         "admin_principal_lookup",
         "admin_task_dispatch",
         "admin_task_dispatch_collection",
+        "admin_task_dispatch_privileged_deny",
     ]
 
 
