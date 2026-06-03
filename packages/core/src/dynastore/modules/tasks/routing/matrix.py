@@ -42,7 +42,12 @@ CLOUD_PROCESS_CONSUMERS: Dict[str, List[str]] = {
 
 # Processes that must stay in-process even under the cloud profile
 # (lightweight enough that spinning up a Cloud Run Job would be wasteful).
-LIGHTWEIGHT_PROCESSES: frozenset = frozenset({"requeue_dead_letter_tasks"})
+# ``tiles_invalidate`` is the light delete-only cache-invalidation path;
+# it runs as an in-process background task on the catalog service rather
+# than a Cloud Run Job.
+LIGHTWEIGHT_PROCESSES: frozenset = frozenset(
+    {"requeue_dead_letter_tasks", "tiles_invalidate"}
+)
 
 
 def build_routing_matrix(

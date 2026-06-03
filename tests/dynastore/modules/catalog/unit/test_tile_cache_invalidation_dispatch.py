@@ -15,9 +15,9 @@
 """``ItemService._dispatch_tile_cache_invalidation`` (#1292 / #1298).
 
 Verifies the write-path hook:
-* enqueues a ``tiles_preseed`` invalidate task via
-  ``enqueue_tile_invalidation_task``, passing the resolved DB engine + tenant
-  physical schema (needed to INSERT the task row),
+* enqueues a ``tiles_invalidate`` task via ``enqueue_tile_invalidation_task``,
+  passing the resolved DB engine + tenant physical schema (needed to INSERT
+  the task row),
 * is a no-op for an empty batch,
 * NEVER raises out — a cache failure must not break the write.
 """

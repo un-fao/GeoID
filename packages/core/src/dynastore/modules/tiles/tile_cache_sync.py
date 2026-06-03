@@ -18,18 +18,20 @@ When features in a collection are created or updated, any cached map tile
 that overlaps the feature's *new* bbox is now stale. This module is the
 coordinator that, on the write path, works out which tiles a batch of
 features touches across the served zoom range and enqueues a
-``tiles_preseed`` task with ``operation=invalidate`` and the batch's
-per-feature bboxes. That task runs on the EXISTING tiles-preseed Cloud Run
-Job and deletes the covered tiles (no render, no save), so the next read
-repopulates lazily from fresh data.
+``tiles_invalidate`` task with the batch's per-feature bboxes. That task
+runs IN-PROCESS as a background task on the catalog service and deletes the
+covered tiles (no render, no save), so the next read repopulates lazily from
+fresh data. The heavy seed/renew path stays on the ``tiles_preseed`` Cloud
+Run Job.
 
 Design (see #1292 / #1298):
 
-* **Reuse the preseed mechanism, no new Job (#1298).** Earlier this enqueued
-  a bespoke ``tile_cache_invalidator`` OUTBOX obligation drained by its own
-  Cloud Run Job. That separate drain is gone — invalidation is now just the
-  light branch of the preseed task (``operation=invalidate``), enqueued as a
-  normal task on the already-deployed ``tiles_preseed`` job.
+* **Dedicated lightweight task (``tiles_invalidate``).** Earlier this
+  enqueued a ``tiles_preseed`` task with ``operation=invalidate``, routing
+  it to the Cloud Run Job — wasteful for a fast delete-only operation. The
+  invalidation path is now a separate ``tiles_invalidate`` task type routed
+  to the in-process ``background`` runner on the catalog service, keeping the
+  durable OUTBOX/task contract while avoiding the Cloud Run Job overhead.
 * **Capability-gated, enabled by default.** No on/off flag. The
   participant is active for a collection when a tile reader
   (``TileStorageProtocol``) is registered AND its backing store is
@@ -457,7 +459,7 @@ async def verify_cache_store(
 
 
 # ===========================================================================
-# Enqueue side (write path) — enqueue a tiles_preseed invalidate task
+# Enqueue side (write path) — enqueue a tiles_invalidate task
 # ===========================================================================
 
 # Coordinate precision for the dedup coverage signature. 6 decimal places of
@@ -483,36 +485,6 @@ def _coverage_signature(bboxes: Sequence[Sequence[float]]) -> str:
     return hashlib.sha1(repr(rounded).encode()).hexdigest()[:16]
 
 
-async def _resolve_tile_extent(
-    catalog_id: str, collection_id: str,
-) -> Tuple[List[str], int, int]:
-    """Resolve served TMS ids + zoom range from the live ``TilesConfig``.
-
-    Falls back to safe defaults if config is unavailable. Pure read; never
-    raises.
-    """
-    from dynastore.modules import get_protocol
-    from dynastore.models.protocols import ConfigsProtocol
-    from dynastore.modules.tiles.tiles_config import TilesConfig
-
-    tms_ids: List[str] = ["WebMercatorQuad"]
-    min_zoom, max_zoom = 0, 12
-    configs = get_protocol(ConfigsProtocol)
-    if configs is None:
-        return tms_ids, min_zoom, max_zoom
-    try:
-        cfg = await configs.get_config(
-            TilesConfig, catalog_id=catalog_id, collection_id=collection_id,
-        )
-    except Exception:
-        return tms_ids, min_zoom, max_zoom
-    if isinstance(cfg, TilesConfig):
-        tms_ids = list(cfg.supported_tms_ids or tms_ids)
-        min_zoom = int(cfg.min_zoom)
-        max_zoom = int(cfg.max_zoom)
-    return tms_ids, min_zoom, max_zoom
-
-
 async def enqueue_tile_invalidation_task(
     catalog_id: str,
     collection_id: str,
@@ -523,14 +495,13 @@ async def enqueue_tile_invalidation_task(
     prior_bboxes: Optional[Sequence[TileBBox]] = None,
     caller_id: Optional[str] = None,
 ) -> int:
-    """Enqueue a ``tiles_preseed`` task with ``operation=invalidate`` (#1298).
+    """Enqueue a ``tiles_invalidate`` task to delete stale cached tiles (#1298).
 
     On a feature create/update the changed bboxes make the cached tiles
-    overlapping them stale. Rather than draining a bespoke OUTBOX obligation on
-    its own Cloud Run Job (the earlier Phase-1 design), this enqueues the LIGHT
-    branch of the existing preseed task — ``operation=invalidate`` — which runs
-    on the already-deployed ``tiles_preseed`` job and DELETES the covered tiles
-    (no render, no save). The next read repopulates lazily from fresh data.
+    overlapping them stale. This enqueues a ``tiles_invalidate`` task — the
+    light delete-only path — which runs IN-PROCESS as a background task on the
+    catalog service and DELETES the covered tiles (no render, no save). The next
+    read repopulates lazily from fresh data.
 
     ``features`` are the feature(s) whose NEW bbox is now stale (create/update).
     ``prior_bboxes`` (Phase 2, #1297) are the pre-write extents a feature USED
@@ -605,19 +576,19 @@ async def enqueue_tile_invalidation_task(
         from dynastore.modules.tasks.models import TaskCreate
         from dynastore.modules.processes.models import ExecuteRequest
 
-        # The preseed task unwraps inputs via
-        # ``TilePreseedRequest.model_validate(payload.inputs.inputs)`` — i.e. the
-        # stored task payload is an OGC ``ExecuteRequest`` whose inner ``.inputs``
-        # is the user dict. ``create_task`` stores ``TaskCreate.inputs`` verbatim
-        # and the dispatcher hydrates it back into ``ExecuteRequest(**stored)``
-        # (see processes_module.execute_process → inputs=ExecuteRequest.model_dump()
-        # and tasks/__init__.hydrate_task_payload). So we must store the full
-        # ExecuteRequest envelope, with the user dict nested under ``inputs``.
+        # ``TileInvalidateTask`` unwraps inputs via
+        # ``TileInvalidateRequest.model_validate(payload.inputs.inputs)`` — i.e.
+        # the stored task payload is an OGC ``ExecuteRequest`` whose inner
+        # ``.inputs`` is the user dict. ``create_task`` stores
+        # ``TaskCreate.inputs`` verbatim and the dispatcher hydrates it back into
+        # ``ExecuteRequest(**stored)`` (see processes_module.execute_process →
+        # inputs=ExecuteRequest.model_dump() and tasks/__init__.hydrate_task_payload).
+        # So we must store the full ExecuteRequest envelope, with the user dict
+        # nested under ``inputs``.
         exec_request = ExecuteRequest(
             inputs={
                 "catalog_id": catalog_id,
                 "collection_id": collection_id,
-                "operation": "invalidate",
                 "update_bbox": bboxes,
             }
         )
@@ -625,7 +596,7 @@ async def enqueue_tile_invalidation_task(
         task = await tasks_module.create_task(
             engine,
             TaskCreate(
-                task_type="tiles_preseed",
+                task_type="tiles_invalidate",
                 type="process",
                 caller_id=caller_id or "system:tile_cache_invalidation",
                 inputs=exec_request.model_dump(),
