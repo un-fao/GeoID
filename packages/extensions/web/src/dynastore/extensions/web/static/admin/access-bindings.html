@@ -104,6 +104,26 @@
           <button class="btn btn-secondary btn-xs" type="button"
                   id="usage-export-json" disabled
                   title="Export current usage snapshot as JSON">Export JSON</button>
+          <button class="btn btn-secondary btn-xs" type="button"
+                  id="usage-history-btn"
+                  title="Show recent quota-reset events for this catalog (GET /logs, event_type=usage_counter_reset)">Reset history</button>
+        </div>
+        <!-- Reset-history panel (#1791) — read-only view over the logs
+             subsystem, populated on demand from GET /logs/catalogs/{cat}
+             (or /logs/system) filtered by event_type=usage_counter_reset. -->
+        <div id="usage-history-panel" style="display:none; margin-bottom:8px">
+          <div class="form-actions" style="margin-bottom:6px">
+            <span class="hint" id="usage-history-status">Loading reset history&hellip;</span>
+            <button class="btn btn-secondary btn-xs" type="button"
+                    id="usage-history-csv" disabled
+                    title="Export reset history as CSV">Export CSV</button>
+            <button class="btn btn-secondary btn-xs" type="button"
+                    id="usage-history-json" disabled
+                    title="Export reset history as JSON">Export JSON</button>
+            <button class="btn btn-secondary btn-xs" type="button"
+                    id="usage-history-close" title="Hide reset history">Close</button>
+          </div>
+          <div id="usage-history-table" class="text-xs text-slate-300"></div>
         </div>
         <div id="bindings-table"></div>
       </div>

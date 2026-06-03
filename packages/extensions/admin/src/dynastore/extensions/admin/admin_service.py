@@ -2049,6 +2049,46 @@ class AdminService(ExtensionProtocol):
                 exc_info=True,
             )
 
+        # Operator-facing history (#1791): mirror the reset into the logs
+        # subsystem so it is visible through the existing /logs read API +
+        # UI at the right scope. ``audit_log`` above stays the always-on
+        # platform security SSOT; this second sink is the catalog/collection
+        # -scoped visualization trail. Platform-tier resets (no catalog)
+        # land in the system log via the ``_system_`` sentinel. Fail-soft
+        # and instant: ``immediate=True`` writes through the LogService
+        # engine so the row is queryable the moment the reset returns.
+        from dynastore.models.protocols.logs import LogsProtocol
+        from dynastore.models.shared_models import SYSTEM_CATALOG_ID
+
+        logs = get_protocol(LogsProtocol)
+        if logs is not None:
+            try:
+                await logs.log_event(
+                    catalog_id=catalog_id or SYSTEM_CATALOG_ID,
+                    event_type="usage_counter_reset",
+                    level="WARNING",
+                    message=(
+                        f"Usage counter reset for {principal_key} on "
+                        f"{policy_id} (previous_count={int(before or 0)})"
+                    ),
+                    details={
+                        "policy_id": policy_id,
+                        "subject_principal_key": principal_key,
+                        "window_seconds": window_seconds,
+                        "previous_count": int(before or 0),
+                        "actor_principal_id": str(actor_id) if actor_id else None,
+                        "catalog_id": catalog_id,
+                    },
+                    immediate=True,
+                )
+            except Exception:
+                logger.warning(
+                    "logs dual-write for usage_counter_reset failed "
+                    "(actor=%s policy=%s subject_key=%s)",
+                    actor_id, policy_id, principal_key,
+                    exc_info=True,
+                )
+
         return UsageResetResponse(
             policy_id=policy_id,
             principal_key=principal_key,
