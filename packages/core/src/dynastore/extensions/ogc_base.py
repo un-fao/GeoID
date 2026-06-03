@@ -34,7 +34,7 @@ Usage::
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, List, Optional, Tuple, Type, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, cast
 
 from fastapi import HTTPException, Request, Response, status
 
@@ -435,6 +435,341 @@ class OGCServiceMixin:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Item '{item_id}' not found.",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    # ------------------------------------------------------------------
+    # Overridable hooks — catalog + collection CRUD seams
+    # ------------------------------------------------------------------
+    # These methods express the points where STAC diverges from the
+    # OGC Features behaviour.  Each has a Features-style default that
+    # is a no-op (or the standard path), and STACService overrides
+    # only the ones that differ.
+    #
+    # Hook inventory:
+    #   _validate_catalog_create()       — pre-create driver check (STAC only)
+    #   _require_catalog_write_ready()   — readiness guard on write ops (STAC only)
+    #   _make_catalog_create_kwargs()    — extra kwargs for create_catalog (STAC: none)
+    #   _make_collection_create_kwargs() — extra kwargs, e.g. stac_context (STAC: True)
+    #   _localize_resource()             — localize a returned model (STAC: stac_localize)
+    #   _pre_update_collection_validate()— merged validation on PATCH (STAC only)
+
+    def _validate_catalog_create(self) -> None:
+        """Assert that the deployment can persist the catalog payload.
+
+        Called before ``create_catalog`` writes to the database.  Default:
+        no-op.  STACService overrides this to call
+        ``_assert_stac_capable_collection_stack()`` which fails with HTTP 422
+        when no registered driver exposes the STAC metadata domain.
+        """
+
+    async def _require_catalog_write_ready(
+        self,
+        catalog_id: str,
+        catalogs_svc: Optional[CatalogsProtocol] = None,
+    ) -> None:
+        """Guard write operations against catalogs that are not yet provisioned.
+
+        Called before replace/update/delete catalog, and before all
+        collection write operations.  Default: no-op (Features never checks
+        readiness on these paths).  STACService overrides this to call
+        ``_require_catalog_ready``.
+        """
+
+    def _make_catalog_create_kwargs(self) -> Dict[str, Any]:
+        """Return extra keyword arguments injected into ``create_catalog``.
+
+        Default: empty dict.  Override when the service needs to pass
+        additional flags (e.g. ``stac_context=True`` on the collection tier).
+        """
+        return {}
+
+    def _make_collection_create_kwargs(self) -> Dict[str, Any]:
+        """Return extra keyword arguments injected into ``create_collection``.
+
+        Default: empty dict.  STACService overrides to return
+        ``{"stac_context": True}``.
+        """
+        return {}
+
+    def _localize_resource(self, model: Any, language: str) -> Tuple[Dict[str, Any], Any]:
+        """Localize a model returned by the catalog service.
+
+        Returns a ``(data_dict, available_langs)`` 2-tuple matching the
+        contract of both ``model.localize(lang)`` and ``stac_localize(model,
+        lang)``.  Default: delegates to ``model.localize(language)``.
+        STACService overrides to use ``stac_localize``.
+        """
+        return model.localize(language)  # type: ignore[no-any-return]
+
+    async def _pre_update_collection_validate(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        input_data: Dict[str, Any],
+        request: Optional[Request] = None,
+    ) -> None:
+        """Validate a collection PATCH against the merged (existing + patch) state.
+
+        Called at the start of the shared ``_ogc_update_collection`` body,
+        before the catalog service write.  Default: no-op.  STACService
+        overrides to fetch the current collection via ``stac_generator`` and
+        validate the merged dict with ``validate_stac_collection``.
+
+        The ``request`` argument is required for the STAC override (it
+        forwards to ``stac_generator.create_collection``); Features passes
+        ``None`` because its handler signature omits ``request``.
+        """
+
+    # ------------------------------------------------------------------
+    # Shared catalog CRUD bodies (M-2)
+    # ------------------------------------------------------------------
+
+    async def _ogc_create_catalog(
+        self,
+        catalog_data: Dict[str, Any],
+        input_dump: Dict[str, Any],
+        language: str,
+        db_resource: Any,
+    ) -> Response:
+        """Shared create-catalog body used by Features and STAC.
+
+        *catalog_data* is the payload passed to ``CatalogsProtocol.create_catalog``.
+        *input_dump* is the full ``model_dump(exclude_unset=True)`` result used
+        solely to detect the language via ``detect_use_lang``.  *db_resource* is
+        the database connection (may be ``None`` when the service omits the
+        transactional context — STAC catalog creates do not pass a connection).
+        """
+        from dynastore.extensions.tools.localization_utils import detect_use_lang
+
+        self._validate_catalog_create()
+        use_lang = detect_use_lang(input_dump, language)
+        catalogs_svc = await self._get_catalogs_service()
+
+        ctx: Optional[DriverContext] = (
+            DriverContext(db_resource=db_resource) if db_resource is not None else None
+        )
+        create_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            create_kwargs["ctx"] = ctx
+        create_kwargs.update(self._make_catalog_create_kwargs())
+
+        created = await catalogs_svc.create_catalog(
+            catalog_data=catalog_data, lang=use_lang, **create_kwargs
+        )
+        localized_data, _ = self._localize_resource(created, language)
+        return JSONResponse(content=localized_data, status_code=status.HTTP_201_CREATED)
+
+    async def _ogc_replace_catalog(
+        self,
+        catalog_id: str,
+        catalog_dict: Dict[str, Any],
+        language: str,
+        db_resource: Any,
+    ) -> Response:
+        """Shared replace-catalog (PUT) body used by Features and STAC.
+
+        *catalog_dict* must already be the result of
+        ``normalize_i18n_for_replace``; this method performs no additional
+        normalization.  *db_resource* follows the same convention as
+        ``_ogc_create_catalog``.
+        """
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_write_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+        ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+        update_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            update_kwargs["ctx"] = ctx
+
+        updated = await catalogs_svc.update_catalog(
+            catalog_id, catalog_dict, lang="*", **update_kwargs
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Catalog not found",
+            )
+        localized_data, _ = self._localize_resource(updated, language)
+        return JSONResponse(content=localized_data)
+
+    async def _ogc_update_catalog(
+        self,
+        catalog_id: str,
+        catalog_dict: Dict[str, Any],
+        language: str,
+        db_resource: Any,
+    ) -> Response:
+        """Shared update-catalog (PATCH) body used by Features and STAC.
+
+        *catalog_dict* must already be the result of
+        ``model_dump(exclude_unset=True)``; this method performs no additional
+        normalization.
+        """
+        from dynastore.extensions.tools.localization_utils import detect_use_lang
+
+        use_lang = detect_use_lang(catalog_dict, language)
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_write_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+        ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+        update_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            update_kwargs["ctx"] = ctx
+
+        updated = await catalogs_svc.update_catalog(
+            catalog_id, catalog_dict, lang=use_lang, **update_kwargs
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Catalog not found",
+            )
+        localized_data, _ = self._localize_resource(updated, language)
+        return JSONResponse(content=localized_data)
+
+    async def _ogc_delete_catalog(
+        self,
+        catalog_id: str,
+        force: bool,
+        db_resource: Any,
+    ) -> Response:
+        """Shared delete-catalog body used by Features and STAC."""
+        catalogs_svc = await self._get_catalogs_service()
+        ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+        delete_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            delete_kwargs["ctx"] = ctx
+
+        if not await catalogs_svc.delete_catalog(
+            catalog_id, force=force, **delete_kwargs
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Catalog '{catalog_id}' not found.",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    # ------------------------------------------------------------------
+    # Shared collection CRUD bodies (M-3)
+    # ------------------------------------------------------------------
+
+    async def _ogc_create_collection(
+        self,
+        catalog_id: str,
+        collection_dict: Dict[str, Any],
+        language: str,
+        db_resource: Any,
+    ) -> Response:
+        """Shared create-collection body used by Features and STAC.
+
+        *collection_dict* must already be the result of
+        ``model_dump(exclude_unset=True)``.  The caller is responsible for
+        any pre-validation (e.g. STAC schema validation) before calling
+        this method.  The localization hook and the collection-create extra
+        kwargs are determined by the service-level overrides.
+        """
+        from dynastore.extensions.tools.localization_utils import detect_use_lang
+
+        use_lang = detect_use_lang(collection_dict, language)
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_write_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+        ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+        create_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            create_kwargs["ctx"] = ctx
+        create_kwargs.update(self._make_collection_create_kwargs())
+
+        created = await catalogs_svc.create_collection(
+            catalog_id, collection_dict, lang=use_lang, **create_kwargs
+        )
+        localized_data, _ = self._localize_resource(created, language)
+        return JSONResponse(content=localized_data, status_code=status.HTTP_201_CREATED)
+
+    async def _ogc_replace_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        updates_dict: Dict[str, Any],
+        language: str,
+    ) -> Response:
+        """Shared replace-collection (PUT) body used by Features and STAC.
+
+        *updates_dict* must already be the result of
+        ``normalize_i18n_for_replace``; this method performs no additional
+        normalization.  No ``db_resource`` / transactional context is passed
+        on this path (neither Features nor STAC injects one for replace).
+        """
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_write_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+        updated = await catalogs_svc.update_collection(
+            catalog_id, collection_id, updates_dict, lang="*"
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
+        localized_data, _ = self._localize_resource(updated, language)
+        return JSONResponse(content=localized_data)
+
+    async def _ogc_update_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        updates_dict: Dict[str, Any],
+        language: str,
+        request: Optional[Request] = None,
+    ) -> Response:
+        """Shared update-collection (PATCH) body used by Features and STAC.
+
+        *updates_dict* must already be the result of
+        ``model_dump(exclude_unset=True)``.  ``request`` is forwarded to
+        ``_pre_update_collection_validate`` for services (STAC) that need
+        to fetch the current state before merging and validating.
+        """
+        from dynastore.extensions.tools.localization_utils import detect_use_lang
+
+        await self._pre_update_collection_validate(
+            catalog_id, collection_id, updates_dict, request
+        )
+        use_lang = detect_use_lang(updates_dict, language)
+        catalogs_svc = await self._get_catalogs_service()
+        await self._require_catalog_write_ready(catalog_id, catalogs_svc=catalogs_svc)
+
+        updated = await catalogs_svc.update_collection(
+            catalog_id, collection_id, updates_dict, lang=use_lang
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
+            )
+        localized_data, _ = self._localize_resource(updated, language)
+        return JSONResponse(content=localized_data)
+
+    async def _ogc_delete_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        force: bool,
+        db_resource: Any,
+    ) -> Response:
+        """Shared delete-collection body used by Features and STAC."""
+        catalogs_svc = await self._get_catalogs_service()
+        ctx = DriverContext(db_resource=db_resource) if db_resource is not None else None
+        delete_kwargs: Dict[str, Any] = {}
+        if ctx is not None:
+            delete_kwargs["ctx"] = ctx
+
+        if not await catalogs_svc.delete_collection(
+            catalog_id, collection_id, force, **delete_kwargs
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found.",
             )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 

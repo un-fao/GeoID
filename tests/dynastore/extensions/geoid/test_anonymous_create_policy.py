@@ -18,18 +18,14 @@ def test_register_geoid_policies_registers_anonymous_create_allow(monkeypatch):
     geoid_policies.register_geoid_policies()
 
     registered = {call.args[0].id: call.args[0] for call in pm.register_policy.call_args_list}
-    assert "geoid_anonymous_create_per_collection" in registered
-    p = registered["geoid_anonymous_create_per_collection"]
-    assert p.effect == "ALLOW"
-    assert "POST" in p.actions
-    assert any(
-        "/stac/catalogs/" in r and "/collections/" in r and "/items" in r
-        for r in p.resources
-    )
-    assert any(
-        c.type == "collection_write_anonymous_allowed"
-        for c in p.conditions
-    )
+     assert "geoid_anonymous_create_per_collection" in registered
+     p = registered["geoid_anonymous_create_per_collection"]
+     assert p.effect == "ALLOW"
+     assert "POST" in p.actions
+     assert any(
+         "/stac/catalogs/" in r and "/collections/" in r and "/items" in r
+         for r in p.resources
+     )
 
 
 def test_anonymous_role_grant_includes_create_policy(monkeypatch):

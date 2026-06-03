@@ -829,6 +829,12 @@ class PolicyService:
                         trace_rec.why_not = f"path {path!r} not in policy resources"
                 continue
 
+            # Stamp the policy effect so condition handlers can resolve
+            # invalid-regex outcomes effect-aware: a DENY keeps denying,
+            # an ALLOW does not grant on a bad pattern (#1775).
+            if request_context is not None:
+                request_context.effect = p.effect
+
             conditions_met = True
             if p.conditions:
                 # Inject the owning policy id for every condition config dict so
@@ -1166,7 +1172,7 @@ def _read_scope_probe_paths(
             f"/stac/catalogs/{cat}/collections/{col}/items",
             f"/stac/catalogs/{cat}/collections/{col}/items/_probe_",
             f"/features/catalogs/{cat}/collections/{col}/items",
-            f"/search/catalogs/{cat}/items-search",
+            f"/search/catalogs/{cat}/geoid-search",
             f"/stac/catalogs/{cat}/search",
         )
     # Catalog-wide read scope: also probe a representative collection-item
@@ -1181,7 +1187,7 @@ def _read_scope_probe_paths(
         f"/stac/catalogs/{cat}/collections/_probe_/items/_probe_",
         f"/features/catalogs/{cat}",
         f"/features/catalogs/{cat}/collections/_probe_/items",
-        f"/search/catalogs/{cat}/items-search",
+        f"/search/catalogs/{cat}/geoid-search",
         f"/stac/catalogs/{cat}/search",
     )
 
