@@ -15,6 +15,14 @@ Design philosophy (post-#887):
     ``description`` generators, generic ``strings`` / ``numerics``
     catch-alls, ``proj:*`` specials) are retained for catalog / collection /
     asset until commit 3; the items factory drops them entirely.
+  - Post-#1800: ``build_item_mapping`` also emits nested ``stats``
+    (geometry-derived statistics) and ``system`` (identity/lifecycle)
+    containers when the incoming ``known_fields`` map carries
+    :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+    values tagged with the corresponding ``container``. Both containers are
+    ``dynamic: false``; their ES types are pinned. Tier-1 plain-dict
+    entries are unaffected (they carry no ``container`` attribute and
+    continue to land in ``properties``).
 """
 from typing import Any, Dict, List
 
@@ -211,7 +219,62 @@ COLLECTION_MAPPING: Dict[str, Any] = {
 }
 
 
-def build_item_mapping(known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def _field_def_container(name: str, field_def: Any) -> str:
+    """Return the container classification for a known-field entry.
+
+    Supports both plain ES-type dicts (Tier-1 backward compat) and
+    :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+    instances carrying a ``container`` tag. Plain dicts have no container
+    attribute and always land in ``properties``. FieldDefinition values are
+    routed through :func:`~dynastore.modules.storage.computed_fields.classify_container`
+    so the single classification SSOT is respected (refs #1800).
+    """
+    if not hasattr(field_def, "container"):
+        # Plain dict (Tier-1 raw ES type entry) — always properties lane.
+        return "properties"
+    # FieldDefinition with a container tag: use the classifier SSOT.
+    from dynastore.modules.storage.computed_fields import classify_container
+    return classify_container(name, field_def)
+
+
+def _field_def_es_type(field_def: Any) -> Dict[str, Any]:
+    """Derive the ES type mapping fragment for a FieldDefinition or plain dict.
+
+    Plain dicts (Tier-1) are returned unchanged.  FieldDefinition values are
+    converted from the canonical ``data_type`` token to an ES type.
+
+    Pinned types for the canonical containers (refs #1800):
+
+    * ``system.external_id`` / ``system.asset_id`` / ``system.geometry_hash``
+      / ``system.attributes_hash`` / ``system.validity`` → ``keyword``
+    * ``system.transaction_time`` / ``system.deleted_at`` → ``date``
+    * ``stats.area`` → ``double``
+    * ``stats.centroid`` → ``keyword`` (WKB hex — single sortable/filterable
+      token; NOT geo_point: the WKB encoding is not a lat/lon pair, so ES
+      would either reject it or silently misinterpret the bytes.  Clients
+      that need point queries on centroid should index a separate geo_point
+      projection; the keyword field is for exact CQL2 matches and sorting).
+    * ``stats.s2_*`` / ``stats.h3_*`` / ``stats.geohash_*`` → ``keyword``
+    """
+    if not hasattr(field_def, "data_type"):
+        # Plain dict — return as-is.
+        return field_def  # type: ignore[return-value]
+    dt = (getattr(field_def, "data_type", "") or "").lower()
+    if dt in ("timestamp", "date", "time"):
+        return {"type": "date"}
+    if dt in ("double", "numeric", "float"):
+        return {"type": "double"}
+    if dt in ("integer", "bigint"):
+        return {"type": "long"}
+    if dt == "boolean":
+        return {"type": "boolean"}
+    # string / uuid / binary / unknown canonical → keyword (safe for all
+    # system and stats fields; properties-lane known fields with complex
+    # localized structure are plain dicts from Tier 1, not FieldDefinition).
+    return {"type": "keyword"}
+
+
+def build_item_mapping(known_fields: Dict[str, Any]) -> Dict[str, Any]:
     """Build the strict items mapping for a catalog given its known-fields map.
 
     Shape:
@@ -230,6 +293,14 @@ def build_item_mapping(known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any
       the unknown tail rides on the root ``_search_text`` field, which
       :func:`items_projection.project_item_for_es` populates from the
       same extras values at write time.
+    * ``stats.dynamic = false`` (new, refs #1800) — typed nested object for
+      geometry-derived statistics (``area``, ``centroid``, spatial cells).
+      Only present when the ``known_fields`` map carries at least one entry
+      with ``container="stats"``.
+    * ``system.dynamic = false`` (new, refs #1800) — typed nested object for
+      identity + lifecycle fields (``geometry_hash``, ``attributes_hash``,
+      ``validity``, ``transaction_time``, ``deleted_at``).
+      Only present when ``known_fields`` carries a system-tagged entry.
 
     The projection helper (``items_projection.project_item_for_es``)
     enforces the shape at write time; ES enforces it at the mapping
@@ -237,20 +308,60 @@ def build_item_mapping(known_fields: Dict[str, Dict[str, Any]]) -> Dict[str, Any
     index — guaranteed because both ``ensure_storage`` and every write
     call route through :func:`build_known_fields`.
     """
-    return {
-        "dynamic": False,
+    # Partition the known-fields map by container so each bucket ends up in
+    # the right nested object.  Plain-dict Tier-1 entries carry no container
+    # attribute and always route to ``properties``.
+    props_fields: Dict[str, Any] = {}
+    stats_fields: Dict[str, Any] = {}
+    system_fields: Dict[str, Any] = {}
+
+    for name, field_def in known_fields.items():
+        container = _field_def_container(name, field_def)
+        es_type = _field_def_es_type(field_def)
+        if container == "stats":
+            stats_fields[name] = es_type
+        elif container == "system":
+            system_fields[name] = es_type
+        elif container == "identity":
+            # Identity fields (external_id, asset_id, geoid) are already
+            # declared in COMMON_PROPERTIES at the document root.  They must
+            # NOT be duplicated inside ``properties``, ``stats``, or ``system``.
+            pass
+        else:
+            # Default: properties lane.
+            props_fields[name] = es_type
+
+    # Assemble the top-level mapping.
+    root_properties: Dict[str, Any] = {
+        **COMMON_PROPERTIES,
+        "geometry": {"type": "geo_shape"},
+        "bbox": {"type": "float"},
         "properties": {
-            **COMMON_PROPERTIES,
-            "geometry": {"type": "geo_shape"},
-            "bbox": {"type": "float"},
+            "dynamic": False,
             "properties": {
-                "dynamic": False,
-                "properties": {
-                    **known_fields,
-                    "extras": {"type": "flattened"},
-                },
+                **props_fields,
+                "extras": {"type": "flattened"},
             },
         },
+    }
+
+    # Emit the ``stats`` container only when there are tagged stats fields.
+    if stats_fields:
+        root_properties["stats"] = {
+            "dynamic": False,
+            "properties": stats_fields,
+        }
+
+    # Emit the ``system`` container only when there are tagged system fields.
+    if system_fields:
+        root_properties["system"] = {
+            "dynamic": False,
+            "properties": system_fields,
+        }
+
+    return {
+        "dynamic": False,
+        "properties": root_properties,
     }
 
 
