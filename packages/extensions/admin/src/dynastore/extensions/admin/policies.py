@@ -57,10 +57,14 @@ def admin_policies() -> List[Policy]:
     - ``admin_task_dispatch_collection`` — POST on the collection-level
       task dispatch surface
       (``/admin/catalogs/{cat}/collections/{col}/tasks``). Bound to
-      sysadmin only because the ``backfill_envelope_attrs`` action
-      available here is a sysadmin-only operation (mirrors the scope of
-      ``search_envelope_backfill_sysadmin``). The sysadmin role also
-      holds ``admin_task_dispatch`` so they can reach both routes.
+      sysadmin + admin so a catalog-admin who can reindex a whole
+      catalog can also act on a single collection within it (the
+      collection scope is a subset of the catalog scope — gating it more
+      tightly than the catalog route would be inconsistent). The
+      ``backfill_envelope_attrs`` action is thereby reachable by admin as
+      well; per-action privilege gating (keeping backfill sysadmin-only)
+      is not expressible with path-pattern policies alone and is tracked
+      as a follow-up.
     """
     return [
         Policy(
@@ -131,10 +135,11 @@ def admin_policies() -> List[Policy]:
         Policy(
             id="admin_task_dispatch_collection",
             description=(
-                "Grants sysadmin the ability to dispatch tasks at collection "
-                "scope via POST /admin/catalogs/{cat}/collections/{col}/tasks. "
-                "Sysadmin-only because the backfill_envelope_attrs action "
-                "available here is a privileged data-repair operation."
+                "Grants admin and sysadmin the ability to dispatch tasks at "
+                "collection scope via POST "
+                "/admin/catalogs/{cat}/collections/{col}/tasks. Collection "
+                "scope is a subset of the catalog route, so it carries the "
+                "same admin+sysadmin binding."
             ),
             actions=["POST"],
             resources=[r"^/admin/catalogs/[^/]+/collections/[^/]+/tasks$"],
@@ -168,10 +173,12 @@ def admin_role_bindings(
             name="catalog_admin",
             policies=["admin_catalogs_list", "admin_principal_lookup"],
         ),
-        # Task-dispatch: both admin tiers can trigger catalog-scoped tasks
-        # (e.g. reindex). Collection-scoped tasks (e.g. backfill_envelope_attrs)
-        # are sysadmin-only because they perform privileged data-repair ops.
+        # Task-dispatch: both admin tiers can trigger catalog- and
+        # collection-scoped tasks (e.g. reindex). The collection scope is a
+        # subset of the catalog scope, so it carries the same admin+sysadmin
+        # binding rather than a tighter one.
         Role(name=sysadmin_role_name, policies=["admin_task_dispatch"]),
         Role(name=admin_role_name, policies=["admin_task_dispatch"]),
         Role(name=sysadmin_role_name, policies=["admin_task_dispatch_collection"]),
+        Role(name=admin_role_name, policies=["admin_task_dispatch_collection"]),
     ]

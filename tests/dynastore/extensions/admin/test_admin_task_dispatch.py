@@ -308,8 +308,10 @@ def test_admin_task_dispatch_role_bindings():
     assert "admin_task_dispatch_collection" in role_policies.get(sysadmin, set()), (
         f"sysadmin ({sysadmin}) must be bound to admin_task_dispatch_collection"
     )
-    # admin role should NOT be bound to the collection-dispatch policy
-    assert "admin_task_dispatch_collection" not in role_policies.get(admin, set()), (
-        f"admin ({admin}) must NOT be bound to admin_task_dispatch_collection "
-        "(collection-level dispatch is sysadmin-only)"
+    # admin role is also bound to the collection-dispatch policy: collection
+    # scope is a subset of the catalog scope, so it carries the same
+    # admin+sysadmin binding rather than a tighter one.
+    assert "admin_task_dispatch_collection" in role_policies.get(admin, set()), (
+        f"admin ({admin}) must be bound to admin_task_dispatch_collection "
+        "(collection scope is a subset of the catalog scope it can reindex)"
     )

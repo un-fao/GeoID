@@ -50,8 +50,9 @@ def test_sysadmin_and_admin_task_dispatch_bindings():
     noticing a privilege regression.
 
     Both sysadmin and admin must be bound to admin_task_dispatch (catalog-scope
-    task dispatch). Only sysadmin is bound to admin_task_dispatch_collection
-    (collection-scope dispatch is sysadmin-only).
+    task dispatch) AND admin_task_dispatch_collection (collection-scope
+    dispatch): the collection scope is a subset of the catalog scope, so it
+    carries the same admin+sysadmin binding rather than a tighter one.
     """
     # Build a dict: role_name -> list of all policies across all binding rows.
     # Note: the same role may appear in multiple Role rows (one per policy),
@@ -76,7 +77,8 @@ def test_sysadmin_and_admin_task_dispatch_bindings():
     assert "admin_task_dispatch" in policy_sets.get("sysadmin", set())
     assert "admin_task_dispatch" in policy_sets.get("admin", set())
     assert "admin_task_dispatch_collection" in policy_sets.get("sysadmin", set())
-    assert "admin_task_dispatch_collection" not in policy_sets.get("admin", set()), (
-        "admin role must NOT be bound to admin_task_dispatch_collection "
-        "(collection-level dispatch is sysadmin-only)"
+    assert "admin_task_dispatch_collection" in policy_sets.get("admin", set()), (
+        "admin role must be bound to admin_task_dispatch_collection so a "
+        "catalog-admin can act on a single collection (subset of the catalog "
+        "scope it can already reindex)"
     )
