@@ -728,10 +728,10 @@ class TemplatingExtension(ExtensionProtocol):
         attr_prefix: str = Query("@"),
         exclude_attributes: bool = Query(False)
     ):
-        from dynastore.extensions.httpx.httpx_service import get_httpx_client
-        client: httpx.AsyncClient = await get_httpx_client(request)
-
         """Streaming XML parser endpoint for large files"""
+        # No httpx client needed: this endpoint streams the inbound request
+        # body (``request.stream()``), it makes no outbound fetch. The URL
+        # variant (``stream_parse_get``) is the one that needs an httpx client.
         async def post_stream():
             total_size = 0
             async for chunk in request.stream():
@@ -842,15 +842,23 @@ class TemplatingExtension(ExtensionProtocol):
             config["exclude_attributes"] = exclude_attributes
             
             result = await convert_xml(xml_content, config, parser)
-            
-            return json.loads(
-                json.dumps(
-                    result,
-                    indent=2 if pretty_print else None,
-                    default=str
-                )
+
+            payload = json.dumps(
+                result,
+                indent=2 if pretty_print else None,
+                default=str,
             )
-            
+            # Return an explicit Response so the headers built above (the
+            # Cache-Control derived from ``max_age`` and X-Content-Type-Options)
+            # are actually applied — returning a bare dict makes FastAPI build a
+            # fresh JSONResponse and silently drops them (and re-serializes,
+            # discarding ``pretty_print``). Both params were previously inert.
+            return Response(
+                content=payload,
+                media_type="application/json",
+                headers=headers,
+            )
+
         except HTTPException as e:
             raise e
         except Exception as e:

@@ -31,7 +31,6 @@ from dynastore.modules.db_config.query_executor import (
 from dynastore.models.protocols import (
     ConfigsProtocol,
 )
-from dynastore.modules.gcp import gcp_db
 from dynastore.modules.gcp.gcp_config import (
     GcpCatalogBucketConfig,
     GcpEventingConfig,
@@ -347,9 +346,8 @@ class GcpCatalogOpsMixin:
 
         # ── Phase 1: DB reads (short transaction, released before any GCP API call) ──
         async with managed_transaction(self.engine) as conn:
-            existing_bucket_name = await gcp_db.get_bucket_for_catalog_query.execute(
-                conn, catalog_id=catalog_id
-            )
+            # Bucket existence is (re)checked idempotently inside
+            # ``ensure_storage_for_catalog`` below, so we don't read it here.
             existing_eventing_config = await self.get_eventing_config(
                 catalog_id, conn=conn, context=context
             )
