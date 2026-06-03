@@ -252,18 +252,13 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
             ),
             Policy(
                 id="geoid_anonymous_create_per_collection",
-                description=(
-                    "Allow anonymous POST of a new item to "
-                    "/stac/catalogs/{cat}/collections/{col}/items or "
-                    "/features/catalogs/{cat}/collections/{col}/items when the "
-                    "collection has opted in via "
-                    "CollectionWriteAudience.allow_anonymous_create. Carries a "
-                    "higher priority than the enumeration DENYs so the opted-in "
-                    "item-POST wins the #915 ranking, while every browse/list/"
-                    "search verb stays denied (the DENYs keep full coverage). "
-                    "A catalog-wide daily rate-limit caps anonymous writes "
-                    "at _ANON_WRITE_LIMIT per _ANON_WRITE_WINDOW_SECONDS."
-                ),
+                 description=(
+                     "Allow anonymous POST of a new item to "
+                     "/stac/catalogs/{cat}/collections/{col}/items or "
+                     "/features/catalogs/{cat}/collections/{col}/items. "
+                     "A catalog-wide daily rate-limit caps anonymous writes "
+                     "at _ANON_WRITE_LIMIT per _ANON_WRITE_WINDOW_SECONDS."
+                 ),
                 actions=["POST"],
                 # Both intake paths: STAC transactions and OGC Features. The
                 # enumeration DENYs match this same item-POST (they cover
@@ -279,31 +274,28 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
                 # principal), capping the total anonymous write volume.
                 # The limit lives here in policy data so an operator can edit or
                 # remove it via a policy update without a code deployment.
-                conditions=[
-                    # Gate 1 — per-collection opt-in (cheap, no counter I/O).
-                    {"type": "collection_write_anonymous_allowed"},
-                    # Gate 2 — catalog-wide daily cap on anonymous writes.
-                    # Over-limit → 429. scope=catalog → one counter per catalog_id.
-                    {
-                        "type": "rate_limit",
-                        "config": {
-                            "limit": _ANON_WRITE_LIMIT,
-                            "window_seconds": _ANON_WRITE_WINDOW_SECONDS,
-                            "scope": "catalog",
-                            "methods": ["POST", "PUT", "PATCH", "DELETE"],
-                        },
-                    },
-                ],
+                 conditions=[
+                     # Gate 2 — catalog-wide daily cap on anonymous writes.
+                     # Over-limit → 429. scope=catalog → one counter per catalog_id.
+                     {
+                         "type": "rate_limit",
+                         "config": {
+                             "limit": _ANON_WRITE_LIMIT,
+                             "window_seconds": _ANON_WRITE_WINDOW_SECONDS,
+                             "scope": "catalog",
+                             "methods": ["POST", "PUT", "PATCH", "DELETE"],
+                         },
+                     },
+                 ],
                 effect="ALLOW",
-                # The STAC/Features enumeration DENYs (_PRIORITY_ENUM_DENY=100)
-                # cover the item-POST path. Evaluation is highest-priority-wins
-                # with DENY-on-tie (PolicyService.evaluate_access, #915), so a
-                # lower- or equal-priority ALLOW would lose to those DENYs.
-                # _PRIORITY_ANON_CREATE=500 lets the create ALLOW win — but ONLY
-                # for a request that also passes the per-collection
-                # ``collection_write_anonymous_allowed`` gate. Browse/list/search
-                # verbs never match this POST-only ALLOW, so they remain denied:
-                # the "blind dropbox" stays blind.
+                 # The STAC/Features enumeration DENYs (_PRIORITY_ENUM_DENY=100)
+                 # cover the item-POST path. Evaluation is highest-priority-wins
+                 # with DENY-on-tie (PolicyService.evaluate_access, #915), so a
+                 # lower- or equal-priority ALLOW would lose to those DENYs.
+                 # _PRIORITY_ANON_CREATE=500 lets the create ALLOW win over the
+                 # enumeration DENYs. Browse/list/search verbs never match this
+                 # POST-only ALLOW, so they remain denied (the "blind dropbox"
+                 # stays blind).
                 priority=_PRIORITY_ANON_CREATE,
             ),
             # --- Catalog admin policies ---
