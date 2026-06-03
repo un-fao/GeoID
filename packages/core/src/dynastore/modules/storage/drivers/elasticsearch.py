@@ -896,7 +896,6 @@ class ItemsElasticsearchDriver(
         from datetime import datetime, timezone
 
         from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
-        from dynastore.modules.elasticsearch.items_projection import project_item_for_es
         from dynastore.modules.catalog.canonical_index_read import CanonicalIndexInput
         from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 

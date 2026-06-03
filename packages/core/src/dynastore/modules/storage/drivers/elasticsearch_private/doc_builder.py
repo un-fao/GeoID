@@ -95,12 +95,18 @@ def build_tenant_feature_doc(
 
     # --- Feature / dict path ---
     # Extract raw src dict from whatever the caller supplied.
-    if hasattr(item, "model_dump"):
-        src = item.model_dump(by_alias=True, exclude_none=True)
-    elif isinstance(item, dict):
-        src = item
+    # The CanonicalIndexInput path returned early above; item is a Feature,
+    # STAC dict, or plain dict at this point.  We cast to Any to avoid
+    # pyright narrowing confusion from the CanonicalIndexInput isinstance
+    # check inside the try/except above.
+    _item_any: Any = item
+    src: Dict[str, Any]
+    if hasattr(_item_any, "model_dump"):
+        src = _item_any.model_dump(by_alias=True, exclude_none=True)
+    elif isinstance(_item_any, dict):
+        src = _item_any
     else:
-        src = dict(item)
+        src = dict(_item_any)
 
     geoid = src.get("id") or src.get("geoid")
     raw_props = src.get("properties") or {}
