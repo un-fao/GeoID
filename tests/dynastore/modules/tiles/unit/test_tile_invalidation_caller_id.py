@@ -60,7 +60,7 @@ async def test_uses_supplied_caller_id() -> None:
     tc = captured["task_create"]
     assert tc.caller_id == "user:alice"
     assert tc.collection_id == "col1"
-    assert tc.task_type == "tiles_preseed"
+    assert tc.task_type == "tiles_invalidate"
     assert captured["kwargs"]["schema"] == "s_xyz"
 
 
