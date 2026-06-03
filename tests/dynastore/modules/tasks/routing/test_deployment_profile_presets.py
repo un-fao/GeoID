@@ -46,8 +46,10 @@ def _build_preset(profile: str) -> PresetBundle:
     }
     preset = mapping[profile]
     # Patch _DYNASTORE_TASKS to empty dict so build() does not need a live
-    # task registry.
-    with patch("dynastore.modules.tasks.routing.presets._DYNASTORE_TASKS", {}):
+    # task registry. presets.build() reads it via a call-time
+    # ``from dynastore.tasks import _DYNASTORE_TASKS`` (not a module-level
+    # attribute of ``presets``), so the patch must target the source module.
+    with patch("dynastore.tasks._DYNASTORE_TASKS", {}):
         return preset.build()
 
 
