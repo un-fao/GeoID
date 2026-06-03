@@ -68,12 +68,15 @@ class AssetStore(Protocol):
 
     async def ensure_storage(
         self,
-        catalog_id: str,
+        catalog_id: Optional[str] = None,
         collection_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         """Create or verify the backing storage for asset documents.
 
         Called during collection creation or driver activation.
+        Extra keyword arguments are accepted for cross-tier signature parity
+        and ignored by this protocol method.
         """
         ...
 

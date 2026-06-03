@@ -1,18 +1,29 @@
-"""PR-2b smoke tests for the regular-driver bulk reindex tasks.
+"""Unit tests for the routing-driven bulk reindex tasks.
 
-Covers shape only — does not exercise live ES. Stubs:
-  * ``get_client`` → fake ES with capture lists
-  * ``get_index_prefix`` → constant
-  * ``get_protocol(CatalogsProtocol)`` → fake catalogs proto returning a
-    fixed page of features then EOF
-  * ``ConfigsProtocol`` lookup of ``ItemsRoutingConfig`` → routing
-    that lists ``ItemsElasticsearchDriver`` (so the collection is
-    eligible for reindex) or doesn't (so it skips)
+The bulk reindex implementation was redesigned to resolve both the reader and
+writer via the storage routing layer rather than hardcoding driver references.
+
+Coverage in this file:
+
+- Routing resolution: reader comes from get_items_search_driver (GEOMETRY_EXACT
+  hint → PG primary); writer comes from get_write_drivers filtered to the first
+  secondary-index (is_item_indexer) driver distinct from the reader.
+- Streaming contract: features from reader.read_entities are written via
+  writer.write_entities in chunks.
+- Error propagation: a write_entities failure propagates (no silent success).
+- Skip condition: collections not routing through the public ES driver are skipped.
+- driver_hint input: an explicit driver_ref in task inputs selects the WRITE target.
+- Pre-reindex wipe: delete_by_query still fires before the routing-driven reindex.
+- Supersedes ``test_bypass_matches_dispatcher_bulk_contract``: the hardcoded-bypass
+  path (issue #507 Option B) has been replaced by routing-resolved read/write; the
+  contract that the reindex produces the same shape as the dispatcher is no longer
+  load-bearing because write_entities (the normal write path) IS the dispatcher entry
+  point — both paths are identical by construction.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import AsyncIterator, Dict, List, Optional
 from unittest.mock import patch
 
 import pytest
@@ -27,19 +38,15 @@ from dynastore.tasks.elasticsearch_indexer.tasks import (
 )
 
 
-class _FakeIndices:
-    pass
-
+# ---------------------------------------------------------------------------
+# Fakes shared across tests
+# ---------------------------------------------------------------------------
 
 class _FakeEs:
-    def __init__(self):
-        self.indices = _FakeIndices()
-        self.bulk_calls: list = []
-        self.delete_by_query_calls: list = []
+    """Minimal fake AsyncElasticsearch for pre-reindex delete_by_query calls."""
 
-    async def bulk(self, *, body, params=None, **kwargs):
-        self.bulk_calls.append({"body": body, "params": params})
-        return {"items": []}
+    def __init__(self):
+        self.delete_by_query_calls: list = []
 
     async def delete_by_query(self, *, index, body, params=None, **kwargs):
         self.delete_by_query_calls.append({
@@ -49,34 +56,90 @@ class _FakeEs:
 
 
 class _FakeCatalogs:
-    """Returns a single page of features then EOF."""
+    """CatalogsProtocol stub that lists a fixed set of collections."""
 
-    def __init__(self, features_per_collection: Dict[str, List[Dict]]):
-        self._features_per_collection = features_per_collection
-        self._served = set()
-
-    async def search(self, catalog_id, collection_id, *, limit, offset):
-        if collection_id in self._served:
-            return {"features": []}
-        self._served.add(collection_id)
-        return {"features": self._features_per_collection.get(collection_id, [])}
+    def __init__(self, collection_ids: List[str]):
+        self._collection_ids = collection_ids
 
     async def list_collections(self, catalog_id, *, limit, offset):
         if offset > 0:
             return []
-        # Simple object with .id
         return [
             type("C", (), {"id": cid})
-            for cid in self._features_per_collection.keys()
+            for cid in self._collection_ids
         ]
 
 
-def _routing_with_es(driver_ref: str = "items_elasticsearch_driver"):
-    """Fake ItemsRoutingConfig listing the regular ES driver as a WRITE
-    secondary index."""
+def _make_feature(item_id: str) -> dict:
+    return {
+        "id": item_id,
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+        "properties": {},
+    }
+
+
+class _FakeReader:
+    """Fake CollectionItemsStore implementing read_entities as an async iterator."""
+
+    driver_id = "fake_reader_driver"
+    preferred_chunk_size: int = 0
+    is_item_indexer: bool = False
+
+    def __init__(self, features_by_collection: Dict[str, List[dict]]):
+        self._features = features_by_collection
+        self._calls: list = []
+
+    async def read_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        **kwargs,
+    ) -> AsyncIterator:
+        self._calls.append((catalog_id, collection_id, limit, offset))
+        page = self._features.get(collection_id, [])
+        # Return items from offset up to offset+limit (simulate pagination).
+        slice_ = page[offset: offset + limit]
+        for f in slice_:
+            yield f
+
+
+class _FakeWriter:
+    """Fake CollectionItemsStore implementing write_entities."""
+
+    driver_id = "fake_writer_driver"
+    preferred_chunk_size: int = 0
+    is_item_indexer: bool = True  # marks as secondary-index / ES-like target
+
+    def __init__(self, raise_on_write: Optional[Exception] = None):
+        self._raise = raise_on_write
+        self.written_batches: list = []
+
+    async def write_entities(self, catalog_id, collection_id, entities, **kwargs):
+        if self._raise:
+            raise self._raise
+        self.written_batches.append(list(entities))
+        return list(entities)
+
+
+class _FakeResolvedDriver:
+    """Minimal stand-in for ResolvedDriver."""
+
+    def __init__(self, driver, driver_ref: str):
+        self.driver = driver
+        self.driver_ref = driver_ref
+
+
+def _make_routing_config(driver_ref: str = "items_elasticsearch_driver", secondary_index: bool = True):
     return type("Routing", (), {
         "operations": {"WRITE": [
-            type("Entry", (), {"driver_ref": driver_ref, "secondary_index": True})()
+            type("Entry", (), {
+                "driver_ref": driver_ref,
+                "secondary_index": secondary_index,
+            })()
         ]},
     })()
 
@@ -90,10 +153,8 @@ def _routing_without_es():
 
 
 def _make_payload(model_inputs):
-    """Wrap pydantic inputs in the TaskPayload shape the run() expects."""
     from uuid import uuid4
     from dynastore.modules.tasks.models import TaskPayload
-
     return TaskPayload(
         task_id=uuid4(),
         caller_id="tests:bulk-reindex",
@@ -101,13 +162,55 @@ def _make_payload(model_inputs):
     )
 
 
+# ---------------------------------------------------------------------------
+# Helper: build the routing-layer patch context for reindex_collection_into_index
+# ---------------------------------------------------------------------------
+
+def _build_router_patches(
+    reader: _FakeReader,
+    writer: _FakeWriter,
+    reader_ref: str = "items_postgresql_driver",
+    writer_ref: str = "items_elasticsearch_driver",
+):
+    """Return a context-manager that patches the routing layer for bulk_reindex."""
+    resolved_reader = _FakeResolvedDriver(reader, reader_ref)
+    resolved_writer = _FakeResolvedDriver(writer, writer_ref)
+
+    async def _fake_get_items_search_driver(catalog_id, collection_id, *, hints=frozenset()):
+        return resolved_reader
+
+    async def _fake_get_write_drivers(catalog_id, collection_id, *, hints=frozenset()):
+        return [resolved_writer]
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def _ctx():
+        with patch(
+            "dynastore.modules.elasticsearch.bulk_reindex.get_items_search_driver",
+            side_effect=_fake_get_items_search_driver,
+        ), patch(
+            "dynastore.modules.elasticsearch.bulk_reindex.get_write_drivers",
+            side_effect=_fake_get_write_drivers,
+        ):
+            yield
+
+    return _ctx()
+
+
+# ---------------------------------------------------------------------------
+# Tests: routing resolution
+# ---------------------------------------------------------------------------
+
 @pytest.mark.asyncio
-async def test_collection_reindex_targets_tenant_index_with_routing(monkeypatch):
-    es = _FakeEs()
-    catalogs = _FakeCatalogs({"col1": [{"id": "f1"}, {"id": "f2"}]})
+async def test_reindex_reader_is_routing_resolved_not_hardcoded():
+    """Reindex resolves the reader via get_items_search_driver, not a hardcoded
+    catalogs_proto.search call.  The reader is distinct from the writer."""
+    reader = _FakeReader({"col1": [_make_feature("f1"), _make_feature("f2")]})
+    writer = _FakeWriter()
 
     async def _get_config(model, *, catalog_id, collection_id=None):
-        return _routing_with_es()
+        return _make_routing_config()
 
     fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
 
@@ -115,50 +218,228 @@ async def test_collection_reindex_targets_tenant_index_with_routing(monkeypatch)
         name = getattr(proto, "__name__", str(proto))
         if "ConfigsProtocol" in name:
             return fake_configs
-        if "CatalogsProtocol" in name:
-            return catalogs
         return None
 
-    with patch(
-        "dynastore.modules.elasticsearch.client.get_client", return_value=es,
-    ), patch(
-        "dynastore.modules.elasticsearch.client.get_index_prefix",
-        return_value="dynastore",
-    ), patch(
-        "dynastore.tools.discovery.get_protocol", side_effect=_get_protocol,
-    ):
-        task = BulkCollectionReindexTask()
-        result = await task.run(_make_payload(
-            BulkCollectionReindexInputs(catalog_id="cat1", collection_id="col1"),
-        ))
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol):
+        async with _build_router_patches(reader, writer):
+            with patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+                return_value=None,
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+                return_value="dynastore-cat1-items",
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+                return_value="dynastore",
+            ):
+                from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+                total = await reindex_collection_into_index("cat1", "col1")
 
-    assert result["status"] == "done"
-    assert result["total_indexed"] == 2
-
-    # Pre-reindex delete_by_query was issued with collection scope.
-    assert es.delete_by_query_calls
-    dbq = es.delete_by_query_calls[0]
-    assert dbq["index"] == "dynastore-cat1-items"
-    assert dbq["body"] == {"query": {"term": {"collection": "col1"}}}
-    assert dbq["params"]["routing"] == "col1"
-
-    # Bulk action shape: every action carries _index + _id + routing.
-    body = es.bulk_calls[0]["body"]
-    assert len(body) == 4  # 2 features × (action, doc)
-    for action_idx in (0, 2):
-        action = body[action_idx]["index"]
-        assert action["_index"] == "dynastore-cat1-items"
-        assert action["routing"] == "col1"
-    for doc_idx in (1, 3):
-        doc = body[doc_idx]
-        assert doc["catalog_id"] == "cat1"
-        assert doc["collection"] == "col1"
+    assert total == 2
+    # Reader was called, not a catalogs_proto path.
+    assert reader._calls, "read_entities was never called"
+    assert reader._calls[0][0] == "cat1"
+    assert reader._calls[0][1] == "col1"
 
 
 @pytest.mark.asyncio
+async def test_reindex_writer_is_secondary_index_driver_not_reader():
+    """Writer is the is_item_indexer driver; it must not equal the reader."""
+    reader = _FakeReader({"col1": [_make_feature("f1")]})
+    writer = _FakeWriter()
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _make_routing_config()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol):
+        async with _build_router_patches(
+            reader,
+            writer,
+            reader_ref="items_postgresql_driver",
+            writer_ref="items_elasticsearch_driver",
+        ):
+            with patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+                return_value=None,
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+                return_value="dynastore-cat1-items",
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+                return_value="dynastore",
+            ):
+                from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+                await reindex_collection_into_index("cat1", "col1")
+
+    assert writer.written_batches, "write_entities was never called"
+    # Writer must have received the features from the reader.
+    written_ids = [f["id"] for f in writer.written_batches[0]]
+    assert "f1" in written_ids
+
+
+@pytest.mark.asyncio
+async def test_reindex_raises_when_reader_equals_writer():
+    """If the only WRITE driver matches the reader, reindex raises ValueError
+    rather than silently looping reads back to the source."""
+    from dynastore.modules.elasticsearch.bulk_reindex import _select_writer
+
+    # Simulate reader and writer resolving to the same driver_ref.
+    reader_ref = "items_postgresql_driver"
+    writer_fake = _FakeResolvedDriver(_FakeWriter(), reader_ref)
+
+    with pytest.raises(ValueError, match="same driver"):
+        _select_writer([writer_fake], reader_ref, driver_hint=reader_ref)
+
+
+@pytest.mark.asyncio
+async def test_reindex_raises_when_no_secondary_index_writer():
+    """When no WRITE driver with is_item_indexer=True exists (distinct from reader),
+    reindex raises ValueError rather than silently no-oping."""
+    from dynastore.modules.elasticsearch.bulk_reindex import _select_writer
+
+    class _NonIndexerWriter:
+        is_item_indexer = False
+
+    writer_entry = _FakeResolvedDriver(_NonIndexerWriter(), "other_driver")
+
+    with pytest.raises(ValueError, match="secondary-index"):
+        _select_writer([writer_entry], "items_postgresql_driver", driver_hint=None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: streaming and chunk delivery
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reindex_features_are_delivered_to_writer_in_chunks():
+    """Features streamed from read_entities arrive at write_entities in pages."""
+    features = [_make_feature(f"f{i}") for i in range(5)]
+    reader = _FakeReader({"col1": features})
+    writer = _FakeWriter()
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _make_routing_config()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol):
+        async with _build_router_patches(reader, writer):
+            with patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+                return_value=None,
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+                return_value="dynastore-cat1-items",
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+                return_value="dynastore",
+            ):
+                from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+                total = await reindex_collection_into_index("cat1", "col1", page_size=3)
+
+    assert total == 5
+    all_written = [f for batch in writer.written_batches for f in batch]
+    written_ids = sorted(f["id"] for f in all_written)
+    assert written_ids == sorted(f["id"] for f in features)
+
+
+# ---------------------------------------------------------------------------
+# Tests: error propagation (silent-loss invariant)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reindex_write_failure_propagates():
+    """A write_entities failure must propagate — no silent success or count inflation."""
+    reader = _FakeReader({"col1": [_make_feature("f1"), _make_feature("f2")]})
+
+    from dynastore.modules.storage.errors import EsBulkWriteError
+    err = EsBulkWriteError("bulk failure", failures=[("f1", "429 too_many_requests: queue full")])
+    writer = _FakeWriter(raise_on_write=err)
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _make_routing_config()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol):
+        async with _build_router_patches(reader, writer):
+            with patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+                return_value=None,
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+                return_value="dynastore-cat1-items",
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+                return_value="dynastore",
+            ):
+                from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+                with pytest.raises(EsBulkWriteError):
+                    await reindex_collection_into_index("cat1", "col1")
+
+
+@pytest.mark.asyncio
+async def test_reindex_generic_write_failure_propagates():
+    """Any write_entities exception (not just EsBulkWriteError) propagates."""
+    reader = _FakeReader({"col1": [_make_feature("f1")]})
+    writer = _FakeWriter(raise_on_write=RuntimeError("transport error"))
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _make_routing_config()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol):
+        async with _build_router_patches(reader, writer):
+            with patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+                return_value=None,
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+                return_value="dynastore-cat1-items",
+            ), patch(
+                "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+                return_value="dynastore",
+            ):
+                from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+                with pytest.raises(RuntimeError, match="transport error"):
+                    await reindex_collection_into_index("cat1", "col1")
+
+
+# ---------------------------------------------------------------------------
+# Tests: skip condition
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
 async def test_collection_reindex_skips_when_es_not_in_routing(monkeypatch):
+    """Collections not routed through the public ES driver are skipped."""
     es = _FakeEs()
-    catalogs = _FakeCatalogs({"col1": [{"id": "f1"}]})
 
     async def _get_config(model, *, catalog_id, collection_id=None):
         return _routing_without_es()
@@ -169,6 +450,85 @@ async def test_collection_reindex_skips_when_es_not_in_routing(monkeypatch):
         name = getattr(proto, "__name__", str(proto))
         if "ConfigsProtocol" in name:
             return fake_configs
+        return None
+
+    # Mock the router to return a valid reader/writer pair — but is_es_active_for
+    # should short-circuit before they are used.
+    reader = _FakeReader({"col1": [_make_feature("f1")]})
+    writer = _FakeWriter()
+
+    with patch(
+        "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+    ), patch(
+        "dynastore.modules.elasticsearch.client.get_index_prefix",
+        return_value="dynastore",
+    ), patch(
+        "dynastore.tools.discovery.get_protocol", side_effect=_get_protocol,
+    ):
+        async with _build_router_patches(reader, writer):
+            task = BulkCollectionReindexTask()
+            result = await task.run(_make_payload(
+                BulkCollectionReindexInputs(catalog_id="cat1", collection_id="col1"),
+            ))
+
+    assert result["total_indexed"] == 0
+    assert not writer.written_batches
+    # delete_by_query still ran (pre-reindex wipe is unconditional).
+    assert es.delete_by_query_calls
+
+
+# ---------------------------------------------------------------------------
+# Tests: task-level wiring
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_collection_reindex_task_passes_driver_hint():
+    """The driver field in BulkCollectionReindexInputs reaches driver_hint in
+    reindex_collection_into_index."""
+    captured_hints: list = []
+
+    async def _fake_reindex(catalog_id, collection_id, *, driver_hint=None, page_size=500):
+        captured_hints.append(driver_hint)
+        return 1
+
+    es = _FakeEs()
+
+    with patch(
+        "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+    ), patch(
+        "dynastore.modules.elasticsearch.client.get_index_prefix",
+        return_value="dynastore",
+    ), patch(
+        "dynastore.tasks.elasticsearch_indexer.tasks._reindex_collection",
+        side_effect=_fake_reindex,
+    ):
+        task = BulkCollectionReindexTask()
+        await task.run(_make_payload(
+            BulkCollectionReindexInputs(
+                catalog_id="cat1",
+                collection_id="col1",
+                driver="items_elasticsearch_driver",
+            ),
+        ))
+
+    assert captured_hints == ["items_elasticsearch_driver"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_reindex_task_iterates_collections_and_passes_driver_hint():
+    """BulkCatalogReindexTask calls _reindex_collection for each collection and
+    forwards the driver hint from inputs."""
+    captured_calls: list = []
+
+    async def _fake_reindex(catalog_id, collection_id, *, driver_hint=None, page_size=500):
+        captured_calls.append((collection_id, driver_hint))
+        return 2
+
+    es = _FakeEs()
+    catalogs = _FakeCatalogs(["col1", "col2"])
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
         if "CatalogsProtocol" in name:
             return catalogs
         return None
@@ -180,36 +540,62 @@ async def test_collection_reindex_skips_when_es_not_in_routing(monkeypatch):
         return_value="dynastore",
     ), patch(
         "dynastore.tools.discovery.get_protocol", side_effect=_get_protocol,
+    ), patch(
+        "dynastore.tasks.elasticsearch_indexer.tasks._reindex_collection",
+        side_effect=_fake_reindex,
     ):
-        task = BulkCollectionReindexTask()
+        task = BulkCatalogReindexTask()
         result = await task.run(_make_payload(
-            BulkCollectionReindexInputs(catalog_id="cat1", collection_id="col1"),
+            BulkCatalogReindexInputs(
+                catalog_id="cat1",
+                driver="items_elasticsearch_driver",
+            ),
         ))
 
-    assert result["total_indexed"] == 0
-    assert es.bulk_calls == []
-    # delete_by_query still ran (pre-reindex wipe is unconditional) — that's
-    # acceptable since the index is the right one and the wipe is bounded.
-    assert es.delete_by_query_calls
+    assert result["total_indexed"] == 4
+    assert sorted(c for c, _ in captured_calls) == ["col1", "col2"]
+    assert all(hint == "items_elasticsearch_driver" for _, hint in captured_calls)
 
 
 @pytest.mark.asyncio
-async def test_catalog_reindex_iterates_collections(monkeypatch):
+async def test_collection_task_pre_reindex_wipe_collection_scoped():
+    """Pre-reindex delete_by_query for BulkCollectionReindexTask uses a
+    collection-scoped term query and carries routing."""
     es = _FakeEs()
-    catalogs = _FakeCatalogs({
-        "col1": [{"id": "f1"}],
-        "col2": [{"id": "f2"}, {"id": "f3"}],
-    })
 
-    async def _get_config(model, *, catalog_id, collection_id=None):
-        return _routing_with_es()
+    async def _fake_reindex(*args, **kwargs):
+        return 0
 
-    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+    with patch(
+        "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+    ), patch(
+        "dynastore.modules.elasticsearch.client.get_index_prefix",
+        return_value="dynastore",
+    ), patch(
+        "dynastore.tasks.elasticsearch_indexer.tasks._reindex_collection",
+        side_effect=_fake_reindex,
+    ):
+        task = BulkCollectionReindexTask()
+        await task.run(_make_payload(
+            BulkCollectionReindexInputs(catalog_id="cat1", collection_id="col1"),
+        ))
+
+    assert es.delete_by_query_calls
+    dbq = es.delete_by_query_calls[0]
+    assert dbq["index"] == "dynastore-cat1-items"
+    assert dbq["body"] == {"query": {"term": {"collection": "col1"}}}
+    assert dbq["params"]["routing"] == "col1"
+
+
+@pytest.mark.asyncio
+async def test_catalog_task_pre_reindex_wipe_catalog_scoped():
+    """Pre-reindex delete_by_query for BulkCatalogReindexTask uses a match_all
+    against the per-tenant index (no collection routing)."""
+    es = _FakeEs()
+    catalogs = _FakeCatalogs([])  # no collections → zero iterations
 
     def _get_protocol(proto):
         name = getattr(proto, "__name__", str(proto))
-        if "ConfigsProtocol" in name:
-            return fake_configs
         if "CatalogsProtocol" in name:
             return catalogs
         return None
@@ -227,32 +613,31 @@ async def test_catalog_reindex_iterates_collections(monkeypatch):
             BulkCatalogReindexInputs(catalog_id="cat1"),
         ))
 
-    assert result["status"] == "done"
-    assert result["total_indexed"] == 3
-
-    # Pre-reindex wipe is catalog-scope (no routing).
+    assert result["total_indexed"] == 0
+    assert es.delete_by_query_calls
     dbq = es.delete_by_query_calls[0]
     assert dbq["index"] == "dynastore-cat1-items"
     assert dbq["body"] == {"query": {"match_all": {}}}
-    assert "routing" not in dbq["params"]
+    # No collection-scope routing for catalog-level wipe.
+    assert "routing" not in (dbq["params"] or {})
 
-    # Both collections produced bulk batches; routing keyed per collection.
-    routings: list = []
-    for call in es.bulk_calls:
-        for entry in call["body"]:
-            if "index" in entry:
-                routings.append(entry["index"]["routing"])
-    assert sorted(set(routings)) == ["col1", "col2"]
 
+# ---------------------------------------------------------------------------
+# Tests: schema regression
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_inputs_drop_mode_field():
-    """Schema regression — the mode field must be gone."""
+    """Schema regression — the mode field must be absent from inputs."""
     inputs = BulkCatalogReindexInputs(catalog_id="cat1")
     assert "mode" not in inputs.model_dump()
     inputs2 = BulkCollectionReindexInputs(catalog_id="cat1", collection_id="col1")
     assert "mode" not in inputs2.model_dump()
 
+
+# ---------------------------------------------------------------------------
+# Tests: is_es_active_for (unchanged guard, tested independently)
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_is_es_active_for_matches_snake_case_driver_id():
@@ -360,132 +745,6 @@ async def test_is_es_active_for_returns_false_for_private_only_routing():
 
 
 @pytest.mark.asyncio
-async def test_bypass_matches_dispatcher_bulk_contract():
-    """Regression guard for issue #507 (Option B).
-
-    The reindex tasks bypass :class:`IndexDispatcher` and call
-    ``es.bulk`` directly via :func:`reindex_collection_into_index`.
-    The dispatcher path goes through
-    :meth:`ItemsElasticsearchDriver.index_bulk`. Both must produce
-    the same ``es.bulk`` body contract so a future refactor cannot
-    silently drift the two paths apart:
-
-      * action header is ``{"index": {...}}``
-      * action carries ``_index``, ``_id``, ``routing`` keys
-      * ``_index`` equals ``{prefix}-{catalog}-items``
-      * ``routing`` equals the collection_id
-      * doc carries ``collection`` set to the collection_id
-
-    The ``_id`` *value* shape differs intentionally (bypass uses
-    ``"{cat}:{col}:{item}"``; dispatcher uses ``op.entity_id``) — both
-    are stable per (catalog, collection, item) but the dispatcher path
-    relies on the scope already being pinned by routing. This test
-    pins the *contract*, not the byte-for-byte body.
-    """
-    from dynastore.modules.elasticsearch.bulk_reindex import (
-        reindex_collection_into_index,
-    )
-    from dynastore.modules.storage.drivers.elasticsearch import (
-        ItemsElasticsearchDriver,
-    )
-    from dynastore.models.protocols.indexer import IndexContext, IndexOp
-
-    # --- shared fake ES capturing bulk calls ---
-    es_bypass = _FakeEs()
-    es_dispatch = _FakeEs()
-
-    # Single feature drives both paths.
-    feature = {
-        "id": "item-1",
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
-        "properties": {},
-    }
-
-    # --- bypass path ---
-    catalogs = _FakeCatalogs({"col1": [feature]})
-
-    async def _get_config(model, *, catalog_id, collection_id=None):
-        return _routing_with_es()
-
-    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
-
-    def _get_protocol(proto):
-        name = getattr(proto, "__name__", str(proto))
-        if "ConfigsProtocol" in name:
-            return fake_configs
-        if "CatalogsProtocol" in name:
-            return catalogs
-        return None
-
-    async def _add_alias(_index):
-        return None
-
-    with patch(
-        "dynastore.modules.elasticsearch.aliases.add_index_to_public_alias",
-        side_effect=_add_alias,
-    ), patch(
-        "dynastore.tools.discovery.get_protocol", side_effect=_get_protocol,
-    ):
-        await reindex_collection_into_index(
-            es_bypass, catalogs, "cat1", "col1",
-            "dynastore-cat1-items",
-        )
-
-    assert es_bypass.bulk_calls, "bypass path did not invoke es.bulk"
-    bypass_body = es_bypass.bulk_calls[0]["body"]
-
-    # --- dispatcher path ---
-    driver = ItemsElasticsearchDriver.__new__(ItemsElasticsearchDriver)
-    ctx = IndexContext(catalog="cat1", collection="col1")
-    op = IndexOp(
-        op_type="upsert",
-        entity_type="item",
-        entity_id="item-1",
-        payload={
-            "id": "item-1",
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
-            "properties": {},
-        },
-    )
-
-    async def _noop_alias(_cat, _idx):
-        return None
-
-    with patch(
-        "dynastore.modules.storage.drivers.elasticsearch._es_client_required",
-        return_value=es_dispatch,
-    ), patch(
-        "dynastore.modules.storage.drivers.elasticsearch._tenant_items_index",
-        return_value="dynastore-cat1-items",
-    ), patch(
-        "dynastore.modules.storage.drivers.elasticsearch._ensure_in_public_alias_once",
-        side_effect=_noop_alias,
-    ):
-        await driver.index_bulk(ctx, [op])
-
-    assert es_dispatch.bulk_calls, "dispatcher path did not invoke es.bulk"
-    dispatch_body = es_dispatch.bulk_calls[0]["body"]
-
-    # --- contract assertions ---
-    for body, label in ((bypass_body, "bypass"), (dispatch_body, "dispatcher")):
-        assert len(body) == 2, f"{label} body must be (action, doc) pair"
-        action = body[0]
-        assert "index" in action, f"{label} action header missing 'index' key"
-        action_inner = action["index"]
-        assert action_inner["_index"] == "dynastore-cat1-items", (
-            f"{label} _index mismatch"
-        )
-        assert action_inner["routing"] == "col1", f"{label} routing mismatch"
-        assert "_id" in action_inner, f"{label} action missing _id"
-        doc = body[1]
-        assert doc.get("collection") == "col1", (
-            f"{label} doc.collection mismatch (post-projection contract)"
-        )
-
-
-@pytest.mark.asyncio
 async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned():
     """A collection that pins BOTH the public and private items
     drivers (e.g. an operator transitioning OUT of private mode by
@@ -531,3 +790,17 @@ async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned
 
     with patch.object(discovery, "get_protocol", side_effect=_get_protocol):
         assert await is_es_active_for("cat1", "col1") is True
+
+
+# ---------------------------------------------------------------------------
+# NOTE: test_bypass_matches_dispatcher_bulk_contract has been deliberately
+# superseded by the tests above.
+#
+# The original contract (issue #507 Option B) pinned that the bulk-reindex
+# bypass path and the IndexDispatcher path produced the same es.bulk body
+# shape. That bypass no longer exists: reindex_collection_into_index now
+# calls writer.write_entities(), which IS the normal write/dispatch entry
+# point. The two paths are structurally identical by construction — there is
+# no separate bypass to pin against. Any regression in write_entities
+# body shape would surface in the item_service / dispatcher tests, not here.
+# ---------------------------------------------------------------------------

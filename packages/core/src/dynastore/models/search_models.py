@@ -4,6 +4,10 @@ Per #819 the search extension now exposes only item-search endpoints.
 Catalog/collection keyword search has been retired from the public router
 and its bodies/response models (CatalogSearchBody, GenericCollection)
 were removed along with the endpoints.
+
+These models live in ``core`` so that the search protocol
+(``dynastore.models.protocols.search``) can reference them without
+importing from any extension package.
 """
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field

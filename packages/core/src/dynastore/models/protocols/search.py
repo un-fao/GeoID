@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
-    from dynastore.extensions.search.search_models import (
+    from dynastore.models.search_models import (
         ItemCollection,
         SearchBody,
     )

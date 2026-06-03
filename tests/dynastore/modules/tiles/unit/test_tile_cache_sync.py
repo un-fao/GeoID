@@ -229,13 +229,13 @@ async def test_gate_degrades_when_store_unusable(monkeypatch):
 
 
 # ===========================================================================
-# Enqueue side — enqueue a tiles_preseed `operation=invalidate` task (#1298).
+# Enqueue side — enqueue a tiles_invalidate task (#1298).
 #
 # These drive the REAL TaskCreate / create_task input shaping. A fake DB layer
 # (managed_transaction + DQLQuery) lets the genuine create_task build its INSERT
 # so we can assert the stored `inputs` is the OGC ExecuteRequest envelope the
-# preseed task consumes (payload.inputs.inputs). Mocking create_task into a
-# no-op would hide an envelope bug — exactly the Phase-1 lesson.
+# tiles_invalidate task consumes (payload.inputs.inputs). Mocking create_task
+# into a no-op would hide an envelope bug — exactly the Phase-1 lesson.
 # ===========================================================================
 
 
@@ -354,9 +354,9 @@ async def test_enqueue_creates_invalidate_task_with_execute_request_envelope(mon
     # Two distinct bboxes enqueued.
     assert n == 2
 
-    # The task row was created as a `tiles_preseed` PENDING task for the
+    # The task row was created as a `tiles_invalidate` PENDING task for the
     # collection, with the per-collection dedup key.
-    assert captured["task_type"] == "tiles_preseed"
+    assert captured["task_type"] == "tiles_invalidate"
     assert captured["status"] == "PENDING"
     assert captured["schema_name"] == "s_cat"
     assert captured["collection_id"] == "col"
@@ -364,23 +364,22 @@ async def test_enqueue_creates_invalidate_task_with_execute_request_envelope(mon
     # coverage edits coalesce; distinct bboxes get distinct keys.
     assert captured["dedup_key"].startswith("tile-invalidate:cat:col:")
 
-    # The stored `inputs` MUST be the OGC ExecuteRequest envelope the preseed
-    # task unwraps via payload.inputs.inputs. Round-trip it back through the
-    # REAL models the dispatcher uses (ExecuteRequest, then TilePreseedRequest).
+    # The stored `inputs` MUST be the OGC ExecuteRequest envelope the
+    # tiles_invalidate task unwraps via payload.inputs.inputs. Round-trip it
+    # back through the REAL models the dispatcher uses (ExecuteRequest, then
+    # TileInvalidateRequest).
     stored = json.loads(captured["inputs"])
     from dynastore.modules.processes.models import ExecuteRequest
-    from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
+    from dynastore.tasks.tiles_invalidate.models import TileInvalidateRequest
 
     exec_req = ExecuteRequest(**stored)
     inner = exec_req.inputs  # this is what payload.inputs.inputs yields
-    assert inner["operation"] == "invalidate"
     assert inner["catalog_id"] == "cat"
     assert inner["collection_id"] == "col"
     assert len(inner["update_bbox"]) == 2
 
     # And it validates as the request the task actually consumes.
-    req = TilePreseedRequest.model_validate(inner)
-    assert req.operation == "invalidate"
+    req = TileInvalidateRequest.model_validate(inner)
     assert req.catalog_id == "cat"
     assert req.collection_id == "col"
     assert len(req.update_bbox) == 2
@@ -485,12 +484,10 @@ async def test_enqueue_distinct_bboxes_both_enqueue_no_coverage_lost(monkeypatch
     # will be invalidated (the whole point of the fix).
     stored = json.loads(captured["inputs"])
     from dynastore.modules.processes.models import ExecuteRequest
-    from dynastore.tasks.tiles_preseed.models import TilePreseedRequest
+    from dynastore.tasks.tiles_invalidate.models import TileInvalidateRequest
 
     inner = ExecuteRequest(**stored).inputs
-    assert inner["operation"] == "invalidate"
-    req = TilePreseedRequest.model_validate(inner)
-    assert req.operation == "invalidate"
+    req = TileInvalidateRequest.model_validate(inner)
     assert [list(b) for b in req.update_bbox] == [bbox_y]
 
 
@@ -517,10 +514,11 @@ async def test_enqueue_prior_bbox_only_invalidates_old_footprint(monkeypatch):
     assert n == 1
     stored = json.loads(captured["inputs"])
     from dynastore.modules.processes.models import ExecuteRequest
+    from dynastore.tasks.tiles_invalidate.models import TileInvalidateRequest
 
     inner = ExecuteRequest(**stored).inputs
-    assert inner["operation"] == "invalidate"
-    assert [list(b) for b in inner["update_bbox"]] == [list(prior)]
+    req = TileInvalidateRequest.model_validate(inner)
+    assert [list(b) for b in req.update_bbox] == [list(prior)]
 
 
 @pytest.mark.asyncio

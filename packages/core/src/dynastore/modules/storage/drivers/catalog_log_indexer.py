@@ -216,3 +216,25 @@ class LogCatalogIndexer:
         already alert on those.
         """
         return True
+
+    # ------------------------------------------------------------------
+    # Storage lifecycle — no-op (the indexer owns no backing storage)
+    # ------------------------------------------------------------------
+
+    async def ensure_storage(
+        self, catalog_id: Optional[str] = None, **kwargs: Any
+    ) -> None:
+        """No-op: the log indexer has no backing storage to provision."""
+        return None
+
+    async def drop_storage(
+        self, catalog_id: str, *, soft: bool = False
+    ) -> None:
+        """Log the storage drop — no persistent side-effect, mirrors
+        :meth:`delete_catalog_metadata`.  Keeps the indexer structurally
+        conformant with the ``CatalogStore`` lifecycle contract.
+        """
+        logger.info(
+            "LogCatalogIndexer: drop_storage catalog_id=%s soft=%s",
+            catalog_id, soft,
+        )

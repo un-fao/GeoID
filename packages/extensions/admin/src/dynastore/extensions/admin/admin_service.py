@@ -51,6 +51,7 @@ from dynastore.modules.iam.authorization import require_permission
 from dynastore.models.protocols.policies import (
     PolicyCreate, PolicyUpdate, PolicyResponse,
 )
+from dynastore.models.auth_models import RoleHierarchyEdge
 
 from .models import (
     PrincipalCreate, PrincipalUpdate,
@@ -59,7 +60,9 @@ from .models import (
     GrantUsageView, GrantUsageEntry, GrantUsageCounters,
     GrantRateLimitCounter, GrantMaxCountCounter,
     AppliedRowResponse, AppliedPresetsPage,
+    AdminTaskRequest, AdminTaskResponse, AdminTaskTarget,
 )
+from . import task_dispatch as _task_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -815,6 +818,71 @@ class AdminService(ExtensionProtocol):
     async def requeue_catalog_dead_letter_view(catalog_id: str, task_id: str):  # type: ignore[reportGeneralTypeIssues]
         await _assert_catalog_exists(catalog_id)
         return await requeue_catalog_dead_letter(catalog_id, task_id)
+
+    # -------------------------------------------------------------------------
+    # Admin task-dispatch (/admin/catalogs/{cat}/tasks and
+    #                       /admin/catalogs/{cat}/collections/{col}/tasks)
+    # -------------------------------------------------------------------------
+    #
+    # Registry-driven: new actions are added to task_dispatch._ACTION_REGISTRY,
+    # not as new routes. The two routes below forward to the dispatch helpers
+    # which resolve the action, build inputs (matching search_service's exact
+    # input shapes), and enqueue via tasks_module.create_task_for_catalog.
+
+    @router.post(
+        "/catalogs/{catalog_id}/tasks",
+        status_code=202,
+        response_model=AdminTaskResponse,
+        summary="Dispatch a task on a catalog (admin/sysadmin only)",
+    )
+    async def dispatch_catalog_task(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        body: AdminTaskRequest,
+    ):
+        await _assert_catalog_exists(catalog_id)
+        result = await _task_dispatch.dispatch_catalog_task(
+            catalog_id=catalog_id,
+            action=body.action,
+            params=body.params,
+        )
+        return AdminTaskResponse(
+            task_id=result["task_id"],
+            action=result["action"],
+            target=AdminTaskTarget(
+                catalog_id=result["target"]["catalog_id"],
+                collection_id=result["target"]["collection_id"],
+            ),
+            status=result["status"],
+        )
+
+    @router.post(
+        "/catalogs/{catalog_id}/collections/{collection_id}/tasks",
+        status_code=202,
+        response_model=AdminTaskResponse,
+        summary="Dispatch a task on a collection (admin/sysadmin only)",
+    )
+    async def dispatch_collection_task(
+        catalog_id: str,  # type: ignore[reportGeneralTypeIssues]
+        collection_id: str,
+        body: AdminTaskRequest,
+    ):
+        await _assert_catalog_exists(catalog_id)
+        await _assert_collection_exists(catalog_id, collection_id)
+        result = await _task_dispatch.dispatch_collection_task(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            action=body.action,
+            params=body.params,
+        )
+        return AdminTaskResponse(
+            task_id=result["task_id"],
+            action=result["action"],
+            target=AdminTaskTarget(
+                catalog_id=result["target"]["catalog_id"],
+                collection_id=result["target"]["collection_id"],
+            ),
+            status=result["status"],
+        )
 
     @router.post(
         "/catalogs/{catalog_id}/principals/{principal_id}/roles",
@@ -1755,6 +1823,14 @@ class AdminService(ExtensionProtocol):
     # Role Hierarchies (/admin/hierarchies)
     # -------------------------------------------------------------------------
 
+    @router.get("/hierarchies", summary="List all role hierarchy edges")
+    async def list_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: Optional[str] = Query(None),
+    ) -> list[RoleHierarchyEdge]:
+        mgr = _iam()
+        edges = await mgr.list_role_hierarchy(catalog_id=catalog_id)
+        return [RoleHierarchyEdge(parent=p, child=c) for p, c in edges]
+
     @router.post("/hierarchies", status_code=204, summary="Add a parent→child role hierarchy edge")
     async def add_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]
         parent: str = Query(..., description="Parent role name"),
@@ -1762,7 +1838,10 @@ class AdminService(ExtensionProtocol):
         catalog_id: Optional[str] = Query(None),
     ):
         mgr = _iam()
-        await mgr.add_role_hierarchy(parent, child, catalog_id=catalog_id)
+        try:
+            await mgr.add_role_hierarchy(parent, child, catalog_id=catalog_id)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
 
     @router.delete("/hierarchies", status_code=204, summary="Remove a parent→child role hierarchy edge")
     async def remove_role_hierarchy(  # type: ignore[reportGeneralTypeIssues]

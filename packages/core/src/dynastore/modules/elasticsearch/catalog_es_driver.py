@@ -193,7 +193,9 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def ensure_storage(self, catalog_id: Optional[str] = None) -> None:
+    async def ensure_storage(
+        self, catalog_id: Optional[str] = None, **kwargs: Any
+    ) -> None:
         """Ensure the shared catalog metadata index exists (idempotent).
 
         ``catalog_id`` is accepted for signature parity with
@@ -201,6 +203,23 @@ class CatalogElasticsearchDriver(TypedDriver[CatalogElasticsearchDriverConfig]):
         shared across all catalogs.
         """
         await self._ensure_index()
+
+    async def drop_storage(
+        self, catalog_id: str, *, soft: bool = False
+    ) -> None:
+        """Remove this catalog's record from the shared ``{prefix}-catalogs``
+        index (idempotent).
+
+        Catalog-tier ``drop_storage``: a catalog owns no per-catalog index
+        (the index is shared), so the only catalog-scoped teardown is
+        removing its document — delegated to :meth:`delete_catalog_metadata`,
+        which honours ``soft`` (sets ``_deleted`` instead of removing the
+        doc).  Completes the ``CatalogStore`` lifecycle contract; the live
+        catalog hard-delete already drives this same primitive via the
+        secondary-index DELETE fan-out, so the two entry points are
+        idempotent.
+        """
+        await self.delete_catalog_metadata(catalog_id, soft=soft)
 
     async def _ensure_index(self) -> str:
         """Create the shared index if it doesn't exist. Returns index name."""

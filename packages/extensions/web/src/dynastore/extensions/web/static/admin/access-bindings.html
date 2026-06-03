@@ -94,7 +94,17 @@
           <code>GET /admin/iam/usage/grants</code> by grant&nbsp;id. Use
           <strong>Why?</strong> to trace effective permissions and
           <strong>Usage</strong> for a full counter breakdown.
+          Counter <strong>Reset</strong> buttons appear inline once counters are loaded.
         </p>
+        <!-- Usage export — active once counter data has been fetched. -->
+        <div class="form-actions" style="margin-bottom:8px">
+          <button class="btn btn-secondary btn-xs" type="button"
+                  id="usage-export-csv" disabled
+                  title="Export current usage snapshot as CSV">Export CSV</button>
+          <button class="btn btn-secondary btn-xs" type="button"
+                  id="usage-export-json" disabled
+                  title="Export current usage snapshot as JSON">Export JSON</button>
+        </div>
         <div id="bindings-table"></div>
       </div>
 

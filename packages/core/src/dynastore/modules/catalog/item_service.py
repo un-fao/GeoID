@@ -1770,13 +1770,12 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
     ) -> None:
         """Write-reactive tile-cache invalidation on create/update (#1292/#1298).
 
-        For each batch of written features, enqueue a ``tiles_preseed`` task
-        with ``operation=invalidate`` and the batch's per-feature bboxes. That
-        task runs on the EXISTING tiles-preseed Cloud Run Job and deletes the
-        cached tiles the new bboxes make stale (across the served zoom range,
-        coalesced + capped); the next read repopulates lazily. There is no
-        separate drain / Job anymore (#1298) — invalidation is the light branch
-        of the preseed task.
+        For each batch of written features, enqueue a ``tiles_invalidate`` task
+        with the batch's per-feature bboxes. That task runs IN-PROCESS as a
+        background task on the catalog service and deletes the cached tiles the
+        new bboxes make stale (across the served zoom range, coalesced + capped);
+        the next read repopulates lazily. The heavy seed/renew path stays on the
+        ``tiles_preseed`` Cloud Run Job.
 
         Both call sites run this AFTER the data write has committed (the
         feature rows are already durable), so the task row is independent —

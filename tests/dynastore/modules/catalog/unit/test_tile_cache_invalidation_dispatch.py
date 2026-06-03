@@ -15,9 +15,9 @@
 """``ItemService._dispatch_tile_cache_invalidation`` (#1292 / #1298).
 
 Verifies the write-path hook:
-* enqueues a ``tiles_preseed`` invalidate task via
-  ``enqueue_tile_invalidation_task``, passing the resolved DB engine + tenant
-  physical schema (needed to INSERT the task row),
+* enqueues a ``tiles_invalidate`` task via ``enqueue_tile_invalidation_task``,
+  passing the resolved DB engine + tenant physical schema (needed to INSERT
+  the task row),
 * is a no-op for an empty batch,
 * NEVER raises out — a cache failure must not break the write.
 """
@@ -37,6 +37,7 @@ async def test_dispatch_enqueues_invalidate_task_with_engine_and_schema(monkeypa
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         calls.append((catalog_id, collection_id, list(features), engine, schema))
         return len(features)
@@ -69,6 +70,7 @@ async def test_dispatch_uses_explicit_db_resource(monkeypatch):
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         seen.append(engine)
         return 0
@@ -132,6 +134,7 @@ async def test_dispatch_passes_prior_bboxes_with_empty_results(monkeypatch):
 
     async def _fake_enqueue(
         catalog_id, collection_id, features, *, engine, schema, prior_bboxes=None,
+        caller_id=None,
     ):
         seen.append((list(features), prior_bboxes))
         return 1

@@ -455,6 +455,29 @@ class CatalogPostgresqlDriver(TypedDriver[CatalogPostgresqlDriverConfig]):
         """No per-catalog driver config today — same default-empty as inners."""
         return None
 
+    async def ensure_storage(
+        self, catalog_id: Optional[str] = None, **kwargs: Any
+    ) -> None:
+        """No-op: inner PG catalog tables are created out-of-band by the
+        catalog-provisioning DDL (same as each inner driver)."""
+        return None
+
+    async def drop_storage(
+        self, catalog_id: str, *, soft: bool = False
+    ) -> None:
+        """Fail-soft fan-out of the lifecycle drop across inner drivers.
+
+        Symmetric to :meth:`ensure_storage`.  The per-tenant schema backing
+        the inner catalog-metadata tables is dropped out-of-band when the
+        catalog is deprovisioned, so every inner is a no-op today; this fans
+        to any inner that grows a real ``drop_storage`` and keeps the wrapper
+        structurally conformant with the ``CatalogStore`` lifecycle contract.
+        """
+        for inner in self._default_inner_drivers:
+            drop = getattr(inner, "drop_storage", None)
+            if drop is not None:
+                await drop(catalog_id, soft=soft)
+
     def stac_metadata_columns(self) -> Tuple[str, ...]:
         """Forward the STAC capability marker through to the first inner
         driver that exposes it.

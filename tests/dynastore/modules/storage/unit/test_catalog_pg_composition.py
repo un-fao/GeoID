@@ -563,3 +563,66 @@ async def test_wrapper_is_discoverable_via_get_protocols():
             )
     finally:
         unregister_plugin(wrapper)
+
+
+# ---------------------------------------------------------------------------
+# Storage-lifecycle contract (ensure_storage / drop_storage) — catalog tier
+# ---------------------------------------------------------------------------
+
+
+async def test_wrapper_ensure_storage_is_noop():
+    """The wrapper owns no SQL — ensure_storage is a no-op (tables are
+    created out-of-band by the catalog-provisioning DDL)."""
+    wrapper = CatalogPostgresqlDriver()
+    assert await wrapper.ensure_storage("cat-x") is None
+    assert await wrapper.ensure_storage() is None
+
+
+async def test_wrapper_drop_storage_fans_to_inners_failsoft():
+    """drop_storage fans to every inner that implements it (passing ``soft``
+    through) and fail-soft skips inners without one."""
+    calls: list = []
+
+    class _InnerWithDrop:
+        async def drop_storage(self, catalog_id, *, soft=False):
+            calls.append((catalog_id, soft))
+
+    class _InnerNoDrop:
+        pass  # no drop_storage → must be skipped, not raise
+
+    wrapper = CatalogPostgresqlDriver()
+    # cached_property stores under the attribute name in the instance __dict__
+    wrapper.__dict__["_default_inner_drivers"] = [_InnerWithDrop(), _InnerNoDrop()]
+    await wrapper.drop_storage("cat-x", soft=True)
+    assert calls == [("cat-x", True)]
+
+
+def test_all_catalog_implementers_conform_to_lifecycle_contract():
+    """Trap guard (cf. the #1756 collection regression): after CatalogStore
+    gained ``ensure_storage`` + ``drop_storage``, EVERY implementer must still
+    structurally satisfy the protocol — otherwise it silently drops out of
+    ``get_protocols(CatalogStore)`` and the driver vanishes from discovery."""
+    from dynastore.modules.storage.drivers.core_postgresql import (
+        CatalogCorePostgresqlDriver,
+    )
+    from dynastore.modules.elasticsearch.catalog_es_driver import (
+        CatalogElasticsearchDriver,
+    )
+    from dynastore.modules.storage.drivers.catalog_log_indexer import (
+        LogCatalogIndexer,
+    )
+
+    implementers = [
+        CatalogPostgresqlDriver(),
+        CatalogCorePostgresqlDriver(),
+        CatalogElasticsearchDriver(),
+        LogCatalogIndexer(),
+    ]
+    for drv in implementers:
+        name = type(drv).__name__
+        assert isinstance(drv, CatalogStore), (
+            f"{name} no longer satisfies CatalogStore — missing a method "
+            f"(likely the new lifecycle pair). It will drop out of discovery."
+        )
+        assert callable(getattr(drv, "ensure_storage", None)), name
+        assert callable(getattr(drv, "drop_storage", None)), name

@@ -15,21 +15,19 @@ client/mappings imports — no extra import gating needed here.
 """
 from __future__ import annotations
 
-import json
 import logging
-from decimal import Decimal
-from typing import Any
+from typing import Any, List, Optional
 
-from pydantic import BaseModel
+# Module-level imports give tests a stable patch target:
+#   ``dynastore.modules.elasticsearch.bulk_reindex.<name>``.
+# The router does not import from bulk_reindex so there is no cycle.
+from dynastore.modules.storage.router import get_items_search_driver, get_write_drivers
+from dynastore.modules.storage.hints import Hint
+from dynastore.modules.elasticsearch.aliases import add_index_to_public_alias
+from dynastore.modules.elasticsearch.mappings import get_tenant_items_index
+from dynastore.modules.elasticsearch.client import get_index_prefix
 
 logger = logging.getLogger(__name__)
-
-
-def _json_default(obj: Any) -> Any:
-    """Fallback serializer for Decimal and other non-JSON types."""
-    if isinstance(obj, Decimal):
-        return float(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def get_es_client():
@@ -101,108 +99,215 @@ async def is_es_active_for(catalog_id: str, collection_id: str) -> bool:
     )
 
 
+def _select_writer(
+    write_drivers: "List[Any]",
+    reader_ref: str,
+    driver_hint: Optional[str],
+) -> "Any":
+    """Select the WRITE driver to use as the reindex target.
+
+    Selection order (first match wins):
+
+    1. If ``driver_hint`` is given (from task inputs): pick the entry whose
+       ``driver_ref`` equals the hint, provided it is not the reader.
+    2. Otherwise: pick the first WRITE entry whose driver declares
+       ``is_item_indexer = True`` (a secondary search-index), provided it is
+       not the reader.
+
+    A reader and writer sharing the same ``driver_ref`` would feed a driver
+    back into itself — that is never the intent of a reindex, so the guard
+    raises rather than silently no-ops.
+
+    Args:
+        write_drivers: List of ``ResolvedDriver`` from ``get_write_drivers``.
+        reader_ref: ``driver_ref`` of the resolved reader (must not equal
+            the selected writer's ref).
+        driver_hint: Optional driver_ref override from task inputs.
+
+    Returns:
+        The selected ``ResolvedDriver`` entry.
+
+    Raises:
+        ValueError: If no suitable writer can be found, or the only candidate
+            matches the reader (which would loop reads back to the source).
+    """
+    if driver_hint:
+        for rd in write_drivers:
+            if rd.driver_ref == driver_hint:
+                if rd.driver_ref == reader_ref:
+                    raise ValueError(
+                        f"Reindex writer '{driver_hint}' (from task inputs) "
+                        f"is the same driver as the reader ('{reader_ref}'). "
+                        "The writer must be a different driver than the source."
+                    )
+                return rd
+        raise ValueError(
+            f"Reindex: driver_hint '{driver_hint}' not found in WRITE drivers "
+            f"({[rd.driver_ref for rd in write_drivers]}). "
+            "Verify ItemsRoutingConfig for this collection."
+        )
+
+    # Prefer secondary-index drivers (is_item_indexer) that differ from the reader.
+    for rd in write_drivers:
+        if rd.driver_ref != reader_ref and getattr(type(rd.driver), "is_item_indexer", False):
+            return rd
+
+    # No secondary-index driver found distinct from the reader.
+    candidates = [rd.driver_ref for rd in write_drivers if rd.driver_ref != reader_ref]
+    if not candidates:
+        raise ValueError(
+            f"Reindex: no writer found that is distinct from the reader "
+            f"('{reader_ref}'). WRITE drivers: "
+            f"{[rd.driver_ref for rd in write_drivers]}. "
+            "Add a secondary-index driver (is_item_indexer=True) to the "
+            "WRITE routing entries, or pass an explicit driver_hint."
+        )
+    raise ValueError(
+        f"Reindex: no secondary-index (is_item_indexer) writer found distinct "
+        f"from the reader ('{reader_ref}'). Non-reader WRITE drivers that were "
+        f"found but lack is_item_indexer: {candidates}. "
+        "Pass driver_hint to select one explicitly."
+    )
+
+
 async def reindex_collection_into_index(
-    es,
-    catalogs_proto,
     catalog_id: str,
     collection_id: str,
-    index_name: str,
+    *,
+    driver_hint: Optional[str] = None,
     page_size: int = 500,
 ) -> int:
-    """Stream every item of a collection from the SoR and bulk-index it
-    into the per-tenant items index with ``_routing=collection_id``.
+    """Stream every item of a collection from the routing-resolved source-of-truth
+    reader and bulk-write it via the routing-resolved secondary-index writer.
 
-    Returns the number of documents indexed. Skips collections that don't
-    currently route through the regular ES driver (per
-    :func:`is_es_active_for`).
+    Resolution strategy:
 
-    This is the driver-level orchestration; both the bulk-reindex tasks
-    and any extension that wants to perform a reindex synchronously can
-    call this directly.
+    - **Reader**: resolved via :func:`~dynastore.modules.storage.router.get_items_search_driver`
+      with ``hints={Hint.GEOMETRY_EXACT}`` to force the authoritative PG primary
+      (bypassing any ES read path — we must not read from the index we are rebuilding).
+    - **Writer**: resolved via :func:`~dynastore.modules.storage.router.get_write_drivers`,
+      then filtered to the first secondary-index entry (``is_item_indexer=True``) that
+      differs from the reader.  When ``driver_hint`` is supplied, that ``driver_ref``
+      is used directly instead.
+
+    The reader and writer MUST resolve to different drivers. If the resolved writer
+    equals the reader this function raises ``ValueError`` immediately — a reindex that
+    reads and writes to the same driver is a no-op at best and a data hazard at worst.
+
+    Chunks are sized to ``max(page_size, writer.preferred_chunk_size)`` when the writer
+    declares a preference; otherwise ``page_size`` governs.
+
+    Write failures propagate: :class:`~dynastore.modules.storage.errors.EsBulkWriteError`
+    (and any other exception from ``write_entities``) are re-raised after logging the
+    failure count so the task can surface them and apply its ``on_failure`` policy.
+    The returned count reflects only successfully written documents.
+
+    Alias enrolment: the writer's index is enrolled in the public alias once before
+    streaming begins (idempotent; best-effort).
+
+    Args:
+        catalog_id: Catalog owning the collection.
+        collection_id: Collection to reindex.
+        driver_hint: Optional ``driver_ref`` override that selects the WRITE target
+            directly (e.g. ``"items_elasticsearch_driver"``). Takes precedence over
+            the secondary-index auto-select.
+        page_size: Items per read page (and write chunk, unless the writer declares
+            a larger ``preferred_chunk_size``).
+
+    Returns:
+        Number of documents successfully written to the target index.
+
+    Raises:
+        ValueError: If routing cannot resolve a valid reader/writer pair.
+        RuntimeError: If required protocols are unavailable.
+        :class:`~dynastore.modules.storage.errors.EsBulkWriteError`: On ES bulk-write
+            rejection (propagated from the writer driver).
     """
+    # --- Resolve reader: source-of-truth READ driver (PG primary via GEOMETRY_EXACT). ---
+    # The GEOMETRY_EXACT hint forces PG rather than ES, ensuring we read from the
+    # authoritative store and not from a potentially stale or empty index.
+    reader_resolved = await get_items_search_driver(
+        catalog_id,
+        collection_id,
+        hints=frozenset({Hint.GEOMETRY_EXACT}),
+    )
+    reader = reader_resolved.driver
+    reader_ref = reader_resolved.driver_ref
+
+    # --- Resolve writers: WRITE fan-out list (all configured WRITE drivers). ---
+    write_drivers = await get_write_drivers(catalog_id, collection_id)
+
+    # --- Select the target writer (must differ from the reader). ---
+    writer_resolved = _select_writer(write_drivers, reader_ref, driver_hint)
+    writer = writer_resolved.driver
+    writer_ref = writer_resolved.driver_ref
+
     if not await is_es_active_for(catalog_id, collection_id):
         logger.debug(
-            "Skipping collection %s/%s — elasticsearch not configured as driver.",
+            "Skipping collection %s/%s — the regular ES driver is not in the "
+            "routing config for this collection.",
             catalog_id,
             collection_id,
         )
         return 0
 
-    # Mirror ItemsElasticsearchDriver.ensure_storage's alias enrolment from
-    # the indexer side. The driver-side path only fires when the items ES
-    # driver is loaded on the catalog service (gated on stac-fastapi-
-    # elasticsearch being importable, which scope-catalog doesn't pull in
-    # today). Without this, /search and /search/catalogs/{catalog_id}
-    # query the empty public alias and return 0 for every catalog created
-    # via the public API even after a successful bulk reindex. Best-effort
-    # and idempotent (helper handles repeats).
-    from dynastore.modules.elasticsearch.aliases import add_index_to_public_alias
-    from dynastore.modules.elasticsearch.items_projection import (
-        project_item_for_es,
-        resolve_catalog_known_fields,
-    )
-    await add_index_to_public_alias(index_name)
-    known_fields = await resolve_catalog_known_fields(catalog_id)
+    # --- Alias enrolment (idempotent). ---
+    # Enrol the writer's index in the public alias so /search returns results
+    # after the reindex completes.  Best-effort: a failure here is non-fatal
+    # since the alias can be repaired independently.
+    try:
+        index_name = get_tenant_items_index(get_index_prefix(), catalog_id)
+        await add_index_to_public_alias(index_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "reindex_collection_into_index: alias enrolment failed for %s/%s: %s. "
+            "Continuing — alias can be repaired separately.",
+            catalog_id, collection_id, exc,
+        )
 
-    total = 0
+    # --- Determine chunk size from the writer's preference. ---
+    writer_chunk = getattr(writer, "preferred_chunk_size", 0)
+    chunk_size = max(page_size, writer_chunk) if writer_chunk > 0 else page_size
+
+    logger.info(
+        "reindex_collection_into_index: %s/%s  reader=%s  writer=%s  chunk_size=%d",
+        catalog_id, collection_id, reader_ref, writer_ref, chunk_size,
+    )
+
+    total_written = 0
     offset = 0
 
     while True:
-        result = await catalogs_proto.search(
+        # Collect a chunk from the reader.
+        chunk: list = []
+        async for feature in reader.read_entities(
             catalog_id,
             collection_id,
-            limit=page_size,
+            limit=chunk_size,
             offset=offset,
-        )
-        features = result.get("features", [])
-        if not features:
+        ):
+            chunk.append(feature)
+
+        if not chunk:
             break
 
-        bulk_body: list = []
-        for feature in features:
-            item_id = getattr(feature, "id", None) or (
-                feature.get("id") if isinstance(feature, dict) else None
+        # Write the chunk to the target (raises on failure — no silent drop).
+        try:
+            written = await writer.write_entities(catalog_id, collection_id, chunk)
+            batch_count = len(written) if written is not None else len(chunk)
+        except Exception:
+            logger.error(
+                "reindex_collection_into_index: write_entities raised for %s/%s "
+                "at offset %d (%d docs in batch); propagating error. "
+                "Total successfully written before failure: %d.",
+                catalog_id, collection_id, offset, len(chunk), total_written,
             )
-            if not item_id:
-                continue
+            raise
 
-            if isinstance(feature, BaseModel):
-                doc = feature.model_dump(by_alias=True, exclude_none=True, mode="json")
-            else:
-                doc = json.loads(json.dumps(dict(feature), default=_json_default))
-            doc["catalog_id"] = catalog_id
-            doc["collection"] = collection_id
-            doc = project_item_for_es(doc, known_fields)
+        total_written += batch_count
 
-            doc_id = f"{catalog_id}:{collection_id}:{item_id}"
-            bulk_body.append(
-                {
-                    "index": {
-                        "_index": index_name,
-                        "_id": doc_id,
-                        "routing": collection_id,
-                    }
-                }
-            )
-            bulk_body.append(doc)
-
-        if bulk_body:
-            resp = await es.bulk(body=bulk_body)
-            errors = [
-                i for i in resp.get("items", []) if "error" in i.get("index", {})
-            ]
-            if errors:
-                logger.warning(
-                    "Bulk index: %d errors in collection %s/%s at offset %d.",
-                    len(errors),
-                    catalog_id,
-                    collection_id,
-                    offset,
-                )
-            total += len(bulk_body) // 2
-
-        if len(features) < page_size:
+        if len(chunk) < chunk_size:
             break
-        offset += page_size
+        offset += chunk_size
 
-    return total
+    return total_written
