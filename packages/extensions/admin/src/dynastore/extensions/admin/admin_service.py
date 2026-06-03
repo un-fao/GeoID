@@ -16,7 +16,8 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import logging
-from typing import TYPE_CHECKING, Literal, Optional
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -81,6 +82,53 @@ def _policy_to_response(p: Policy) -> PolicyResponse:
         priority=p.priority,
         conditions=getattr(p, "conditions", []) or [],
     )
+
+
+def _validate_condition_regexes(
+    conditions: Optional[List[Any]],
+    quota: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Compile-check every regex-bearing field in the supplied conditions
+    and quota spec.  Raises ``HTTPException(422)`` on the first invalid
+    pattern so bad data is rejected at the API boundary rather than stored
+    and causing 500s on every request that evaluates the policy.
+
+    This is intentionally NOT a Pydantic model validator: the ``Condition``
+    model is also used when loading policies from the DB, and a model-level
+    validator would raise on reading an already-stored bad policy.
+    """
+    for cond in conditions or []:
+        ctype = (cond.type if hasattr(cond, "type") else cond.get("type", ""))
+        cfg: Dict[str, Any] = (
+            cond.config if hasattr(cond, "config") else cond.get("config", {})
+        ) or {}
+        if ctype in ("rate_limit", "max_count"):
+            _check_re_field(cfg, "path_pattern", ctype)
+        elif ctype == "query_match":
+            _check_re_field(cfg, "pattern", ctype)
+        elif ctype == "match" and cfg.get("operator") == "regex":
+            _check_re_field(cfg, "value", ctype)
+
+    for slot in ("rate_limit", "max_count"):
+        spec = (quota or {}).get(slot)
+        if isinstance(spec, dict):
+            _check_re_field(spec, "path_pattern", f"quota.{slot}")
+
+
+def _check_re_field(cfg: Dict[str, Any], key: str, context: str) -> None:
+    """Try to compile ``cfg[key]`` as a regex; raise HTTP 422 if it fails."""
+    value = cfg.get(key)
+    if not value:
+        return
+    try:
+        re.compile(value)
+    except re.error as e:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid regular expression in {context!r} field {key!r}: {e}"
+            ),
+        ) from e
 
 
 def _iam() -> IamService:
@@ -981,6 +1029,7 @@ class AdminService(ExtensionProtocol):
         request: Request,  # type: ignore[reportGeneralTypeIssues]
         body: CreateBindingRequest,
     ):
+        _validate_condition_regexes(None, body.quota)
         mgr = _iam()
         if body.object_kind == "role":
             # Same escalation gate the legacy `/platform/.../roles` POST applies.
@@ -1096,6 +1145,7 @@ class AdminService(ExtensionProtocol):
         catalog_id: str,
         body: CreateBindingRequest,
     ):
+        _validate_condition_regexes(None, body.quota)
         mgr = _iam()
         if body.object_kind == "role":
             # Match `grant_catalog_role`'s narrowed guard: platform-tier names
@@ -1520,6 +1570,7 @@ class AdminService(ExtensionProtocol):
         collection_id: str,
         body: CreateBindingRequest,
     ):
+        _validate_condition_regexes(None, body.quota)
         mgr = _iam()
         # Role bindings carry privilege-escalation risk — gate exactly like
         # the catalog-scope role grant (platform-tier names blocked; catalog
@@ -1796,6 +1847,7 @@ class AdminService(ExtensionProtocol):
 
     @router.post("/policies", summary="Create a new policy", status_code=201)
     async def create_policy(body: PolicyCreate, catalog_id: Optional[str] = Query(None)):  # type: ignore[reportGeneralTypeIssues]
+        _validate_condition_regexes(body.conditions)
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:
@@ -1821,6 +1873,8 @@ class AdminService(ExtensionProtocol):
         body: PolicyUpdate,
         catalog_id: Optional[str] = Query(None),
     ):
+        if body.conditions is not None:
+            _validate_condition_regexes(body.conditions)
         mgr = _iam()
         pm = mgr.get_policy_service()
         if not pm:

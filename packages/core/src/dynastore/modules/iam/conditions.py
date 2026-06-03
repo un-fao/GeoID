@@ -20,7 +20,9 @@
 
 import abc
 import re
+import time
 import logging
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -42,6 +44,64 @@ logger = logging.getLogger(__name__)
 # most one line per (condition_type, policy_id, principal_key) per minute.
 # Sized for ~4k distinct (policy, principal) pairs in flight per pod.
 _DENIAL_LOG_GATE: TTLGate = TTLGate(maxsize=4096, ttl_seconds=60.0)
+
+# Sync throttle for invalid-regex warnings.  Two of the three regex sites
+# are in sync code, so TTLGate (async-only) cannot be reused here.
+# Bounded to 4096 entries; evicts the oldest when full.
+_INVALID_REGEX_LOG: "OrderedDict[tuple, float]" = OrderedDict()
+_INVALID_REGEX_LOG_MAX = 4096
+_INVALID_REGEX_LOG_TTL = 60.0
+
+
+def _warn_invalid_regex(site: str, pattern: str, err: Exception) -> None:
+    """Throttled WARNING (<=1 per (site,pattern) per 60s) for an operator-
+    supplied regex that fails to compile. Sync-safe (no asyncio)."""
+    key = (site, pattern)
+    now = time.monotonic()
+    last = _INVALID_REGEX_LOG.get(key)
+    if last is not None and (now - last) < _INVALID_REGEX_LOG_TTL:
+        _INVALID_REGEX_LOG.move_to_end(key)
+        return
+    _INVALID_REGEX_LOG[key] = now
+    _INVALID_REGEX_LOG.move_to_end(key)
+    while len(_INVALID_REGEX_LOG) > _INVALID_REGEX_LOG_MAX:
+        _INVALID_REGEX_LOG.popitem(last=False)
+    logger.warning(
+        "invalid_regex_condition site=%s pattern=%r error=%s", site, pattern, err
+    )
+
+
+def _safe_search(pattern: str, value: str, *, site: str):
+    """Fail-open matcher for the rate-limit/quota path gate: an invalid
+    pattern is treated as 'no match' so the quota is skipped (availability
+    over enforcing a mis-typed limit). Returns a match object or None."""
+    try:
+        return re.search(pattern, value)
+    except re.error as e:
+        _warn_invalid_regex(site, pattern, e)
+        return None
+
+
+def _safe_regex_matches(
+    pattern: str,
+    value: str,
+    *,
+    matcher,
+    site: str,
+    ctx: "EvaluationContext",
+) -> bool:
+    """Effect-aware matcher for ACCESS conditions (query_match / attribute
+    regex). On an invalid pattern, resolve toward the restrictive direction:
+    a DENY policy must keep denying (return True = condition matches -> DENY
+    applies); an ALLOW policy (or unknown effect) must NOT grant
+    (return False = non-match -> policy skipped). This guarantees an invalid
+    regex can never silently open a DENY rule, and never silently grant.
+    ``matcher`` is re.fullmatch or re.match."""
+    try:
+        return bool(matcher(pattern, value))
+    except re.error as e:
+        _warn_invalid_regex(site, pattern, e)
+        return ctx.effect == "DENY"
 
 
 async def _log_usage_counter_denied(
@@ -91,10 +151,16 @@ class EvaluationContext:
     path: str = ""
     method: str = ""
     query_params: Optional[Dict[str, str]] = None
-    requested_ttl: int = 0 
+    requested_ttl: int = 0
     schema: str = "catalog" # Default to global/catalog schema
     catalog_id: Optional[str] = None
     extras: Dict[str, Any] = field(default_factory=dict)
+    # Set by the evaluation engine to the current policy's effect
+    # ("ALLOW" or "DENY") before evaluating that policy's conditions.
+    # None when evaluated outside the engine (inspect, filter compile, tests
+    # that build contexts by hand) -> _safe_regex_matches treats as ALLOW
+    # (fail-closed: non-match -> policy skipped, never grants).
+    effect: Optional[str] = None
 
 class ConditionHandler(abc.ABC):
     @property
@@ -193,9 +259,13 @@ def _principal_key_for(scope: str, ctx: EvaluationContext) -> Optional[str]:
 
 
 def _path_method_matches(config: Dict[str, Any], ctx: EvaluationContext) -> bool:
-    """Apply ``path_pattern`` / ``methods`` gate; conditions skip non-matching requests."""
+    """Apply ``path_pattern`` / ``methods`` gate; conditions skip non-matching requests.
+
+    An invalid ``path_pattern`` regex is treated as no-match (fail-open):
+    the rate-limit/quota condition is skipped rather than 500ing the request.
+    """
     pattern = config.get("path_pattern")
-    if pattern and not re.search(pattern, ctx.path or ""):
+    if pattern and not _safe_search(pattern, ctx.path or "", site="rate_limit.path_pattern"):
         return False
     methods = config.get("methods")
     if methods and ctx.method.upper() not in {m.upper() for m in methods}:
@@ -494,10 +564,16 @@ class QueryParamHandler(ConditionHandler):
         param_key = config.get("param")
         pattern = config.get("pattern")
         if not param_key or not pattern: return True
-        
+
         val = ctx.query_params.get(param_key)
         if val is None: return False
-        if not re.fullmatch(pattern, val): return False
+        if not _safe_regex_matches(
+            pattern, val,
+            matcher=re.fullmatch,
+            site="query_match.pattern",
+            ctx=ctx,
+        ):
+            return False
         return True
 
 class TimeWindowHandler(ConditionHandler):
@@ -610,12 +686,20 @@ class AttributeMatchHandler(ConditionHandler):
             return None
         return None
 
-    def _compare(self, actual: Any, operator: str, expected: Any) -> bool:
+    def _compare(
+        self, actual: Any, operator: str, expected: Any, ctx: "EvaluationContext"
+    ) -> bool:
         if operator == "eq": return str(actual) == str(expected)
         if operator == "neq": return str(actual) != str(expected)
         if operator == "contains": return str(expected) in str(actual)
-        if operator == "regex": return bool(re.match(str(expected), str(actual)))
-        if operator == "gt": 
+        if operator == "regex":
+            return _safe_regex_matches(
+                str(expected), str(actual),
+                matcher=re.match,
+                site="match.regex",
+                ctx=ctx,
+            )
+        if operator == "gt":
             try: return float(actual) > float(expected)
             except Exception: return False
         if operator == "lt":
@@ -629,14 +713,14 @@ class AttributeMatchHandler(ConditionHandler):
     async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
         attr_path = config.get("attribute")
         if not attr_path: return True
-        
+
         actual_value = self._get_value(attr_path, ctx)
         if actual_value is None: return False
-        
+
         operator = config.get("operator", "eq")
         expected_value = config.get("value")
-        
-        return self._compare(actual_value, operator, expected_value)
+
+        return self._compare(actual_value, operator, expected_value, ctx)
 
 class LogicalAndHandler(ConditionHandler):
     @property

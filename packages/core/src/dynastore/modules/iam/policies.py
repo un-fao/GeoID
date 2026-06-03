@@ -805,6 +805,11 @@ class PolicyService:
 
             conditions_met = True
             if p.conditions:
+                # Stamp the current policy's effect onto the context so that
+                # _safe_regex_matches inside condition handlers can resolve
+                # toward the safe direction when a regex is invalid.
+                if hasattr(request_context, "effect"):
+                    request_context.effect = p.effect
                 for cond in p.conditions:
                     cond_ok = await self._evaluate_condition(cond, request_context)
                     if trace_rec is not None:
