@@ -36,7 +36,6 @@ class _ShutdownAfter:
 
 def _service() -> EventService:
     svc = EventService.__new__(EventService)
-    svc._async_listeners = {}
     svc._consumer_running = False
     svc._consumer_task = None
     return svc
