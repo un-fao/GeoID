@@ -491,8 +491,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 )
             try:
                 parsed_bbox = tuple(float(p) for p in parts)  # type: ignore[assignment]
-            except ValueError:
-                raise HTTPException(status_code=400, detail="bbox values must be numbers")
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="bbox values must be numbers"
+                ) from exc
 
         parsed_q: Optional[List[str]] = (
             [t.strip() for t in q.split(",") if t.strip()] if q else None
@@ -512,7 +514,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             async with managed_transaction(engine) as conn:
                 collections_list, total_count = await search_collections(conn, search_req)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         stac_collections = []
         for coll in collections_list:
@@ -940,7 +942,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 )
             except ValueError as e:
                 # Unknown property / malformed CQL → 400
-                raise HTTPException(status_code=400, detail=str(e))
+                raise HTTPException(status_code=400, detail=str(e)) from e
         return JSONResponse(content=result)
 
     async def _get_item_with_row(
@@ -1278,7 +1280,9 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         except HTTPException:
             raise
         except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+            ) from e
         except Exception as e:
             return handle_or_raise(
                 e,
@@ -1362,8 +1366,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 )
             try:
                 parsed_bbox = tuple(float(p) for p in parts)  # type: ignore[assignment]
-            except ValueError:
-                raise HTTPException(status_code=400, detail="bbox values must be numbers")
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="bbox values must be numbers"
+                ) from exc
 
         # Parse ids: comma-separated → list
         parsed_ids: Optional[List[str]] = (
@@ -1387,8 +1393,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                 import json as _json
                 try:
                     filter_body = _json.loads(filter)
-                except Exception:
-                    raise HTTPException(status_code=400, detail="Invalid cql2-json filter")
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=400, detail="Invalid cql2-json filter"
+                    ) from exc
                 from pydantic import ValidationError as _VE
                 try:
                     from dynastore.extensions.stac.search import QueryFilter as _QF
@@ -1401,7 +1409,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                         raise HTTPException(
                             status_code=400,
                             detail=f"Could not parse cql2-json filter: {exc}",
-                        )
+                        ) from exc
             else:
                 # cql2-text: parse via pygeofilter then encode to CQL2-JSON dict
                 try:
@@ -1422,18 +1430,18 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                             raise HTTPException(
                                 status_code=400,
                                 detail=f"Could not parse cql2-text filter: {exc}",
-                            )
-                except ImportError:
+                            ) from exc
+                except ImportError as exc:
                     raise HTTPException(
                         status_code=501,
                         detail="CQL2-Text filter requires pygeofilter (not installed)",
-                    )
+                    ) from exc
                 except HTTPException:
                     raise
                 except Exception as exc:
                     raise HTTPException(
                         status_code=400, detail=f"Invalid cql2-text filter: {exc}"
-                    )
+                    ) from exc
 
         search_request = ItemSearchRequest(
             catalog_id=catalog_id,
@@ -1461,7 +1469,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     principals=_principals, principal=_principal,
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         from dynastore.models.shared_models import OutputFormatEnum
         if f in (OutputFormatEnum.GEOPARQUET, "geoparquet", "parquet"):
@@ -1521,7 +1529,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             except ValueError as exc:
                 # Invalid filter (e.g. unknown queryable property) — surface as a
                 # 400 instead of a 500, matching the ``/items`` filter path.
-                raise HTTPException(status_code=400, detail=str(exc))
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         from dynastore.models.shared_models import OutputFormatEnum
         if f in (OutputFormatEnum.GEOPARQUET, "geoparquet", "parquet"):
@@ -1562,7 +1570,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             async with managed_transaction(engine) as conn:
                 collections, total_count = await search_collections(conn, search_req)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         # Release connection before PySTAC processing
         stac_collections = []
