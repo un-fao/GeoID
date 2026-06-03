@@ -4,7 +4,8 @@
 // collection-binding CRUD added in #1360 and list_grants_for_resource for
 // the reverse "who can access" view.
 
-import { getJSON, postJSON, putJSON, deleteJSON } from "../common/api.js";
+import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage } from "../common/api.js";
+import { downloadAsFile, rowsToCsv } from "../common/download.js";
 
 // ---------------------------------------------------------------- state
 
@@ -171,11 +172,14 @@ function pickPrincipal(id, label) {
 // Cached usage entries keyed by grant_id for the current principal view.
 // Populated by refreshBindings after the bindings load completes.
 let _usageByGrantId = {};
+// The full GrantUsageView last returned by fetchUsageIntoCache; used for export.
+let _lastUsageView = null;
 
 async function refreshBindings() {
   const el = $("#bindings-table");
   clear(el);
   _usageByGrantId = {};
+  _lastUsageView = null;
 
   if (!state.catalogId || !state.collectionId) {
     setHint(el, "Pick a catalog and collection first.");
@@ -220,6 +224,9 @@ async function fetchUsageIntoCache(rows) {
   for (const e of entries) {
     _usageByGrantId[String(e.grant_id)] = e;
   }
+  // Store full view for export; enable export buttons now that data is ready.
+  _lastUsageView = data || null;
+  updateExportButtons();
   // Re-render the counter cells without a full refresh — find all counter
   // cells that were left as "…" and fill them in.
   document.querySelectorAll("td.counter-cell[data-grant-id]").forEach((td) => {
@@ -235,11 +242,16 @@ function fillCounterCell(td, entry) {
     return;
   }
   const counters = entry.counters;
-  const lines = [];
+
   if (counters.rate_limit) {
     const rl = counters.rate_limit;
     const line = document.createElement("div");
-    line.textContent = `rate: ${rl.count}/${rl.limit} (${rl.remaining} left)`;
+    line.className = "counter-line";
+
+    const text = document.createElement("span");
+    text.textContent = `rate: ${rl.count}/${rl.limit} (${rl.remaining} left)`;
+    line.appendChild(text);
+
     if (rl.window_start) {
       const sub = document.createElement("div");
       sub.className = "muted";
@@ -247,17 +259,175 @@ function fillCounterCell(td, entry) {
       sub.textContent = `resets from ${fmtDateTime(rl.window_start)}`;
       line.appendChild(sub);
     }
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "btn btn-ghost btn-xs counter-reset-btn";
+    resetBtn.textContent = "Reset";
+    resetBtn.setAttribute("aria-label", "Reset rate-limit counter for this binding");
+    const grantId = entry.grant_id;
+    const windowSeconds = rl.window_seconds;
+    const principalId = state.principalId;
+    const catalogId = state.catalogId;
+    resetBtn.addEventListener("click", () =>
+      handleInlineCounterReset(td, entry, grantId, windowSeconds, principalId, catalogId),
+    );
+    line.appendChild(resetBtn);
     td.appendChild(line);
   }
+
   if (counters.max_count) {
     const mc = counters.max_count;
     const line = document.createElement("div");
-    line.textContent = `total: ${mc.count}/${mc.limit} (${mc.remaining} left)`;
+    line.className = "counter-line";
+
+    const text = document.createElement("span");
+    text.textContent = `total: ${mc.count}/${mc.limit} (${mc.remaining} left)`;
+    line.appendChild(text);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "btn btn-ghost btn-xs counter-reset-btn";
+    resetBtn.textContent = "Reset";
+    resetBtn.setAttribute("aria-label", "Reset lifetime quota counter for this binding");
+    const grantId = entry.grant_id;
+    const principalId = state.principalId;
+    const catalogId = state.catalogId;
+    resetBtn.addEventListener("click", () =>
+      handleInlineCounterReset(td, entry, grantId, undefined, principalId, catalogId),
+    );
+    line.appendChild(resetBtn);
     td.appendChild(line);
   }
+
   if (!counters.rate_limit && !counters.max_count) {
     td.textContent = "—";
   }
+}
+
+// Handles a counter reset triggered from an inline cell button.
+// Re-fetches all counters on success so every counter cell refreshes.
+async function handleInlineCounterReset(td, entry, grantId, windowSeconds, principalId, catalogId) {
+  const kind = windowSeconds != null ? "rate_limit" : "max_count";
+  const msg = windowSeconds != null
+    ? `Reset the rate-limit counter (${windowSeconds}s window) for this binding?`
+    : "Reset the lifetime quota counter for this binding? This cannot be undone.";
+  if (!confirm(msg)) return;
+
+  const policyId = `grant:${grantId}`;
+  const statusEl = $("#usage-stale-banner-inline");
+  try {
+    const result = await resetGrantUsage({
+      policyId,
+      principalKey: principalId,
+      windowSeconds: windowSeconds != null ? windowSeconds : undefined,
+      catalogId: catalogId || undefined,
+    });
+    // Update the inline stale banner to confirm the reset
+    if (statusEl) {
+      statusEl.textContent =
+        `Reset ${kind}: cleared ${result.reset_count} hit(s) on grant ${grantId}.`;
+      statusEl.style.display = "";
+      statusEl.dataset.level = "info";
+    }
+    // Re-fetch all usage counters so every counter cell refreshes.
+    await fetchUsageIntoCache(
+      Array.from(document.querySelectorAll("td.counter-cell[data-grant-id]"))
+        .map((c) => ({ id: c.dataset.grantId })),
+    );
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = `Counter reset failed: ${err.message}`;
+      statusEl.style.display = "";
+      statusEl.dataset.level = "error";
+    }
+  }
+}
+
+// ---------------------------------------------------------------- usage export (CSV / JSON)
+
+// Sanitize a string for use in a filename (replace unsafe chars with underscores).
+function sanitizeFilenameSegment(s) {
+  if (!s) return "unknown";
+  return String(s).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64);
+}
+
+function buildExportFilename(ext) {
+  const principal = sanitizeFilenameSegment(
+    _lastUsageView && _lastUsageView.principal_id
+      ? _lastUsageView.principal_id
+      : (state.principalId || "unknown"),
+  );
+  const fetchedAt = sanitizeFilenameSegment(
+    _lastUsageView && _lastUsageView.fetched_at
+      ? _lastUsageView.fetched_at
+      : new Date().toISOString(),
+  );
+  return `iam-usage_${principal}_${fetchedAt}.${ext}`;
+}
+
+// Enable or disable the export buttons depending on whether _lastUsageView is loaded.
+function updateExportButtons() {
+  const csvBtn = $("#usage-export-csv");
+  const jsonBtn = $("#usage-export-json");
+  const hasData = !!(_lastUsageView && Array.isArray(_lastUsageView.entries));
+  if (csvBtn) csvBtn.disabled = !hasData;
+  if (jsonBtn) jsonBtn.disabled = !hasData;
+}
+
+const CSV_HEADERS = [
+  "grant_id", "subject_kind", "subject_ref",
+  "object_kind", "object_ref", "effect", "resource_kind", "resource_ref",
+  "rate_count", "rate_limit", "rate_remaining", "rate_window_seconds", "rate_window_start",
+  "total_count", "total_limit", "total_remaining",
+  "valid_from", "valid_until",
+];
+
+function usageViewToCsvRows(view) {
+  const entries = (view && Array.isArray(view.entries)) ? view.entries : [];
+  return entries.map((e) => {
+    const rl = (e.counters && e.counters.rate_limit) ? e.counters.rate_limit : {};
+    const mc = (e.counters && e.counters.max_count) ? e.counters.max_count : {};
+    return [
+      e.grant_id,
+      e.subject_kind,
+      e.subject_ref,
+      e.object_kind,
+      e.object_ref,
+      e.effect,
+      e.resource_kind,
+      e.resource_ref,
+      rl.count,
+      rl.limit,
+      rl.remaining,
+      rl.window_seconds,
+      rl.window_start,
+      mc.count,
+      mc.limit,
+      mc.remaining,
+      e.valid_from,
+      e.valid_until,
+    ];
+  });
+}
+
+function handleExportCsv() {
+  if (!_lastUsageView) {
+    setStatus($("#usage-stale-banner-inline"), "No usage data loaded yet — load bindings first.", "error");
+    return;
+  }
+  const rows = usageViewToCsvRows(_lastUsageView);
+  const csv = rowsToCsv(CSV_HEADERS, rows);
+  downloadAsFile(buildExportFilename("csv"), csv, "text/csv;charset=utf-8");
+}
+
+function handleExportJson() {
+  if (!_lastUsageView) {
+    setStatus($("#usage-stale-banner-inline"), "No usage data loaded yet — load bindings first.", "error");
+    return;
+  }
+  const json = JSON.stringify(_lastUsageView, null, 2);
+  downloadAsFile(buildExportFilename("json"), json, "application/json");
 }
 
 async function refreshReverse() {
@@ -1062,6 +1232,13 @@ function bind() {
       loadStampingConfig();
     });
   }
+
+  // Usage export wiring — buttons disabled until usage data is loaded.
+  const exportCsvBtn = $("#usage-export-csv");
+  if (exportCsvBtn) exportCsvBtn.addEventListener("click", handleExportCsv);
+  const exportJsonBtn = $("#usage-export-json");
+  if (exportJsonBtn) exportJsonBtn.addEventListener("click", handleExportJson);
+  updateExportButtons();
 }
 
 // ---------------------------------------------------------------- boot
