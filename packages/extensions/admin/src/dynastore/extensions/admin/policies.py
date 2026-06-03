@@ -46,6 +46,21 @@ def admin_policies() -> List[Policy]:
       before calling ``POST /admin/catalogs/{cid}/principals/{pid}/roles``.
       The handler requires a non-empty ``q`` parameter from catalog-only
       callers so they cannot enumerate the platform principal directory.
+
+    - ``admin_task_dispatch`` — POST on the catalog-level task dispatch
+      surface (``/admin/catalogs/{cat}/tasks``). Bound to sysadmin +
+      admin so both privileged platform roles can trigger tasks at the
+      catalog scope (e.g. reindex). The path pattern uses a regex anchor
+      so it does not match the collection-scoped variant, which is
+      covered by the separate ``admin_task_dispatch_collection`` policy.
+
+    - ``admin_task_dispatch_collection`` — POST on the collection-level
+      task dispatch surface
+      (``/admin/catalogs/{cat}/collections/{col}/tasks``). Bound to
+      sysadmin only because the ``backfill_envelope_attrs`` action
+      available here is a sysadmin-only operation (mirrors the scope of
+      ``search_envelope_backfill_sysadmin``). The sysadmin role also
+      holds ``admin_task_dispatch`` so they can reach both routes.
     """
     return [
         Policy(
@@ -103,6 +118,28 @@ def admin_policies() -> List[Policy]:
             resources=[r"^/admin/principals/?$"],
             effect="ALLOW",
         ),
+        Policy(
+            id="admin_task_dispatch",
+            description=(
+                "Grants admin and sysadmin the ability to dispatch tasks at "
+                "catalog scope via POST /admin/catalogs/{cat}/tasks."
+            ),
+            actions=["POST"],
+            resources=[r"^/admin/catalogs/[^/]+/tasks$"],
+            effect="ALLOW",
+        ),
+        Policy(
+            id="admin_task_dispatch_collection",
+            description=(
+                "Grants sysadmin the ability to dispatch tasks at collection "
+                "scope via POST /admin/catalogs/{cat}/collections/{col}/tasks. "
+                "Sysadmin-only because the backfill_envelope_attrs action "
+                "available here is a privileged data-repair operation."
+            ),
+            actions=["POST"],
+            resources=[r"^/admin/catalogs/[^/]+/collections/[^/]+/tasks$"],
+            effect="ALLOW",
+        ),
     ]
 
 
@@ -131,4 +168,10 @@ def admin_role_bindings(
             name="catalog_admin",
             policies=["admin_catalogs_list", "admin_principal_lookup"],
         ),
+        # Task-dispatch: both admin tiers can trigger catalog-scoped tasks
+        # (e.g. reindex). Collection-scoped tasks (e.g. backfill_envelope_attrs)
+        # are sysadmin-only because they perform privileged data-repair ops.
+        Role(name=sysadmin_role_name, policies=["admin_task_dispatch"]),
+        Role(name=admin_role_name, policies=["admin_task_dispatch"]),
+        Role(name=sysadmin_role_name, policies=["admin_task_dispatch_collection"]),
     ]
