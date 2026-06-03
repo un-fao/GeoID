@@ -81,6 +81,11 @@ from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.hints import Hint
 from dynastore.modules.storage.routing_config import Operation
 
+# Canonical ES write-boundary imports (#1800 Task 5).
+# Imported at module level so tests can patch them as module attributes.
+from dynastore.modules.catalog.canonical_index_read import read_canonical_index_inputs
+from dynastore.modules.elasticsearch.items_projection import resolve_catalog_known_fields
+
 logger = logging.getLogger(__name__)
 
 
@@ -880,10 +885,7 @@ class ItemsElasticsearchDriver(
         - REFUSE (``refuse_batch``): raise ``ConflictError`` if any external_id already exists.
         """
         from datetime import datetime, timezone
-        from dynastore.modules.elasticsearch.items_projection import (
-            project_item_for_es,
-            resolve_catalog_known_fields,
-        )
+        from dynastore.modules.elasticsearch.items_projection import project_item_for_es
         from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 
         items = self._normalize_entities(entities)
@@ -994,7 +996,22 @@ class ItemsElasticsearchDriver(
                 stac_doc["_simplification_factor"] = factor
                 stac_doc["_simplification_mode"] = mode
 
-            doc_id = stac_doc.get("id") or base_id
+            # Derive doc_id as geoid when available; fall back to the pre-#1800
+            # external_id-or-stac-id path so NEW_VERSION / REFUSE callers that
+            # supply a versioned id are unaffected.
+            # Geoid sources (in priority order):
+            #   1. top-level "geoid" key (expose_geoid=True on the read policy)
+            #   2. system.geoid (expose_all=True on the read policy)
+            #   3. properties.geoid (some callers surface it there)
+            #   4. context["geoid"] (explicitly supplied by the call-site)
+            #   5. legacy: stac_doc["id"] / base_id (pre-#1800 fallback)
+            geoid_for_id = (
+                stac_doc.get("geoid")
+                or (stac_doc.get("system") or {}).get("geoid")
+                or (stac_doc.get("properties") or {}).get("geoid")
+                or ctx.get("geoid")
+            )
+            doc_id = geoid_for_id or stac_doc.get("id") or base_id
             if doc_id is None:
                 logger.error(
                     "ES write_entities: skipping item with no id in %s/%s "
@@ -1558,26 +1575,35 @@ class ItemsElasticsearchDriver(
             )
             return
 
-        # op_type == "upsert"
-        doc = op.payload or await self._serialize_item(
-            ctx.catalog, ctx.collection, op.entity_id,
+        # op_type == "upsert": build the canonical doc from a raw PG read.
+        # Bypasses op.payload and _serialize_item so the indexed document
+        # uses the canonical envelope (stats/system/properties/access) built
+        # directly from the raw row + resolved sidecars — no read-policy
+        # filtering, no external_id_as_feature_id id-flip (#1800).
+        known_fields = await resolve_catalog_known_fields(ctx.catalog)
+        inputs = await read_canonical_index_inputs(
+            ctx.catalog, ctx.collection, [op.entity_id],
         )
-        if doc is None:
-            # Nothing serialisable — skip without raising; this is the
-            # "row vanished between write and index" race, not a failure.
+        ci = inputs.get(op.entity_id)
+        if ci is None:
+            # Row vanished between write and index (race / soft-delete) — skip.
             logger.debug(
-                "ItemsElasticsearchDriver.index: %s/%s/%s — no doc to index",
+                "ItemsElasticsearchDriver.index: %s/%s/%s — no raw row; skipping",
                 ctx.catalog, ctx.collection, op.entity_id,
             )
             return
-        doc.setdefault("id", op.entity_id)
-        doc.setdefault("collection", ctx.collection)
-        from dynastore.modules.elasticsearch.items_projection import (
-            project_item_for_es,
-            resolve_catalog_known_fields,
+        from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
+        doc = build_canonical_index_doc(
+            ci.row,
+            resolved_sidecars=ci.resolved_sidecars,
+            known_fields=known_fields,
+            catalog_id=ctx.catalog,
+            collection_id=ctx.collection,
+            geometry=ci.geometry,
+            bbox=ci.bbox,
+            user_properties=ci.user_properties,
+            access=ci.access,
         )
-        doc = _ensure_localized_object_shape(doc)
-        doc = project_item_for_es(doc, await resolve_catalog_known_fields(ctx.catalog))
         await es.index(
             index=index_name, id=op.entity_id, body=doc,
             params={"routing": ctx.collection},
@@ -1590,7 +1616,15 @@ class ItemsElasticsearchDriver(
         per-op.  An unhandled exception (auth, connection) raises; the
         dispatcher applies the configured ``FailurePolicy`` to the whole
         batch.
+
+        Upsert ops are built from the canonical doc builder (#1800):
+        geoids are batched into a single raw-PG read, then each doc is
+        assembled via ``build_canonical_index_doc``.  ``op.payload`` is
+        ignored for the doc body (the canonical raw-row path supersedes it).
+        Delete ops are passed through unchanged.
+        ``_id`` is always the geoid (``op.entity_id``).
         """
+        from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
         from dynastore.models.protocols.indexer import BulkResult
 
         if not ops:
@@ -1600,15 +1634,20 @@ class ItemsElasticsearchDriver(
                 "ItemsElasticsearchDriver.index_bulk: collection is required for item ops",
             )
 
-        from dynastore.modules.elasticsearch.items_projection import (
-            project_item_for_es,
-            resolve_catalog_known_fields,
-        )
-
         es = _es_client_required()
         index_name = self._items_index_name(ctx.catalog)
         await _ensure_in_public_alias_once(ctx.catalog, index_name)
         known_fields = await resolve_catalog_known_fields(ctx.catalog)
+
+        # Batch-fetch canonical inputs for all upsert ops in one PG round-trip.
+        upsert_geoids = [
+            op.entity_id
+            for op in ops
+            if op.entity_type == "item" and op.op_type == "upsert"
+        ]
+        canonical_inputs = await read_canonical_index_inputs(
+            ctx.catalog, ctx.collection, upsert_geoids,
+        ) if upsert_geoids else {}
 
         body: List[dict] = []
         for op in ops:
@@ -1620,16 +1659,27 @@ class ItemsElasticsearchDriver(
                     "routing": ctx.collection,
                 }})
                 continue
-            doc = op.payload or await self._serialize_item(
-                ctx.catalog, ctx.collection, op.entity_id,
-            )
-            if doc is None:
+            # op_type == "upsert": build canonical doc from raw-row inputs.
+            ci = canonical_inputs.get(op.entity_id)
+            if ci is None:
+                # Row vanished between write and index — skip silently.
+                logger.debug(
+                    "ItemsElasticsearchDriver.index_bulk: %s/%s/%s — no raw row; "
+                    "skipping upsert op",
+                    ctx.catalog, ctx.collection, op.entity_id,
+                )
                 continue
-            doc.setdefault("id", op.entity_id)
-            doc.setdefault("collection", ctx.collection)
-            doc.setdefault("catalog_id", ctx.catalog)
-            doc = _ensure_localized_object_shape(doc)
-            doc = project_item_for_es(doc, known_fields)
+            doc = build_canonical_index_doc(
+                ci.row,
+                resolved_sidecars=ci.resolved_sidecars,
+                known_fields=known_fields,
+                catalog_id=ctx.catalog,
+                collection_id=ctx.collection,
+                geometry=ci.geometry,
+                bbox=ci.bbox,
+                user_properties=ci.user_properties,
+                access=ci.access,
+            )
             body.append({"index": {
                 "_index": index_name, "_id": op.entity_id,
                 "routing": ctx.collection,
