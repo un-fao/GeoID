@@ -13,8 +13,6 @@ Tests cover:
   - access pass-through and omission when falsy
   - no id/geoid leak into properties
 """
-import pytest
-
 from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
 
 
@@ -81,6 +79,33 @@ def test_id_unchanged_when_no_external_id():
     assert doc["id"] == "019e6318-d99e-7da2-bdd9-1223a0d9cd35"
     assert "external_id" not in doc
     assert "_external_id" not in doc
+
+
+def test_emits_both_collection_wire_member_and_collection_id():
+    """The doc must carry the STAC/GeoJSON wire member ``collection`` AND the
+    internal queryable ``collection_id`` (both equal the collection id).
+
+    ``collection`` is a reserved member key that the read reconstruction
+    (``unproject_item_from_es``) surfaces verbatim onto the wire Feature, and
+    the ``collection``-term filter behind the REFUSE write policy queries it.
+    ``collection_id`` is what the search/sort field path resolves to. Dropping
+    either breaks an ES-served read or a write-conflict check.
+    """
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="cat", collection_id="col",
+    )
+    assert doc["collection"] == "col"
+    assert doc["collection_id"] == "col"
+
+    # Read round-trip: the wire Feature must keep ``collection``.
+    from dynastore.modules.elasticsearch.items_projection import (
+        unproject_item_from_es,
+    )
+    wire = unproject_item_from_es(doc)
+    assert wire["collection"] == "col"
+    # ``collection_id`` is internal — it must NOT leak onto the wire Feature.
+    assert "collection_id" not in wire
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,14 @@ def build_canonical_index_doc(
         "id": geoid,
         "catalog_id": catalog_id,
         "collection_id": collection_id,
+        # ``collection`` is the STAC/GeoJSON wire member (a reserved key the
+        # read reconstruction surfaces verbatim); ``collection_id`` is the
+        # internal queryable/filter field. Both are carried until the
+        # read-time projector derives the wire ``collection`` from
+        # ``collection_id`` (#1285). Dropping it here would null the
+        # ``collection`` member on every ES-served STAC hit and break the
+        # ``collection``-term existence check used by the REFUSE write policy.
+        "collection": collection_id,
     }
 
     external_id = row.get("external_id")
