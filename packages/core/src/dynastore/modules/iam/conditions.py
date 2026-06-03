@@ -134,10 +134,14 @@ class EvaluationContext:
     path: str = ""
     method: str = ""
     query_params: Optional[Dict[str, str]] = None
-    requested_ttl: int = 0 
+    requested_ttl: int = 0
     schema: str = "catalog" # Default to global/catalog schema
     catalog_id: Optional[str] = None
     extras: Dict[str, Any] = field(default_factory=dict)
+    # Stamped by evaluate_access before the conditions loop so handlers can
+    # resolve invalid-regex outcomes in an effect-aware way (DENY keeps
+    # denying; ALLOW does not grant on a bad pattern).
+    effect: Optional[str] = None
 
 class ConditionHandler(abc.ABC):
     @property
@@ -550,9 +554,12 @@ class QueryParamHandler(ConditionHandler):
         val = ctx.query_params.get(param_key)
         if val is None: return False
         # _safe_regex_matches(fullmatch=True) replicates the original re.fullmatch
-        # semantics and returns None on invalid pattern (non-match direction).
+        # semantics and returns None on invalid pattern.
         matched = _safe_regex_matches(pattern, val, kind="query_match", fullmatch=True)
-        # None → invalid pattern → treat as non-match → False.
+        if matched is None:
+            # Invalid regex: a DENY condition keeps denying (True = match);
+            # an ALLOW condition does not grant on a bad pattern (False).
+            matched = getattr(ctx, "effect", None) == "DENY"
         if not matched:
             return False
         return True
@@ -667,7 +674,7 @@ class AttributeMatchHandler(ConditionHandler):
             return None
         return None
 
-    def _compare(self, actual: Any, operator: str, expected: Any) -> bool:
+    def _compare(self, actual: Any, operator: str, expected: Any, ctx: EvaluationContext) -> bool:
         if operator == "eq": return str(actual) == str(expected)
         if operator == "neq": return str(actual) != str(expected)
         if operator == "contains": return str(expected) in str(actual)
@@ -675,9 +682,12 @@ class AttributeMatchHandler(ConditionHandler):
             matched = _safe_regex_matches(
                 str(expected), str(actual), kind="match/regex"
             )
-            # None → invalid pattern → non-match direction → False.
+            if matched is None:
+                # Invalid regex: a DENY condition keeps denying (True = match);
+                # an ALLOW condition does not grant on a bad pattern (False).
+                matched = getattr(ctx, "effect", None) == "DENY"
             return bool(matched)
-        if operator == "gt": 
+        if operator == "gt":
             try: return float(actual) > float(expected)
             except Exception: return False
         if operator == "lt":
@@ -691,14 +701,14 @@ class AttributeMatchHandler(ConditionHandler):
     async def evaluate(self, config: Dict[str, Any], ctx: EvaluationContext) -> bool:
         attr_path = config.get("attribute")
         if not attr_path: return True
-        
+
         actual_value = self._get_value(attr_path, ctx)
         if actual_value is None: return False
-        
+
         operator = config.get("operator", "eq")
         expected_value = config.get("value")
-        
-        return self._compare(actual_value, operator, expected_value)
+
+        return self._compare(actual_value, operator, expected_value, ctx)
 
 class LogicalAndHandler(ConditionHandler):
     @property
