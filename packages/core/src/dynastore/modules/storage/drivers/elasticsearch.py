@@ -871,21 +871,33 @@ class ItemsElasticsearchDriver(
         context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> List[Feature]:
-        """Write/upsert entities to Elasticsearch respecting ItemsWritePolicy.
+        """Write/upsert entities to Elasticsearch using the canonical envelope.
 
-        Applies ``WriteConflictPolicy`` per entity when ``external_id`` is present.
-        Stores ``asset_id``, ``valid_from``, ``valid_to`` from ``context`` in ES ``_source``.
+        Builds the ES ``_source`` from a batched raw-PG read via
+        :func:`read_canonical_index_inputs` + :func:`build_canonical_index_doc`
+        so every write path (direct ingest, bulk-reindex, outbox FATAL sync)
+        lands in the same canonical shape (``stats.*`` / ``system.*`` /
+        ``properties`` user-only, ``id``=geoid, ``_external_id`` tracker).
 
-        Conflict policies (item-level via ``on_conflict``):
-        - UPDATE: index with stable doc_id (existing ES behaviour).
+        When no raw PG row is found for a given geoid (non-PG-primary config
+        or race with a concurrent delete), a feature-derived fallback is emitted
+        so the write never silently drops items.
+
+        Write-conflict policies (``ItemsWritePolicy``):
+        - UPDATE (default): stable doc_id=geoid; upsert in place.
         - REFUSE: skip if a doc with the same external_id already exists.
-        - NEW_VERSION: index with a timestamped doc_id suffix; stores ``valid_from``/``valid_to``.
+        - NEW_VERSION: timestamped doc_id suffix; stores ``_valid_from``/
+          ``_valid_to`` from context.
 
         Batch-level via ``on_batch_conflict``:
-        - REFUSE (``refuse_batch``): raise ``ConflictError`` if any external_id already exists.
+        - REFUSE (``refuse_batch``): raise ``ConflictError`` if any external_id
+          already exists.
         """
         from datetime import datetime, timezone
+
+        from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
         from dynastore.modules.elasticsearch.items_projection import project_item_for_es
+        from dynastore.modules.catalog.canonical_index_read import CanonicalIndexInput
         from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 
         items = self._normalize_entities(entities)
@@ -920,24 +932,41 @@ class ItemsElasticsearchDriver(
         valid_from = ctx.get("valid_from")
         valid_to = ctx.get("valid_to")
 
+        # --- Pre-pass: collect geoids for the batch canonical read (#1800) ---
+        # Canonical _source is built from the raw PG row + resolved sidecars for
+        # each item.  A single batched SELECT per collection avoids N+1 reads.
+        # Geoid sources (in priority order):
+        #   1. top-level "geoid" key (expose_geoid=True on the read policy)
+        #   2. system.geoid (expose_all=True path)
+        #   3. properties.geoid (some callers surface it there)
+        #   4. context["geoid"] (explicitly supplied by the call-site, e.g. outbox)
+        item_stac_docs: List[dict] = []
+        item_geoids: List[Optional[str]] = []
+        for item in items:
+            stac_doc = self._feature_to_stac_item(item, catalog_id, collection_id)
+            item_stac_docs.append(stac_doc)
+            geoid_for_item = (
+                stac_doc.get("geoid")
+                or (stac_doc.get("system") or {}).get("geoid")
+                or (stac_doc.get("properties") or {}).get("geoid")
+                or ctx.get("geoid")
+            )
+            item_geoids.append(geoid_for_item)
+
+        # Batch-fetch canonical inputs for all non-None geoids.
+        batch_geoids = [g for g in item_geoids if g is not None]
+        canonical_inputs: Dict[str, Any] = {}
+        if batch_geoids:
+            canonical_inputs = await read_canonical_index_inputs(
+                catalog_id, collection_id, batch_geoids, db_resource=db_resource,
+            )
+
         written: List = []
         prepped_bulk: list = []
 
-        for item in items:
-            stac_doc = self._feature_to_stac_item(item, catalog_id, collection_id)
-
+        for item, stac_doc, geoid_for_id in zip(items, item_stac_docs, item_geoids):
             # Resolve external_id from the configured ComputedField path.
             external_id = self._extract_external_id_from_doc(stac_doc, policy.external_id_path())
-
-            # Attach tracking fields to ES document _source.
-            if asset_id is not None:
-                stac_doc["_asset_id"] = asset_id
-            if valid_from is not None:
-                stac_doc["_valid_from"] = valid_from
-            if valid_to is not None:
-                stac_doc["_valid_to"] = valid_to
-            if external_id is not None:
-                stac_doc["_external_id"] = external_id
 
             # Build the ES doc_id based on conflict policy.
             from dynastore.modules.storage.driver_config import WriteConflictPolicy
@@ -970,10 +999,11 @@ class ItemsElasticsearchDriver(
                     )
                     continue
 
+            # NEW_VERSION: each version gets a unique doc_id. Store validity window.
+            versioned_suffix: Optional[str] = None
             if policy.on_conflict == WriteConflictPolicy.NEW_VERSION:
-                # Each version gets a unique doc_id. Store validity window.
                 ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-                stac_doc["id"] = f"{base_id}_{ts}" if base_id else ts
+                versioned_suffix = ts
                 # An open lower bound (ValiditySpec.start_from is None) keeps
                 # ``_valid_from`` unset; otherwise a missing start defaults to
                 # the ingestion instant for this new version. (#1172)
@@ -981,37 +1011,60 @@ class ItemsElasticsearchDriver(
                     policy.validity is not None and policy.validity.start_from is None
                 )
                 if valid_from is None and not start_is_open:
-                    stac_doc["_valid_from"] = datetime.now(timezone.utc).isoformat()
+                    valid_from = datetime.now(timezone.utc).isoformat()
 
-            # Default (UPDATE): stable doc_id wins; the bulk action below
-            # uses ``index`` semantics (upsert in place).
-
-            # Geometry policy (#1248): index EXACT geometry by default. Only
-            # when ``simplify_geometry`` is enabled do we shrink oversize docs
-            # to fit the ES 10MB per-doc limit and record the lossy ratio.
-            stac_doc, factor, mode = maybe_simplify_for_es(
-                stac_doc, simplify=simplify_geometry,
+            # Resolve the canonical doc — prefer the raw PG row; fall back to a
+            # feature-derived minimal doc when the row is absent (non-PG-primary
+            # config, concurrent delete, or race).
+            ci: Optional[CanonicalIndexInput] = (
+                canonical_inputs.get(geoid_for_id) if geoid_for_id else None
             )
-            if mode != "none":
-                stac_doc["_simplification_factor"] = factor
-                stac_doc["_simplification_mode"] = mode
+            if ci is not None:
+                es_doc = build_canonical_index_doc(
+                    ci.row,
+                    resolved_sidecars=ci.resolved_sidecars,
+                    known_fields=known_fields,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    geometry=ci.geometry,
+                    bbox=ci.bbox,
+                    user_properties=ci.user_properties,
+                    access=ci.access,
+                )
+                doc_id = geoid_for_id
+            else:
+                # Fallback: feature-derived canonical doc (no stats/system).
+                # Preserves identity + user properties + geometry; the canonical
+                # shape is maintained (stats/system sections are empty/absent).
+                raw_props = stac_doc.get("properties") or {}
+                from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _SFK
+                _sys_keys = frozenset(_SFK)
+                user_props = {k: v for k, v in raw_props.items() if k not in _sys_keys}
+                geom = stac_doc.get("geometry")
+                bbox_val = stac_doc.get("bbox")
+                fallback_row: Dict[str, Any] = {"geoid": geoid_for_id or base_id}
+                if external_id is not None:
+                    fallback_row["external_id"] = str(external_id)
+                if asset_id is not None:
+                    fallback_row["asset_id"] = str(asset_id)
+                es_doc = build_canonical_index_doc(
+                    fallback_row,
+                    resolved_sidecars=[],
+                    known_fields=known_fields,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                    geometry=geom if isinstance(geom, dict) else None,
+                    bbox=list(bbox_val) if bbox_val is not None else None,
+                    user_properties=user_props or None,
+                    access=None,
+                )
+                doc_id = geoid_for_id or base_id
+                logger.debug(
+                    "write_entities: no raw PG row for geoid=%s in %s/%s — "
+                    "using feature-derived fallback doc",
+                    geoid_for_id, catalog_id, collection_id,
+                )
 
-            # Derive doc_id as geoid when available; fall back to the pre-#1800
-            # external_id-or-stac-id path so NEW_VERSION / REFUSE callers that
-            # supply a versioned id are unaffected.
-            # Geoid sources (in priority order):
-            #   1. top-level "geoid" key (expose_geoid=True on the read policy)
-            #   2. system.geoid (expose_all=True on the read policy)
-            #   3. properties.geoid (some callers surface it there)
-            #   4. context["geoid"] (explicitly supplied by the call-site)
-            #   5. legacy: stac_doc["id"] / base_id (pre-#1800 fallback)
-            geoid_for_id = (
-                stac_doc.get("geoid")
-                or (stac_doc.get("system") or {}).get("geoid")
-                or (stac_doc.get("properties") or {}).get("geoid")
-                or ctx.get("geoid")
-            )
-            doc_id = geoid_for_id or stac_doc.get("id") or base_id
             if doc_id is None:
                 logger.error(
                     "ES write_entities: skipping item with no id in %s/%s "
@@ -1019,14 +1072,40 @@ class ItemsElasticsearchDriver(
                     catalog_id, collection_id,
                 )
                 continue
-            stac_doc = project_item_for_es(stac_doc, known_fields)
+
+            # NEW_VERSION: append timestamp suffix to the doc_id (not to the
+            # canonical id in _source — that stays as geoid).
+            if versioned_suffix is not None:
+                doc_id = f"{doc_id}_{versioned_suffix}"
+            # Propagate ingestion-context tracking fields onto the _source so
+            # historical versions retain their validity window.
+            if valid_from is not None:
+                es_doc["_valid_from"] = valid_from
+            if valid_to is not None:
+                es_doc["_valid_to"] = valid_to
+            if asset_id is not None and "_asset_id" not in es_doc:
+                # _asset_id tracker for the ingestion pipeline (mirrors the
+                # public driver's convention; canonical doc uses asset_id at
+                # the top-level identity field).
+                es_doc["_asset_id"] = str(asset_id)
+
+            # Geometry simplification (#1248) — operates on the assembled
+            # _source dict so the canonical envelope is intact; the simplification
+            # metadata is appended as top-level tracking fields.
+            es_doc, factor, mode = maybe_simplify_for_es(
+                es_doc, simplify=simplify_geometry,
+            )
+            if mode != "none":
+                es_doc["_simplification_factor"] = factor
+                es_doc["_simplification_mode"] = mode
+
             prepped_bulk.append({
                 "action": {"index": {
                     "_index": index_name,
                     "_id": str(doc_id),
                     "routing": collection_id,
                 }},
-                "doc": stac_doc,
+                "doc": es_doc,
             })
             written.append(item)
 
