@@ -373,6 +373,22 @@ export const resetGrantUsage = ({ policyId, principalKey, windowSeconds, catalog
   );
 };
 
+// ----- IAM usage-counter reset history (#1791) -----
+//
+// Reset events are mirrored into the logs subsystem at reset time
+// (event_type="usage_counter_reset"), so the history view reuses the logs
+// read API rather than a bespoke audit endpoint. Catalog-scoped resets are
+// read from GET /logs/catalogs/{cat}; platform-tier resets land in the
+// system log (catalog_id="_system_") and are read from GET /logs/system.
+// Returns LogsListResponse {logs: [LogEntry{..., details}], total, ...}.
+export const listUsageResetHistory = ({ catalogId, limit = 50 } = {}) => {
+  const query = qs({ event_type: "usage_counter_reset", limit });
+  if (catalogId != null && catalogId !== "") {
+    return getJSON(`/logs/catalogs/${encodeURIComponent(catalogId)}${query}`);
+  }
+  return getJSON(`/logs/system${query}`);
+};
+
 // ----- STAC write endpoints (create catalog / collection / features) -----
 
 export const createStacCatalog = (definition) => postJSON(`/stac/catalogs`, definition);

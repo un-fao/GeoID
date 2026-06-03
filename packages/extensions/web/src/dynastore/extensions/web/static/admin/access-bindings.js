@@ -4,7 +4,7 @@
 // collection-binding CRUD added in #1360 and list_grants_for_resource for
 // the reverse "who can access" view.
 
-import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage } from "../common/api.js";
+import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage, listUsageResetHistory } from "../common/api.js";
 import { downloadAsFile, rowsToCsv } from "../common/download.js";
 
 // ---------------------------------------------------------------- state
@@ -422,6 +422,127 @@ function handleExportJson() {
   }
   const json = JSON.stringify(_lastUsageView, null, 2);
   downloadAsFile(buildExportFilename("json"), json, "application/json");
+}
+
+// ---------------------------------------------------------------- reset history (#1791)
+//
+// The reset handler mirrors every quota reset into the logs subsystem as a
+// `usage_counter_reset` event, so the history view is a thin read over the
+// existing /logs API — no bespoke audit endpoint. We fetch the in-scope
+// catalog's reset events (platform-tier resets fall back to /logs/system)
+// and render when / actor / subject / policy / previous_count / window.
+
+// Last fetched history rows (raw LogEntry list), kept for export.
+let _lastHistoryRows = [];
+
+const HISTORY_COLUMNS = [
+  ["timestamp", "when"],
+  ["actor_principal_id", "by"],
+  ["subject_principal_key", "subject"],
+  ["policy_id", "policy"],
+  ["previous_count", "previous_count"],
+  ["window_seconds", "window_s"],
+];
+
+// Flatten a LogEntry into the columns we display/export. The structured
+// fields live in `details`; `timestamp` is top-level on the log row.
+function historyRowFrom(entry) {
+  const d = (entry && entry.details) || {};
+  return {
+    timestamp: entry.timestamp || "",
+    actor_principal_id: d.actor_principal_id || "",
+    subject_principal_key: d.subject_principal_key || "",
+    policy_id: d.policy_id || "",
+    previous_count: d.previous_count != null ? d.previous_count : "",
+    window_seconds: d.window_seconds != null ? d.window_seconds : "",
+  };
+}
+
+function renderHistory(rows) {
+  const target = $("#usage-history-table");
+  if (!target) return;
+  clear(target);
+  if (!rows.length) {
+    setHint(target, "No quota-reset events recorded for this scope yet.");
+    return;
+  }
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  for (const [, label] of HISTORY_COLUMNS) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    htr.appendChild(th);
+  }
+  thead.appendChild(htr);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    for (const [key] of HISTORY_COLUMNS) {
+      const td = document.createElement("td");
+      td.textContent = r[key] != null ? String(r[key]) : "";
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  target.appendChild(table);
+}
+
+function setHistoryExportEnabled(enabled) {
+  const csvBtn = $("#usage-history-csv");
+  const jsonBtn = $("#usage-history-json");
+  if (csvBtn) csvBtn.disabled = !enabled;
+  if (jsonBtn) jsonBtn.disabled = !enabled;
+}
+
+async function loadResetHistory() {
+  const panel = $("#usage-history-panel");
+  const statusEl = $("#usage-history-status");
+  if (panel) panel.style.display = "";
+  if (statusEl) statusEl.textContent = "Loading reset history…";
+  setHistoryExportEnabled(false);
+  _lastHistoryRows = [];
+  try {
+    const resp = await listUsageResetHistory({ catalogId: state.catalogId, limit: 50 });
+    const logs = (resp && Array.isArray(resp.logs)) ? resp.logs : [];
+    _lastHistoryRows = logs.map(historyRowFrom);
+    renderHistory(_lastHistoryRows);
+    if (statusEl) {
+      const scope = state.catalogId ? `catalog ${state.catalogId}` : "platform (system)";
+      statusEl.textContent = `${_lastHistoryRows.length} reset event(s) — ${scope}.`;
+    }
+    setHistoryExportEnabled(_lastHistoryRows.length > 0);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Failed to load reset history: ${err && err.message ? err.message : err}`;
+    renderHistory([]);
+  }
+}
+
+function buildHistoryFilename(ext) {
+  const scope = sanitizeFilenameSegment(state.catalogId || "_system_");
+  const at = sanitizeFilenameSegment(new Date().toISOString());
+  return `iam-usage-reset-history_${scope}_${at}.${ext}`;
+}
+
+function handleHistoryExportCsv() {
+  if (!_lastHistoryRows.length) return;
+  const headers = HISTORY_COLUMNS.map(([key]) => key);
+  const rows = _lastHistoryRows.map((r) => headers.map((h) => r[h]));
+  const csv = rowsToCsv(headers, rows);
+  downloadAsFile(buildHistoryFilename("csv"), csv, "text/csv;charset=utf-8");
+}
+
+function handleHistoryExportJson() {
+  if (!_lastHistoryRows.length) return;
+  const json = JSON.stringify(_lastHistoryRows, null, 2);
+  downloadAsFile(buildHistoryFilename("json"), json, "application/json");
+}
+
+function closeHistoryPanel() {
+  const panel = $("#usage-history-panel");
+  if (panel) panel.style.display = "none";
 }
 
 async function refreshReverse() {
@@ -1233,6 +1354,17 @@ function bind() {
   const exportJsonBtn = $("#usage-export-json");
   if (exportJsonBtn) exportJsonBtn.addEventListener("click", handleExportJson);
   updateExportButtons();
+
+  // Reset-history panel wiring (#1791) — reads usage_counter_reset events
+  // from the logs subsystem for the in-scope catalog (or platform).
+  const historyBtn = $("#usage-history-btn");
+  if (historyBtn) historyBtn.addEventListener("click", loadResetHistory);
+  const historyCsvBtn = $("#usage-history-csv");
+  if (historyCsvBtn) historyCsvBtn.addEventListener("click", handleHistoryExportCsv);
+  const historyJsonBtn = $("#usage-history-json");
+  if (historyJsonBtn) historyJsonBtn.addEventListener("click", handleHistoryExportJson);
+  const historyCloseBtn = $("#usage-history-close");
+  if (historyCloseBtn) historyCloseBtn.addEventListener("click", closeHistoryPanel);
 }
 
 // ---------------------------------------------------------------- boot
