@@ -308,7 +308,6 @@ function fillCounterCell(td, entry) {
 // Handles a counter reset triggered from an inline cell button.
 // Re-fetches all counters on success so every counter cell refreshes.
 async function handleInlineCounterReset(td, entry, grantId, windowSeconds, principalId, catalogId) {
-  const kind = windowSeconds != null ? "rate_limit" : "max_count";
   const msg = windowSeconds != null
     ? `Reset the rate-limit counter (${windowSeconds}s window) for this binding?`
     : "Reset the lifetime quota counter for this binding? This cannot be undone.";
@@ -317,20 +316,15 @@ async function handleInlineCounterReset(td, entry, grantId, windowSeconds, princ
   const policyId = `grant:${grantId}`;
   const statusEl = $("#usage-stale-banner-inline");
   try {
-    const result = await resetGrantUsage({
+    await resetGrantUsage({
       policyId,
       principalKey: principalId,
       windowSeconds: windowSeconds != null ? windowSeconds : undefined,
       catalogId: catalogId || undefined,
     });
-    // Update the inline stale banner to confirm the reset
-    if (statusEl) {
-      statusEl.textContent =
-        `Reset ${kind}: cleared ${result.reset_count} hit(s) on grant ${grantId}.`;
-      statusEl.style.display = "";
-      statusEl.dataset.level = "info";
-    }
-    // Re-fetch all usage counters so every counter cell refreshes.
+    // The counter cell visibly resetting to 0 is the success signal; the
+    // shared inline banner is reserved for the Valkey-stale warning and
+    // error feedback only. Re-fetch all usage counters so every cell refreshes.
     await fetchUsageIntoCache(
       Array.from(document.querySelectorAll("td.counter-cell[data-grant-id]"))
         .map((c) => ({ id: c.dataset.grantId })),
