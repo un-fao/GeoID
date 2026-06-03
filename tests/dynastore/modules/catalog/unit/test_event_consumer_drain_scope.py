@@ -86,6 +86,7 @@ async def test_consume_shard_forwards_all_scope_to_driver(monkeypatch):
         shard_id=0,
         shutdown_event=_ShutdownAfter(after_iters=1),
         scope="ALL",
+        semaphore=asyncio.Semaphore(4),
     )
 
     assert driver.recorded_scopes == ["ALL"], (
@@ -113,7 +114,7 @@ async def test_run_consume_loop_default_scope_is_all(monkeypatch):
     # Capture scopes forwarded to shards without running 16 real tasks.
     captured: List[str] = []
 
-    async def _fake_consume_shard(shard_id, shutdown_event, *, scope):
+    async def _fake_consume_shard(shard_id, shutdown_event, *, scope, semaphore):
         captured.append(scope)
 
     monkeypatch.setattr(svc, "_consume_shard", _fake_consume_shard)

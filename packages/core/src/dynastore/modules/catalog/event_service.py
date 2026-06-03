@@ -19,6 +19,7 @@
 import logging
 import asyncio
 import json
+import os
 from typing import (
     ClassVar,
     List,
@@ -48,8 +49,21 @@ from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.tools.discovery import get_protocol
 from dynastore.modules.concurrency import get_background_executor, run_in_background
 from dynastore.models.driver_context import DriverContext
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 logger = logging.getLogger(__name__)
+
+# Cap on how many of the 16 shard consumers may hold a pooled DB connection at
+# once. The shards exist to partition the outbox for lock-free SKIP LOCKED
+# draining — NOT to each pin a connection. With a request pool of ~10, 16
+# concurrent FOR UPDATE checkouts starve both the drainer and request traffic,
+# raising ``sqlalchemy.exc.TimeoutError`` ("QueuePool limit reached"). Bounding
+# concurrent checkouts decouples shard count from connection count so the
+# drainer makes steady progress while leaving headroom for the rest of the
+# service. Tunable per deployment; default leaves margin under a size-10 pool.
+_EVENT_CONSUMER_MAX_CONCURRENCY = max(
+    1, int(os.getenv("DYNASTORE_EVENT_CONSUMER_CONCURRENCY", "4"))
+)
 
 
 class CatalogEventType(EventType):
@@ -496,15 +510,21 @@ class EventService(EventBusProtocol):
         shutdown_event: Any,
         *,
         scope: str,
+        semaphore: asyncio.Semaphore,
     ) -> None:
-        """One consumer task per shard — own connection, own SKIP LOCKED scan.
+        """One consumer task per shard — own SKIP LOCKED scan, bounded checkout.
 
-        On ``asyncio.TimeoutError`` (pool checkout timed out — meaning all
-        connections are in use), back off exponentially up to 60 s instead
-        of retrying every 5 s. Pile-on under sustained pool pressure was
-        the dominant amplifier of the production storm; backing off lets
-        the pool drain. The backoff resets to 5 s after any successful
-        ``consume_batch``.
+        ``semaphore`` (shared across all 16 shards) caps how many shards hold a
+        pooled DB connection at once, so the drainer cannot exhaust the request
+        pool. Only the active SKIP LOCKED pull + listener fan-out + ack hold a
+        slot; idle ``wait_for_events`` polling stays outside it.
+
+        On a pool-checkout timeout (``sqlalchemy.exc.TimeoutError`` — all
+        connections in use — or the builtin ``TimeoutError``), back off
+        exponentially up to 60 s instead of retrying every 5 s. Pile-on under
+        sustained pool pressure was the dominant amplifier of the production
+        storm; backing off lets the pool drain. The backoff resets to 5 s after
+        any successful ``consume_batch``.
         """
         if shard_id > 0:
             await asyncio.sleep(shard_id * 0.25)
@@ -519,34 +539,43 @@ class EventService(EventBusProtocol):
                     await asyncio.sleep(5.0)
                     continue
 
-                events = await driver.consume_batch(
-                    scope=scope, batch_size=100, shard=shard_id
-                )
-                timeout_backoff_s = 5.0  # successful checkout → reset
+                # Bounded checkout: only ``semaphore`` shards may draw from the
+                # shared pool at once (pull + listener fan-out + ack/nack).
+                async with semaphore:
+                    events = await driver.consume_batch(
+                        scope=scope, batch_size=100, shard=shard_id
+                    )
+                    timeout_backoff_s = 5.0  # successful checkout → reset
+
+                    for event in events:
+                        event_type_str = event.get("event_type", "")
+                        payload = event.get("payload", {})
+                        if isinstance(payload, str):
+                            payload = json.loads(payload)
+
+                        event_id = str(event.get("event_id") or event.get("id"))
+                        try:
+                            async_listeners = self._async_listeners.get(
+                                event_type_str, []
+                            )
+                            for listener in async_listeners:
+                                args = payload.get("args", [])
+                                kwargs = payload.get("kwargs", {})
+                                await listener(*args, **kwargs)
+
+                            await driver.ack(event_ids=[event_id])
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to process event {event_id}: {e}",
+                                exc_info=True,
+                            )
+                            await driver.nack(event_id=event_id, error=str(e))
+
+                # Idle wait runs OUTSIDE the slot so a quiet shard never pins a
+                # drain slot while there is nothing to do.
                 if not events:
                     await driver.wait_for_events(timeout=10.0)
                     continue
-
-                for event in events:
-                    event_type_str = event.get("event_type", "")
-                    payload = event.get("payload", {})
-                    if isinstance(payload, str):
-                        payload = json.loads(payload)
-
-                    event_id = str(event.get("event_id") or event.get("id"))
-                    try:
-                        async_listeners = self._async_listeners.get(event_type_str, [])
-                        for listener in async_listeners:
-                            args = payload.get("args", [])
-                            kwargs = payload.get("kwargs", {})
-                            await listener(*args, **kwargs)
-
-                        await driver.ack(event_ids=[event_id])
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to process event {event_id}: {e}", exc_info=True
-                        )
-                        await driver.nack(event_id=event_id, error=str(e))
 
             except asyncio.CancelledError:
                 raise
@@ -556,7 +585,7 @@ class EventService(EventBusProtocol):
                     shard_id, e,
                 )
                 await asyncio.sleep(60.0)
-            except (asyncio.TimeoutError, TimeoutError) as e:
+            except (asyncio.TimeoutError, TimeoutError, SQLAlchemyTimeoutError) as e:
                 logger.warning(
                     "EventService shard %d: pool checkout timed out (%s); "
                     "backing off %.0fs (next: %.0fs).",
@@ -584,11 +613,24 @@ class EventService(EventBusProtocol):
         scope: str = "ALL",
         channels: Optional[List[str]] = None,
     ) -> None:
-        """Spawn 16 shard consumer tasks and wait for all to complete."""
-        logger.info("EventService: starting 16-shard consume loop (scope=%s).", scope)
+        """Spawn 16 shard consumer tasks and wait for all to complete.
+
+        A single semaphore shared across the shards caps concurrent pool
+        checkouts (see ``_EVENT_CONSUMER_MAX_CONCURRENCY``); it is created here,
+        inside the consumer's running loop, so it binds to the correct event
+        loop regardless of when the service was constructed.
+        """
+        logger.info(
+            "EventService: starting 16-shard consume loop "
+            "(scope=%s, max_db_concurrency=%d).",
+            scope, _EVENT_CONSUMER_MAX_CONCURRENCY,
+        )
+        semaphore = asyncio.Semaphore(_EVENT_CONSUMER_MAX_CONCURRENCY)
         tasks = [
             asyncio.create_task(
-                self._consume_shard(shard_id, shutdown_event, scope=scope),
+                self._consume_shard(
+                    shard_id, shutdown_event, scope=scope, semaphore=semaphore
+                ),
                 name=f"EventShard:{shard_id}",
             )
             for shard_id in range(16)
