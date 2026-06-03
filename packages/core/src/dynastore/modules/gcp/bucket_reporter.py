@@ -43,7 +43,6 @@ def _gzip_compress(src_path: str, dst_path: str) -> None:
         f_out.writelines(f_in)
 
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, List, Any, Dict
 
 # Canonical GeoJSON/STAC Feature structural keys. The read assembly bridges
 # every sidecar attribute into ``feature.__pydantic_extra__`` (so STAC extension

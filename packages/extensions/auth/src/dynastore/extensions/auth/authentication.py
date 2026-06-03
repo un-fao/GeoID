@@ -228,7 +228,9 @@ class Authentication(ExtensionProtocol):
             form = await request.form()
             code = form.get("code")
             redirect_uri = form.get("redirect_uri", "")
-            client_id = form.get("client_id", "")
+            # The form ``client_id`` is intentionally not read here: the token
+            # exchange below authenticates with the server-configured
+            # ``IDP_CLIENT_ID``, not a client-supplied value.
 
             if not code or not isinstance(code, str):
                 raise HTTPException(400, "Missing authorization code")
