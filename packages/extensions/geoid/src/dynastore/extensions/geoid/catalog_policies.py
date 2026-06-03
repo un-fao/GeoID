@@ -18,6 +18,37 @@ from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
 
+# --- Priority bands for geoid anonymous-access policies ---
+#
+# The IAM engine (PolicyService.evaluate_access) uses highest-priority-wins
+# with DENY-on-tie at equal priority (#915). These constants establish a
+# deterministic composition order so the geoid posture remains correct when
+# an operator layers a generic catch-all DENY at the default priority (0) onto
+# the unauthenticated role (e.g. a "deny everything not explicitly permitted"
+# backstop).
+#
+# Band assignment:
+#   _PRIORITY_ENUM_DENY  = 100 — block STAC/Features browse/list/search while
+#       in lookup-only mode. Sits above a generic operator catch-all (0) so
+#       these DENYs take effect even when the catch-all is absent.
+#
+#   _PRIORITY_LOOKUP_ALLOW = 200 — needle-lookup ALLOW on
+#       POST /search/catalogs/{cat}/items-search. Must outrank a generic
+#       deny-all at priority 0: if ALLOW and that catch-all DENY tied at 0,
+#       DENY would win by tie-breaking, silently blocking the public lookup
+#       surface. Priority 200 ensures the lookup ALLOW is always the decisive
+#       policy for its own path (the enumeration DENYs do NOT cover
+#       /search/…/items-search, so they do not compete here).
+#
+#   _PRIORITY_ANON_CREATE = 500 — per-collection anonymous item POST on
+#       .../collections/{col}/items. The enumeration DENYs (_PRIORITY_ENUM_DENY)
+#       cover that same item-POST path (they match GET/POST/…/items). This
+#       ALLOW must outrank them so an opted-in collection's item-POST wins while
+#       every browse/list/search verb stays denied by the DENYs.
+_PRIORITY_ENUM_DENY = 100
+_PRIORITY_LOOKUP_ALLOW = 200
+_PRIORITY_ANON_CREATE = 500
+
 # Policy conditions
 #
 # ``_LOOKUP_PUBLIC_CONDITION`` gates the lookup-only posture on the catalog
@@ -93,6 +124,10 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
                 resources=[r"/search/catalogs/[^/]+/items-search(/.*)?"],
                 conditions=_ANON_LOOKUP_ALLOW_CONDITION,
                 effect="ALLOW",
+                # Must outrank a generic catch-all DENY at priority 0 so a
+                # tie does not cause DENY-wins to block the lookup surface.
+                # See _PRIORITY_LOOKUP_ALLOW above.
+                priority=_PRIORITY_LOOKUP_ALLOW,
             ),
             Policy(
                 id="geoid_anonymous_stac_deny_lookup_only",
@@ -112,6 +147,10 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
                 ],
                 conditions=_LOOKUP_PUBLIC_CONDITION,
                 effect="DENY",
+                # Explicit band; see _PRIORITY_ENUM_DENY above. The create
+                # ALLOW (_PRIORITY_ANON_CREATE=500) must outrank this DENY
+                # on the shared item-POST path.
+                priority=_PRIORITY_ENUM_DENY,
             ),
             Policy(
                 id="geoid_anonymous_features_deny_lookup_only",
@@ -129,6 +168,8 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
                 ],
                 conditions=_LOOKUP_PUBLIC_CONDITION,
                 effect="DENY",
+                # Explicit band; see _PRIORITY_ENUM_DENY above.
+                priority=_PRIORITY_ENUM_DENY,
             ),
             Policy(
                 id="geoid_anonymous_create_per_collection",
@@ -153,15 +194,16 @@ async def register_geoid_policies_for_catalog(catalog_id: str) -> None:
                 ],
                 conditions=_COLLECTION_WRITE_CONDITION,
                 effect="ALLOW",
-                # The STAC/Features enumeration DENYs default to priority 0 and
+                # The STAC/Features enumeration DENYs (_PRIORITY_ENUM_DENY=100)
                 # cover the item-POST path. Evaluation is highest-priority-wins
-                # with DENY-on-tie (PermissionService.evaluate_access, #915), so
-                # an equal-priority ALLOW would lose to the DENY. Priority 500
-                # lets the create win — but ONLY for a request that also passes
-                # the per-collection ``collection_write_anonymous_allowed`` gate.
-                # Browse/list/search verbs never match this POST-only ALLOW, so
-                # they remain denied: the "blind dropbox" stays blind.
-                priority=500,
+                # with DENY-on-tie (PolicyService.evaluate_access, #915), so a
+                # lower- or equal-priority ALLOW would lose to those DENYs.
+                # _PRIORITY_ANON_CREATE=500 lets the create ALLOW win — but ONLY
+                # for a request that also passes the per-collection
+                # ``collection_write_anonymous_allowed`` gate. Browse/list/search
+                # verbs never match this POST-only ALLOW, so they remain denied:
+                # the "blind dropbox" stays blind.
+                priority=_PRIORITY_ANON_CREATE,
             ),
         ]
 
