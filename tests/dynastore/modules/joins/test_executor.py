@@ -80,3 +80,23 @@ async def test_index_secondary_drops_rows_with_null_key():
     idx = await index_secondary(secondary, secondary_column="user_id")
     assert set(idx.keys()) == {"alpha", "gamma"}
     assert idx["alpha"]["score"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_join_matches_when_join_key_only_in_model_extra():
+    """Regression for #1818: PG-path features arrive with join-column values
+    only in model_extra (properties={}). run_join must match them after
+    normalize_feature_attributes lifts model_extra into properties."""
+    # Simulate PG-driver output: properties empty, join column in model_extra.
+    # Use dict-spread so pyright does not flag unknown extra kwargs on Feature.
+    primary = _astream([
+        Feature(type="Feature", id="f1", geometry=None, properties={}, **{"uid": "a"}),
+        Feature(type="Feature", id="f2", geometry=None, properties={}, **{"uid": "missing"}),
+    ])
+    secondary = {"a": {"user_id": "a", "score": 42}}
+    out = [f async for f in run_join(_req(), primary_stream=primary, secondary_index=secondary)]
+    # Only "f1" matches; "f2" is correctly dropped (inner-join semantics).
+    assert [f.id for f in out] == ["f1"]
+    assert (out[0].properties or {})["score"] == 42
+    # The join key itself must be visible in the output properties too.
+    assert (out[0].properties or {})["uid"] == "a"

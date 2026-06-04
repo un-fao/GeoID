@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 from dynastore.tools.cache import cached
 from dynastore.tools.enrichment import enrich_features
+from dynastore.modules.tools.item_stream import stream_normalized_items  # noqa: E402
 
 from fastapi import (
     FastAPI,
@@ -259,17 +260,17 @@ class DwhService(ExtensionProtocol):
         # the read-primary fallback, hands the read to the inline PG SQL path).
         # The access_filter set above rides along on query_req into the
         # optimiser, so the forced PG path stays per-row ABAC-enforced.
-        query_context = await items_svc.stream_items(
-            catalog_id=catalog_id,
-            collection_id=req.collection,
-            request=query_req,
+        # stream_normalized_items lifts PG model_extra columns into
+        # feature.properties so enrich_features can join on them uniformly.
+        normalized_stream = stream_normalized_items(
+            items_svc, catalog_id, req.collection, query_req,
             ctx=DriverContext(db_resource=conn),
             hints=frozenset({Hint.JOIN}),
         )
 
         # Enrich streamed features with DWH data (O(1) dict lookup per feature)
         enriched_stream = enrich_features(
-            query_context.items,
+            normalized_stream,
             join_values,
             join_column=req.join_column,
         )
@@ -507,31 +508,34 @@ class DwhService(ExtensionProtocol):
                 principal=principal,
             )
 
-        query_context = await items_svc.stream_items(
-            catalog_id=catalog_id,
-            collection_id=req.collection,
-            request=query_req,
+        # stream_normalized_items lifts PG model_extra columns into
+        # feature.properties so the join key is visible uniformly.
+        # No Hint.JOIN here: the raw_where spatial filter already pins this to
+        # the PG path; adding Hint.JOIN would be redundant and would suppress
+        # ES routing for collections that don't carry the PG geometry sidecar.
+        normalized_stream = stream_normalized_items(
+            items_svc, catalog_id, req.collection, query_req,
             ctx=DriverContext(db_resource=conn),
         )
 
-        # 8. Join with DWH data and materialize for MVT query
+        # 8. Join with DWH data and materialize for MVT query.
+        # LEFT-join semantics (inner_join=False): features whose join key is
+        # present but have no BigQuery match are kept (their props are passed
+        # through unchanged). Features whose join key is absent or None are
+        # skipped below with the explicit `continue` guard.
+        enriched = enrich_features(
+            normalized_stream, join_values, join_column=req.join_column, inner_join=False,
+        )
         ids = []
         attributes_array = []
 
-        async for feature in query_context.items:
+        async for feature in enriched:
             props = feature.properties or {}
-            join_key_value = props.get(req.join_column)
-            if join_key_value is None:
+            if props.get(req.join_column) is None:
                 continue
 
-            supplementary_row = join_values.get(join_key_value)
-            attributes = dict(props)
-
-            if supplementary_row:
-                attributes.update(supplementary_row)
-
             ids.append(feature.id)
-            attributes_array.append(json.dumps(attributes))
+            attributes_array.append(json.dumps(props))
 
         if not ids:
             return Response(status_code=204)
