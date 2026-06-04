@@ -665,6 +665,20 @@ _IDENTITY_FIELD_NAMES: frozenset = frozenset({"external_id", "asset_id", "geoid"
 # System field names are all SYSTEM_FIELD_KEYS except the identity axes.
 _SYSTEM_ONLY_FIELD_NAMES: frozenset = frozenset(SYSTEM_FIELD_KEYS) - _IDENTITY_FIELD_NAMES
 
+# Descriptive metadata field names (multilingual title / description / keywords),
+# sourced from the ItemMetadataSidecar. Classified into the ``metadata`` container
+# so the strict mapping types them as localized text and the read projector resolves
+# them per ``?lang=`` (refs #1828). Both the resolved feature names and the
+# ``item_``-prefixed queryable aliases are recognised.
+_METADATA_FIELD_NAMES: frozenset = frozenset({
+    "title",
+    "description",
+    "keywords",
+    "item_title",
+    "item_description",
+    "item_keywords",
+})
+
 # Base names for geometry-derived statistics (from ComputedKind, minus the
 # content-hash and identity kinds which land in ``system``). Used by the
 # classifier to recognise names like "area", "centroid", "perimeter" as stats.
@@ -732,7 +746,8 @@ def classify_container(name: str, field_def: "Any") -> str:
             instance (or any object with an optional ``container`` attribute).
 
     Returns:
-        One of ``"identity"``, ``"system"``, ``"stats"``, ``"properties"``.
+        One of ``"identity"``, ``"system"``, ``"metadata"``, ``"stats"``,
+        ``"properties"`` (or any explicit container tag honoured by rule 3).
     """
     # Rules 1 & 2 are structural invariants — explicit tags cannot override them.
     if name in _IDENTITY_FIELD_NAMES:
@@ -746,13 +761,17 @@ def classify_container(name: str, field_def: "Any") -> str:
     if explicit != "properties":
         return explicit
 
-    # Rule 4: derive "stats" from the name pattern.
+    # Rule 4: descriptive multilingual metadata (title/description/keywords).
+    if name in _METADATA_FIELD_NAMES:
+        return "metadata"
+
+    # Rule 5: derive "stats" from the name pattern.
     if name in _GEOMETRY_STAT_BASE_NAMES:
         return "stats"
     if _SPATIAL_CELL_PATTERN.match(name):
         return "stats"
 
-    # Rule 5: default.
+    # Rule 6: default.
     return "properties"
 
 

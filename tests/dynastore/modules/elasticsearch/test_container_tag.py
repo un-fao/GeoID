@@ -123,6 +123,41 @@ def test_user_stac_attrs_classify_as_properties(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Metadata fields — multilingual title / description / keywords (refs #1828)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "title",
+        "description",
+        "keywords",
+        "item_title",
+        "item_description",
+        "item_keywords",
+    ],
+)
+def test_descriptive_metadata_classifies_as_metadata(name: str) -> None:
+    """Descriptive multilingual metadata routes to the 'metadata' container, not
+    'properties' — so the strict mapping types it as localized text and the read
+    projector resolves it per ?lang= instead of leaking into properties."""
+    fd = FieldDefinition(name=name, data_type="string")
+    assert classify_container(name, fd) == "metadata"
+
+
+@pytest.mark.parametrize(
+    "container",
+    ["metadata", "extras", "stac", "assets", "access"],
+)
+def test_field_definition_accepts_new_open_containers(container: str) -> None:
+    """FieldDefinition accepts the v2 namespace containers (refs #1828)."""
+    fd = FieldDefinition(name="x", data_type="string", container=container)  # type: ignore[arg-type]
+    assert fd.container == container
+    # An explicit tag is honoured by classify_container (rule 3) for a plain name.
+    assert classify_container("x", fd) == container
+
+
+# ---------------------------------------------------------------------------
 # FieldDefinition.container attribute (Task 1 additive change)
 # ---------------------------------------------------------------------------
 
