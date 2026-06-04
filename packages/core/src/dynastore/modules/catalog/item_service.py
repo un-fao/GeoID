@@ -444,6 +444,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # via __pydantic_extra__ — that would clobber values already
                 # set by the sidecar pipeline.
                 model_fields = set(Feature.model_fields)
+                # Explicit field names from the request (see #1827): a SYSTEM
+                # field named explicitly in select may be surfaced into
+                # model_extra so join consumers can use it as a join key.
+                # Wildcard selects leave requested_fields empty, preserving
+                # the existing behaviour.
+                from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _SYSTEM_FIELD_KEYS
+                _requested = getattr(context, "requested_fields", None) or set()
+                _system_set = frozenset(_SYSTEM_FIELD_KEYS)
                 for sid, data in sidecar_data.items():
                     if isinstance(data, dict):
                         # Merge dicts if it's a standard sidecar publication,
@@ -451,7 +459,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                         # external_extensions) that are only meant for
                         # inter-sidecar communication.
                         for k, v in data.items():
-                            if k not in all_internal and k not in model_fields:
+                            surface_requested = k in _requested and k in _system_set
+                            if (k not in all_internal or surface_requested) and k not in model_fields:
                                 if feature.__pydantic_extra__ is not None:
                                     feature.__pydantic_extra__[k] = v
                     else:
@@ -479,27 +488,26 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         resolved_sidecars: List[Any],
         context: Optional[FeaturePipelineContext],
     ) -> None:
-        """Attach the ``stats`` + ``system`` report sections (#1402).
+        """Attach the ``stats`` + ``system`` report sections (#1402, #1827).
 
-        No-op unless ``ItemsReadPolicy.feature_type.expose_all`` is True. When
-        on, builds two top-level Feature members (GeoJSON foreign members, RFC
-        7946 §6.1) from the read row, mirroring the ingestion report envelope:
+        Runs in two modes:
 
-        - ``system`` — identity + lifecycle fields (``SYSTEM_FIELD_KEYS``),
-          each present only when the row carries a value.
-        - ``stats``  — every other producible computed value the resolved
-          sidecars can surface from the row (geometry/attribute stats, content
-          hashes, spatial cells).
+        Full mode (``expose_all=True``): builds complete ``system`` + ``stats``
+        top-level GeoJSON foreign members (RFC 7946 §6.1) from the read row,
+        mirroring the ingestion report envelope.
 
-        ``properties`` is left untouched — it stays user-only and governed by
-        ``expose``. Any recognised stats/system key already attached flat (via
-        the sidecar foreign-member bridge) is folded into its section so it is
-        not emitted twice.
+        Partial mode (``expose_all=False``, explicit fields requested): when
+        ``context.requested_fields`` contains system or stats keys, builds
+        only the intersection — surfacing, for example, ``external_id`` into
+        ``feature.__pydantic_extra__["system"]`` so a DWH join with
+        ``join_source="system"`` can resolve it. Normal wildcard reads
+        (requested_fields empty) exit early and are byte-identical to
+        pre-#1827 behavior.
 
-        Note: a section is only as complete as the read SELECT. Columns the
-        query did not fetch (e.g. the STORED GENERATED ``*_hash`` columns absent
-        a hub read-back) simply do not appear — full column inclusion is tracked
-        separately and gated on live verification.
+        ``properties`` is left untouched in both modes — it stays user-only.
+        Any recognised stats/system key already attached flat (via the sidecar
+        foreign-member bridge) is folded into its section so it is not emitted
+        twice.
         """
         from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
 
@@ -507,20 +515,54 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             context.get("_items_read_policy") if context is not None else None
         )
         feature_type = getattr(policy, "feature_type", None)
-        if feature_type is None or not getattr(feature_type, "expose_all", False):
+        expose_all = bool(getattr(feature_type, "expose_all", False))
+        requested: set = getattr(context, "requested_fields", None) or set()
+
+        # Fast exit: expose_all is off AND no explicit system/stats field requested.
+        # This keeps normal wildcard reads byte-identical to pre-#1827. (#1827)
+        system_keys = set(SYSTEM_FIELD_KEYS)
+        if not expose_all and not requested:
+            return
+        if feature_type is None and not requested:
+            return
+
+        # Collect all producible stat names from sidecars so we can resolve
+        # which requested names land in stats vs system.
+        all_stat_names: set = set()
+        for sidecar in resolved_sidecars:
+            all_stat_names.update(sidecar.producible_computed_names())
+        all_stat_names -= system_keys
+
+        # Determine which system fields to include.
+        if expose_all:
+            system_include = system_keys
+        else:
+            system_include = requested & system_keys
+
+        # Determine which stat names to include.
+        if expose_all:
+            stats_include: set | None = None  # all producible
+        else:
+            stats_include = requested & all_stat_names
+
+        if not expose_all and not system_include and not stats_include:
+            # Requested fields contain neither system nor stats names; nothing to do.
             return
 
         system: Dict[str, Any] = {}
         for key in SYSTEM_FIELD_KEYS:
+            if key not in system_include:
+                continue
             value = row.get(key)
             if value is not None:
                 system[key] = value
 
-        system_keys = set(SYSTEM_FIELD_KEYS)
         stats: Dict[str, Any] = {}
         for sidecar in resolved_sidecars:
             for name in sidecar.producible_computed_names():
                 if name in system_keys or name in stats:
+                    continue
+                if stats_include is not None and name not in stats_include:
                     continue
                 found, value = sidecar.resolve_computed_value(row, name)
                 if found and value is not None:
@@ -531,12 +573,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         extra = feature.__pydantic_extra__
         if extra is not None:
             for key in list(extra.keys()):
-                if key in system_keys:
+                if key in system_include:
                     system.setdefault(key, extra.pop(key))
-                elif key in stats:
+                elif stats_include is not None and key in stats_include:
                     extra.pop(key, None)
-            extra["stats"] = stats
-            extra["system"] = system
+                elif expose_all and key in stats:
+                    extra.pop(key, None)
+            if expose_all:
+                # Full mode: always attach both sections (mirrors pre-#1827 behavior).
+                extra["stats"] = stats
+                extra["system"] = system
+            else:
+                # Partial mode: only attach non-empty sections to avoid polluting
+                # normal reads with empty foreign members.
+                if system:
+                    extra["system"] = system
+                if stats:
+                    extra["stats"] = stats
 
     @staticmethod
     def _resolved_driver_is_es_items(driver: Any) -> bool:

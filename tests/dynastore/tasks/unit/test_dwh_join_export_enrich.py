@@ -193,3 +193,77 @@ def test_task_to_status_info_surfaces_outputs_message():
     info_failed = task_to_status_info(failed)
     assert info_failed.status == "failed"
     assert info_failed.message == "boom"
+
+
+# ---------------------------------------------------------------------------
+# enrich_features with join_source (#1827)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_enrich_features_join_source_system_matches_via_system_section():
+    """With join_source='system', enrich_features resolves the join key from
+    feature.__pydantic_extra__['system'] rather than flat feature.properties,
+    so external_id can drive the join without colliding with a user property."""
+    from dynastore.tools.enrichment import enrich_features
+
+    # Feature with external_id in system foreign-member section (as produced by
+    # the partial _apply_expose_all_sections path for requested_fields={'external_id'}).
+    f = Feature(type="Feature", id="geoid-uuid", geometry=None, properties={"name": "Italy"})
+    if f.__pydantic_extra__ is not None:
+        f.__pydantic_extra__["system"] = {"external_id": "EXT-001"}
+
+    join_values = {"EXT-001": {"country_code": "IT", "population": 60_000_000}}
+
+    async def _stream():
+        yield f
+
+    results = [
+        feat async for feat in enrich_features(
+            _stream(), join_values, join_column="external_id", join_source="system",
+        )
+    ]
+
+    assert len(results) == 1
+    assert results[0].id == "geoid-uuid"  # feature.id stays the geoid UUID
+    assert (results[0].properties or {})["name"] == "Italy"
+    assert (results[0].properties or {})["country_code"] == "IT"
+
+
+@pytest.mark.asyncio
+async def test_enrich_features_join_source_system_no_match_dropped_inner_join():
+    """With join_source='system' and inner_join=True, a feature whose system
+    section has no external_id is dropped (not matched)."""
+    from dynastore.tools.enrichment import enrich_features
+
+    f_no_ext = Feature(type="Feature", id="g1", geometry=None,
+                       properties={"name": "France"})
+
+    join_values = {"EXT-001": {"data": "x"}}
+
+    async def _stream():
+        yield f_no_ext
+
+    results = [
+        feat async for feat in enrich_features(
+            _stream(), join_values, join_column="external_id", join_source="system",
+        )
+    ]
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_enrich_features_default_join_source_properties_back_compat():
+    """Default join_source='properties' still joins on flat feature.properties[key],
+    preserving back-compat for callers that don't set join_source. (#1827)"""
+    from dynastore.tools.enrichment import enrich_features
+
+    f = Feature(type="Feature", id="g1", geometry=None, properties={"CODE": "FR"})
+    join_values = {"FR": {"country_name": "France"}}
+
+    async def _stream():
+        yield f
+
+    results = [feat async for feat in enrich_features(_stream(), join_values, join_column="CODE")]
+
+    assert len(results) == 1
+    assert (results[0].properties or {})["country_name"] == "France"
