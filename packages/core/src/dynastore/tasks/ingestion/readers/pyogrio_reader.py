@@ -60,7 +60,27 @@ class PyogrioReader(SourceReaderProtocol):
         import geopandas as gpd
 
         path = _to_vsigs(uri)
-        gdf = gpd.read_file(path, engine="pyogrio", encoding=encoding)
+        # Surface the OGR FID under its column name so a collection that
+        # declares it as a required/unique field resolves it (#1820 — mirrors
+        # GdalOsgeoReader).  ``iterfeatures`` drops the index, so a NAMED fid
+        # column (Shapefile's auto-promoted ``FID``, GeoPackage's ``fid``) must
+        # be read as the index and reset back into a column; an anonymous
+        # record-number FID (``fid_column == ""``) is deliberately left out so
+        # plain shapefiles keep their previous attribute shape.
+        fid_column = ""
+        try:
+            fid_column = pyogrio.read_info(path).get("fid_column") or ""
+        except Exception:  # noqa: BLE001 — no FID surfacing if introspection fails
+            fid_column = ""
+        read_kwargs: dict[str, Any] = {"engine": "pyogrio", "encoding": encoding}
+        if fid_column:
+            read_kwargs["fid_as_index"] = True
+        gdf = gpd.read_file(path, **read_kwargs)
+        if fid_column and gdf.index.name and fid_column not in gdf.columns:
+            idx_name = gdf.index.name
+            gdf = gdf.reset_index()
+            if idx_name != fid_column and idx_name in gdf.columns:
+                gdf = gdf.rename(columns={idx_name: fid_column})
         logger.info("PyogrioReader: opened %r (%d features)", path, len(gdf))
         # ``iterfeatures`` yields GeoJSON-shaped dicts
         # (``{"type": "Feature", "properties": …, "geometry": …}``), matching

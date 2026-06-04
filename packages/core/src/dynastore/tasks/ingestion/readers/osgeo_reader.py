@@ -205,6 +205,21 @@ class GdalOsgeoReader(SourceReaderProtocol):
                 layer.GetLayerDefn().GetFieldDefn(i).GetName()
                 for i in range(layer.GetLayerDefn().GetFieldCount())
             ]
+            # The OGR FID is the feature identity, not a regular attribute
+            # field: drivers expose it via ``feat.GetFID()`` rather than in the
+            # layer definition.  Several drivers also promote a *named* primary
+            # key out of the attribute set onto the FID — the Shapefile driver
+            # auto-promotes an integer DBF column called ``FID``, GeoPackage
+            # surfaces its ``fid`` column — and ``GetFIDColumn()`` reports that
+            # name (empty string when the FID is anonymous, e.g. a plain
+            # shapefile's implicit record number).  Without surfacing it, a
+            # collection that declares the FID column as a required field reads
+            # it as null and ingestion fails (#1820).  Re-attach it under its
+            # own name so required/unique/attribute mapping all resolve it.
+            try:
+                fid_column = layer.GetFIDColumn()
+            except Exception:  # noqa: BLE001 — defensive; treat as anonymous FID
+                fid_column = ""
             for feat in layer:
                 if feat is None:
                     continue
@@ -214,6 +229,11 @@ class GdalOsgeoReader(SourceReaderProtocol):
                         props[fname] = feat.GetField(fname)
                     except Exception:  # noqa: BLE001
                         props[fname] = None
+                if fid_column and fid_column not in props:
+                    try:
+                        props[fid_column] = feat.GetFID()
+                    except Exception:  # noqa: BLE001 — leave unset if unavailable
+                        pass
                 geom = feat.GetGeometryRef()
                 geom_geojson = None
                 geom_wkb = None
