@@ -689,10 +689,14 @@ _GEOMETRY_STAT_BASE_NAMES: frozenset = frozenset({
     ComputedKind.TEMPORAL_DURATION.value,
 })
 
-# Pattern for spatial-cell resolved names: ``{grid}_{resolution}``
-# e.g. ``s2_7``, ``h3_10``, ``geohash_6``.
+# Pattern for spatial-cell resolved names: ``{grid}_{resolution}`` with an
+# optional ``res`` resolution token. Matches both the default resolved-name
+# shape (``s2_7``, ``h3_10``, ``geohash_6``) and custom names that spell out
+# the resolution (``s2_res12``, ``h3_res_10``) — e.g. the geoid preset's
+# ``s2_res12``, which would otherwise fall through to ``properties`` and get
+# swept into ``properties.extras``.
 _SPATIAL_CELL_PATTERN: re.Pattern = re.compile(
-    r"^(s2|h3|geohash)_\d+$"
+    r"^(s2|h3|geohash)_(?:res_?)?\d+$"
 )
 
 

@@ -82,6 +82,27 @@ def test_computed_sidecar_names_classify_as_stats(name: str) -> None:
     assert classify_container(name, fd) == "stats"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "s2_res12",
+        "s2_res_12",
+        "h3_res10",
+        "geohash_res6",
+    ],
+)
+def test_custom_named_spatial_cells_classify_as_stats(name: str) -> None:
+    """Spatial-cell fields named with a ``res`` token (e.g. the geoid preset's
+    ``s2_res12``) must still classify to 'stats' from the name pattern alone.
+
+    Regression: the original pattern ``^(s2|h3|geohash)_\\d+$`` did not match a
+    ``res`` infix, so ``s2_res12`` fell through to 'properties' and got swept
+    into ``properties.extras`` by the ES projection.
+    """
+    fd = FieldDefinition(name=name, data_type="string")
+    assert classify_container(name, fd) == "stats"
+
+
 # ---------------------------------------------------------------------------
 # Properties — user / STAC attributes
 # ---------------------------------------------------------------------------
