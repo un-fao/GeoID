@@ -52,8 +52,10 @@ class _StubSidecar:
         return (False, None)
 
 
-def _ctx(expose_all: bool, expose=None) -> FeaturePipelineContext:
-    ctx = FeaturePipelineContext()
+def _ctx(expose_all: bool, expose=None, requested_fields=None) -> FeaturePipelineContext:
+    ctx = FeaturePipelineContext(
+        requested_fields=requested_fields if requested_fields is not None else set()
+    )
     ctx["_items_read_policy"] = ItemsReadPolicy(
         feature_type=FeatureType(expose=expose, expose_all=expose_all)
     )
@@ -70,6 +72,7 @@ def _apply(feature, row, sidecars, ctx):
 
 class TestExposeAllOff:
     def test_no_op_when_expose_all_false(self) -> None:
+        """Normal wildcard read (requested_fields empty) is byte-identical to pre-#1827."""
         feature = _feature({"name": "Field A"})
         _apply(feature, {"geoid": "g1", "area": 12.5}, [_StubSidecar({"area": 12.5})],
                 _ctx(expose_all=False))
@@ -82,6 +85,59 @@ class TestExposeAllOff:
         _apply(feature, {"geoid": "g1"}, [_StubSidecar({"area": 1.0})], ctx)
         extra = feature.__pydantic_extra__ or {}
         assert "stats" not in extra and "system" not in extra
+
+    # -- #1827: partial-mode (expose_all=False, requested_fields non-empty) --
+
+    def test_requested_system_field_surfaced_into_system_section(self) -> None:
+        """With requested_fields={'external_id'} and expose_all=False,
+        the row's external_id is surfaced into feature.__pydantic_extra__['system'].
+        This is the prerequisite for resolve_join_value(join_source='system')
+        to find it. See #1827."""
+        feature = _feature({"name": "Italy"})
+        row = {"external_id": "EXT-001", "geoid": "g1", "area": 99.0}
+        _apply(
+            feature, row, [_StubSidecar({"area": 99.0})],
+            _ctx(expose_all=False, requested_fields={"external_id"}),
+        )
+        extra = feature.__pydantic_extra__ or {}
+        assert "system" in extra
+        assert extra["system"] == {"external_id": "EXT-001"}
+        # stats section not added (area not requested)
+        assert "stats" not in extra
+
+    def test_unrequested_system_field_not_surfaced(self) -> None:
+        """With requested_fields empty, external_id is NOT surfaced even though
+        the row carries it — non-regression: normal reads are unchanged. (#1827)"""
+        feature = _feature({"name": "Italy"})
+        row = {"external_id": "EXT-001"}
+        _apply(feature, row, [], _ctx(expose_all=False))
+        extra = feature.__pydantic_extra__ or {}
+        assert "system" not in extra
+        assert "stats" not in extra
+
+    def test_feature_id_unchanged_in_partial_mode(self) -> None:
+        """feature.id (geoid UUID) is never modified by partial-mode surfacing."""
+        feature = _feature()
+        feature.id = "the-geoid-uuid"  # type: ignore[assignment]
+        row = {"external_id": "EXT-999"}
+        _apply(feature, row, [], _ctx(expose_all=False, requested_fields={"external_id"}))
+        assert feature.id == "the-geoid-uuid"
+
+    def test_properties_unchanged_in_partial_mode(self) -> None:
+        """feature.properties (user-only) is untouched in partial mode. (#1827)"""
+        feature = _feature({"name": "Rome", "pop": 2_800_000})
+        row = {"external_id": "IT-ROME"}
+        _apply(feature, row, [], _ctx(expose_all=False, requested_fields={"external_id"}))
+        assert feature.properties == {"name": "Rome", "pop": 2_800_000}
+
+    def test_empty_system_section_not_added_for_unrequested_key(self) -> None:
+        """requested_fields names a system key but the row has no value for it;
+        the resulting system dict is empty and must NOT be attached."""
+        feature = _feature()
+        row = {}  # external_id absent in row
+        _apply(feature, row, [], _ctx(expose_all=False, requested_fields={"external_id"}))
+        extra = feature.__pydantic_extra__ or {}
+        assert "system" not in extra
 
 
 class TestExposeAllOn:

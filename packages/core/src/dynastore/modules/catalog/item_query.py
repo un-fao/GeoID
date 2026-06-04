@@ -1215,6 +1215,17 @@ class ItemQueryMixin:
         # Stream Generator (O(1) Memory)
         lang = (request.raw_params or {}).get("lang", "en")
         read_policy = await self._resolve_read_policy(catalog_id, collection_id)
+        # Collect explicitly-requested field names (both alias and source column)
+        # so the sidecar bridge can surface SYSTEM fields named here. Wildcard
+        # selects ("*") are excluded — only opt-in by name exposes system columns.
+        # See #1827.
+        _sel = request.select or []
+        _requested_fields: set = {
+            name
+            for s in _sel
+            if s.field and s.field != "*"
+            for name in (s.field, s.alias) if name
+        }
         async def feature_stream():
             # Require async engine: I/O-bound worker SCOPEs (export_features,
             # dwh_join) must include module_db so DatastoreModule.engine resolves
@@ -1229,7 +1240,10 @@ class ItemQueryMixin:
                 # AsyncConnection.stream() yields rows server-side without buffering
                 stream = await stream_conn.stream(text(sql), params)  # type: ignore[union-attr]
                 async for row in stream:
-                    feature_ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
+                    feature_ctx = FeaturePipelineContext(
+                        lang=lang, consumer=consumer,
+                        requested_fields=_requested_fields,
+                    )
                     yield self.map_row_to_feature(
                         dict(row._mapping), col_config, context=feature_ctx,
                         read_policy=read_policy,
