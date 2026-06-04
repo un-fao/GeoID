@@ -1204,9 +1204,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
+                    # NB: explicit ``is None`` fallback, NOT ``a or b`` — a
+                    # falsy-but-present value (FID == 0, False, 0.0, "") must be
+                    # kept, otherwise it is silently dropped and a ``required``
+                    # (NOT NULL) sidecar column fails with "field is null"
+                    # (#1820). ``_extract_value`` already falls back to the
+                    # properties bag, so the top-level lookup is a last resort.
                     val = self._extract_value(
                         feature_as_dict, f"properties.{attr.name}"
-                    ) or feature_as_dict.get(attr.name)
+                    )
+                    if val is None:
+                        val = feature_as_dict.get(attr.name)
 
                     # Apply default if missing
                     if val is None:
