@@ -146,10 +146,16 @@ async def _materialise_per_catalog_indices(catalog_id: str) -> None:
         ItemsElasticsearchPrivateDriver,
     )
 
-    await ItemsElasticsearchDriver().ensure_storage(catalog_id)
-    await AssetElasticsearchDriver().ensure_storage(catalog_id)
-    await ItemsElasticsearchPrivateDriver().ensure_storage(catalog_id)
-    await ItemsElasticsearchEnvelopeDriver().ensure_storage(catalog_id)
+    # These ES drivers are concrete at runtime — they are constructed by the
+    # storage driver registry via entry points, and ``get_config_service`` is
+    # supplied by the runtime config-service wiring. pyright only sees the
+    # declared protocol method as unimplemented, so the reportAbstractUsage on
+    # direct instantiation is a static-analysis false positive; suppress it
+    # narrowly rather than leaving a noisy IDE diagnostic on each line.
+    await ItemsElasticsearchDriver().ensure_storage(catalog_id)  # pyright: ignore[reportAbstractUsage]
+    await AssetElasticsearchDriver().ensure_storage(catalog_id)  # pyright: ignore[reportAbstractUsage]
+    await ItemsElasticsearchPrivateDriver().ensure_storage(catalog_id)  # pyright: ignore[reportAbstractUsage]
+    await ItemsElasticsearchEnvelopeDriver().ensure_storage(catalog_id)  # pyright: ignore[reportAbstractUsage]
 
     # Index one item into the per-catalog public items index so the index
     # holds real data at delete time (not just an empty shell).
@@ -168,7 +174,7 @@ async def _materialise_per_catalog_indices(catalog_id: str) -> None:
     }
     ctx = IndexContext(catalog=catalog_id, collection="cascade-col")
     op = IndexOp(op_type="upsert", entity_type="item", entity_id=item_id, payload=item)
-    await ItemsElasticsearchDriver().index(ctx, op)
+    await ItemsElasticsearchDriver().index(ctx, op)  # pyright: ignore[reportAbstractUsage]
 
 
 async def _drive_cascade_cleanup(app_state) -> dict:
