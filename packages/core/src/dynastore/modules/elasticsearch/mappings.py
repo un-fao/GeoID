@@ -182,16 +182,9 @@ STAC_DATETIME_FIELDS: Dict[str, Any] = {
 # Index mappings per entity type
 # ---------------------------------------------------------------------------
 
-CATALOG_MAPPING: Dict[str, Any] = {
-    "dynamic": True,
-    "dynamic_templates": DYNAMIC_TEMPLATES,
-    "numeric_detection": False,
-    "properties": {
-        **COMMON_PROPERTIES,
-        "created": {"type": "date"},
-        "updated": {"type": "date"},
-    },
-}
+# ``CATALOG_MAPPING`` is assembled by :func:`build_catalog_mapping` (defined
+# below) once the shared container helpers exist — same canonical shape as
+# collections, minus the spatial/temporal extent.
 
 # ``COLLECTION_MAPPING`` is assembled by :func:`build_collection_mapping`
 # (defined below, after the shared container helpers) and assigned once those
@@ -434,6 +427,53 @@ def build_collection_mapping(known_fields: Dict[str, Any]) -> Dict[str, Any]:
 # Canonical collections mapping (Tier 1 known attributes). Replaces the former
 # ``dynamic: true`` dynamic-template shape.
 COLLECTION_MAPPING: Dict[str, Any] = build_collection_mapping(build_known_fields())
+
+
+def build_catalog_mapping(known_fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the strict canonical catalog mapping (refs #1285/#1800).
+
+    The thinnest metadata entity: identity + ``type``/``stac_version`` keyword,
+    attributes under ``properties`` (typed known + ``extras`` flattened lane +
+    ``_search_text``), lifecycle in a typed ``system`` container, ``links``
+    suppressed, ``access`` opaque. ``dynamic: false`` — undeclared members ride
+    in ``_source`` unindexed (kept for round-trip), no per-key growth.
+    """
+    props_fields: Dict[str, Any] = {}
+    for name, field_def in known_fields.items():
+        if _field_def_container(name, field_def) in ("stats", "system", "identity"):
+            continue
+        props_fields[name] = _field_def_es_type(field_def)
+
+    root_properties: Dict[str, Any] = {
+        "id":              {"type": "keyword"},
+        "catalog_id":      {"type": "keyword"},
+        "type":            {"type": "keyword"},
+        "stac_version":    {"type": "keyword"},
+        "stac_extensions": {"type": "keyword"},
+        "links":           {"type": "object", "enabled": False},
+        "properties": {
+            "dynamic": False,
+            "properties": {
+                **props_fields,
+                "extras": {"type": "flattened"},
+            },
+        },
+        "system": {
+            "dynamic": False,
+            "properties": {
+                "created": {"type": "date"},
+                "updated": {"type": "date"},
+            },
+        },
+        "access": {"type": "object", "enabled": False},
+        "_deleted": {"type": "boolean"},
+        "_search_text": {"type": "text", "analyzer": "standard"},
+    }
+    return {"dynamic": False, "properties": root_properties}
+
+
+# Canonical catalogs mapping. Replaces the former dynamic-template shape.
+CATALOG_MAPPING: Dict[str, Any] = build_catalog_mapping(build_known_fields())
 
 
 # Just the new top-level fields a cap-safe items index needs that an

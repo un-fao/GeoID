@@ -42,7 +42,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from dynastore.modules.elasticsearch.canonical_doc import build_canonical_envelope
+from dynastore.modules.elasticsearch.metadata_canonical import (
+    build_canonical_metadata_doc,
+    unproject_metadata_from_es,
+)
 
 # STAC/structural Collection members surfaced verbatim on the wire. Anything
 # NOT here and not an identity/lifecycle axis is an attribute → properties.
@@ -60,13 +63,6 @@ COLLECTION_RESERVED_MEMBERS: frozenset = frozenset({
     "conformsTo",
 })
 
-# Lifecycle fields that live in ``system`` for storage but surface as STAC
-# Common Metadata at the top level on read.
-_LIFECYCLE_KEYS = ("created", "updated")
-
-# Internal identity axes that must never reach the STAC wire.
-_INTERNAL_IDENTITY = ("catalog_id", "collection_id")
-
 
 def build_canonical_collection_doc(
     metadata: Dict[str, Any],
@@ -78,95 +74,41 @@ def build_canonical_collection_doc(
 ) -> Dict[str, Any]:
     """Assemble the canonical collection ``_source`` from STAC collection metadata.
 
-    Partitions *metadata* into the canonical sections and delegates assembly to
-    :func:`build_canonical_envelope`. ``extent`` is carried opaquely as a
-    reserved member (the driver enriches/unenriches it).
-
-    Pure function — *metadata* is not mutated.
+    Thin collection-level adapter over
+    :func:`~dynastore.modules.elasticsearch.metadata_canonical.build_canonical_metadata_doc`.
+    ``extent`` is carried opaquely as a reserved member (the driver
+    enriches/unenriches it). Pure function — *metadata* is not mutated.
     """
-    md = dict(metadata or {})
-
-    identity: Dict[str, Any] = {
-        "id": collection_id,
-        "catalog_id": catalog_id,
-        "collection_id": collection_id,
-    }
-
-    # system: lifecycle (created/updated). Stored in the system container; the
-    # read projector hoists them back to top-level Common Metadata.
-    system: Dict[str, Any] = {}
-    for key in _LIFECYCLE_KEYS:
-        val = md.pop(key, None)
-        if val is not None:
-            system[key] = val
-
-    # reserved structural members surfaced verbatim on the wire.
-    reserved: Dict[str, Any] = {}
-    for key in COLLECTION_RESERVED_MEMBERS:
-        if key in md:
-            reserved[key] = md.pop(key)
-
-    # drop any echoed internal identity; the remainder is the attribute bag.
-    for key in _INTERNAL_IDENTITY:
-        md.pop(key, None)
-    properties = md
-
-    return build_canonical_envelope(
-        identity=identity,
-        properties=properties,
+    return build_canonical_metadata_doc(
+        metadata,
+        identity={
+            "id": collection_id,
+            "catalog_id": catalog_id,
+            "collection_id": collection_id,
+        },
+        reserved_member_keys=COLLECTION_RESERVED_MEMBERS,
         known_fields=known_fields,
-        reserved_members=reserved,
-        system=system or None,
-        access=access or None,
+        access=access,
     )
 
 
 def unproject_collection_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
     """Reconstruct a STAC Collection dict from a canonical ``_source`` (#1285).
 
-    Inverse of :func:`build_canonical_collection_doc` for the STAC protocol:
-
-    * reserved structural members (:data:`COLLECTION_RESERVED_MEMBERS`) surface
-      verbatim;
-    * the ``properties`` attribute bag (with ``extras`` hoisted) is spread onto
-      the **top level** — a STAC Collection has no ``properties`` member;
-    * ``system.created`` / ``system.updated`` surface as top-level Common
-      Metadata; the internal identity axes (``catalog_id``/``collection_id``)
-      and the ``system``/``access`` containers are dropped from the wire.
+    Inverse of :func:`build_canonical_collection_doc`: structural members
+    (:data:`COLLECTION_RESERVED_MEMBERS`) surface verbatim, the ``properties``
+    attribute bag (with ``extras`` hoisted) spreads onto the **top level** (a
+    STAC Collection has no ``properties`` member), lifecycle surfaces as Common
+    Metadata, and internal identity / ``system`` / ``access`` are dropped.
 
     ``extent`` is returned as stored (opaque) — the driver's ``_unenrich_doc``
-    restores the STAC extent shape afterwards.
-
-    Pure function — *source* is not mutated.
+    restores the STAC extent shape afterwards. Pure function.
     """
-    if not isinstance(source, dict):
-        return source
-
-    out: Dict[str, Any] = {}
-    for key in COLLECTION_RESERVED_MEMBERS:
-        if key in source:
-            out[key] = source[key]
-    out.setdefault("type", "Collection")
-
-    # attributes → top level (STAC Collection has no `properties` member)
-    props = source.get("properties")
-    if isinstance(props, dict):
-        flat = dict(props)
-        extras = flat.pop("extras", None)
-        if isinstance(extras, dict):
-            for k, v in extras.items():
-                flat.setdefault(k, v)
-        for k, v in flat.items():
-            out.setdefault(k, v)
-
-    # lifecycle → top-level Common Metadata
-    system = source.get("system")
-    if isinstance(system, dict):
-        for key in _LIFECYCLE_KEYS:
-            if key in system:
-                out.setdefault(key, system[key])
-
-    return out
+    return unproject_metadata_from_es(
+        source,
+        reserved_member_keys=COLLECTION_RESERVED_MEMBERS,
+        wire_type="Collection",
+    )
 
 
 __all__ = [
