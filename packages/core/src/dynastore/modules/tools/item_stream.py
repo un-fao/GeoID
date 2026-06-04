@@ -28,7 +28,7 @@ This module provides:
                                   and normalize each Feature before yielding.
 """
 
-from typing import AsyncIterator, FrozenSet, TYPE_CHECKING
+from typing import Any, AsyncIterator, FrozenSet, Optional, TYPE_CHECKING
 
 from dynastore.models.ogc import Feature
 
@@ -62,6 +62,54 @@ def normalize_feature_attributes(feature: Feature) -> Feature:
     if feature.__pydantic_extra__:
         feature.__pydantic_extra__.clear()
     return feature
+
+
+# Sections where expose_all and external_id_as_feature_id place system/stats
+# fields on the Feature (as foreign members or in model_extra). These are
+# checked in order by resolve_join_value when the key is absent from flat
+# feature.properties. See #1827.
+_JOIN_SECTIONS = ("system", "stats")
+
+# Allowed values for the join_source parameter. See #1827.
+_VALID_JOIN_SOURCES = frozenset({"properties", "system", "stats"})
+
+
+def resolve_join_value(
+    feature: Feature,
+    join_column: str,
+    join_source: str = "properties",
+) -> Optional[Any]:
+    """Resolve a join key from a Feature using an explicit section.
+
+    join_source="properties" reads feature.properties[join_column] (falling back to
+    feature.id when absent, preserving the catalog-tier id-join behavior).
+    join_source="system"/"stats" reads ONLY that foreign-member section
+    (feature.properties[section][join_column], or model_extra[section] pre-normalization),
+    so a system identity like external_id or a stat like area can be joined without
+    colliding with a same-named property. See #1827.
+
+    When join_source="properties" and the key is present in feature.properties
+    (even as None), returns that value directly — preserving the existing semantics
+    where an explicit None in properties means the row should be dropped.
+    """
+    props = feature.properties or {}
+    if join_source == "properties":
+        if join_column in props:
+            return props[join_column]
+        extra = getattr(feature, "model_extra", None) or {}
+        for src in (props, extra):
+            for section in _JOIN_SECTIONS:
+                sec = src.get(section)
+                if isinstance(sec, dict) and join_column in sec:
+                    return sec[join_column]
+        return getattr(feature, "id", None)
+    # Explicit section: read ONLY from the named section (properties or model_extra).
+    extra = getattr(feature, "model_extra", None) or {}
+    for src in (props, extra):
+        sec = src.get(join_source)
+        if isinstance(sec, dict) and join_column in sec:
+            return sec[join_column]
+    return None
 
 
 async def stream_normalized_items(

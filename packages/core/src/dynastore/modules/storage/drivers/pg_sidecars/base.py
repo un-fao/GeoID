@@ -174,13 +174,14 @@ class FeaturePipelineContext:
         context.valid_to    # validity end from attributes sidecar (or None)
     """
 
-    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store", "consumer")
+    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store", "consumer", "requested_fields")
 
     def __init__(
         self,
         lang: str = "en",
         include_internal: bool = False,
         consumer: ConsumerType = ConsumerType.GENERIC,
+        requested_fields: Optional[Set[str]] = None,
     ) -> None:
         self.lang: str = lang
         self.include_internal: bool = include_internal
@@ -188,6 +189,11 @@ class FeaturePipelineContext:
         self._all_internal_cols: Set[str] = set()
         self._sidecar_store: Dict[str, Dict[str, Any]] = {}
         self._store: Dict[str, Any] = {}
+        # Explicit field names from QueryRequest.select (excluding "*").
+        # When non-empty, SYSTEM_FIELD_KEYS named here are surfaced into
+        # Feature.model_extra so join consumers can use them as join keys.
+        # See #1827.
+        self.requested_fields: Set[str] = requested_fields if requested_fields is not None else set()
 
     # ── Sidecar data access ─────────────────────────────────────────────────
 

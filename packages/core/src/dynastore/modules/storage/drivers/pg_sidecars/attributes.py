@@ -1446,14 +1446,21 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             internal_cols = self.get_internal_columns()
             jsonb_col = self.config.jsonb_column_name
             props = feature.properties if feature.properties is not None else {}
-            
-            # Delegate exclusion entirely to the pipeline context, which already
-            # merged HUB_INTERNAL_COLUMNS + every other sidecar's get_internal_columns().
+
+            # Delegate exclusion to the pipeline context (HUB_INTERNAL_COLUMNS
+            # merged with every sidecar's get_internal_columns()). A SYSTEM field
+            # named explicitly in the request bypasses the exclusion so it can be
+            # used as a join key by downstream consumers. See #1827.
             excluded = context.all_internal_columns
+            from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _JSONB_SYSTEM_KEYS
+            _jsonb_requested = getattr(context, "requested_fields", None) or set()
+            _jsonb_system_set = frozenset(_JSONB_SYSTEM_KEYS)
             for key, val in row.items():
-                if key not in internal_cols and key not in excluded and key != jsonb_col and key not in props:
-                    if val is not PydanticUndefined and not isinstance(val, (bytes, bytearray)):
-                        props[key] = val
+                surface_requested = key in _jsonb_requested and key in _jsonb_system_set
+                if (key not in internal_cols and key not in excluded) or surface_requested:
+                    if key != jsonb_col and key not in props:
+                        if val is not PydanticUndefined and not isinstance(val, (bytes, bytearray)):
+                            props[key] = val
             feature.properties = props
 
         # 3. Time Standardization
