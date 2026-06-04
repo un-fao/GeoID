@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Callable, Dict
 
 from dynastore.models.ogc import Feature
 from dynastore.modules.joins.models import JoinRequest
+from dynastore.modules.tools.item_stream import normalize_feature_attributes
 
 PrimaryStream = Callable[..., AsyncIterator[Feature]]
 
@@ -43,6 +44,7 @@ async def run_join(
     skipped = 0
 
     async for feat in primary_stream:
+        feat = normalize_feature_attributes(feat)
         props = feat.properties or {}
         # Look up the join value: prefer the explicit property, but fall
         # back to feat.id only when the column is ABSENT from properties.
@@ -98,6 +100,7 @@ async def index_secondary(
     """
     out: Dict[Any, Dict[str, Any]] = {}
     async for feat in secondary_stream:
+        feat = normalize_feature_attributes(feat)
         props = feat.properties or {}
         # See run_join() above for the matching fallback rationale: BQ
         # (and any other driver that promotes the join column to feat.id)
