@@ -158,6 +158,15 @@ async def maybe_dispatch_items_to_search_driver(
     if not getattr(driver, "is_es_items_driver", False):
         return None
 
+    # Routing-honouring fallback: the ES driver is the configured search
+    # primary, but if its per-tenant items index does not exist (PG-only
+    # catalog, or indexing has not run) it cannot serve. Defer to the PG
+    # ``stream_items`` path — the configured read fallback / system of record —
+    # instead of returning an empty result that hides PG-resident rows.
+    _index_check = getattr(driver, "index_available", None)
+    if _index_check is not None and not await _index_check(catalog_id):
+        return None
+
     # Single-collection /items: leave ``collections`` unset so the driver keeps
     # its routed single-collection fast path; the positional collection scopes.
     # ``filters`` carries any caller-supplied structural attribute predicates
