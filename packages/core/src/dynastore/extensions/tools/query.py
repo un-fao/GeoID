@@ -247,6 +247,9 @@ OGC_RESERVED_QUERY_PARAMS: frozenset = frozenset({
     "language",
     "token",
     "access_token",
+    "geometry",  # geometry-precision tier hint (e.g. ?geometry=exact); the
+    # GeoJSON structural member, never a queryable attribute, so it must not be
+    # swept into the ?{property}={value} equality-filter shorthand.
     "_",  # cache-buster appended by browsers/jQuery; never an attribute
 })
 

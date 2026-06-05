@@ -676,3 +676,30 @@ def _acoro(value):
     async def _inner(*a, **kw):
         return value
     return _inner
+
+
+# ---------------------------------------------------------------------------
+# Regression: ``geometry`` is a reserved control param, not an attribute filter
+# ---------------------------------------------------------------------------
+
+def test_geometry_is_reserved_query_param_not_attribute_filter():
+    """``?geometry=exact`` is the geometry-precision tier hint, never a
+    ``?{property}={value}`` equality filter.
+
+    Regression for the live 500 ``invalid geometry ... "ex" <-- parse error``:
+    the STAC ``/items`` route sweeps every non-reserved query param into a CQL
+    equality filter, so ``geometry`` MUST be in OGC_RESERVED_QUERY_PARAMS or the
+    literal value ``exact`` reaches PostGIS as WKT and the query 500s.
+    """
+    from dynastore.extensions.tools.query import OGC_RESERVED_QUERY_PARAMS
+
+    assert "geometry" in OGC_RESERVED_QUERY_PARAMS
+
+    # And the STAC sweep expression itself must exclude it.
+    extra = {
+        k: v
+        for k, v in {"geometry": "exact", "name": "ital"}.items()
+        if k not in OGC_RESERVED_QUERY_PARAMS and v != ""
+    }
+    assert "geometry" not in extra
+    assert extra == {"name": "ital"}
