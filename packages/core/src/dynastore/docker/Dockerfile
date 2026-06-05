@@ -115,6 +115,7 @@ RUN mkdir -p ./packages/extensions && \
         mkdir -p "./packages/extensions/${name}"; \
         cp "${d}pyproject.toml" "./packages/extensions/${name}/pyproject.toml"; \
     done && rm -rf ./packages/extensions-meta
+COPY packages/modules/ ./packages/modules/
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.
@@ -143,6 +144,11 @@ RUN mkdir -p packages/core/src/dynastore/extensions packages/core/src/dynastore/
         name=$(basename "$d"); \
         mkdir -p "${d}src/dynastore/extensions/${name}" && \
         : > "${d}src/dynastore/extensions/${name}/__init__.py"; \
+    done && \
+    for d in packages/modules/*/; do \
+        name=$(basename "$d"); \
+        mkdir -p "${d}src/dynastore/modules/${name}" && \
+        : > "${d}src/dynastore/modules/${name}/__init__.py"; \
     done
 
 # SCOPE selects which pyproject.toml extras to install.
