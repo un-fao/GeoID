@@ -142,7 +142,10 @@ _PRIVATE_SYSTEM_FIELDS: Dict[str, Any] = {
     "asset_id":         {"type": "keyword"},
     "geometry_hash":    {"type": "keyword"},
     "attributes_hash":  {"type": "keyword"},
-    "validity":         {"type": "keyword"},
+    # validity is the temporal window, typed as date_range to mirror the public
+    # items mapping (#1828). The shared canonical_doc builder converts the PG
+    # tstzrange Range object into the matching {gte|gt, lte|lt} range body.
+    "validity":         {"type": "date_range"},
     "transaction_time": {"type": "date"},
     "deleted_at":       {"type": "date"},
     # Geometry simplification metadata (#1828 Phase 2).

@@ -31,6 +31,58 @@ from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
 _SYSTEM_KEYS: frozenset = frozenset(SYSTEM_FIELD_KEYS)
 
 
+def _iso(value: Any) -> Any:
+    """Render a temporal bound as an ES-parseable string.
+
+    ``datetime``/``date`` objects become ISO-8601 (the ``date_range`` field's
+    ``strict_date_optional_time`` accepts the offset form); anything else is
+    passed through unchanged (already a string, or an epoch number).
+    """
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else value
+
+
+def _validity_to_es_range(value: Any) -> Optional[Dict[str, Any]]:
+    """Convert a PG ``tstzrange``-like validity value into an ES ``date_range``.
+
+    A PostgreSQL ``tstzrange`` surfaces (via asyncpg/psycopg2) as a Range-like
+    object exposing ``lower``/``upper`` bounds and ``lower_inc``/``upper_inc``
+    inclusivity flags. ES ``date_range`` accepts an object with ``gte``/``gt``
+    (lower) and ``lte``/``lt`` (upper) bounds, so the inclusivity maps directly:
+    an inclusive bound uses ``gte``/``lte``, an exclusive one ``gt``/``lt``. An
+    open bound (``None``) is omitted — ES treats a missing bound as unbounded.
+
+    Returns ``None`` when the value carries no bounds (fully-open window) or is
+    otherwise unusable, so callers can drop the field entirely. An input that is
+    already a mapping (pre-converted / idempotent re-index) is returned as-is.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value or None
+    # Range-like duck-type: a genuine tstzrange value (asyncpg.Range, etc.)
+    # exposes the inclusivity flag ``lower_inc``. The flag is the discriminator
+    # — a bare ``str`` carries ``.lower`` / ``.upper`` *methods* but no
+    # ``lower_inc``, so this guard keeps a stray string from being mistaken for
+    # a range. Anything that is neither a dict nor Range-like cannot be a valid
+    # ``date_range`` body, so it is dropped rather than risk an ingest rejection.
+    if not hasattr(value, "lower_inc"):
+        return None
+    lower = getattr(value, "lower", None)
+    upper = getattr(value, "upper", None)
+    if lower is None and upper is None:
+        # Fully-open window: nothing to index.
+        return None
+    lower_inc = bool(getattr(value, "lower_inc", True))
+    upper_inc = bool(getattr(value, "upper_inc", False))
+    out: Dict[str, Any] = {}
+    if lower is not None:
+        out["gte" if lower_inc else "gt"] = _iso(lower)
+    if upper is not None:
+        out["lte" if upper_inc else "lt"] = _iso(upper)
+    return out or None
+
+
 def build_canonical_envelope(
     *,
     identity: Dict[str, Any],
@@ -156,12 +208,25 @@ def build_canonical_index_doc(
     if row.get("asset_id") is not None:
         identity["asset_id"] = str(row["asset_id"])
 
-    if row.get("validity") is not None:
-        identity["validity"] = row["validity"]
+    # validity is a PG tstzrange (Range-like object) — convert it once to the ES
+    # date_range shape ({gte|gt, lte|lt}) so it is JSON-serializable and lands in
+    # the typed ``system.validity`` date_range field (refs #1828). The same
+    # converted value is mirrored at the document root for read-path parity.
+    validity_range = _validity_to_es_range(row.get("validity"))
+    if validity_range is not None:
+        identity["validity"] = validity_range
 
     # system: SYSTEM_FIELD_KEYS values present on the row (content hashes live
     # here, not in stats).
     system = {k: row[k] for k in SYSTEM_FIELD_KEYS if row.get(k) is not None}
+    # validity is typed as ES date_range — store the converted range object
+    # (or drop it when the window is fully open / unusable). Overriding the raw
+    # Range here is what makes the date_range mapping ingestible (#1828).
+    if "validity" in system:
+        if validity_range is not None:
+            system["validity"] = validity_range
+        else:
+            system.pop("validity")
 
     # stats: producible computed values from sidecars NOT claimed by system.
     # System wins all overlaps: if a sidecar also produces geometry_hash it
@@ -206,4 +271,8 @@ def build_canonical_index_doc(
     )
 
 
-__all__ = ["build_canonical_envelope", "build_canonical_index_doc"]
+__all__ = [
+    "build_canonical_envelope",
+    "build_canonical_index_doc",
+    "_validity_to_es_range",
+]

@@ -343,15 +343,15 @@ def build_item_mapping(known_fields: Dict[str, Any]) -> Dict[str, Any]:
         if container == "stats":
             stats_fields[name] = es_type
         elif container == "system":
-            # NOTE (#1828 Phase 2): the target is to type ``validity`` as a
-            # ``date_range`` and write it as an ES range object ({"gte","lte"}).
-            # That mapping and the driver-side conversion from the PG tstzrange
-            # value MUST land together — typing date_range here while the raw
-            # tstzrange value is still written into ``system.validity`` (validity
-            # is in SYSTEM_FIELD_KEYS) would fail ingest. So validity keeps its
-            # current es_type until the Phase 2 write conversion. TODO (#1828):
-            # validity -> date_range + driver writes {"gte": lower, "lte": upper}.
-            system_fields[name] = es_type
+            # validity is the temporal window — typed as an ES ``date_range``
+            # (#1828). The driver-side write converts the PG ``tstzrange`` Range
+            # object into the matching range body ({gte|gt, lte|lt}) in
+            # ``canonical_doc._validity_to_es_range``; the two MUST stay in sync
+            # (a raw tstzrange value would be rejected by a date_range field).
+            if name == "validity":
+                system_fields[name] = {"type": "date_range"}
+            else:
+                system_fields[name] = es_type
         elif container in ("metadata", "identity"):
             # metadata: lands in the _METADATA_CONTAINER block below (emitted
             # statically with per-language analyzed sub-fields, not per-field).
