@@ -59,6 +59,14 @@ from dynastore.modules.catalog.lifecycle_manager import LifecycleContext
 
 logger = logging.getLogger(__name__)
 
+# Bounded retry count for create_subscription. Binding a subscription needs
+# ``pubsub.topics.attachSubscription`` on the topic, which can transiently 403
+# right after the topic + its IAM policy are created (IAM eventual
+# consistency). With base-1s exponential backoff this spans ~31s across 6
+# attempts (1+2+4+8+16) before giving up, comfortably covering typical IAM
+# propagation while still failing fast on a genuine permission gap.
+_SUBSCRIPTION_CREATE_MAX_ATTEMPTS = 6
+
 
 class OrphanSubscriptionClash(RuntimeError):
     """A push subscription already exists with a topic binding we cannot satisfy.
@@ -638,10 +646,44 @@ class GcpEventingOpsMixin:
         #     subscription_args["expiration_policy"] = pubsub_v1.types.ExpirationPolicy(ttl=ttl_duration)
 
         try:
-            # Run blocking create_subscription via the shared concurrency backend
-            await run_in_thread(
-                subscriber_client.create_subscription, **subscription_args
-            )
+            # Run blocking create_subscription via the shared concurrency
+            # backend. Binding a subscription requires
+            # ``pubsub.topics.attachSubscription`` on the topic; immediately
+            # after the topic and its IAM policy are created that permission
+            # can transiently return 403 PERMISSION_DENIED until the policy
+            # propagates (eventual consistency). Retry with bounded exponential
+            # backoff so a propagation race self-heals instead of failing — and
+            # dead-lettering — the catalog provisioning task. Mirrors the
+            # transient-error retry around the topic IAM-policy update above.
+            for attempt in range(1, _SUBSCRIPTION_CREATE_MAX_ATTEMPTS + 1):
+                try:
+                    await run_in_thread(
+                        subscriber_client.create_subscription, **subscription_args
+                    )
+                    break
+                except (
+                    google_exceptions.PermissionDenied,
+                    google_exceptions.ServiceUnavailable,
+                    google_exceptions.InternalServerError,
+                    google_exceptions.Unknown,
+                    Aborted,
+                ) as transient_err:
+                    if attempt == _SUBSCRIPTION_CREATE_MAX_ATTEMPTS:
+                        logger.error(
+                            f"create_subscription for '{subscription_path}' "
+                            f"failed after {attempt} attempts "
+                            f"(last error: {transient_err})."
+                        )
+                        raise
+                    delay = 1.0 * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"Transient error creating subscription "
+                        f"'{subscription_path}' (commonly attachSubscription IAM "
+                        f"not yet propagated): {transient_err}. "
+                        f"Attempt {attempt}/{_SUBSCRIPTION_CREATE_MAX_ATTEMPTS}, "
+                        f"retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
             logger.info(
                 f"Created Pub/Sub push subscription '{subscription_path}' to endpoint '{push_endpoint}' with attributes {list(attributes.keys())}."
             )
