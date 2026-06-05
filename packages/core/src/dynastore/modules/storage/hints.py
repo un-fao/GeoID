@@ -167,3 +167,18 @@ class Hint(StrEnum):
     # vocabulary is one consolidated catalogue rather than scattered
     # asset-driver and storage-driver dialects.
     DEFAULT = "default"
+
+
+# ---------------------------------------------------------------------------
+# Named hint sets
+# ---------------------------------------------------------------------------
+
+# Protocol-level "request exact geometry" constant.  Pass this as the
+# ``hints=`` argument wherever the caller must receive full-precision
+# (non-simplified) geometry regardless of which concrete driver happens to
+# carry the exact tier.  The routing layer selects the first registered
+# driver whose ``supported_hints`` is a *superset* of this set — today PG,
+# tomorrow any driver that declares ``Hint.GEOMETRY_EXACT``.  No driver
+# class name appears here; adding a new exact-capable driver requires zero
+# changes to any call site that uses this constant.
+EXACT_READ_HINTS: frozenset = frozenset({Hint.GEOMETRY_EXACT})

@@ -1724,6 +1724,7 @@ class ItemsElasticsearchDriver(
         known_fields = await resolve_catalog_known_fields(ctx.catalog)
         inputs = await read_canonical_index_inputs(
             ctx.catalog, ctx.collection, [op.entity_id],
+            db_resource=ctx.pg_conn,
         )
         ci = inputs.get(op.entity_id)
         if ci is None:
@@ -1790,8 +1791,13 @@ class ItemsElasticsearchDriver(
             for op in ops
             if op.entity_type == "item" and op.op_type == "upsert"
         ]
+        # Pass ctx.pg_conn as db_resource so the PG read uses the live
+        # connection from the caller's transaction when available (covers the
+        # Cloud Run JOB/worker context where the dispatcher's IndexContext
+        # carries the wrapping TX opened by _dispatch_index_upsert Phase 2f).
         canonical_inputs = await read_canonical_index_inputs(
             ctx.catalog, ctx.collection, upsert_geoids,
+            db_resource=ctx.pg_conn,
         ) if upsert_geoids else {}
 
         body: List[dict] = []

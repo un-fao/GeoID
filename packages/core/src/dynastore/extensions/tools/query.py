@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Optional, List, Dict, Any, Union
+from typing import FrozenSet, Optional, List, Dict, Any, Union
 from datetime import datetime, timezone
 import logging
 from fastapi import HTTPException, Request
@@ -381,6 +381,7 @@ async def dispatch_or_stream_items(
     search_dispatch: Optional[QueryResponse] = None,
     ctx: Any = None,
     request: Optional[Request] = None,
+    hints: "FrozenSet" = frozenset(),
 ) -> QueryResponse:
     """Return the routed SEARCH-driver response, or stream from the items protocol.
 
@@ -391,6 +392,11 @@ async def dispatch_or_stream_items(
     properties / fields) to HTTP 400. Callers supply their own ``consumer``
     (``OGC_FEATURES`` / ``OGC_RECORDS``) and ``ctx`` (Features decouples with
     ``None`` for background streaming; Records threads the request connection).
+
+    ``hints`` is forwarded to ``stream_items`` so callers requesting exact
+    geometry (``EXACT_READ_HINTS``) force the PG path even when a simplified-
+    geometry ES driver is registered first for READ.  Defaults to ``frozenset()``
+    so all existing callers are unaffected.
 
     Row-level ABAC (PG path): when ``request`` is supplied and the collection
     carries a PG ``access_envelope`` sidecar, the caller's read scope is compiled
@@ -428,6 +434,7 @@ async def dispatch_or_stream_items(
             request=query_request,
             ctx=ctx,
             consumer=consumer,
+            hints=hints,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

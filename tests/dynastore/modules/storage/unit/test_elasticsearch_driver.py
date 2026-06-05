@@ -1015,7 +1015,7 @@ def _make_ctx():
     return IndexContext(catalog="cat1", collection="col1", entity_type="item")
 
 
-def _fake_canonical_inputs(catalog_id, collection_id, geoids):
+def _fake_canonical_inputs(catalog_id, collection_id, geoids, db_resource=None):
     """Stand in for the raw-PG read (#1800): one minimal canonical input per
     geoid so ``build_canonical_index_doc`` runs for real with ``id``/
     ``catalog_id``/``collection_id`` populated, exercising the same body

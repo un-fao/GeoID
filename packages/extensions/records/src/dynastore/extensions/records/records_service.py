@@ -296,6 +296,16 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         ),
         sortby: Optional[str] = Query(None, description="Sort order (e.g., '-title,+created')."),
         q: Optional[str] = Query(None, description="Free-text search query."),
+        geometry: Optional[str] = Query(
+            None,
+            description=(
+                "Geometry precision tier. ``exact`` requests full-precision "
+                "geometry from the exact-capable driver (today PostgreSQL); "
+                "the default (omitted or any other value) returns simplified "
+                "geometry from the search backend. Use ``exact`` when downstream "
+                "processing requires non-generalised coordinates."
+            ),
+        ),
     ) -> Response:
         catalogs_svc = await self._get_catalogs_service()
 
@@ -376,9 +386,16 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         # read-primary (PG ``QUERY_FALLBACK_SOURCE``) driver, or a non-ES items
         # driver. Free-text ``q`` folds into a CQL ``ILIKE`` predicate, so it
         # defers to the PG path too.
+        #
+        # ``geometry=exact`` opt-in: when the caller requests exact geometry the
+        # simplified-geometry ES fast-path is skipped unconditionally; the
+        # stream_items call below then carries EXACT_READ_HINTS to force the
+        # exact-capable driver.  Omitting ``geometry`` (or any other value)
+        # keeps the existing default behaviour byte-for-byte.
+        wants_exact = geometry == "exact"
         has_complex_filter = bool(filter) or bool(q)
         search_dispatch = None
-        if not has_complex_filter:
+        if not has_complex_filter and not wants_exact:
             search_dispatch = await maybe_dispatch_items_to_search_driver(
                 catalog_id=catalog_id,
                 collection_id=collection_id,
@@ -415,6 +432,8 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             else:
                 request_obj.cql_filter = ilike_expr
 
+        from dynastore.modules.storage.hints import EXACT_READ_HINTS
+
         items_protocol = cast(ItemsProtocol, catalogs_svc)
         query_response = await dispatch_or_stream_items(
             items_protocol,
@@ -425,6 +444,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             search_dispatch=search_dispatch,
             ctx=DriverContext(db_resource=conn) if conn is not None else None,
             request=request,
+            hints=EXACT_READ_HINTS if wants_exact else frozenset(),
         )
 
         count = query_response.total_count or 0
