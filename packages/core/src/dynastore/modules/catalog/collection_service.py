@@ -691,94 +691,39 @@ class CollectionService:
         q: Optional[str] = None,
     ) -> List[Collection]:
         db_resource = ctx.db_resource if ctx else None
-        # Delegate to the router — it picks the most capable registered
-        # driver (CORE has SEARCH capability; ES contributes FULLTEXT when
-        # present) and falls back to the direct-PG path below if nothing
-        # matches the query shape.
+        # Navigation is routing-driven: the collection-metadata router picks
+        # the configured driver for this scope (ES-first, PG-first, or PG-only
+        # per the applied preset) and returns COMPLETE collections — the PG
+        # composition driver hydrates its STAC slice, so a PG-routed listing
+        # carries extent/providers/summaries/links/assets/item_assets, not just
+        # the CORE columns (see CollectionPostgresqlDriver.search_metadata).
+        #
+        # When the SEARCH slice is ES-only (e.g. the public_catalog preset) and
+        # the ES collection index has not yet been populated for this catalog,
+        # the SEARCH query returns empty; we then re-run the same query against
+        # the READ-routed driver, which is PG-backed under every preset (the
+        # system of record).  This per-scope routing resolution replaces the
+        # former hand-rolled collection_core⋈collection_stac fallback SQL.
         from dynastore.modules.catalog.collection_router import (
             search_collection_metadata as _route_search,
         )
+        from dynastore.modules.storage.routing_config import Operation
 
-        try:
-            rows, _total = await _route_search(
-                catalog_id, q=q, limit=limit, offset=offset,
-                db_resource=db_resource,
-            )
+        for op in (Operation.SEARCH, Operation.READ):
+            try:
+                rows, _ = await _route_search(
+                    catalog_id, q=q, limit=limit, offset=offset,
+                    db_resource=db_resource, operation=op,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Collection-metadata router %s failed for %s: %s",
+                    op, catalog_id, exc,
+                )
+                continue
             if rows:
                 return [Collection.model_validate(row) for row in rows]
-        except Exception as e:
-            logger.warning(
-                "Collection-metadata router search failed for %s, "
-                "falling back to PG: %s",
-                catalog_id, e,
-            )
-
-        # PG direct fallback
-        async with managed_transaction(db_resource or self.engine) as conn:
-            phys_schema = await self._resolve_physical_schema(
-                catalog_id, db_resource=conn
-            )
-            if not phys_schema:
-                return []
-
-            if not q:
-                query_sql = (
-                    f'SELECT c.id, mc.title, mc.description, mc.keywords, mc.license, '
-                    f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
-                    f'ms.item_assets, mc.extra_metadata '
-                    f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_core mc ON mc.collection_id = c.id '
-                    f'LEFT JOIN "{phys_schema}".collection_stac ms ON ms.collection_id = c.id '
-                    f'WHERE c.deleted_at IS NULL '
-                    f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
-                )
-                result_rows = await DQLQuery(
-                    query_sql, result_handler=ResultHandler.ALL_DICTS
-                ).execute(conn, limit=limit, offset=offset)
-            else:
-                query_sql = (
-                    f'SELECT c.id, mc.title, mc.description, mc.keywords, mc.license, '
-                    f'ms.links, ms.assets, ms.extent, ms.providers, ms.summaries, '
-                    f'ms.item_assets, mc.extra_metadata '
-                    f'FROM "{phys_schema}".collections c '
-                    f'LEFT JOIN "{phys_schema}".collection_core mc ON mc.collection_id = c.id '
-                    f'LEFT JOIN "{phys_schema}".collection_stac ms ON ms.collection_id = c.id '
-                    f'WHERE c.deleted_at IS NULL '
-                    f"AND (c.id ILIKE :q OR mc.title->>'en' ILIKE :q OR mc.description->>'en' ILIKE :q) "
-                    f'ORDER BY c.created_at DESC LIMIT :limit OFFSET :offset;'
-                )
-                result_rows = await DQLQuery(
-                    query_sql, result_handler=ResultHandler.ALL_DICTS
-                ).execute(conn, limit=limit, offset=offset, q=f"%{q}%")
-
-            results = []
-            for row_dict in result_rows:
-                for key in ["title", "description", "keywords", "license", "links",
-                            "assets", "extent", "providers", "summaries", "item_assets",
-                            "extra_metadata"]:
-                    val = row_dict.get(key)
-                    if isinstance(val, str):
-                        try:
-                            row_dict[key] = json.loads(val)
-                        except Exception:
-                            row_dict[key] = None
-
-                data = {
-                    "id": row_dict["id"],
-                    "title": row_dict.get("title"),
-                    "description": row_dict.get("description"),
-                    "keywords": row_dict.get("keywords"),
-                    "license": row_dict.get("license"),
-                    "links": row_dict.get("links"),
-                    "assets": row_dict.get("assets"),
-                    "extent": row_dict.get("extent"),
-                    "providers": row_dict.get("providers"),
-                    "summaries": row_dict.get("summaries"),
-                    "item_assets": row_dict.get("item_assets"),
-                    "extra_metadata": row_dict.get("extra_metadata"),
-                }
-                results.append(Collection.model_validate(data))
-            return results
+        return []
 
     async def update_collection(
         self,
