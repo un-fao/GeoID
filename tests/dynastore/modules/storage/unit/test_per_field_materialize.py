@@ -1,16 +1,20 @@
-"""Unit tests for per-field ``materialize`` + capability-driven sidecar columns.
+"""Unit tests for the strict binary storage rule in ``bridge_schema_to_attribute_sidecar``.
 
-Covers the five-rule precedence in ``bridge_schema_to_attribute_sidecar``:
+Strict binary layout (enforced since #1043):
+  AUTOMATIC + schema present → ALL non-geometry fields become columns (COLUMNAR).
+  AUTOMATIC + no schema      → JSONB (no columns).
+  COLUMNAR  explicit         → ALL non-geometry fields become columns.
+  JSONB     explicit         → no columns; blob catches every field.
 
-  Rule 1 — hard constraint (unique + required): COLUMN regardless of ``materialize``
-  Rule 2 — ``access=FieldAccess.FAST``:  COLUMN
-  Rule 3 — ``access=FieldAccess.COMPACT``: JSONB (do NOT lift), even when capabilities present
-  Rule 4 — ``access=FieldAccess.AUTO``, no capabilities → JSONB (unless materialize_all)
-  Rule 5 — ``access=FieldAccess.AUTO``, column-implying capability → COLUMN
+Per-field ``access`` and capabilities (FieldAccess.FAST/COMPACT/AUTO) are
+preserved on ``FieldDefinition`` for the driver-agnostic projection
+(``field_projection.materialize_feature_fields`` used by Iceberg/DuckDB), but
+they have NO influence on the PG sidecar bridge's binary COLUMNAR/JSONB
+decision under AUTOMATIC mode — under AUTOMATIC+schema every declared
+non-geometry field gets its own PG column, period.
 
 The existing ``AttributeSchemaEntry`` overlay path is checked separately to
-confirm the constraint-update logic remains intact when per-field materialize
-is in play.
+confirm the constraint-update logic remains intact.
 """
 
 from __future__ import annotations
@@ -127,73 +131,81 @@ class TestRule2MaterializeTrue:
 
 
 # ---------------------------------------------------------------------------
-# Rule 3 — access=FieldAccess.COMPACT suppresses capability-driven lifting
+# Strict binary: under AUTOMATIC + schema, ALL fields become columns.
+# access=FieldAccess.COMPACT and access=FieldAccess.AUTO with no capabilities
+# are promoted just like any other field — the binary rule supersedes per-field
+# access hints for the PG sidecar bridge.
 # ---------------------------------------------------------------------------
 
-class TestRule3MaterializeFalse:
-    def test_materialize_false_no_constraint_stays_jsonb(self) -> None:
+class TestStrictBinaryAllFieldsPromoted:
+    """Strict binary rule: AUTOMATIC+schema → every non-geometry field gets a column."""
+
+    def test_compact_field_promoted_under_automatic(self) -> None:
+        """Under AUTOMATIC+schema, access=COMPACT still gets a PG column."""
         schema = _schema({"col": _fd(access=FieldAccess.COMPACT)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged), (
-            "Rule 3: access=FieldAccess.COMPACT must suppress column synthesis"
+        assert "col" in _names(bridged), (
+            "Strict binary: access=COMPACT must be promoted to column under AUTOMATIC+schema"
         )
 
-    def test_materialize_false_with_filterable_still_stays_jsonb(self) -> None:
-        """Explicit false beats capability-driven lifting."""
+    def test_compact_with_filterable_promoted(self) -> None:
+        """COMPACT + capability → still a column under AUTOMATIC+schema."""
         schema = _schema({
             "col": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE])
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
+        assert "col" in _names(bridged)
 
-    def test_materialize_false_with_sortable_still_stays_jsonb(self) -> None:
-        schema = _schema({
-            "col": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.SORTABLE])
-        })
-        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
-
-    def test_materialize_false_multiple_caps_still_stays_jsonb(self) -> None:
-        schema = _schema({
-            "col": _fd(
-                access=FieldAccess.COMPACT,
-                capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE,
-                               FieldCapability.INDEXED],
-            )
-        })
-        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
-
-    def test_materialize_false_with_materialize_all_still_stays_jsonb(self) -> None:
-        """Per-field False beats schema-level materialize_all."""
-        schema = _schema({"col": _fd(access=FieldAccess.COMPACT)}, materialize_all=True)
-        bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
-
-
-# ---------------------------------------------------------------------------
-# Rule 4 — access=FieldAccess.AUTO, no column-implying capability → JSONB
-# ---------------------------------------------------------------------------
-
-class TestRule4NoneNoCapability:
-    def test_plain_field_materialize_none_stays_jsonb(self) -> None:
+    def test_plain_auto_no_caps_promoted_under_automatic(self) -> None:
+        """access=AUTO, no capabilities → still promoted under AUTOMATIC+schema."""
         schema = _schema({"col": _fd(access=FieldAccess.AUTO)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
+        assert "col" in _names(bridged), (
+            "Strict binary: plain AUTO field must be promoted under AUTOMATIC+schema"
+        )
 
-    def test_none_with_groupable_stays_jsonb(self) -> None:
-        """GROUPABLE alone does not imply a native column."""
+    def test_groupable_only_field_promoted(self) -> None:
+        """GROUPABLE alone → still a column under AUTOMATIC+schema (binary rule)."""
         schema = _schema({
             "col": _fd(access=FieldAccess.AUTO, capabilities=[FieldCapability.GROUPABLE])
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert "col" not in _names(bridged)
+        assert "col" in _names(bridged)
 
-    def test_none_materialize_all_true_lifts(self) -> None:
-        """materialize_all=True + None → schema-level opt-in lifts the field."""
-        schema = _schema({"col": _fd(access=FieldAccess.AUTO)}, materialize_all=True)
+    def test_fast_field_promoted(self) -> None:
+        """access=FAST → column (unchanged behaviour + compatible with binary rule)."""
+        schema = _schema({"col": _fd(access=FieldAccess.FAST)})
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         assert "col" in _names(bridged)
+
+    def test_no_schema_stays_jsonb(self) -> None:
+        """AUTOMATIC + no schema → JSONB; bridge returns sidecar unchanged."""
+        from unittest.mock import MagicMock
+        schema = MagicMock()
+        schema.fields = {}
+        sidecar = _empty_sidecar()
+        bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
+        assert bridged is sidecar  # identity returned, no columns emitted
+
+    def test_jsonb_explicit_suppresses_promotion(self) -> None:
+        """Explicit JSONB pin: no column emitted even for plain AUTO fields."""
+        from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+            AttributeStorageMode,
+        )
+        jsonb_sidecar = FeatureAttributeSidecarConfig(
+            storage_mode=AttributeStorageMode.JSONB
+        )
+        schema = _schema({"col": _fd(access=FieldAccess.AUTO)})
+        bridged = bridge_schema_to_attribute_sidecar(schema, jsonb_sidecar)
+        assert "col" not in _names(bridged), (
+            "Explicit JSONB: no column must be emitted; blob catches the field"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rule 5 — access=FieldAccess.AUTO + column-implying capability → COLUMN
+# (still holds under AUTOMATIC+schema, now subsumed by binary rule)
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -230,52 +242,34 @@ class TestRule5NoneWithCapability:
 # ---------------------------------------------------------------------------
 
 class TestMixedSchema:
-    def test_mixed_precedence_rules(self) -> None:
-        """All rules apply within a single schema pass — with silent-drop guard.
+    def test_mixed_access_all_promoted_under_automatic(self) -> None:
+        """Strict binary: ALL non-geometry fields promoted under AUTOMATIC+schema.
 
-        Per-field precedence (Rules 1–5) decides each field's IDEAL routing,
-        but when the resulting sidecar would resolve COLUMNAR-only (any
-        column-bound field present under AUTOMATIC) the bridge force-promotes
-        every non-geometry field — otherwise un-promoted fields would silently
-        drop at ingest (#1488). Because ``constrained`` (Rule 1) and ``forced``
-        (Rule 2) and ``cap_none`` (Rule 5) all promote here, the sidecar will
-        resolve COLUMNAR-only, so ``suppressed`` (COMPACT) and ``plain_none``
-        (AUTO no caps) also get column entries — JSONB-routing is the right
-        answer ONLY when a JSONB blob exists on disk, which it does not in
-        this schema.
+        access=COMPACT, AUTO+no-cap, AUTO+FILTERABLE, FAST, and constrained
+        fields all become columns — the binary rule admits no JSONB-routing
+        exceptions in COLUMNAR mode.
         """
         schema = _schema({
-            # Rule 1: constraint → COLUMN
             "constrained": _fd(required=True, unique=True, access=FieldAccess.COMPACT),
-            # Rule 2: explicit True → COLUMN
             "forced":       _fd(access=FieldAccess.FAST),
-            # Rule 3: COMPACT — would route to JSONB on its own…
             "suppressed":   _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE]),
-            # Rule 4: AUTO + no cap — would route to JSONB on its own…
             "plain_none":   _fd(access=FieldAccess.AUTO),
-            # Rule 5: AUTO + FILTERABLE → COLUMN
             "cap_none":     _fd(access=FieldAccess.AUTO, capabilities=[FieldCapability.FILTERABLE]),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         names = _names(bridged)
-        assert "constrained" in names, "Rule 1 failed"
-        assert "forced"      in names, "Rule 2 failed"
-        assert "cap_none"    in names, "Rule 5 failed"
-        # Silent-drop guard: COMPACT / AUTO+no-cap promoted because sidecar
-        # resolves COLUMNAR-only and the JSONB blob would NOT be DDL'd.
-        assert "suppressed" in names, "silent-drop guard: COMPACT field force-promoted"
-        assert "plain_none" in names, "silent-drop guard: AUTO+no-cap field force-promoted"
+        # Every non-geometry field must be promoted under AUTOMATIC+schema.
+        assert names == {"constrained", "forced", "suppressed", "plain_none", "cap_none"}
 
 
 class TestSilentDropGuard:
-    """Bridge force-promotes ALL non-geometry items_schema fields when the
-    sidecar will resolve COLUMNAR-only — closes the #1488 / #1491 class.
+    """Strict binary rule — AUTOMATIC+schema → all fields COLUMNAR.
 
     Resolution mirror at ``attributes.py:144-150``:
       * sidecar.storage_mode == COLUMNAR (explicit) → always COLUMNAR
       * sidecar.storage_mode == JSONB (explicit) → always JSONB (blob exists)
-      * sidecar.storage_mode == AUTOMATIC + any attribute_schema entry → COLUMNAR
-      * sidecar.storage_mode == AUTOMATIC + empty schema → JSONB
+      * sidecar.storage_mode == AUTOMATIC + schema fields present → COLUMNAR
+      * sidecar.storage_mode == AUTOMATIC + no schema fields → JSONB
     """
 
     def _columnar_sidecar(self) -> FeatureAttributeSidecarConfig:
@@ -290,13 +284,12 @@ class TestSilentDropGuard:
         )
         return FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB)
 
-    def test_regression_1488_automatic_mix_promotes_plain_fields(self) -> None:
-        """The exact #1488 shape: 6 required + 2 optional fields, AUTOMATIC sidecar.
+    def test_regression_1488_automatic_all_fields_promoted(self) -> None:
+        """The original #1488 shape: 6 required + 2 optional → all 8 get columns.
 
-        Pre-fix: the 6 required promoted, the 2 optional fell to "JSONB"
-        branch, but AUTOMATIC + 6 entries → COLUMNAR DDL → no JSONB blob →
-        the 2 optional silently dropped at ingest (`datamgr02/region`
-        START_DATE / END_DATE). With the guard, all 8 promote.
+        Under the strict binary rule, AUTOMATIC+schema → all fields COLUMNAR
+        (the 2 optional were already promoted by the prior silent-drop guard;
+        under the new rule they are promoted unconditionally).
         """
         schema = _schema({
             "CODE":       _fd(required=True),
@@ -315,8 +308,7 @@ class TestSilentDropGuard:
         }
 
     def test_columnar_explicit_promotes_every_field(self) -> None:
-        """Explicit COLUMNAR sidecar → every non-geometry field gets a column
-        regardless of per-field precedence."""
+        """Explicit COLUMNAR sidecar → every non-geometry field gets a column."""
         schema = _schema({
             "plain":   _fd(),
             "compact": _fd(access=FieldAccess.COMPACT),
@@ -324,50 +316,40 @@ class TestSilentDropGuard:
         bridged = bridge_schema_to_attribute_sidecar(schema, self._columnar_sidecar())
         assert _names(bridged) == {"plain", "compact"}
 
-    def test_automatic_no_force_keeps_plain_in_jsonb(self) -> None:
-        """No constraint / FAST / cap field anywhere → sidecar AUTOMATIC
-        resolves to JSONB → the blob catches plain fields → no force-promotion."""
+    def test_automatic_with_schema_promotes_all(self) -> None:
+        """AUTOMATIC + schema → all non-geometry fields become columns."""
         schema = _schema({
             "a": _fd(),
             "b": _fd(access=FieldAccess.COMPACT, capabilities=[FieldCapability.FILTERABLE]),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
-        assert _names(bridged) == set()
+        assert _names(bridged) == {"a", "b"}
 
-    def test_jsonb_explicit_does_not_force_promote(self) -> None:
-        """Explicit JSONB sidecar → blob always exists → no force-promotion.
-
-        Constraint fields still hit Rule 1 (column entries are added even
-        when the resolved mode is JSONB so the constraint metadata is
-        carried; DDL ignores them in JSONB-mode); plain fields stay in JSONB.
-        """
+    def test_jsonb_explicit_does_not_promote(self) -> None:
+        """Explicit JSONB sidecar → blob always exists → no columns emitted."""
         schema = _schema({
             "constrained": _fd(required=True),
             "plain":       _fd(),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, self._jsonb_sidecar())
-        assert _names(bridged) == {"constrained"}, (
-            "JSONB sidecar must not force-promote plain fields"
+        assert _names(bridged) == set(), (
+            "JSONB sidecar must not emit any columns; blob catches all fields"
         )
 
-    def test_geometry_skipped_even_when_force_promoting(self) -> None:
-        """Force-promotion under COLUMNAR-only must still skip geometry."""
+    def test_geometry_skipped_under_columnar(self) -> None:
+        """COLUMNAR/AUTOMATIC must still skip geometry fields."""
         schema = _schema({
-            "constrained": _fd(required=True),  # triggers COLUMNAR resolution
-            "plain":       _fd(),
-            "geom":        _fd(data_type="geometry"),
+            "plain": _fd(),
+            "geom":  _fd(data_type="geometry"),
         })
         bridged = bridge_schema_to_attribute_sidecar(schema, _empty_sidecar())
         names = _names(bridged)
         assert "geom" not in names
-        assert names == {"constrained", "plain"}
+        assert "plain" in names
 
-    def test_existing_entry_triggers_automatic_columnar_resolution(self) -> None:
-        """A pre-existing attribute_schema entry (AUTOMATIC + non-empty schema)
-        also resolves COLUMNAR → schema-declared plain fields must promote.
-
-        Mirrors the ``ensure_storage`` path where the PG driver pre-populates
-        the sidecar with platform-fixed entries before the bridge runs.
+    def test_existing_entry_automatic_promotes_new_fields(self) -> None:
+        """Pre-existing attribute_schema entry → AUTOMATIC resolves COLUMNAR
+        → new schema-declared fields also promoted.
         """
         sidecar = FeatureAttributeSidecarConfig(
             attribute_schema=[

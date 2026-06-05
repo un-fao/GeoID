@@ -1842,8 +1842,7 @@ async def _validate_items_schema_storage_realizable(
                 "bridge_schema_to_attribute_sidecar — every non-geometry "
                 "items_schema field must become an AttributeSchemaEntry under "
                 "COLUMNAR resolution. Recover by switching the sidecar "
-                "storage_mode to JSONB (so the blob catches plain fields), or "
-                "annotate the listed fields with required/unique/access=FAST."
+                "storage_mode to JSONB (so the blob catches plain fields)."
             )
     except ValueError:
         raise
