@@ -33,6 +33,31 @@ from dynastore.modules.elasticsearch.items_projection import (
 )
 
 
+def _localized_keyword_field(ignore_above: int = 256) -> Dict[str, Any]:
+    """Localized keyword-array field — one ``keyword`` sub-property per locale.
+
+    Each locale value is an array of exact tokens (ES treats multi-values on
+    a keyword field as an array natively).  A ``.text`` analyzed sub-field on
+    each locale gives full-text search on the same data.  ``dynamic: false``
+    on the parent blocks unknown locales, matching the same guard in
+    :func:`~dynastore.modules.elasticsearch.items_projection._localized_text_field`.
+
+    Used by the canonical ``metadata.keywords`` mapping (refs #1828).
+    """
+    return {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            lang: {
+                "type": "keyword",
+                "ignore_above": ignore_above,
+                "fields": {"text": {"type": "text", "analyzer": analyzer}},
+            }
+            for lang, analyzer in LANGUAGE_ANALYZERS.items()
+        },
+    }
+
+
 def _localized_text_templates(field: str, ignore_above: int) -> List[Dict[str, Any]]:
     """Per-language dynamic templates for catalog / collection localized fields.
 
@@ -143,11 +168,12 @@ def _build_metadata_container() -> Dict[str, Any]:
         "properties": {
             "title":       _localized_text_field(ignore_above=512),
             "description": _localized_text_field(ignore_above=1024),
-            # keywords: array of exact tokens; .text sub-field for full-text.
-            "keywords": {
-                "type": "keyword",
-                "fields": {"text": {"type": "text", "analyzer": "standard"}},
-            },
+            # keywords: per-language array of exact tokens (i18n write path).
+            # The i18n layer wraps keywords as {"en": ["a", "b"], ...} before
+            # indexing, so each locale sub-property must be keyword (not a
+            # flat keyword at the parent level), otherwise ES rejects the
+            # object value with mapper_parsing_exception (refs #1828).
+            "keywords":    _localized_keyword_field(ignore_above=256),
         },
     }
 
