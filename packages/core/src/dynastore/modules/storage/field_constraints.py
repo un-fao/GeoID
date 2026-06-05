@@ -159,26 +159,23 @@ def bridge_schema_to_attribute_sidecar(
 ) -> "FeatureAttributeSidecarConfig":
     """Merge ``ItemsSchema.fields`` into the attributes sidecar.
 
+    Enforces STRICT BINARY storage: the attributes table is either fully
+    COLUMNAR (one PG column per declared field) or fully JSONB (a single
+    blob column). A table that mixes attribute columns AND a JSONB blob is
+    never produced.
+
+    Promotion rules:
+    - COLUMNAR (explicit) → every non-geometry field becomes a column.
+    - JSONB (explicit)    → no columns emitted; blob catches all fields.
+    - AUTOMATIC           → schema present → COLUMNAR (every non-geometry
+                            field becomes a column); schema absent → JSONB.
+
     For every ``FieldDefinition`` in ``schema.fields``:
 
     - If an ``AttributeSchemaEntry`` with the same ``name`` already exists,
       overlay ``nullable = not fd.required`` and ``unique = fd.unique``.
-    - Otherwise, decide whether to synthesise a native column. The per-field
-      precedence (constraint → FAST → COMPACT → AUTO+capability) is the single
-      :func:`schema_field_materializes_as_column` rule.
-
-    Silent-drop guard (#1488/#1491 follow-up): the sidecar's
-    ``resolved_storage_mode`` (see ``attributes.py:144-150``) becomes
-    COLUMNAR-only the moment *any* attribute_schema entry exists under
-    AUTOMATIC mode (or when COLUMNAR is set explicitly). The DDL branch in
-    ``attributes.py:399-449`` then creates physical columns ONLY — there is
-    no JSONB blob on disk to catch fields that the per-field precedence
-    would have left for JSONB. To make a silent drop architecturally
-    impossible, every non-geometry items_schema field is promoted to an
-    ``AttributeSchemaEntry`` whenever the sidecar will resolve COLUMNAR-only.
-    When the resolution will be JSONB (AUTOMATIC + no constraint/FAST/cap
-    field anywhere in the schema, or explicit JSONB), the blob catches
-    un-promoted fields and the per-field precedence is the only gate.
+    - Otherwise synthesise a native column for every non-geometry field
+      when the mode resolves COLUMNAR; skip entirely when JSONB.
 
     Returns a new ``FeatureAttributeSidecarConfig`` so callers can replace it
     in ``col_config.sidecars``. If ``schema`` is None or has no fields,
@@ -199,40 +196,32 @@ def bridge_schema_to_attribute_sidecar(
         existing[entry.name] = entry
         order.append(entry.name)
 
-    # Schema-wide default access intent (#1291). A field that leaves its own
-    # ``access`` at AUTO inherits this. ``default_access=FAST`` is the portable
-    # successor of the old ``materialize_fields_as_columns=True`` — lift every
-    # field into a native column. AUTO keeps the historical "constraints + queryable
-    # capabilities only" behaviour so sparse schemas don't widen tables unintentionally.
-    schema_default_access = getattr(schema, "default_access", FieldAccess.AUTO)
-
-    # Project the sidecar's eventual ``resolved_storage_mode`` so the loop
-    # below can decide whether un-promoted fields will have a JSONB blob to
-    # land in. Mirror of the resolution at ``attributes.py:144-150``:
-    # explicit COLUMNAR/JSONB pin the mode; AUTOMATIC resolves to COLUMNAR
-    # the moment any column entry exists (existing entries already on the
-    # sidecar, or schema fields the per-field precedence will promote).
+    # Strict binary layout decision: the sidecar is either fully COLUMNAR or
+    # fully JSONB — no mixed tables.
+    #   COLUMNAR (explicit) → promote all declared non-geometry fields.
+    #   JSONB    (explicit) → blob catches every field; no columns emitted.
+    #   AUTOMATIC           → schema present → COLUMNAR (all fields get
+    #                         columns so the absent JSONB blob cannot silently
+    #                         swallow any declared property); AUTOMATIC with no
+    #                         schema → JSONB (resolved later by the DDL branch).
     sidecar_mode = getattr(sidecar, "storage_mode", AttributeStorageMode.AUTOMATIC)
-    if sidecar_mode == AttributeStorageMode.COLUMNAR:
-        force_all_columnar = True
-    elif sidecar_mode == AttributeStorageMode.JSONB:
+    if sidecar_mode == AttributeStorageMode.JSONB:
+        # Explicit JSONB pin: blob stays blob regardless of schema presence.
+        # Apply defaults from existing entries only; do not synthesise columns.
         force_all_columnar = False
-    else:  # AUTOMATIC
-        force_all_columnar = bool(existing) or any(
-            (not (fd.data_type or "").lower().startswith("geometry"))
-            and schema_field_materializes_as_column(
-                fd, default_access=schema_default_access,
-            )
-            for fd in schema.fields.values()
-        )
+    else:
+        # COLUMNAR or AUTOMATIC with a non-empty schema → all fields columnar.
+        # Under AUTOMATIC the schema presence itself is the columnar trigger:
+        # the DDL branch creates NO JSONB blob when attribute_schema is
+        # non-empty (attributes.py resolved_storage_mode → COLUMNAR), so every
+        # un-promoted field would be silently lost at ingest.
+        force_all_columnar = True
 
     changed = False
     for name, fd in schema.fields.items():
         # Geometry is owned by the geometry sidecar / driver, never an attribute
-        # column. It is neither a constraint column nor an attribute column, so it
-        # must be skipped before any column-synthesis decision (and before the
-        # existing-entry overlay) — regardless of capabilities or the schema-wide
-        # ``default_access`` intent. The tolerant ``startswith`` mirrors the
+        # column. It must be skipped before any column-synthesis decision —
+        # regardless of mode. The tolerant ``startswith`` mirrors the
         # geometry/geography check at the top of this module.
         if (fd.data_type or "").lower().startswith("geometry"):
             continue
@@ -256,24 +245,11 @@ def bridge_schema_to_attribute_sidecar(
                 )
                 changed = True
             continue
-        # Decide whether to synthesise a native column for this field. The
-        # per-field precedence (hard constraint → FAST → COMPACT → AUTO+
-        # capability) is the single :func:`schema_field_materializes_as_column`
-        # rule, shared with the driver-agnostic projection so PG never
-        # re-derives it (#1291). When ``force_all_columnar`` is set, the
-        # bridge overrides the JSONB-routing arm of the precedence — the
-        # JSONB blob would not exist on disk, so leaving a field there is
-        # equivalent to dropping it at ingest (the #1488 class).
-        if not (
-            force_all_columnar
-            or schema_field_materializes_as_column(
-                fd, default_access=schema_default_access,
-            )
-        ):
-            continue  # field stays in JSONB (blob exists in this branch)
+        if not force_all_columnar:
+            continue  # JSONB mode: blob catches this field; no column emitted
         # ``data_type`` is already canonical (validated on FieldDefinition);
-        # tolerant lookup so a bypassed/unknown value degrades to TEXT rather
-        # than raising deep in DDL generation.
+        # tolerant lookup so an unknown value degrades to TEXT rather than
+        # raising deep in DDL generation.
         pg_name = _DATA_TYPE_TO_PG_NAME.get(
             (fd.data_type or "").lower(), "TEXT"
         )

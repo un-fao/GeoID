@@ -1,13 +1,17 @@
-"""Tests for the schema-wide ``ItemsSchema.default_access`` intent (#1291).
+"""Tests for the strict binary storage rule in ``bridge_schema_to_attribute_sidecar``.
 
-Default (AUTO): the bridge lifts only fields carrying required/unique
-constraints (or a column-implying capability) — plain fields stay in JSONB
-properties.
+Strict binary rule: the attributes table is either fully COLUMNAR (every
+declared non-geometry field gets its own PG column) or fully JSONB (a single
+blob column).  There are no mixed tables.
 
-When FAST: ALL declared fields get an AttributeSchemaEntry → native PG
-column, enabling per-field indexes, ANALYZE statistics, and column-store
-query plans. This is the portable successor of the former
-``materialize_fields_as_columns=True`` flag.
+  AUTOMATIC + schema → ALL fields columnar.
+  AUTOMATIC + no schema → JSONB.
+  COLUMNAR explicit → ALL fields columnar.
+  JSONB explicit → blob (no columns).
+
+The ``default_access`` field on ``ItemsSchema`` is preserved for use by the
+driver-agnostic ``field_projection.materialize_feature_fields`` (Iceberg,
+DuckDB) but has no effect on the PG bridge's binary layout decision.
 """
 
 from __future__ import annotations
@@ -69,11 +73,11 @@ def test_default_constrained_field_forces_all_columnar() -> None:
     assert names == {"constrained", "plain"}
 
 
-def test_default_no_change_when_all_plain() -> None:
-    """Schema with only plain fields produces no sidecar entries.
+def test_automatic_with_plain_fields_all_promoted() -> None:
+    """AUTOMATIC + schema (plain fields only) → all fields promoted to columns.
 
-    No field forces a column → sidecar AUTOMATIC resolves to JSONB →
-    DDL creates the blob → plain fields land there. Force-promotion stays off.
+    Strict binary rule: schema presence is the only trigger for COLUMNAR.
+    Plain (AUTO/no-caps) fields get columns just like constrained fields.
     """
     schema = MagicMock()
     schema.default_access = FieldAccess.AUTO
@@ -83,8 +87,8 @@ def test_default_no_change_when_all_plain() -> None:
     }
     sidecar = _empty_sidecar()
     bridged = bridge_schema_to_attribute_sidecar(schema, sidecar)
-    # Identity returned — nothing changed
-    assert bridged is sidecar
+    names = {e.name for e in bridged.attribute_schema}
+    assert names == {"a", "b"}
 
 
 # ---------------------------------------------------------------------------
