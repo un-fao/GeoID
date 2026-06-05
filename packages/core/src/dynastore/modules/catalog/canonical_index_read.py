@@ -170,7 +170,18 @@ async def _fetch_raw_rows(
         validate_sql_identifier(collection_id)
 
         item_svc = ItemService()
-        async with managed_transaction(db_resource or item_svc.engine) as conn:
+        # The post-commit inline index dispatch calls this with db_resource=None
+        # (the write transaction already committed), and a freshly-constructed
+        # ItemService has no bound engine — so without this fallback the
+        # managed_transaction below raises "db_resource is None", the read-back
+        # returns nothing, and the ES indexer silently skips every doc (the
+        # index ends up empty despite a "successful" dispatch). Resolve the
+        # global engine from the DatabaseProtocol provider as the last resort.
+        engine = db_resource or item_svc.engine
+        if engine is None:
+            from dynastore.tools.protocol_helpers import get_engine
+            engine = get_engine()
+        async with managed_transaction(engine) as conn:
             phys_schema = await item_svc._resolve_physical_schema(
                 catalog_id, db_resource=conn,
             )
