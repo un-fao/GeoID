@@ -410,11 +410,21 @@ async def search_collection_metadata(
     context: Optional[Dict[str, Any]] = None,
     db_resource: Optional[Any] = None,
     drivers: Optional[List[CollectionStore]] = None,
+    operation: str = Operation.SEARCH,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Delegate SEARCH to the first driver capable of serving the query shape."""
+    """Delegate SEARCH to the first driver capable of serving the query shape.
+
+    ``operation`` selects which routing slice supplies the candidate driver
+    list (default ``SEARCH``).  Callers pass ``Operation.READ`` to run the
+    same capability-matched delegation against the READ-routed drivers — the
+    routing-driven fallback the collection service uses when the SEARCH slice
+    is ES-only and the ES collection index has no rows for the catalog yet
+    (READ is PG-backed under every preset, so it always answers from the
+    system of record).
+    """
     if drivers is None:
         routed = await _routed_drivers(
-            Operation.SEARCH, catalog_id, collection_id=None, db_resource=db_resource,
+            operation, catalog_id, collection_id=None, db_resource=db_resource,
         )
         # SEARCH deliberately does NOT pre-filter via ``_filter_capable``:
         # the per-shape capability match below (``required.issubset(caps)``

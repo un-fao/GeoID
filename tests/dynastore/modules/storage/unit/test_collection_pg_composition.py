@@ -372,6 +372,82 @@ async def test_search_metadata_returns_empty_when_no_inner_has_search():
 
 
 # ---------------------------------------------------------------------------
+# Search hydration — each CORE search hit is merged with the non-SEARCH
+# (STAC) sidecar slices so the composition driver returns COMPLETE
+# collections.  Without this, a PG-routed listing (e.g. the private_catalog
+# preset, whose collection SEARCH is PG-first) silently drops every STAC
+# field that single-collection GET still returns.
+# ---------------------------------------------------------------------------
+
+
+async def test_search_metadata_hydrates_hits_with_stac_slice():
+    """With the STAC inner configured, a CORE search hit is hydrated with the
+    STAC slice (extent/providers) — the search itself still runs ONLY on the
+    SEARCH-capable CORE inner, never on STAC.
+    """
+    with _operator_sidecars(
+        CollectionCoreSidecarConfig(), CollectionStacSidecarConfig(),
+    ):
+        driver = CollectionPostgresqlDriver()
+        rows, total = await driver.search_metadata("cat-a", q="foo")
+    assert total == 1
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "from-search"                  # CORE id preserved
+    assert row["extent"] == {"bbox": [[1, 2, 3, 4]]}   # STAC slice merged in
+    assert row["providers"] == []
+    core, stac = _FakeCoreCls(), _FakeStacCls()
+    assert len(core.search_calls) == 1
+    assert stac.search_calls == []                     # STAC never searched
+
+
+async def test_search_hydration_preserves_core_values_on_key_overlap():
+    """CORE search values win on key collision — hydration uses ``setdefault``,
+    so a STAC slice that carries an overlapping key (here a stale ``id``)
+    cannot clobber the CORE search result's identity or ordering.
+    """
+    _FakeStacCls._instance = _FakeInner(
+        slice_value={"id": "STALE-stac-id", "extent": {"bbox": [[9, 9, 9, 9]]}},
+        capabilities=frozenset({
+            EntityStoreCapability.READ, EntityStoreCapability.SPATIAL_FILTER,
+        }),
+    )
+    with _operator_sidecars(
+        CollectionCoreSidecarConfig(), CollectionStacSidecarConfig(),
+    ):
+        driver = CollectionPostgresqlDriver()
+        rows, _ = await driver.search_metadata("cat-a", q="foo")
+    assert rows[0]["id"] == "from-search"              # CORE wins, not STALE
+    assert rows[0]["extent"] == {"bbox": [[9, 9, 9, 9]]}
+
+
+async def test_search_hydration_degrades_when_hydrator_fails(caplog):
+    """A hydrator's ``get_metadata`` raising must not blank the CORE result —
+    the slice is skipped with a warning and the search rows still return.
+    """
+    failing_stac = _FakeInner(
+        capabilities=frozenset({
+            EntityStoreCapability.READ, EntityStoreCapability.SPATIAL_FILTER,
+        }),
+    )
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("stac slice down")
+
+    failing_stac.get_metadata = _boom  # type: ignore[assignment]
+    _FakeStacCls._instance = failing_stac
+    with _operator_sidecars(
+        CollectionCoreSidecarConfig(), CollectionStacSidecarConfig(),
+    ):
+        driver = CollectionPostgresqlDriver()
+        with caplog.at_level("WARNING"):
+            rows, total = await driver.search_metadata("cat-a", q="foo")
+    assert rows == [{"id": "from-search"}]             # CORE result survives
+    assert total == 1
+    assert any("hydrate" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Wrapper config — sidecar discriminated union round-trip
 # ---------------------------------------------------------------------------
 

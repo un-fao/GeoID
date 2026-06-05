@@ -585,27 +585,74 @@ class CollectionPostgresqlDriver(TypedDriver[CollectionPostgresqlDriverConfig]):
         context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Delegate to the first SEARCH-capable inner driver.
+        """Search via the first SEARCH-capable inner, then hydrate each hit
+        with the remaining (non-SEARCH) sidecar slices.
 
-        Today only the CORE inner declares ``SEARCH`` — the STAC inner
-        contributes ``SPATIAL_FILTER`` only.  When/if multiple inners
-        declare ``SEARCH``, this delegation strategy will need to be
-        revisited (union? rank-then-merge?); for now first-wins matches
-        the existing two-driver router behaviour.
+        Today only the CORE inner declares ``SEARCH``; the STAC inner
+        contributes ``SPATIAL_FILTER`` only.  CORE owns its column slice
+        (id / title / description / keywords / license / extra_metadata) —
+        so a bare delegation returns CORE-only rows.  That silently drops
+        every STAC field (extent / providers / summaries / links / assets /
+        item_assets) from a PG-routed collection listing — e.g. the
+        ``private_catalog`` preset, whose collection SEARCH is PG-first —
+        even though single-collection GET (which goes through the
+        :meth:`get_metadata` fan-in merge) still returns them.
+
+        To keep the composition driver authoritative, each search hit is
+        hydrated with the other inners' slices via their ``get_metadata``,
+        mirroring the merge in :meth:`get_metadata`.  CORE search values win
+        on key overlap (preserving ``id`` and result ordering); the STAC
+        columns are disjoint and merge cleanly.  Hydration is skipped
+        entirely when no non-SEARCH inner is configured (the common
+        core-only catalog), so it costs nothing until a ``StacStorageConfig``
+        opts the catalog into the collection STAC tier.
+
+        When/if multiple inners declare ``SEARCH``, the first-wins selection
+        of the search executor will need revisiting (union? rank-then-merge?).
         """
         inners = await self._resolve_sidecars_for_catalog(
             catalog_id, db_resource=db_resource,
         )
+        search_inner: Optional[CollectionStore] = None
         for inner in inners:
-            inner_caps = getattr(inner, "capabilities", frozenset())
-            if EntityStoreCapability.SEARCH in inner_caps:
-                return await inner.search_metadata(
-                    catalog_id,
-                    q=q, bbox=bbox, datetime_range=datetime_range,
-                    filter_cql=filter_cql, limit=limit, offset=offset,
-                    context=context, db_resource=db_resource,
-                )
-        return [], 0
+            if EntityStoreCapability.SEARCH in getattr(
+                inner, "capabilities", frozenset()
+            ):
+                search_inner = inner
+                break
+        if search_inner is None:
+            return [], 0
+
+        rows, total = await search_inner.search_metadata(
+            catalog_id,
+            q=q, bbox=bbox, datetime_range=datetime_range,
+            filter_cql=filter_cql, limit=limit, offset=offset,
+            context=context, db_resource=db_resource,
+        )
+
+        hydrators = [d for d in inners if d is not search_inner]
+        if hydrators and rows:
+            for row in rows:
+                cid = row.get("id")
+                if cid is None:
+                    continue
+                for hydrator in hydrators:
+                    try:
+                        slice_ = await hydrator.get_metadata(
+                            catalog_id, cid,
+                            context=context, db_resource=db_resource,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "CollectionPostgresqlDriver: search hydrate via "
+                            "%s failed for %s/%s: %s",
+                            type(hydrator).__name__, catalog_id, cid, exc,
+                        )
+                        continue
+                    if slice_:
+                        for key, value in slice_.items():
+                            row.setdefault(key, value)
+        return rows, total
 
     async def get_driver_config(
         self,
