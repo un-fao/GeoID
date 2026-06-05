@@ -456,6 +456,31 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         """
         return collection_id
 
+    async def index_available(self, catalog_id: str) -> bool:
+        """Whether this driver's backing items index exists for ``catalog_id``.
+
+        Navigation honours the routing config's ordered driver list. When this
+        ES driver is the resolved read/search primary but its per-tenant index
+        has not been created (a PG-only catalog, or indexing has not yet run),
+        it cannot serve. Callers treat ``False`` as "skip to the next
+        configured driver" — the PG read fallback — instead of returning an
+        empty ES result that hides PG-resident rows (the #914 silent-empty
+        consequence). Falling back to PG is always safe for items because PG is
+        the WRITE primary / system of record. Fails closed to ``False`` so a
+        missing client or a lookup error also degrades to the next driver.
+        """
+        from dynastore.modules.elasticsearch.client import get_client
+
+        es = get_client()
+        if es is None:
+            return False
+        try:
+            return bool(
+                await es.indices.exists(index=self._items_index_name(catalog_id))
+            )
+        except Exception:  # noqa: BLE001 — degrade to the next configured driver
+            return False
+
     # ------------------------------------------------------------------
     # CollectionItemsStore Protocol — data-side ops
     # ------------------------------------------------------------------

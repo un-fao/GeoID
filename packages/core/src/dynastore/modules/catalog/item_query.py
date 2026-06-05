@@ -152,6 +152,18 @@ async def _try_driver_dispatch(
     if is_query_fallback_driver(resolved):
         return None
 
+    # Routing-honouring fallback: ``resolved`` is the routing config's
+    # read/search primary, but if it is an ES items driver whose per-tenant
+    # index does not exist yet (PG-only catalog, or indexing has not run), it
+    # cannot serve. Return None so the next configured driver — the PG read
+    # path / system of record — handles the query, instead of returning an
+    # empty stream that hides PG-resident rows (#914 silent-empty).
+    if getattr(resolved, "is_es_items_driver", False):
+        _es_driver: Any = resolved
+        _index_check = getattr(_es_driver, "index_available", None)
+        if _index_check is not None and not await _index_check(catalog_id):
+            return None
+
     effective_limit = (request.limit if request and request.limit else limit) or limit
     effective_offset = (request.offset if request and request.offset else offset) or offset
 
