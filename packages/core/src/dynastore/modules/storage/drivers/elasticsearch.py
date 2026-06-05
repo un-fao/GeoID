@@ -1063,6 +1063,12 @@ class ItemsElasticsearchDriver(
                 # Fallback: feature-derived canonical doc (no stats/system).
                 # Preserves identity + user properties + geometry; the canonical
                 # shape is maintained (stats/system sections are empty/absent).
+                #
+                # For ES-only STAC collections (stac_storage=ES, no PG sidecar),
+                # this is the primary write path.  Per-item STAC content
+                # (assets, stac_extensions) lives only in the inbound feature doc
+                # and must be threaded through to the ES _source so
+                # unproject_item_from_es can surface them on read.
                 raw_props = stac_doc.get("properties") or {}
                 from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _SFK
                 _sys_keys = frozenset(_SFK)
@@ -1074,6 +1080,19 @@ class ItemsElasticsearchDriver(
                     fallback_row["external_id"] = str(external_id)
                 if asset_id is not None:
                     fallback_row["asset_id"] = str(asset_id)
+
+                # Collect per-item STAC reserved members present in the
+                # serialized feature.  ``assets`` and ``stac_extensions`` are
+                # already in ``_RESERVED_MEMBER_KEYS`` so unproject_item_from_es
+                # passes them through verbatim — they just need to be stored.
+                _stac_reserved: Dict[str, Any] = {}
+                _raw_assets = stac_doc.get("assets")
+                if _raw_assets is not None:
+                    _stac_reserved["assets"] = _raw_assets
+                _raw_exts = stac_doc.get("stac_extensions")
+                if _raw_exts is not None:
+                    _stac_reserved["stac_extensions"] = _raw_exts
+
                 es_doc = build_canonical_index_doc(
                     fallback_row,
                     resolved_sidecars=[],
@@ -1084,6 +1103,7 @@ class ItemsElasticsearchDriver(
                     bbox=list(bbox_val) if bbox_val is not None else None,
                     user_properties=user_props or None,
                     access=None,
+                    stac_reserved_members=_stac_reserved or None,
                 )
                 doc_id = geoid_for_id or base_id
                 logger.debug(
