@@ -866,6 +866,60 @@ class ItemQueryMixin:
             )
             return None
 
+    async def _capture_prior_bboxes_for_update(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        items: List[Any],
+    ) -> List[Tuple[float, float, float, float]]:
+        """Read existing items' extents before an upsert (#1297 Phase 2b).
+
+        Phase 2b tile-cache invalidation for the geometry-MOVE case: when a
+        feature's geometry moves, Phase 1 already invalidates the NEW bbox but
+        the OLD tiles stay stale. This reads the current bbox for each incoming
+        item (via the normal read path — ``feature_bbox`` / materialized
+        envelope, never raw geometry) BEFORE the upsert overwrites the row.
+
+        Gated on ``is_tile_cache_active`` so non-tile deployments pay nothing.
+        Degrade-safe at every level — a capture failure (item not found, read
+        error, cache inactive) silently yields no bbox for that item and must
+        never block or fail the upsert. Items that don't yet exist (CREATE, not
+        UPDATE) return ``None`` from ``get_item`` and contribute nothing.
+        """
+        try:
+            from dynastore.modules.tiles.tile_cache_sync import (
+                feature_bbox,
+                is_tile_cache_active,
+            )
+
+            if not await is_tile_cache_active(catalog_id, collection_id):
+                return []
+        except Exception:  # noqa: BLE001 — never break the upsert
+            return []
+
+        prior_bboxes: List[Tuple[float, float, float, float]] = []
+        for item in items:
+            item_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+            if item_id is None:
+                continue
+            try:
+                from dynastore.models.protocols.access_filter import AccessFilter
+                existing = await self.get_item(
+                    catalog_id, collection_id, str(item_id),
+                    access_filter=AccessFilter.allow_everything(),
+                )
+                if existing is None:
+                    continue
+                bb = feature_bbox(existing)
+                if bb is not None:
+                    prior_bboxes.append(bb)
+            except Exception as exc:  # noqa: BLE001 — never break the upsert
+                logger.debug(
+                    "tile_cache: prior-bbox capture skipped for %s/%s/%s: %s",
+                    catalog_id, collection_id, item_id, exc,
+                )
+        return prior_bboxes
+
     async def delete_item(
         self,
         catalog_id: str,

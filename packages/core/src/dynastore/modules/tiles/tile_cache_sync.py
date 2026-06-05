@@ -107,30 +107,29 @@ TileCoord = Tuple[str, int, int, int]
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 prior-bbox capture (#1297).
+# Phase 2 prior-bbox capture (#1297) — COMPLETE.
 #
-# To invalidate the tiles a feature *used to* occupy the listener needs the
-# feature's PRIOR bbox, which the Phase-1 write/event payload didn't carry.
+# Both halves are now wired:
 #
-# DELETE — WIRED. ``ItemQueryMixin.delete_item`` now reads the item's bbox
-# (via the existing read path → ``feature_bbox``, the materialized envelope,
-# never raw geometry) BEFORE the soft-delete and, when the tile cache is
-# active, enqueues an invalidate task with that extent as ``prior_bboxes``.
+# DELETE (Phase 2 DELETE half). ``ItemQueryMixin.delete_item`` reads the
+# item's bbox (via the existing read path → ``feature_bbox``, the materialized
+# envelope, never raw geometry) BEFORE the soft-delete and enqueues an
+# invalidate task with that extent as ``prior_bboxes``.
 #
-# GEOMETRY-MOVE on UPDATE — still pending. When a feature's geometry moves so
-# its old footprint no longer overlaps the new one, Phase 1 already invalidates
-# the NEW bbox but the OLD tiles stay stale. Capturing the prior bbox on the
-# create/update path needs a pre-read of the existing rows' envelope before the
-# upsert (inside the write path, from the canonical bbox column — never the raw
-# geometry) and passing those extents as ``prior_bboxes`` to
-# ``_dispatch_tile_cache_invalidation``. The union point is already present
-# below and ``enqueue_tile_invalidation_task`` already accepts ``prior_bboxes``;
-# only the upsert-path prior-bbox source is missing.
+# GEOMETRY-MOVE on UPDATE (Phase 2b). ``ItemQueryMixin._capture_prior_bboxes_for_update``
+# reads the current bbox for each incoming item BEFORE the upsert. Both
+# upsert call sites in ``ItemService.upsert`` (Branch A non-PG and Branch B
+# PG) invoke it and pass the result as ``prior_bboxes`` to
+# ``_dispatch_tile_cache_invalidation``. Items that don't yet exist (CREATE)
+# return ``None`` from ``get_item`` and contribute nothing. The union point in
+# ``enqueue_tile_invalidation_task`` merges new + prior bboxes so the old
+# footprint's tiles are also dropped. Full live verification (geometry moves
+# on a tile-serving stack) remains review-env-gated.
 # ---------------------------------------------------------------------------
 PHASE2_PRIOR_BBOX_EXTENSION_POINT = (
-    "DELETE prior-bbox is wired via delete_item. Remaining: capture the "
-    "pre-write bbox on the create/update path and pass it as prior_bboxes to "
-    "_dispatch_tile_cache_invalidation for the geometry-MOVE case."
+    "Phase 2 complete: DELETE half wired via delete_item; UPDATE/geometry-MOVE "
+    "wired via _capture_prior_bboxes_for_update on both upsert call sites. "
+    "Live geometry-move verification is review-env-gated."
 )
 
 
