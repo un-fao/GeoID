@@ -857,6 +857,15 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         from dynastore.models.protocols.storage_driver import Capability
         if primary is not None and Capability.QUERY_FALLBACK_SOURCE not in primary.driver.capabilities:
+            # Phase 2b tile-cache (#1297): capture each item's current extent
+            # BEFORE the upsert so the invalidate task can also drop the tiles
+            # a moved geometry USED to occupy. Gated + degrade-safe — never
+            # blocks the write; returns [] when the cache is inactive or the
+            # item doesn't yet exist (CREATE path contributes nothing).
+            prior_bboxes_a = await self._capture_prior_bboxes_for_update(
+                catalog_id, collection_id, items_list,
+            )
+
             chunk_size = getattr(primary.driver, "preferred_chunk_size", 0)
             if chunk_size > 0 and len(items_list) > chunk_size:
                 results = []
@@ -895,14 +904,16 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     processing_context=processing_context,
                 )
 
-            # Write-reactive tile-cache invalidation (#1292): mark stale the
-            # tiles the new feature bboxes touch. No-op + degrade-safe when no
-            # tile reader / cache store is present; never blocks the write.
+            # Write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b):
+            # mark stale the tiles the new feature bboxes touch, and also the
+            # tiles the old footprint used to occupy (prior_bboxes_a — the
+            # geometry-MOVE case). No-op + degrade-safe; never blocks the write.
             if results:
                 await self._dispatch_tile_cache_invalidation(
                     catalog_id, collection_id, results,
                     db_resource=db_resource or self.engine,
                     processing_context=processing_context,
+                    prior_bboxes=prior_bboxes_a or None,
                 )
 
             # Emit events for non-indexer subscribers (audit, telemetry).
@@ -955,6 +966,16 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         #      accumulate AccessShare locks on every iteration.
         #   5. Read-back: one bulk SELECT WHERE geoid = ANY(:geoids) on a
         #      separate read conn, after writes have committed.
+
+        # Phase 2b tile-cache (#1297): capture each item's current extent
+        # BEFORE Phase 4 (the write) so the invalidate task can also drop the
+        # tiles a moved geometry USED to occupy. Gated + degrade-safe — never
+        # blocks the write; returns [] when the cache is inactive or the item
+        # doesn't yet exist (CREATE path contributes nothing).
+        prior_bboxes_b = await self._capture_prior_bboxes_for_update(
+            catalog_id, collection_id, items_list,
+        )
+
         engine = db_resource or self.engine
         from dynastore.tools.identifiers import generate_geoid
 
@@ -1394,14 +1415,15 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 processing_context=processing_context,
             )
 
-        # ── Post-commit: write-reactive tile-cache invalidation (#1292) ──
-        # Mark stale the tiles the new feature bboxes touch (coalesced per
-        # batch, capped). No-op + degrade-safe when no tile reader / cache
-        # store is present; never blocks the write.
+        # ── Post-commit: write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b) ──
+        # Mark stale the tiles the new feature bboxes touch, and also the tiles
+        # the old footprint used to occupy (prior_bboxes_b — the geometry-MOVE
+        # case). No-op + degrade-safe; never blocks the write.
         if results:
             await self._dispatch_tile_cache_invalidation(
                 catalog_id, collection_id, results, db_resource=engine,
                 processing_context=processing_context,
+                prior_bboxes=prior_bboxes_b or None,
             )
 
         # ── Post-commit: emit events for non-indexer subscribers ──────
