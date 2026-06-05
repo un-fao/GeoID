@@ -350,7 +350,7 @@ async def test_stac_collection_items_default_uses_es_fastpath(monkeypatch):
         offset=0,
         filter=None,
         language="en",
-        # geometry param absent — default simplified path
+        request_hints=frozenset(),  # no hints — default simplified path
     )
 
     assert called_dispatch["yes"] is True, "Default path must call the ES fast-path dispatch"
@@ -358,7 +358,7 @@ async def test_stac_collection_items_default_uses_es_fastpath(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stac_collection_items_geometry_exact_skips_es_fastpath(monkeypatch):
-    """geometry=exact must bypass the ES fast-path (search_dispatch=None always)."""
+    """?hints=geometry_exact must bypass the ES fast-path (search_dispatch=None always)."""
     import dynastore.extensions.stac.stac_service as stac_mod
 
     called_dispatch = {"yes": False}
@@ -399,11 +399,11 @@ async def test_stac_collection_items_geometry_exact_skips_es_fastpath(monkeypatc
         offset=0,
         filter=None,
         language="en",
-        geometry="exact",
+        request_hints=EXACT_READ_HINTS,
     )
 
     assert called_dispatch["yes"] is False, (
-        "geometry=exact must skip maybe_dispatch_items_to_search_driver"
+        "?hints=geometry_exact must skip maybe_dispatch_items_to_search_driver"
     )
     # search_dispatch stays None → create_item_collection falls through to PG path.
     assert seen_collection.get("search_dispatch") is None
@@ -448,7 +448,7 @@ async def test_records_default_uses_es_fastpath(monkeypatch):
         filter=None,
         sortby=None,
         q=None,
-        # geometry absent — default simplified path
+        request_hints=frozenset(),  # no hints — default simplified path
     )
 
     assert called["dispatch"] is True, "Default path must call the ES fast-path"
@@ -456,7 +456,7 @@ async def test_records_default_uses_es_fastpath(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_records_geometry_exact_skips_es_fastpath_and_passes_hints(monkeypatch):
-    """geometry=exact skips the ES fast-path and passes EXACT_READ_HINTS to stream_items."""
+    """?hints=geometry_exact skips the ES fast-path and threads the hint to stream_items."""
 
     called = {"dispatch": False}
 
@@ -495,12 +495,12 @@ async def test_records_geometry_exact_skips_es_fastpath_and_passes_hints(monkeyp
         filter=None,
         sortby=None,
         q=None,
-        geometry="exact",
+        request_hints=EXACT_READ_HINTS,
     )
 
-    assert called["dispatch"] is False, "geometry=exact must skip the ES fast-path"
+    assert called["dispatch"] is False, "?hints=geometry_exact must skip the ES fast-path"
     assert received.get("hints") == EXACT_READ_HINTS, (
-        f"geometry=exact must pass EXACT_READ_HINTS; got {received.get('hints')}"
+        f"?hints=geometry_exact must thread the geometry_exact hint; got {received.get('hints')}"
     )
 
 
@@ -539,6 +539,7 @@ async def test_records_geometry_absent_uses_empty_hints(monkeypatch):
         filter=None,
         sortby=None,
         q=None,
+        request_hints=frozenset(),
     )
 
     assert received.get("hints") == frozenset(), (
@@ -641,11 +642,10 @@ def test_geometry_fidelity_call_sites_use_hint_constant_not_driver():
         pathlib.Path(dwh_pkg_spec.origin).parent / "dwh.py"
     ).read_text()
 
-    # Confirm EXACT_READ_HINTS appears at the right call sites.
+    # Exact-by-default protocols pass EXACT_READ_HINTS unconditionally.
     assert "EXACT_READ_HINTS" in inspect.getsource(export_mod), "export_features"
     assert "EXACT_READ_HINTS" in inspect.getsource(feat_mod), "OGC Features"
     assert "EXACT_READ_HINTS" in inspect.getsource(wfs_mod), "WFS"
-    assert "EXACT_READ_HINTS" in inspect.getsource(rec_mod), "Records"
     assert "EXACT_READ_HINTS" in dwh_src, "DWH tiled join"
 
     # query.py dispatch_or_stream_items must forward hints.
@@ -653,14 +653,19 @@ def test_geometry_fidelity_call_sites_use_hint_constant_not_driver():
         "dispatch_or_stream_items must forward hints to stream_items"
     )
 
-    # STAC may reference EXACT_READ_HINTS, but ONLY guarded by the geometry=exact
-    # opt-in (never unconditionally). Confirm the reference is gated by wants_exact;
-    # default-vs-opt-in behaviour itself is pinned by the dedicated STAC hint tests.
-    stac_src = inspect.getsource(stac_mod)
-    if "EXACT_READ_HINTS" in stac_src:
-        assert "wants_exact" in stac_src, (
-            "STAC must apply EXACT_READ_HINTS only under the geometry=exact opt-in "
-            "(gated by wants_exact), never unconditionally"
+    # Opt-in protocols (STAC, Records) default to the simplified search backend
+    # and request the exact tier only under the ``?hints=geometry_exact`` array
+    # parameter — they thread the parsed ``request_hints`` and gate the ES
+    # fast-path skip on the geometry_exact hint, never EXACT_READ_HINTS
+    # unconditionally.
+    for mod, name in ((stac_mod, "STAC"), (rec_mod, "Records")):
+        src = inspect.getsource(mod)
+        assert "request_hints" in src, f"{name} must thread the parsed hints"
+        assert "Hint.GEOMETRY_EXACT in request_hints" in src, (
+            f"{name} must gate the exact opt-in on the geometry_exact hint"
+        )
+        assert "EXACT_READ_HINTS" not in src, (
+            f"{name} is simplified-by-default; it must not force EXACT_READ_HINTS"
         )
 
 
@@ -679,27 +684,42 @@ def _acoro(value):
 
 
 # ---------------------------------------------------------------------------
-# Regression: ``geometry`` is a reserved control param, not an attribute filter
+# Regression: ``hints`` is a reserved control param, not an attribute filter
 # ---------------------------------------------------------------------------
 
-def test_geometry_is_reserved_query_param_not_attribute_filter():
-    """``?geometry=exact`` is the geometry-precision tier hint, never a
+def test_hints_is_reserved_query_param_not_attribute_filter():
+    """``?hints=geometry_exact`` is the per-request routing-hints array, never a
     ``?{property}={value}`` equality filter.
 
     Regression for the live 500 ``invalid geometry ... "ex" <-- parse error``:
-    the STAC ``/items`` route sweeps every non-reserved query param into a CQL
-    equality filter, so ``geometry`` MUST be in OGC_RESERVED_QUERY_PARAMS or the
-    literal value ``exact`` reaches PostGIS as WKT and the query 500s.
+    the OGC ``/items`` routes (STAC + Features) sweep every non-reserved query
+    param into a CQL equality filter, so the control param MUST be in
+    OGC_RESERVED_QUERY_PARAMS or its value reaches PostGIS as WKT and 500s.
     """
     from dynastore.extensions.tools.query import OGC_RESERVED_QUERY_PARAMS
 
-    assert "geometry" in OGC_RESERVED_QUERY_PARAMS
+    assert "hints" in OGC_RESERVED_QUERY_PARAMS
 
-    # And the STAC sweep expression itself must exclude it.
+    # And the OGC sweep expression itself must exclude it.
     extra = {
         k: v
-        for k, v in {"geometry": "exact", "name": "ital"}.items()
+        for k, v in {"hints": "geometry_exact", "name": "ital"}.items()
         if k not in OGC_RESERVED_QUERY_PARAMS and v != ""
     }
-    assert "geometry" not in extra
+    assert "hints" not in extra
     assert extra == {"name": "ital"}
+
+
+def test_hints_param_parses_comma_array_and_repeats():
+    """``?hints=`` is an array: comma-joined (``a,b,c``) or repeated; tokens map
+    to the Hint vocabulary, unknowns drop, empty → frozenset()."""
+    from dynastore.modules.storage.hints import parse_request_hints, Hint
+
+    assert parse_request_hints(["geometry_exact,tiles"]) == frozenset(
+        {Hint.GEOMETRY_EXACT, Hint.TILES}
+    )
+    assert parse_request_hints(["geometry_exact", "tiles"]) == frozenset(
+        {Hint.GEOMETRY_EXACT, Hint.TILES}
+    )
+    assert parse_request_hints(["nope"]) == frozenset()
+    assert parse_request_hints(None) == frozenset()

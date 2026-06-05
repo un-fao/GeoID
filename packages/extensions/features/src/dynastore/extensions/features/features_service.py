@@ -18,7 +18,7 @@
 
 # dynastore/extensions/features/features_service.py
 
-from typing import Optional, List, Any, Union, cast
+from typing import Optional, List, Any, FrozenSet, Union, cast
 
 import logging
 
@@ -69,8 +69,9 @@ from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 import re
 from dynastore.extensions.tools.formatters import OutputFormatEnum
-from dynastore.extensions.tools.query import (
+from dynastore.extensions.tools.query import (  # noqa: E402
     parse_ogc_query_request,
+    parse_hints_param,
     stream_ogc_features,
     resolve_items_read_policy,
     validate_filter_lang,
@@ -827,6 +828,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             alias="f",
             description="The output format for the features.",
         ),
+        request_hints: FrozenSet = Depends(parse_hints_param),
     ) -> Response:
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()

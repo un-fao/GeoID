@@ -20,7 +20,7 @@
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, FrozenSet
 
 import pystac
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Query, Request, status
@@ -35,6 +35,7 @@ from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.web.decorators import expose_static
 from dynastore.extensions.tools.db import get_async_engine
+from dynastore.extensions.tools.query import parse_hints_param
 from dynastore.extensions.tools.exception_handlers import handle_or_raise
 from dynastore.modules.db_config.query_executor import (
     managed_transaction,
@@ -787,16 +788,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         offset: int = Query(0, ge=0),
         filter: Optional[str] = Query(None, description="CQL2-Text filter expression"),
         language: str = Depends(get_language),
-        geometry: Optional[str] = Query(
-            None,
-            description=(
-                "Geometry precision tier. ``exact`` requests full-precision "
-                "geometry from the exact-capable driver (today PostgreSQL); the "
-                "default (omitted or any other value) returns simplified geometry "
-                "from the search backend (Elasticsearch). Use ``exact`` when "
-                "downstream processing requires non-generalised coordinates."
-            ),
-        ),
+        request_hints: FrozenSet = Depends(parse_hints_param),
     ):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
@@ -813,6 +805,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             combine_cql_filters,
             maybe_dispatch_items_to_search_driver,
         )
+        from dynastore.modules.storage.hints import Hint
 
         extra_filters = {
             key: value
@@ -857,12 +850,13 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # through the access-aware ``search_items`` path. Closing this gap
             # needs a PG access-filter seam or CQL2→ES translation on the
             # envelope driver — tracked under #1285/#1311.
-            # Opt-in exact-geometry path: when the caller passes ``geometry=exact``
-            # skip the simplified-geometry ES fast-path so create_item_collection
-            # falls through to get_stac_items_paginated, which reads directly from
-            # the exact-capable driver (PostgreSQL).  The default (omitted or any
-            # other value) keeps the ES fast-path byte-for-byte unchanged.
-            wants_exact = geometry == "exact"
+            # Opt-in exact-geometry path: when the caller requests the
+            # ``geometry_exact`` hint (``?hints=geometry_exact``) skip the
+            # simplified-geometry ES fast-path so create_item_collection falls
+            # through to get_stac_items_paginated, which reads directly from the
+            # exact-capable driver (PostgreSQL).  With no such hint the ES
+            # fast-path stays byte-for-byte unchanged.
+            wants_exact = Hint.GEOMETRY_EXACT in request_hints
             search_dispatch = None
             if not cql_filter and not wants_exact:
                 search_dispatch = await maybe_dispatch_items_to_search_driver(
@@ -873,8 +867,6 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     has_complex_filter=False,
                     request=request,
                 )
-
-            from dynastore.modules.storage.hints import EXACT_READ_HINTS
 
             try:
                 result = await stac_generator.create_item_collection(
@@ -890,7 +882,7 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
                     lang=language,
                     cql_filter=cql_filter,
                     search_dispatch=search_dispatch,
-                    hints=EXACT_READ_HINTS if wants_exact else frozenset(),
+                    hints=request_hints,
                 )
             except ValueError as e:
                 # Unknown property / malformed CQL → 400
