@@ -5,8 +5,9 @@ Covers:
 - cloud preset: gdal consumers = [catalog, maps]; tiles_* = [maps].
 - cloud preset: requeue_dead_letter_tasks stays background.
 - cloud preset: system tasks get background on their affinity tier.
-- onprem preset: all tasks background; processes on [worker].
-- onprem preset: lightweight processes get BACKGROUND, others get HEAVY.
+- onprem preset: every process in-process (background) on its affinity tier
+  (gdal -> [catalog, maps], tiles_* -> [maps], rest -> [catalog]); never
+  gcp_cloud_run, never the bare [worker] tier.
 """
 from __future__ import annotations
 
@@ -106,20 +107,41 @@ def test_onprem_system_task_gets_background():
     assert t.consumers == ["catalog"]
 
 
-def test_onprem_process_goes_to_worker():
+def test_onprem_process_runs_in_process_on_affinity_tier():
+    # A default process (not in CLOUD_PROCESS_CONSUMERS) lands on catalog,
+    # in-process — never gcp_cloud_run, never the bare "worker" tier.
     _, procs = build_routing_matrix([_proc("ingestion")], preset="onprem")
     t = procs["ingestion"][0]
     assert t.runner == "background"
-    assert t.consumers == ["worker"]
-    assert ExecHint.HEAVY in t.hints
+    assert t.consumers == ["catalog"]
+    assert ExecHint.BACKGROUND in t.hints
+    assert ExecHint.HEAVY not in t.hints
 
 
-def test_onprem_lightweight_process_gets_background_hint():
-    for key in LIGHTWEIGHT_PROCESSES:
+def test_onprem_gdal_routes_to_catalog_and_maps_in_process():
+    # gdal's affinity (CLOUD_PROCESS_CONSUMERS) is [catalog, maps]; on-prem keeps
+    # that consumer topology but runs it in-process so maps can claim gdalinfo.
+    _, procs = build_routing_matrix([_proc("gdal")], preset="onprem")
+    t = procs["gdal"][0]
+    assert t.runner == "background"
+    assert t.consumers == ["catalog", "maps"]
+    assert ExecHint.BACKGROUND in t.hints
+
+
+def test_onprem_tiles_preseed_routes_to_maps_in_process():
+    _, procs = build_routing_matrix([_proc("tiles_preseed")], preset="onprem")
+    t = procs["tiles_preseed"][0]
+    assert t.runner == "background"
+    assert t.consumers == ["maps"]
+
+
+def test_onprem_never_offloads_to_cloud_run():
+    for key in ("ingestion", "gdal", "tiles_preseed", "dwh_join", *LIGHTWEIGHT_PROCESSES):
         _, procs = build_routing_matrix([_proc(key)], preset="onprem")
         t = procs[key][0]
-        assert ExecHint.BACKGROUND in t.hints
-        assert ExecHint.HEAVY not in t.hints
+        assert t.runner == "background"
+        assert ExecHint.OFFLOAD not in t.hints
+        assert t.consumers != ["worker"]
 
 
 # ---------------------------------------------------------------------------

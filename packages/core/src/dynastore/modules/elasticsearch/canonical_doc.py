@@ -160,6 +160,7 @@ def build_canonical_index_doc(
     bbox: Optional[list] = None,
     user_properties: Optional[Dict[str, Any]] = None,
     access: Optional[Dict[str, Any]] = None,
+    stac_reserved_members: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the policy-independent canonical ES _source.
 
@@ -180,6 +181,13 @@ def build_canonical_index_doc(
 
     ``id`` is ALWAYS ``row["geoid"]``, regardless of any policy.
     Reserved STAC/GeoJSON members never leak into properties.
+
+    ``stac_reserved_members`` carries per-item STAC content that lives only in
+    the inbound feature and has no PG sidecar (ES-only storage).  Typical keys:
+    ``assets``, ``stac_extensions``, ``extra_fields``.  These are merged into
+    ``reserved_members`` so they survive the canonical write and are surfaced
+    verbatim by ``unproject_item_from_es`` on read (``assets`` /
+    ``stac_extensions`` are already in ``_RESERVED_MEMBER_KEYS``).
 
     Implemented as a thin item-level adapter over
     :func:`build_canonical_envelope`: it maps the PG row + sidecars onto the
@@ -259,11 +267,17 @@ def build_canonical_index_doc(
         if val is not None:
             metadata[key] = val
 
+    reserved_members: Dict[str, Any] = {"geometry": geometry, "bbox": bbox}
+    if stac_reserved_members:
+        for k, v in stac_reserved_members.items():
+            if v is not None:
+                reserved_members[k] = v
+
     return build_canonical_envelope(
         identity=identity,
         properties=user_properties or {},
         known_fields=known_fields,
-        reserved_members={"geometry": geometry, "bbox": bbox},
+        reserved_members=reserved_members,
         metadata=metadata or None,
         system=system or None,
         stats=stats or None,

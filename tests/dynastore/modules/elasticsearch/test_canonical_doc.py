@@ -465,3 +465,132 @@ def test_validity_string_bounds_pass_through_without_isoformat():
     """Range bounds that are already strings (no isoformat) pass through as-is."""
     r = _Range("2020-01-01T00:00:00+00:00", None)
     assert _validity_to_es_range(r) == {"gte": "2020-01-01T00:00:00+00:00"}
+
+
+# ---------------------------------------------------------------------------
+# ES-only STAC: stac_reserved_members round-trip (refs #1757)
+# ---------------------------------------------------------------------------
+# For stac_level=items, stac_storage=ES (no PG sidecar), per-item STAC content
+# (assets, stac_extensions) lives only in the inbound feature.  The write
+# path must thread these into the canonical _source so unproject_item_from_es
+# surfaces them verbatim on read.
+
+
+def test_stac_reserved_members_assets_stored_and_round_trips():
+    """assets from stac_reserved_members survive the canonical doc and unproject."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    assets = {
+        "data": {
+            "href": "https://example.com/data.tif",
+            "type": "image/tiff; application=geotiff",
+            "roles": ["data"],
+        }
+    }
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        geometry={"type": "Point", "coordinates": [12.0, 41.0]},
+        stac_reserved_members={"assets": assets},
+    )
+
+    # assets must be stored at the top level of the ES _source
+    assert doc["assets"] == assets
+
+    # unproject restores the wire shape with assets intact
+    wire = unproject_item_from_es(doc)
+    assert wire["assets"] == assets
+
+    # Feature.model_validate carries assets through (via extra="allow")
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "assets", None) == assets
+
+
+def test_stac_reserved_members_stac_extensions_stored_and_round_trips():
+    """stac_extensions from stac_reserved_members survive canonical doc and unproject."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    exts = [
+        "https://stac-extensions.github.io/eo/v1.0.0/schema.json",
+        "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
+    ]
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={"stac_extensions": exts},
+    )
+
+    assert doc["stac_extensions"] == exts
+
+    wire = unproject_item_from_es(doc)
+    assert wire["stac_extensions"] == exts
+
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "stac_extensions", None) == exts
+
+
+def test_stac_reserved_members_assets_and_extensions_together():
+    """Full ES-only STAC round-trip: assets + stac_extensions survive write→read."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    assets = {"thumbnail": {"href": "https://example.com/thumb.png", "roles": ["thumbnail"]}}
+    exts = ["https://stac-extensions.github.io/eo/v1.0.0/schema.json"]
+
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={"cloud_cover": {}},
+        catalog_id="c", collection_id="k",
+        geometry={"type": "Point", "coordinates": [0.0, 0.0]},
+        bbox=[0.0, 0.0, 0.0, 0.0],
+        user_properties={"cloud_cover": 12, "datetime": "2024-01-01T00:00:00Z"},
+        stac_reserved_members={"assets": assets, "stac_extensions": exts},
+    )
+
+    # Both stored at top level of _source
+    assert doc["assets"] == assets
+    assert doc["stac_extensions"] == exts
+    # user properties are not corrupted
+    assert doc["properties"]["cloud_cover"] == 12
+
+    # Round-trip: unproject → Feature
+    wire = unproject_item_from_es(doc)
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "assets", None) == assets
+    assert getattr(feature, "stac_extensions", None) == exts
+    # user properties survive
+    assert feature.properties.get("cloud_cover") == 12
+
+
+def test_stac_reserved_members_none_omits_sections():
+    """When stac_reserved_members is None, no extra keys appear in the doc."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members=None,
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc
+
+
+def test_stac_reserved_members_empty_omits_sections():
+    """Empty stac_reserved_members dict behaves like None."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={},
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc
+
+
+def test_stac_reserved_members_none_values_skipped():
+    """Keys with None values inside stac_reserved_members are not written."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={"assets": None, "stac_extensions": None},
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc

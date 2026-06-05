@@ -188,7 +188,20 @@ class TaskRoutingConfig(PluginConfig):
                 for key, cfg in _DYNASTORE_TASKS.items()
             ]
             if inventory:
-                tasks_map, processes_map = build_routing_matrix(inventory)
+                # Default to the cloud profile (production / dynastore CI build
+                # is unaffected). A deployment may opt into a different profile
+                # without storing an explicit TaskRoutingConfig by setting
+                # ``DYNASTORE_TASK_ROUTING_PRESET`` (e.g. ``onprem`` for a
+                # worker-less local/on-prem box). Unknown values fall back to
+                # ``cloud`` so a typo can never silently mis-route.
+                import os
+
+                preset = os.environ.get(
+                    "DYNASTORE_TASK_ROUTING_PRESET", "cloud"
+                ).strip().lower()
+                if preset not in ("cloud", "onprem", "review"):
+                    preset = "cloud"
+                tasks_map, processes_map = build_routing_matrix(inventory, preset=preset)
                 object.__setattr__(self, "tasks", tasks_map)
                 object.__setattr__(self, "processes", processes_map)
         except Exception:
