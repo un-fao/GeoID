@@ -13,6 +13,8 @@ Tests cover:
   - access pass-through and omission when falsy
   - no id/geoid leak into properties
 """
+from datetime import datetime, timezone
+
 from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
 
 
@@ -20,12 +22,24 @@ from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _Range:
+    """Minimal tstzrange Range-like stub mirroring the asyncpg.Range duck-type
+    (``lower`` / ``upper`` bounds + ``lower_inc`` / ``upper_inc`` flags) that the
+    canonical doc builder converts into an ES ``date_range`` body."""
+
+    def __init__(self, lower, upper, *, lower_inc=True, upper_inc=False):
+        self.lower = lower
+        self.upper = upper
+        self.lower_inc = lower_inc
+        self.upper_inc = upper_inc
+
+
 def _row(**over):
     base = {
         "geoid": "019e6318-d99e-7da2-bdd9-1223a0d9cd35",
         "external_id": "305",
         "asset_id": "ALBL1_01",
-        "validity": "[2024-01-01,)",
+        "validity": _Range(datetime(2024, 1, 1, tzinfo=timezone.utc), None),
         "geometry_hash": "abc",
         "attributes_hash": "def",
         "transaction_time": "2026-02-26T18:09:04.131762+00:00",
@@ -246,7 +260,7 @@ def test_all_system_fields_present_on_row():
         "asset_id": "aid",
         "geometry_hash": "gh",
         "attributes_hash": "ah",
-        "validity": "[2020,)",
+        "validity": _Range(datetime(2020, 1, 1, tzinfo=timezone.utc), None),
         "transaction_time": "2026-01-01T00:00:00Z",
         "deleted_at": "2026-06-01T00:00:00Z",
     }
@@ -260,7 +274,9 @@ def test_all_system_fields_present_on_row():
     assert sys["asset_id"] == "aid"
     assert sys["geometry_hash"] == "gh"
     assert sys["attributes_hash"] == "ah"
-    assert sys["validity"] == "[2020,)"
+    # validity is converted to an ES date_range body: inclusive lower bound
+    # (tstzrange default ``[``) -> ``gte``; open upper bound -> omitted.
+    assert sys["validity"] == {"gte": "2020-01-01T00:00:00+00:00"}
     assert sys["transaction_time"] == "2026-01-01T00:00:00Z"
     assert sys["deleted_at"] == "2026-06-01T00:00:00Z"
 
@@ -372,6 +388,83 @@ def test_reserved_stac_key_in_user_properties_is_dropped():
     assert extras.get("NAME") == "in-extras"
     # top-level id is still the geoid, not the leaked value
     assert doc["id"] == "019e6318-d99e-7da2-bdd9-1223a0d9cd35"
+
+
+# ---------------------------------------------------------------------------
+# validity -> ES date_range conversion (#1828)
+# ---------------------------------------------------------------------------
+
+from dynastore.modules.elasticsearch.canonical_doc import _validity_to_es_range
+
+
+def test_validity_range_both_bounds_default_inclusivity():
+    """Default tstzrange ``[lower, upper)`` -> gte (inclusive) + lt (exclusive)."""
+    r = _Range(
+        datetime(2020, 1, 1, tzinfo=timezone.utc),
+        datetime(2021, 1, 1, tzinfo=timezone.utc),
+    )
+    assert _validity_to_es_range(r) == {
+        "gte": "2020-01-01T00:00:00+00:00",
+        "lt": "2021-01-01T00:00:00+00:00",
+    }
+
+
+def test_validity_range_open_upper_bound_omits_upper():
+    """An open upper bound (``[lower,)``) yields only the lower bound."""
+    r = _Range(datetime(2020, 1, 1, tzinfo=timezone.utc), None)
+    assert _validity_to_es_range(r) == {"gte": "2020-01-01T00:00:00+00:00"}
+
+
+def test_validity_range_open_lower_bound_omits_lower():
+    """An open lower bound (``(,upper]``) yields only the upper bound."""
+    r = _Range(None, datetime(2021, 1, 1, tzinfo=timezone.utc), lower_inc=False, upper_inc=True)
+    assert _validity_to_es_range(r) == {"lte": "2021-01-01T00:00:00+00:00"}
+
+
+def test_validity_range_exclusive_lower_inclusive_upper():
+    """Inclusivity flags map to gt/lte respectively."""
+    r = _Range(
+        datetime(2020, 1, 1, tzinfo=timezone.utc),
+        datetime(2021, 1, 1, tzinfo=timezone.utc),
+        lower_inc=False,
+        upper_inc=True,
+    )
+    assert _validity_to_es_range(r) == {
+        "gt": "2020-01-01T00:00:00+00:00",
+        "lte": "2021-01-01T00:00:00+00:00",
+    }
+
+
+def test_validity_fully_open_window_is_dropped():
+    """A range with no bounds carries no temporal info -> None (field dropped)."""
+    assert _validity_to_es_range(_Range(None, None)) is None
+
+
+def test_validity_none_is_dropped():
+    assert _validity_to_es_range(None) is None
+
+
+def test_validity_dict_passes_through_idempotently():
+    """A pre-converted range body (re-index path) is returned unchanged."""
+    body = {"gte": "2020-01-01T00:00:00+00:00", "lt": "2021-01-01T00:00:00+00:00"}
+    assert _validity_to_es_range(body) == body
+
+
+def test_validity_empty_dict_is_dropped():
+    assert _validity_to_es_range({}) is None
+
+
+def test_validity_bare_string_is_dropped_not_misread_as_range():
+    """A bare str exposes ``.lower``/``.upper`` *methods* but no ``lower_inc``;
+    it must NOT be mistaken for a range, and cannot be a valid date_range body,
+    so it is dropped."""
+    assert _validity_to_es_range("[2020-01-01,)") is None
+
+
+def test_validity_string_bounds_pass_through_without_isoformat():
+    """Range bounds that are already strings (no isoformat) pass through as-is."""
+    r = _Range("2020-01-01T00:00:00+00:00", None)
+    assert _validity_to_es_range(r) == {"gte": "2020-01-01T00:00:00+00:00"}
 
 
 # ---------------------------------------------------------------------------

@@ -159,11 +159,9 @@ def test_system_object_is_dynamic_false() -> None:
     [
         ("geometry_hash", "keyword"),
         ("attributes_hash", "keyword"),
-        # validity keeps its current es_type until #1828 Phase 2 lands the
-        # date_range mapping together with the driver-side range-object write
-        # (typing date_range while the raw tstzrange value is still written into
-        # system.validity would fail ingest).
-        ("validity", "keyword"),
+        # validity is the temporal window, typed as date_range (#1828); the
+        # driver write converts the PG tstzrange into the matching range body.
+        ("validity", "date_range"),
         ("transaction_time", "date"),
         ("deleted_at", "date"),
     ],
@@ -388,17 +386,17 @@ def test_flat_simplification_fields_still_in_common_properties() -> None:
 
 
 # ---------------------------------------------------------------------------
-# validity — date_range deferred to #1828 Phase 2 (mapping + driver write move
-# together); for now it keeps its current es_type so ingest of the raw tstzrange
-# value into system.validity does not fail.
+# validity — typed as ES date_range (#1828). The mapping and the driver-side
+# range-object write land together: the canonical doc builder converts the PG
+# tstzrange Range object into the matching {gte|gt, lte|lt} body so the
+# date_range field accepts it on ingest.
 # ---------------------------------------------------------------------------
 
-def test_system_validity_not_yet_date_range() -> None:
-    """Until Phase 2, system.validity must NOT be date_range (the raw tstzrange
-    value is still written there; date_range would reject it on ingest)."""
+def test_system_validity_is_date_range() -> None:
+    """system.validity must be typed as date_range (#1828)."""
     m = _mapping()
     validity = m["properties"]["system"]["properties"]["validity"]
-    assert validity["type"] != "date_range"
+    assert validity["type"] == "date_range"
 
 
 def test_flat_valid_from_to_still_in_common_properties() -> None:
