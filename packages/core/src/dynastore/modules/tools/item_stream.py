@@ -85,9 +85,6 @@ def normalize_feature_attributes(feature: Feature) -> Feature:
 # feature.properties. See #1827.
 _JOIN_SECTIONS = ("system", "stats")
 
-# Allowed values for the join_source parameter. See #1827.
-_VALID_JOIN_SOURCES = frozenset({"properties", "system", "stats"})
-
 
 def resolve_join_value(
     feature: Feature,
