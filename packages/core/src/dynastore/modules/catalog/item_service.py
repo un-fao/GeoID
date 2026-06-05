@@ -445,14 +445,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         _mapping = getattr(row, "_mapping", None)
         row_dict = dict(_mapping) if _mapping is not None else dict(row)
 
-        # Hub contribution: initialise the feature with geoid as the default id.
+        # Hub contribution: initialise the feature id from the canonical
+        # identity column. The select aliases the identity expression to
+        # ``id`` (``<expr> AS id`` — default ``h.geoid``, or the COALESCE'd
+        # external_id when the read policy flips), so the result row carries an
+        # ``id`` key, not a bare ``geoid``. Read ``id`` first and fall back to
+        # a ``geoid`` column for raw/legacy rows. Reading the wrong key here is
+        # what produced ``feature.id = None`` and ``/items/None`` self links.
         # Sidecars (e.g. Attributes) may override this later in the pipeline.
-        geoid = row_dict.get("geoid")
+        identity = row_dict.get("id")
+        if identity is None:
+            identity = row_dict.get("geoid")
         feature = Feature(
             type="Feature",
             geometry=None,
             properties={},
-            id=str(geoid) if geoid is not None else None,
+            id=str(identity) if identity is not None else None,
         )
 
         # Shared context propagated through the entire sidecar pipeline.
