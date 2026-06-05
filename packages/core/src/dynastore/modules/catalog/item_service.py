@@ -162,6 +162,61 @@ def _collect_generated_stats(
     return flat
 
 
+async def _storage_resolves_columnar_async(
+    configs: Any,
+    catalog_id: str,
+    collection_id: str,
+    ft: Any,
+) -> bool:
+    """Return True when the PG attributes sidecar resolves to COLUMNAR storage.
+
+    Probes the persisted ``CollectionPostgresqlDriverConfig`` for the
+    sidecar's ``storage_mode``. Fails open (returns False) on any lookup
+    error so an absent driver config — e.g. before the first
+    ``ensure_storage`` — does not block writes.
+
+    Decision table (matches the bridge in ``field_constraints.py``):
+    * COLUMNAR (explicit)  → always closed (True).
+    * JSONB    (explicit)  → open (False); ``strict_unknown_fields`` is the
+                             only operator opt-in for JSONB collections.
+    * AUTOMATIC + fields   → bridge promotes all fields → COLUMNAR → closed (True).
+    * AUTOMATIC + no fields→ JSONB → open (False)  [ft.fields already checked
+                             by the caller].
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+    )
+    from dynastore.modules.storage.drivers.collection_postgresql import (
+        CollectionPostgresqlDriverConfig,
+    )
+
+    try:
+        driver_cfg = None
+        if configs is not None:
+            try:
+                driver_cfg = await configs.get_config(
+                    CollectionPostgresqlDriverConfig,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+            except Exception:
+                driver_cfg = None
+
+        sidecar_mode = AttributeStorageMode.AUTOMATIC
+        for sc in getattr(driver_cfg, "sidecars", None) or []:
+            if isinstance(sc, FeatureAttributeSidecarConfig):
+                sidecar_mode = sc.storage_mode
+                break
+
+        if sidecar_mode == AttributeStorageMode.JSONB:
+            return False
+        # COLUMNAR or AUTOMATIC: AUTOMATIC + non-empty fields → COLUMNAR.
+        return bool(ft.fields)
+    except Exception:
+        return False
+
+
 # --- Specialized Queries for ItemService ---
 
 
@@ -229,6 +284,17 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         no JSON-property-storing backend (PG JSONB, ES) can reject unknown
         keys natively. ``UnknownFieldsError`` is mapped to HTTP 422 by the
         global ``UnknownFieldsExceptionHandler``.
+
+        Closed-schema enforcement (strict binary storage rule): a schema that
+        resolves to COLUMNAR storage is implicitly closed — there is no JSONB
+        blob on disk to absorb undeclared properties, so every unknown field
+        would be silently dropped at ingest. Unknown properties are therefore
+        rejected (HTTP 422) whenever the storage resolves COLUMNAR:
+        * ``storage_mode=COLUMNAR`` (explicit) → always closed.
+        * ``storage_mode=AUTOMATIC`` with a non-empty ``ItemsSchema.fields``
+          → resolves COLUMNAR (bridge promotes all fields) → closed.
+        * ``storage_mode=JSONB`` (explicit) → open; ``strict_unknown_fields``
+          is the only opt-in gate.
         """
         from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.field_constraints import (
@@ -248,7 +314,18 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             return
         if not isinstance(ft, ItemsSchema):
             return
-        if not ft.strict_unknown_fields or not ft.fields:
+        if not ft.fields:
+            return
+
+        # Determine whether the schema is closed (unknown props rejected).
+        # A COLUMNAR layout (resolved or explicit) is always closed because the
+        # table has no JSONB blob to catch undeclared properties.
+        # An explicit JSONB pin keeps the schema open unless the operator also
+        # set strict_unknown_fields=True.
+        schema_is_closed = ft.strict_unknown_fields or await _storage_resolves_columnar_async(
+            configs, catalog_id, collection_id, ft
+        )
+        if not schema_is_closed:
             return
 
         feature_dicts = [
@@ -368,14 +445,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         _mapping = getattr(row, "_mapping", None)
         row_dict = dict(_mapping) if _mapping is not None else dict(row)
 
-        # Hub contribution: initialise the feature with geoid as the default id.
+        # Hub contribution: initialise the feature id from the canonical
+        # identity column. The select aliases the identity expression to
+        # ``id`` (``<expr> AS id`` — default ``h.geoid``, or the COALESCE'd
+        # external_id when the read policy flips), so the result row carries an
+        # ``id`` key, not a bare ``geoid``. Read ``id`` first and fall back to
+        # a ``geoid`` column for raw/legacy rows. Reading the wrong key here is
+        # what produced ``feature.id = None`` and ``/items/None`` self links.
         # Sidecars (e.g. Attributes) may override this later in the pipeline.
-        geoid = row_dict.get("geoid")
+        identity = row_dict.get("id")
+        if identity is None:
+            identity = row_dict.get("geoid")
         feature = Feature(
             type="Feature",
             geometry=None,
             properties={},
-            id=str(geoid) if geoid is not None else None,
+            id=str(identity) if identity is not None else None,
         )
 
         # Shared context propagated through the entire sidecar pipeline.
