@@ -482,6 +482,104 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             return False
 
     # ------------------------------------------------------------------
+    # Shared index bootstrap and bulk tally helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _ensure_index(
+        es: Any,
+        index_name: str,
+        mapping: Dict[str, Any],
+        settings_fn: Any,
+    ) -> None:
+        """Idempotently create ``index_name`` if absent (race-tolerant).
+
+        Used by the private and envelope drivers' write/index/ensure_storage
+        paths — a single code path for the create-if-absent + swallow
+        ``resource_already_exists`` pattern.
+
+        ``settings_fn`` must be an async callable with no required arguments
+        that returns the index settings dict (e.g.
+        ``get_private_items_index_settings``).
+
+        The public driver's ``ensure_storage`` is NOT routed here because it
+        carries additional alias-enrolment logic (``_ensure_in_public_alias_once``)
+        that is public-only behaviour.
+        """
+        if await es.indices.exists(index=index_name):
+            return
+        try:
+            await es.indices.create(
+                index=index_name,
+                body={
+                    "settings": await settings_fn(),
+                    "mappings": mapping,
+                },
+            )
+        except Exception as exc:
+            if "resource_already_exists" not in str(exc):
+                raise
+
+    @staticmethod
+    def _tally_bulk_response(
+        resp: Any,
+        ops_count: int,
+        *,
+        driver_name: str = "",
+        catalog: str = "",
+        collection: str = "",
+        index_name: str = "",
+    ) -> "tuple[int, List[Dict[str, Any]]]":
+        """Parse an ES ``_bulk`` response into ``(succeeded, failures)``.
+
+        Shared by the private and envelope ``index_bulk`` paths.  The public
+        driver reuses this too (contributing the #914 zero/zero warning so
+        that all three drivers log diagnostic context when ES returns a
+        response shape that yields no per-item results).
+
+        Returns
+        -------
+        succeeded : int
+        failures  : list of ``{"id": ..., "reason": ...}`` dicts
+        """
+        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
+        succeeded = 0
+        failures: List[Dict[str, Any]] = []
+        for it in items:
+            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
+            err = entry.get("error") if isinstance(entry, dict) else None
+            if err:
+                failures.append({
+                    "id": entry.get("_id"),
+                    "reason": str(
+                        err.get("reason", err) if isinstance(err, dict) else err
+                    ),
+                })
+            else:
+                succeeded += 1
+        # #914 — when the parsed result is a silent no-op (succeeded=0 with
+        # no per-item failures), log the raw response shape so operators
+        # can tell ``items=[]`` (request never hit ES) from a shape we
+        # don't parse.
+        if succeeded == 0 and not failures and ops_count > 0:
+            logger.warning(
+                "%s.index_bulk: ES bulk returned a shape that yielded "
+                "0 succeeded / 0 failed for %d ops "
+                "(catalog=%s collection=%s index=%s). resp_type=%s "
+                "resp_keys=%s items_len=%d errors=%s",
+                driver_name or "ItemsElasticsearchBase",
+                ops_count,
+                catalog,
+                collection,
+                index_name,
+                type(resp).__name__,
+                list(resp.keys()) if isinstance(resp, dict) else None,
+                len(items),
+                resp.get("errors") if isinstance(resp, dict) else None,
+            )
+        return succeeded, failures
+
+    # ------------------------------------------------------------------
     # CollectionItemsStore Protocol — data-side ops
     # ------------------------------------------------------------------
     # Identical between public and private modulo the two seams: the index
@@ -1868,35 +1966,13 @@ class ItemsElasticsearchDriver(
             return BulkResult(total=len(ops))
 
         resp = await es.bulk(body=body, params={"refresh": "false"})
-        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
-        succeeded = 0
-        failures: List[Dict[str, Any]] = []
-        for it in items:
-            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
-            err = entry.get("error") if isinstance(entry, dict) else None
-            if err:
-                failures.append({
-                    "id": entry.get("_id"),
-                    "reason": str(err.get("reason", err) if isinstance(err, dict) else err),
-                })
-            else:
-                succeeded += 1
-        # #914 — when the parsed result is a silent no-op (succeeded=0 with
-        # no per-item failures), log the raw response shape so operators
-        # can tell ``items=[]`` (request never hit ES) from a shape we
-        # don't parse.
-        if succeeded == 0 and not failures and len(ops) > 0:
-            logger.warning(
-                "ItemsElasticsearchDriver.index_bulk: ES bulk returned a "
-                "shape that yielded 0 succeeded / 0 failed for %d ops "
-                "(catalog=%s collection=%s index=%s). resp_type=%s "
-                "resp_keys=%s items_len=%d errors=%s",
-                len(ops), ctx.catalog, ctx.collection, index_name,
-                type(resp).__name__,
-                list(resp.keys()) if isinstance(resp, dict) else None,
-                len(items),
-                resp.get("errors") if isinstance(resp, dict) else None,
-            )
+        succeeded, failures = self._tally_bulk_response(
+            resp, len(ops),
+            driver_name="ItemsElasticsearchDriver",
+            catalog=ctx.catalog,
+            collection=ctx.collection,
+            index_name=index_name,
+        )
         return BulkResult(
             total=len(ops),
             succeeded=succeeded,

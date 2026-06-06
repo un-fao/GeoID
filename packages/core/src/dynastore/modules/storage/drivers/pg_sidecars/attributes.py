@@ -1062,13 +1062,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         #      contract and preserves the pre-#940 default of treating
         #      ``"id"`` as the implicit identity path when the operator
         #      hasn't configured an ``ItemsWritePolicy.external_id_field``.
-        #   3. Policy-bound path -> ``_extract_value`` walks the path.
+        #   3. Policy-bound path -> ``resolve_external_id`` walks the path.
         if isinstance(feature, Feature):
             ext_id = feature.id
         else:
-            field_path = _resolve_external_id_field(context)
-            if field_path:
-                ext_id = self._extract_value(feature, field_path)
+            policy = context.get("_items_write_policy") if context else None
+            if policy is not None and hasattr(policy, "resolve_external_id"):
+                feature_dict: Any = (
+                    feature if isinstance(feature, dict)
+                    else (feature.model_dump(by_alias=True) if hasattr(feature, "model_dump") else dict(feature))
+                )
+                ext_id = policy.resolve_external_id(feature_dict)
             elif isinstance(feature, dict):
                 ext_id = feature.get("id")
             else:

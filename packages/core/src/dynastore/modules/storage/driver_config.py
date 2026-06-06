@@ -39,7 +39,7 @@ import logging
 import os
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from pydantic import (
     BaseModel,
@@ -716,6 +716,57 @@ class ItemsWritePolicy(PluginConfig):
         # ``name`` on EXTERNAL_ID is the source path (no leading "properties."
         # collapse — that's resolved at extraction time).
         return cf.name or None
+
+    def resolve_external_id(self, feature: Mapping[str, Any]) -> Optional[str]:
+        """Resolve the external_id from an inbound feature using the configured
+        path (if any), otherwise fall back to the feature's top-level ``id``.
+
+        Resolution order mirrors ``_walk_external_id_path``:
+          1. When a path is configured: walk the path through the feature dict.
+          2. When no path is configured: return ``feature.get("id")``.
+
+        Returns a ``str`` or ``None``; never raises.
+        """
+        path = self.external_id_path()
+        if path is not None:
+            val = _walk_external_id_path(feature, path)
+        else:
+            val = feature.get("id")
+        if val is None:
+            return None
+        return str(val)
+
+
+def _walk_external_id_path(
+    feature: Mapping[str, Any], path: str
+) -> Optional[Any]:
+    """Walk ``path`` through ``feature`` using the standard three-step rule.
+
+    1. Top-level lookup: ``feature[path]``.
+    2. Dot-walk (e.g. ``a.b.c``): traverse nested dicts.
+    3. Properties fallback: when ``path`` has no dot AND top-level is ``None``,
+       try ``feature["properties"][path]``.
+
+    Returns the value or ``None``; never raises.
+    """
+    try:
+        if "." in path:
+            current: Any = feature
+            for part in path.split("."):
+                if not isinstance(current, Mapping):
+                    return None
+                current = current.get(part)
+                if current is None:
+                    return None
+            return current
+        val = feature.get(path)
+        if val is None:
+            props = feature.get("properties")
+            if isinstance(props, Mapping):
+                val = props.get(path)
+        return val
+    except Exception:
+        return None
 
 
 async def _warn_unstored_unreferenced_stats(
