@@ -33,7 +33,7 @@ carry no STAC pollution.
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import ClassVar, Dict, Any, List, Optional, Set, Tuple
 
 from geojson_pydantic import Feature
 
@@ -465,7 +465,7 @@ class ItemMetadataSidecar(SidecarProtocol):
 
     # ── Canonical ES metadata container (refs #1828 Phase 2 / #1838) ─────────
 
-    _METADATA_COLUMN_MAP = {
+    _METADATA_COLUMN_MAP: ClassVar[Dict[str, str]] = {
         "title": "item_title",
         "description": "item_description",
         "keywords": "item_keywords",
