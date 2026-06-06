@@ -243,18 +243,11 @@ class ItemsElasticsearchPrivateDriver(
         ctx = context or {}
         asset_id = ctx.get("asset_id")
 
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         bulk_body: list = []
         submitted_ids: list = []
@@ -458,24 +451,16 @@ class ItemsElasticsearchPrivateDriver(
         index_name = self._items_index_name(catalog_id)
         es = self._get_client()
 
-        if not await es.indices.exists(index=index_name):
-            # Snapshot the tenant-scoped operator overlay at index-create
-            # time. Live edits to ``mapping`` do not retro-patch ES
-            # (ES disallows tightening a live mapping); they take effect
-            # on the next index rebuild — same contract as the public
-            # driver's Tier-2 overlay.
-            known_fields = await resolve_catalog_private_known_fields(catalog_id)
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        # Snapshot the tenant-scoped operator overlay at index-create time.
+        # Live edits to ``mapping`` do not retro-patch ES (ES disallows
+        # tightening a live mapping); they take effect on the next index
+        # rebuild — same contract as the public driver's Tier-2 overlay.
+        known_fields = await resolve_catalog_private_known_fields(catalog_id)
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         await self._apply_deny_policy(catalog_id)
 
@@ -573,19 +558,11 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 
         known_fields = await resolve_catalog_private_known_fields(ctx.catalog)
-
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         src = op.payload or {"id": op.entity_id}
         src.setdefault("id", op.entity_id)
@@ -639,18 +616,11 @@ class ItemsElasticsearchPrivateDriver(
         index_name = self._items_index_name(ctx.catalog)
         es = self._get_client()
 
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         body: List[dict] = []
         for op in ops:
@@ -680,19 +650,13 @@ class ItemsElasticsearchPrivateDriver(
             return BulkResult(total=len(ops))
 
         resp = await es.bulk(body=body)
-        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
-        succeeded = 0
-        failures: List[Dict[str, Any]] = []
-        for it in items:
-            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
-            err = entry.get("error") if isinstance(entry, dict) else None
-            if err:
-                failures.append({
-                    "id": entry.get("_id"),
-                    "reason": str(err.get("reason", err) if isinstance(err, dict) else err),
-                })
-            else:
-                succeeded += 1
+        succeeded, failures = self._tally_bulk_response(
+            resp, len(ops),
+            driver_name="ItemsElasticsearchPrivateDriver",
+            catalog=ctx.catalog,
+            collection=ctx.collection,
+            index_name=index_name,
+        )
         return BulkResult(
             total=len(ops),
             succeeded=succeeded,
