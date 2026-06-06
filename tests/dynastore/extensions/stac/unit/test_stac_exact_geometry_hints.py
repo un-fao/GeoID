@@ -1,6 +1,6 @@
-"""STAC ``geometry=exact`` opt-in threads EXACT_READ_HINTS to stream_items.
+"""STAC ``?hints=geometry_exact`` opt-in threads EXACT_READ_HINTS to stream_items.
 
-The ``geometry=exact`` query parameter is intended to route item reads to the
+The ``?hints=geometry_exact`` query parameter routes item reads to the
 exact-geometry (PostgreSQL) tier instead of the simplified (Elasticsearch)
 tier by passing ``hints=EXACT_READ_HINTS`` down to ``stream_items``.  These
 tests pin the wiring at the handler boundary (``get_stac_collection_items``),
@@ -9,9 +9,9 @@ the generator boundary (``create_item_collection``), and the DB layer
 
 Paths covered:
 
-* ``get_stac_collection_items(geometry="exact")`` → ``create_item_collection``
-  receives ``hints=EXACT_READ_HINTS``.
-* ``get_stac_collection_items()`` (default, no ``geometry`` param) →
+* ``get_stac_collection_items`` with ``request_hints=EXACT_READ_HINTS`` →
+  ``create_item_collection`` receives ``hints=EXACT_READ_HINTS``.
+* ``get_stac_collection_items`` with ``request_hints=frozenset()`` (default) →
   ``create_item_collection`` receives ``hints=frozenset()`` (no hint injected,
   ES fast-path unchanged).
 * ``create_item_collection(hints=EXACT_READ_HINTS, search_dispatch=None)`` →
@@ -77,7 +77,7 @@ def _acoro(value: Any):
 
 
 async def test_handler_passes_exact_hints_when_geometry_exact(monkeypatch):
-    """``geometry=exact`` → ``create_item_collection`` receives EXACT_READ_HINTS."""
+    """``request_hints=EXACT_READ_HINTS`` → ``create_item_collection`` receives EXACT_READ_HINTS."""
     svc = STACService.__new__(STACService)
 
     catalogs = SimpleNamespace(get_collection=_acoro({"id": "col-a"}))
@@ -85,9 +85,9 @@ async def test_handler_passes_exact_hints_when_geometry_exact(monkeypatch):
     monkeypatch.setattr(svc, "_get_stac_config", _acoro(SimpleNamespace()))
     monkeypatch.setattr(stac_service_mod, "managed_transaction", _fake_txn)
 
-    # With geometry=exact the ES dispatch is skipped (search_dispatch stays None)
+    # With GEOMETRY_EXACT hint, ES dispatch is skipped (wants_exact=True)
     async def _no_dispatch(**kwargs: Any):
-        raise AssertionError("dispatch must not be called for geometry=exact")
+        raise AssertionError("dispatch must not be called when GEOMETRY_EXACT hint is set")
 
     monkeypatch.setattr(
         query_mod, "maybe_dispatch_items_to_search_driver", _no_dispatch
@@ -112,7 +112,7 @@ async def test_handler_passes_exact_hints_when_geometry_exact(monkeypatch):
         offset=0,
         filter=None,
         language="en",
-        geometry="exact",
+        request_hints=EXACT_READ_HINTS,
     )
 
     assert seen["hints"] == EXACT_READ_HINTS, (
@@ -122,7 +122,7 @@ async def test_handler_passes_exact_hints_when_geometry_exact(monkeypatch):
 
 
 async def test_handler_passes_empty_hints_by_default(monkeypatch):
-    """No ``geometry`` param → ``create_item_collection`` receives empty frozenset."""
+    """No hints → ``create_item_collection`` receives empty frozenset."""
     svc = STACService.__new__(STACService)
 
     catalogs = SimpleNamespace(get_collection=_acoro({"id": "col-a"}))
@@ -157,7 +157,8 @@ async def test_handler_passes_empty_hints_by_default(monkeypatch):
         offset=0,
         filter=None,
         language="en",
-        # geometry not passed → default None
+        # request_hints not passed → default frozenset()
+        request_hints=frozenset(),
     )
 
     assert seen["hints"] == frozenset(), (
