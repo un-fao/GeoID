@@ -1230,6 +1230,157 @@ def test_option_a_fresh_construct_still_auto_augments():
     assert "_discoverable_indexer" in index_refs
 
 
+def _items_pg_only_body():
+    """A GET→edit→PUT body: PG-only lists whose entries carry ``source='auto'``
+    exactly as the configs API serialises persisted self-registered/boot
+    entries back to the operator. This is the round-trip that the bug rode in
+    on (#792/#889)."""
+    return {
+        "operations": {
+            Operation.WRITE: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto",
+                 "on_failure": "fatal", "write_mode": "sync"},
+            ],
+            Operation.READ: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+            Operation.SEARCH: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+        },
+    }
+
+
+def test_external_write_context_stamps_operator_provenance():
+    """The configs-API deserialisation boundary passes
+    ``context={'dynastore_external_write': True}`` to ``model_validate``; the
+    routing validator then stamps ``source='operator'`` on every operation list
+    the operator explicitly sent — the API-boundary half of Option A
+    (#792/#889) that engages ``_is_operator_managed``.
+    """
+    cfg = ItemsRoutingConfig.model_validate(
+        _items_pg_only_body(),
+        context={"dynastore_external_write": True},
+    )
+
+    assert all(
+        e.source == "operator"
+        for entries in cfg.operations.values()
+        for e in entries
+    )
+
+
+def test_external_write_context_blocks_driver_reinjection_on_removal():
+    """End-to-end of the reported bug through the REAL deserialisation path.
+
+    With a discoverable ES indexer/searcher registered, an operator round-trips
+    a PG-only routing config (entries carry ``source='auto'`` from the GET):
+
+    * WITHOUT the external-write context the validator's self-register pass
+      re-appends ES — this is the bug, and the assertion proves the fixture
+      genuinely reproduces it.
+    * WITH the context the validator stamps the lists operator-authored BEFORE
+      self-registration, so ES is NOT re-appended — the operator's deletion
+      sticks.
+    """
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    # Bug path: no external-write context -> ES is re-appended.
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        bug = ItemsRoutingConfig.model_validate(_items_pg_only_body())
+    bug_write = {e.driver_ref for e in bug.operations[Operation.WRITE]}
+    assert "_items_es" in bug_write, (
+        "fixture must reproduce the re-injection without the context flag"
+    )
+
+    # Fix path: external-write context -> ES stays removed.
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        fixed = ItemsRoutingConfig.model_validate(
+            _items_pg_only_body(),
+            context={"dynastore_external_write": True},
+        )
+    fixed_write = {e.driver_ref for e in fixed.operations[Operation.WRITE]}
+    fixed_search = {e.driver_ref for e in fixed.operations[Operation.SEARCH]}
+    assert fixed_write == {"items_postgresql_driver"}
+    assert fixed_search == {"items_postgresql_driver"}
+
+
+def test_internal_construct_without_context_still_auto_augments():
+    """No external-write context (internal DB-load / boot-default construction)
+    => discoverable drivers still auto-register. Guards against the stamp
+    over-reaching and freezing internal augmentation."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import secondary_index_entries
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        cfg = ItemsRoutingConfig.model_validate(_items_pg_only_body())
+
+    index_refs = {e.driver_ref for e in secondary_index_entries(cfg.operations)}
+    assert "_items_es" in index_refs
+
+
+def test_is_external_operator_write_reads_context():
+    """The context predicate is True only for the explicit external-write flag
+    and False for missing/empty/None context (internal paths)."""
+    from types import SimpleNamespace
+
+    from typing import Any, cast
+
+    from dynastore.modules.storage.routing_config import _is_external_operator_write
+
+    def _info(ctx):
+        # Duck-typed stand-in for ValidationInfo (only .context is read).
+        return cast(Any, SimpleNamespace(context=ctx))
+
+    assert _is_external_operator_write(_info({"dynastore_external_write": True}))
+    assert not _is_external_operator_write(_info(None))
+    assert not _is_external_operator_write(_info({}))
+    assert not _is_external_operator_write(_info({"dynastore_external_write": False}))
+
+
+def test_operations_field_is_mutable_so_operators_can_edit_driver_list():
+    """The ``operations`` field must be Mutable, not Immutable: an operator
+    must be able to change the driver mapping (e.g. remove ES) even after the
+    tier is materialized. Pins the #792/#889 follow-up that an Immutable
+    ``operations`` made a genuine driver-list change 409 once any catalog
+    existed."""
+    from dynastore.models.mutability import is_immutable_field
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+    )
+
+    for cls in (
+        ItemsRoutingConfig,
+        CollectionRoutingConfig,
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+    ):
+        field_info = cls.model_fields["operations"]
+        assert not is_immutable_field(field_info), (
+            f"{cls.__name__}.operations must be Mutable so operators can edit "
+            f"the driver list post-materialization"
+        )
+
+
 def test_option_a_792_reproducer_search_index_lock():
     """End-to-end reproducer for #792: operator PUTs an explicit SEARCH
     list (single entry, source='operator'), then a downstream code path

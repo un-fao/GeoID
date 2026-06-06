@@ -41,7 +41,14 @@ import logging
 from enum import StrEnum
 from typing import Any, Callable, ClassVar, Dict, FrozenSet, List, Literal, Mapping, Optional, Sequence, Set, Tuple, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from dynastore.models.protocols.driver_roles import DriverSla
 from dynastore.models.protocols.indexer import (
@@ -49,7 +56,7 @@ from dynastore.models.protocols.indexer import (
     CatalogIndexer,
     CollectionIndexer,
 )
-from dynastore.models.mutability import Immutable
+from dynastore.models.mutability import Immutable, Mutable
 from dynastore.modules.db_config.plugin_config import PluginConfig
 from dynastore.modules.storage.hints import Hint
 from dynastore.tools.typed_store.base import _to_snake
@@ -523,7 +530,7 @@ class _RoutingConfigBase(PluginConfig):
 
     model_config = ConfigDict(json_schema_extra=ui(category="routing"))
 
-    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+    operations: Mutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=dict,
         description=(
             "Operation -> ordered driver list.  Overridden per tier with the "
@@ -550,8 +557,36 @@ class _RoutingConfigBase(PluginConfig):
         """
         return None
 
+    def _stamp_operator_provenance(self) -> None:
+        """Stamp ``source='operator'`` on every operation-driver entry the
+        operator sent — the API-boundary half of the Option-A list-level
+        operator lock (#792/#889).
+
+        ``_is_operator_managed`` (and the self-register helpers it gates) keys
+        on whether any entry in an operation list carries ``source='operator'``.
+        Boot defaults and self-registered drivers are stamped ``'auto'``, and
+        the configs API serialises that ``'auto'`` back to the operator — so a
+        natural GET→edit→PUT round-trip returns lists that still read as
+        auto-managed.  Unless we re-assert operator intent, the self-register
+        helpers re-append the very driver the operator removed (the "deleted
+        driver comes back" symptom).
+
+        This MUST run BEFORE ``_self_register_drivers`` (see
+        ``_augment_and_validate_routing``): the stamp only sticks if it
+        precedes the re-append pass it is meant to suppress.  It is driven by
+        the ``dynastore_external_write`` validation-context flag set at the
+        configs-API deserialisation boundary, so it never fires for internal
+        DB-load / boot-default construction.  Idempotent.
+        """
+        for entries in self.operations.values():
+            for i, entry in enumerate(entries):
+                if entry.source != "operator":
+                    entries[i] = entry.model_copy(update={"source": "operator"})
+
     @model_validator(mode="after")
-    def _augment_and_validate_routing(self) -> "_RoutingConfigBase":
+    def _augment_and_validate_routing(
+        self, info: ValidationInfo
+    ) -> "_RoutingConfigBase":
         """Self-register discoverable drivers + transformers, then validate
         transformer attachments and warn on deferred hops.
 
@@ -559,8 +594,18 @@ class _RoutingConfigBase(PluginConfig):
         bootstrap / fixtures that validate before plugins register), in which
         case the apply-handler repopulates on the next write.  Attachment
         validation always runs — a dangling transformer ref is a hard error.
+
+        On an **external operator write** (the configs API stamps
+        ``context={"dynastore_external_write": True}`` at deserialisation), the
+        operations the operator explicitly sent are authoritative: their entries
+        are stamped ``source='operator'`` *before* self-registration so a driver
+        the operator removed is not silently re-appended (#792/#889 GET→edit→PUT
+        round-trip).  Internal DB-load / boot-default construction carries no
+        such context, so discoverable drivers still auto-register there.
         """
         label = type(self).__name__
+        if _is_external_operator_write(info) and "operations" in self.model_fields_set:
+            self._stamp_operator_provenance()
         try:
             self._self_register_drivers()
             _self_register_transformers_into(self.transformers)
@@ -603,7 +648,7 @@ class ItemsRoutingConfig(_RoutingConfigBase):
     # SEARCH output_transformers are now wired for this tier (geoid#1574).
     _wired_output_search_hop: ClassVar[bool] = True
 
-    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+    operations: Mutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # PG is authoritative for WRITE (on_failure=fatal — must succeed,
             # write_mode=sync — caller awaits the result).
@@ -791,7 +836,7 @@ class CollectionRoutingConfig(_RoutingConfigBase):
     # SEARCH output_transformers are now wired for this tier (geoid#1574).
     _wired_output_search_hop: ClassVar[bool] = True
 
-    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+    operations: Mutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # Collection-envelope routing. The PG collection driver
             # (collection_postgresql_driver — internally fans CRUD across
@@ -886,7 +931,7 @@ class AssetRoutingConfig(_RoutingConfigBase):
     # output_transformers actually fire on this tier. See geoid#1567.
     _wired_output_search_hop: ClassVar[bool] = True
 
-    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+    operations: Mutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # Assets routing: PG is the canonical system of record and
             # the only default driver. Elasticsearch is intentionally
@@ -983,7 +1028,7 @@ class CatalogRoutingConfig(_RoutingConfigBase):
     # SEARCH output_transformers are now wired for this tier (geoid#1574).
     _wired_output_search_hop: ClassVar[bool] = True
 
-    operations: Immutable[Dict[str, List[OperationDriverEntry]]] = Field(
+    operations: Mutable[Dict[str, List[OperationDriverEntry]]] = Field(
         default_factory=lambda: {
             # catalog_postgresql_driver is the registered CatalogStore
             # composition wrapper — it fans CRUD across the catalog_core +
@@ -1154,6 +1199,20 @@ def _validate_routing_entries(
                 "This may cause runtime errors.",
                 label, primary_id, operation, required_cap,
             )
+
+
+def _is_external_operator_write(info: ValidationInfo) -> bool:
+    """Return True when validation was triggered by an external operator write.
+
+    The configs-API deserialisation boundary (``update_platform_config`` /
+    ``update_catalog_config`` / ``update_collection_config``) passes
+    ``context={"dynastore_external_write": True}`` to ``model_validate``.
+    Internal construction (DB load, boot defaults, config merge/snapshot)
+    carries no such context, so this returns False and self-registration runs
+    normally. Drives the operator-provenance stamp in
+    ``_augment_and_validate_routing`` (#792/#889).
+    """
+    return bool((info.context or {}).get("dynastore_external_write"))
 
 
 def _is_operator_managed(
