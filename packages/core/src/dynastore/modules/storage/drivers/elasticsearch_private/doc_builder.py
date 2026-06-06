@@ -25,11 +25,53 @@ envelope as the public items driver (``id``=geoid, ``properties`` user-only,
 ``stats`` / ``system`` containers). Private differs from public ONLY by
 target index/alias. The old flat shape (``geoid`` at root, no stats/system)
 is no longer emitted.
+
+Post-#1839: the Feature/dict path carries through already-computed stat values
+(s2/h3/geohash spatial-cell keys, area, centroid, etc.) that were produced on
+the ingest path and ride flat on the source dict after ``map_row_to_feature``.
+These are classified into ``stats{}`` via :func:`classify_container` (the SSOT
+for container routing, refs #1800/#1828) instead of being silently dropped.
+No recomputation is performed — only values already present are carried through.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+
+
+def _collect_flat_stats(src: Dict[str, Any], exclude: "frozenset[str]") -> Dict[str, Any]:
+    """Extract stat-classified keys from a flat source dict (carry-through only).
+
+    Scans ``src`` top-level keys and any keys inside ``src["properties"]`` using
+    :func:`~dynastore.modules.storage.computed_fields.classify_container`.
+    A key classifies to ``"stats"`` when it matches a geometry-derived statistic
+    base name (``area``, ``centroid``, …) or a spatial-cell resolved-name pattern
+    (``s2_*``, ``h3_*``, ``geohash_*``).  Identity and system keys are excluded
+    via ``exclude`` so ``system`` always wins the overlap (same rule as the PG
+    sidecar path in ``build_canonical_index_doc``).
+
+    Returns a dict of ``{name: value}`` suitable for merging into the canonical
+    ``stats`` section.  Values that are ``None`` are skipped.
+
+    This function performs **no recomputation** — it only carries values that
+    already exist on the source.
+    """
+    from dynastore.modules.storage.computed_fields import classify_container
+
+    stats: Dict[str, Any] = {}
+    # Check top-level keys first (model_extra / map_row_to_feature flat output).
+    for k, v in src.items():
+        if k in exclude or v is None:
+            continue
+        if classify_container(k, None) == "stats":
+            stats[k] = v
+    # Also check properties bag — some callers serialise stats into properties.
+    for k, v in (src.get("properties") or {}).items():
+        if k in exclude or k in stats or v is None:
+            continue
+        if classify_container(k, None) == "stats":
+            stats[k] = v
+    return stats
 
 
 def build_tenant_feature_doc(
@@ -53,14 +95,17 @@ def build_tenant_feature_doc(
 
     * A Feature pydantic model, a STAC item dict, or a GeoJSON Feature dict —
       adapts to a minimal ``row`` and calls ``build_canonical_index_doc``.
-      Stats and system sections will be empty when sidecar data is unavailable
-      through this path; the canonical shape is preserved.
+      Already-computed stat values (s2/h3/geohash spatial-cell keys, area,
+      centroid, etc.) that ride flat on the source after ``map_row_to_feature``
+      are carried through into ``stats{}`` via :func:`classify_container` so
+      privatised items that legitimately have these values in PG do not lose
+      them when written through the dict adapter.  No recomputation is done.
 
     The returned doc uses the canonical envelope:
     ``id``=geoid, ``catalog_id``, ``collection_id``, ``external_id``,
     ``_external_id`` tracker, ``geometry``, ``bbox``, ``properties``
-    (user-only, no SYSTEM_FIELD_KEYS), ``stats`` (sidecar-derived, when
-    available), ``system`` (SYSTEM_FIELD_KEYS present in the row).
+    (user-only, no SYSTEM_FIELD_KEYS), ``stats`` (sidecar-derived or carried
+    through from the source), ``system`` (SYSTEM_FIELD_KEYS present in the row).
 
     ``known_fields`` is passed to the underlying projection so undeclared
     property keys route to ``properties.extras`` when a strict overlay is
@@ -148,7 +193,16 @@ def build_tenant_feature_doc(
     geom = src.get("geometry")
     bbox_val = src.get("bbox")
 
-    return build_canonical_index_doc(
+    # Collect already-computed stat values that ride flat on the source dict
+    # (s2_res*, h3_res*, geohash_*, area, centroid, …) and carry them through
+    # into the canonical ``stats`` section.  System keys are excluded so the
+    # ``system`` container always wins the overlap (#1585 round-trip constraint).
+    # No recomputation is performed — this is carry-through only.
+    from dynastore.modules.storage.computed_fields import _IDENTITY_FIELD_NAMES
+    _stats_exclude = _sys_keys | _IDENTITY_FIELD_NAMES
+    flat_stats = _collect_flat_stats(src, _stats_exclude)
+
+    doc = build_canonical_index_doc(
         row,
         resolved_sidecars=[],
         known_fields=known_fields or {},
@@ -159,3 +213,12 @@ def build_tenant_feature_doc(
         user_properties=user_props or None,
         access=None,
     )
+
+    # Merge flat stats into the canonical stats section.  Existing stats (from
+    # the sidecar path, if any) win; flat values only fill gaps.
+    if flat_stats:
+        existing_stats = doc.get("stats") or {}
+        merged = {**flat_stats, **existing_stats}
+        doc["stats"] = merged
+
+    return doc
