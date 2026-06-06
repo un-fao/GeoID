@@ -292,6 +292,26 @@ OGC_RESERVED_QUERY_PARAMS: frozenset = frozenset({
     "hints",  # per-request routing hints (e.g. ?hints=geometry_exact); a
     # control parameter accepted uniformly across protocols, never a queryable
     # attribute, so it must not be swept into the ?{property}={value} shorthand.
+    # Projection / geometry-control parameters. These are bound as real query
+    # parameters by the item endpoints (``properties`` projection, the
+    # pygeoapi ``skipGeometry`` and ESRI ``returnGeometry`` geometry switches,
+    # and the ``filter-crs`` / ``bbox-crs`` CRS overrides). They must be
+    # reserved here too: the single-field equality shorthand sweeps every
+    # non-reserved query parameter into a ``?{property}={value}`` CQL filter,
+    # so leaving them out makes e.g. ``?returnGeometry=false`` parse as a
+    # bogus ``returnGeometry = 'false'`` attribute filter and 400 with
+    # "Unknown properties". Both spellings (hyphen alias + snake_case) are
+    # listed because either can reach ``request.query_params``.
+    "properties",
+    "skipgeometry",
+    "skipGeometry",
+    "skip_geometry",
+    "returngeometry",
+    "returnGeometry",
+    "return_geometry",
+    "filter-crs",
+    "filter_crs",
+    "bbox_crs",
     "_",  # cache-buster appended by browsers/jQuery; never an attribute
 })
 
