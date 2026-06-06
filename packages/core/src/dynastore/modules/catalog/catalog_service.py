@@ -1856,7 +1856,16 @@ class CatalogService(CatalogsProtocol):
         try:
             driver = await get_driver("WRITE", catalog_id, collection_id)
         except ValueError:
-            return
+            # No write driver registered for this collection.  Re-raise so
+            # the caller's transaction rolls back and any prior
+            # ``set_physical_table`` pin is not committed without the table
+            # actually existing (atomicity guard, #1847).
+            logger.error(
+                "create_physical_collection: no WRITE driver for %s/%s — "
+                "cannot create physical table %r; aborting provisioning.",
+                catalog_id, collection_id, physical_table,
+            )
+            raise
         await driver.ensure_storage(
             catalog_id,
             collection_id,
