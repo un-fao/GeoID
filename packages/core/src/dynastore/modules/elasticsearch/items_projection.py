@@ -107,7 +107,16 @@ _STAC_CORE_FIELDS: Dict[str, Dict[str, Any]] = {
     # STAC Common Metadata
     "title":          _localized_text_field(ignore_above=512),
     "description":    _localized_text_field(ignore_above=1024),
-    "license":        {"type": "keyword"},
+    # license: LicenseInfo object {license_id, is_osi_compliant, localized_content?}.
+    # dynamic:false keeps localized_content in _source unindexed (refs #1828).
+    "license": {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            "license_id":      {"type": "keyword"},
+            "is_osi_compliant": {"type": "boolean"},
+        },
+    },
     "platform":       {"type": "keyword"},
     "instruments":    {"type": "keyword"},
     "constellation":  {"type": "keyword"},
