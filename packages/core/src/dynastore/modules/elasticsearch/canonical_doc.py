@@ -250,22 +250,18 @@ def build_canonical_index_doc(
 
     # metadata: multilingual descriptive metadata from the ItemMetadataSidecar
     # (item_title / item_description / item_keywords JSONB columns). The sidecar
-    # wiring into this assembly is deferred to #1828 Phase 2; for now we read
-    # the three columns directly from the row if present so callers that already
-    # populate them (e.g. future PG-level joins) get the typed metadata container
-    # without any driver change. The preferred canonical names are the un-prefixed
-    # forms (title/description/keywords); the item_* aliases are also accepted.
-    # TODO (#1828 Phase 2): wire ItemMetadataSidecar here so sidecars can produce
-    # metadata fields and this reads from resolved_sidecars instead of the row.
+    # declares which canonical names it produces via producible_metadata_names()
+    # and maps storage columns to values via resolve_metadata_value(). First
+    # sidecar that claims a name wins (same rule as stats). This removes the
+    # direct row-column read that bypassed the sidecar abstraction (refs #1838).
     metadata: Dict[str, Any] = {}
-    for col, key in (
-        ("item_title", "title"),
-        ("item_description", "description"),
-        ("item_keywords", "keywords"),
-    ):
-        val = row.get(col)
-        if val is not None:
-            metadata[key] = val
+    for sidecar in resolved_sidecars:
+        for name in sidecar.producible_metadata_names():
+            if name in metadata:
+                continue
+            found, value = sidecar.resolve_metadata_value(row, name)
+            if found and value is not None:
+                metadata[name] = value
 
     reserved_members: Dict[str, Any] = {"geometry": geometry, "bbox": bbox}
     if stac_reserved_members:

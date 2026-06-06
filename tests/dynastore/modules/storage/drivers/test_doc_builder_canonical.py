@@ -52,6 +52,12 @@ class _FakeStatsSidecar:
         vals = {"area": 42.0, "centroid": "CAFEBABE"}
         return (True, vals[name]) if name in vals else (False, None)
 
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, name):
+        return (False, None)
+
 
 def _canonical_input_for(geoid: str, external_id: str):
     """Build a CanonicalIndexInput that mirrors what a real PG read returns."""
