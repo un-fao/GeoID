@@ -62,6 +62,12 @@ class _FakeSidecar:
             return True, self._produce[name]
         return False, None
 
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, name):  # noqa: ARG002
+        return False, None
+
 
 # ---------------------------------------------------------------------------
 # Step 1 / Step 4 — identity & geoid-as-id
@@ -309,19 +315,35 @@ def test_sidecar_none_value_not_written_to_stats():
 
 
 # ---------------------------------------------------------------------------
-# metadata section — item_title / item_description / item_keywords (refs #1828)
+# metadata section — via ItemMetadataSidecar (refs #1828 Phase 2 / #1838)
 # ---------------------------------------------------------------------------
 
+# The metadata section is populated exclusively through the sidecar protocol:
+# ItemMetadataSidecar.producible_metadata_names() returns {"title","description",
+# "keywords"} and resolve_metadata_value() reads item_* columns from the row.
+# Direct row-column reads were removed in #1838; the sidecar must be in
+# resolved_sidecars for metadata to appear.
 
-def test_metadata_section_populated_from_row_columns():
-    """When the row carries item_title / item_description / item_keywords,
-    build_canonical_index_doc must surface them in the ``metadata`` section."""
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata import (
+    ItemMetadataSidecar,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata_config import (
+    ItemMetadataSidecarConfig,
+)
+
+_METADATA_SIDECAR = ItemMetadataSidecar(ItemMetadataSidecarConfig())
+
+
+def test_metadata_section_populated_via_sidecar():
+    """Metadata must come from ItemMetadataSidecar.resolve_metadata_value(), not
+    from direct row-column reads. Wire shape is identical to the pre-refactor
+    output (title / description / keywords in metadata{})."""
     row = _row()
     row["item_title"] = {"en": "Rome", "fr": "Rome"}
     row["item_description"] = {"en": "The Eternal City"}
     row["item_keywords"] = ["city", "europe"]
     doc = build_canonical_index_doc(
-        row, resolved_sidecars=[], known_fields={},
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
         catalog_id="c", collection_id="k",
     )
     assert "metadata" in doc
@@ -330,9 +352,8 @@ def test_metadata_section_populated_from_row_columns():
     assert doc["metadata"]["keywords"] == ["city", "europe"]
 
 
-def test_metadata_section_absent_when_no_columns():
-    """When none of item_title / item_description / item_keywords are on the
-    row, the ``metadata`` section must be absent (not an empty dict)."""
+def test_metadata_section_absent_when_no_sidecar():
+    """Without a metadata-producing sidecar the metadata section is absent."""
     doc = build_canonical_index_doc(
         _row(), resolved_sidecars=[], known_fields={},
         catalog_id="c", collection_id="k",
@@ -340,12 +361,22 @@ def test_metadata_section_absent_when_no_columns():
     assert "metadata" not in doc
 
 
-def test_metadata_section_partial_columns():
-    """If only some metadata columns are present, only those keys are emitted."""
+def test_metadata_section_absent_when_sidecar_row_columns_missing():
+    """When the row has no item_* columns the metadata section is absent even
+    with the sidecar in the list."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" not in doc
+
+
+def test_metadata_section_partial_columns_via_sidecar():
+    """Only the keys present in the row are emitted in metadata{}."""
     row = _row()
     row["item_title"] = {"en": "Partial"}
     doc = build_canonical_index_doc(
-        row, resolved_sidecars=[], known_fields={},
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
         catalog_id="c", collection_id="k",
     )
     assert "metadata" in doc
@@ -356,12 +387,12 @@ def test_metadata_section_partial_columns():
 
 def test_metadata_columns_do_not_leak_into_system_or_stats():
     """item_title / item_description / item_keywords must not bleed into
-    ``system`` or ``stats`` sections."""
+    system or stats sections."""
     row = _row()
     row["item_title"] = {"en": "Title"}
     row["item_keywords"] = ["kw"]
     doc = build_canonical_index_doc(
-        row, resolved_sidecars=[], known_fields={},
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
         catalog_id="c", collection_id="k",
     )
     for section in ("system", "stats"):
@@ -369,6 +400,52 @@ def test_metadata_columns_do_not_leak_into_system_or_stats():
             assert "title" not in doc[section]
             assert "item_title" not in doc[section]
             assert "keywords" not in doc[section]
+
+
+def test_metadata_wire_shape_byte_identical_before_and_after_sidecar_wiring():
+    """The wire shape emitted by the sidecar path must be byte-for-byte
+    identical to the previous direct-column read (the refactor is provenance-
+    only; the ES _source must not change). Verifies the contract from #1838."""
+    row = _row()
+    row["item_title"] = {"en": "Rome", "fr": "Rome"}
+    row["item_description"] = {"en": "The Eternal City"}
+    row["item_keywords"] = ["city", "europe"]
+
+    doc_via_sidecar = build_canonical_index_doc(
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+
+    # Reference shape: what the previous direct-column read produced.
+    expected_metadata = {
+        "title": {"en": "Rome", "fr": "Rome"},
+        "description": {"en": "The Eternal City"},
+        "keywords": ["city", "europe"],
+    }
+    assert doc_via_sidecar["metadata"] == expected_metadata
+
+
+def test_metadata_first_sidecar_wins_duplicate_name():
+    """First metadata-producing sidecar for a given name wins; second is ignored."""
+    class _MetaSidecar:
+        def producible_computed_names(self): return set()
+        def resolve_computed_value(self, row, name): return (False, None)
+        def producible_metadata_names(self): return {"title"}
+        def resolve_metadata_value(self, row, name):
+            return (True, {"en": "First"}) if name == "title" else (False, None)
+
+    class _SecondMetaSidecar:
+        def producible_computed_names(self): return set()
+        def resolve_computed_value(self, row, name): return (False, None)
+        def producible_metadata_names(self): return {"title"}
+        def resolve_metadata_value(self, row, name):
+            return (True, {"en": "Second"}) if name == "title" else (False, None)
+
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[_MetaSidecar(), _SecondMetaSidecar()],
+        known_fields={}, catalog_id="c", collection_id="k",
+    )
+    assert doc["metadata"]["title"] == {"en": "First"}
 
 
 def test_reserved_stac_key_in_user_properties_is_dropped():

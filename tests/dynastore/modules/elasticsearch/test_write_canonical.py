@@ -71,6 +71,12 @@ class _FakeStatsSidecar:
             return True, vals[name]
         return False, None
 
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, name):
+        return (False, None)
+
 
 def _make_canonical_input(geoid: str = _GEOID, external_id: str = _EXTERNAL_ID):
     """Return a CanonicalIndexInput that build_canonical_index_doc will accept."""
