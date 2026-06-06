@@ -463,6 +463,43 @@ class ItemMetadataSidecar(SidecarProtocol):
         """Columns owned by this sidecar that are never part of Feature properties."""
         return ITEM_METADATA_RAW_COLUMNS
 
+    def producible_computed_names(self) -> set:
+        """Canonical metadata names this sidecar can surface for the ES builder.
+
+        Returns the un-prefixed canonical names (``title``, ``description``,
+        ``keywords``) that map to the ``metadata`` container in the canonical
+        ES envelope (refs #1838).  These are the keys that
+        :meth:`resolve_computed_value` can read from the PG row.
+        """
+        return {"title", "description", "keywords"}
+
+    def resolve_computed_value(
+        self, row: Dict[str, Any], resolved_name: str
+    ) -> Tuple[bool, Any]:
+        """Locate a metadata value in a raw PG row.
+
+        The PG sidecar join aliases the ``title``, ``description``, and
+        ``keywords`` columns as ``item_title``, ``item_description``, and
+        ``item_keywords`` respectively.  Both the prefixed alias and the
+        canonical name are checked so the method works regardless of which
+        column alias the caller's query used.
+
+        Returns ``(True, value)`` when the row carries the column;
+        ``(False, None)`` when neither alias is present.
+        """
+        col_map = {
+            "title": ("item_title", "title"),
+            "description": ("item_description", "description"),
+            "keywords": ("item_keywords", "keywords"),
+        }
+        aliases = col_map.get(resolved_name)
+        if aliases is None:
+            return (False, None)
+        for alias in aliases:
+            if alias in row:
+                return (True, row[alias])
+        return (False, None)
+
     def map_row_to_feature(
         self,
         row: Dict[str, Any],

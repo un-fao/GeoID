@@ -15,7 +15,10 @@ Tests cover:
 """
 from datetime import datetime, timezone
 
-from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
+from dynastore.modules.elasticsearch.canonical_doc import (
+    build_canonical_index_doc,
+    _validity_to_es_range,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +60,7 @@ class _FakeSidecar:
     def producible_computed_names(self):
         return set(self._produce)
 
-    def resolve_computed_value(self, row, name):  # noqa: ARG002
+    def resolve_computed_value(self, _row, name):  # noqa: ARG002
         if name in self._produce:
             return True, self._produce[name]
         return False, None
@@ -394,8 +397,6 @@ def test_reserved_stac_key_in_user_properties_is_dropped():
 # validity -> ES date_range conversion (#1828)
 # ---------------------------------------------------------------------------
 
-from dynastore.modules.elasticsearch.canonical_doc import _validity_to_es_range
-
 
 def test_validity_range_both_bounds_default_inclusivity():
     """Default tstzrange ``[lower, upper)`` -> gte (inclusive) + lt (exclusive)."""
@@ -594,3 +595,138 @@ def test_stac_reserved_members_none_values_skipped():
     )
     assert "assets" not in doc
     assert "stac_extensions" not in doc
+
+
+# ---------------------------------------------------------------------------
+# #1838 — metadata sidecar-driven path
+# ---------------------------------------------------------------------------
+
+
+class _MetadataSidecar:
+    """Stub that mimics ItemMetadataSidecar.producible_computed_names /
+    resolve_computed_value for the three canonical metadata fields."""
+
+    def producible_computed_names(self):
+        return {"title", "description", "keywords"}
+
+    def resolve_computed_value(self, row, name):
+        col_map = {
+            "title": ("item_title", "title"),
+            "description": ("item_description", "description"),
+            "keywords": ("item_keywords", "keywords"),
+        }
+        aliases = col_map.get(name)
+        if aliases is None:
+            return (False, None)
+        for alias in aliases:
+            if alias in row:
+                return (True, row[alias])
+        return (False, None)
+
+
+def test_metadata_sidecar_populates_metadata_container():
+    """With a resolved ItemMetadataSidecar and a row carrying item_title /
+    item_description / item_keywords the metadata{} container is identical
+    to the old direct-column path (wire-shape unchanged)."""
+    row = _row(
+        item_title={"en": "Rome", "fr": "Rome"},
+        item_description={"en": "The Eternal City"},
+        item_keywords=["city", "europe"],
+    )
+    # New sidecar path
+    doc_sidecar = build_canonical_index_doc(
+        row, resolved_sidecars=[_MetadataSidecar()], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    # Old fallback path (no sidecar, raw columns on row)
+    doc_fallback = build_canonical_index_doc(
+        row, resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert doc_sidecar["metadata"] == {
+        "title": {"en": "Rome", "fr": "Rome"},
+        "description": {"en": "The Eternal City"},
+        "keywords": ["city", "europe"],
+    }
+    # Wire shape must be byte-identical for both paths
+    assert doc_sidecar["metadata"] == doc_fallback["metadata"]
+
+
+def test_metadata_sidecar_names_not_in_stats():
+    """title / description / keywords from the metadata sidecar must not
+    appear in the stats{} container."""
+    row = _row(item_title={"en": "Title"}, item_keywords=["kw"])
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_MetadataSidecar()], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" in doc
+    assert "stats" not in doc
+    # Confirm the metadata sidecar values are only in metadata
+    for key in ("title", "description", "keywords"):
+        assert key not in doc.get("stats", {})
+
+
+def test_metadata_sidecar_names_not_in_stats_with_other_sidecar():
+    """When both a metadata sidecar and a stats sidecar are present, metadata
+    keys stay in metadata{} and stats keys stay in stats{}."""
+    row = _row(item_title={"en": "Title"})
+    row["area"] = 42.0
+    stats_sc = _FakeSidecar({"area": 42.0})
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_MetadataSidecar(), stats_sc], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert doc["metadata"] == {"title": {"en": "Title"}}
+    assert doc["stats"] == {"area": 42.0}
+    # title must not bleed into stats
+    assert "title" not in doc["stats"]
+
+
+def test_metadata_fallback_path_no_sidecar():
+    """When resolved_sidecars=[] but the row carries item_* columns, the
+    fallback path still emits the metadata{} container (backward compat)."""
+    row = _row(item_title={"en": "Fallback"}, item_description={"en": "Desc"})
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert doc["metadata"]["title"] == {"en": "Fallback"}
+    assert doc["metadata"]["description"] == {"en": "Desc"}
+    assert "keywords" not in doc["metadata"]
+
+
+def test_metadata_sidecar_wins_over_fallback_for_same_key():
+    """The sidecar-produced value is stored first; the fallback must not
+    overwrite it even when the row also carries the raw item_* column."""
+    row = _row(item_title={"en": "From sidecar"})
+    # Sidecar returns {"en": "From sidecar"}; fallback would also see item_title.
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_MetadataSidecar()], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    # Should appear exactly once, not duplicated
+    assert doc["metadata"] == {"title": {"en": "From sidecar"}}
+
+
+def test_metadata_absent_when_sidecar_and_no_row_columns():
+    """When the sidecar is present but the row carries no item_* columns
+    and no fallback columns, metadata{} must be absent."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[_MetadataSidecar()], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" not in doc
+
+
+def test_metadata_sidecar_partial_fields():
+    """Only the fields present on the row are emitted; absent fields are
+    silently omitted from metadata{}."""
+    row = _row(item_description={"en": "Only desc"})
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_MetadataSidecar()], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert doc["metadata"] == {"description": {"en": "Only desc"}}
+    assert "title" not in doc["metadata"]
+    assert "keywords" not in doc["metadata"]

@@ -879,4 +879,5 @@ __all__ = [
     "classify_container",
     "_IDENTITY_FIELD_NAMES",
     "_SYSTEM_ONLY_FIELD_NAMES",
+    "_METADATA_FIELD_NAMES",
 ]

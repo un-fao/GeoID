@@ -26,9 +26,16 @@ internal storage concern.
 from typing import Any, Dict, List, Optional
 
 from dynastore.modules.elasticsearch.items_projection import project_item_for_es
-from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+from dynastore.modules.storage.computed_fields import (
+    SYSTEM_FIELD_KEYS,
+    _METADATA_FIELD_NAMES,
+)
 
 _SYSTEM_KEYS: frozenset = frozenset(SYSTEM_FIELD_KEYS)
+# Metadata-container names that must not be claimed by the stats loop.
+# Both canonical names (title/description/keywords) and the item_*-prefixed
+# sidecar column aliases are excluded so neither form leaks into ``stats``.
+_METADATA_KEYS: frozenset = _METADATA_FIELD_NAMES
 
 
 def _iso(value: Any) -> Any:
@@ -236,36 +243,47 @@ def build_canonical_index_doc(
         else:
             system.pop("validity")
 
-    # stats: producible computed values from sidecars NOT claimed by system.
-    # System wins all overlaps: if a sidecar also produces geometry_hash it
-    # still lives in system only.
+    # stats: producible computed values from sidecars NOT claimed by system or
+    # metadata.  System wins all overlaps (geometry_hash stays in system only).
+    # Metadata names are excluded here so they are never double-written into
+    # both ``metadata`` and ``stats`` even if a sidecar declares them.
     stats: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {}
     for sidecar in resolved_sidecars:
         for name in sidecar.producible_computed_names():
-            if name in _SYSTEM_KEYS or name in stats:
+            if name in _SYSTEM_KEYS:
+                continue
+            if name in _METADATA_KEYS:
+                # Metadata-producing sidecar (ItemMetadataSidecar): route to
+                # the metadata container, not stats.  Canonical name wins the
+                # first occurrence; duplicates are skipped.
+                canonical = name if not name.startswith("item_") else name[len("item_"):]
+                if canonical not in metadata:
+                    found, value = sidecar.resolve_computed_value(row, name)
+                    if found and value is not None:
+                        metadata[canonical] = value
+                continue
+            if name in stats:
                 continue
             found, value = sidecar.resolve_computed_value(row, name)
             if found and value is not None:
                 stats[name] = value
 
-    # metadata: multilingual descriptive metadata from the ItemMetadataSidecar
-    # (item_title / item_description / item_keywords JSONB columns). The sidecar
-    # wiring into this assembly is deferred to #1828 Phase 2; for now we read
-    # the three columns directly from the row if present so callers that already
-    # populate them (e.g. future PG-level joins) get the typed metadata container
-    # without any driver change. The preferred canonical names are the un-prefixed
-    # forms (title/description/keywords); the item_* aliases are also accepted.
-    # TODO (#1828 Phase 2): wire ItemMetadataSidecar here so sidecars can produce
-    # metadata fields and this reads from resolved_sidecars instead of the row.
-    metadata: Dict[str, Any] = {}
-    for col, key in (
+    # metadata fallback: when no sidecar populated a metadata key (e.g. the
+    # caller passes resolved_sidecars=[] but the row still carries the raw
+    # item_* columns directly — the dict/Feature adapter path in the private
+    # and envelope doc builders does this), read the columns straight from the
+    # row.  This keeps backward compatibility for non-sidecar callers while
+    # the sidecar path is the preferred production source.
+    for col, canonical in (
         ("item_title", "title"),
         ("item_description", "description"),
         ("item_keywords", "keywords"),
     ):
-        val = row.get(col)
-        if val is not None:
-            metadata[key] = val
+        if canonical not in metadata:
+            val = row.get(col)
+            if val is not None:
+                metadata[canonical] = val
 
     reserved_members: Dict[str, Any] = {"geometry": geometry, "bbox": bbox}
     if stac_reserved_members:
