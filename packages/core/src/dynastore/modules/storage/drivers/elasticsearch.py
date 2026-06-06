@@ -1180,6 +1180,7 @@ class ItemsElasticsearchDriver(
                     bbox=ci.bbox,
                     user_properties=ci.user_properties,
                     access=ci.access,
+                    stac_reserved_members=ci.stac_reserved_members,
                 )
                 doc_id = geoid_for_id
             else:
@@ -1868,6 +1869,7 @@ class ItemsElasticsearchDriver(
             bbox=ci.bbox,
             user_properties=ci.user_properties,
             access=ci.access,
+            stac_reserved_members=ci.stac_reserved_members,
         )
         simplify_geometry = await self._resolve_simplify_geometry(ctx.catalog, ctx.collection)
         doc, factor, mode = maybe_simplify_for_es(doc, simplify=simplify_geometry)
@@ -1953,6 +1955,7 @@ class ItemsElasticsearchDriver(
                 bbox=ci.bbox,
                 user_properties=ci.user_properties,
                 access=ci.access,
+                stac_reserved_members=ci.stac_reserved_members,
             )
             doc, factor, mode = maybe_simplify_for_es(doc, simplify=simplify_geometry)
             _apply_geometry_simplification(doc, factor, mode)

@@ -1056,18 +1056,31 @@ async def create_item_from_feature(
     # StacItemsSidecar.map_row_to_feature already handles merging title,
     # description, etc into `feature.properties` but for extensions and assets
     # `merge_stac_metadata` still expects them in `external_metadata`.
+    #
+    # For default (no-schema/JSONB) catalogs without a stac_metadata sidecar,
+    # `assets` and `stac_extensions` are stored inside the attributes JSONB blob
+    # (keyed as "assets" / "stac_extensions") so they survive the PG round-trip.
+    # strip_reserved_members() above removed them from the working `properties`
+    # dict, but they are still accessible via the raw feature.properties dict.
+    # The fallback reads from there so the round-trip is complete without
+    # requiring the stac_metadata sidecar.
+    _raw_feature_props = feature.properties or {} if hasattr(feature, "properties") else {}
     external_metadata = {}
     feat_assets = getattr(feature, "assets", None)
     if feat_assets:
         external_metadata["external_assets"] = feat_assets
     elif "assets" in properties:
         external_metadata["external_assets"] = properties["assets"]
+    elif "assets" in _raw_feature_props:
+        external_metadata["external_assets"] = _raw_feature_props["assets"]
 
     feat_stac_extensions = getattr(feature, "stac_extensions", None)
     if feat_stac_extensions:
         external_metadata["external_extensions"] = feat_stac_extensions
     elif "stac_extensions" in properties:
         external_metadata["external_extensions"] = properties["stac_extensions"]
+    elif "stac_extensions" in _raw_feature_props:
+        external_metadata["external_extensions"] = _raw_feature_props["stac_extensions"]
 
     extension_context = StacExtensionContext(
         base_url=root_url,
