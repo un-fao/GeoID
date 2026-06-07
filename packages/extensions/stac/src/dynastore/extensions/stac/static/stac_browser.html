@@ -260,7 +260,9 @@
                     window.parent.switchTab('map_viewer');
                 }
                 // postMessage lets map_viewer (also in an iframe) receive the context.
-                window.parent.postMessage({ type: 'open-map', catalogId, collectionId }, '*');
+                // Target our own origin only (never '*') so the message can't leak
+                // to a cross-origin parent.
+                window.parent.postMessage({ type: 'open-map', catalogId, collectionId }, window.location.origin);
             } else {
                 const p = window.location.pathname;
                 const i = p.indexOf('/web/');

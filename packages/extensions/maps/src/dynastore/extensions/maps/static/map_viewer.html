@@ -80,10 +80,15 @@
         // Also accept postMessage deep-links sent by stac_browser "View on map"
         // when both pages run in iframes under the same shell origin.
         window.addEventListener('message', function(evt) {
+            // Only accept messages from the same origin (the embedding shell) to
+            // prevent a malicious cross-origin frame from driving the map.
+            if (evt.origin !== window.location.origin) return;
             if (!evt.data || evt.data.type !== 'open-map') return;
             var catId = evt.data.catalogId;
             var colId = evt.data.collectionId;
-            if (catId && colId) {
+            // Validate identifiers before using them to build layer requests.
+            var idRe = /^[A-Za-z0-9._-]+$/;
+            if (catId && colId && idRe.test(catId) && idRe.test(colId)) {
                 updateMapLayers(catId, [colId]);
             }
         });
