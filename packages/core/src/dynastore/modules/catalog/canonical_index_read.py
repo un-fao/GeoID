@@ -70,20 +70,34 @@ class CanonicalIndexInput:
     policy-free and intended for the ES write boundary only.
 
     Attributes:
-        row:               Raw PG row dict including all sidecar columnar
-                           columns (area, centroid, hashes, validity, …).
-        resolved_sidecars: Sidecar instances that can answer
-                           ``producible_computed_names`` /
-                           ``resolve_computed_value`` for this collection.
-        geometry:          GeoJSON geometry as a plain ``dict``, or ``None``
-                           when the collection has no geometry column.
-        bbox:              Bounding-box list ``[minx, miny, maxx, maxy]``, or
-                           ``None``.
-        user_properties:   User-facing attribute dict — only schema-declared /
-                           JSONB user fields.  No SYSTEM_FIELD_KEYS, no stats.
-        access:            Access-envelope dict for the access-aware ES driver
-                           variant.  Always ``None`` in this implementation;
-                           wired in a follow-up pass.
+        row:                   Raw PG row dict including all sidecar columnar
+                               columns (area, centroid, hashes, validity, …).
+        resolved_sidecars:     Sidecar instances that can answer
+                               ``producible_computed_names`` /
+                               ``resolve_computed_value`` for this collection.
+        geometry:              GeoJSON geometry as a plain ``dict``, or ``None``
+                               when the collection has no geometry column.
+        bbox:                  Bounding-box list ``[minx, miny, maxx, maxy]``,
+                               or ``None``.
+        user_properties:       User-facing attribute dict — only schema-declared
+                               / JSONB user fields.  No SYSTEM_FIELD_KEYS, no
+                               stats.  GeoJSON/STAC reserved members (``assets``,
+                               ``stac_extensions``) are excluded from here and
+                               surfaced via ``stac_reserved_members`` instead so
+                               the canonical doc builder can place them at the ES
+                               document top level where
+                               ``unproject_item_from_es`` can restore them on
+                               read.
+        access:                Access-envelope dict for the access-aware ES
+                               driver variant.  Always ``None`` in this
+                               implementation; wired in a follow-up pass.
+        stac_reserved_members: Per-item STAC members that must live at the ES
+                               doc top level (``assets``, ``stac_extensions``).
+                               Populated when these keys are found in the
+                               attributes JSONB blob — the case for default
+                               (no-schema/JSONB) catalogs whose ``stac_metadata``
+                               sidecar is not active.  ``None`` when the
+                               ``stac_metadata`` sidecar owns them instead.
     """
 
     row: Dict[str, Any]
@@ -92,6 +106,7 @@ class CanonicalIndexInput:
     bbox: Optional[List[float]] = None
     user_properties: Optional[Dict[str, Any]] = None
     access: Optional[Dict[str, Any]] = None
+    stac_reserved_members: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +320,7 @@ async def read_canonical_index_inputs(
 
     result: Dict[str, CanonicalIndexInput] = {}
     for geoid, row in raw_rows.items():
-        geometry, bbox, user_properties = _extract_feature_parts(
+        geometry, bbox, user_properties, stac_reserved_members = _extract_feature_parts(
             row, col_config, resolved_sidecars, catalog_id, collection_id,
         )
         result[geoid] = CanonicalIndexInput(
@@ -315,6 +330,7 @@ async def read_canonical_index_inputs(
             bbox=bbox,
             user_properties=user_properties,
             access=None,
+            stac_reserved_members=stac_reserved_members,
         )
 
     return result
@@ -331,8 +347,8 @@ def _extract_feature_parts(
     resolved_sidecars: List[Any],
     catalog_id: str,
     collection_id: str,
-) -> tuple[Optional[Dict[str, Any]], Optional[List[float]], Optional[Dict[str, Any]]]:
-    """Extract geometry, bbox, and user-only properties from a raw PG row.
+) -> tuple[Optional[Dict[str, Any]], Optional[List[float]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Extract geometry, bbox, user-only properties, and STAC reserved members from a raw PG row.
 
     Does NOT apply any read policy:
     - ``id`` stays as the geoid.
@@ -406,17 +422,37 @@ def _extract_feature_parts(
         except Exception:
             bbox = None
 
-    # User properties: scrub stats, system, and internal-column keys that
-    # the JSONB fallback loop may have mixed in.
+    # GeoJSON/STAC reserved members that must sit at the ES document top
+    # level (not inside ``properties``) so ``unproject_item_from_es`` can
+    # restore them verbatim on read.  For default (no-schema/JSONB) catalogs
+    # without a ``stac_metadata`` sidecar, ``assets`` and ``stac_extensions``
+    # are stored inside the attributes JSONB blob and therefore appear in
+    # ``feature.properties`` after the JSONB is unpacked.
+    # ``project_item_for_es`` would silently drop them (they are in
+    # ``_RESERVED_MEMBER_KEYS``), so we extract them here and route them
+    # through the ``stac_reserved_members`` path instead.
+    _STAC_TOP_LEVEL_KEYS: frozenset = frozenset({"assets", "stac_extensions"})
+
+    # User properties: scrub stats, system, internal-column keys, and
+    # GeoJSON/STAC reserved members that the JSONB fallback loop may have
+    # mixed in.
     user_properties: Optional[Dict[str, Any]] = None
+    stac_reserved_members: Optional[Dict[str, Any]] = None
     if feature.properties is not None:
         exclude = all_computed | all_internal
+        raw_props = feature.properties
+        stac_rsv: Dict[str, Any] = {}
+        for _k in _STAC_TOP_LEVEL_KEYS:
+            if _k in raw_props:
+                stac_rsv[_k] = raw_props[_k]
+        if stac_rsv:
+            stac_reserved_members = stac_rsv
         user_properties = {
-            k: v for k, v in feature.properties.items()
-            if k not in exclude
+            k: v for k, v in raw_props.items()
+            if k not in exclude and k not in _STAC_TOP_LEVEL_KEYS
         }
 
-    return geometry, bbox, user_properties
+    return geometry, bbox, user_properties, stac_reserved_members
 
 
 __all__ = ["CanonicalIndexInput", "read_canonical_index_inputs"]
