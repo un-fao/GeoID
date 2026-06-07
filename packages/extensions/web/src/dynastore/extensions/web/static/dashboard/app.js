@@ -5,6 +5,8 @@
 // strings are rendered via textContent / createElement — never innerHTML —
 // since logs and task names carry untrusted text.
 
+import { mountContextBar } from "../common/context-bar.js";
+
 const app = {
     state: {
         activeTab: 'overview',
@@ -17,19 +19,18 @@ const app = {
 
     // --- Initialization ---
     init() {
-        this.contextSelector = new ContextSelector({
-            containerId: 'context-selector-container',
-            enableCollection: true,
-            enableVirtualCollections: false,
-            enableAssets: false,
-            enableSearch: true,
-            defaultCatalog: '_system_',
-            onChange: (context) => {
-                this.state.catalogId = context.catalogId;
-                this.state.collectionId = context.collectionId;
-                this.refreshAll();
-            }
-        });
+        const container = document.getElementById('context-selector-container');
+        if (container) {
+            this.contextHandle = mountContextBar(container, {
+                mode: 'select',
+                enableVirtualCollections: false,
+                onChange: ({ catalogId, collectionId }) => {
+                    this.state.catalogId = catalogId;
+                    this.state.collectionId = collectionId;
+                    this.refreshAll();
+                },
+            });
+        }
 
         this.bindEvents();
         this.refreshAll();

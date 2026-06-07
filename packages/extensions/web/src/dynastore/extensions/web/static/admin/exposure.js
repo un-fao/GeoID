@@ -1,4 +1,4 @@
-import { apiUrl } from "../common/url.js";
+import { getJSON, patchJSON, fetchCatalogOptions } from "../common/api.js";
 
 (async () => {
   const $ = (sel) => document.querySelector(sel);
@@ -13,48 +13,12 @@ import { apiUrl } from "../common/url.js";
     registryDesc: {},
   };
 
-  // Utility: fetch JSON with error handling. Routes absolute paths through
-  // apiUrl() so the proxy prefix (e.g. /geospatial/v2/api/catalog) is applied.
-  // Bearer token stored by the login flow (same convention as common/api.js).
-  function authHeader() {
-    const key = window.DS_TOKEN_KEY || "ds_token";
-    const ls = (typeof localStorage !== "undefined") ? localStorage : null;
-    const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
-    const token = (ls && ls.getItem(key)) || (ss && ss.getItem(key))
-      || (ls && ls.getItem("ds_token")) || (ss && ss.getItem("ds_token"));
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
-  async function getJSON(url) {
-    const target = apiUrl(url);
-    const r = await fetch(target, { headers: { ...authHeader() } });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`${target} -> ${r.status}: ${text}`);
-    }
-    return r.json();
-  }
-
-  async function patchJSON(url, body) {
-    const target = apiUrl(url);
-    const r = await fetch(target, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", ...authHeader() },
-      body: JSON.stringify(body)
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`${target} -> ${r.status}: ${text}`);
-    }
-    return r.json();
-  }
-
-  // Load catalogs from the grant-filtered /iam/me/catalogs surface. The bare
-  // /admin/catalogs list and cross-tenant /stac/catalogs are denied to a plain
-  // authenticated admin (#1736), which left this picker empty.
+  // Populate #catalog-select using the grant-filtered catalog list from api.js.
+  // fetchCatalogOptions() handles the /iam/me/catalogs → /stac/catalogs fallback
+  // for sysadmin wildcard grants, so no local auth plumbing is needed here.
   async function loadCatalogs() {
     try {
-      const res = await getJSON("/iam/me/catalogs");
+      const catalogs = await fetchCatalogOptions();
       const sel = $("#catalog-select");
       while (sel.firstChild) sel.removeChild(sel.firstChild);
 
@@ -63,19 +27,13 @@ import { apiUrl } from "../common/url.js";
       opt0.textContent = "-- select catalog --";
       sel.appendChild(opt0);
 
-      const items = Array.isArray(res) ? res : (res.items || res.catalogs || []);
-      if (!Array.isArray(items)) return;
-
-      for (const c of items) {
+      for (const c of catalogs) {
         const opt = document.createElement("option");
-        const id = c.id || c.catalog_id || (typeof c === "string" ? c : null);
-        if (!id) continue;
-        opt.value = id;
-        opt.textContent = id;
+        opt.value = c.id;
+        opt.textContent = c.id;
         sel.appendChild(opt);
       }
     } catch (e) {
-      // Catalogs may not exist or user may lack /admin access; safe to ignore.
       console.debug("loadCatalogs:", e.message);
     }
   }

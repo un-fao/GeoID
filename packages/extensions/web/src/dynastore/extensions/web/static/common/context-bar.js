@@ -1,7 +1,16 @@
 // Scope picker for admin pages. Platform / Catalog / Collection.
-// Renders into a container; emits onChange(scope) whenever the selection
-// changes. Keeps state internal, but persists to sessionStorage so
-// navigation between admin pages preserves scope.
+//
+// Two modes:
+//   "bar" (default) — renders a sticky context bar with Platform/Catalog/Collection
+//     radio buttons, sessionStorage persistence, and emits scope objects of the form
+//     {kind, catalogId?, collectionId?}. Used by Configuration and Governance pages.
+//
+//   "select" — embeddable, renders only the dropdown selects (no radios, no sticky bar
+//     chrome) into a caller-provided container. Used by Dashboard, STAC browser, map
+//     viewer, and the bespoke admin <select> pairs. Emits change callbacks with
+//     {catalogId, collectionId} (both may be null).
+//
+// mountContextBar(container, options) — the single public export.
 
 import { fetchCatalogOptions, getJSON } from "./api.js";
 
@@ -27,11 +36,11 @@ function persistScope(scope) {
   }
 }
 
-function buildSelect({ id, placeholder, disabled }) {
+function buildSelect({ id, placeholder, disabled, cls }) {
   const s = document.createElement("select");
-  s.id = id;
+  if (id) s.id = id;
   s.disabled = !!disabled;
-  s.className = "scope-select";
+  s.className = cls || "scope-select";
   const o0 = document.createElement("option");
   o0.value = "";
   o0.textContent = placeholder;
@@ -58,7 +67,30 @@ function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
-export function mountContextBar(container, { onChange } = {}) {
+// Fetch and cache collections for a catalog.
+// Returns a normalized [{id, title}] list; returns [] on error.
+async function fetchCollectionsFor(catalogId, collectionsByCatalog, includeVirtual) {
+  if (!catalogId) return [];
+  if (collectionsByCatalog[catalogId]) return collectionsByCatalog[catalogId];
+  try {
+    let url = `/stac/catalogs/${encodeURIComponent(catalogId)}/collections`;
+    if (includeVirtual) url += "?include_virtual=true";
+    const res = await getJSON(url);
+    const items = Array.isArray(res) ? res : (res.collections || res.items || []);
+    const norm = items.map((c) => ({ id: c.id || c.collection_id || c, title: c.title || c.id || c }));
+    collectionsByCatalog[catalogId] = norm;
+    return norm;
+  } catch {
+    return [];
+  }
+}
+
+// ---- BAR MODE (default) ------------------------------------------------
+// Preserves 100% of the original mountContextBar behaviour: Platform /
+// Catalog / Collection radio buttons, sessionStorage persistence, and scope
+// objects of the form {kind, catalogId?, collectionId?}.
+
+function mountBarMode(container, { onChange } = {}) {
   container.classList.add("context-bar");
   clearNode(container);
 
@@ -122,20 +154,6 @@ export function mountContextBar(container, { onChange } = {}) {
     );
   }
 
-  async function loadCollectionsFor(catalogId) {
-    if (!catalogId) return [];
-    if (collectionsByCatalog[catalogId]) return collectionsByCatalog[catalogId];
-    try {
-      const res = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-      const items = Array.isArray(res) ? res : (res.items || res.collections || []);
-      const norm = items.map((c) => ({ id: c.id || c.collection_id || c }));
-      collectionsByCatalog[catalogId] = norm;
-      return norm;
-    } catch {
-      return [];
-    }
-  }
-
   rPlatform.input.addEventListener("change", () => {
     if (!rPlatform.input.checked) return;
     scope = { kind: "platform" };
@@ -155,7 +173,7 @@ export function mountContextBar(container, { onChange } = {}) {
     if (!rCollection.input.checked) return;
     const catId = scope.kind !== "platform" ? scope.catalogId : (catalogs[0]?.id || "");
     scope = { kind: "collection", catalogId: catId, collectionId: "" };
-    await loadCollectionsFor(catId);
+    await fetchCollectionsFor(catId, collectionsByCatalog, false);
     syncUI();
   });
 
@@ -165,7 +183,7 @@ export function mountContextBar(container, { onChange } = {}) {
       scope = { kind: "catalog", catalogId: v };
     } else if (scope.kind === "collection") {
       scope = { kind: "collection", catalogId: v, collectionId: "" };
-      await loadCollectionsFor(v);
+      await fetchCollectionsFor(v, collectionsByCatalog, false);
     }
     syncUI();
     if (v) emit();
@@ -186,7 +204,7 @@ export function mountContextBar(container, { onChange } = {}) {
     if (scope.kind !== "platform" && !scope.catalogId && catalogs.length) {
       scope.catalogId = catalogs[0].id;
     }
-    if (scope.kind === "collection") await loadCollectionsFor(scope.catalogId);
+    if (scope.kind === "collection") await fetchCollectionsFor(scope.catalogId, collectionsByCatalog, false);
     syncUI();
     // Avoid emitting an incomplete restored scope on boot (e.g. a persisted
     // "collection" scope with no collection chosen yet), which makes
@@ -202,4 +220,209 @@ export function mountContextBar(container, { onChange } = {}) {
       emit();
     },
   };
+}
+
+// ---- SELECT MODE -------------------------------------------------------
+// Embeddable, no sticky-bar chrome. Renders catalog + optional collection
+// selects into the container inside a .context-selector-wrapper div.
+// Calls onChange({catalogId, collectionId}) whenever either select changes.
+// Does NOT write to sessionStorage (no cross-page persistence by design).
+
+function mountSelectMode(container, {
+  onChange,
+  catalogOnly = false,
+  initialCatalog = null,
+  initialCollection = null,
+  autoSelectFirst = false,
+  preferredCollection = null,
+  enableVirtualCollections = false,
+} = {}) {
+  clearNode(container);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "context-selector-wrapper";
+
+  const catalogSelect = buildSelect({ placeholder: "-- catalog --", cls: "filter-select" });
+  wrapper.appendChild(catalogSelect);
+
+  let collectionSelect = null;
+  if (!catalogOnly) {
+    collectionSelect = buildSelect({ placeholder: "-- collection --", disabled: true, cls: "filter-select" });
+    wrapper.appendChild(collectionSelect);
+  }
+
+  container.appendChild(wrapper);
+
+  let currentCatalog = initialCatalog;
+  let currentCollection = initialCollection;
+  const collectionsByCatalog = {};
+
+  function emitChange() {
+    if (typeof onChange === "function") {
+      onChange({ catalogId: currentCatalog || null, collectionId: currentCollection || null });
+    }
+  }
+
+  async function populateCatalogSelect(catalogs) {
+    while (catalogSelect.firstChild) catalogSelect.removeChild(catalogSelect.firstChild);
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "-- catalog --";
+    catalogSelect.appendChild(placeholder);
+    for (const c of catalogs) {
+      const o = document.createElement("option");
+      o.value = c.id;
+      o.textContent = c.title || c.id;
+      if (c.id === currentCatalog) o.selected = true;
+      catalogSelect.appendChild(o);
+    }
+  }
+
+  async function populateCollectionSelect(collections) {
+    if (!collectionSelect) return;
+    while (collectionSelect.firstChild) collectionSelect.removeChild(collectionSelect.firstChild);
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "-- collection --";
+    collectionSelect.appendChild(placeholder);
+    for (const c of collections) {
+      const o = document.createElement("option");
+      o.value = c.id;
+      o.textContent = c.title || c.id;
+      if (c.id === currentCollection) o.selected = true;
+      collectionSelect.appendChild(o);
+    }
+    collectionSelect.disabled = false;
+  }
+
+  async function onCatalogChanged(catId) {
+    currentCatalog = catId || null;
+    currentCollection = null;
+    if (collectionSelect) {
+      clearNode(collectionSelect);
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "-- collection --";
+      collectionSelect.appendChild(ph);
+      collectionSelect.disabled = true;
+    }
+    if (!catId) { emitChange(); return; }
+
+    emitChange();
+
+    if (collectionSelect) {
+      const cols = await fetchCollectionsFor(catId, collectionsByCatalog, enableVirtualCollections);
+      await populateCollectionSelect(cols);
+
+      if (autoSelectFirst && cols.length) {
+        const preferred = preferredCollection
+          ? cols.find((c) => c.id === preferredCollection)
+          : null;
+        const target = preferred || cols[0];
+        currentCollection = target.id;
+        collectionSelect.value = currentCollection;
+        emitChange();
+      }
+    }
+  }
+
+  catalogSelect.addEventListener("change", (e) => {
+    onCatalogChanged(e.target.value || null);
+  });
+
+  if (collectionSelect) {
+    collectionSelect.addEventListener("change", (e) => {
+      currentCollection = e.target.value || null;
+      emitChange();
+    });
+  }
+
+  // Boot: load catalogs and apply initialCatalog / autoSelectFirst
+  (async () => {
+    let catalogs = [];
+    try {
+      catalogs = await fetchCatalogOptions();
+    } catch {
+      catalogs = [];
+    }
+
+    await populateCatalogSelect(catalogs);
+
+    if (!currentCatalog && autoSelectFirst && catalogs.length) {
+      currentCatalog = catalogs[0].id;
+      catalogSelect.value = currentCatalog;
+    }
+
+    if (currentCatalog) {
+      catalogSelect.value = currentCatalog;
+      if (collectionSelect) {
+        const cols = await fetchCollectionsFor(currentCatalog, collectionsByCatalog, enableVirtualCollections);
+        await populateCollectionSelect(cols);
+
+        if (!currentCollection && autoSelectFirst && cols.length) {
+          const preferred = preferredCollection
+            ? cols.find((c) => c.id === preferredCollection)
+            : null;
+          const target = preferred || cols[0];
+          currentCollection = target.id;
+          collectionSelect.value = currentCollection;
+        } else if (currentCollection) {
+          collectionSelect.value = currentCollection;
+        }
+      }
+      emitChange();
+    }
+  })();
+
+  return {
+    getCatalogId: () => currentCatalog,
+    getCollectionId: () => currentCollection,
+    setCatalogId: (catId) => {
+      currentCatalog = catId || null;
+      catalogSelect.value = currentCatalog || "";
+      if (collectionSelect) {
+        currentCollection = null;
+        clearNode(collectionSelect);
+        const ph = document.createElement("option");
+        ph.value = "";
+        ph.textContent = "-- collection --";
+        collectionSelect.appendChild(ph);
+        collectionSelect.disabled = !catId;
+      }
+      emitChange();
+    },
+    setCollectionId: (colId) => {
+      currentCollection = colId || null;
+      if (collectionSelect) collectionSelect.value = currentCollection || "";
+      emitChange();
+    },
+  };
+}
+
+// ---- Public API --------------------------------------------------------
+
+/**
+ * Mount the context picker into `container`.
+ *
+ * @param {HTMLElement} container   - DOM node to render into.
+ * @param {Object}      options
+ * @param {string}      [options.mode="bar"]           - "bar" or "select".
+ * @param {Function}    [options.onChange]             - Callback on scope change.
+ *   Bar mode:    called with {kind, catalogId?, collectionId?}
+ *   Select mode: called with {catalogId, collectionId} (both nullable)
+ * @param {boolean}     [options.catalogOnly=false]    - Select mode: omit collection select.
+ * @param {string}      [options.initialCatalog]       - Select mode: pre-select catalog.
+ * @param {string}      [options.initialCollection]    - Select mode: pre-select collection.
+ * @param {boolean}     [options.autoSelectFirst=false]- Select mode: auto-pick first option.
+ * @param {string}      [options.preferredCollection]  - Select mode: preferred collection id.
+ * @param {boolean}     [options.enableVirtualCollections=false] - Select mode: include virtual collections.
+ *
+ * @returns {Object} Control handle.
+ *   Bar mode:    { getScope(), setScope(scope) }
+ *   Select mode: { getCatalogId(), getCollectionId(), setCatalogId(id), setCollectionId(id) }
+ */
+export function mountContextBar(container, options = {}) {
+  const { mode = "bar", ...rest } = options;
+  if (mode === "select") return mountSelectMode(container, rest);
+  return mountBarMode(container, rest);
 }
