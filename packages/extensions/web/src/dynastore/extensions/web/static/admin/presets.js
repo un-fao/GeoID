@@ -3,7 +3,7 @@
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
-import { getJSON, postJSON, deleteJSON } from "../common/api.js";
+import { getJSON, postJSON, deleteJSON, fetchCatalogOptions } from "../common/api.js";
 import { mountSchemaForm } from "../common/schema-form.js";
 
 // ---------------------------------------------------------------- state
@@ -100,7 +100,7 @@ function tierCompatible(presetTier) {
 async function loadCatalogs() {
   const sel = $("#scope-catalog");
   try {
-    const rows = await getJSON("/admin/catalogs");
+    const rows = await fetchCatalogOptions();
     fillSelect(sel, rows || [], "— platform scope —");
   } catch (e) {
     setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");

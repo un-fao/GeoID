@@ -15,9 +15,19 @@ import { apiUrl } from "../common/url.js";
 
   // Utility: fetch JSON with error handling. Routes absolute paths through
   // apiUrl() so the proxy prefix (e.g. /geospatial/v2/api/catalog) is applied.
+  // Bearer token stored by the login flow (same convention as common/api.js).
+  function authHeader() {
+    const key = window.DS_TOKEN_KEY || "ds_token";
+    const ls = (typeof localStorage !== "undefined") ? localStorage : null;
+    const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
+    const token = (ls && ls.getItem(key)) || (ss && ss.getItem(key))
+      || (ls && ls.getItem("ds_token")) || (ss && ss.getItem("ds_token"));
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   async function getJSON(url) {
     const target = apiUrl(url);
-    const r = await fetch(target);
+    const r = await fetch(target, { headers: { ...authHeader() } });
     if (!r.ok) {
       const text = await r.text();
       throw new Error(`${target} -> ${r.status}: ${text}`);
@@ -29,7 +39,7 @@ import { apiUrl } from "../common/url.js";
     const target = apiUrl(url);
     const r = await fetch(target, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeader() },
       body: JSON.stringify(body)
     });
     if (!r.ok) {
@@ -39,10 +49,12 @@ import { apiUrl } from "../common/url.js";
     return r.json();
   }
 
-  // Load list of catalogs from /admin/catalogs (role-filtered, not /stac/catalogs).
+  // Load catalogs from the grant-filtered /iam/me/catalogs surface. The bare
+  // /admin/catalogs list and cross-tenant /stac/catalogs are denied to a plain
+  // authenticated admin (#1736), which left this picker empty.
   async function loadCatalogs() {
     try {
-      const res = await getJSON("/admin/catalogs");
+      const res = await getJSON("/iam/me/catalogs");
       const sel = $("#catalog-select");
       while (sel.firstChild) sel.removeChild(sel.firstChild);
 

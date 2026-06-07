@@ -235,27 +235,42 @@ class ContextSelector {
     async loadCatalogs() {
         const seq = (this._catSeq = (this._catSeq || 0) + 1);
         try {
-            let offset = 0;
-            const limit = 100;
             let allCatalogs = [];
 
-            while (true) {
-                let url = `/stac/catalogs?limit=${limit}&offset=${offset}`;
-                if (this.state.q) url += `&q=${encodeURIComponent(this.state.q)}`;
+            // Prefer the grant-filtered surface for signed-in users: the
+            // cross-tenant /stac/catalogs list is denied to a plain authenticated
+            // admin (#1736). Fall back to /stac/catalogs for anonymous/public
+            // browsing where /iam/me/catalogs returns 401.
+            let usedMine = false;
+            try {
+                const mine = this._unwrapList(await this._fetchJSON('/iam/me/catalogs'));
+                // Drop the "*" wildcard grant marker — it isn't a selectable
+                // catalog; a wildcard means "fall back to the full list".
+                const concrete = mine.filter(c => (c.id || c.catalog_id || c.code) !== '*');
+                if (concrete.length) { allCatalogs = concrete; usedMine = true; }
+            } catch (_) { /* fall through to public listing */ }
 
-                const catalogs = this._unwrapList(await this._fetchJSON(url));
+            if (!usedMine) {
+                let offset = 0;
+                const limit = 100;
+                while (true) {
+                    let url = `/stac/catalogs?limit=${limit}&offset=${offset}`;
+                    if (this.state.q) url += `&q=${encodeURIComponent(this.state.q)}`;
 
-                if (catalogs.length === 0) break;
-                allCatalogs = allCatalogs.concat(catalogs);
-                if (catalogs.length < limit) break;
-                offset += limit;
+                    const catalogs = this._unwrapList(await this._fetchJSON(url));
+
+                    if (catalogs.length === 0) break;
+                    allCatalogs = allCatalogs.concat(catalogs);
+                    if (catalogs.length < limit) break;
+                    offset += limit;
+                }
             }
             // Discard if a newer load started while this was in flight.
             if (seq !== this._catSeq) return;
-            
+
             allCatalogs.forEach(c => {
                 const opt = document.createElement('option');
-                const idValue = c.id || c.code;
+                const idValue = c.id || c.catalog_id || c.code;
                 opt.value = idValue;
                 opt.textContent = `${c.title || idValue}`;
                 if (this.multipleCatalogs ? this.state.catalogId.includes(idValue) : idValue === this.defaultCatalog) opt.selected = true;
@@ -267,7 +282,7 @@ class ContextSelector {
                 ? this.state.catalogId.every(id => id === '_system_')
                 : this.state.catalogId === '_system_';
             if (this.autoSelectFirst && currentIsSystem && allCatalogs.length > 0) {
-                const firstId = allCatalogs[0].id || allCatalogs[0].code;
+                const firstId = allCatalogs[0].id || allCatalogs[0].catalog_id || allCatalogs[0].code;
                 if (this.multipleCatalogs) {
                     this.state.catalogId = [firstId];
                     Array.from(this.catalogSelect.options).forEach(o => { o.selected = o.value === firstId; });

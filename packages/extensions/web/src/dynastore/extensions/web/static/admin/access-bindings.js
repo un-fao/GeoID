@@ -4,7 +4,7 @@
 // collection-binding CRUD added in #1360 and list_grants_for_resource for
 // the reverse "who can access" view.
 
-import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage, listUsageResetHistory } from "../common/api.js";
+import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage, listUsageResetHistory, fetchCatalogOptions } from "../common/api.js";
 import { downloadAsFile, rowsToCsv } from "../common/download.js";
 
 // ---------------------------------------------------------------- state
@@ -77,7 +77,7 @@ function fillSelect(sel, rows, placeholder, idKey = "id") {
 async function loadCatalogs() {
   const sel = $("#scope-catalog");
   try {
-    const rows = await getJSON("/admin/catalogs");
+    const rows = await fetchCatalogOptions();
     fillSelect(sel, rows || [], "— pick a catalog —");
   } catch (e) {
     setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");

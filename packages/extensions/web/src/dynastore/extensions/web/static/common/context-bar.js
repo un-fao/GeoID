@@ -3,7 +3,7 @@
 // changes. Keeps state internal, but persists to sessionStorage so
 // navigation between admin pages preserves scope.
 
-import { fetchCatalogs, getJSON } from "./api.js";
+import { fetchCatalogOptions, getJSON } from "./api.js";
 
 const STORAGE_KEY = "dynastore.admin.scope";
 
@@ -179,9 +179,7 @@ export function mountContextBar(container, { onChange } = {}) {
 
   (async () => {
     try {
-      const res = await fetchCatalogs();
-      const items = Array.isArray(res) ? res : (res.items || []);
-      catalogs = items.map((c) => ({ id: c.id || c.catalog_id || c }));
+      catalogs = await fetchCatalogOptions();
     } catch {
       catalogs = [];
     }
