@@ -29,7 +29,11 @@ else:
     except ImportError:
         storage = None
 
-from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
+from dynastore.modules.db_config.query_executor import (
+    managed_transaction,
+    DbResource,
+    _is_transient_asyncpg_error,
+)
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import ConfigsProtocol, CatalogsProtocol
 from dynastore.modules.catalog.lifecycle_manager import LifecycleContext
@@ -44,6 +48,43 @@ from dynastore.modules.gcp.tools.bucket import BucketConflictError
 from dynastore.modules.concurrency import run_in_thread
 
 logger = logging.getLogger(__name__)
+
+
+async def _phase_with_retry(engine: DbResource, fn):
+    """Run ``fn(conn)`` in a short committed transaction, retrying once on a
+    dead-connection transient error.
+
+    The bucket-provisioning phases (``ensure_storage_for_catalog`` phase 1 / 3)
+    open their own short transactions between slow GCS calls. On a long-lived
+    deployment (e.g. dev/review on AlloyDB) the pool can hand out a wire the
+    server already closed while idle, surfacing as an asyncpg ``InterfaceError``
+    ("connection is closed") on first use. The write-path helper
+    ``_provisioning_write_with_retry`` (#1895) already retries those for the
+    catalog-status writes; the bucket phases lacked the same guard, so a stale
+    connection failed the whole ``gcp_provision_catalog`` task before the bucket
+    step completed — leaving the catalog wedged in 'provisioning' (#1894). The
+    retry acquires a FRESH connection from the pool, never the stale one.
+    """
+    for attempt in range(2):
+        try:
+            async with managed_transaction(engine) as conn:
+                return await fn(conn)
+        except Exception as exc:
+            orig = getattr(exc, "orig", exc)
+            transient = (
+                _is_transient_asyncpg_error(exc)
+                or _is_transient_asyncpg_error(orig)
+            )
+            if attempt == 0 and transient:
+                logger.warning(
+                    "bucket_provision phase: transient %s (cause %s) on a pooled "
+                    "connection; retrying once on a fresh connection.",
+                    exc.__class__.__name__, orig.__class__.__name__,
+                )
+                await asyncio.sleep(0)
+                continue
+            raise
+    raise AssertionError("_phase_with_retry: exhausted attempts")
 
 
 class BucketService:
@@ -406,28 +447,35 @@ class BucketService:
 
         # ── conn=None: three-phase to avoid holding a pooled conn across GCS I/O ──
 
-        # Phase 1 (short tx): bucket-exists short-circuit + effective config resolution.
-        async with managed_transaction(self.engine) as p1_conn:
-            existing_bucket = await gcp_db.get_bucket_for_catalog_query.execute(
+        # Phase 1 (short tx, retried on a dead pooled conn): bucket-exists
+        # short-circuit + effective config resolution.
+        async def _phase1(p1_conn):
+            existing = await gcp_db.get_bucket_for_catalog_query.execute(
                 p1_conn, catalog_id=catalog_id
             )
-            if existing_bucket:
-                return existing_bucket
-
+            if existing:
+                return ("existing", existing)
             if not auto_create:
                 logger.info(
                     f"Bucket for catalog '{catalog_id}' does not exist and "
                     "auto_create=False. Skipping creation."
                 )
-                return None
-
-            effective_config = await self._resolve_effective_config(
+                return ("skip", None)
+            eff = await self._resolve_effective_config(
                 p1_conn,
                 catalog_id=catalog_id,
                 context=context,
                 config_override=config_override,
                 persist_default=True,
             )
+            return ("config", eff)
+
+        _p1_kind, _p1_val = await _phase_with_retry(self.engine, _phase1)
+        if _p1_kind == "existing":
+            return _p1_val
+        if _p1_kind == "skip":
+            return None
+        effective_config = _p1_val
 
         # Phase 2 (NO DB connection held): GCS bucket create + settings + placeholders.
         if not self.project_id:
@@ -455,10 +503,12 @@ class BucketService:
         # (``bucket_created is False``) is owned by someone else and force-
         # deleting it would destroy their data.
         try:
-            async with managed_transaction(self.engine) as p3_conn:
-                result = await gcp_db.link_bucket_to_catalog_query.execute(
+            async def _phase3(p3_conn):
+                return await gcp_db.link_bucket_to_catalog_query.execute(
                     p3_conn, catalog_id=catalog_id, bucket_name=new_bucket_name
                 )
+
+            result = await _phase_with_retry(self.engine, _phase3)
         except Exception as e:
             logger.error(
                 f"Failed to link bucket '{new_bucket_name}' to catalog '{catalog_id}': {e}",
