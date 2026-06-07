@@ -32,29 +32,6 @@
          bindings table is displaying PG-fallback counter figures. -->
     <p id="usage-stale-banner-inline" class="status err" style="display:none"></p>
 
-    <!-- Scope picker -------------------------------------------------- -->
-    <section class="plate">
-      <div class="plate-header">
-        <h3>Scope</h3>
-        <div class="plate-meta" id="scope-route">GET /admin/catalogs · /catalogs/{cat}/collections</div>
-      </div>
-      <div class="form-row">
-        <div>
-          <label for="scope-catalog">Catalog</label>
-          <select id="scope-catalog">
-            <option value="">— pick a catalog —</option>
-          </select>
-        </div>
-        <div>
-          <label for="scope-collection">Collection</label>
-          <select id="scope-collection" disabled>
-            <option value="">— pick a collection —</option>
-          </select>
-        </div>
-      </div>
-      <div id="scope-status" class="hint"></div>
-    </section>
-
     <div class="tabs" id="tabs" role="tablist">
       <button class="tab-btn active" data-tab="by-principal">By principal</button>
       <button class="tab-btn" data-tab="by-resource">Who can access this collection</button>

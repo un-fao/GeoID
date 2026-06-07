@@ -3,8 +3,9 @@
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
-import { getJSON, postJSON, deleteJSON, fetchCatalogOptions } from "../common/api.js";
+import { getJSON, postJSON, deleteJSON } from "../common/api.js";
 import { mountSchemaForm } from "../common/schema-form.js";
+import { mountContextBar } from "../common/context-bar.js";
 
 // ---------------------------------------------------------------- state
 
@@ -93,54 +94,6 @@ function tierCompatible(presetTier) {
   if (active === "catalog" && (presetTier === "catalog" || presetTier === "items" || presetTier === "assets")) return true;
   if (active === "collection" && (presetTier === "collection" || presetTier === "items" || presetTier === "assets")) return true;
   return false;
-}
-
-// ---------------------------------------------------------------- scope pickers
-
-async function loadCatalogs() {
-  const sel = $("#scope-catalog");
-  try {
-    const rows = await fetchCatalogOptions();
-    fillSelect(sel, rows || [], "— platform scope —");
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");
-  }
-}
-
-async function loadCollections(catalogId) {
-  const sel = $("#scope-collection");
-  clear(sel);
-  if (!catalogId) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "— pick a collection —";
-    sel.appendChild(opt);
-    sel.disabled = true;
-    return;
-  }
-  try {
-    const data = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-    const cols = (data && (data.collections || data)) || [];
-    fillSelect(sel, cols, "— all collections —");
-    sel.disabled = false;
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load collections: ${e.message}`, "error");
-  }
-}
-
-function fillSelect(sel, rows, placeholder) {
-  clear(sel);
-  const def = document.createElement("option");
-  def.value = "";
-  def.textContent = placeholder;
-  sel.appendChild(def);
-  for (const r of rows) {
-    const id = (typeof r === "object") ? (r.id || r.catalog_id || r) : r;
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = id;
-    sel.appendChild(opt);
-  }
 }
 
 // ---------------------------------------------------------------- preset list
@@ -647,18 +600,17 @@ function bindFilters() {
   });
 }
 
-function bindScopePickers() {
-  $("#scope-catalog").addEventListener("change", async (e) => {
-    state.catalogId = e.target.value || null;
-    state.collectionId = null;
-    await loadCollections(state.catalogId);
-    await loadPresets(true);
-    if (state.selectedPreset) await refreshAppliedHistory();
-  });
-  $("#scope-collection").addEventListener("change", async (e) => {
-    state.collectionId = e.target.value || null;
-    await loadPresets(true);
-    if (state.selectedPreset) await refreshAppliedHistory();
+function mountScopePicker() {
+  const scopeEl = document.getElementById("scope-picker");
+  if (!scopeEl) return;
+  mountContextBar(scopeEl, {
+    mode: "select",
+    onChange: async ({ catalogId, collectionId }) => {
+      state.catalogId = catalogId;
+      state.collectionId = collectionId;
+      await loadPresets(true);
+      if (state.selectedPreset) await refreshAppliedHistory();
+    },
   });
 }
 
@@ -742,7 +694,7 @@ function bindFilterInputSync() {
 
 (async function init() {
   bindFilters();
-  bindScopePickers();
+  mountScopePicker();
   bindPresetList();
   bindPagination();
   bindDetailActions();
@@ -750,6 +702,5 @@ function bindFilterInputSync() {
   bindFilterInputSync();
   syncFiltersFromState();
 
-  await loadCatalogs();
   await loadPresets(true);
 })();

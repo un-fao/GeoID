@@ -4,8 +4,9 @@
 // collection-binding CRUD added in #1360 and list_grants_for_resource for
 // the reverse "who can access" view.
 
-import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage, listUsageResetHistory, fetchCatalogOptions } from "../common/api.js";
+import { getJSON, postJSON, putJSON, deleteJSON, resetGrantUsage, listUsageResetHistory } from "../common/api.js";
 import { downloadAsFile, rowsToCsv } from "../common/download.js";
+import { mountContextBar } from "../common/context-bar.js";
 
 // ---------------------------------------------------------------- state
 
@@ -55,57 +56,6 @@ function fmtQuota(q) {
 function clear(el) {
   while (el.firstChild) el.removeChild(el.firstChild);
 }
-
-// ---------------------------------------------------------------- catalog + collection pickers
-
-function fillSelect(sel, rows, placeholder, idKey = "id") {
-  // Use DOM methods — never innerHTML with server-derived strings.
-  while (sel.firstChild) sel.removeChild(sel.firstChild);
-  const blank = document.createElement("option");
-  blank.value = "";
-  blank.textContent = placeholder;
-  sel.appendChild(blank);
-  for (const r of rows) {
-    const opt = document.createElement("option");
-    const v = String(r[idKey] || "");
-    opt.value = v;
-    opt.textContent = v;
-    sel.appendChild(opt);
-  }
-}
-
-async function loadCatalogs() {
-  const sel = $("#scope-catalog");
-  try {
-    const rows = await fetchCatalogOptions();
-    fillSelect(sel, rows || [], "— pick a catalog —");
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");
-  }
-}
-
-async function loadCollections(catalogId) {
-  const sel = $("#scope-collection");
-  if (!catalogId) {
-    sel.disabled = true;
-    // Reset via DOM — not innerHTML — so no server content is involved.
-    while (sel.firstChild) sel.removeChild(sel.firstChild);
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "— pick a collection —";
-    sel.appendChild(opt);
-    return;
-  }
-  try {
-    const data = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-    const cols = data.collections || data || [];
-    fillSelect(sel, cols, "— pick a collection —");
-    sel.disabled = false;
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load collections: ${e.message}`, "error");
-  }
-}
-
 
 // ---------------------------------------------------------------- principal picker
 
@@ -1279,21 +1229,6 @@ function switchTab(name) {
 }
 
 function bind() {
-  $("#scope-catalog").addEventListener("change", async (e) => {
-    state.catalogId = e.target.value || null;
-    state.collectionId = null;
-    await loadCollections(state.catalogId);
-    refreshBindings();
-    refreshReverse();
-    loadStampingConfig();
-  });
-  $("#scope-collection").addEventListener("change", (e) => {
-    state.collectionId = e.target.value || null;
-    refreshBindings();
-    refreshReverse();
-    loadStampingConfig();
-  });
-
   $("#principal-search-btn").addEventListener("click", searchPrincipals);
   $("#principal-search").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -1377,6 +1312,21 @@ function bind() {
 
 (async function init() {
   bind();
-  await loadCatalogs();
+
+  // Mount the canonical context picker into the shared context-bar slot.
+  const ctxBar = document.getElementById("context-bar");
+  if (ctxBar) {
+    mountContextBar(ctxBar, {
+      mode: "select",
+      onChange: ({ catalogId, collectionId }) => {
+        state.catalogId = catalogId;
+        state.collectionId = collectionId;
+        refreshBindings();
+        refreshReverse();
+        loadStampingConfig();
+      },
+    });
+  }
+
   loadStampingConfig();
 })();

@@ -11,8 +11,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Marked.js for rendering description markdown -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- Context Selector for dynamic navigation -->
-    <script src="../static/website/context-selector.js?v={{VERSION}}"></script>
 
     <style>
         body {
@@ -156,11 +154,12 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
         // -----------------------------------------------
         // AIP Self-contained STAC Browser
         // Calls /stac/ API directly — no external class deps
         // -----------------------------------------------
+        import { mountContextBar } from "../static/common/context-bar.js";
 
         let allItems = [];  // flat list for sidebar filter
 
@@ -432,31 +431,28 @@
         async function init() {
             setLoading('Connecting to STAC API…');
 
-            // Initialize Context Selector
-            const cs = new ContextSelector({
-                containerId: 'cs-container',
-                enableCollection: true,
-                enableVirtualCollections: true,
-                enableAssets: false,
-                onChange: async (detail) => {
-                    const catId = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
-                    const colId = Array.isArray(detail.collectionId) ? detail.collectionId[0] : detail.collectionId;
-
-                    let targetUrl = ROOT;
-                    if (catId && catId !== '_system_' && colId) {
-                        targetUrl = `${ROOT}catalogs/${catId}/collections/${colId}`;
-                    } else if (catId && catId !== '_system_') {
-                        targetUrl = `${ROOT}catalogs/${catId}`;
-                    }
-
-                    try {
-                        const data = await loadDetail(targetUrl);
-                        updateSidebarFromData(data, targetUrl);
-                    } catch (e) {
-                        console.error('Failed to update context detail:', e);
-                    }
-                }
-            });
+            // Initialize context selector using the canonical shared component.
+            const csContainer = document.getElementById('cs-container');
+            if (csContainer) {
+                mountContextBar(csContainer, {
+                    mode: 'select',
+                    enableVirtualCollections: true,
+                    onChange: async ({ catalogId: catId, collectionId: colId }) => {
+                        let targetUrl = ROOT;
+                        if (catId && catId !== '_system_' && colId) {
+                            targetUrl = `${ROOT}catalogs/${catId}/collections/${colId}`;
+                        } else if (catId && catId !== '_system_') {
+                            targetUrl = `${ROOT}catalogs/${catId}`;
+                        }
+                        try {
+                            const data = await loadDetail(targetUrl);
+                            updateSidebarFromData(data, targetUrl);
+                        } catch (e) {
+                            console.error('Failed to update context detail:', e);
+                        }
+                    },
+                });
+            }
 
             try {
                 const root = await fetchJson(ROOT);

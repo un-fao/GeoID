@@ -1,6 +1,5 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="../static/website/context-selector.js?v={{VERSION}}"></script>
 
 <div data-fills-viewport class="flex flex-col" style="height:100%;">
     <div class="flex gap-4 overflow-hidden" style="flex:1;min-height:0;">
@@ -28,12 +27,14 @@
     </div>
 </div>
 
-<script>
+<script type="module">
+    import { mountContextBar } from "../static/common/context-bar.js";
+
     let map;
     let activeLayers = {};
 
     // Derive the reverse-proxy prefix from the current pathname.
-    // Mirrors ContextSelector._apiUrl() — both use '/web/' as the boundary.
+    // Both the canonical api.js apiBase() and this local use '/web/' as the boundary.
     const _apiPrefix = (function() {
         var p = window.location.pathname;
         var i = p.indexOf('/web/');
@@ -57,25 +58,21 @@
             maxZoom: 20
         }).addTo(map);
 
-        // Initialize Context Selector.
-        // When deep-link params are present, seed defaultCatalog/preferredCollection
+        // Initialize context selector using the canonical shared component.
+        // When deep-link params are present, seed initialCatalog/preferredCollection
         // so the selector boots with the requested layer already selected.
-        var csOptions = {
-            containerId: 'map-context-selector-container',
-            enableCollection: true,
-            multipleCollections: true,
-            autoSelectFirst: true,
-            preferredCollection: _preselCollection || 'demo',
-            onChange: function(detail) {
-                var dataset = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
-                var collections = Array.isArray(detail.collectionIds) ? detail.collectionIds : (detail.collectionId ? [detail.collectionId] : []);
-                updateMapLayers(dataset, collections);
-            }
-        };
-        if (_preselCatalog) {
-            csOptions.defaultCatalog = _preselCatalog;
+        const csContainer = document.getElementById('map-context-selector-container');
+        if (csContainer) {
+            mountContextBar(csContainer, {
+                mode: 'select',
+                autoSelectFirst: true,
+                initialCatalog: _preselCatalog || null,
+                preferredCollection: _preselCollection || 'demo',
+                onChange: function({ catalogId, collectionId }) {
+                    updateMapLayers(catalogId, collectionId ? [collectionId] : []);
+                },
+            });
         }
-        new ContextSelector(csOptions);
 
         // Also accept postMessage deep-links sent by stac_browser "View on map"
         // when both pages run in iframes under the same shell origin.

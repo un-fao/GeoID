@@ -4,15 +4,13 @@
 // been chosen.
 
 import {
-  fetchMe, fetchMyCatalogs, fetchCatalogs, postFeatures, getJSON,
+  fetchMe, postFeatures,
 } from "../common/api.js";
+import { mountContextBar } from "../common/context-bar.js";
 
 const $ = (s) => document.querySelector(s);
 
 const state = {
-  isSysadmin: false,
-  myCatalogs: [],
-  allCatalogs: [],
   files: [],                 // [{name, size, features}]
   totalFeatures: 0,
   selectedCatalog: null,
@@ -209,80 +207,10 @@ async function onSubmit() {
   }
 }
 
-// --- Target selectors -------------------------------------------------
-
-async function populateCatalogs() {
-  const sel = $("#ing-catalog");
-  clearNode(sel);
-  const opt0 = document.createElement("option");
-  opt0.value = "";
-  opt0.textContent = "Choose catalog…";
-  sel.appendChild(opt0);
-
-  try {
-    state.allCatalogs = await fetchCatalogs();
-  } catch (_) {
-    state.allCatalogs = [];
-  }
-  const items = Array.isArray(state.allCatalogs)
-    ? state.allCatalogs
-    : (state.allCatalogs.catalogs || state.allCatalogs.items || []);
-
-  const allowed = state.isSysadmin
-    ? items.map((c) => c.id).filter(Boolean)
-    : state.myCatalogs.map((c) => c.catalog_id);
-  const allowedSet = new Set(allowed);
-  for (const c of items) {
-    if (!c.id || !allowedSet.has(c.id)) continue;
-    const o = document.createElement("option");
-    o.value = c.id;
-    o.textContent = c.id;
-    sel.appendChild(o);
-  }
-}
-
-async function populateCollections(catalogId) {
-  const sel = $("#ing-collection");
-  clearNode(sel);
-  const opt0 = document.createElement("option");
-  opt0.value = "";
-  opt0.textContent = "Choose collection…";
-  sel.appendChild(opt0);
-  if (!catalogId) {
-    sel.disabled = true;
-    return;
-  }
-  sel.disabled = false;
-
-  try {
-    const payload = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-    const items = Array.isArray(payload)
-      ? payload
-      : (payload.collections || payload.items || []);
-    for (const c of items) {
-      if (!c.id) continue;
-      const o = document.createElement("option");
-      o.value = c.id;
-      o.textContent = c.id;
-      sel.appendChild(o);
-    }
-  } catch (e) {
-    setStatus(`Collections load failed: ${e.message}`, "err");
-  }
-}
-
 // --- Boot -------------------------------------------------------------
 
 async function boot() {
   const me = await fetchMe();
-  const roles = me.roles || [];
-  state.isSysadmin = roles.includes("sysadmin");
-
-  try {
-    state.myCatalogs = await fetchMyCatalogs();
-  } catch (_) {
-    state.myCatalogs = [];
-  }
 
   if (!me.principal) {
     const main = document.querySelector("main");
@@ -294,19 +222,18 @@ async function boot() {
     return;
   }
 
-  await populateCatalogs();
-  await populateCollections("");
-
-  $("#ing-catalog").addEventListener("change", async (e) => {
-    state.selectedCatalog = e.target.value || null;
-    state.selectedCollection = null;
-    await populateCollections(state.selectedCatalog);
-    updateButtons();
-  });
-  $("#ing-collection").addEventListener("change", (e) => {
-    state.selectedCollection = e.target.value || null;
-    updateButtons();
-  });
+  // Mount the canonical context picker into the target plate.
+  const pickerEl = document.getElementById("ing-target-picker");
+  if (pickerEl) {
+    mountContextBar(pickerEl, {
+      mode: "select",
+      onChange: ({ catalogId, collectionId }) => {
+        state.selectedCatalog = catalogId;
+        state.selectedCollection = collectionId;
+        updateButtons();
+      },
+    });
+  }
 
   // Dropzone + file picker
   const zone = $("#dropzone");

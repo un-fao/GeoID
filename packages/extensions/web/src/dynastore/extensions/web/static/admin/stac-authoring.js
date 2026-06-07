@@ -4,7 +4,7 @@
 // friendly message if the POST comes back 403.
 
 import {
-  fetchMe, fetchCatalogs, fetchMyCatalogs,
+  fetchMe, fetchCatalogs, fetchCatalogOptions,
   createStacCatalog, createStacCollection,
 } from "../common/api.js";
 
@@ -12,7 +12,6 @@ const $ = (s) => document.querySelector(s);
 
 const state = {
   isSysadmin: false,
-  myCatalogs: [],
   allCatalogs: [],
 };
 
@@ -121,8 +120,9 @@ async function refreshCatalogs() {
   loading.appendChild(td);
   tbody.appendChild(loading);
 
+  let raw;
   try {
-    state.allCatalogs = await fetchCatalogs();
+    raw = await fetchCatalogs();
   } catch (e) {
     clearNode(tbody);
     const tr = document.createElement("tr");
@@ -137,9 +137,8 @@ async function refreshCatalogs() {
 
   clearNode(tbody);
   // /catalogs may return a bare list or {catalogs: [...]}.
-  const items = Array.isArray(state.allCatalogs)
-    ? state.allCatalogs
-    : (state.allCatalogs.catalogs || state.allCatalogs.items || []);
+  const items = Array.isArray(raw) ? raw : (raw.catalogs || raw.items || []);
+  state.allCatalogs = items;
   if (!items.length) {
     const tr = document.createElement("tr");
     tr.className = "empty-row";
@@ -166,7 +165,8 @@ async function refreshCatalogs() {
     }
   }
 
-  // Repopulate the catalog <select> for collection creation.
+  // Repopulate the catalog <select> for collection creation using the
+  // grant-filtered list so non-sysadmin catalog admins see only their tenants.
   const sel = $("#col-catalog");
   clearNode(sel);
   const opt0 = document.createElement("option");
@@ -174,12 +174,12 @@ async function refreshCatalogs() {
   opt0.textContent = "Choose catalog…";
   sel.appendChild(opt0);
 
-  const allowed = state.isSysadmin
-    ? items.map((c) => c.id).filter(Boolean)
-    : state.myCatalogs.map((c) => c.catalog_id);
-  const allowedSet = new Set(allowed);
-  for (const c of items) {
-    if (!c.id || !allowedSet.has(c.id)) continue;
+  let allowed = [];
+  try {
+    allowed = await fetchCatalogOptions();
+  } catch (_) { /* leave the select empty on error */ }
+
+  for (const c of allowed) {
     const o = document.createElement("option");
     o.value = c.id;
     o.textContent = c.id;
@@ -274,21 +274,24 @@ async function boot() {
   const roles = me.roles || [];
   state.isSysadmin = roles.includes("sysadmin");
 
-  try {
-    state.myCatalogs = await fetchMyCatalogs();
-  } catch (_) {
-    state.myCatalogs = [];
-  }
+  // Gate: the user needs sysadmin or at least one catalog grant to author resources.
+  // fetchCatalogOptions() handles the /iam/me/catalogs → /stac/catalogs fallback.
+  if (!state.isSysadmin) {
+    let accessible = [];
+    try {
+      accessible = await fetchCatalogOptions();
+    } catch (_) { /* deny on error */ }
 
-  if (!state.isSysadmin && !state.myCatalogs.length) {
-    const main = document.querySelector("main");
-    clearNode(main);
-    const p = document.createElement("p");
-    p.className = "subtitle";
-    p.textContent =
-      "You need sysadmin, or a role on at least one catalog, to author STAC resources.";
-    main.appendChild(p);
-    return;
+    if (!accessible.length) {
+      const main = document.querySelector("main");
+      clearNode(main);
+      const p = document.createElement("p");
+      p.className = "subtitle";
+      p.textContent =
+        "You need sysadmin, or a role on at least one catalog, to author STAC resources.";
+      main.appendChild(p);
+      return;
+    }
   }
 
   // Disable the catalog-create form for non-sysadmins (backend will also block).

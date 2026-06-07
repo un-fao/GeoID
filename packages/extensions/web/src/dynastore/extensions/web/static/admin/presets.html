@@ -27,27 +27,7 @@
     </p>
 
     <!-- Scope picker ---------------------------------------------------- -->
-    <section class="plate" aria-label="Scope">
-      <div class="plate-header">
-        <h3>Scope</h3>
-        <div class="plate-meta" id="scope-route">GET /admin/catalogs · /catalogs/{cat}/collections</div>
-      </div>
-      <div class="form-row">
-        <div>
-          <label for="scope-catalog">Catalog</label>
-          <select id="scope-catalog" aria-label="Catalog selector">
-            <option value="">— platform scope —</option>
-          </select>
-        </div>
-        <div>
-          <label for="scope-collection">Collection</label>
-          <select id="scope-collection" disabled aria-label="Collection selector">
-            <option value="">— pick a collection —</option>
-          </select>
-        </div>
-      </div>
-      <div id="scope-status" class="hint" role="status" aria-live="polite"></div>
-    </section>
+    <div id="scope-picker" class="context-bar"></div>
 
     <!-- Filters --------------------------------------------------------- -->
     <section class="plate" aria-label="Filters">
