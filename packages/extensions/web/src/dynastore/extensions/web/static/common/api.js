@@ -425,6 +425,47 @@ export async function postFeatures(catalogId, collectionId, payload) {
 // signed-in principal. Used to discover "catalog admin" scope.
 export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");
 
+// Catalog options for pickers, grant-filtered to the signed-in principal.
+// Sources from /iam/me/catalogs (allowed for any authenticated principal via
+// self_service_authorization_api) rather than the cross-tenant /stac/catalogs
+// or the bare /admin/catalogs list — both of which are denied to a plain
+// authenticated admin and made the admin pickers render empty (#1736).
+// Normalized to {id, catalog_id, title} so every dropdown reads a stable id.
+const _normalizeCatalogList = (raw) => {
+  const list = Array.isArray(raw) ? raw : (raw.catalogs || raw.items || []);
+  return list
+    .map((c) => {
+      const id = (typeof c === "string")
+        ? c
+        : (c.id || c.catalog_id || c.code || "");
+      const title = (typeof c === "string") ? c : (c.title || c.name || id);
+      return { id, catalog_id: id, title };
+    })
+    .filter((c) => c.id);
+};
+
+export const fetchCatalogOptions = async () => {
+  let mine = [];
+  try {
+    mine = _normalizeCatalogList(await fetchMyCatalogs());
+  } catch (_) { mine = []; }
+  const concrete = mine.filter((c) => c.id !== "*");
+  if (concrete.length) return concrete;
+  // A wildcard ("*") grant or empty result means the caller is a platform-tier
+  // admin with no enumerated catalogs. Try the cross-tenant list, which is only
+  // permitted for sysadmin (sysadmin_full_access); if denied, return what we
+  // have rather than surfacing a meaningless "*" option. Cross-tenant
+  // enumeration for non-sysadmin platform admins is intentionally not granted
+  // (private-catalogs-never-aggregate invariant, #1736).
+  const wildcard = mine.some((c) => c.id === "*");
+  if (wildcard) {
+    try {
+      return _normalizeCatalogList(await getJSON("/stac/catalogs"));
+    } catch (_) { /* not permitted to enumerate cross-tenant */ }
+  }
+  return concrete;
+};
+
 export const getCatalogProvisioning = (catalogId) =>
   getJSON(`/admin/catalogs/${encodeURIComponent(catalogId)}`);
 

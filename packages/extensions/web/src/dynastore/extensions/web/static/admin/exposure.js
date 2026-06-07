@@ -7,14 +7,27 @@ import { apiUrl } from "../common/url.js";
     catalog: null,
     resolved: {},
     explicit: {},
-    dirty: {}
+    dirty: {},
+    // PascalCase class name → human-readable description from /configs/registry.
+    // Loaded once at init; used to annotate the Extension column.
+    registryDesc: {},
   };
 
   // Utility: fetch JSON with error handling. Routes absolute paths through
   // apiUrl() so the proxy prefix (e.g. /geospatial/v2/api/catalog) is applied.
+  // Bearer token stored by the login flow (same convention as common/api.js).
+  function authHeader() {
+    const key = window.DS_TOKEN_KEY || "ds_token";
+    const ls = (typeof localStorage !== "undefined") ? localStorage : null;
+    const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
+    const token = (ls && ls.getItem(key)) || (ss && ss.getItem(key))
+      || (ls && ls.getItem("ds_token")) || (ss && ss.getItem("ds_token"));
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   async function getJSON(url) {
     const target = apiUrl(url);
-    const r = await fetch(target);
+    const r = await fetch(target, { headers: { ...authHeader() } });
     if (!r.ok) {
       const text = await r.text();
       throw new Error(`${target} -> ${r.status}: ${text}`);
@@ -26,7 +39,7 @@ import { apiUrl } from "../common/url.js";
     const target = apiUrl(url);
     const r = await fetch(target, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeader() },
       body: JSON.stringify(body)
     });
     if (!r.ok) {
@@ -36,10 +49,12 @@ import { apiUrl } from "../common/url.js";
     return r.json();
   }
 
-  // Load list of catalogs
+  // Load catalogs from the grant-filtered /iam/me/catalogs surface. The bare
+  // /admin/catalogs list and cross-tenant /stac/catalogs are denied to a plain
+  // authenticated admin (#1736), which left this picker empty.
   async function loadCatalogs() {
     try {
-      const res = await getJSON("/stac/catalogs");
+      const res = await getJSON("/iam/me/catalogs");
       const sel = $("#catalog-select");
       while (sel.firstChild) sel.removeChild(sel.firstChild);
 
@@ -48,7 +63,7 @@ import { apiUrl } from "../common/url.js";
       opt0.textContent = "-- select catalog --";
       sel.appendChild(opt0);
 
-      const items = res.items || res || [];
+      const items = Array.isArray(res) ? res : (res.items || res.catalogs || []);
       if (!Array.isArray(items)) return;
 
       for (const c of items) {
@@ -59,13 +74,33 @@ import { apiUrl } from "../common/url.js";
         opt.textContent = id;
         sel.appendChild(opt);
       }
-      if (items.length > 0) {
-        const firstId = items[0].id || items[0].catalog_id || items[0];
-        if (firstId) state.catalog = firstId;
-      }
     } catch (e) {
-      // Catalogs may not exist; safe to ignore
+      // Catalogs may not exist or user may lack /admin access; safe to ignore.
       console.debug("loadCatalogs:", e.message);
+    }
+  }
+
+  // Load the config registry once and return a PascalCase-key → description map.
+  // Keys in the registry are snake_case; we convert them to PascalCase to match
+  // the class names returned by /configs. Falls back to {} on error so the grid
+  // still renders (the key itself serves as fallback label).
+  async function loadRegistryDescriptions() {
+    try {
+      const reg = await getJSON("/configs/registry");
+      if (!reg || typeof reg !== "object") return {};
+      // Convert snake_case registry key → PascalCase class name.
+      function toPascal(s) {
+        return s.replace(/(^|_)([a-z])/g, (_, _sep, ch) => ch.toUpperCase());
+      }
+      const out = {};
+      for (const [pluginId, meta] of Object.entries(reg)) {
+        if (meta && meta.description) {
+          out[toPascal(pluginId)] = meta.description;
+        }
+      }
+      return out;
+    } catch (_) {
+      return {};
     }
   }
 

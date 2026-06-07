@@ -32,9 +32,22 @@
     let map;
     let activeLayers = {};
 
+    // Derive the reverse-proxy prefix from the current pathname.
+    // Mirrors ContextSelector._apiUrl() — both use '/web/' as the boundary.
+    const _apiPrefix = (function() {
+        var p = window.location.pathname;
+        var i = p.indexOf('/web/');
+        return i >= 0 ? p.slice(0, i) : '';
+    })();
+
+    // Read deep-link query params written by stac_browser "View on map".
+    var _qs = new URLSearchParams(window.location.search);
+    var _preselCatalog = _qs.get('catalog') || null;
+    var _preselCollection = _qs.get('collection') || null;
+
     function initMap() {
         if (map) return;
-        
+
         map = L.map('map').setView([0, 0], 2);
 
         // Add Base Map (OpenStreetMap Dark)
@@ -44,17 +57,39 @@
             maxZoom: 20
         }).addTo(map);
 
-        // Initialize Context Selector
-        const cs = new ContextSelector({
+        // Initialize Context Selector.
+        // When deep-link params are present, seed defaultCatalog/preferredCollection
+        // so the selector boots with the requested layer already selected.
+        var csOptions = {
             containerId: 'map-context-selector-container',
             enableCollection: true,
             multipleCollections: true,
             autoSelectFirst: true,
-            preferredCollection: 'demo',
-            onChange: (detail) => {
-                const dataset = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
-                const collections = Array.isArray(detail.collectionIds) ? detail.collectionIds : (detail.collectionId ? [detail.collectionId] : []);
+            preferredCollection: _preselCollection || 'demo',
+            onChange: function(detail) {
+                var dataset = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
+                var collections = Array.isArray(detail.collectionIds) ? detail.collectionIds : (detail.collectionId ? [detail.collectionId] : []);
                 updateMapLayers(dataset, collections);
+            }
+        };
+        if (_preselCatalog) {
+            csOptions.defaultCatalog = _preselCatalog;
+        }
+        new ContextSelector(csOptions);
+
+        // Also accept postMessage deep-links sent by stac_browser "View on map"
+        // when both pages run in iframes under the same shell origin.
+        window.addEventListener('message', function(evt) {
+            // Only accept messages from the same origin (the embedding shell) to
+            // prevent a malicious cross-origin frame from driving the map.
+            if (evt.origin !== window.location.origin) return;
+            if (!evt.data || evt.data.type !== 'open-map') return;
+            var catId = evt.data.catalogId;
+            var colId = evt.data.collectionId;
+            // Validate identifiers before using them to build layer requests.
+            var idRe = /^[A-Za-z0-9._-]+$/;
+            if (catId && colId && idRe.test(catId) && idRe.test(colId)) {
+                updateMapLayers(catId, [colId]);
             }
         });
     }
@@ -62,7 +97,7 @@
     function updateMapLayers(dataset, collections) {
         if (!dataset || dataset === '_system_') {
             // Remove all if dataset is invalid
-            Object.keys(activeLayers).forEach(layerId => {
+            Object.keys(activeLayers).forEach(function(layerId) {
                 map.removeLayer(activeLayers[layerId]);
                 delete activeLayers[layerId];
             });
@@ -71,21 +106,25 @@
         }
 
         // Remove layers no longer selected
-        Object.keys(activeLayers).forEach(layerId => {
-            const [layerDataset, layerCollection] = layerId.split(':');
+        Object.keys(activeLayers).forEach(function(layerId) {
+            var parts = layerId.split(':');
+            var layerDataset = parts[0];
+            var layerCollection = parts[1];
             if (layerDataset !== dataset || !collections.includes(layerCollection)) {
                 map.removeLayer(activeLayers[layerId]);
                 delete activeLayers[layerId];
             }
         });
 
-        // Add new layers
-        collections.forEach(collectionId => {
+        // Add new layers.  Build the tile URL with string concatenation so the
+        // Leaflet placeholder tokens {z}/{x}/{y} remain literal and are never
+        // evaluated as template-literal expressions.
+        collections.forEach(function(collectionId) {
             if (!collectionId) return;
-            const layerId = `${dataset}:${collectionId}`;
+            var layerId = dataset + ':' + collectionId;
             if (!activeLayers[layerId]) {
-                const tileUrl = `/maps/${dataset}/map/tiles/WebMercatorQuad/{z}/{x}/{y}?collections=${collectionId}`;
-                const layer = L.tileLayer(tileUrl, { maxZoom: 19, attribution: collectionId }).addTo(map);
+                var tileUrl = _apiPrefix + '/maps/' + dataset + '/map/tiles/WebMercatorQuad/{z}/{x}/{y}?collections=' + collectionId;
+                var layer = L.tileLayer(tileUrl, { maxZoom: 19, attribution: collectionId }).addTo(map);
                 activeLayers[layerId] = layer;
             }
         });
@@ -94,18 +133,19 @@
     }
 
     function renderActiveLayersList() {
-        const list = document.getElementById('active-layers-list');
+        var list = document.getElementById('active-layers-list');
         list.innerHTML = '';
-        const layers = Object.keys(activeLayers);
-        
+        var layers = Object.keys(activeLayers);
+
         if (layers.length === 0) {
             list.innerHTML = '<div class="text-xs text-slate-500 italic">No active layers</div>';
             return;
         }
 
-        layers.forEach(layerId => {
-            const [dataset, collectionId] = layerId.split(':');
-            const item = document.createElement('div');
+        layers.forEach(function(layerId) {
+            var parts = layerId.split(':');
+            var collectionId = parts[1];
+            var item = document.createElement('div');
             item.className = 'flex items-center justify-between bg-slate-800/50 p-2 rounded text-sm border border-slate-700/50';
             item.innerHTML = `
                 <span class="text-slate-300 truncate" title="${layerId}"><i class="fa-solid fa-layer-group text-slate-500 mr-2 text-xs"></i>${collectionId}</span>
@@ -124,9 +164,9 @@
     }
 
     // Init Logic — delay lets the flex layout settle before Leaflet measures the container
-    setTimeout(() => {
+    setTimeout(function() {
         initMap();
         // Invalidate size after a second tick in case the container resized post-init
-        setTimeout(() => { if (map) map.invalidateSize(); }, 200);
+        setTimeout(function() { if (map) map.invalidateSize(); }, 200);
     }, 100);
 </script>

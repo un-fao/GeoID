@@ -9,7 +9,7 @@
   <div class="flex items-center justify-between">
     <div>
       <h2 class="text-2xl font-bold text-white mb-1">System Stats</h2>
-      <p class="text-slate-400 text-sm">Object counts, request volume and latency by catalog.</p>
+      <p class="text-slate-400 text-sm">Platform request volume, latency, and caller activity (platform-wide).</p>
     </div>
     <button id="stats-refresh"
       class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs">
@@ -17,7 +17,7 @@
     </button>
   </div>
 
-  <div id="stats-system" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div id="stats-system" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
     <div class="glass-panel p-5 rounded-2xl border border-white/5">
       <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Total requests</div>
       <div id="stats-total-requests" class="text-2xl font-bold text-white">—</div>
@@ -27,8 +27,13 @@
       <div id="stats-avg-latency" class="text-2xl font-bold text-white">—</div>
     </div>
     <div class="glass-panel p-5 rounded-2xl border border-white/5">
-      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Build version</div>
-      <div class="text-2xl font-mono text-blue-300">{{VERSION}}</div>
+      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Unique principals</div>
+      <div id="stats-unique-principals" class="text-2xl font-bold text-white">—</div>
+    </div>
+    <div class="glass-panel p-5 rounded-2xl border border-white/5">
+      <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Success rate</div>
+      <div id="stats-success-rate" class="text-2xl font-bold text-white">—</div>
+      <div id="stats-status-dist" class="text-[10px] text-slate-500 mt-1 space-y-0.5"></div>
     </div>
   </div>
 
@@ -37,6 +42,7 @@
 
 <script>
 (function() {
+  const STATS_API_PREFIX = '__STATS_API_PREFIX__';
   const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
   const token = (typeof authToken !== 'undefined' && authToken)
     || localStorage.getItem(tkey)
@@ -56,11 +62,35 @@
   async function load() {
     errEl.classList.add('hidden');
     try {
-      const res = await fetch('/stats/system', { headers });
+      const res = await fetch(STATS_API_PREFIX + '/stats/system', { headers });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      document.getElementById('stats-total-requests').textContent = fmtNumber(data.total_requests);
-      document.getElementById('stats-avg-latency').textContent = fmtMs(data.average_latency_ms);
+      document.getElementById('stats-total-requests').textContent =
+        fmtNumber(data.total_requests);
+      document.getElementById('stats-avg-latency').textContent =
+        fmtMs(data.average_latency_ms);
+      document.getElementById('stats-unique-principals').textContent =
+        fmtNumber(data.unique_principals);
+
+      // Success rate + top status codes from status_code_distribution.
+      const dist = data.status_code_distribution || {};
+      const total = Object.values(dist).reduce(function(s, n) { return s + n; }, 0);
+      const rateEl = document.getElementById('stats-success-rate');
+      const distEl = document.getElementById('stats-status-dist');
+      if (total > 0) {
+        const success = Object.entries(dist)
+          .filter(function(e) { return e[0].startsWith('2') || e[0].startsWith('3'); })
+          .reduce(function(s, e) { return s + e[1]; }, 0);
+        if (rateEl) rateEl.textContent = Math.round((success / total) * 100) + '%';
+        if (distEl) {
+          const sorted = Object.entries(dist).sort(function(a, b) { return b[1] - a[1]; });
+          distEl.textContent = sorted.slice(0, 4)
+            .map(function(e) { return e[0] + ': ' + fmtNumber(e[1]); })
+            .join('  ');
+        }
+      } else {
+        if (rateEl) rateEl.textContent = '—';
+      }
     } catch (e) {
       errEl.textContent = 'Failed to load system stats: ' + (e.message || e);
       errEl.classList.remove('hidden');

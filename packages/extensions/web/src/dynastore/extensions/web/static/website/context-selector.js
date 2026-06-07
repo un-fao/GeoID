@@ -198,29 +198,79 @@ class ContextSelector {
         return prefix + path;
     }
 
+    // Build an Authorization header from the Bearer token stored by the login
+    // flow (same convention as common/api.js authHeader). Returns {} when no
+    // token is present so the request still goes out and surfaces a 401.
+    _authHeader() {
+        if (typeof window === 'undefined') return {};
+        const key = window.DS_TOKEN_KEY || 'ds_token';
+        const ls = (typeof localStorage !== 'undefined') ? localStorage : null;
+        const ss = (typeof sessionStorage !== 'undefined') ? sessionStorage : null;
+        const token = (ls && ls.getItem(key)) || (ss && ss.getItem(key))
+            || (ls && ls.getItem('ds_token')) || (ss && ss.getItem('ds_token'));
+        return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
+    // Fetch + parse JSON with auth header attached.
+    async _fetchJSON(path) {
+        const res = await fetch(this._apiPath(path), {
+            credentials: 'same-origin',
+            headers: { ...this._authHeader() },
+        });
+        if (!res.ok) throw new Error(`${res.status} ${path}`);
+        return res.json();
+    }
+
+    // STAC list endpoints return either a bare array (catalogs) or an envelope
+    // like {collections:[...]} / {catalogs:[...]} (collections, search path).
+    // Normalize to an array so the dropdowns populate in every case.
+    _unwrapList(data) {
+        if (Array.isArray(data)) return data;
+        if (data && Array.isArray(data.collections)) return data.collections;
+        if (data && Array.isArray(data.catalogs)) return data.catalogs;
+        if (data && Array.isArray(data.items)) return data.items;
+        return [];
+    }
+
     async loadCatalogs() {
+        const seq = (this._catSeq = (this._catSeq || 0) + 1);
         try {
-            let offset = 0;
-            const limit = 100;
             let allCatalogs = [];
 
-            while (true) {
-                let url = this._apiPath(`/stac/catalogs?limit=${limit}&offset=${offset}`);
-                if (this.state.q) url += `&q=${encodeURIComponent(this.state.q)}`;
+            // Prefer the grant-filtered surface for signed-in users: the
+            // cross-tenant /stac/catalogs list is denied to a plain authenticated
+            // admin (#1736). Fall back to /stac/catalogs for anonymous/public
+            // browsing where /iam/me/catalogs returns 401.
+            let usedMine = false;
+            try {
+                const mine = this._unwrapList(await this._fetchJSON('/iam/me/catalogs'));
+                // Drop the "*" wildcard grant marker — it isn't a selectable
+                // catalog; a wildcard means "fall back to the full list".
+                const concrete = mine.filter(c => (c.id || c.catalog_id || c.code) !== '*');
+                if (concrete.length) { allCatalogs = concrete; usedMine = true; }
+            } catch (_) { /* fall through to public listing */ }
 
-                const res = await fetch(url, { credentials: "same-origin" });
-                if (!res.ok) throw new Error("Failed to fetch catalogs");
-                const catalogs = await res.json();
-                
-                if (catalogs.length === 0) break;
-                allCatalogs = allCatalogs.concat(catalogs);
-                if (catalogs.length < limit) break;
-                offset += limit;
+            if (!usedMine) {
+                let offset = 0;
+                const limit = 100;
+                while (true) {
+                    let url = `/stac/catalogs?limit=${limit}&offset=${offset}`;
+                    if (this.state.q) url += `&q=${encodeURIComponent(this.state.q)}`;
+
+                    const catalogs = this._unwrapList(await this._fetchJSON(url));
+
+                    if (catalogs.length === 0) break;
+                    allCatalogs = allCatalogs.concat(catalogs);
+                    if (catalogs.length < limit) break;
+                    offset += limit;
+                }
             }
-            
+            // Discard if a newer load started while this was in flight.
+            if (seq !== this._catSeq) return;
+
             allCatalogs.forEach(c => {
                 const opt = document.createElement('option');
-                const idValue = c.id || c.code;
+                const idValue = c.id || c.catalog_id || c.code;
                 opt.value = idValue;
                 opt.textContent = `${c.title || idValue}`;
                 if (this.multipleCatalogs ? this.state.catalogId.includes(idValue) : idValue === this.defaultCatalog) opt.selected = true;
@@ -232,7 +282,7 @@ class ContextSelector {
                 ? this.state.catalogId.every(id => id === '_system_')
                 : this.state.catalogId === '_system_';
             if (this.autoSelectFirst && currentIsSystem && allCatalogs.length > 0) {
-                const firstId = allCatalogs[0].id || allCatalogs[0].code;
+                const firstId = allCatalogs[0].id || allCatalogs[0].catalog_id || allCatalogs[0].code;
                 if (this.multipleCatalogs) {
                     this.state.catalogId = [firstId];
                     Array.from(this.catalogSelect.options).forEach(o => { o.selected = o.value === firstId; });
@@ -256,13 +306,14 @@ class ContextSelector {
     }
 
     async loadCollections(catalogId) {
+        const seq = (this._colSeq = (this._colSeq || 0) + 1);
         try {
             let offset = 0;
             const limit = 100;
             let allCollections = [];
 
             while (true) {
-                let url = this._apiPath(`/stac/catalogs/${catalogId}/collections?limit=${limit}&offset=${offset}`);
+                let url = `/stac/catalogs/${catalogId}/collections?limit=${limit}&offset=${offset}`;
                 if (this.enableVirtualCollections) {
                     url += '&include_virtual=true';
                 }
@@ -270,15 +321,15 @@ class ContextSelector {
                     url += `&q=${encodeURIComponent(this.state.q)}`;
                 }
 
-                const res = await fetch(url, { credentials: "same-origin" });
-                if (!res.ok) throw new Error("Failed to fetch collections");
-                const cols = await res.json();
-                
+                const cols = this._unwrapList(await this._fetchJSON(url));
+
                 if (cols.length === 0) break;
                 allCollections = allCollections.concat(cols);
                 if (cols.length < limit) break;
                 offset += limit;
             }
+            // Discard stale in-flight response (catalog changed meanwhile).
+            if (seq !== this._colSeq) return;
             
             allCollections.forEach(c => {
                 const opt = document.createElement('option');
@@ -311,13 +362,10 @@ class ContextSelector {
     
     async loadAssets(catalogId, collectionId) {
         try {
-            const res = await fetch(
-                this._apiPath(`/catalogs/${catalogId}/collections/${collectionId}/assets`),
-                { credentials: "same-origin" }
+            const assets = this._unwrapList(
+                await this._fetchJSON(`/assets/catalogs/${catalogId}/collections/${collectionId}`)
             );
-            if (!res.ok) throw new Error("Failed to fetch assets");
-            const assets = await res.json();
-            
+
             assets.forEach(a => {
                 const opt = document.createElement('option');
                 opt.value = a.id || a.name;
