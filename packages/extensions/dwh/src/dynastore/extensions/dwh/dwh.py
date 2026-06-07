@@ -22,9 +22,10 @@ _ = _pyproj_scope_gate  # silence pyright "unused" — load-bearing for SCOPE fi
 from dynastore.tools.discovery import get_protocol
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional as _Optional
 from dynastore.tools.cache import cached
 from dynastore.tools.enrichment import enrich_features
+from dynastore.modules.tools.item_stream import resolve_join_value, stream_normalized_items  # noqa: E402
 
 from fastapi import (
     FastAPI,
@@ -48,7 +49,7 @@ from dynastore.models.protocols import (
     ItemsProtocol,
 )
 from dynastore.models.driver_context import DriverContext
-from dynastore.modules.storage.hints import Hint  # noqa: E402  # after pyproj SCOPE-gate stmt
+from dynastore.modules.storage.hints import Hint, EXACT_READ_HINTS  # noqa: E402  # after pyproj SCOPE-gate stmt
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -108,7 +109,7 @@ async def execute_bigquery_async(
         raise
     except Exception as e:
         logger.error("BigQuery query failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"BigQuery query error: {str(e)}") from e
 
 
 from dynastore.models.query_builder import QueryRequest, FieldSelection
@@ -149,7 +150,7 @@ class DwhService(ExtensionProtocol):
         except (ValueError, TypeError) as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid identifier in request: {e}"
-            )
+            ) from e
 
         # 1. Resolve Catalog Provider
         catalogs_provider = get_protocol(CatalogsProtocol)
@@ -198,17 +199,38 @@ class DwhService(ExtensionProtocol):
                 selects.append(FieldSelection(field="geom"))
 
         # Resolve field names from three storage-aware categories, then project
-        # each as a plain FieldSelection. join_column is guaranteed to be included.
+        # each as a plain FieldSelection. join_column is guaranteed to be included
+        # in its declared section (join_source) so the PG SELECT fetches it and
+        # resolve_join_value can find it there. See #1827.
+        join_source = getattr(req, "join_source", "properties")
+        _jc_props = req.join_column if join_source == "properties" else None
+        _jc_stats = req.join_column if join_source == "stats" else None
+        _jc_system_list: _Optional[list] = (
+            [req.join_column] if join_source == "system" else None
+        )
+        # Merge the join column into the explicit system list when join_source="system"
+        # and the caller already passed a system list, to avoid cross-category errors.
+        _req_system = getattr(req, "system", None)
+        if join_source == "system" and _req_system is not None and req.join_column not in _req_system:
+            _req_system = list(_req_system) + [req.join_column]
+        elif join_source == "system":
+            _req_system = _jc_system_list
+        else:
+            _req_system = getattr(req, "system", None)
         try:
             field_names = await resolve_category_field_names(
                 catalog_id,
                 req.collection,
                 properties=req.properties,
-                stats=req.stats,
-                system=req.system,
-                join_column=req.join_column,
+                stats=getattr(req, "stats", None),
+                system=_req_system,
+                join_column=_jc_props if join_source == "properties" else None,
                 db_resource=conn,
             )
+            # When join_source is stats, ensure the join column is selected.
+            if join_source == "stats" and req.join_column not in field_names:
+                # Append via stats category (stats join_column is unusual but user-requested).
+                field_names.append(req.join_column)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
@@ -259,19 +281,21 @@ class DwhService(ExtensionProtocol):
         # the read-primary fallback, hands the read to the inline PG SQL path).
         # The access_filter set above rides along on query_req into the
         # optimiser, so the forced PG path stays per-row ABAC-enforced.
-        query_context = await items_svc.stream_items(
-            catalog_id=catalog_id,
-            collection_id=req.collection,
-            request=query_req,
+        # stream_normalized_items lifts PG model_extra columns into
+        # feature.properties so enrich_features can join on them uniformly.
+        normalized_stream = stream_normalized_items(
+            items_svc, catalog_id, req.collection, query_req,
             ctx=DriverContext(db_resource=conn),
             hints=frozenset({Hint.JOIN}),
         )
 
-        # Enrich streamed features with DWH data (O(1) dict lookup per feature)
+        # Enrich streamed features with DWH data (O(1) dict lookup per feature).
+        # join_source routes the key lookup to the declared section (#1827).
         enriched_stream = enrich_features(
-            query_context.items,
+            normalized_stream,
             join_values,
             join_column=req.join_column,
+            join_source=getattr(req, "join_source", "properties"),
         )
 
         return format_response(
@@ -345,7 +369,7 @@ class DwhService(ExtensionProtocol):
         except (ValueError, TypeError) as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid identifier in request: {e}"
-            )
+            ) from e
 
         if format not in ["mvt", "pbf"]:
             raise HTTPException(
@@ -441,7 +465,7 @@ class DwhService(ExtensionProtocol):
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not process CRS for TMS '{req.tiles.tileMatrixSetId}'.",
-            )
+            ) from e
 
         # 6. Get source SRID for collection
         from dynastore.modules.tiles import tiles_module
@@ -507,31 +531,39 @@ class DwhService(ExtensionProtocol):
                 principal=principal,
             )
 
-        query_context = await items_svc.stream_items(
-            catalog_id=catalog_id,
-            collection_id=req.collection,
-            request=query_req,
+        # stream_normalized_items lifts PG model_extra columns into
+        # feature.properties so the join key is visible uniformly.
+        # EXACT_READ_HINTS: the tiled join emits MVT attributes from these
+        # features and the downstream geometry query (geom_sql) fetches raw
+        # WKB from PG — both require full-precision rows from the exact driver.
+        normalized_stream = stream_normalized_items(
+            items_svc, catalog_id, req.collection, query_req,
             ctx=DriverContext(db_resource=conn),
+            hints=EXACT_READ_HINTS,
         )
 
-        # 8. Join with DWH data and materialize for MVT query
+        # 8. Join with DWH data and materialize for MVT query.
+        # LEFT-join semantics (inner_join=False): features whose join key is
+        # present but have no BigQuery match are kept (their props are passed
+        # through unchanged). Features whose join key is absent or None are
+        # skipped below with the explicit `continue` guard.
+        # join_source routes the key lookup to the declared section (#1827).
+        tiled_join_source = getattr(req, "join_source", "properties")
+        enriched = enrich_features(
+            normalized_stream, join_values,
+            join_column=req.join_column, inner_join=False,
+            join_source=tiled_join_source,
+        )
         ids = []
         attributes_array = []
 
-        async for feature in query_context.items:
-            props = feature.properties or {}
-            join_key_value = props.get(req.join_column)
-            if join_key_value is None:
+        async for feature in enriched:
+            # Use resolve_join_value so the skip check respects join_source (#1827).
+            if resolve_join_value(feature, req.join_column, tiled_join_source) is None:
                 continue
 
-            supplementary_row = join_values.get(join_key_value)
-            attributes = dict(props)
-
-            if supplementary_row:
-                attributes.update(supplementary_row)
-
             ids.append(feature.id)
-            attributes_array.append(json.dumps(attributes))
+            attributes_array.append(json.dumps(feature.properties or {}))
 
         if not ids:
             return Response(status_code=204)

@@ -20,7 +20,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Union, cast
 from dynastore.models.shared_models import Feature
 from dynastore.models.ogc import Feature as OGCFeature
 
@@ -61,6 +61,48 @@ SUPPORTED_STAC_EXTENSIONS = [
     "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
     STAC_LANGUAGE_EXTENSION_URI,
 ]
+
+
+def _apply_extra_metadata_fallbacks(
+    collection: "pystac.Collection",
+    merged_summaries: Dict[str, Any],
+) -> None:
+    """Resolve providers/summaries from extra_fields when the collection_stac
+    PG sidecar is not active.
+
+    Write-path: ``_pack_stac_extras`` (stac_service) folds them into
+    ``extra_metadata``.  Read-path: the generator copies ``extra_metadata``
+    content into ``collection.extra_fields``; this helper then promotes the
+    typed pystac fields and removes the duplicates so they are not
+    double-serialized by the ``stac_top_level`` cleanup that follows.
+
+    When ``collection.providers`` / ``collection.summaries`` are already set
+    (from the ``collection_stac`` sidecar) the fallback is skipped and the
+    duplicate key is still removed from ``extra_fields``.
+    """
+    if collection.providers is None:
+        extra_providers = collection.extra_fields.pop("providers", None)
+        if extra_providers and isinstance(extra_providers, list):
+            collection.providers = [
+                pystac.Provider(**p) if isinstance(p, dict) else p
+                for p in extra_providers
+            ]
+    else:
+        collection.extra_fields.pop("providers", None)
+
+    # pystac always initialises summaries to an empty Summaries(), never None.
+    # Use is_empty() to distinguish "no data yet" from "already populated".
+    summaries_empty = collection.summaries is None or collection.summaries.is_empty()
+    if summaries_empty:
+        extra_summaries = collection.extra_fields.pop("summaries", None)
+        if extra_summaries and isinstance(extra_summaries, dict):
+            if not merged_summaries:
+                collection.summaries = pystac.Summaries(extra_summaries)
+            else:
+                merged_summaries.update(extra_summaries)
+                collection.summaries = pystac.Summaries(merged_summaries)
+    else:
+        collection.extra_fields.pop("summaries", None)
 
 
 async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, Any]:
@@ -509,12 +551,20 @@ async def create_collection(
     if "languages" in meta_dict:
         collection.extra_fields["languages"] = meta_dict["languages"]
 
-    # Merge localized extra metadata into collection extra fields
+    # Merge localized extra metadata into collection extra fields.
+    # This path surfaces STAC extras (cube:dimensions, themes, sci:citation, …)
+    # stored by _pack_stac_extras at write time, as well as any other custom
+    # metadata the operator placed in extra_metadata directly.
     if "extra_metadata" in meta_dict and isinstance(meta_dict["extra_metadata"], dict):
         extra = meta_dict["extra_metadata"]
         for k, v in extra.items():
             if k not in ["language", "languages"]:
                  collection.extra_fields[k] = v
+
+    # Fallback: resolve providers / summaries from extra_metadata when the
+    # collection_stac PG sidecar is not active.  The helper also handles the
+    # case where they ARE set (sidecar active) by dropping the duplicate key.
+    _apply_extra_metadata_fallbacks(collection, merged_summaries)
 
     # Add datacube dimensions and variables from config
     if stac_config.cube_dimensions:
@@ -1006,18 +1056,31 @@ async def create_item_from_feature(
     # StacItemsSidecar.map_row_to_feature already handles merging title,
     # description, etc into `feature.properties` but for extensions and assets
     # `merge_stac_metadata` still expects them in `external_metadata`.
+    #
+    # For default (no-schema/JSONB) catalogs without a stac_metadata sidecar,
+    # `assets` and `stac_extensions` are stored inside the attributes JSONB blob
+    # (keyed as "assets" / "stac_extensions") so they survive the PG round-trip.
+    # strip_reserved_members() above removed them from the working `properties`
+    # dict, but they are still accessible via the raw feature.properties dict.
+    # The fallback reads from there so the round-trip is complete without
+    # requiring the stac_metadata sidecar.
+    _raw_feature_props = feature.properties or {} if hasattr(feature, "properties") else {}
     external_metadata = {}
     feat_assets = getattr(feature, "assets", None)
     if feat_assets:
         external_metadata["external_assets"] = feat_assets
     elif "assets" in properties:
         external_metadata["external_assets"] = properties["assets"]
+    elif "assets" in _raw_feature_props:
+        external_metadata["external_assets"] = _raw_feature_props["assets"]
 
     feat_stac_extensions = getattr(feature, "stac_extensions", None)
     if feat_stac_extensions:
         external_metadata["external_extensions"] = feat_stac_extensions
     elif "stac_extensions" in properties:
         external_metadata["external_extensions"] = properties["stac_extensions"]
+    elif "stac_extensions" in _raw_feature_props:
+        external_metadata["external_extensions"] = _raw_feature_props["stac_extensions"]
 
     extension_context = StacExtensionContext(
         base_url=root_url,
@@ -1082,6 +1145,7 @@ async def create_item_collection(
     lang: str = "en",
     cql_filter: Optional[str] = None,
     search_dispatch: Optional[Any] = None,
+    hints: FrozenSet = frozenset(),
 ) -> Dict[str, Any]:
     """Generates a STAC ItemCollection for a single collection.
 
@@ -1091,6 +1155,12 @@ async def create_item_collection(
     ``QueryResponse`` here so this builder uses the driver-streamed features +
     ``total_count`` instead of running the PostgreSQL ``get_stac_items_paginated``
     fallback. ``None`` (the default) keeps the existing PG path byte-for-byte.
+
+    ``hints``: per-request routing preferences forwarded to
+    ``get_stac_items_paginated`` when the PG fallback path is taken (i.e. when
+    ``search_dispatch`` is ``None``). Pass ``EXACT_READ_HINTS`` to force the
+    exact-geometry driver; the default ``frozenset()`` preserves the existing
+    routing behaviour unchanged.
     """
     # Ensure logical IDs are available for row-to-feature conversion
     catalog_id = catalog_id or schema
@@ -1107,6 +1177,7 @@ async def create_item_collection(
             conn, catalog_id, collection_id, limit, offset, stac_config,
             cql_filter=cql_filter,
             request=request,
+            hints=hints,
         )
 
     stac_items_tasks = [
@@ -1263,4 +1334,4 @@ async def _process_stac_item_for_db(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e

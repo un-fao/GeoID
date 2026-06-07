@@ -128,6 +128,8 @@ class StatsExtension(ExtensionProtocol, StatsProtocol):
                 content='<div class="text-slate-400 text-sm py-8">Stats page template missing.</div>'
             )
         html = await asyncio.to_thread(Path(file_path).read_text, encoding="utf-8")
+        prefix = (request.scope.get("root_path") or "").rstrip("/")
+        html = html.replace("__STATS_API_PREFIX__", prefix)
         return HTMLResponse(content=html.replace("{{VERSION}}", VERSION))
 
     @property

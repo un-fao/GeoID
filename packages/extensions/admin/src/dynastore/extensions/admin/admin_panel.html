@@ -736,6 +736,7 @@ async function loadRoles() {
     renderRoles(_allRoles);
   } catch(e) { tb.innerHTML = `<tr class="empty-row"><td colspan="4">Error: ${escapeHtml(e.message)}</td></tr>`; }
 }
+let _editingRole = null;
 function renderRoles(list) {
   const tb = document.getElementById('roles-tbody');
   if (!list.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="4">No roles found.</td></tr>'; return; }
@@ -744,20 +745,53 @@ function renderRoles(list) {
       <td><strong>${escapeHtml(r.name)}</strong></td>
       <td class="muted">${escapeHtml(r.description || '—')}</td>
       <td><div class="chip-list">${(r.policies||[]).map(p=>`<span class="chip">${escapeHtml(p)}</span>`).join('')}</div></td>
-      <td class="table-actions"><button class="btn btn-danger btn-xs" type="button" data-action="delete-role" data-name="${escapeHtml(r.name)}" aria-label="Delete role">Delete</button></td>
+      <td class="table-actions">
+        <button class="btn btn-secondary btn-xs" type="button" data-action="edit-role" data-name="${escapeHtml(r.name)}" aria-label="Edit role">Edit</button>
+        <button class="btn btn-danger btn-xs" type="button" data-action="delete-role" data-name="${escapeHtml(r.name)}" aria-label="Delete role">Delete</button>
+      </td>
     </tr>`).join('');
+  tb.querySelectorAll('[data-action="edit-role"]').forEach(b => b.addEventListener('click', () => {
+    const role = (_allRoles || []).find(r => r.name === b.dataset.name);
+    if (role) openRoleModal(role);
+  }));
   tb.querySelectorAll('[data-action="delete-role"]').forEach(b => b.addEventListener('click', () => deleteRole(b.dataset.name)));
 }
-function openRoleModal() { showModal('role-modal'); }
-function closeRoleModal() { hideModal('role-modal'); }
-async function createRole() {
-  const name = document.getElementById('rm-name').value.trim();
+function openRoleModal(role) {
+  _editingRole = role && role.name ? role.name : null;
+  const nameEl = document.getElementById('rm-name');
+  const descEl = document.getElementById('rm-desc');
+  const polEl = document.getElementById('rm-policies');
+  const titleEl = document.getElementById('role-modal-title');
+  const submitEl = document.getElementById('btn-submit-role');
+  if (_editingRole) {
+    nameEl.value = role.name; nameEl.disabled = true;
+    descEl.value = role.description || '';
+    polEl.value = (role.policies || []).join(', ');
+    if (titleEl) titleEl.textContent = `Edit role — ${role.name}`;
+    if (submitEl) submitEl.textContent = 'Save';
+  } else {
+    nameEl.value = ''; nameEl.disabled = false;
+    descEl.value = ''; polEl.value = '';
+    if (titleEl) titleEl.textContent = 'Create role';
+    if (submitEl) submitEl.textContent = 'Create';
+  }
+  showModal('role-modal');
+}
+function closeRoleModal() { _editingRole = null; document.getElementById('rm-name').disabled = false; hideModal('role-modal'); }
+async function submitRole() {
+  const name = _editingRole || document.getElementById('rm-name').value.trim();
   const description = document.getElementById('rm-desc').value.trim();
   const policies = csvToList(document.getElementById('rm-policies').value);
   if (!name) { toast('Role name is required.', false); return; }
   try {
-    await apiFetch('/roles', { method:'POST', body: JSON.stringify({name,description,policies}) });
-    toast('Role created.'); closeRoleModal(); loadRoles();
+    if (_editingRole) {
+      await apiFetch(`/roles/${encodeURIComponent(name)}`, { method:'PUT', body: JSON.stringify({description,policies}) });
+      toast('Role updated.');
+    } else {
+      await apiFetch('/roles', { method:'POST', body: JSON.stringify({name,description,policies}) });
+      toast('Role created.');
+    }
+    closeRoleModal(); loadRoles();
   } catch(e) { toast(e.message, false); }
 }
 async function deleteRole(name) {
@@ -1085,7 +1119,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-refresh-principals').addEventListener('click', loadPrincipals);
   document.getElementById('principal-search').addEventListener('input', filterPrincipals);
 
-  document.getElementById('btn-new-role').addEventListener('click', openRoleModal);
+  document.getElementById('btn-new-role').addEventListener('click', () => openRoleModal());
   document.getElementById('btn-refresh-roles').addEventListener('click', loadRoles);
 
   document.getElementById('btn-new-policy').addEventListener('click', () => openPolicyModal());
@@ -1104,7 +1138,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-submit-catalog-grant').addEventListener('click', submitCatalogGrant);
 
   document.getElementById('btn-cancel-role').addEventListener('click', closeRoleModal);
-  document.getElementById('btn-submit-role').addEventListener('click', createRole);
+  document.getElementById('btn-submit-role').addEventListener('click', submitRole);
 
   document.getElementById('btn-cancel-policy').addEventListener('click', closePolicyModal);
   document.getElementById('btn-submit-policy').addEventListener('click', submitPolicy);

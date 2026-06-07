@@ -1062,13 +1062,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         #      contract and preserves the pre-#940 default of treating
         #      ``"id"`` as the implicit identity path when the operator
         #      hasn't configured an ``ItemsWritePolicy.external_id_field``.
-        #   3. Policy-bound path -> ``_extract_value`` walks the path.
+        #   3. Policy-bound path -> ``resolve_external_id`` walks the path.
         if isinstance(feature, Feature):
             ext_id = feature.id
         else:
-            field_path = _resolve_external_id_field(context)
-            if field_path:
-                ext_id = self._extract_value(feature, field_path)
+            policy = context.get("_items_write_policy") if context else None
+            if policy is not None and hasattr(policy, "resolve_external_id"):
+                feature_dict: Any = (
+                    feature if isinstance(feature, dict)
+                    else (feature.model_dump(by_alias=True) if hasattr(feature, "model_dump") else dict(feature))
+                )
+                ext_id = policy.resolve_external_id(feature_dict)
             elif isinstance(feature, dict):
                 ext_id = feature.get("id")
             else:
@@ -1204,9 +1208,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         if self.resolved_storage_mode == AttributeStorageMode.COLUMNAR:
             if self.config.attribute_schema:
                 for attr in self.config.attribute_schema:
+                    # NB: explicit ``is None`` fallback, NOT ``a or b`` — a
+                    # falsy-but-present value (FID == 0, False, 0.0, "") must be
+                    # kept, otherwise it is silently dropped and a ``required``
+                    # (NOT NULL) sidecar column fails with "field is null"
+                    # (#1820). ``_extract_value`` already falls back to the
+                    # properties bag, so the top-level lookup is a last resort.
                     val = self._extract_value(
                         feature_as_dict, f"properties.{attr.name}"
-                    ) or feature_as_dict.get(attr.name)
+                    )
+                    if val is None:
+                        val = feature_as_dict.get(attr.name)
 
                     # Apply default if missing
                     if val is None:
@@ -1215,8 +1227,46 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     if val is not None and val is not PydanticUndefined:
                         payload[attr.name] = val
         else:
-            # JSONB Mode: Clean duplicates
-            props_to_save = dict(properties or {})
+            # JSONB Mode: use the pristine pre-prune snapshot when available.
+            # A prune-first sidecar (item_metadata) strips all colon-namespaced
+            # extension keys (proj:*, cube:*, eo:*, …) from the live feature dict
+            # in place before this sidecar runs.  Reading from the live dict would
+            # silently drop those keys from the JSONB blob.  The pristine snapshot
+            # is a deep copy taken before any sidecar runs, so it carries the
+            # complete properties bag exactly as the caller supplied it.
+            # This path only applies when there is no stac_metadata sidecar to own
+            # the extension keys (i.e. no StacPreset / stac_items_pg=False).  When
+            # stac_metadata IS active it handles extra_fields itself and the two
+            # blobs do not overlap (stac_metadata owns colon-namespaced keys;
+            # attributes JSONB owns the rest), so reading from pristine here is
+            # harmless — the downstream read path merges them independently.
+            _pristine = context.get("_pristine_item") if context else None
+            if _pristine is not None:
+                if isinstance(_pristine, dict):
+                    _pristine_props = _pristine.get("properties") or {}
+                elif isinstance(_pristine, Feature):
+                    _pristine_props = _pristine.properties or {}
+                else:
+                    _pristine_props = getattr(_pristine, "properties", None) or {}
+                props_to_save = dict(_pristine_props)
+                # Also fold in top-level STAC reserved members (assets,
+                # stac_extensions) so the JSONB blob is the single persisted
+                # copy when the stac_metadata sidecar is absent.  The read path
+                # in stac_generator.create_item_from_feature already has a
+                # feature.properties fallback for both keys, so they are restored
+                # correctly on GET.
+                if isinstance(_pristine, dict):
+                    _top_assets = _pristine.get("assets")
+                    _top_exts = _pristine.get("stac_extensions")
+                else:
+                    _top_assets = getattr(_pristine, "assets", None)
+                    _top_exts = getattr(_pristine, "stac_extensions", None)
+                if _top_assets is not None and "assets" not in props_to_save:
+                    props_to_save["assets"] = _top_assets
+                if _top_exts is not None and "stac_extensions" not in props_to_save:
+                    props_to_save["stac_extensions"] = _top_exts
+            else:
+                props_to_save = dict(properties or {})
 
             # Apply defaults from schema if present (even in JSONB mode)
             if self.config.attribute_schema:
@@ -1438,14 +1488,21 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
             internal_cols = self.get_internal_columns()
             jsonb_col = self.config.jsonb_column_name
             props = feature.properties if feature.properties is not None else {}
-            
-            # Delegate exclusion entirely to the pipeline context, which already
-            # merged HUB_INTERNAL_COLUMNS + every other sidecar's get_internal_columns().
+
+            # Delegate exclusion to the pipeline context (HUB_INTERNAL_COLUMNS
+            # merged with every sidecar's get_internal_columns()). A SYSTEM field
+            # named explicitly in the request bypasses the exclusion so it can be
+            # used as a join key by downstream consumers. See #1827.
             excluded = context.all_internal_columns
+            from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _JSONB_SYSTEM_KEYS
+            _jsonb_requested = getattr(context, "requested_fields", None) or set()
+            _jsonb_system_set = frozenset(_JSONB_SYSTEM_KEYS)
             for key, val in row.items():
-                if key not in internal_cols and key not in excluded and key != jsonb_col and key not in props:
-                    if val is not PydanticUndefined and not isinstance(val, (bytes, bytearray)):
-                        props[key] = val
+                surface_requested = key in _jsonb_requested and key in _jsonb_system_set
+                if (key not in internal_cols and key not in excluded) or surface_requested:
+                    if key != jsonb_col and key not in props:
+                        if val is not PydanticUndefined and not isinstance(val, (bytes, bytearray)):
+                            props[key] = val
             feature.properties = props
 
         # 3. Time Standardization

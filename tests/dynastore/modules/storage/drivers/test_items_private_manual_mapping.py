@@ -364,7 +364,11 @@ class TestDriverConsumesOverlay:
         await driver.ensure_storage("cat1")
 
         body = es.indices.create_calls[0]["body"]
-        # Legacy shape — properties sub-tree fully dynamic, no
-        # _search_text root field.
+        # Legacy shape — properties sub-tree fully dynamic.
+        # Post-#1800: _search_text IS present in the root (mirrors COMMON_PROPERTIES
+        # so project_item_for_es can populate it for extras full-text search).
         assert body["mappings"] is TENANT_FEATURE_MAPPING
-        assert "_search_text" not in body["mappings"]["properties"]
+        # Verify the legacy-mode properties sub-tree is still dynamic.
+        assert body["mappings"]["properties"]["properties"] == {
+            "type": "object", "dynamic": True,
+        }

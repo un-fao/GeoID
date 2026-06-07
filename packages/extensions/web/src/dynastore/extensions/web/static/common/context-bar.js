@@ -3,7 +3,7 @@
 // changes. Keeps state internal, but persists to sessionStorage so
 // navigation between admin pages preserves scope.
 
-import { fetchCatalogs, getJSON } from "./api.js";
+import { fetchCatalogOptions, getJSON } from "./api.js";
 
 const STORAGE_KEY = "dynastore.admin.scope";
 
@@ -179,9 +179,7 @@ export function mountContextBar(container, { onChange } = {}) {
 
   (async () => {
     try {
-      const res = await fetchCatalogs();
-      const items = Array.isArray(res) ? res : (res.items || []);
-      catalogs = items.map((c) => ({ id: c.id || c.catalog_id || c }));
+      catalogs = await fetchCatalogOptions();
     } catch {
       catalogs = [];
     }
@@ -190,7 +188,10 @@ export function mountContextBar(container, { onChange } = {}) {
     }
     if (scope.kind === "collection") await loadCollectionsFor(scope.catalogId);
     syncUI();
-    emit();
+    // Avoid emitting an incomplete restored scope on boot (e.g. a persisted
+    // "collection" scope with no collection chosen yet), which makes
+    // subscribers fire a wasted/incorrect load before the user interacts.
+    if (scope.kind !== "collection" || scope.collectionId) emit();
   })();
 
   return {

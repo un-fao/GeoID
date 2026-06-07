@@ -18,7 +18,7 @@
 
 from dynastore.models.shared_models import OutputFormatEnum
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Literal, Optional, Dict
 from dynastore.tools.geospatial import SimplificationAlgorithm
 
 class DWHJoinRequestBase(BaseModel):
@@ -48,6 +48,19 @@ class DWHJoinRequestBase(BaseModel):
         ...,
         json_schema_extra={"example": "geoid"},
         description="Common column name for joining, present in DynaStore table attributes.",
+    )
+    join_source: Literal["properties", "system", "stats"] = Field(
+        default="properties",
+        description=(
+            "Which section of the DynaStore feature to read the join key from. "
+            "'properties' (default) reads feature.properties[join_column] with "
+            "a feature.id fallback — preserving existing behavior. "
+            "'system' reads the system foreign-member section only "
+            "(external_id, geoid, asset_id, etc.), so a system identity can be "
+            "used as a join key without colliding with a same-named user property. "
+            "'stats' reads the stats foreign-member section only. "
+            "See #1827."
+        ),
     )
     properties: Optional[List[str]] = Field(
         None,
@@ -137,5 +150,12 @@ class DWHTiledJoinRequest(BaseModel):
     collection: str = Field(..., description="DynaStore collection to query")
     dwh_join_column: str = Field(..., description="Join column in DWH results")
     join_column: str = Field(..., description="Join column in DynaStore table")
+    join_source: Literal["properties", "system", "stats"] = Field(
+        default="properties",
+        description=(
+            "Which section of the DynaStore feature to read the join key from. "
+            "See DWHJoinRequestBase.join_source for full semantics. See #1827."
+        ),
+    )
     tiles: TilesConfig = Field(default_factory=TilesConfig, description="Tiles configuration")  # type: ignore[arg-type]
     format: str = Field(default="mvt", description="Output format (mvt or pbf)")

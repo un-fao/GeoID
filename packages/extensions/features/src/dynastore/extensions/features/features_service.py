@@ -18,7 +18,7 @@
 
 # dynastore/extensions/features/features_service.py
 
-from typing import Optional, List, Any, Union, cast
+from typing import Optional, List, Any, FrozenSet, Union, cast
 
 import logging
 
@@ -69,8 +69,9 @@ from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 import re
 from dynastore.extensions.tools.formatters import OutputFormatEnum
-from dynastore.extensions.tools.query import (
+from dynastore.extensions.tools.query import (  # noqa: E402
     parse_ogc_query_request,
+    parse_hints_param,
     stream_ogc_features,
     resolve_items_read_policy,
     validate_filter_lang,
@@ -78,6 +79,7 @@ from dynastore.extensions.tools.query import (
     dispatch_or_stream_items,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+from dynastore.modules.storage.hints import EXACT_READ_HINTS
 
 logger = logging.getLogger(__name__)
 
@@ -443,9 +445,6 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
     ):
         """Creates a new catalog, its data schema, and required table partitions."""
         try:
-            catalogs_svc = await self._get_catalogs_service()
-            # Use id as code in the internal representation
-            # Pass the definition fields individually as required by CatalogsProtocol
             catalog_data = {
                 "id": definition.id,
                 "title": definition.title,
@@ -454,24 +453,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 "license": definition.license,
                 "extra_metadata": definition.extra_metadata,
             }
-
-            # For creation, we check the input data dictionary constructed above
-            # Note: definition.title/description might already be resolved/typed by Pydantic
-            # We dump the model to check raw input structure
             input_dump = definition.model_dump(exclude_unset=True)
-
-            use_lang = detect_use_lang(input_dump, language)
-
-            created_catalog_model = await catalogs_svc.create_catalog(
-                catalog_data=catalog_data,
-                lang=use_lang,
-                ctx=DriverContext(db_resource=conn),
-            )
-            localized_data, _ = created_catalog_model.localize(language)
-            return JSONResponse(
-                content=localized_data,
-                status_code=status.HTTP_201_CREATED,
-            )
+            return await self._ogc_create_catalog(catalog_data, input_dump, language, conn)
         except Exception as e:
             return handle_or_raise(
                 e,
@@ -527,21 +510,9 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                     f"({catalog_id!r})."
                 ),
             )
-
-        # exclude_unset=False -> absent optionals dump as None and clear
-        # the corresponding columns. normalize_i18n_for_replace canonicalises
-        # mixed-shape i18n input so lang='*' is unambiguous.
         catalog_dict = definition.model_dump(exclude_unset=False)
         catalog_dict = normalize_i18n_for_replace(catalog_dict, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        catalog = await catalogs_svc.update_catalog(
-            catalog_id, catalog_dict, lang="*", ctx=DriverContext(db_resource=conn)
-        )
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        localized_data, _ = catalog.localize(language)
-        return JSONResponse(content=localized_data)
+        return await self._ogc_replace_catalog(catalog_id, catalog_dict, language, conn)
 
     async def update_catalog(
         self,
@@ -551,20 +522,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         language: str = Depends(get_language),
     ):
         """Updates an existing catalog."""
-        catalogs_svc = await self._get_catalogs_service()
-        # Use id as code in the internal representation
         catalog_dict = definition.model_dump(exclude_unset=True)
-
-        use_lang = detect_use_lang(catalog_dict, language)
-
-        # Pass raw dict, manager handles validation
-        catalog = await catalogs_svc.update_catalog(
-            catalog_id, catalog_dict, lang=use_lang, ctx=DriverContext(db_resource=conn)
-        )
-        if not catalog:
-            raise HTTPException(status_code=404, detail="Catalog not found")
-        localized_data, _ = catalog.localize(language)
-        return JSONResponse(content=localized_data)
+        return await self._ogc_update_catalog(catalog_id, catalog_dict, language, conn)
 
     async def delete_catalog(
         self,
@@ -572,15 +531,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         force: bool = Query(False),
         conn: AsyncConnection = Depends(get_async_connection),
     ):
-        catalogs_svc = await self._get_catalogs_service()
-        # Catalog Protocol supports force deletion of catalogs
-        if not await catalogs_svc.delete_catalog(
-            catalog_id, force=force, ctx=DriverContext(db_resource=conn)
-        ):
-            raise HTTPException(
-                status_code=404, detail=f"Catalog '{catalog_id}' not found."
-            )
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return await self._ogc_delete_catalog(catalog_id, force, conn)
 
     # --- Collection Endpoints ---
     async def list_collections_in_catalog(
@@ -665,20 +616,9 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
     ):
         """Creates a new collection in a catalog."""
         try:
-            catalogs_svc = await self._get_catalogs_service()
-            # Use id as code in the internal representation
             collection_dict = collection_def.model_dump(exclude_unset=True)
-
-            use_lang = detect_use_lang(collection_dict, language)
-
-            # Pass raw dict, manager handles localization
-            # Pass conn as db_resource for transactional integrity
-            collection = await catalogs_svc.create_collection(
-                catalog_id, collection_dict, lang=use_lang, ctx=DriverContext(db_resource=conn)
-            )
-            return JSONResponse(
-                content=collection.model_dump(by_alias=True, exclude_none=True),
-                status_code=status.HTTP_201_CREATED,
+            return await self._ogc_create_collection(
+                catalog_id, collection_dict, language, conn
             )
         except Exception as e:
             return handle_or_raise(
@@ -768,24 +708,11 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                     f"collection_id ({collection_id!r})."
                 ),
             )
-
         updates_dict = collection_def.model_dump(exclude_unset=False)
         updates_dict = normalize_i18n_for_replace(updates_dict, language)
-
-        catalogs_svc = await self._get_catalogs_service()
-        updated_collection = await catalogs_svc.update_collection(
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            updates=updates_dict,
-            lang="*",
+        return await self._ogc_replace_collection(
+            catalog_id, collection_id, updates_dict, language
         )
-        if not updated_collection:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
-            )
-        collection, _ = updated_collection.localize(language)
-        return JSONResponse(content=collection, status_code=status.HTTP_200_OK)
 
     async def update_collection(
         self,
@@ -795,24 +722,8 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         language: str = Depends(get_language),
     ):
         """Updates an existing collection's metadata."""
-        catalogs_svc = await self._get_catalogs_service()
         updates_dict = collection_def.model_dump(exclude_unset=True)
-
-        use_lang = detect_use_lang(updates_dict, language)
-
-        updated_collection = await catalogs_svc.update_collection(
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            updates=updates_dict,
-            lang=use_lang,
-        )
-        if not updated_collection:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Collection '{catalog_id}:{collection_id}' not found.",
-            )
-        collection, _ = updated_collection.localize(language)
-        return JSONResponse(content=collection, status_code=status.HTTP_200_OK)
+        return await self._ogc_update_collection(catalog_id, collection_id, updates_dict, language)
 
     async def delete_collection(
         self,
@@ -821,12 +732,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         force: bool = Query(False),
         conn: AsyncConnection = Depends(get_async_connection),
     ):
-        catalogs_svc = await self._get_catalogs_service()
-        if not await catalogs_svc.delete_collection(
-            catalog_id, collection_id, force, ctx=DriverContext(db_resource=conn)
-        ):
-            raise HTTPException(status_code=404, detail="Collection not found.")
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return await self._ogc_delete_collection(catalog_id, collection_id, force, conn)
 
     # --- Item Endpoints ---
     async def get_items(
@@ -922,6 +828,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             alias="f",
             description="The output format for the features.",
         ),
+        request_hints: FrozenSet = Depends(parse_hints_param),
     ) -> Response:
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
@@ -1016,46 +923,13 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 if key not in OGC_RESERVED_QUERY_PARAMS and value != ""
             }
 
-            # ── Routing-aware items SEARCH-driver dispatch (#1047) ────────
-            # Mirror STAC ``/search``: for structural-only listings (no CQL2
-            # ``filter`` / shorthand attribute filter, no non-4326 CRS
-            # reprojection) resolve the items SEARCH driver via routing and
-            # dispatch through its streaming ``read_entities`` +
-            # ``count_entities`` contract — public ES, the tenant-private ES
-            # index, or any future ES items driver. The helper returns ``None``
-            # (→ the PG ``stream_items`` path below) for CQL/attribute filters,
-            # a read-primary (PG ``QUERY_FALLBACK_SOURCE``) driver, or a non-ES
-            # items driver. CRS reprojection is a
-            # PG-only capability, so a non-4326 output/bbox CRS also defers.
-            from dynastore.extensions.tools.query import (
-                maybe_dispatch_items_to_search_driver,
-            )
-
-            has_complex_filter = bool(filter) or bool(extra_filters)
-            wants_crs_reproject = (
-                target_crs_srid not in (None, 4326)
-                or bbox_crs_srid not in (None, 4326)
-            )
+            # OGC Features /items always returns exact, full-precision geometry.
+            # The simplified-geometry ES fast-path is not applicable here; the
+            # routing hint EXACT_READ_HINTS passed to dispatch_or_stream_items
+            # below selects the exact driver via the routing layer directly.
+            # Setting search_dispatch=None unconditionally skips the ES path and
+            # goes straight to stream_items with the exact hint.
             search_dispatch: Optional[Any] = None
-            if not has_complex_filter and not wants_crs_reproject:
-                parsed_bbox: Optional[List[float]] = None
-                if bbox:
-                    try:
-                        _b = [float(v) for v in bbox.split(",")]
-                        if len(_b) == 4:
-                            parsed_bbox = _b
-                    except ValueError:
-                        parsed_bbox = None
-                search_dispatch = await maybe_dispatch_items_to_search_driver(
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                    bbox=parsed_bbox,
-                    datetime=datetime_param,
-                    limit=limit,
-                    offset=offset,
-                    has_complex_filter=False,
-                    request=request,
-                )
 
             # Resolve skipGeometry/returnGeometry from the two accepted forms.
             skip_geom_bool = resolve_geometry_flag_from_query(skip_geometry, return_geometry)
@@ -1078,6 +952,12 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
 
             # Execute search via protocol (streaming). ctx=None decouples from
             # the request connection to allow background streaming.
+            # OGC Features /items always requests exact geometry: pass
+            # EXACT_READ_HINTS so the router selects the exact-geometry driver
+            # (today PG) regardless of which driver is registered first for READ.
+            # When exact is requested the ES fast-path (search_dispatch) is None
+            # because is_es_items_driver is False for the exact driver, so
+            # dispatch_or_stream_items falls straight through to stream_items.
             items_protocol = cast(ItemsProtocol, catalogs_svc)
             query_response = await dispatch_or_stream_items(
                 items_protocol,
@@ -1088,6 +968,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 search_dispatch=search_dispatch,
                 ctx=None,
                 request=request,
+                hints=EXACT_READ_HINTS,
             )
 
             count = query_response.total_count or 0

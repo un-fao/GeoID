@@ -22,8 +22,9 @@ Stores the full feature (geometry + properties + external_id) in a single
 index per tenant (catalog). Access is gated by the DENY policy applied
 when the private driver is active. Docs that would exceed the ES 10MB
 per-doc limit are shrunk by ``simplify_to_fit``
-(:mod:`dynastore.tools.geometry_simplify`), which records a
-``simplification_factor`` and ``simplification_mode`` on the stored doc.
+(:mod:`dynastore.tools.geometry_simplify`), which records
+``system.geometry_simplification.factor`` and ``.mode`` on the stored doc
+(#1828 Phase 2; previously stored flat at the doc root).
 
 Two index shapes are supported, selected per tenant by the operator via
 :attr:`~dynastore.modules.storage.driver_config.ItemsElasticsearchPrivateDriverConfig.mapping`:
@@ -67,10 +68,10 @@ _PRIVATE_RESERVED_ROOT_FIELDS = frozenset({
     "asset_id",
     "geometry",
     "bbox",
-    "simplification_factor",
-    "simplification_mode",
     "properties",
     "extras",
+    "system",
+    "stats",
 })
 
 
@@ -94,10 +95,20 @@ _RESERVED_MEMBER_KEYS = frozenset({
 def _tenant_root_fields() -> Dict[str, Any]:
     """Root-level field map shared by both private mapping shapes.
 
-    Excludes ``properties`` — that slot is built per-shape (dynamic
-    sub-tree in legacy mode, strict typed map in strict mode).
+    Excludes ``properties``, ``stats``, and ``system`` — those slots are
+    built per-shape below.
+
+    Post-#1800: ``id`` is added as the canonical identity keyword (mirrors
+    ``COMMON_PROPERTIES["id"]`` in the public items mapping). ``geoid`` is
+    retained for backward compatibility with existing private-index queries.
+    Internal write-time trackers (``_external_id``, ``_asset_id``, etc.)
+    are also declared so the strict ``dynamic: false`` root does not reject
+    docs that carry them.
     """
     return {
+        # Canonical identity (post-#1800 — id == geoid in canonical shape).
+        "id":                    {"type": "keyword"},
+        # Kept for backward compat with existing private-index queries.
         "geoid":                 {"type": "keyword"},
         "catalog_id":            {"type": "keyword"},
         "collection_id":         {"type": "keyword"},
@@ -105,15 +116,73 @@ def _tenant_root_fields() -> Dict[str, Any]:
         "asset_id":              {"type": "keyword"},
         "geometry":              {"type": "geo_shape"},
         "bbox":                  {"type": "float"},
-        "simplification_factor": {"type": "float"},
-        "simplification_mode":   {"type": "keyword"},
+        # Write-time trackers (mirrors COMMON_PROPERTIES in the public mapping).
+        "_external_id":          {"type": "keyword"},
+        "_asset_id":             {"type": "keyword"},
+        "_valid_from":           {"type": "date"},
+        "_valid_to":             {"type": "date"},
+        # ``_simplification_factor`` / ``_simplification_mode`` removed in #1828
+        # Phase 2 — simplification metadata is now stored under
+        # ``system.geometry_simplification`` (see _PRIVATE_SYSTEM_FIELDS).
+        # The back-compat read path in ``_private_source_to_feature`` still
+        # accepts old docs that carry these flat root keys.
+        "_search_text":          {"type": "text", "analyzer": "standard"},
     }
+
+
+# Canonical stats container — geometry-derived statistics.
+# Mirrors the ``stats`` nested object in the public items mapping (#1800).
+_PRIVATE_STATS_FIELDS: Dict[str, Any] = {
+    "area":     {"type": "double"},
+    "centroid": {"type": "keyword"},  # WKB hex — not geo_point.
+}
+
+# Canonical system container — identity / lifecycle SYSTEM_FIELD_KEYS.
+# Mirrors the ``system`` nested object in the public items mapping (#1800).
+_PRIVATE_SYSTEM_FIELDS: Dict[str, Any] = {
+    "geoid":            {"type": "keyword"},
+    "external_id":      {"type": "keyword"},
+    "asset_id":         {"type": "keyword"},
+    "geometry_hash":    {"type": "keyword"},
+    "attributes_hash":  {"type": "keyword"},
+    # validity is the temporal window, typed as date_range to mirror the public
+    # items mapping (#1828). The shared canonical_doc builder converts the PG
+    # tstzrange Range object into the matching {gte|gt, lte|lt} range body.
+    "validity":         {"type": "date_range"},
+    "transaction_time": {"type": "date"},
+    "deleted_at":       {"type": "date"},
+    # Geometry simplification metadata (#1828 Phase 2).
+    # Nested under system so it travels with other lifecycle fields rather
+    # than polluting the doc root.
+    "geometry_simplification": {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            "factor": {"type": "float"},
+            "mode":   {"type": "keyword"},
+        },
+    },
+}
+
+# Canonical nested containers for both mapping shapes.
+_PRIVATE_CANONICAL_CONTAINERS: Dict[str, Any] = {
+    "stats": {
+        "dynamic": False,
+        "properties": _PRIVATE_STATS_FIELDS,
+    },
+    "system": {
+        "dynamic": False,
+        "properties": _PRIVATE_SYSTEM_FIELDS,
+    },
+}
 
 
 TENANT_FEATURE_MAPPING: Dict[str, Any] = {
     "dynamic": False,  # reject unknown top-level fields (typos, smuggling)
     "properties": {
         **_tenant_root_fields(),
+        # Canonical containers (post-#1800).
+        **_PRIVATE_CANONICAL_CONTAINERS,
         # Tenant attributes live under a dynamic sub-tree so new fields
         # are indexed without mapping updates.
         "properties":            {"type": "object", "dynamic": True},
@@ -142,6 +211,10 @@ def build_private_item_mapping(
       entry no matter how many distinct leaf keys arrive.
     * ``_search_text`` is a root ``text`` field carrying the analyzed
       view of the extras tail.
+    * ``stats`` / ``system`` canonical nested objects (post-#1800) so
+      geometry-derived statistics and identity/lifecycle fields are
+      queryable at their canonical path regardless of which mapping shape
+      is active.
 
     The projection helper (:func:`project_private_doc`) enforces the
     shape at write time; ES enforces it at the mapping boundary. Both
@@ -162,7 +235,8 @@ def build_private_item_mapping(
         "dynamic": False,
         "properties": {
             **_tenant_root_fields(),
-            "_search_text": {"type": "text", "analyzer": "standard"},
+            # Canonical containers shared with both shapes.
+            **_PRIVATE_CANONICAL_CONTAINERS,
             "properties": {
                 "dynamic": False,
                 "properties": {

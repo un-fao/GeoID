@@ -12,7 +12,7 @@ use it to build OGC/STAC responses.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -173,6 +173,26 @@ class FieldDefinition(BaseModel):
     # Independent of ``access`` (#1291). The value's Python type must match
     # ``data_type`` (validated below). SSOT counterpart of ``AttributeSchemaEntry.default``.
     default: Optional[Any] = None
+    # Canonical ES envelope container. Drives both the ES mapping builder
+    # (``build_item_mapping``) and the field-path resolvers (``resolve_es_field_path``,
+    # ``build_es_field_mapping``, ``parse_sort``). Single source of truth — no drift
+    # between mapping and resolution. Sidecars that produce computed statistics set
+    # this to ``"stats"``; the platform identity / lifecycle fields use ``"system"``
+    # or ``"identity"``; multilingual descriptive metadata (title/description/keywords)
+    # uses ``"metadata"``; user / STAC attributes default to ``"properties"``. The
+    # open-ended lanes (``"extras"``, ``"stac"``, ``"assets"``, ``"access"``) are mapped
+    # ``flat_object``/``flattened`` so they never grow the strict mapping (refs #1800/#1828).
+    container: Literal[
+        "identity",
+        "properties",
+        "stats",
+        "system",
+        "metadata",
+        "extras",
+        "stac",
+        "assets",
+        "access",
+    ] = "properties"
 
     @field_validator("data_type")
     @classmethod

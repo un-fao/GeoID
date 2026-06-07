@@ -19,7 +19,7 @@ private ES indexers on the items tier, IAM DENY on the catalog's routes)
 and opts the catalog in to a single anonymous audience:
 
   * ``CatalogLookupAudience.is_public=True`` — opens the anonymous
-    lookup-only needle endpoint ``POST /search/catalogs/{cat}/items-search``
+    lookup-only needle endpoint ``POST /search/catalogs/{cat}/geoid-search``
     (resolve one item by exact ``geoid`` / ``external_id``, gated by the
     ``lookup_only_search`` handler so a broadening request never matches),
     and arms the geoid extension's anonymous STAC/Features enumeration DENY
@@ -40,12 +40,12 @@ invalid geometry is rejected with a reason rather than silently repaired; and
 geohash + S2 spatial cells plus geometry statistics are materialised for
 lookup.
 
-Anonymous *writes* are off by default: no collection opts in, so the catalog
-refuses anonymous inserts (un-fao/GeoID#1204 — public users must not insert
-by default). A catalog admin turns a single intake collection into a "blind
-dropbox" by setting ``CollectionWriteAudience.allow_anonymous_create=True``
-on it (PUT ``/configs/catalogs/{cat}/collections/{col}/plugins/collection_write_audience``).
-For that collection only, anonymous ``POST .../items`` is then allowed: the
+Anonymous *writes* are off by default: the catalog refuses anonymous inserts
+(un-fao/GeoID#1204 — public users must not insert by default). A catalog admin
+can enable anonymous inserts on specific collections by setting
+``CollectionWriteAudience.allow_anonymous_create=True`` on them (PUT
+``/configs/catalogs/{cat}/collections/{col}/plugins/collection_write_audience``).
+For those collections, anonymous ``POST .../items`` is allowed: the
 create ALLOW carries a higher priority than the enumeration DENY, so it wins
 the #915 ranking (highest priority wins; DENY only wins on a tie) — while
 every browse / list / search verb stays denied because the ALLOW is

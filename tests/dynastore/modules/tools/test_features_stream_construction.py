@@ -36,6 +36,7 @@ def _make_items_svc(captured: List[QueryRequest]) -> MagicMock:
         ctx=None,
         config=None,
         consumer=None,
+        hints=frozenset(),
     ):
         captured.append((request, consumer))
         response = MagicMock()

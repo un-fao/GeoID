@@ -16,10 +16,10 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-from typing import Optional, List, Dict, Any, Union
+from typing import FrozenSet, Optional, List, Dict, Any, Union
 from datetime import datetime, timezone
 import logging
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from dynastore.models.query_builder import (
     QueryRequest,
@@ -34,6 +34,48 @@ from dynastore.extensions.tools.formatters import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+#: OpenAPI description shared by the ``?hints=`` parameter on every protocol.
+HINTS_QUERY_DESCRIPTION = (
+    "Per-request routing hints (repeatable, or comma-separated in one value). "
+    "Canonical tokens come from the Hint vocabulary — e.g. "
+    "``geometry_exact`` requests full-precision geometry from the exact-capable "
+    "driver (today PostgreSQL) instead of the simplified search-backend copy. "
+    "Unknown tokens are ignored, so passing an unsupported hint is harmless."
+)
+
+
+def parse_hints_param(
+    hints: Optional[List[str]] = Query(None, description=HINTS_QUERY_DESCRIPTION),
+) -> FrozenSet:
+    """FastAPI dependency: parse the uniform ``?hints=`` parameter.
+
+    Declaring ``hints: FrozenSet = Depends(parse_hints_param)`` on any protocol
+    route both documents the parameter in OpenAPI and yields a validated
+    ``frozenset[Hint]`` ready to thread into the routing layer's ``hints=``
+    argument. Empty/omitted → ``frozenset()`` (default read path unchanged).
+    """
+    from dynastore.modules.storage.hints import parse_request_hints
+
+    return parse_request_hints(hints)
+
+
+def request_hints(request: Request) -> FrozenSet:
+    """Parse ``?hints=`` straight from the live request query string.
+
+    For shared helpers (e.g. :func:`dispatch_or_stream_items`) that already
+    receive the ``Request`` but whose callers may not have declared the
+    :func:`parse_hints_param` dependency: lets every protocol routed through the
+    helper honour ``hints`` uniformly without a per-route signature change.
+    """
+    from dynastore.modules.storage.hints import parse_request_hints
+
+    try:
+        values = request.query_params.getlist("hints")
+    except Exception:
+        return frozenset()
+    return parse_request_hints(values)
 
 
 async def resolve_items_read_policy(
@@ -158,6 +200,15 @@ async def maybe_dispatch_items_to_search_driver(
     if not getattr(driver, "is_es_items_driver", False):
         return None
 
+    # Routing-honouring fallback: the ES driver is the configured search
+    # primary, but if its per-tenant items index does not exist (PG-only
+    # catalog, or indexing has not run) it cannot serve. Defer to the PG
+    # ``stream_items`` path — the configured read fallback / system of record —
+    # instead of returning an empty result that hides PG-resident rows.
+    _index_check = getattr(driver, "index_available", None)
+    if _index_check is not None and not await _index_check(catalog_id):
+        return None
+
     # Single-collection /items: leave ``collections`` unset so the driver keeps
     # its routed single-collection fast path; the positional collection scopes.
     # ``filters`` carries any caller-supplied structural attribute predicates
@@ -238,6 +289,29 @@ OGC_RESERVED_QUERY_PARAMS: frozenset = frozenset({
     "language",
     "token",
     "access_token",
+    "hints",  # per-request routing hints (e.g. ?hints=geometry_exact); a
+    # control parameter accepted uniformly across protocols, never a queryable
+    # attribute, so it must not be swept into the ?{property}={value} shorthand.
+    # Projection / geometry-control parameters. These are bound as real query
+    # parameters by the item endpoints (``properties`` projection, the
+    # pygeoapi ``skipGeometry`` and ESRI ``returnGeometry`` geometry switches,
+    # and the ``filter-crs`` / ``bbox-crs`` CRS overrides). They must be
+    # reserved here too: the single-field equality shorthand sweeps every
+    # non-reserved query parameter into a ``?{property}={value}`` CQL filter,
+    # so leaving them out makes e.g. ``?returnGeometry=false`` parse as a
+    # bogus ``returnGeometry = 'false'`` attribute filter and 400 with
+    # "Unknown properties". Both spellings (hyphen alias + snake_case) are
+    # listed because either can reach ``request.query_params``.
+    "properties",
+    "skipgeometry",
+    "skipGeometry",
+    "skip_geometry",
+    "returngeometry",
+    "returnGeometry",
+    "return_geometry",
+    "filter-crs",
+    "filter_crs",
+    "bbox_crs",
     "_",  # cache-buster appended by browsers/jQuery; never an attribute
 })
 
@@ -381,6 +455,7 @@ async def dispatch_or_stream_items(
     search_dispatch: Optional[QueryResponse] = None,
     ctx: Any = None,
     request: Optional[Request] = None,
+    hints: "FrozenSet" = frozenset(),
 ) -> QueryResponse:
     """Return the routed SEARCH-driver response, or stream from the items protocol.
 
@@ -392,6 +467,11 @@ async def dispatch_or_stream_items(
     (``OGC_FEATURES`` / ``OGC_RECORDS``) and ``ctx`` (Features decouples with
     ``None`` for background streaming; Records threads the request connection).
 
+    ``hints`` is forwarded to ``stream_items`` so callers requesting exact
+    geometry (``EXACT_READ_HINTS``) force the PG path even when a simplified-
+    geometry ES driver is registered first for READ.  Defaults to ``frozenset()``
+    so all existing callers are unaffected.
+
     Row-level ABAC (PG path): when ``request`` is supplied and the collection
     carries a PG ``access_envelope`` sidecar, the caller's read scope is compiled
     from request state and set on ``query_request.access_filter`` before the PG
@@ -402,6 +482,14 @@ async def dispatch_or_stream_items(
     """
     if search_dispatch is not None:
         return search_dispatch
+
+    # Uniform ``?hints=`` support: union any caller-supplied hints with the
+    # ones parsed from the live request query string. Every protocol routed
+    # through this helper (OGC Features, Records, …) honours ``?hints=…``
+    # without a per-route signature change; an exact-by-default caller that
+    # already passes EXACT_READ_HINTS simply keeps it.
+    if request is not None:
+        hints = frozenset(hints) | request_hints(request)
 
     # PG row-level ABAC: compile and inject access_filter when the collection
     # uses the PG access_envelope sidecar and the HTTP request is available.
@@ -428,6 +516,7 @@ async def dispatch_or_stream_items(
             request=query_request,
             ctx=ctx,
             consumer=consumer,
+            hints=hints,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

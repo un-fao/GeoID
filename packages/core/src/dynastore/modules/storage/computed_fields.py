@@ -59,8 +59,9 @@ Public surface:
   ``ItemsReadPolicy``.
 """
 
+import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, Iterable, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Iterable, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -658,6 +659,121 @@ SYSTEM_FIELD_KEYS: tuple[str, ...] = (
     "deleted_at",
 )
 
+# The three identity axes live flat at the document root in the canonical ES envelope.
+_IDENTITY_FIELD_NAMES: frozenset = frozenset({"external_id", "asset_id", "geoid"})
+
+# System field names are all SYSTEM_FIELD_KEYS except the identity axes.
+_SYSTEM_ONLY_FIELD_NAMES: frozenset = frozenset(SYSTEM_FIELD_KEYS) - _IDENTITY_FIELD_NAMES
+
+# Descriptive metadata field names (multilingual title / description / keywords),
+# sourced from the ItemMetadataSidecar. Classified into the ``metadata`` container
+# so the strict mapping types them as localized text and the read projector resolves
+# them per ``?lang=`` (refs #1828). Both the resolved feature names and the
+# ``item_``-prefixed queryable aliases are recognised.
+_METADATA_FIELD_NAMES: frozenset = frozenset({
+    "title",
+    "description",
+    "keywords",
+    "item_title",
+    "item_description",
+    "item_keywords",
+})
+
+# Base names for geometry-derived statistics (from ComputedKind, minus the
+# content-hash and identity kinds which land in ``system``). Used by the
+# classifier to recognise names like "area", "centroid", "perimeter" as stats.
+_GEOMETRY_STAT_BASE_NAMES: frozenset = frozenset({
+    ComputedKind.AREA.value,
+    ComputedKind.VOLUME.value,
+    ComputedKind.PERIMETER.value,
+    ComputedKind.LENGTH.value,
+    ComputedKind.CENTROID.value,
+    ComputedKind.BBOX.value,
+    ComputedKind.VERTEX_COUNT.value,
+    ComputedKind.HOLE_COUNT.value,
+    ComputedKind.CIRCULARITY.value,
+    ComputedKind.CONVEXITY.value,
+    ComputedKind.ASPECT_RATIO.value,
+    ComputedKind.SURFACE_AREA.value,
+    ComputedKind.SURFACE_TO_VOLUME_RATIO.value,
+    ComputedKind.NET_FLOOR_AREA.value,
+    ComputedKind.CENTROID_3D.value,
+    ComputedKind.Z_RANGE.value,
+    ComputedKind.VERTICAL_GRADIENT.value,
+    ComputedKind.TEMPORAL_DURATION.value,
+})
+
+# Pattern for spatial-cell resolved names: ``{grid}_{resolution}`` with an
+# optional ``res`` resolution token. Matches both the default resolved-name
+# shape (``s2_7``, ``h3_10``, ``geohash_6``) and custom names that spell out
+# the resolution (``s2_res12``, ``h3_res_10``) — e.g. the geoid preset's
+# ``s2_res12``, which would otherwise fall through to ``properties`` and get
+# swept into ``properties.extras``.
+_SPATIAL_CELL_PATTERN: re.Pattern = re.compile(
+    r"^(s2|h3|geohash)_(?:res_?)?\d+$"
+)
+
+
+def classify_container(name: str, field_def: "Any") -> str:
+    """Resolve an ES envelope container for a queryable field.
+
+    This is the **single source of truth** consumed by both the ES mapping
+    builder (``build_item_mapping``) and the field-path resolvers
+    (``resolve_es_field_path``, ``build_es_field_mapping``, ``parse_sort``).
+    Having one function guarantees that mapping and resolution never drift —
+    a field's ES path and its mapping type are always consistent (refs #1800).
+
+    Classification rules (evaluated in priority order):
+
+    1. **identity** — name in ``_IDENTITY_FIELD_NAMES`` (``external_id``,
+       ``asset_id``, ``geoid``). Wins regardless of any explicit tag on the
+       ``FieldDefinition``.
+    2. **system** — name in ``SYSTEM_FIELD_KEYS`` minus the identity set
+       (``geometry_hash``, ``attributes_hash``, ``validity``,
+       ``transaction_time``, ``deleted_at``). Wins regardless of any explicit
+       tag.
+    3. Explicit ``container`` tag on the ``FieldDefinition`` (anything other
+       than the default ``"properties"``) — honoured verbatim when neither
+       rule 1 nor 2 fires.
+    4. **stats** — name matches a known geometry-derived statistic base name
+       (``area``, ``centroid``, …) or a spatial-cell resolved-name pattern
+       (``s2_*``, ``h3_*``, ``geohash_*``).
+    5. **properties** — default for all user / STAC attributes.
+
+    Args:
+        name: The queryable field name (e.g. ``"area"``, ``"eo:cloud_cover"``).
+        field_def: A :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+            instance (or any object with an optional ``container`` attribute).
+
+    Returns:
+        One of ``"identity"``, ``"system"``, ``"metadata"``, ``"stats"``,
+        ``"properties"`` (or any explicit container tag honoured by rule 3).
+    """
+    # Rules 1 & 2 are structural invariants — explicit tags cannot override them.
+    if name in _IDENTITY_FIELD_NAMES:
+        return "identity"
+    if name in _SYSTEM_ONLY_FIELD_NAMES:
+        return "system"
+
+    # Rule 3: honour an explicit container tag when the caller (a sidecar or a
+    # driver) has already classified the field.
+    explicit = getattr(field_def, "container", "properties")
+    if explicit != "properties":
+        return explicit
+
+    # Rule 4: descriptive multilingual metadata (title/description/keywords).
+    if name in _METADATA_FIELD_NAMES:
+        return "metadata"
+
+    # Rule 5: derive "stats" from the name pattern.
+    if name in _GEOMETRY_STAT_BASE_NAMES:
+        return "stats"
+    if _SPATIAL_CELL_PATTERN.match(name):
+        return "stats"
+
+    # Rule 6: default.
+    return "properties"
+
 
 class FeatureType(BaseModel):
     """Declarative wire-shape contract for the data-oriented read path.
@@ -759,4 +875,8 @@ __all__ = [
     "_GEOMETRY_STAT_KINDS",
     "_PLACE_TABLE_KINDS",
     "_ATTRIBUTE_SIDECAR_KINDS",
+    # Container classification SSOT (refs #1800)
+    "classify_container",
+    "_IDENTITY_FIELD_NAMES",
+    "_SYSTEM_ONLY_FIELD_NAMES",
 ]

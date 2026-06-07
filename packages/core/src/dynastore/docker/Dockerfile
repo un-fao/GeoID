@@ -115,6 +115,23 @@ RUN mkdir -p ./packages/extensions && \
         mkdir -p "./packages/extensions/${name}"; \
         cp "${d}pyproject.toml" "./packages/extensions/${name}/pyproject.toml"; \
     done && rm -rf ./packages/extensions-meta
+# Module wheels (packages/modules/*) are workspace members too, so uv must see
+# their pyproject.toml at resolve time — otherwise `.[${SCOPE}]` chains that pull
+# a module extra (e.g. module_datastore via the db_sync/worker chain) fail with
+# "references a workspace in tool.uv.sources but is not a workspace member".
+# Unlike extensions, a module wheel carries NO source of its own: the impl lives
+# in dynastore-core under dynastore/modules/<name>/ (a regular package owned by
+# core), and the module wheel is an entry-point-only stub (packages = []). So we
+# stage ONLY the pyproject.toml — and deliberately create no src stub, since the
+# wheel declares no packages to build. Source arrives with `COPY packages` in
+# Layer 3; keeping just the pyproject here preserves the deps-install cache.
+COPY packages/modules/ ./packages/modules-meta/
+RUN mkdir -p ./packages/modules && \
+    for d in ./packages/modules-meta/*/; do \
+        name=$(basename "$d"); \
+        mkdir -p "./packages/modules/${name}"; \
+        cp "${d}pyproject.toml" "./packages/modules/${name}/pyproject.toml"; \
+    done && rm -rf ./packages/modules-meta
 
 # Copy .env file if it exists (CI creates it in root, local has it in env/)
 # We use pyproject.toml as a sentinel to prevent COPY from failing if .env is missing.

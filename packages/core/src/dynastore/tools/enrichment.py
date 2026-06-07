@@ -51,6 +51,7 @@ Typical usage pattern (replaces hardwired BQ join logic):
 from typing import Any, AsyncIterator, Dict, Optional
 
 from dynastore.models.ogc import Feature
+from dynastore.modules.tools.item_stream import resolve_join_value, stream_join_features
 
 
 async def get_enrichment_data(
@@ -91,13 +92,9 @@ async def get_enrichment_data(
         limit=limit,
     ):
         props = entity.properties or {}
-        # Look up the join key: prefer an explicit property, but fall back to
-        # entity.id when the join column was promoted out of properties (e.g.
-        # ItemsBigQueryDriver's row→Feature adapter excludes the id_column from
-        # properties — a join on the id column would otherwise drop every row).
-        key = props.get(join_column)
-        if key is None:
-            key = getattr(entity, "id", None)
+        # resolve_join_value checks flat properties, system/stats sections,
+        # and feature.id in order — covers all driver placements. See #1827.
+        key = resolve_join_value(entity, join_column)
         if key is not None:
             row = dict(props)
             # Surface the join column as a property too so downstream
@@ -113,8 +110,12 @@ async def enrich_features(
     join_column: str,
     *,
     inner_join: bool = True,
+    join_source: str = "properties",
 ) -> AsyncIterator[Feature]:
     """Streaming O(1) per-feature dict lookup enrichment.
+
+    Delegates to ``stream_join_features`` (the shared streaming-join primitive)
+    so join semantics live in one place (#1835).
 
     Iterates ``feature_stream`` and merges matching enrichment properties
     from ``enrichment_data`` (keyed by ``join_column`` value).
@@ -127,29 +128,21 @@ async def enrich_features(
             matching enrichment row.  If ``False``, yield all features
             (LEFT JOIN semantics — features without a match pass through
             unmodified).
+        join_source: Which section to read the join key from. One of
+            "properties" (default), "system", or "stats". When "system" or
+            "stats", the key is resolved from the named foreign-member section
+            only, so a system field like external_id can be used without
+            colliding with a same-named user property. See #1827.
 
     Yields:
         ``Feature`` instances with enrichment properties merged into
         ``feature.properties``.
     """
-    async for feature in feature_stream:
-        props = feature.properties or {}
-        # Look up the join key: prefer an explicit property, but fall back
-        # to feature.id when the column is the feature identifier (the
-        # primary case for catalog-tier rows whose `geoid` UUID lives on
-        # feature.id and never lands in properties — see PR #110 for the
-        # symmetric fix to OGC /join's executor).
-        key = props.get(join_column)
-        if key is None:
-            key = getattr(feature, "id", None)
-        extra = enrichment_data.get(key) if key is not None else None
-        if extra:
-            merged_props = {**props, **extra}
-            yield Feature(
-                type=feature.type,
-                id=feature.id,
-                geometry=feature.geometry,
-                properties=merged_props,
-            )
-        elif not inner_join:
-            yield feature
+    async for feature in stream_join_features(
+        feature_stream,
+        enrichment_data,
+        join_column,
+        join_source=join_source,
+        inner_join=inner_join,
+    ):
+        yield feature

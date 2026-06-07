@@ -243,18 +243,11 @@ class ItemsElasticsearchPrivateDriver(
         ctx = context or {}
         asset_id = ctx.get("asset_id")
 
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         bulk_body: list = []
         submitted_ids: list = []
@@ -271,8 +264,11 @@ class ItemsElasticsearchPrivateDriver(
             doc, factor, mode = maybe_simplify_for_es(
                 doc, simplify=simplify_geometry,
             )
-            doc["simplification_factor"] = factor
-            doc["simplification_mode"] = mode
+            if mode != "none":
+                doc.setdefault("system", {})["geometry_simplification"] = {
+                    "factor": factor,
+                    "mode": mode,
+                }
             doc = project_private_doc(doc, known_fields)
             bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
             bulk_body.append(doc)
@@ -351,8 +347,11 @@ class ItemsElasticsearchPrivateDriver(
         for hit in resp.get("hits", {}).get("hits", []):
             try:
                 src = hit["_source"]
+                # Use the ES document ``_id`` (always the geoid) as the
+                # caller-supplied fallback so read never produces a None id even
+                # when the source lacks both ``geoid`` and ``id`` root keys.
                 yield self._private_source_to_feature(
-                    src, catalog_id, collection_id, src.get("geoid"),
+                    src, catalog_id, collection_id, hit.get("_id"),
                 )
             except Exception:
                 pass
@@ -370,19 +369,39 @@ class ItemsElasticsearchPrivateDriver(
         simplification markers) in ``properties`` so callers can detect
         simplification without a separate API — shared by the by-id lookup and
         the structural-search read paths.
+
+        Canonical docs (post-#1800/#1828) carry ``id``=geoid at root with a
+        ``geoid`` alias written by ``build_tenant_feature_doc``. Pre-canonical
+        docs carry only ``geoid`` at root. Both shapes are handled: prefer
+        ``geoid`` (set on all private docs, canonical or legacy), then fall
+        back to ``id`` (canonical only), then ``fallback_id`` (caller-supplied,
+        typically the ES ``_id``).
         """
         props = dict(source.get("properties") or {})
         if "external_id" in source:
             props["external_id"] = source["external_id"]
-        if "simplification_factor" in source:
-            props["simplification_factor"] = source["simplification_factor"]
-        if "simplification_mode" in source:
-            props["simplification_mode"] = source["simplification_mode"]
+        # Read geometry_simplification from canonical system container (#1828).
+        # Defensive fallback reads old flat keys for docs written before this change.
+        _gs = source.get("system", {}).get("geometry_simplification")
+        if _gs:
+            props["simplification_factor"] = _gs.get("factor")
+            props["simplification_mode"] = _gs.get("mode")
+        else:
+            # Back-compat: flat keys on docs written before #1828 Phase 2.
+            if "simplification_factor" in source:
+                props["simplification_factor"] = source["simplification_factor"]
+            if "simplification_mode" in source:
+                props["simplification_mode"] = source["simplification_mode"]
         props["catalog_id"] = source.get("catalog_id", catalog_id)
         props["collection_id"] = source.get("collection_id", collection_id)
+        # Resolve the feature id: prefer the ``geoid`` alias written by
+        # build_tenant_feature_doc on all private docs (canonical and legacy),
+        # fall back to ``id`` (canonical shape only), then the caller-supplied
+        # fallback (typically the ES document ``_id``).
+        feature_id = source.get("geoid") or source.get("id") or fallback_id
         return Feature(
             type="Feature",
-            id=source.get("geoid", fallback_id),
+            id=feature_id,
             geometry=source.get("geometry"),
             properties=props,
             bbox=source.get("bbox"),  # type: ignore[call-arg]
@@ -432,24 +451,16 @@ class ItemsElasticsearchPrivateDriver(
         index_name = self._items_index_name(catalog_id)
         es = self._get_client()
 
-        if not await es.indices.exists(index=index_name):
-            # Snapshot the tenant-scoped operator overlay at index-create
-            # time. Live edits to ``mapping`` do not retro-patch ES
-            # (ES disallows tightening a live mapping); they take effect
-            # on the next index rebuild — same contract as the public
-            # driver's Tier-2 overlay.
-            known_fields = await resolve_catalog_private_known_fields(catalog_id)
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        # Snapshot the tenant-scoped operator overlay at index-create time.
+        # Live edits to ``mapping`` do not retro-patch ES (ES disallows
+        # tightening a live mapping); they take effect on the next index
+        # rebuild — same contract as the public driver's Tier-2 overlay.
+        known_fields = await resolve_catalog_private_known_fields(catalog_id)
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         await self._apply_deny_policy(catalog_id)
 
@@ -547,19 +558,11 @@ class ItemsElasticsearchPrivateDriver(
         from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 
         known_fields = await resolve_catalog_private_known_fields(ctx.catalog)
-
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         src = op.payload or {"id": op.entity_id}
         src.setdefault("id", op.entity_id)
@@ -571,8 +574,11 @@ class ItemsElasticsearchPrivateDriver(
             ctx.catalog, ctx.collection,
         )
         doc, factor, mode = maybe_simplify_for_es(doc, simplify=simplify_geometry)
-        doc["simplification_factor"] = factor
-        doc["simplification_mode"] = mode
+        if mode != "none":
+            doc.setdefault("system", {})["geometry_simplification"] = {
+                "factor": factor,
+                "mode": mode,
+            }
         doc = project_private_doc(doc, known_fields)
         await es.index(index=index_name, id=op.entity_id, body=doc)
 
@@ -610,18 +616,11 @@ class ItemsElasticsearchPrivateDriver(
         index_name = self._items_index_name(ctx.catalog)
         es = self._get_client()
 
-        if not await es.indices.exists(index=index_name):
-            try:
-                await es.indices.create(
-                    index=index_name,
-                    body={
-                        "settings": await get_private_items_index_settings(),
-                        "mappings": build_private_item_mapping(known_fields),
-                    },
-                )
-            except Exception as exc:
-                if "resource_already_exists" not in str(exc):
-                    raise
+        await self._ensure_index(
+            es, index_name,
+            build_private_item_mapping(known_fields),
+            get_private_items_index_settings,
+        )
 
         body: List[dict] = []
         for op in ops:
@@ -638,8 +637,11 @@ class ItemsElasticsearchPrivateDriver(
             doc, factor, mode = maybe_simplify_for_es(
                 doc, simplify=simplify_geometry,
             )
-            doc["simplification_factor"] = factor
-            doc["simplification_mode"] = mode
+            if mode != "none":
+                doc.setdefault("system", {})["geometry_simplification"] = {
+                    "factor": factor,
+                    "mode": mode,
+                }
             doc = project_private_doc(doc, known_fields)
             body.append({"index": {"_index": index_name, "_id": op.entity_id}})
             body.append(doc)
@@ -648,19 +650,13 @@ class ItemsElasticsearchPrivateDriver(
             return BulkResult(total=len(ops))
 
         resp = await es.bulk(body=body)
-        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
-        succeeded = 0
-        failures: List[Dict[str, Any]] = []
-        for it in items:
-            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
-            err = entry.get("error") if isinstance(entry, dict) else None
-            if err:
-                failures.append({
-                    "id": entry.get("_id"),
-                    "reason": str(err.get("reason", err) if isinstance(err, dict) else err),
-                })
-            else:
-                succeeded += 1
+        succeeded, failures = self._tally_bulk_response(
+            resp, len(ops),
+            driver_name="ItemsElasticsearchPrivateDriver",
+            catalog=ctx.catalog,
+            collection=ctx.collection,
+            index_name=index_name,
+        )
         return BulkResult(
             total=len(ops),
             succeeded=succeeded,

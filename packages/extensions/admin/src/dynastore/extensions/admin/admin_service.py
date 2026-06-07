@@ -352,7 +352,7 @@ def _resolve_preset_for_scope(preset_name: str, url_tier: "PresetTier"):
     return preset
 
 
-async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
+async def _apply_preset_bundle(preset, base_scope: dict, *, force: bool = False) -> dict:
     """Delegate to :func:`lifecycle.dispatch_preset`.
 
     The dispatcher picks the right path for ``preset`` — routing-config
@@ -360,10 +360,14 @@ async def _apply_preset_bundle(preset, base_scope: dict) -> dict:
     (``apply``/``revoke``/``dry_run``). Fixes the ``AttributeError`` raised
     when the registry returned a generalised preset (e.g. ``PolicyContributorPreset``)
     to a route that assumed ``preset.build(...)``.
+
+    ``force`` carries the ``?force=true`` REST flag through to
+    :func:`apply_preset`, letting an operator replace an already-applied
+    preset whose stored params snapshot differs from the request.
     """
     from dynastore.modules.storage.presets.lifecycle import dispatch_preset
 
-    return await dispatch_preset(preset, "apply", base_scope=base_scope)
+    return await dispatch_preset(preset, "apply", base_scope=base_scope, force=force)
 
 
 async def _unapply_preset_bundle(preset, base_scope: dict) -> dict:
@@ -802,6 +806,60 @@ class AdminService(ExtensionProtocol):
             provisioning_status=provisioning_status,
             task=task_view,
         )
+
+    @router.post(
+        "/catalogs/{catalog_id}/reprovision",
+        status_code=202,
+        summary="Re-enqueue the gcp_provision_catalog task for a catalog (sysadmin/admin only).",
+    )
+    async def reprovision_catalog(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
+        """Re-trigger GCP provisioning for a catalog.
+
+        Idempotent: the underlying task is already idempotent (bucket ensure +
+        eventing attach). Useful when eventing was degraded due to a missing
+        IAM grant — fix the grant, then call this endpoint to repair without
+        recreating the catalog.
+
+        Gated by the same ``admin_access`` policy as the broader
+        ``/admin/catalogs/{id}`` surface (sysadmin + admin).
+        """
+        from dynastore.modules.tasks import tasks_module
+        from dynastore.modules.tasks.models import TaskCreate
+        from dynastore.models.protocols import DatabaseProtocol
+
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise HTTPException(status_code=503, detail="Catalogs service not available.")
+        catalog = await catalogs.get_catalog_model(catalog_id)
+        if catalog is None:
+            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
+
+        db = get_protocol(DatabaseProtocol)
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database unavailable.")
+
+        provisioning_status = getattr(catalog, "provisioning_status", "ready") or "ready"
+
+        task = await tasks_module.create_task_for_catalog(
+            engine=db.engine,
+            task_data=TaskCreate(
+                caller_id="system:admin",
+                task_type="gcp_provision_catalog",
+                inputs={"catalog_id": catalog_id},
+            ),
+            catalog_id=catalog_id,
+        )
+        if task is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Task enqueue returned None (possible dedup collision).",
+            )
+        return {
+            "task_id": str(task.task_id),
+            "catalog_id": catalog_id,
+            "provisioning_status": provisioning_status,
+            "status": "queued",
+        }
 
     @router.get(
         "/catalogs/{catalog_id}/dead-letter",
@@ -2597,13 +2655,21 @@ class AdminService(ExtensionProtocol):
     async def apply_platform_preset(
         request: Request,  # type: ignore[reportGeneralTypeIssues]
         preset_name: str,
+        force: bool = Query(
+            False,
+            description=(
+                "Replace an already-applied preset whose stored params "
+                "snapshot differs from this request (otherwise a mismatch "
+                "returns 409)."
+            ),
+        ),
     ):
         """Apply a ``PLATFORM``-tier preset (no scope params). Returns 409
         if ``preset_name`` declares a non-platform tier."""
         from dynastore.modules.storage.presets import PresetTier
 
         preset = _resolve_preset_for_scope(preset_name, PresetTier.PLATFORM)
-        return await _apply_preset_bundle(preset, {})
+        return await _apply_preset_bundle(preset, {}, force=force)
 
     @router.delete(
         "/presets/{preset_name}",
@@ -2630,6 +2696,14 @@ class AdminService(ExtensionProtocol):
         request: Request,  # type: ignore[reportGeneralTypeIssues]
         catalog_id: str,
         preset_name: str,
+        force: bool = Query(
+            False,
+            description=(
+                "Replace an already-applied preset whose stored params "
+                "snapshot differs from this request (otherwise a mismatch "
+                "returns 409)."
+            ),
+        ),
     ):
         """Apply ``preset_name`` to ``catalog_id`` by walking the bundle
         through the standard ``ConfigsProtocol.set_config`` lifecycle.
@@ -2646,7 +2720,9 @@ class AdminService(ExtensionProtocol):
 
         await _assert_catalog_exists(catalog_id)
         preset = _resolve_preset_for_scope(preset_name, PresetTier.CATALOG)
-        return await _apply_preset_bundle(preset, {"catalog_id": catalog_id})
+        return await _apply_preset_bundle(
+            preset, {"catalog_id": catalog_id}, force=force
+        )
 
     @router.delete(
         "/catalogs/{catalog_id}/presets/{preset_name}",
@@ -2689,6 +2765,14 @@ class AdminService(ExtensionProtocol):
         catalog_id: str,
         collection_id: str,
         preset_name: str,
+        force: bool = Query(
+            False,
+            description=(
+                "Replace an already-applied preset whose stored params "
+                "snapshot differs from this request (otherwise a mismatch "
+                "returns 409)."
+            ),
+        ),
     ):
         """Apply ``preset_name`` at the collection scope. Returns 409 if the
         preset is not reachable at the collection scope (e.g. a catalog-tier
@@ -2699,7 +2783,9 @@ class AdminService(ExtensionProtocol):
         await _assert_collection_exists(catalog_id, collection_id)
         preset = _resolve_preset_for_scope(preset_name, PresetTier.COLLECTION)
         return await _apply_preset_bundle(
-            preset, {"catalog_id": catalog_id, "collection_id": collection_id}
+            preset,
+            {"catalog_id": catalog_id, "collection_id": collection_id},
+            force=force,
         )
 
     @router.delete(

@@ -152,6 +152,18 @@ async def _try_driver_dispatch(
     if is_query_fallback_driver(resolved):
         return None
 
+    # Routing-honouring fallback: ``resolved`` is the routing config's
+    # read/search primary, but if it is an ES items driver whose per-tenant
+    # index does not exist yet (PG-only catalog, or indexing has not run), it
+    # cannot serve. Return None so the next configured driver — the PG read
+    # path / system of record — handles the query, instead of returning an
+    # empty stream that hides PG-resident rows (#914 silent-empty).
+    if getattr(resolved, "is_es_items_driver", False):
+        _es_driver: Any = resolved
+        _index_check = getattr(_es_driver, "index_available", None)
+        if _index_check is not None and not await _index_check(catalog_id):
+            return None
+
     effective_limit = (request.limit if request and request.limit else limit) or limit
     effective_offset = (request.offset if request and request.offset else offset) or offset
 
@@ -824,6 +836,97 @@ class ItemQueryMixin:
 
             return None
 
+    async def _fetch_prior_bboxes_bulk(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        item_ids: List[str],
+    ) -> List[Tuple[float, float, float, float]]:
+        """Bulk-read prior bbox extents for a list of item IDs (#1845).
+
+        Issues a single ``WHERE feature_id = ANY(:ids)`` query against the
+        physical hub + geometries sidecar tables, reading ONLY the four
+        ST_XMin/ST_YMin/ST_XMax/ST_YMax scalar values off the materialized
+        ``bbox_geom`` envelope column — never raw geometry. Returns a list of
+        ``(west, south, east, north)`` tuples for every item that exists and
+        has a non-NULL bbox. Items that don't exist (CREATE path) contribute
+        nothing — they simply aren't found in the query.
+
+        This is a pure performance helper; the invalidation result is
+        identical to calling ``get_item`` per item. Callers must gate on
+        ``is_tile_cache_active`` before calling this.
+
+        Degrade-safe: any exception returns ``[]`` so the caller's write is
+        never blocked. Empty ``item_ids`` short-circuits immediately.
+        """
+        if not item_ids:
+            return []
+        try:
+            col_config = await self._get_collection_config(catalog_id, collection_id)
+            phys_schema = await self._resolve_physical_schema(catalog_id)
+            phys_table = await self._resolve_physical_table(catalog_id, collection_id)
+            if not phys_schema or not phys_table:
+                return []
+
+            # Resolve bbox column name from the geometries sidecar config.
+            # Default is ``bbox_geom``; fall back to that when no sidecar
+            # config is found so the helper is robust to minimal environments.
+            bbox_col = "bbox_geom"
+            from dynastore.modules.storage.drivers.pg_sidecars import driver_sidecars
+            for sc in driver_sidecars(col_config):
+                if getattr(sc, "sidecar_type", None) == "geometries":
+                    bbox_col = getattr(sc, "bbox_column", None) or bbox_col
+                    break
+
+            from dynastore.models.protocols.access_filter import AccessFilter
+
+            request = QueryRequest(
+                item_ids=list(item_ids),
+                select=[],
+                raw_selects=[
+                    "h.geoid",
+                    f"ST_XMin(sc_geometries.{bbox_col}) AS _xmin",
+                    f"ST_YMin(sc_geometries.{bbox_col}) AS _ymin",
+                    f"ST_XMax(sc_geometries.{bbox_col}) AS _xmax",
+                    f"ST_YMax(sc_geometries.{bbox_col}) AS _ymax",
+                ],
+                limit=len(item_ids),
+                access_filter=AccessFilter.allow_everything(),
+            )
+            query_ctx: Dict[str, Any] = {
+                "catalog_id": catalog_id,
+                "collection_id": collection_id,
+                "col_config": col_config,
+            }
+            sql, params = await self._apply_query_transformations(
+                request, query_ctx, catalog_id, collection_id, col_config,
+            )
+
+            async with managed_transaction(self.engine) as conn:
+                rows = await DQLQuery(
+                    sql, result_handler=ResultHandler.ALL_DICTS,
+                ).execute(conn, **params)
+
+            bboxes: List[Tuple[float, float, float, float]] = []
+            for row in (rows or []):
+                try:
+                    w = row.get("_xmin")
+                    s = row.get("_ymin")
+                    e = row.get("_xmax")
+                    n = row.get("_ymax")
+                    if None in (w, s, e, n):
+                        continue
+                    bboxes.append((float(w), float(s), float(e), float(n)))
+                except (TypeError, ValueError):
+                    continue
+            return bboxes
+        except Exception as exc:  # noqa: BLE001 — never break the caller's write
+            logger.debug(
+                "tile_cache: bulk prior-bbox read failed for %s/%s: %s",
+                catalog_id, collection_id, exc,
+            )
+            return []
+
     async def _capture_prior_bbox_for_delete(
         self,
         catalog_id: str,
@@ -835,36 +938,73 @@ class ItemQueryMixin:
 
         Phase 2 tile-cache invalidation needs the tiles a feature *used to*
         occupy. This reads that extent off the materialized bbox envelope via
-        the normal read path (``feature_bbox`` — never raw geometry) BEFORE the
-        delete removes the row. Gated on ``is_tile_cache_active`` so non-tile
-        deployments pay nothing, and degrade-safe (returns ``None`` on any
-        error) — capturing the prior bbox must never block or fail a delete.
+        a single targeted query (``_fetch_prior_bboxes_bulk`` with one id —
+        never raw geometry) BEFORE the delete removes the row. Gated on
+        ``is_tile_cache_active`` so non-tile deployments pay nothing, and
+        degrade-safe (returns ``None`` on any error) — capturing the prior
+        bbox must never block or fail a delete.
         """
         try:
-            from dynastore.modules.tiles.tile_cache_sync import (
-                feature_bbox,
-                is_tile_cache_active,
-            )
+            from dynastore.modules.tiles.tile_cache_sync import is_tile_cache_active
 
             if not await is_tile_cache_active(catalog_id, collection_id):
                 return None
 
-            # Privileged system read: tile-cache pre-delete bbox capture is a
-            # server-side operation with no end-user principal; allow all rows.
-            from dynastore.models.protocols.access_filter import AccessFilter
-            existing = await self.get_item(
-                catalog_id, collection_id, item_id, ctx=ctx,
-                access_filter=AccessFilter.allow_everything(),
+            bboxes = await self._fetch_prior_bboxes_bulk(
+                catalog_id, collection_id, [item_id],
             )
-            if existing is None:
-                return None
-            return feature_bbox(existing)
+            return bboxes[0] if bboxes else None
         except Exception as exc:  # noqa: BLE001 — never break the delete
             logger.debug(
                 "tile_cache: prior-bbox capture skipped for %s/%s/%s: %s",
                 catalog_id, collection_id, item_id, exc,
             )
             return None
+
+    async def _capture_prior_bboxes_for_update(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        items: List[Any],
+    ) -> List[Tuple[float, float, float, float]]:
+        """Read existing items' extents before an upsert (#1297 Phase 2b, #1845).
+
+        Phase 2b tile-cache invalidation for the geometry-MOVE case: when a
+        feature's geometry moves, Phase 1 already invalidates the NEW bbox but
+        the OLD tiles stay stale. This reads the current bbox for ALL incoming
+        items in a SINGLE bulk query (``WHERE feature_id = ANY(:ids)`` — never
+        raw geometry) BEFORE the upsert overwrites the rows, replacing the
+        previous per-item ``get_item`` loop (N+1 reads on bulk ingestion).
+
+        Gated on ``is_tile_cache_active`` so non-tile deployments pay nothing.
+        Degrade-safe: a single bulk read failure yields ``[]`` and must never
+        block or fail the upsert. Items that don't yet exist (CREATE, not
+        UPDATE) are simply absent from the query result and contribute nothing.
+        """
+        try:
+            from dynastore.modules.tiles.tile_cache_sync import is_tile_cache_active
+
+            if not await is_tile_cache_active(catalog_id, collection_id):
+                return []
+        except Exception:  # noqa: BLE001 — never break the upsert
+            return []
+
+        item_ids = [
+            str(item.get("id") if isinstance(item, dict) else getattr(item, "id", None))
+            for item in items
+            if (item.get("id") if isinstance(item, dict) else getattr(item, "id", None)) is not None
+        ]
+        if not item_ids:
+            return []
+
+        try:
+            return await self._fetch_prior_bboxes_bulk(catalog_id, collection_id, item_ids)
+        except Exception as exc:  # noqa: BLE001 — never break the upsert
+            logger.debug(
+                "tile_cache: bulk prior-bbox capture failed for %s/%s: %s",
+                catalog_id, collection_id, exc,
+            )
+            return []
 
     async def delete_item(
         self,
@@ -1181,11 +1321,82 @@ class ItemQueryMixin:
                 "col_config": col_config,
                 **(request.raw_params or {}),
             }
+
+            # Read-policy projection pushdown (config-driven). Resolve the
+            # collection's ItemsReadPolicy ONCE here — reused for row assembly
+            # below — and narrow a wildcard SELECT to exactly what
+            # ``feature_type`` exposes. Without this a wildcard /items read
+            # fetches every sidecar column (geometry stats area/perimeter/length,
+            # spatial-cell indexes, …) the policy does not surface, joining and
+            # computing columns no consumer asked for and leaking them onto the
+            # Feature root. The tile path already narrows via
+            # ``project_select_for_feature_type``; ``pushdown_read_select`` brings
+            # the row-projected path under the same SSOT (and returns None — no
+            # change — for STAC, explicit caller projections, expose_all, or
+            # schemaless collections; the row-map guard remains the backstop).
+            read_policy = await self._resolve_read_policy(catalog_id, collection_id)
+            try:
+                from dynastore.modules.storage.driver_config import ItemsSchema
+                from dynastore.modules.storage.drivers.pg_sidecars import (
+                    SidecarRegistry,
+                )
+                from dynastore.modules.storage.read_policy import (
+                    pushdown_read_select,
+                )
+
+                _feature_type = getattr(read_policy, "feature_type", None)
+                _declared_schema = None
+                if _feature_type is not None:
+                    _configs = get_protocol(ConfigsProtocol)
+                    if _configs is not None:
+                        _schema = await _configs.get_config(
+                            ItemsSchema,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                        )
+                        _declared_schema = getattr(_schema, "fields", None) or {}
+                        # The optimizer needs the declared schema to resolve
+                        # JSONB-only field names (no columnar storage) in its
+                        # field index — same thread the tile path uses.
+                        context["schema_fields"] = _declared_schema
+                _geom_field = next(
+                    (
+                        name
+                        for name in (
+                            sc.get_main_geometry_field()
+                            for sc in (
+                                SidecarRegistry.get_sidecar(cfg, lenient=True)
+                                for cfg in driver_sidecars(col_config)
+                            )
+                            if sc is not None
+                        )
+                        if name
+                    ),
+                    None,
+                )
+                _narrowed = pushdown_read_select(
+                    request.select,
+                    _feature_type,
+                    _declared_schema,
+                    is_stac=(consumer == ConsumerType.STAC),
+                    geometry_field=_geom_field,
+                    skip_geometry=bool(getattr(request, "skip_geometry", False)),
+                )
+                if _narrowed is not None:
+                    request.select = _narrowed
+            except Exception as exc:  # noqa: BLE001 — pushdown is an optimisation; never break the read
+                logger.debug(
+                    "read-select pushdown skipped for %s/%s: %s",
+                    catalog_id, collection_id, exc,
+                )
+
             # Snapshot a pagination-free copy BEFORE the data transformation
             # runs: _apply_query_transformations mutates the request in place
             # (it folds the parsed CQL filter into raw_where/raw_params), so a
             # copy taken afterwards would re-parse the filter and double the
-            # predicate. deep=True isolates the shared raw_params dict.
+            # predicate. deep=True isolates the shared raw_params dict. Taken
+            # AFTER the projection pushdown so the count query shares the
+            # narrowed select.
             count_request = (
                 request.model_copy(deep=True, update={"limit": None, "offset": None})
                 if request.include_total_count
@@ -1214,7 +1425,19 @@ class ItemQueryMixin:
 
         # Stream Generator (O(1) Memory)
         lang = (request.raw_params or {}).get("lang", "en")
-        read_policy = await self._resolve_read_policy(catalog_id, collection_id)
+        # ``read_policy`` was resolved once above (projection pushdown) and is
+        # reused here for row assembly — no second config fetch.
+        # Collect explicitly-requested field names (both alias and source column)
+        # so the sidecar bridge can surface SYSTEM fields named here. Wildcard
+        # selects ("*") are excluded — only opt-in by name exposes system columns.
+        # See #1827.
+        _sel = request.select or []
+        _requested_fields: set = {
+            name
+            for s in _sel
+            if s.field and s.field != "*"
+            for name in (s.field, s.alias) if name
+        }
         async def feature_stream():
             # Require async engine: I/O-bound worker SCOPEs (export_features,
             # dwh_join) must include module_db so DatastoreModule.engine resolves
@@ -1229,7 +1452,10 @@ class ItemQueryMixin:
                 # AsyncConnection.stream() yields rows server-side without buffering
                 stream = await stream_conn.stream(text(sql), params)  # type: ignore[union-attr]
                 async for row in stream:
-                    feature_ctx = FeaturePipelineContext(lang=lang, consumer=consumer)
+                    feature_ctx = FeaturePipelineContext(
+                        lang=lang, consumer=consumer,
+                        requested_fields=_requested_fields,
+                    )
                     yield self.map_row_to_feature(
                         dict(row._mapping), col_config, context=feature_ctx,
                         read_policy=read_policy,

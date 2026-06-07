@@ -26,9 +26,23 @@ This service implements CatalogsProtocol and provides:
 - Catalog-level caching
 """
 
+import asyncio
 import logging
 import json
-from typing import List, Optional, Any, Dict, FrozenSet, Union, Set, Tuple, TYPE_CHECKING
+from typing import (
+    Awaitable,
+    Callable,
+    List,
+    Optional,
+    Any,
+    Dict,
+    FrozenSet,
+    TypeVar,
+    Union,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 if TYPE_CHECKING:
     from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
@@ -42,6 +56,7 @@ from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     DbResource,
     ResultHandler,
+    _is_transient_asyncpg_error,
     managed_nested_transaction,
     managed_transaction,
 )
@@ -177,6 +192,49 @@ def get_catalog_engine(db_resource: Optional[DbResource] = None) -> DbResource:
     from dynastore.tools.protocol_helpers import get_engine
 
     return get_engine()  # type: ignore[return-value]
+
+
+_T = TypeVar("_T")
+
+
+async def _provisioning_write_with_retry(
+    engine: DbResource,
+    fn: Callable[[Any], Awaitable[_T]],
+) -> _T:
+    """Run ``fn(conn)`` inside a short, committed PG transaction.
+
+    Retries exactly once on dead-connection transient errors (asyncpg
+    InterfaceError / ConnectionDoesNotExistError) that surface when the
+    pool recycles a wire that was closed server-side by
+    ``idle_in_transaction_session_timeout``.  The retry uses a fresh
+    connection acquired from the pool — never the stale one.
+
+    This helper exists solely to centralise the retry logic for the
+    provisioning write path (#1895).  It must NOT be used for non-
+    idempotent writes.
+    """
+    for attempt in range(2):
+        try:
+            async with managed_transaction(engine) as conn:
+                return await fn(conn)
+        except Exception as exc:
+            orig = getattr(exc, "orig", exc)
+            is_transient = (
+                _is_transient_asyncpg_error(exc)
+                or _is_transient_asyncpg_error(orig)
+            )
+            if attempt == 0 and is_transient:
+                logger.warning(
+                    "provisioning_write_retry "
+                    "attempt=0 exc=%s cause=%s; retrying on fresh connection",
+                    exc.__class__.__name__,
+                    orig.__class__.__name__,
+                )
+                await asyncio.sleep(0)  # yield to event loop before retry
+                continue
+            raise
+    # Unreachable: the loop always returns or raises on both iterations.
+    raise AssertionError("_provisioning_write_with_retry: exhausted attempts")
 
 
 def _build_catalog_metadata_payload(catalog_model: Catalog) -> Dict[str, Any]:
@@ -471,8 +529,6 @@ def _invalidate_catalog_model_cache(catalog_id: str) -> None:
 
 from dynastore.modules.catalog.collection_service import CollectionService
 from dynastore.modules.catalog.item_service import ItemService
-
-# ... (Previous imports and helpers remain same, just adding these)
 
 
 class CatalogService(CatalogsProtocol):
@@ -1856,7 +1912,16 @@ class CatalogService(CatalogsProtocol):
         try:
             driver = await get_driver("WRITE", catalog_id, collection_id)
         except ValueError:
-            return
+            # No write driver registered for this collection.  Re-raise so
+            # the caller's transaction rolls back and any prior
+            # ``set_physical_table`` pin is not committed without the table
+            # actually existing (atomicity guard, #1847).
+            logger.error(
+                "create_physical_collection: no WRITE driver for %s/%s — "
+                "cannot create physical table %r; aborting provisioning.",
+                catalog_id, collection_id, physical_table,
+            )
+            raise
         await driver.ensure_storage(
             catalog_id,
             collection_id,
@@ -2100,33 +2165,43 @@ class CatalogService(CatalogsProtocol):
         relative to the row (observed on review env 2026-04-30: PG flipped to
         'ready' but ES still showed 'provisioning'). Mirrors the create-time
         fan-out at create_catalog (above).
+
+        The metadata fan-out (which includes non-PG drivers such as ES) runs
+        OUTSIDE the PG transaction so that slow non-PG I/O (e.g. ES
+        refresh=wait_for) never holds a BEGIN open long enough to trigger
+        idle_in_transaction_session_timeout (#1895).
         """
         db_resource = ctx.db_resource if ctx else None
+        engine = get_catalog_engine(db_resource)
+
+        # Phase 1 — short PG transaction: write the authoritative row and
+        # return immediately.  The transaction is committed before any
+        # non-PG fan-out driver is called.
         sql = "UPDATE catalog.catalogs SET provisioning_status = :status WHERE id = :id RETURNING id;"
-        async with managed_transaction(get_catalog_engine(db_resource)) as conn:
-            result = await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
+
+        async def _do_update(conn: Any) -> Any:
+            return await DQLQuery(sql, result_handler=ResultHandler.ONE_DICT).execute(
                 conn, id=catalog_id, status=status
             )
-            if not result:
-                return False
-            _invalidate_catalog_model_cache(catalog_id)
 
-            # Re-fetch the model so the metadata-driver fan-out sees the new
-            # status. Pass the same connection so the read participates in
-            # this transaction (avoids the read-after-write race that an
-            # implicit-fresh-connection path would produce on a busy db).
-            inner_ctx = DriverContext(db_resource=conn)
-            catalog_model = await self.get_catalog_model(catalog_id, ctx=inner_ctx)
-            if catalog_model is not None:
-                metadata = _build_catalog_metadata_payload(catalog_model)
-                if metadata:
-                    from dynastore.modules.catalog.catalog_router import (
-                        upsert_catalog_metadata,
-                    )
-                    await upsert_catalog_metadata(
-                        catalog_id, metadata, db_resource=conn,
-                    )
-            return True
+        result = await _provisioning_write_with_retry(engine, _do_update)
+        if not result:
+            return False
+        _invalidate_catalog_model_cache(catalog_id)
+
+        # Phase 2 — OUTSIDE the transaction: fan out to metadata drivers.
+        # The PG row is committed; a fresh read sees the new status, removing
+        # the read-after-write race while avoiding a held connection across
+        # potentially slow non-PG I/O.
+        catalog_model = await self.get_catalog_model(catalog_id)
+        if catalog_model is not None:
+            metadata = _build_catalog_metadata_payload(catalog_model)
+            if metadata:
+                from dynastore.modules.catalog.catalog_router import (
+                    upsert_catalog_metadata,
+                )
+                await upsert_catalog_metadata(catalog_id, metadata)
+        return True
 
     async def mark_provisioning_step(
         self,
@@ -2148,31 +2223,33 @@ class CatalogService(CatalogsProtocol):
         on the same catalog serialise instead of racing on the JSONB blob. A
         status change fans out to the metadata drivers, mirroring
         :meth:`update_provisioning_status`.
+
+        The metadata fan-out runs OUTSIDE the PG transaction for the same
+        idle_in_transaction_session_timeout safety as
+        :meth:`update_provisioning_status` (#1895).
         """
         from dynastore.modules.catalog.provisioning_registry import (
             evaluate_checklist,
         )
 
         db_resource = ctx.db_resource if ctx else None
-        async with managed_transaction(get_catalog_engine(db_resource)) as conn:
+        engine = get_catalog_engine(db_resource)
+
+        # Phase 1 — short PG transaction: update checklist + status.
+        # Returns the new_status (str | None) or a sentinel for early-exit.
+        _NOT_FOUND = object()
+        _NO_CHECKLIST = object()
+
+        async def _do_checklist_update(conn: Any) -> Any:
             row = await _get_provisioning_checklist_query.execute(conn, id=catalog_id)
             if not row:
-                logger.warning(
-                    "mark_provisioning_step: catalog '%s' not found.", catalog_id
-                )
-                return False
+                return _NOT_FOUND
             raw = row.get("provisioning_checklist")
             if raw is None:
-                logger.debug(
-                    "mark_provisioning_step: catalog '%s' has no checklist; "
-                    "step '%s' ignored.", catalog_id, key,
-                )
-                return False
+                return _NO_CHECKLIST
             checklist = json.loads(raw) if isinstance(raw, str) else dict(raw)
-
             checklist[key] = step_status
             new_status = evaluate_checklist(checklist)
-
             if new_status is not None:
                 await DQLQuery(
                     "UPDATE catalog.catalogs "
@@ -2187,22 +2264,37 @@ class CatalogService(CatalogsProtocol):
                     "WHERE id = :id;",
                     result_handler=ResultHandler.NONE,
                 ).execute(conn, id=catalog_id, cl=json.dumps(checklist))
+            return new_status
 
-            _invalidate_catalog_model_cache(catalog_id)
+        result = await _provisioning_write_with_retry(engine, _do_checklist_update)
 
-            if new_status is not None:
-                inner_ctx = DriverContext(db_resource=conn)
-                catalog_model = await self.get_catalog_model(catalog_id, ctx=inner_ctx)
-                if catalog_model is not None:
-                    metadata = _build_catalog_metadata_payload(catalog_model)
-                    if metadata:
-                        from dynastore.modules.catalog.catalog_router import (
-                            upsert_catalog_metadata,
-                        )
-                        await upsert_catalog_metadata(
-                            catalog_id, metadata, db_resource=conn,
-                        )
-            return True
+        if result is _NOT_FOUND:
+            logger.warning(
+                "mark_provisioning_step: catalog '%s' not found.", catalog_id
+            )
+            return False
+        if result is _NO_CHECKLIST:
+            logger.debug(
+                "mark_provisioning_step: catalog '%s' has no checklist; "
+                "step '%s' ignored.", catalog_id, key,
+            )
+            return False
+
+        new_status = result
+        _invalidate_catalog_model_cache(catalog_id)
+
+        # Phase 2 — OUTSIDE the transaction: fan out when the overall status
+        # changed.  The PG row is committed so a fresh read sees the new state.
+        if new_status is not None:
+            catalog_model = await self.get_catalog_model(catalog_id)
+            if catalog_model is not None:
+                metadata = _build_catalog_metadata_payload(catalog_model)
+                if metadata:
+                    from dynastore.modules.catalog.catalog_router import (
+                        upsert_catalog_metadata,
+                    )
+                    await upsert_catalog_metadata(catalog_id, metadata)
+        return True
 
 
 # --- Standalone Utilities ---

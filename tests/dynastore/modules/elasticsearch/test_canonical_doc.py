@@ -13,7 +13,7 @@ Tests cover:
   - access pass-through and omission when falsy
   - no id/geoid leak into properties
 """
-import pytest
+from datetime import datetime, timezone
 
 from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
 
@@ -22,12 +22,24 @@ from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _Range:
+    """Minimal tstzrange Range-like stub mirroring the asyncpg.Range duck-type
+    (``lower`` / ``upper`` bounds + ``lower_inc`` / ``upper_inc`` flags) that the
+    canonical doc builder converts into an ES ``date_range`` body."""
+
+    def __init__(self, lower, upper, *, lower_inc=True, upper_inc=False):
+        self.lower = lower
+        self.upper = upper
+        self.lower_inc = lower_inc
+        self.upper_inc = upper_inc
+
+
 def _row(**over):
     base = {
         "geoid": "019e6318-d99e-7da2-bdd9-1223a0d9cd35",
         "external_id": "305",
         "asset_id": "ALBL1_01",
-        "validity": "[2024-01-01,)",
+        "validity": _Range(datetime(2024, 1, 1, tzinfo=timezone.utc), None),
         "geometry_hash": "abc",
         "attributes_hash": "def",
         "transaction_time": "2026-02-26T18:09:04.131762+00:00",
@@ -48,6 +60,12 @@ class _FakeSidecar:
     def resolve_computed_value(self, row, name):  # noqa: ARG002
         if name in self._produce:
             return True, self._produce[name]
+        return False, None
+
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, name):  # noqa: ARG002
         return False, None
 
 
@@ -81,6 +99,33 @@ def test_id_unchanged_when_no_external_id():
     assert doc["id"] == "019e6318-d99e-7da2-bdd9-1223a0d9cd35"
     assert "external_id" not in doc
     assert "_external_id" not in doc
+
+
+def test_emits_both_collection_wire_member_and_collection_id():
+    """The doc must carry the STAC/GeoJSON wire member ``collection`` AND the
+    internal queryable ``collection_id`` (both equal the collection id).
+
+    ``collection`` is a reserved member key that the read reconstruction
+    (``unproject_item_from_es``) surfaces verbatim onto the wire Feature, and
+    the ``collection``-term filter behind the REFUSE write policy queries it.
+    ``collection_id`` is what the search/sort field path resolves to. Dropping
+    either breaks an ES-served read or a write-conflict check.
+    """
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="cat", collection_id="col",
+    )
+    assert doc["collection"] == "col"
+    assert doc["collection_id"] == "col"
+
+    # Read round-trip: the wire Feature must keep ``collection``.
+    from dynastore.modules.elasticsearch.items_projection import (
+        unproject_item_from_es,
+    )
+    wire = unproject_item_from_es(doc)
+    assert wire["collection"] == "col"
+    # ``collection_id`` is internal — it must NOT leak onto the wire Feature.
+    assert "collection_id" not in wire
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +266,7 @@ def test_all_system_fields_present_on_row():
         "asset_id": "aid",
         "geometry_hash": "gh",
         "attributes_hash": "ah",
-        "validity": "[2020,)",
+        "validity": _Range(datetime(2020, 1, 1, tzinfo=timezone.utc), None),
         "transaction_time": "2026-01-01T00:00:00Z",
         "deleted_at": "2026-06-01T00:00:00Z",
     }
@@ -235,7 +280,9 @@ def test_all_system_fields_present_on_row():
     assert sys["asset_id"] == "aid"
     assert sys["geometry_hash"] == "gh"
     assert sys["attributes_hash"] == "ah"
-    assert sys["validity"] == "[2020,)"
+    # validity is converted to an ES date_range body: inclusive lower bound
+    # (tstzrange default ``[``) -> ``gte``; open upper bound -> omitted.
+    assert sys["validity"] == {"gte": "2020-01-01T00:00:00+00:00"}
     assert sys["transaction_time"] == "2026-01-01T00:00:00Z"
     assert sys["deleted_at"] == "2026-06-01T00:00:00Z"
 
@@ -267,6 +314,140 @@ def test_sidecar_none_value_not_written_to_stats():
     assert "stats" not in doc
 
 
+# ---------------------------------------------------------------------------
+# metadata section — via ItemMetadataSidecar (refs #1828 Phase 2 / #1838)
+# ---------------------------------------------------------------------------
+
+# The metadata section is populated exclusively through the sidecar protocol:
+# ItemMetadataSidecar.producible_metadata_names() returns {"title","description",
+# "keywords"} and resolve_metadata_value() reads item_* columns from the row.
+# Direct row-column reads were removed in #1838; the sidecar must be in
+# resolved_sidecars for metadata to appear.
+
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata import (
+    ItemMetadataSidecar,
+)
+from dynastore.modules.storage.drivers.pg_sidecars.item_metadata_config import (
+    ItemMetadataSidecarConfig,
+)
+
+_METADATA_SIDECAR = ItemMetadataSidecar(ItemMetadataSidecarConfig())
+
+
+def test_metadata_section_populated_via_sidecar():
+    """Metadata must come from ItemMetadataSidecar.resolve_metadata_value(), not
+    from direct row-column reads. Wire shape is identical to the pre-refactor
+    output (title / description / keywords in metadata{})."""
+    row = _row()
+    row["item_title"] = {"en": "Rome", "fr": "Rome"}
+    row["item_description"] = {"en": "The Eternal City"}
+    row["item_keywords"] = ["city", "europe"]
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" in doc
+    assert doc["metadata"]["title"] == {"en": "Rome", "fr": "Rome"}
+    assert doc["metadata"]["description"] == {"en": "The Eternal City"}
+    assert doc["metadata"]["keywords"] == ["city", "europe"]
+
+
+def test_metadata_section_absent_when_no_sidecar():
+    """Without a metadata-producing sidecar the metadata section is absent."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" not in doc
+
+
+def test_metadata_section_absent_when_sidecar_row_columns_missing():
+    """When the row has no item_* columns the metadata section is absent even
+    with the sidecar in the list."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" not in doc
+
+
+def test_metadata_section_partial_columns_via_sidecar():
+    """Only the keys present in the row are emitted in metadata{}."""
+    row = _row()
+    row["item_title"] = {"en": "Partial"}
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    assert "metadata" in doc
+    assert doc["metadata"] == {"title": {"en": "Partial"}}
+    assert "description" not in doc["metadata"]
+    assert "keywords" not in doc["metadata"]
+
+
+def test_metadata_columns_do_not_leak_into_system_or_stats():
+    """item_title / item_description / item_keywords must not bleed into
+    system or stats sections."""
+    row = _row()
+    row["item_title"] = {"en": "Title"}
+    row["item_keywords"] = ["kw"]
+    doc = build_canonical_index_doc(
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+    for section in ("system", "stats"):
+        if section in doc:
+            assert "title" not in doc[section]
+            assert "item_title" not in doc[section]
+            assert "keywords" not in doc[section]
+
+
+def test_metadata_wire_shape_byte_identical_before_and_after_sidecar_wiring():
+    """The wire shape emitted by the sidecar path must be byte-for-byte
+    identical to the previous direct-column read (the refactor is provenance-
+    only; the ES _source must not change). Verifies the contract from #1838."""
+    row = _row()
+    row["item_title"] = {"en": "Rome", "fr": "Rome"}
+    row["item_description"] = {"en": "The Eternal City"}
+    row["item_keywords"] = ["city", "europe"]
+
+    doc_via_sidecar = build_canonical_index_doc(
+        row, resolved_sidecars=[_METADATA_SIDECAR], known_fields={},
+        catalog_id="c", collection_id="k",
+    )
+
+    # Reference shape: what the previous direct-column read produced.
+    expected_metadata = {
+        "title": {"en": "Rome", "fr": "Rome"},
+        "description": {"en": "The Eternal City"},
+        "keywords": ["city", "europe"],
+    }
+    assert doc_via_sidecar["metadata"] == expected_metadata
+
+
+def test_metadata_first_sidecar_wins_duplicate_name():
+    """First metadata-producing sidecar for a given name wins; second is ignored."""
+    class _MetaSidecar:
+        def producible_computed_names(self): return set()
+        def resolve_computed_value(self, row, name): return (False, None)
+        def producible_metadata_names(self): return {"title"}
+        def resolve_metadata_value(self, row, name):
+            return (True, {"en": "First"}) if name == "title" else (False, None)
+
+    class _SecondMetaSidecar:
+        def producible_computed_names(self): return set()
+        def resolve_computed_value(self, row, name): return (False, None)
+        def producible_metadata_names(self): return {"title"}
+        def resolve_metadata_value(self, row, name):
+            return (True, {"en": "Second"}) if name == "title" else (False, None)
+
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[_MetaSidecar(), _SecondMetaSidecar()],
+        known_fields={}, catalog_id="c", collection_id="k",
+    )
+    assert doc["metadata"]["title"] == {"en": "First"}
+
+
 def test_reserved_stac_key_in_user_properties_is_dropped():
     # "id" is a reserved GeoJSON/STAC member — project_item_for_es drops it from
     # properties rather than routing it into extras.
@@ -284,3 +465,209 @@ def test_reserved_stac_key_in_user_properties_is_dropped():
     assert extras.get("NAME") == "in-extras"
     # top-level id is still the geoid, not the leaked value
     assert doc["id"] == "019e6318-d99e-7da2-bdd9-1223a0d9cd35"
+
+
+# ---------------------------------------------------------------------------
+# validity -> ES date_range conversion (#1828)
+# ---------------------------------------------------------------------------
+
+from dynastore.modules.elasticsearch.canonical_doc import _validity_to_es_range
+
+
+def test_validity_range_both_bounds_default_inclusivity():
+    """Default tstzrange ``[lower, upper)`` -> gte (inclusive) + lt (exclusive)."""
+    r = _Range(
+        datetime(2020, 1, 1, tzinfo=timezone.utc),
+        datetime(2021, 1, 1, tzinfo=timezone.utc),
+    )
+    assert _validity_to_es_range(r) == {
+        "gte": "2020-01-01T00:00:00+00:00",
+        "lt": "2021-01-01T00:00:00+00:00",
+    }
+
+
+def test_validity_range_open_upper_bound_omits_upper():
+    """An open upper bound (``[lower,)``) yields only the lower bound."""
+    r = _Range(datetime(2020, 1, 1, tzinfo=timezone.utc), None)
+    assert _validity_to_es_range(r) == {"gte": "2020-01-01T00:00:00+00:00"}
+
+
+def test_validity_range_open_lower_bound_omits_lower():
+    """An open lower bound (``(,upper]``) yields only the upper bound."""
+    r = _Range(None, datetime(2021, 1, 1, tzinfo=timezone.utc), lower_inc=False, upper_inc=True)
+    assert _validity_to_es_range(r) == {"lte": "2021-01-01T00:00:00+00:00"}
+
+
+def test_validity_range_exclusive_lower_inclusive_upper():
+    """Inclusivity flags map to gt/lte respectively."""
+    r = _Range(
+        datetime(2020, 1, 1, tzinfo=timezone.utc),
+        datetime(2021, 1, 1, tzinfo=timezone.utc),
+        lower_inc=False,
+        upper_inc=True,
+    )
+    assert _validity_to_es_range(r) == {
+        "gt": "2020-01-01T00:00:00+00:00",
+        "lte": "2021-01-01T00:00:00+00:00",
+    }
+
+
+def test_validity_fully_open_window_is_dropped():
+    """A range with no bounds carries no temporal info -> None (field dropped)."""
+    assert _validity_to_es_range(_Range(None, None)) is None
+
+
+def test_validity_none_is_dropped():
+    assert _validity_to_es_range(None) is None
+
+
+def test_validity_dict_passes_through_idempotently():
+    """A pre-converted range body (re-index path) is returned unchanged."""
+    body = {"gte": "2020-01-01T00:00:00+00:00", "lt": "2021-01-01T00:00:00+00:00"}
+    assert _validity_to_es_range(body) == body
+
+
+def test_validity_empty_dict_is_dropped():
+    assert _validity_to_es_range({}) is None
+
+
+def test_validity_bare_string_is_dropped_not_misread_as_range():
+    """A bare str exposes ``.lower``/``.upper`` *methods* but no ``lower_inc``;
+    it must NOT be mistaken for a range, and cannot be a valid date_range body,
+    so it is dropped."""
+    assert _validity_to_es_range("[2020-01-01,)") is None
+
+
+def test_validity_string_bounds_pass_through_without_isoformat():
+    """Range bounds that are already strings (no isoformat) pass through as-is."""
+    r = _Range("2020-01-01T00:00:00+00:00", None)
+    assert _validity_to_es_range(r) == {"gte": "2020-01-01T00:00:00+00:00"}
+
+
+# ---------------------------------------------------------------------------
+# ES-only STAC: stac_reserved_members round-trip (refs #1757)
+# ---------------------------------------------------------------------------
+# For stac_level=items, stac_storage=ES (no PG sidecar), per-item STAC content
+# (assets, stac_extensions) lives only in the inbound feature.  The write
+# path must thread these into the canonical _source so unproject_item_from_es
+# surfaces them verbatim on read.
+
+
+def test_stac_reserved_members_assets_stored_and_round_trips():
+    """assets from stac_reserved_members survive the canonical doc and unproject."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    assets = {
+        "data": {
+            "href": "https://example.com/data.tif",
+            "type": "image/tiff; application=geotiff",
+            "roles": ["data"],
+        }
+    }
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        geometry={"type": "Point", "coordinates": [12.0, 41.0]},
+        stac_reserved_members={"assets": assets},
+    )
+
+    # assets must be stored at the top level of the ES _source
+    assert doc["assets"] == assets
+
+    # unproject restores the wire shape with assets intact
+    wire = unproject_item_from_es(doc)
+    assert wire["assets"] == assets
+
+    # Feature.model_validate carries assets through (via extra="allow")
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "assets", None) == assets
+
+
+def test_stac_reserved_members_stac_extensions_stored_and_round_trips():
+    """stac_extensions from stac_reserved_members survive canonical doc and unproject."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    exts = [
+        "https://stac-extensions.github.io/eo/v1.0.0/schema.json",
+        "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
+    ]
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={"stac_extensions": exts},
+    )
+
+    assert doc["stac_extensions"] == exts
+
+    wire = unproject_item_from_es(doc)
+    assert wire["stac_extensions"] == exts
+
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "stac_extensions", None) == exts
+
+
+def test_stac_reserved_members_assets_and_extensions_together():
+    """Full ES-only STAC round-trip: assets + stac_extensions survive write→read."""
+    from dynastore.modules.elasticsearch.items_projection import unproject_item_from_es
+    from dynastore.models.shared_models import Feature
+
+    assets = {"thumbnail": {"href": "https://example.com/thumb.png", "roles": ["thumbnail"]}}
+    exts = ["https://stac-extensions.github.io/eo/v1.0.0/schema.json"]
+
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={"cloud_cover": {}},
+        catalog_id="c", collection_id="k",
+        geometry={"type": "Point", "coordinates": [0.0, 0.0]},
+        bbox=[0.0, 0.0, 0.0, 0.0],
+        user_properties={"cloud_cover": 12, "datetime": "2024-01-01T00:00:00Z"},
+        stac_reserved_members={"assets": assets, "stac_extensions": exts},
+    )
+
+    # Both stored at top level of _source
+    assert doc["assets"] == assets
+    assert doc["stac_extensions"] == exts
+    # user properties are not corrupted
+    assert doc["properties"]["cloud_cover"] == 12
+
+    # Round-trip: unproject → Feature
+    wire = unproject_item_from_es(doc)
+    feature = Feature.model_validate(wire)
+    assert getattr(feature, "assets", None) == assets
+    assert getattr(feature, "stac_extensions", None) == exts
+    # user properties survive
+    assert feature.properties.get("cloud_cover") == 12
+
+
+def test_stac_reserved_members_none_omits_sections():
+    """When stac_reserved_members is None, no extra keys appear in the doc."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members=None,
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc
+
+
+def test_stac_reserved_members_empty_omits_sections():
+    """Empty stac_reserved_members dict behaves like None."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={},
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc
+
+
+def test_stac_reserved_members_none_values_skipped():
+    """Keys with None values inside stac_reserved_members are not written."""
+    doc = build_canonical_index_doc(
+        _row(), resolved_sidecars=[], known_fields={},
+        catalog_id="c", collection_id="k",
+        stac_reserved_members={"assets": None, "stac_extensions": None},
+    )
+    assert "assets" not in doc
+    assert "stac_extensions" not in doc

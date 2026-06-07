@@ -112,7 +112,7 @@ class TestEnumerateConfiguredDrivers:
             "dynastore.modules.storage.router._resolve_driver_ids_cached",
             new=AsyncMock(side_effect=_mock_resolve),
         ):
-            result = await _enumerate_configured_drivers(scope_ref, MagicMock())
+            result = await _enumerate_configured_drivers(scope_ref)
 
         # Only one entry for items_elasticsearch_driver despite multiple ops
         items_entries = [p for p in result if p == (_REGISTRY_ITEMS, "items_elasticsearch_driver")]
@@ -136,15 +136,22 @@ class TestEnumerateConfiguredDrivers:
             "dynastore.modules.storage.router._resolve_driver_ids_cached",
             new=AsyncMock(side_effect=_mock_resolve),
         ):
-            result = await _enumerate_configured_drivers(scope_ref, MagicMock())
+            result = await _enumerate_configured_drivers(scope_ref)
 
         driver_refs = [dr for _, dr in result]
         assert "gcs_asset_driver" not in driver_refs
         assert "asset_elasticsearch_driver" in driver_refs
 
     @pytest.mark.asyncio
-    async def test_benign_exception_treated_as_no_drivers(self) -> None:
-        """ConfigsProtocol not available → treated as empty (no raise)."""
+    async def test_configs_unavailable_fails_closed(self) -> None:
+        """ConfigsProtocol outage must PROPAGATE (fail-closed), not be swallowed.
+
+        Regression guard for #1764: the previous benign-substring filter
+        treated ``"ConfigsProtocol not available"`` as "no drivers" and
+        returned ``[]`` — so a real configs outage let the delete proceed
+        while cleaning nothing (silent tenant-storage leak). The outage must
+        now raise so ``describe_scope`` rolls the delete transaction back.
+        """
         async def _mock_resolve(routing_cls, catalog_id, collection_id, op, hints):
             raise RuntimeError("ConfigsProtocol not available — cannot resolve storage routing")
 
@@ -154,9 +161,8 @@ class TestEnumerateConfiguredDrivers:
             "dynastore.modules.storage.router._resolve_driver_ids_cached",
             new=AsyncMock(side_effect=_mock_resolve),
         ):
-            result = await _enumerate_configured_drivers(scope_ref, MagicMock())
-
-        assert result == []
+            with pytest.raises(RuntimeError, match="ConfigsProtocol not available"):
+                await _enumerate_configured_drivers(scope_ref)
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_propagates(self) -> None:
@@ -171,7 +177,7 @@ class TestEnumerateConfiguredDrivers:
             new=AsyncMock(side_effect=_mock_resolve),
         ):
             with pytest.raises(RuntimeError, match="database connection lost"):
-                await _enumerate_configured_drivers(scope_ref, MagicMock())
+                await _enumerate_configured_drivers(scope_ref)
 
     @pytest.mark.asyncio
     async def test_includes_collection_metadata_driver(self) -> None:
@@ -188,7 +194,7 @@ class TestEnumerateConfiguredDrivers:
             "dynastore.modules.storage.router._resolve_driver_ids_cached",
             new=AsyncMock(side_effect=_mock_resolve),
         ):
-            result = await _enumerate_configured_drivers(scope_ref, MagicMock())
+            result = await _enumerate_configured_drivers(scope_ref)
 
         assert (_REGISTRY_COLLECTION, "collection_elasticsearch_driver") in result
 

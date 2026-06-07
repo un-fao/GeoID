@@ -193,17 +193,19 @@ async def stream_features(
     from dynastore.models.protocols.access_filter import AccessFilter
     req.access_filter = AccessFilter.allow_everything()
 
-    # 4. Stream
+    # 4. Stream via the driver-agnostic boundary so PG model_extra columns are
+    # lifted into feature.properties before any consumer sees the features.
+    from dynastore.modules.tools.item_stream import stream_normalized_items
     try:
-        response = await items_svc.stream_items(
-            catalog_id=config.catalog,
-            collection_id=config.collection,
-            request=req,
+        async for item in stream_normalized_items(
+            items_svc,
+            config.catalog,
+            config.collection,
+            req,
             ctx=DriverContext(db_resource=db_resource) if db_resource else None,
             consumer=ConsumerType.OGC_FEATURES,
             hints=hints,
-        )
-        async for item in response.items:
+        ):
             yield item
     except Exception as e:
         logger.error(f"Streaming failed: {e}")

@@ -1230,6 +1230,380 @@ def test_option_a_fresh_construct_still_auto_augments():
     assert "_discoverable_indexer" in index_refs
 
 
+def _items_pg_only_body():
+    """A GET→edit→PUT body: PG-only lists whose entries carry ``source='auto'``
+    exactly as the configs API serialises persisted self-registered/boot
+    entries back to the operator. This is the round-trip that the bug rode in
+    on (#792/#889)."""
+    return {
+        "operations": {
+            Operation.WRITE: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto",
+                 "on_failure": "fatal", "write_mode": "sync"},
+            ],
+            Operation.READ: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+            Operation.SEARCH: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+        },
+    }
+
+
+def test_external_write_context_stamps_operator_provenance():
+    """The configs-API deserialisation boundary passes
+    ``context={'dynastore_external_write': True}`` to ``model_validate``; the
+    routing validator then stamps ``source='operator'`` on every operation list
+    the operator explicitly sent — the API-boundary half of Option A
+    (#792/#889) that engages ``_is_operator_managed``.
+    """
+    cfg = ItemsRoutingConfig.model_validate(
+        _items_pg_only_body(),
+        context={"dynastore_external_write": True},
+    )
+
+    assert all(
+        e.source == "operator"
+        for entries in cfg.operations.values()
+        for e in entries
+    )
+
+
+def test_external_write_context_blocks_driver_reinjection_on_removal():
+    """End-to-end of the reported bug through the REAL deserialisation path.
+
+    With a discoverable ES indexer/searcher registered, an operator round-trips
+    a PG-only routing config (entries carry ``source='auto'`` from the GET):
+
+    * WITHOUT the external-write context the validator's self-register pass
+      re-appends ES — this is the bug, and the assertion proves the fixture
+      genuinely reproduces it.
+    * WITH the context the validator stamps the lists operator-authored BEFORE
+      self-registration, so ES is NOT re-appended — the operator's deletion
+      sticks.
+    """
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    # Bug path: no external-write context -> ES is re-appended.
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        bug = ItemsRoutingConfig.model_validate(_items_pg_only_body())
+    bug_write = {e.driver_ref for e in bug.operations[Operation.WRITE]}
+    assert "_items_es" in bug_write, (
+        "fixture must reproduce the re-injection without the context flag"
+    )
+
+    # Fix path: external-write context -> ES stays removed.
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        fixed = ItemsRoutingConfig.model_validate(
+            _items_pg_only_body(),
+            context={"dynastore_external_write": True},
+        )
+    fixed_write = {e.driver_ref for e in fixed.operations[Operation.WRITE]}
+    fixed_search = {e.driver_ref for e in fixed.operations[Operation.SEARCH]}
+    assert fixed_write == {"items_postgresql_driver"}
+    assert fixed_search == {"items_postgresql_driver"}
+
+
+def test_internal_construct_without_context_still_auto_augments():
+    """No external-write context (internal DB-load / boot-default construction)
+    => discoverable drivers still auto-register. Guards against the stamp
+    over-reaching and freezing internal augmentation."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    from dynastore.modules.storage.routing_config import secondary_index_entries
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        cfg = ItemsRoutingConfig.model_validate(_items_pg_only_body())
+
+    index_refs = {e.driver_ref for e in secondary_index_entries(cfg.operations)}
+    assert "_items_es" in index_refs
+
+
+def test_is_external_operator_write_reads_context():
+    """The context predicate is True only for the explicit external-write flag
+    and False for missing/empty/None context (internal paths)."""
+    from types import SimpleNamespace
+
+    from typing import Any, cast
+
+    from dynastore.modules.storage.routing_config import _is_external_operator_write
+
+    def _info(ctx):
+        # Duck-typed stand-in for ValidationInfo (only .context is read).
+        return cast(Any, SimpleNamespace(context=ctx))
+
+    assert _is_external_operator_write(_info({"dynastore_external_write": True}))
+    assert not _is_external_operator_write(_info(None))
+    assert not _is_external_operator_write(_info({}))
+    assert not _is_external_operator_write(_info({"dynastore_external_write": False}))
+
+
+def test_operations_field_is_mutable_so_operators_can_edit_driver_list():
+    """The ``operations`` field must be Mutable, not Immutable: an operator
+    must be able to change the driver mapping (e.g. remove ES) even after the
+    tier is materialized. Pins the #792/#889 follow-up that an Immutable
+    ``operations`` made a genuine driver-list change 409 once any catalog
+    existed."""
+    from dynastore.models.mutability import is_immutable_field
+    from dynastore.modules.storage.routing_config import (
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+    )
+
+    for cls in (
+        ItemsRoutingConfig,
+        CollectionRoutingConfig,
+        AssetRoutingConfig,
+        CatalogRoutingConfig,
+    ):
+        field_info = cls.model_fields["operations"]
+        assert not is_immutable_field(field_info), (
+            f"{cls.__name__}.operations must be Mutable so operators can edit "
+            f"the driver list post-materialization"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #1865 — scope operator-provenance lock to changed operation lists only
+# ---------------------------------------------------------------------------
+
+
+def test_1865_compute_changed_op_keys_detects_changes():
+    """``_compute_changed_op_keys`` returns only the operation keys whose
+    driver-ref sets differ from the stored config.  Order-insensitive."""
+    from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+
+    incoming = {
+        Operation.WRITE: [
+            {"driver_ref": "pg_driver"},
+        ],
+        Operation.READ: [
+            {"driver_ref": "pg_driver"},
+        ],
+        Operation.SEARCH: [
+            {"driver_ref": "pg_driver"},
+        ],
+    }
+    # Stored has WRITE with BOTH pg + es; READ and SEARCH identical to incoming.
+    stored_raw = {
+        "operations": {
+            Operation.WRITE: [
+                {"driver_ref": "pg_driver", "source": "auto"},
+                {"driver_ref": "es_driver", "source": "auto"},
+            ],
+            Operation.READ: [{"driver_ref": "pg_driver", "source": "auto"}],
+            Operation.SEARCH: [{"driver_ref": "pg_driver", "source": "auto"}],
+        }
+    }
+    changed = _compute_changed_op_keys(incoming, stored_raw)
+    # Only WRITE changed (es_driver removed).
+    assert changed == {Operation.WRITE}
+
+
+def test_1865_compute_changed_op_keys_returns_none_on_create():
+    """When there is no stored config (create path), returns ``None`` so the
+    validator stamps all present lists."""
+    from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+
+    incoming = {
+        Operation.WRITE: [{"driver_ref": "pg_driver"}],
+    }
+    assert _compute_changed_op_keys(incoming, None) is None
+
+
+def test_1865_compute_changed_op_keys_new_op_key_is_changed():
+    """An operation key present in incoming but absent in stored is 'changed'."""
+    from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+
+    incoming = {
+        Operation.WRITE: [{"driver_ref": "pg_driver"}],
+        Operation.SEARCH: [{"driver_ref": "es_driver"}],  # new — absent in stored
+    }
+    stored_raw = {
+        "operations": {
+            Operation.WRITE: [{"driver_ref": "pg_driver", "source": "auto"}],
+        }
+    }
+    changed = _compute_changed_op_keys(incoming, stored_raw)
+    assert Operation.SEARCH in changed
+    assert Operation.WRITE not in changed
+
+
+def test_1865_stamp_scoped_to_changed_ops_only():
+    """``_stamp_operator_provenance`` with ``changed_op_keys={WRITE}`` stamps
+    WRITE entries but leaves READ/SEARCH entries with their existing source."""
+    cfg = ItemsRoutingConfig.model_construct(
+        operations={
+            Operation.WRITE: [
+                OperationDriverEntry(driver_ref="pg", source="auto"),
+            ],
+            Operation.READ: [
+                OperationDriverEntry(driver_ref="pg", source="auto"),
+            ],
+            Operation.SEARCH: [
+                OperationDriverEntry(driver_ref="pg", source="auto"),
+            ],
+        }
+    )
+    cfg._stamp_operator_provenance(changed_op_keys={Operation.WRITE})
+
+    assert cfg.operations[Operation.WRITE][0].source == "operator"
+    assert cfg.operations[Operation.READ][0].source == "auto"
+    assert cfg.operations[Operation.SEARCH][0].source == "auto"
+
+
+def test_1865_stamp_with_none_changed_keys_stamps_all():
+    """``_stamp_operator_provenance(None)`` stamps all operations (create path /
+    legacy behaviour)."""
+    cfg = ItemsRoutingConfig.model_construct(
+        operations={
+            Operation.WRITE: [OperationDriverEntry(driver_ref="pg", source="auto")],
+            Operation.READ: [OperationDriverEntry(driver_ref="pg", source="auto")],
+        }
+    )
+    cfg._stamp_operator_provenance(changed_op_keys=None)
+
+    assert cfg.operations[Operation.WRITE][0].source == "operator"
+    assert cfg.operations[Operation.READ][0].source == "operator"
+
+
+def test_1865_unchanged_op_allows_driver_auto_augmentation():
+    """End-to-end: operator PUT changes only WRITE (removes ES); READ and
+    SEARCH are unchanged.  After validation with the scoped context:
+
+    * WRITE is locked — ES stays removed.
+    * READ and SEARCH remain auto-managed — a newly discovered ES driver
+      would be auto-appended to those lists on the next write.
+
+    This is the core semantic of #1865: scope the provenance lock to the
+    lists the operator actually changed.
+    """
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    # The stored config has WRITE=[pg, es], READ=[pg], SEARCH=[pg, es].
+    # The operator sends WRITE=[pg] (removes es), READ=[pg], SEARCH=[pg, es].
+    # Only WRITE changed.
+    incoming_body = {
+        "operations": {
+            Operation.WRITE: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto",
+                 "on_failure": "fatal", "write_mode": "sync"},
+            ],
+            Operation.READ: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+            Operation.SEARCH: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+                {"driver_ref": "_items_es", "source": "auto"},
+            ],
+        },
+    }
+    # changed_op_keys = {WRITE} (only that list differs from stored)
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        cfg = ItemsRoutingConfig.model_validate(
+            incoming_body,
+            context={
+                "dynastore_external_write": True,
+                "dynastore_changed_operation_keys": {Operation.WRITE},
+            },
+        )
+
+    write_refs = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
+    read_refs = {e.driver_ref for e in cfg.operations[Operation.READ]}
+    search_refs = {e.driver_ref for e in cfg.operations[Operation.SEARCH]}
+
+    # WRITE locked: ES removed, stays removed even though ES is discoverable.
+    assert "_items_es" not in write_refs
+    assert "items_postgresql_driver" in write_refs
+    # WRITE entries have source=operator (locked).
+    assert all(
+        e.source == "operator"
+        for e in cfg.operations[Operation.WRITE]
+    )
+    # READ: still auto-managed — the validator did not stamp operator on READ.
+    # The existing [pg] auto entry survives; no additional es entry (discovery
+    # did not add one since READ was already present).
+    assert "items_postgresql_driver" in read_refs
+    assert all(
+        e.source == "auto"
+        for e in cfg.operations[Operation.READ]
+    )
+    # SEARCH: operator sent [pg, es] and it was NOT in changed_op_keys, so
+    # entries stay auto-sourced and are not locked.
+    assert "items_postgresql_driver" in search_refs
+    assert "_items_es" in search_refs
+    assert all(
+        e.source == "auto"
+        for e in cfg.operations[Operation.SEARCH]
+    )
+
+
+def test_1865_write_lock_preserved_when_read_search_open():
+    """Guard: the #1863 guarantee is intact — when WRITE is in changed_op_keys
+    and the operator removes a driver from WRITE, that driver does NOT come
+    back even though READ/SEARCH are left open."""
+    from typing import ClassVar
+    from unittest.mock import patch
+
+    class _ItemsES:
+        is_item_indexer: ClassVar[bool] = True
+        auto_register_for_routing: ClassVar = frozenset(
+            {Operation.WRITE, Operation.SEARCH}
+        )
+
+    pg_only_write_body = {
+        "operations": {
+            Operation.WRITE: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto",
+                 "on_failure": "fatal", "write_mode": "sync"},
+            ],
+            Operation.READ: [
+                {"driver_ref": "items_postgresql_driver", "source": "auto"},
+            ],
+        },
+    }
+    with patch("dynastore.tools.discovery.get_protocols",
+               lambda proto: [_ItemsES()]):
+        cfg = ItemsRoutingConfig.model_validate(
+            pg_only_write_body,
+            context={
+                "dynastore_external_write": True,
+                "dynastore_changed_operation_keys": {Operation.WRITE},
+            },
+        )
+
+    write_refs = {e.driver_ref for e in cfg.operations[Operation.WRITE]}
+    assert "_items_es" not in write_refs, (
+        "#1863 regression: removed ES driver re-appeared in WRITE despite lock"
+    )
+
+
 def test_option_a_792_reproducer_search_index_lock():
     """End-to-end reproducer for #792: operator PUTs an explicit SEARCH
     list (single entry, source='operator'), then a downstream code path

@@ -162,6 +162,61 @@ def _collect_generated_stats(
     return flat
 
 
+async def _storage_resolves_columnar_async(
+    configs: Any,
+    catalog_id: str,
+    collection_id: str,
+    ft: Any,
+) -> bool:
+    """Return True when the PG attributes sidecar resolves to COLUMNAR storage.
+
+    Probes the persisted ``CollectionPostgresqlDriverConfig`` for the
+    sidecar's ``storage_mode``. Fails open (returns False) on any lookup
+    error so an absent driver config — e.g. before the first
+    ``ensure_storage`` — does not block writes.
+
+    Decision table (matches the bridge in ``field_constraints.py``):
+    * COLUMNAR (explicit)  → always closed (True).
+    * JSONB    (explicit)  → open (False); ``strict_unknown_fields`` is the
+                             only operator opt-in for JSONB collections.
+    * AUTOMATIC + fields   → bridge promotes all fields → COLUMNAR → closed (True).
+    * AUTOMATIC + no fields→ JSONB → open (False)  [ft.fields already checked
+                             by the caller].
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+    )
+    from dynastore.modules.storage.drivers.collection_postgresql import (
+        CollectionPostgresqlDriverConfig,
+    )
+
+    try:
+        driver_cfg = None
+        if configs is not None:
+            try:
+                driver_cfg = await configs.get_config(
+                    CollectionPostgresqlDriverConfig,
+                    catalog_id=catalog_id,
+                    collection_id=collection_id,
+                )
+            except Exception:
+                driver_cfg = None
+
+        sidecar_mode = AttributeStorageMode.AUTOMATIC
+        for sc in getattr(driver_cfg, "sidecars", None) or []:
+            if isinstance(sc, FeatureAttributeSidecarConfig):
+                sidecar_mode = sc.storage_mode
+                break
+
+        if sidecar_mode == AttributeStorageMode.JSONB:
+            return False
+        # COLUMNAR or AUTOMATIC: AUTOMATIC + non-empty fields → COLUMNAR.
+        return bool(ft.fields)
+    except Exception:
+        return False
+
+
 # --- Specialized Queries for ItemService ---
 
 
@@ -182,11 +237,18 @@ class _IndexStampContext:
     (:meth:`ItemService._dispatch_index_upsert`) and the atomic OUTBOX bulk
     path (:meth:`ItemService.upsert_bulk`). ``access_envelope`` is ``None``
     unless the collection routes WRITE to an access-aware driver.
+
+    ``external_id`` carries the pre-resolved value from the inbound item (set
+    on ``processing_context["external_id"]`` by the sidecar or write-boundary).
+    When present it takes precedence over path-based extraction so the stamped
+    ``_external_id`` always reflects the original inbound identity, not the
+    post-read-back geoid-bearing result.
     """
 
     external_id_path: Optional[str]
     asset_id: Optional[Any]
     access_envelope: Optional[Dict[str, Any]]
+    external_id: Optional[str] = None
 
 
 class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
@@ -229,6 +291,17 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         no JSON-property-storing backend (PG JSONB, ES) can reject unknown
         keys natively. ``UnknownFieldsError`` is mapped to HTTP 422 by the
         global ``UnknownFieldsExceptionHandler``.
+
+        Closed-schema enforcement (strict binary storage rule): a schema that
+        resolves to COLUMNAR storage is implicitly closed — there is no JSONB
+        blob on disk to absorb undeclared properties, so every unknown field
+        would be silently dropped at ingest. Unknown properties are therefore
+        rejected (HTTP 422) whenever the storage resolves COLUMNAR:
+        * ``storage_mode=COLUMNAR`` (explicit) → always closed.
+        * ``storage_mode=AUTOMATIC`` with a non-empty ``ItemsSchema.fields``
+          → resolves COLUMNAR (bridge promotes all fields) → closed.
+        * ``storage_mode=JSONB`` (explicit) → open; ``strict_unknown_fields``
+          is the only opt-in gate.
         """
         from dynastore.modules.storage.driver_config import ItemsSchema
         from dynastore.modules.storage.field_constraints import (
@@ -248,7 +321,18 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             return
         if not isinstance(ft, ItemsSchema):
             return
-        if not ft.strict_unknown_fields or not ft.fields:
+        if not ft.fields:
+            return
+
+        # Determine whether the schema is closed (unknown props rejected).
+        # A COLUMNAR layout (resolved or explicit) is always closed because the
+        # table has no JSONB blob to catch undeclared properties.
+        # An explicit JSONB pin keeps the schema open unless the operator also
+        # set strict_unknown_fields=True.
+        schema_is_closed = ft.strict_unknown_fields or await _storage_resolves_columnar_async(
+            configs, catalog_id, collection_id, ft
+        )
+        if not schema_is_closed:
             return
 
         feature_dicts = [
@@ -368,14 +452,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         _mapping = getattr(row, "_mapping", None)
         row_dict = dict(_mapping) if _mapping is not None else dict(row)
 
-        # Hub contribution: initialise the feature with geoid as the default id.
+        # Hub contribution: initialise the feature id from the canonical
+        # identity column. The select aliases the identity expression to
+        # ``id`` (``<expr> AS id`` — default ``h.geoid``, or the COALESCE'd
+        # external_id when the read policy flips), so the result row carries an
+        # ``id`` key, not a bare ``geoid``. Read ``id`` first and fall back to
+        # a ``geoid`` column for raw/legacy rows. Reading the wrong key here is
+        # what produced ``feature.id = None`` and ``/items/None`` self links.
         # Sidecars (e.g. Attributes) may override this later in the pipeline.
-        geoid = row_dict.get("geoid")
+        identity = row_dict.get("id")
+        if identity is None:
+            identity = row_dict.get("geoid")
         feature = Feature(
             type="Feature",
             geometry=None,
             properties={},
-            id=str(geoid) if geoid is not None else None,
+            id=str(identity) if identity is not None else None,
         )
 
         # Shared context propagated through the entire sidecar pipeline.
@@ -444,6 +536,47 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 # via __pydantic_extra__ — that would clobber values already
                 # set by the sidecar pipeline.
                 model_fields = set(Feature.model_fields)
+                # Explicit field names from the request (see #1827): a SYSTEM
+                # field named explicitly in select may be surfaced into
+                # model_extra so join consumers can use it as a join key.
+                # Wildcard selects leave requested_fields empty, preserving
+                # the existing behaviour.
+                from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS as _SYSTEM_FIELD_KEYS
+                _requested = getattr(context, "requested_fields", None) or set()
+                _system_set = frozenset(_SYSTEM_FIELD_KEYS)
+                # Producer contract (#1826): user attributes live ONLY in
+                # ``feature.properties``. The attributes sidecar already placed
+                # every requested column there, so do NOT also echo it up as a
+                # top-level foreign member — that duplication is non-spec
+                # GeoJSON on the OGC Features wire (``{"CODE":..,"properties":
+                # {"CODE":..}}``) and forces every consumer to reconcile
+                # ``model_extra`` against ``properties`` (the band-aid added in
+                # #1818). Inter-sidecar internal keys (asset_id, *_langs,
+                # place, coordRefSys, …) are never in ``properties`` so they
+                # keep flowing; an explicitly requested SYSTEM field (#1827
+                # join key) is surfaced regardless.
+                _props_keys = set(feature.properties) if feature.properties else set()
+                # Derived/computed values (geometry ``stats`` — area/perimeter/
+                # length/centroid… — and ``system`` names) are governed solely
+                # by the read policy: exposed onto ``properties`` via
+                # ``feature_type.expose`` (handled above) or folded into the
+                # gated ``stats``/``system`` sections by
+                # ``_apply_expose_all_sections``. ``pushdown_read_select`` keeps
+                # unexposed computed columns out of the SELECT on the common
+                # path, but the attributes sidecar still republishes the *entire*
+                # fetched row into context for inter-sidecar use — so when the
+                # projection cannot be narrowed (schemaless collection, no read
+                # policy, wildcard caller) those columns are present here yet
+                # absent from ``properties`` and from any ``get_internal_columns()``
+                # set. Without this backstop they would leak onto the Feature
+                # root as foreign members regardless of the policy. A producible
+                # computed value surfaces here only when the policy selected it
+                # (it then rides ``_requested``, set from the narrowed/explicit
+                # select) — e.g. a #1827 join key — mirroring the producer
+                # contract #1826 applied to user attributes.
+                _gated_computed: set = set()
+                for _sc in resolved_sidecars:
+                    _gated_computed.update(_sc.producible_computed_names())
                 for sid, data in sidecar_data.items():
                     if isinstance(data, dict):
                         # Merge dicts if it's a standard sidecar publication,
@@ -451,7 +584,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                         # external_extensions) that are only meant for
                         # inter-sidecar communication.
                         for k, v in data.items():
-                            if k not in all_internal and k not in model_fields:
+                            surface_requested = k in _requested and k in _system_set
+                            if k in _props_keys and not surface_requested:
+                                continue
+                            # Policy-governed computed value, not explicitly
+                            # requested -> never flat on the Feature root.
+                            if k in _gated_computed and k not in _requested:
+                                continue
+                            if (k not in all_internal or surface_requested) and k not in model_fields:
                                 if feature.__pydantic_extra__ is not None:
                                     feature.__pydantic_extra__[k] = v
                     else:
@@ -479,27 +619,26 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         resolved_sidecars: List[Any],
         context: Optional[FeaturePipelineContext],
     ) -> None:
-        """Attach the ``stats`` + ``system`` report sections (#1402).
+        """Attach the ``stats`` + ``system`` report sections (#1402, #1827).
 
-        No-op unless ``ItemsReadPolicy.feature_type.expose_all`` is True. When
-        on, builds two top-level Feature members (GeoJSON foreign members, RFC
-        7946 §6.1) from the read row, mirroring the ingestion report envelope:
+        Runs in two modes:
 
-        - ``system`` — identity + lifecycle fields (``SYSTEM_FIELD_KEYS``),
-          each present only when the row carries a value.
-        - ``stats``  — every other producible computed value the resolved
-          sidecars can surface from the row (geometry/attribute stats, content
-          hashes, spatial cells).
+        Full mode (``expose_all=True``): builds complete ``system`` + ``stats``
+        top-level GeoJSON foreign members (RFC 7946 §6.1) from the read row,
+        mirroring the ingestion report envelope.
 
-        ``properties`` is left untouched — it stays user-only and governed by
-        ``expose``. Any recognised stats/system key already attached flat (via
-        the sidecar foreign-member bridge) is folded into its section so it is
-        not emitted twice.
+        Partial mode (``expose_all=False``, explicit fields requested): when
+        ``context.requested_fields`` contains system or stats keys, builds
+        only the intersection — surfacing, for example, ``external_id`` into
+        ``feature.__pydantic_extra__["system"]`` so a DWH join with
+        ``join_source="system"`` can resolve it. Normal wildcard reads
+        (requested_fields empty) exit early and are byte-identical to
+        pre-#1827 behavior.
 
-        Note: a section is only as complete as the read SELECT. Columns the
-        query did not fetch (e.g. the STORED GENERATED ``*_hash`` columns absent
-        a hub read-back) simply do not appear — full column inclusion is tracked
-        separately and gated on live verification.
+        ``properties`` is left untouched in both modes — it stays user-only.
+        Any recognised stats/system key already attached flat (via the sidecar
+        foreign-member bridge) is folded into its section so it is not emitted
+        twice.
         """
         from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
 
@@ -507,20 +646,54 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             context.get("_items_read_policy") if context is not None else None
         )
         feature_type = getattr(policy, "feature_type", None)
-        if feature_type is None or not getattr(feature_type, "expose_all", False):
+        expose_all = bool(getattr(feature_type, "expose_all", False))
+        requested: set = getattr(context, "requested_fields", None) or set()
+
+        # Fast exit: expose_all is off AND no explicit system/stats field requested.
+        # This keeps normal wildcard reads byte-identical to pre-#1827. (#1827)
+        system_keys = set(SYSTEM_FIELD_KEYS)
+        if not expose_all and not requested:
+            return
+        if feature_type is None and not requested:
+            return
+
+        # Collect all producible stat names from sidecars so we can resolve
+        # which requested names land in stats vs system.
+        all_stat_names: set = set()
+        for sidecar in resolved_sidecars:
+            all_stat_names.update(sidecar.producible_computed_names())
+        all_stat_names -= system_keys
+
+        # Determine which system fields to include.
+        if expose_all:
+            system_include = system_keys
+        else:
+            system_include = requested & system_keys
+
+        # Determine which stat names to include.
+        if expose_all:
+            stats_include: set | None = None  # all producible
+        else:
+            stats_include = requested & all_stat_names
+
+        if not expose_all and not system_include and not stats_include:
+            # Requested fields contain neither system nor stats names; nothing to do.
             return
 
         system: Dict[str, Any] = {}
         for key in SYSTEM_FIELD_KEYS:
+            if key not in system_include:
+                continue
             value = row.get(key)
             if value is not None:
                 system[key] = value
 
-        system_keys = set(SYSTEM_FIELD_KEYS)
         stats: Dict[str, Any] = {}
         for sidecar in resolved_sidecars:
             for name in sidecar.producible_computed_names():
                 if name in system_keys or name in stats:
+                    continue
+                if stats_include is not None and name not in stats_include:
                     continue
                 found, value = sidecar.resolve_computed_value(row, name)
                 if found and value is not None:
@@ -531,12 +704,23 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         extra = feature.__pydantic_extra__
         if extra is not None:
             for key in list(extra.keys()):
-                if key in system_keys:
+                if key in system_include:
                     system.setdefault(key, extra.pop(key))
-                elif key in stats:
+                elif stats_include is not None and key in stats_include:
                     extra.pop(key, None)
-            extra["stats"] = stats
-            extra["system"] = system
+                elif expose_all and key in stats:
+                    extra.pop(key, None)
+            if expose_all:
+                # Full mode: always attach both sections (mirrors pre-#1827 behavior).
+                extra["stats"] = stats
+                extra["system"] = system
+            else:
+                # Partial mode: only attach non-empty sections to avoid polluting
+                # normal reads with empty foreign members.
+                if system:
+                    extra["system"] = system
+                if stats:
+                    extra["stats"] = stats
 
     @staticmethod
     def _resolved_driver_is_es_items(driver: Any) -> bool:
@@ -790,6 +974,15 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
 
         from dynastore.models.protocols.storage_driver import Capability
         if primary is not None and Capability.QUERY_FALLBACK_SOURCE not in primary.driver.capabilities:
+            # Phase 2b tile-cache (#1297): capture each item's current extent
+            # BEFORE the upsert so the invalidate task can also drop the tiles
+            # a moved geometry USED to occupy. Gated + degrade-safe — never
+            # blocks the write; returns [] when the cache is inactive or the
+            # item doesn't yet exist (CREATE path contributes nothing).
+            prior_bboxes_a = await self._capture_prior_bboxes_for_update(
+                catalog_id, collection_id, items_list,
+            )
+
             chunk_size = getattr(primary.driver, "preferred_chunk_size", 0)
             if chunk_size > 0 and len(items_list) > chunk_size:
                 results = []
@@ -822,20 +1015,41 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             # Phase 2f: pass the engine so the dispatcher can open its own
             # wrapping TX for atomic OUTBOX enqueue.
             if results:
-                await self._dispatch_index_upsert(
+                _index_results = await self._dispatch_index_upsert(
                     catalog_id, collection_id, results,
                     db_resource=db_resource or self.engine,
                     processing_context=processing_context,
                 )
+                # Propagate per-indexer results via ctx.extensions so callers
+                # (e.g. the ingestion task) can inspect secondary-index health
+                # without additional round-trips.
+                if ctx is not None and _index_results:
+                    existing = ctx.extensions.get("_index_results") or {}
+                    # Merge per-batch results: accumulate succeeded/failed totals.
+                    for indexer_id, bulk_res in _index_results.items():
+                        if indexer_id in existing:
+                            prev = existing[indexer_id]
+                            from dynastore.models.protocols.indexer import BulkResult
+                            existing[indexer_id] = BulkResult(
+                                total=prev.total + bulk_res.total,
+                                succeeded=prev.succeeded + bulk_res.succeeded,
+                                failed=prev.failed + bulk_res.failed,
+                                failures=prev.failures + bulk_res.failures,
+                            )
+                        else:
+                            existing[indexer_id] = bulk_res
+                    ctx.extensions["_index_results"] = existing
 
-            # Write-reactive tile-cache invalidation (#1292): mark stale the
-            # tiles the new feature bboxes touch. No-op + degrade-safe when no
-            # tile reader / cache store is present; never blocks the write.
+            # Write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b):
+            # mark stale the tiles the new feature bboxes touch, and also the
+            # tiles the old footprint used to occupy (prior_bboxes_a — the
+            # geometry-MOVE case). No-op + degrade-safe; never blocks the write.
             if results:
                 await self._dispatch_tile_cache_invalidation(
                     catalog_id, collection_id, results,
                     db_resource=db_resource or self.engine,
                     processing_context=processing_context,
+                    prior_bboxes=prior_bboxes_a or None,
                 )
 
             # Emit events for non-indexer subscribers (audit, telemetry).
@@ -888,6 +1102,16 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         #      accumulate AccessShare locks on every iteration.
         #   5. Read-back: one bulk SELECT WHERE geoid = ANY(:geoids) on a
         #      separate read conn, after writes have committed.
+
+        # Phase 2b tile-cache (#1297): capture each item's current extent
+        # BEFORE Phase 4 (the write) so the invalidate task can also drop the
+        # tiles a moved geometry USED to occupy. Gated + degrade-safe — never
+        # blocks the write; returns [] when the cache is inactive or the item
+        # doesn't yet exist (CREATE path contributes nothing).
+        prior_bboxes_b = await self._capture_prior_bboxes_for_update(
+            catalog_id, collection_id, items_list,
+        )
+
         engine = db_resource or self.engine
         from dynastore.tools.identifiers import generate_geoid
 
@@ -1111,6 +1335,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     **({"_access_envelope": _batch_access_envelope}
                        if _batch_access_envelope is not None else {}),
                 }
+                # Pre-resolve external_id from the inbound feature before any
+                # sidecar runs so PG sidecars and the index-stamp path share
+                # one consistent value derived from the INBOUND item (not the
+                # post-read-back geoid-bearing result).
+                if items_write_policy is not None:
+                    _ext = items_write_policy.resolve_external_id(raw_item)
+                    if _ext is not None:
+                        item_context["external_id"] = _ext
                 hub_payload: Dict[str, Any] = {
                     "geoid": geoid,
                     "transaction_time": datetime.now(timezone.utc),
@@ -1321,20 +1553,35 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # event listeners.  Phase 2f: pass the engine so the dispatcher
         # can open its own wrapping TX for atomic OUTBOX enqueue.
         if results:
+            # Per-item external_id resolved from the INBOUND items (built 1:1
+            # with results in ``generated_stats``, keyed by the persisted geoid
+            # so an identity-match update maps correctly). Passing it makes the
+            # index stamp use the same value PG stored — one external_id for
+            # every driver, independent of path-vs-default and the geoid swap.
+            _ext_by_geoid = {
+                str(gs["geoid"]): str(gs["external_id"])
+                for gs in generated_stats
+                if gs.get("geoid") is not None and gs.get("external_id") is not None
+            }
+            # Return value is logged by the dispatcher — callers of upsert_bulk
+            # that need per-indexer health must call _dispatch_index_upsert
+            # directly and inspect the returned dict.
             await self._dispatch_index_upsert(
                 catalog_id, collection_id, results,
                 db_resource=engine,
                 processing_context=processing_context,
+                external_id_by_id=_ext_by_geoid or None,
             )
 
-        # ── Post-commit: write-reactive tile-cache invalidation (#1292) ──
-        # Mark stale the tiles the new feature bboxes touch (coalesced per
-        # batch, capped). No-op + degrade-safe when no tile reader / cache
-        # store is present; never blocks the write.
+        # ── Post-commit: write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b) ──
+        # Mark stale the tiles the new feature bboxes touch, and also the tiles
+        # the old footprint used to occupy (prior_bboxes_b — the geometry-MOVE
+        # case). No-op + degrade-safe; never blocks the write.
         if results:
             await self._dispatch_tile_cache_invalidation(
                 catalog_id, collection_id, results, db_resource=engine,
                 processing_context=processing_context,
+                prior_bboxes=prior_bboxes_b or None,
             )
 
         # ── Post-commit: emit events for non-indexer subscribers ──────
@@ -1585,6 +1832,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             access_envelope=await self._resolve_access_envelope(
                 catalog_id, collection_id, processing_context,
             ),
+            external_id=(processing_context or {}).get("external_id"),
         )
 
     def _apply_index_stamp(
@@ -1605,7 +1853,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         :class:`~dynastore.modules.iam.stamping_config.AttributeStampingPolicy`
         with a non-empty ``attribute_paths`` map.
         """
-        if ctx.external_id_path:
+        if ctx.external_id is not None:
+            payload["_external_id"] = str(ctx.external_id)
+        elif ctx.external_id_path:
             ext = self._extract_by_path(payload, ctx.external_id_path)
             if ext is not None:
                 payload["_external_id"] = str(ext)
@@ -1632,7 +1882,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         *,
         db_resource: Optional[DbResource] = None,
         processing_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+        external_id_by_id: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Fan items out to every configured Indexer for the collection.
 
         Single dispatcher call site for items, replacing the per-driver
@@ -1662,9 +1913,18 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         the tenant-private doc builder both read ``_external_id`` / ``_asset_id``)
         carries the canonical envelope identity. The ES read path strips these
         internal ``_*`` fields, so they never surface to clients.
+
+        ``external_id_by_id`` maps a persisted geoid → the external_id resolved
+        from the *inbound* item (``ItemsWritePolicy.resolve_external_id``). It is
+        the authoritative per-item override because ``results`` are the
+        post-write read-back whose ``id`` is the geoid — re-deriving external_id
+        from the result here would lose the inbound identity (and the no-path
+        default ``id`` would resolve to the geoid, not the tenant's id). The PG
+        distributed-upsert path builds this map (it has the inbound contexts);
+        when absent, the stamp falls back to ``stamp_ctx`` (path extraction).
         """
         if not results:
-            return
+            return {}
 
         from dynastore.models.protocols.indexer import IndexOp
         from dynastore.modules.storage.index_dispatcher import (
@@ -1691,35 +1951,43 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 "or updated.",
                 len(id_less), catalog_id, collection_id,
             )
-        ops = [
-            IndexOp(
+        ops = []
+        for r in results:
+            if r.id is None:
+                continue
+            payload = self._apply_index_stamp(
+                r.model_dump(by_alias=True, exclude_none=True), stamp_ctx,
+            )
+            # Per-item external_id override: the resolved inbound value wins over
+            # any stamp_ctx-derived one, because ``results`` carry the geoid as
+            # ``id`` and cannot recover the inbound identity (esp. the no-path
+            # default, which would otherwise resolve to the geoid).
+            if external_id_by_id:
+                _eid = external_id_by_id.get(str(r.id))
+                if _eid is not None:
+                    payload["_external_id"] = str(_eid)
+            ops.append(IndexOp(
                 op_type="upsert",
                 entity_type="item",
-                entity_id=str(r.id) if r.id else "",
-                payload=self._apply_index_stamp(
-                    r.model_dump(by_alias=True, exclude_none=True), stamp_ctx,
-                ),
-            )
-            for r in results
-            if r.id is not None
-        ]
+                entity_id=str(r.id),
+                payload=payload,
+            ))
         if not ops:
-            return
+            return {}
 
         engine = db_resource or self.engine
         if engine is None:
             # No engine available — degrade to non-atomic enqueue (matches
             # pre-Phase-2f behaviour).  Outbox writer logs its own warning
             # when ctx.pg_conn is None.
-            await self._do_dispatch(
+            return await self._do_dispatch(
                 dispatcher, catalog_id, collection_id, ops, pg_conn=None,
             )
-            return
 
         # Phase 2f: open a wrapping TX so the outbox INSERT (if any) is
         # atomic with the indexer attempt.
         async with managed_transaction(engine) as conn:
-            await self._do_dispatch(
+            return await self._do_dispatch(
                 dispatcher, catalog_id, collection_id, ops, pg_conn=conn,
             )
 
@@ -1731,9 +1999,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         ops: List[Any],
         *,
         pg_conn: Optional[DbResource],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Inner dispatch helper — split out so the wrapping TX in
-        :meth:`_dispatch_index_upsert` is a single ``async with`` block."""
+        :meth:`_dispatch_index_upsert` is a single ``async with`` block.
+
+        Returns the per-indexer :class:`BulkResult` dict from
+        :meth:`~IndexDispatcher.fan_out_bulk` so callers can inspect
+        secondary-index health without additional round-trips.
+        """
         from dynastore.models.protocols.indexer import IndexContext
         from dynastore.modules.storage.index_dispatcher import IndexerFatal
         from dynastore.tools.correlation import get_correlation_id
@@ -1746,7 +2019,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             entity_type="item",
         )
         try:
-            await dispatcher.fan_out_bulk(ctx, ops)
+            return await dispatcher.fan_out_bulk(ctx, ops)
         except IndexerFatal:
             # FATAL contract: a routing entry with on_failure=FATAL
             # MUST propagate so the caller's TX rolls back.  Don't
@@ -1757,6 +2030,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 "Index dispatcher fan-out failed for %s/%s (%d items): %s",
                 catalog_id, collection_id, len(ops), e,
             )
+            return {}
 
     async def _dispatch_tile_cache_invalidation(
         self,
@@ -2034,6 +2308,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 stamp_ctx = await self._resolve_index_stamp_context(
                     catalog_id, collection_id, processing_context,
                 )
+                # Resolve the write policy once for per-item external_id
+                # resolution. When no policy is configured, this is None and
+                # per-item resolution below is skipped. Failure is intentionally
+                # swallowed — missing write-policy means no external_id stamp,
+                # not a crash.
+                _write_policy = None
+                try:
+                    _bulk_configs = get_protocol(ConfigsProtocol)
+                    if _bulk_configs is not None:
+                        _write_policy = await _bulk_configs.get_config(
+                            ItemsWritePolicy,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                        )
+                except Exception:
+                    _write_policy = None
                 records: List[OutboxRecord] = []
                 for entry in async_outbox_entries:
                     inst = compute_driver_instance_id(
@@ -2042,13 +2332,27 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     for it in deduped:
                         item_id = it.get("id") if isinstance(it, dict) else None
                         item_id_str = str(item_id) if item_id is not None else None
+                        payload_copy = dict(it)
+                        # Per-item external_id resolution: inject _external_id
+                        # from the inbound item so every OUTBOX record carries
+                        # the correct identity even when stamp_ctx.external_id
+                        # is None (batch-level context has no per-item value)
+                        # and stamp_ctx.external_id_path is None (no path
+                        # configured). When stamp_ctx already resolved a value
+                        # via ctx.external_id or path extraction, _apply_index_stamp
+                        # will overwrite this — the per-item pre-set only fills
+                        # the gap for the no-path case.
+                        if _write_policy is not None:
+                            _item_ext = _write_policy.resolve_external_id(payload_copy)
+                            if _item_ext is not None and "_external_id" not in payload_copy:
+                                payload_copy["_external_id"] = _item_ext
                         records.append(OutboxRecord(
                             op_id=generate_uuidv7(),
                             driver_id=entry.driver_ref,
                             driver_instance_id=inst,
                             collection_id=collection_id,
                             op="upsert",
-                            payload=self._apply_index_stamp(dict(it), stamp_ctx),
+                            payload=self._apply_index_stamp(payload_copy, stamp_ctx),
                             item_id=item_id_str,
                             idempotency_key=item_id_str or str(generate_uuidv7()),
                         ))

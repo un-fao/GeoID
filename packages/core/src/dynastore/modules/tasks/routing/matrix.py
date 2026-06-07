@@ -9,9 +9,11 @@ Two flavours:
 * ``cloud``  — processes run as GCP Cloud Run Jobs (``gcp_cloud_run``
   runner) unless they are lightweight; lightweight processes and all
   system tasks stay in-process (``background``).
-* ``onprem`` — all tasks and processes run as background workers; heavy
-  processes get the ``HEAVY`` hint to signal they should be served by a
-  dedicated worker tier.
+* ``onprem`` — every task and process runs in-process (``background``
+  runner, never Cloud Run), routed to its natural affinity tier
+  (``CLOUD_PROCESS_CONSUMERS``: ``gdal`` -> catalog/maps, ``tiles_*`` ->
+  maps, the rest -> catalog). Suits a worker-less deployment with no Cloud
+  Run Jobs offload target.
 """
 from __future__ import annotations
 
@@ -83,10 +85,13 @@ def build_routing_matrix(
         responsibility.
 
     **Processes** (``kind == "process"``), onprem preset:
-        All processes run as background workers on the ``"worker"`` service
-        tier.  Lightweight processes get ``hints={BACKGROUND}``; heavy
-        processes get ``hints={HEAVY}`` to signal they should be deferred
-        to a dedicated worker queue.
+        Every process runs in-process: ``background`` runner,
+        ``hints={BACKGROUND}``, consumers taken from
+        ``CLOUD_PROCESS_CONSUMERS`` (``gdal`` -> ``["catalog", "maps"]``,
+        ``tiles_preseed``/``tiles_export`` -> ``["maps"]``, everything else
+        -> ``["catalog"]``).  No process is routed to ``gcp_cloud_run`` and
+        none is pinned to a dedicated ``"worker"`` tier — suits a worker-less
+        deployment (a single fat node plus maps) with no Cloud Run Jobs.
 
     **Processes** (``kind == "process"``), review preset:
         Mirrors the cloud preset for every process EXCEPT ``gdal``, which
@@ -158,16 +163,22 @@ def build_routing_matrix(
                         )
                     ]
             else:
-                # onprem — all processes to the worker tier
-                if item.task_key in LIGHTWEIGHT_PROCESSES:
-                    hints: frozenset = frozenset({ExecHint.BACKGROUND})
-                else:
-                    hints = frozenset({ExecHint.HEAVY})
+                # onprem — in-process background on affinity tiers, never Cloud
+                # Run. Mirrors the cloud CONSUMER topology
+                # (CLOUD_PROCESS_CONSUMERS: gdal -> [catalog, maps], tiles_* ->
+                # [maps], everything else -> [catalog]) but runs EVERY process
+                # through the in-process ``background`` runner. Suits a
+                # worker-less deployment — a single fat node (plus maps) with no
+                # Cloud Run Jobs offload target — so nothing is routed to a
+                # dedicated "worker" tier that need not exist. The
+                # lightweight/heavy split is irrelevant here (all in-process), so
+                # every process carries the same BACKGROUND hint.
+                consumers = CLOUD_PROCESS_CONSUMERS.get(item.task_key, ["catalog"])
                 processes_map[item.task_key] = [
                     RunnerTarget(
-                        consumers=["worker"],
+                        consumers=list(consumers),
                         runner="background",
-                        hints=set(hints),
+                        hints={ExecHint.BACKGROUND},
                     )
                 ]
 

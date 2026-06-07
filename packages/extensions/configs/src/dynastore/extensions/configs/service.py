@@ -825,7 +825,26 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id, collection_id
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id
@@ -1025,7 +1044,26 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="catalog")
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id, collection_id=None
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id=None
@@ -1089,7 +1127,26 @@ class ConfigsService(ExtensionProtocol):
             raise problem_details.plugin_not_registered(plugin_id)
 
         try:
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id=None, collection_id=None
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id=None, collection_id=None

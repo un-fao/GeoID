@@ -128,6 +128,32 @@ import pytest  # noqa: E402 — appended after existing non-pytest tests
 
 
 @pytest.mark.asyncio
+async def test_search_operation_kwarg_selects_read_routed_drivers(monkeypatch):
+    """``operation=READ`` resolves the READ-routed driver list (PG, the system
+    of record) instead of the SEARCH slice — the routing-driven fallback the
+    collection service uses when an ES-only SEARCH slice has no rows yet."""
+    from dynastore.modules.catalog import collection_router
+    from dynastore.modules.storage.routing_config import Operation, OperationDriverEntry
+
+    es = _RecordingDriver("es")
+    pg = _RecordingDriver("pg")
+
+    async def _fake_resolve(rpc, operation, catalog_id, collection_id=None, *, db_resource=None):
+        if operation == Operation.SEARCH:
+            return [(OperationDriverEntry(driver_ref="collection_elasticsearch_driver"), es)]
+        if operation == Operation.READ:
+            return [(OperationDriverEntry(driver_ref="collection_postgresql_driver"), pg)]
+        return []
+
+    monkeypatch.setattr(collection_router, "resolve_routed", _fake_resolve)
+    rows, total = await collection_router.search_collection_metadata(
+        "cat", q="x", operation=Operation.READ,
+    )
+    assert total == 1 and rows[0]["_src"] == "pg"
+    assert pg.calls == ["search"] and es.calls == []
+
+
+@pytest.mark.asyncio
 async def test_upsert_dispatches_index_hop(monkeypatch):
     """After a successful WRITE fan-out, upsert_collection_metadata must
     dispatch the envelope to the INDEX hop so ES gets populated."""

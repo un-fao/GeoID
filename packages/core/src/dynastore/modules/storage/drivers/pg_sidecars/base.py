@@ -86,6 +86,12 @@ HUB_INTERNAL_COLUMNS: frozenset = frozenset({
     "catalog_id",
     "collection_id",
     "geometry_hash",
+    # ``COUNT(*) OVER() AS _total_count`` — the pagination total injected by
+    # ``QueryOptimizer.build_optimized_query`` when ``include_total_count`` is
+    # set. It rides every streamed row purely as transport for the total and
+    # must never surface on the Feature (neither in ``properties`` nor as a
+    # top-level foreign member); the page consumer reads it off the row.
+    "_total_count",
 })
 
 
@@ -174,13 +180,14 @@ class FeaturePipelineContext:
         context.valid_to    # validity end from attributes sidecar (or None)
     """
 
-    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store", "consumer")
+    __slots__ = ("lang", "include_internal", "_all_internal_cols", "_sidecar_store", "_store", "consumer", "requested_fields")
 
     def __init__(
         self,
         lang: str = "en",
         include_internal: bool = False,
         consumer: ConsumerType = ConsumerType.GENERIC,
+        requested_fields: Optional[Set[str]] = None,
     ) -> None:
         self.lang: str = lang
         self.include_internal: bool = include_internal
@@ -188,6 +195,11 @@ class FeaturePipelineContext:
         self._all_internal_cols: Set[str] = set()
         self._sidecar_store: Dict[str, Dict[str, Any]] = {}
         self._store: Dict[str, Any] = {}
+        # Explicit field names from QueryRequest.select (excluding "*").
+        # When non-empty, SYSTEM_FIELD_KEYS named here are surfaced into
+        # Feature.model_extra so join consumers can use them as join keys.
+        # See #1827.
+        self.requested_fields: Set[str] = requested_fields if requested_fields is not None else set()
 
     # ── Sidecar data access ─────────────────────────────────────────────────
 
@@ -868,6 +880,29 @@ class SidecarProtocol(ABC):
 
         Returns ``(found, value)``; ``found`` is False when this sidecar's
         storage layout has no slot for the value. Default: not found.
+        """
+        return (False, None)
+
+    def producible_metadata_names(self) -> Set[str]:
+        """Resolved names of ``metadata`` container fields this sidecar produces.
+
+        Parallel to :meth:`producible_computed_names` but scoped to the
+        ``metadata`` ES container (multilingual title / description / keywords).
+        ``build_canonical_index_doc`` iterates sidecars via this method to fill
+        the typed ``metadata{}`` section, keeping storage-layout knowledge in
+        the sidecar that owns those columns. Default: none — only
+        ``ItemMetadataSidecar`` overrides this.
+        """
+        return set()
+
+    def resolve_metadata_value(
+        self, row: Dict[str, Any], resolved_name: str
+    ) -> Tuple[bool, Any]:
+        """Locate one ``metadata`` container value in a read row.
+
+        Returns ``(found, value)``; ``found`` is False when this sidecar owns
+        no slot for the value. Mirrors :meth:`resolve_computed_value` but for
+        the ``metadata`` namespace. Default: not found.
         """
         return (False, None)
 

@@ -8,26 +8,36 @@ Three-tier model:
   Tier 1 across all alias members gives the platform-wide alias
   ``{prefix}-items`` a stable cross-catalog contract (term/range queries
   against Tier 1 paths resolve uniformly on every member).
+* **Tier SSOT** (optional, #1285) — per-collection queryable fields derived
+  from ``QueryOptimizer.get_all_queryable_fields()``. When available, each
+  :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+  object is placed directly into the known-fields map; :func:`build_item_mapping`
+  already converts FieldDefinition to an ES type fragment. A new queryable field
+  declared in the collection schema automatically appears in the ES mapping
+  without a separate Tier-1 hand-edit. SSOT-derived entries win over Tier-1 on
+  key overlap so schema-declared types are authoritative.
 * **Tier 2** — per-catalog operator overlay via
   ``ItemsElasticsearchDriverConfig.mapping.additional_known_fields``
   (introduced in the follow-up commit). Additive only: collisions with
   Tier 1 are rejected at config-validate time. Snapshot at index-create;
   live edits take effect on next index rebuild.
 * **Tier 3** — ``properties.extras`` long-tail lane. Anything not in
-  Tier 1 ∪ Tier 2 lands here. Mapped as a single ``flattened`` field —
-  the whole bucket is one mapping entry regardless of how many distinct
-  leaf keys arrive across the collections sharing the per-catalog
-  index (#1295). ``flattened`` leaves are keyword-exact (good for
-  per-key term/exists filters, no analysis); a sibling root field
-  ``_search_text`` populated at write time from the same extras values
-  carries the analyzed full-text view of the tail. Two mapping entries
-  total for the unknown long tail; nothing per-leaf.
+  Tier 1 ∪ Tier SSOT ∪ Tier 2 lands here. Mapped as a single ``flattened``
+  field — the whole bucket is one mapping entry regardless of how many
+  distinct leaf keys arrive across the collections sharing the per-catalog
+  index (#1295). ``flattened`` leaves are keyword-exact (good for per-key
+  term/exists filters, no analysis); a sibling root field ``_search_text``
+  populated at write time from the same extras values carries the analyzed
+  full-text view of the tail. Two mapping entries total for the unknown long
+  tail; nothing per-leaf.
 
 The module exposes a small, pure-Python API consumed by the items
 driver write path and the search service sort path:
 
 * :func:`build_known_fields` — resolve the effective known-fields map for
   a catalog (Tier 1 ∪ that catalog's Tier 2). v1 just returns Tier 1.
+* :func:`build_known_fields_from_queryables` — derive the known-fields map
+  from the queryables SSOT (Tier 1 < SSOT FieldDefinitions < Tier 2).
 * :func:`project_item_for_es` — reshape an item doc so unknown properties
   move under ``properties.extras``. Called at every write entry point
   before the bulk-action append.
@@ -43,7 +53,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.field_definition import FieldDefinition
+
+from dynastore.tools.language_utils import resolve_localized_field
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +120,16 @@ _STAC_CORE_FIELDS: Dict[str, Dict[str, Any]] = {
     # STAC Common Metadata
     "title":          _localized_text_field(ignore_above=512),
     "description":    _localized_text_field(ignore_above=1024),
-    "license":        {"type": "keyword"},
+    # license: LicenseInfo object {license_id, is_osi_compliant, localized_content?}.
+    # dynamic:false keeps localized_content in _source unindexed (refs #1828).
+    "license": {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            "license_id":      {"type": "keyword"},
+            "is_osi_compliant": {"type": "boolean"},
+        },
+    },
     "platform":       {"type": "keyword"},
     "instruments":    {"type": "keyword"},
     "constellation":  {"type": "keyword"},
@@ -287,6 +311,47 @@ def build_known_fields(catalog_config: Optional[Any] = None) -> Dict[str, Dict[s
     return out
 
 
+def build_known_fields_from_queryables(
+    queryable_fields: Dict[str, "FieldDefinition"],
+    catalog_config: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Derive the known-fields map from the queryables SSOT.
+
+    Produces a ``Dict[str, Any]`` suitable for :func:`build_item_mapping`
+    by merging three layers in priority order (highest wins):
+
+    1. **Tier-1** static platform baseline (:data:`TIER_1_FIELDS`) — covers
+       STAC core fields and well-known extensions that need hand-crafted
+       complex ES types (localised text blocks, disabled object containers,
+       etc.). Fills any field the SSOT does not cover.
+    2. **SSOT-derived** FieldDefinition objects from
+       ``QueryOptimizer.get_all_queryable_fields()`` — each queryable field
+       declared in the collection schema automatically appears in the derived
+       mapping without a manual Tier-1 edit. When the same key exists in both
+       Tier-1 and the SSOT, the SSOT-derived entry wins so schema-declared
+       types are authoritative.
+    3. **Tier-2** operator overlay from
+       ``ItemsElasticsearchDriverConfig.mapping`` (via ``catalog_config``) —
+       explicit raw ES type dicts; wins over all other layers.
+
+    Pure function: no DB access, no protocol calls, no web-framework imports.
+    """
+    # Start from Tier-1 as the base.
+    out: Dict[str, Any] = dict(TIER_1_FIELDS)
+
+    # Overlay SSOT-derived FieldDefinition objects (wins over Tier-1 on overlap).
+    for name, field_def in queryable_fields.items():
+        out[name] = field_def
+
+    # Overlay Tier-2 raw ES type dicts (wins over everything).
+    if catalog_config is not None:
+        overlay = getattr(catalog_config, "mapping", None)
+        if isinstance(overlay, dict) and overlay:
+            out.update(overlay)
+
+    return out
+
+
 def validate_tier_2(
     tier_2: Dict[str, Any],
     tier_1: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -334,9 +399,19 @@ def validate_tier_2(
                 )
 
 
-async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+async def resolve_catalog_known_fields(
+    catalog_id: Optional[str],
+    queryable_fields: Optional[Dict[str, "FieldDefinition"]] = None,
+) -> Dict[str, Any]:
     """Async helper: fetch the per-catalog ``ItemsElasticsearchDriverConfig``
-    and return the merged Tier-1 ∪ Tier-2 known-fields map.
+    and return the merged known-fields map.
+
+    When ``queryable_fields`` is provided (the SSOT from
+    ``QueryOptimizer.get_all_queryable_fields()``), the result is produced
+    via :func:`build_known_fields_from_queryables` which merges three layers:
+    Tier-1 (base) < SSOT FieldDefinition objects < Tier-2 raw ES overlay.
+    Without ``queryable_fields`` the result is the legacy Tier-1 ∪ Tier-2
+    dict — byte-identical to the pre-#1285 behaviour.
 
     Falls back to Tier 1 only when:
 
@@ -345,11 +420,13 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
     * the config fetch raises any exception (degrade-safe, never blocks
       writes).
 
-    Used by write entry points so the projection helper writes Tier-2
-    fields at their explicit ``properties.<key>`` path instead of routing
-    them through ``extras``.
+    Used by write entry points so the projection helper writes Tier-2 and
+    SSOT-declared fields at their explicit ``properties.<key>`` path instead
+    of routing them through ``extras``.
     """
     if not catalog_id:
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
     try:
         from dynastore.models.protocols.configs import ConfigsProtocol
@@ -366,10 +443,14 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             "falling back to Tier-1 only: %s",
             catalog_id, exc,
         )
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
 
     configs = get_protocol(ConfigsProtocol)
     if configs is None:
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
     try:
         cfg = await configs.get_config(
@@ -385,7 +466,11 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             "falling back to Tier-1 only: %s",
             catalog_id, exc,
         )
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
+    if queryable_fields:
+        return build_known_fields_from_queryables(queryable_fields, catalog_config=cfg)
     return build_known_fields(cfg)
 
 
@@ -525,7 +610,10 @@ def _collect_search_tokens(values: Iterable[Any], out: List[str]) -> None:
             out.append(str(v))
 
 
-def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
+def unproject_item_from_es(
+    source: Dict[str, Any],
+    lang: str = "en",
+) -> Dict[str, Any]:
     """Rebuild the GeoJSON/STAC read contract from an indexed ``_source``.
 
     Inverse of :func:`project_item_for_es`. The write path routes unknown
@@ -544,6 +632,11 @@ def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
 
     * ``properties.extras.*`` is hoisted back to flat ``properties.*`` (an
       existing flat key wins on collision — it is the more specific value);
+    * when ``_source["metadata"]`` contains a typed multilingual container
+      (``title`` / ``description`` / ``keywords``), each field is resolved
+      to the requested ``lang`` (defaulting to ``"en"``) and placed onto
+      the flat ``properties`` dict — matching the PG read contract. The raw
+      ``metadata`` container is not surfaced on the wire;
     * only GeoJSON/STAC structural members (:data:`_RESERVED_MEMBER_KEYS`)
       survive at the top level — internal ``_*`` fields and leaked
       attribute/echo keys are dropped;
@@ -553,6 +646,52 @@ def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
     Pure function — returns a new dict, the input is not mutated.
     Read-policy exposure (id override, ``expose`` gating) is layered on by
     the caller after this structural normalisation.
+    """
+    return unproject_envelope_from_es(
+        source,
+        reserved_member_keys=_RESERVED_MEMBER_KEYS,
+        default_type="Feature",
+        null_empty_geometry=True,
+        lang=lang,
+    )
+
+
+def unproject_envelope_from_es(
+    source: Dict[str, Any],
+    *,
+    reserved_member_keys: "frozenset[str]",
+    default_type: Optional[str] = None,
+    null_empty_geometry: bool = False,
+    lang: str = "en",
+) -> Dict[str, Any]:
+    """Level-agnostic read reconstruction from a canonical ``_source`` (#1285).
+
+    Generalises :func:`unproject_item_from_es` so every entity level
+    (catalog / collection / item / asset) restores its wire shape with the
+    same three moves, parameterised by which structural members that level
+    surfaces:
+
+    * ``properties.extras.*`` is hoisted back to flat ``properties.*`` (an
+      existing flat key wins on collision — it is the more specific value);
+    * when ``_source["metadata"]`` carries a typed multilingual container
+      (``title`` / ``description`` / ``keywords``), each present key is
+      resolved to the requested ``lang`` (``"*"`` returns the full dict;
+      otherwise falls back to ``"en"`` then the first available language)
+      and written to flat ``properties`` via ``setdefault`` — the raw
+      ``metadata`` container is kept out of the wire output, consistent with
+      how ``system``/``stats``/``access`` are treated;
+    * only the level's ``reserved_member_keys`` survive at the top level —
+      flat identity (``catalog_id``/``collection_id``), internal ``_*`` fields
+      and the ``system``/``stats``/``access`` containers are dropped;
+    * when ``default_type`` is given it is stamped as the GeoJSON/STAC
+      ``type``; when ``null_empty_geometry`` is set an empty/falsy
+      ``geometry`` is normalised to ``None`` (valid GeoJSON ``null``).
+
+    The per-(entity_level, protocol) projector registry (#1285) layers any
+    attribute → wire-member remapping (e.g. a STAC Collection has no
+    ``properties`` member) on top of this structural normalisation.
+
+    Pure function — returns a new dict, the input is not mutated.
     """
     if not isinstance(source, dict):
         return source
@@ -564,14 +703,30 @@ def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
         for k, v in extras.items():
             props.setdefault(k, v)
 
-    out: Dict[str, Any] = {"type": "Feature", "properties": props}
-    for key in _RESERVED_MEMBER_KEYS:
+    # Resolve the typed multilingual metadata container (#1828 Phase 2).
+    # The raw ``metadata`` block is intentionally excluded from the wire output
+    # (same treatment as ``system``/``stats``/``access``). Only the resolved
+    # scalar/array values land on flat ``properties``.
+    metadata = source.get("metadata")
+    if isinstance(metadata, dict):
+        for _meta_key in ("title", "description", "keywords"):
+            _raw = metadata.get(_meta_key)
+            if _raw is None:
+                continue
+            _resolved = resolve_localized_field(_raw, lang)
+            if _resolved is not None:
+                props.setdefault(_meta_key, _resolved)
+
+    out: Dict[str, Any] = {"properties": props}
+    if default_type is not None:
+        out["type"] = default_type
+    for key in reserved_member_keys:
         if key == "type":
             continue
         if key in source:
             out[key] = source[key]
 
-    if not out.get("geometry"):
+    if null_empty_geometry and not out.get("geometry"):
         out["geometry"] = None
 
     return out
@@ -579,7 +734,7 @@ def unproject_item_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
 
 def resolve_es_field_path(
     stac_path: str,
-    known_fields: Dict[str, Dict[str, Any]],
+    known_fields: Dict[str, Any],
 ) -> str:
     """Resolve a STAC field path to the ES path it actually lives at.
 
@@ -591,6 +746,8 @@ def resolve_es_field_path(
     * ``properties.title.en``  → ``properties.title.en`` (Tier 1; ES
       routes ``.en`` to the analyzer-tagged sub-property)
     * ``properties.eo:cloud_cover`` → ``properties.eo:cloud_cover``
+    * ``properties.area``      → ``stats.area`` (container="stats")
+    * ``properties.geometry_hash`` → ``system.geometry_hash`` (container="system")
     * ``properties.foo:bar``   → ``properties.extras.foo:bar``
     * ``_external_id``         → ``_external_id`` (top-level passthrough)
 
@@ -598,11 +755,38 @@ def resolve_es_field_path(
     unchanged. Sub-paths under a Tier-1 object field (e.g.
     ``properties.title.en``) keep their full path so ES can resolve the
     leaf via the parent's sub-properties.
+
+    When ``known_fields`` carries :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+    values with a ``container`` tag, the field is routed to its canonical
+    container (``stats.*`` / ``system.*`` / flat root for identity) via
+    :func:`~dynastore.modules.storage.computed_fields.classify_container`
+    — the single classification SSOT (refs #1800).
     """
     if not stac_path.startswith("properties."):
         return stac_path
     tail = stac_path[len("properties."):]
     head, _, _ = tail.partition(".")
-    if head in known_fields or head == "extras":
+
+    if head == "extras":
         return stac_path
-    return f"properties.extras.{tail}"
+
+    field_def = known_fields.get(head)
+    if field_def is None:
+        # Unknown field — route to the extras long-tail lane.
+        return f"properties.extras.{tail}"
+
+    # Route based on container classification.
+    from dynastore.modules.storage.computed_fields import classify_container
+    container = classify_container(head, field_def)
+
+    if container == "stats":
+        return f"stats.{tail}"
+    if container == "system":
+        return f"system.{tail}"
+    if container == "identity":
+        # Identity fields (external_id, asset_id, geoid) live flat at the
+        # document root; strip the ``properties.`` prefix.
+        return tail
+
+    # Default: keep the ``properties.<name>`` path unchanged (user attrs).
+    return stac_path

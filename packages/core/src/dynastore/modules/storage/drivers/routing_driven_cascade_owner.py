@@ -35,12 +35,16 @@ This design correctly handles:
 - Private items DENY revoke: ``ItemsElasticsearchPrivateDriver.drop_storage``
   already calls ``_revoke_deny_policy`` — parity is preserved.
 
-GCS asset drivers are EXCLUDED from this owner.  GCS object-storage cleanup
+GCS asset drivers are EXCLUDED from this owner.  GCS binary storage cleanup
 is handled by the dedicated ``GcsCatalogPrefixOwner`` / ``GcsCollectionPrefixOwner``
-owners (task-runner based), which have their own lifecycle and retry semantics.
-Including GCS drivers here would duplicate cleanup and conflict with those
-owners.  The check is based on the driver class name: drivers whose snake_case
-id contains ``gcs`` or ``bigquery`` are skipped.
+owners (task-runner based), which call ``StorageProtocol.drop_storage`` (renamed
+from ``delete_storage_for_catalog`` in the vocabulary-consolidation pass) and have
+their own lifecycle and retry semantics.  Including GCS drivers here would duplicate
+cleanup and conflict with those owners.  The check is based on the driver class name:
+drivers whose snake_case id contains ``gcs`` or ``bigquery`` are skipped.
+
+Per-asset event-driven binary teardown (``AssetBlobReaper``-style) remains outside
+the cascade registry — it is a per-asset eventing concern, not a bulk cascade.
 
 Register via :func:`register_owners` from the catalog module lifespan BEFORE
 the CascadeCleanupRegistry is frozen.
@@ -84,7 +88,6 @@ def _is_excluded_driver(driver_ref: str) -> bool:
 
 async def _enumerate_configured_drivers(
     scope_ref: ScopeRef,
-    conn: Any,
 ) -> list[tuple[str, str]]:
     """Return ``[(registry_kind, driver_ref), ...]`` for the deleted entity.
 
@@ -93,12 +96,24 @@ async def _enumerate_configured_drivers(
     ``(registry_kind, driver_ref)`` pair appears at most once, regardless of
     how many operations reference it.
 
-    Safe when no explicit config exists (the resolver falls back to model
-    defaults).  ``ModuleNotFoundError`` on an optional routing-config class
-    (e.g. AssetRoutingConfig when the assets SCOPE is not installed) is
-    treated as "no drivers" — not an error.  Genuinely broken resolutions
-    (unexpected exceptions) propagate so describe_scope fails closed and the
-    delete transaction rolls back.
+    Safe when no explicit config exists: ``_resolve_driver_ids_cached``
+    returns an empty list for the legitimate "no config / no driver for this
+    operation" case (its no-row path fires the model's default factory, and a
+    genuinely empty operation yields ``[]``).  It does NOT raise there, so a
+    catalog with no routing config simply enumerates no extra drivers.
+
+    Fails CLOSED on infrastructure failure.  The resolver only RAISES when
+    routing cannot be resolved at all — most importantly
+    ``RuntimeError("ConfigsProtocol not available …")`` on a configs outage,
+    or an underlying DB/cache error.  Those propagate unfiltered so
+    ``describe_scope`` fails and the delete transaction rolls back.  Earlier
+    code suppressed any exception whose message contained
+    ``"configsprotocol not available"`` / ``"not available"`` as "benign",
+    which inverted the safety posture: a real configs outage returned an
+    under-enumerated driver set and the delete proceeded while silently
+    leaking the tenant's storage (#1764).  Substring-matching exception
+    messages is brittle; there is no benign exception to suppress here, so the
+    suppression is removed entirely.
     """
     from dynastore.modules.storage.routing_config import (
         AssetRoutingConfig,
@@ -120,32 +135,19 @@ async def _enumerate_configured_drivers(
         operations: list[str],
     ) -> None:
         for op in operations:
-            try:
-                entries = await _resolve_driver_ids_cached(
-                    routing_cls,
-                    catalog_id,
-                    collection_id,
-                    op,
-                    frozenset(),
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Only suppress "no config/no drivers" style errors by
-                # checking that the exception is truly benign.  Unknown /
-                # infrastructure errors are re-raised to trigger fail-closed.
-                exc_str = str(exc).lower()
-                benign = (
-                    "no driver" in exc_str
-                    or "not available" in exc_str
-                    or "configsprotocol not available" in exc_str
-                )
-                if not benign:
-                    raise
-                logger.debug(
-                    "_enumerate_configured_drivers: no drivers for "
-                    "routing_cls=%r op=%r catalog_id=%r: %s",
-                    routing_cls.__name__, op, catalog_id, exc,
-                )
-                continue
+            # No exception is suppressed here (fail-closed). The resolver
+            # returns ``[]`` for the legitimate no-config / no-driver case, so
+            # the only way it raises is an infrastructure failure — e.g.
+            # ``ConfigsProtocol not available`` on a configs outage. Letting
+            # that propagate rolls back the delete instead of proceeding with
+            # an under-enumerated driver set and leaking tenant storage (#1764).
+            entries = await _resolve_driver_ids_cached(
+                routing_cls,
+                catalog_id,
+                collection_id,
+                op,
+                frozenset(),
+            )
 
             for driver_ref, _on_failure, _write_mode in entries:
                 if _is_excluded_driver(driver_ref):
@@ -215,11 +217,18 @@ class RoutingDrivenCascadeOwner(BaseResourceOwner):
     ) -> list[CleanupRef]:
         """Snapshot one CleanupRef per configured driver for the deleted entity.
 
-        Called inside the delete transaction (before schema drop) so that the
-        routing config rows are still readable via ``conn``.  Re-raises on
-        genuinely broken state so the transaction rolls back (fail-closed).
+        Called inside the delete transaction (before the catalog's schema
+        drop). The routing config is read by ``_enumerate_configured_drivers``
+        via ``ConfigsProtocol`` on its own pooled connection — NOT via the
+        delete txn's ``conn`` — and reliably observes the *pre-delete* routing
+        config: the platform ``configs`` rows are untouched by the delete, and
+        the catalog's own schema drop is not yet committed at describe time.
+        ``conn`` is retained to satisfy the ``ResourceOwner`` interface (other
+        owners read tenant tables within the delete txn). Re-raises on
+        infrastructure failure so the transaction rolls back (fail-closed).
         """
-        pairs = await _enumerate_configured_drivers(scope_ref, conn)
+        del conn  # see docstring — config is read via ConfigsProtocol, not this txn
+        pairs = await _enumerate_configured_drivers(scope_ref)
 
         refs: list[CleanupRef] = []
         for registry_kind, driver_ref in pairs:

@@ -3,7 +3,7 @@
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
-import { getJSON, postJSON, deleteJSON } from "../common/api.js";
+import { getJSON, postJSON, deleteJSON, fetchCatalogOptions } from "../common/api.js";
 import { mountSchemaForm } from "../common/schema-form.js";
 
 // ---------------------------------------------------------------- state
@@ -100,7 +100,7 @@ function tierCompatible(presetTier) {
 async function loadCatalogs() {
   const sel = $("#scope-catalog");
   try {
-    const rows = await getJSON("/admin/catalogs");
+    const rows = await fetchCatalogOptions();
     fillSelect(sel, rows || [], "— platform scope —");
   } catch (e) {
     setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");
@@ -436,9 +436,11 @@ async function applyPreset(force) {
   if (!state.selectedPreset) return;
   const name = state.selectedPreset.name;
   const prefix = scopePrefix();
-  const path = `${prefix}/presets/${encodeURIComponent(name)}`;
+  // `force` is a query parameter on the backend (Query(False)); put it on the
+  // URL, not in the request body.
+  const qs = force ? "?force=true" : "";
+  const path = `${prefix}/presets/${encodeURIComponent(name)}${qs}`;
   const body = state.paramsForm ? state.paramsForm.getPatch() : {};
-  if (force) body._force = true;
 
   setStatus($("#detail-action-status"), "Applying…");
   try {
