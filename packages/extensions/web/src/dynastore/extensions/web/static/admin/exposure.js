@@ -7,7 +7,10 @@ import { apiUrl } from "../common/url.js";
     catalog: null,
     resolved: {},
     explicit: {},
-    dirty: {}
+    dirty: {},
+    // PascalCase class name → human-readable description from /configs/registry.
+    // Loaded once at init; used to annotate the Extension column.
+    registryDesc: {},
   };
 
   // Utility: fetch JSON with error handling. Routes absolute paths through
@@ -36,10 +39,10 @@ import { apiUrl } from "../common/url.js";
     return r.json();
   }
 
-  // Load list of catalogs
+  // Load list of catalogs from /admin/catalogs (role-filtered, not /stac/catalogs).
   async function loadCatalogs() {
     try {
-      const res = await getJSON("/stac/catalogs");
+      const res = await getJSON("/admin/catalogs");
       const sel = $("#catalog-select");
       while (sel.firstChild) sel.removeChild(sel.firstChild);
 
@@ -48,7 +51,7 @@ import { apiUrl } from "../common/url.js";
       opt0.textContent = "-- select catalog --";
       sel.appendChild(opt0);
 
-      const items = res.items || res || [];
+      const items = Array.isArray(res) ? res : (res.items || res.catalogs || []);
       if (!Array.isArray(items)) return;
 
       for (const c of items) {
@@ -59,13 +62,33 @@ import { apiUrl } from "../common/url.js";
         opt.textContent = id;
         sel.appendChild(opt);
       }
-      if (items.length > 0) {
-        const firstId = items[0].id || items[0].catalog_id || items[0];
-        if (firstId) state.catalog = firstId;
-      }
     } catch (e) {
-      // Catalogs may not exist; safe to ignore
+      // Catalogs may not exist or user may lack /admin access; safe to ignore.
       console.debug("loadCatalogs:", e.message);
+    }
+  }
+
+  // Load the config registry once and return a PascalCase-key → description map.
+  // Keys in the registry are snake_case; we convert them to PascalCase to match
+  // the class names returned by /configs. Falls back to {} on error so the grid
+  // still renders (the key itself serves as fallback label).
+  async function loadRegistryDescriptions() {
+    try {
+      const reg = await getJSON("/configs/registry");
+      if (!reg || typeof reg !== "object") return {};
+      // Convert snake_case registry key → PascalCase class name.
+      function toPascal(s) {
+        return s.replace(/(^|_)([a-z])/g, (_, _sep, ch) => ch.toUpperCase());
+      }
+      const out = {};
+      for (const [pluginId, meta] of Object.entries(reg)) {
+        if (meta && meta.description) {
+          out[toPascal(pluginId)] = meta.description;
+        }
+      }
+      return out;
+    } catch (_) {
+      return {};
     }
   }
 

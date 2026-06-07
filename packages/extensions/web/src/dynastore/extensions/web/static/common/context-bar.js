@@ -190,7 +190,10 @@ export function mountContextBar(container, { onChange } = {}) {
     }
     if (scope.kind === "collection") await loadCollectionsFor(scope.catalogId);
     syncUI();
-    emit();
+    // Avoid emitting an incomplete restored scope on boot (e.g. a persisted
+    // "collection" scope with no collection chosen yet), which makes
+    // subscribers fire a wasted/incorrect load before the user interacts.
+    if (scope.kind !== "collection" || scope.collectionId) emit();
   })();
 
   return {

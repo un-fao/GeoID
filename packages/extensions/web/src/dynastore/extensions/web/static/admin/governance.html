@@ -120,8 +120,12 @@
               <input id="policy-actions" type="text" placeholder="GET, HEAD">
             </div>
             <div>
-              <label for="policy-resources">Resources — csv of regex</label>
-              <input id="policy-resources" type="text" placeholder="/stac/catalogs/.*">
+              <label for="policy-resources">Resources — regex patterns, one per line</label>
+              <!-- Changed from <input> to <textarea> for multi-line resource
+                   patterns (same id/name so governance.js reads .value unchanged;
+                   multi-line semantics: governance.js must split on newlines when
+                   building the resources array — owned by the governance.js agent). -->
+              <textarea id="policy-resources" rows="3" placeholder="/stac/catalogs/.*"></textarea>
             </div>
           </div>
           <div class="form-actions">
@@ -313,7 +317,18 @@
           <div class="plate-meta">GET /admin/catalogs/{catalog_id}</div>
         </div>
         <div class="row">
-          <input id="prov-catalog-id" type="text" class="input-large" placeholder="Catalog ID">
+          <!-- Changed from free-text input to a <select> for consistency with
+               other catalog pickers on this page. governance.js reads this as
+               #prov-catalog-id and calls .value.trim() — the select emits the
+               same string, so no JS change is needed for the read path.
+               Population: governance.js must populate this select with catalog
+               options (same list used by the context-bar / ownedCatalogs) after
+               page load — owned by the governance.js agent.
+               The keydown "Enter" listener on #prov-catalog-id still wires up
+               correctly because <select> also fires keydown. -->
+          <select id="prov-catalog-id" class="input-large">
+            <option value="">— select a catalog —</option>
+          </select>
           <button class="btn btn-secondary btn-xs" id="prov-check-btn" type="button">Check</button>
           <span id="prov-status" class="status"></span>
         </div>

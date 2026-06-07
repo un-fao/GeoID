@@ -40,6 +40,76 @@ function switchTab(name) {
   });
 }
 
+// Navigate to an admin page by id.  Works both embedded in the shell (via
+// parent.switchTab) and standalone (hash navigation falls back to the server).
+function goToAdminPage(pageId) {
+  if (
+    window.parent !== window &&
+    typeof window.parent.switchTab === "function"
+  ) {
+    window.parent.switchTab(pageId);
+  } else {
+    window.location.href = "#" + pageId;
+  }
+}
+
+// Render a "Next steps" affordance block inserted after the given status span.
+// catalogId is user-supplied; it is set via textContent only — never innerHTML.
+function showNextSteps(afterStatusSel, catalogId) {
+  const statusEl = $(afterStatusSel);
+  if (!statusEl) return;
+
+  // Remove any previously-injected block so repeated submissions stay clean.
+  const prev = statusEl.parentElement.querySelector(".next-steps-block");
+  if (prev) prev.remove();
+
+  const block = document.createElement("div");
+  block.className = "next-steps-block";
+  block.style.cssText =
+    "margin-top:1rem;padding:0.75rem 1rem;" +
+    "border:1px solid rgba(59,130,246,0.2);border-radius:0.5rem;" +
+    "background:rgba(59,130,246,0.05);font-size:0.85rem;";
+
+  // Heading — catalogId set via textContent, never concatenated into HTML.
+  const heading = document.createElement("p");
+  heading.style.cssText = "font-weight:600;margin-bottom:0.5rem;color:#93c5fd;";
+  heading.textContent = "Next steps for ";
+  const code = document.createElement("code");
+  code.style.color = "#e2e8f0";
+  code.textContent = catalogId;
+  heading.appendChild(code);
+  block.appendChild(heading);
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;flex-wrap:wrap;gap:0.5rem;";
+
+  const steps = [
+    { icon: "fa-shield-halved", label: "Set up access (Governance)", page: "governance" },
+    { icon: "fa-sliders",        label: "Apply a preset (Presets)",   page: "presets"    },
+    { icon: "fa-broadcast-tower", label: "Enable services (Exposure)", page: "exposure"  },
+  ];
+  steps.forEach(({ icon, label, page }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.cssText =
+      "display:inline-flex;align-items:center;gap:0.4rem;" +
+      "padding:0.35rem 0.75rem;border-radius:0.4rem;font-size:0.78rem;" +
+      "background:rgba(30,41,59,0.8);border:1px solid rgba(255,255,255,0.1);" +
+      "color:#e2e8f0;cursor:pointer;";
+    // icon and label are hardcoded constants, not user input.
+    const ic = document.createElement("i");
+    ic.className = "fa-solid " + icon + " text-blue-400";
+    ic.style.fontSize = "0.75rem";
+    btn.appendChild(ic);
+    btn.appendChild(document.createTextNode(" " + label));
+    btn.addEventListener("click", () => goToAdminPage(page));
+    row.appendChild(btn);
+  });
+  block.appendChild(row);
+
+  statusEl.parentElement.appendChild(block);
+}
+
 async function refreshCatalogs() {
   const tbody = $("#catalogs-table tbody");
   clearNode(tbody);
@@ -138,6 +208,7 @@ async function onCreateCatalog(e) {
   try {
     await createStacCatalog(body);
     setStatus("#cat-status", `Catalog "${body.id}" chartered.`, "ok");
+    showNextSteps("#cat-status", body.id);
     $("#catalog-create").reset();
     refreshCatalogs();
   } catch (e) {
@@ -191,6 +262,7 @@ async function onCreateCollection(e) {
   try {
     await createStacCollection(catalogId, body);
     setStatus("#col-status", `Collection "${id}" commissioned under "${catalogId}".`, "ok");
+    showNextSteps("#col-status", catalogId);
     $("#collection-create").reset();
   } catch (e) {
     setStatus("#col-status", `Failed: ${e.message}`, "err");

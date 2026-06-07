@@ -26,6 +26,15 @@ class LanguageSelector extends HTMLElement {
         this.render();
     }
 
+    disconnectedCallback() {
+        // Remove the global click handler so repeated connect/disconnect
+        // (SPA-style navigation) does not stack orphaned listeners.
+        if (this._docClickHandler) {
+            document.removeEventListener('click', this._docClickHandler);
+            this._docClickHandler = null;
+        }
+    }
+
     getCurrentLang() {
         const urlParams = new URLSearchParams(window.location.search);
         return urlParams.get('language') || document.documentElement.lang || 'en';
@@ -70,12 +79,17 @@ class LanguageSelector extends HTMLElement {
             menu.classList.toggle('show');
         });
 
-        document.addEventListener('click', (e) => {
+        // Remove any prior handler before re-binding (render can run again).
+        if (this._docClickHandler) {
+            document.removeEventListener('click', this._docClickHandler);
+        }
+        this._docClickHandler = (e) => {
             if (!this.contains(e.target)) {
                 trigger.setAttribute('aria-expanded', 'false');
                 menu.classList.remove('show');
             }
-        });
+        };
+        document.addEventListener('click', this._docClickHandler);
     }
 }
 

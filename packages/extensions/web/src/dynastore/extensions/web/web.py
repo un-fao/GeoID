@@ -1722,10 +1722,25 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         @self.router.get("/dashboard/tasks", response_class=JSONResponse)
         async def get_dashboard_platform_tasks():
-            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
-            if tasks_ext:
-                return await tasks_ext.get_tasks()
-            return []
+            from dynastore.models.protocols.tasks import TasksProtocol
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.db_config.query_executor import managed_transaction
+            from dynastore.modules.tasks.tasks_module import get_task_schema
+
+            tasks_svc = get_protocol(TasksProtocol)
+            if tasks_svc is None:
+                return []
+            db = get_protocol(DatabaseProtocol)
+            engine = db.get_any_engine() if db else None
+            if engine is None:
+                return []
+            try:
+                schema = get_task_schema()
+                async with managed_transaction(engine) as conn:
+                    tasks = await tasks_svc.list_tasks(conn, schema)
+                return [t.model_dump() if hasattr(t, "model_dump") else t for t in tasks]
+            except Exception:
+                return []
 
         @self.router.get(
             "/dashboard/ogc-compliance",
@@ -1766,15 +1781,23 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/tasks", response_class=JSONResponse)
         async def get_dashboard_tasks(catalog_id: str):
-            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
-            if tasks_ext:
-                # The TasksProtocol's get_tasks returns the global view today;
-                # filtering by catalog_id is a follow-up that requires the
-                # protocol contract to grow a parameter. The middleware
-                # already enforced that the caller is allowed for catalog_id.
-                tasks = await tasks_ext.get_tasks()
-                return tasks
-            return []
+            from dynastore.models.protocols.tasks import TasksProtocol
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.db_config.query_executor import managed_transaction
+
+            tasks_svc = get_protocol(TasksProtocol)
+            if tasks_svc is None:
+                return []
+            db = get_protocol(DatabaseProtocol)
+            engine = db.get_any_engine() if db else None
+            if engine is None:
+                return []
+            try:
+                async with managed_transaction(engine) as conn:
+                    tasks = await tasks_svc.list_tasks_for_catalog(conn, catalog_id)
+                return [t.model_dump() if hasattr(t, "model_dump") else t for t in tasks]
+            except Exception:
+                return []
 
         # /dashboard/catalogs/{cat}[/collections/{col}]/{logs,events} deleted:
         # callers fetch canonical /logs/catalogs/{cat}... and /events/catalogs/{cat}...

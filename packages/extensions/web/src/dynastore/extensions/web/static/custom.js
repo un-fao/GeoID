@@ -467,10 +467,29 @@ async function fetchDashboardStats() {
         const res = await fetch('dashboard/stats');
         if (!res.ok) return;
         const stats = await res.json();
-        if(document.getElementById('stat-total-requests')) document.getElementById('stat-total-requests').innerText = stats.total_requests.toLocaleString() || '0';
-        if(document.getElementById('stat-avg-latency')) document.getElementById('stat-avg-latency').innerText = `${Math.round(stats.average_latency_ms || 0)}ms`;
-        const rate = stats.total_requests > 0 ? 100 : 0;
-        if(document.getElementById('stat-success-rate')) document.getElementById('stat-success-rate').innerText = `${rate}%`;
+        if (document.getElementById('stat-total-requests')) {
+            document.getElementById('stat-total-requests').innerText =
+                (stats.total_requests || 0).toLocaleString();
+        }
+        if (document.getElementById('stat-avg-latency')) {
+            document.getElementById('stat-avg-latency').innerText =
+                `${Math.round(stats.average_latency_ms || 0)}ms`;
+        }
+        // Compute success rate from status_code_distribution (defect D fix).
+        // Only display when the distribution has data; avoid a fake 100%.
+        const rateEl = document.getElementById('stat-success-rate');
+        if (rateEl) {
+            const dist = stats.status_code_distribution || {};
+            const total = Object.values(dist).reduce((s, n) => s + n, 0);
+            if (total > 0) {
+                const success = Object.entries(dist)
+                    .filter(([code]) => code.startsWith('2') || code.startsWith('3'))
+                    .reduce((s, [, n]) => s + n, 0);
+                rateEl.innerText = `${Math.round((success / total) * 100)}%`;
+            } else {
+                rateEl.innerText = '—';
+            }
+        }
     } catch(e) {}
 }
 

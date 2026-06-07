@@ -406,6 +406,8 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
             },
         }
         html = html.replace("__CATALOG_LOGS_CTX__", json.dumps(ctx))
+        catalog_id = request.query_params.get("catalog") or ""
+        html = html.replace("__CATALOG_ID__", json.dumps(catalog_id))
         return HTMLResponse(html)
 
     async def _get_dashboards_health(self) -> Dict[str, bool]:

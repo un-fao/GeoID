@@ -475,6 +475,39 @@ td.cell-truncate {
   font-size: 0.82rem;
 }
 
+/* Shared selector controls. These classes are used by the catalog/collection
+   pickers (ContextSelector wrapper, scope-select dropdowns, filter inputs).
+   Without explicit rules the global `select { width: 100% }` above stretches
+   them inconsistently, which is the root cause of the misaligned selector bar
+   reported across pages. Pin them to a consistent auto width + height. */
+.filter-select,
+.scope-select {
+  display: inline-block;
+  width: auto;
+  min-width: 180px;
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  vertical-align: middle;
+}
+
+.filter-input {
+  display: inline-block;
+  width: auto;
+  min-width: 180px;
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  vertical-align: middle;
+}
+
+/* Keep the ContextSelector dropdowns evenly spaced and aligned regardless of
+   which page hosts them. */
+.context-selector-wrapper {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 /* --- Empty-state / footnote ------------------------------------------ */
 
 .footnote {

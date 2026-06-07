@@ -436,9 +436,11 @@ async function applyPreset(force) {
   if (!state.selectedPreset) return;
   const name = state.selectedPreset.name;
   const prefix = scopePrefix();
-  const path = `${prefix}/presets/${encodeURIComponent(name)}`;
+  // `force` is a query parameter on the backend (Query(False)); put it on the
+  // URL, not in the request body.
+  const qs = force ? "?force=true" : "";
+  const path = `${prefix}/presets/${encodeURIComponent(name)}${qs}`;
   const body = state.paramsForm ? state.paramsForm.getPatch() : {};
-  if (force) body._force = true;
 
   setStatus($("#detail-action-status"), "Applying…");
   try {

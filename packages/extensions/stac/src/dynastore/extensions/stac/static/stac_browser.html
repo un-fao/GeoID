@@ -126,7 +126,13 @@
             <img src="../static/dynastore.png" alt="AIP Logo">
             <span>Agro-Informatics Platform: STAC Browser</span>
         </div>
-        <a href="../" class="back-link">
+        <!--
+            "Back to Home" works in both contexts:
+            - Embedded in the shell iframe: calls parent.switchTab('home') if available.
+            - Standalone: follows the href="../" fallback normally.
+        -->
+        <a href="../" class="back-link" id="back-home-link"
+           onclick="(function(e){if(window.parent!==window&&typeof window.parent.switchTab==='function'){e.preventDefault();window.parent.switchTab('home');}})(event)">
             <i class="fa-solid fa-arrow-left"></i> Back to Home
         </a>
     </header>
@@ -244,6 +250,30 @@
             }
         }
 
+        // ---- "View on map" deep-link ----
+        // Opens the map_viewer page with the given catalog+collection preselected.
+        // When embedded in the shell iframe: calls parent.switchTab + postMessage.
+        // When standalone: navigates to the map page with query params.
+        function openOnMap(catalogId, collectionId) {
+            if (window.parent !== window) {
+                if (typeof window.parent.switchTab === 'function') {
+                    window.parent.switchTab('map_viewer');
+                }
+                // postMessage lets map_viewer (also in an iframe) receive the context.
+                window.parent.postMessage({ type: 'open-map', catalogId, collectionId }, '*');
+            } else {
+                const p = window.location.pathname;
+                const i = p.indexOf('/web/');
+                const base = i >= 0 ? p.slice(0, i) : '';
+                const params = new URLSearchParams({ catalog: catalogId, collection: collectionId });
+                window.location.href = base + '/web/pages/map_viewer?' + params.toString();
+            }
+        }
+
+        // Track the catalog inferred from the last collection detail rendered,
+        // so the "View on map" button has the right catalogId to pass.
+        let _lastCatalogId = null;
+
         function renderDetail(d) {
             const pane = document.getElementById('detail-pane');
             const type = d.type || (d.collections ? 'Catalog' : d.features ? 'ItemCollection' : 'Unknown');
@@ -252,12 +282,29 @@
             const collections = d.collections || [];
             const features = d.features || [];
 
+            // Detect whether this is a Collection (has extent.spatial).
+            const isCollection = !!(d.extent && d.extent.spatial);
+
+            // Infer catalogId from the self-link when rendering a collection.
+            if (isCollection && selfLink) {
+                const catMatch = selfLink.match(/\/stac\/catalogs\/([^/]+)\/collections\//);
+                if (catMatch) _lastCatalogId = catMatch[1];
+            }
+
+            // "View on map" button — shown for collections when we know the catalog.
+            let viewOnMapBtn = '';
+            if (isCollection && _lastCatalogId && d.id) {
+                // Use data attributes so the IDs never land inside an onclick string.
+                viewOnMapBtn = `<button class="view-on-map-btn" data-catalog="${_escAttr(_lastCatalogId)}" data-collection="${_escAttr(d.id)}" style="margin-left:0.5rem;padding:0.2rem 0.75rem;font-size:0.75rem;border-radius:9999px;background:rgba(14,165,233,0.15);color:#7dd3fc;border:1px solid rgba(14,165,233,0.3);cursor:pointer;" title="Open this collection in the map viewer"><i class="fa-solid fa-map text-xs" style="margin-right:0.25rem;"></i>View on map</button>`;
+            }
+
             let html = `
                 <div id="detail-title">${d.title || d.id || 'Catalog'}</div>
                 <div id="detail-desc">${d.description ? (typeof marked !== 'undefined' ? marked.parse(d.description) : d.description) : ''}</div>
                 <div class="detail-meta">
                     <span class="badge badge-blue">${type}</span>
                     ${d.id ? `<span class="badge badge-green">${d.id}</span>` : ''}
+                    ${viewOnMapBtn}
                 </div>
             `;
 
@@ -322,6 +369,25 @@
             }
 
             pane.innerHTML = html;
+
+            // Wire "View on map" button via DOM event listener — catalog/collection
+            // IDs are read from data attributes, never from an onclick string.
+            const mapBtn = pane.querySelector('.view-on-map-btn');
+            if (mapBtn) {
+                mapBtn.addEventListener('click', function() {
+                    openOnMap(mapBtn.dataset.catalog, mapBtn.dataset.collection);
+                });
+            }
+        }
+
+        // Escape a value for use in an HTML attribute (single or double quoted).
+        function _escAttr(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
         }
 
         function loadDetailAndHighlight(url, id) {
@@ -363,7 +429,7 @@
         // ---- Initial load ----
         async function init() {
             setLoading('Connecting to STAC API…');
-            
+
             // Initialize Context Selector
             const cs = new ContextSelector({
                 containerId: 'cs-container',
@@ -373,14 +439,14 @@
                 onChange: async (detail) => {
                     const catId = Array.isArray(detail.catalogId) ? detail.catalogId[0] : detail.catalogId;
                     const colId = Array.isArray(detail.collectionId) ? detail.collectionId[0] : detail.collectionId;
-                    
+
                     let targetUrl = ROOT;
                     if (catId && catId !== '_system_' && colId) {
                         targetUrl = `${ROOT}catalogs/${catId}/collections/${colId}`;
                     } else if (catId && catId !== '_system_') {
                         targetUrl = `${ROOT}catalogs/${catId}`;
                     }
-                    
+
                     try {
                         const data = await loadDetail(targetUrl);
                         updateSidebarFromData(data, targetUrl);

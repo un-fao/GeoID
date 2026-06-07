@@ -515,7 +515,13 @@ async function loadResetHistory() {
     }
     setHistoryExportEnabled(_lastHistoryRows.length > 0);
   } catch (err) {
-    if (statusEl) statusEl.textContent = `Failed to load reset history: ${err && err.message ? err.message : err}`;
+    if (statusEl) {
+      if (err && err.status === 503) {
+        statusEl.textContent = "Usage reset history requires the logs extension, which is not enabled on this platform.";
+      } else {
+        statusEl.textContent = `Failed to load reset history: ${err && err.message ? err.message : err}`;
+      }
+    }
     renderHistory([]);
   }
 }
