@@ -499,6 +499,48 @@ class EventsModule(ModuleProtocol):
             max_retries=_MAX_RETRIES,
         )
 
+    async def _register_cron_maintenance(self) -> None:
+        """Register pg_cron-backed retention + reaper jobs (best-effort).
+
+        pg_cron is an optional, superuser-installed extension and may be absent
+        (a fresh database, a restricted/managed instance, or any deployment
+        without it). Retention/reaper are best-effort maintenance, NOT a hard
+        dependency, so this MUST never abort the foundational EventsModule:
+        when pg_cron is missing — or any cron-registration call fails — we log
+        a WARNING and continue so the service still boots. Runs in its own
+        transaction, isolated from the critical shard-partition DDL.
+        """
+        from dynastore.modules.db_config.locking_tools import check_extension_exists
+
+        try:
+            async with managed_transaction(self._engine) as conn:
+                if not await check_extension_exists(conn, "pg_cron"):
+                    logger.warning(
+                        "EventsModule: pg_cron extension not installed — skipping "
+                        "events retention/reaper scheduling. Automatic DLQ pruning "
+                        "and the stuck-PROCESSING reaper are disabled until pg_cron "
+                        "is available; run maintenance out-of-band if needed."
+                    )
+                    return
+                policy = self.accumulation_policy
+                await _register_events_retention(conn, policy.dead_letter_days)
+                await _register_events_reaper(
+                    conn,
+                    timeout_minutes=int(
+                        os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15")
+                    ),
+                    max_retries=policy.max_retries,
+                )
+                logger.info(
+                    "EventsModule: pg_cron retention + reaper jobs registered."
+                )
+        except Exception:
+            logger.warning(
+                "EventsModule: failed to register pg_cron maintenance jobs "
+                "(best-effort) — continuing startup without them.",
+                exc_info=True,
+            )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -548,15 +590,11 @@ class EventsModule(ModuleProtocol):
                 shard_partitions_ddl, check_query=_check_last_shard
             ).execute(conn)
 
-            policy = self.accumulation_policy
-            await _register_events_retention(conn, policy.dead_letter_days)
-            await _register_events_reaper(
-                conn,
-                timeout_minutes=int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15")),
-                max_retries=policy.max_retries,
-            )
-
         logger.info("EventsModule: Global events shard partitions configured.")
+
+        # pg_cron retention/reaper jobs are best-effort maintenance, registered
+        # in their own transaction and never allowed to abort startup.
+        await self._register_cron_maintenance()
 
         # 2. Create webhook subscriptions table
         async with managed_transaction(self._engine) as conn:
