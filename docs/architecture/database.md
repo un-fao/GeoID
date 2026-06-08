@@ -8,6 +8,36 @@ The choice of PostgreSQL + PostGIS provides a fast, standard-compliant geospatia
 
 A significant component is the usage of the `JSONB` data type, allowing for unstructured/semi-structured attributes attached to feature data that can be indexed efficiently by the `GIN` (Generalized Inverted Index) format.
 
+### Required Extensions (fresh-database bootstrap)
+
+Before any geometry-typed or columnar write can succeed, a small set of base PostgreSQL extensions must exist in the target database:
+
+| Extension | Why it is needed |
+|-----------|------------------|
+| `postgis` | the `geometry` type and all spatial operators / GIST indexing |
+| `postgis_topology` | topology support used by advanced geometry operations |
+| `btree_gist` | exclusion constraints mixing scalar + range/geometry columns |
+| `btree_gin` | GIN indexing of scalar columns alongside JSONB |
+| `pgcrypto` | `digest()` backing the `*_hash` GENERATED columns on the geometry/attributes sidecars |
+| `pg_trgm` | trigram `similarity()` used by the dimension Similarity conformance class |
+
+This list is the single source of truth `BASE_DB_EXTENSIONS` in `modules/db_config/tools.py`.
+
+**Self-heal on startup.** `DBService` calls `ensure_base_extensions()` on its async engine during lifespan startup. The call is guarded by a Valkey-cached presence probe keyed by database identity (`host:port/dbname`), so the steady-state cost across the multi-pod / multi-Cloud-Run fleet is a single cache read, not repeated DDL on every boot. A freshly-provisioned or repointed database (sentinel extension absent) always re-probes and re-bootstraps rather than inheriting a stale "present" marker. The call is best-effort: a failure never aborts foundational startup.
+
+**Managed PostgreSQL requires a one-time superuser bootstrap.** On a self-hosted Postgres or a local Docker stack where the application role is a superuser, the self-heal above creates the extensions automatically — no operator action needed. On **managed PostgreSQL (AlloyDB, Cloud SQL)** the application role is intentionally *not* a superuser, and these instances gate `CREATE EXTENSION postgis` (and several others) on superuser; the privilege cannot be granted to a normal role. There the self-heal correctly fails soft (logging a warning, writes will fail with `type "geometry" does not exist`), and the extensions must be created once by a superuser when the database is first provisioned — or whenever an environment is repointed to a fresh, empty database. Run, as the instance superuser (e.g. the `postgres` / `alloydbsuperuser` role), against the target database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS btree_gin;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+This is the same privilege class as `pg_cron`: the application can tolerate its absence and degrade gracefully, but only a superuser can install it. Provisioning a new managed database (or repointing an existing environment to one) must include this bootstrap step.
+
 ### Connection Pooling
 
 DynaStore runs two **independent** database stacks. They share configuration (via `db_config`) but never share an engine, a pool, or a driver. A given process belongs to exactly one stack:

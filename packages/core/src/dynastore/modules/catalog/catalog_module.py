@@ -411,6 +411,10 @@ class CatalogModule(ModuleProtocol):
                     "dynastore.extensions.proxy.cascade_owner",
                     "proxy short URLs",
                 ),
+                (
+                    "dynastore.modules.stats.cascade_owner",
+                    "stats telemetry ES index",
+                ),
             ]
             _register_cascade_owners(cascade_cleanup_registry, _owner_modules)
             # Freeze the registry immediately after all owners have been
