@@ -567,11 +567,16 @@ class CatalogModule(ModuleProtocol):
                 MaintenanceSupervisor,
                 build_supervisor_config,
                 register_supervisor_jobs,
+                unschedule_superseded_cron_jobs,
             )
             _supervisor_shutdown = asyncio.Event()
             _supervisor: Optional[MaintenanceSupervisor] = None
             try:
                 supervisor_cfg = build_supervisor_config()
+                # Clean-cut safety: drop any pre-existing events/logs/IAM pg_cron
+                # jobs this supervisor now owns so they cannot double-run on a
+                # non-fresh deploy (no-op when pg_cron is absent).
+                await unschedule_superseded_cron_jobs(engine)
                 await register_supervisor_jobs(engine)
                 _supervisor = MaintenanceSupervisor(supervisor_cfg)
                 _supervisor.start(_supervisor_shutdown)

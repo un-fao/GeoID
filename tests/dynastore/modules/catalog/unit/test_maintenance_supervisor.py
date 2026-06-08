@@ -49,6 +49,8 @@ from dynastore.modules.catalog.maintenance_supervisor import (
     _CADENCE_TENANT_LOGS,
     _PRUNE_BATCH,
     _STALE_AFTER_SECONDS,
+    _SUPERSEDED_CRON_JOBS,
+    _SUPERSEDED_TENANT_LOG_PREFIX,
     _run_events_dlq_prune,
     _run_events_pending_alert,
     _run_events_stuck_reaper,
@@ -668,3 +670,82 @@ def test_supervisor_advisory_lock_key_differs_from_reaper():
     from dynastore.modules.catalog.soft_delete_reaper import _REAPER_ADVISORY_LOCK_KEY
 
     assert _SUPERVISOR_ADVISORY_LOCK_KEY != _REAPER_ADVISORY_LOCK_KEY
+
+
+# ---------------------------------------------------------------------------
+# unschedule_superseded_cron_jobs — clean-cut safety for non-fresh deploys
+# ---------------------------------------------------------------------------
+
+
+def _patch_mtx(mock_mtx, conn):
+    """Wire a managed_transaction mock to yield *conn*."""
+    mock_mtx.return_value.__aenter__ = AsyncMock(return_value=conn)
+    mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+
+@pytest.mark.asyncio
+async def test_unschedule_superseded_noop_when_pgcron_absent():
+    """No pg_cron → returns 0 and issues no cron.unschedule query."""
+    from dynastore.modules.catalog.maintenance_supervisor import (
+        unschedule_superseded_cron_jobs,
+    )
+
+    conn = AsyncMock()
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.check_extension_exists",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.DQLQuery",
+        ) as MockDQL,
+    ):
+        _patch_mtx(mock_mtx, conn)
+        result = await unschedule_superseded_cron_jobs(_fake_engine())
+
+    assert result == 0
+    MockDQL.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unschedule_superseded_unschedules_when_pgcron_present():
+    """pg_cron present → unschedules matching jobs and returns the count."""
+    from dynastore.modules.catalog.maintenance_supervisor import (
+        unschedule_superseded_cron_jobs,
+    )
+
+    conn = AsyncMock()
+    exec_calls: list[dict] = []
+
+    async def _fake_execute(c, **kw):
+        exec_calls.append(kw)
+        return 3
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.check_extension_exists",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.DQLQuery",
+        ) as MockDQL,
+    ):
+        _patch_mtx(mock_mtx, conn)
+        instance = MagicMock()
+        instance.execute = AsyncMock(side_effect=_fake_execute)
+        MockDQL.return_value = instance
+
+        result = await unschedule_superseded_cron_jobs(_fake_engine())
+
+    assert result == 3
+    sql_arg = MockDQL.call_args[0][0]
+    assert "cron.unschedule" in sql_arg and "cron.job" in sql_arg
+    # superseded global names + tenant-logs prefix forwarded as params
+    assert exec_calls[0]["names"] == list(_SUPERSEDED_CRON_JOBS)
+    assert exec_calls[0]["tenant_prefix"] == f"{_SUPERSEDED_TENANT_LOG_PREFIX}%"

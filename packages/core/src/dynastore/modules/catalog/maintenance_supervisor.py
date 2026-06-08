@@ -46,6 +46,7 @@ from typing import Any, Optional
 from dynastore.modules.catalog.db_init.maintenance_schedule import (
     MaintenanceScheduleRepository,
 )
+from dynastore.modules.db_config.locking_tools import check_extension_exists
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -72,6 +73,19 @@ JOB_EVENTS_PENDING_ALERT = "events_pending_alert"
 JOB_TENANT_LOGS_PRUNE = "tenant_logs_prune"
 JOB_SYSTEM_LOGS_PRUNE = "system_logs_prune"
 JOB_IAM_PRUNE = "iam_prune"
+
+# pg_cron job names this supervisor supersedes. On a non-fresh deploy these may
+# already be scheduled in cron.job from a prior boot; we unschedule them once so
+# they cannot double-run alongside the supervisor. Per-tenant tenant-logs jobs
+# follow the ``monthly_cleanup_logs_<schema>`` shape and are matched by prefix.
+_SUPERSEDED_CRON_JOBS = (
+    "events_events_retention",
+    "events_events_pending_alert",
+    "events_events_reaper",
+    "monthly_cleanup_system_logs",
+    "prune_expired_iam",
+)
+_SUPERSEDED_TENANT_LOG_PREFIX = "monthly_cleanup_logs_"
 
 # Cadences (seconds)
 _CADENCE_DLQ_PRUNE = 86400        # daily
@@ -551,6 +565,41 @@ class MaintenanceSupervisor:
 # ---------------------------------------------------------------------------
 # Startup: register job cadences into platform.maintenance_schedule
 # ---------------------------------------------------------------------------
+
+
+async def unschedule_superseded_cron_jobs(engine: Any) -> int:
+    """Unschedule any pre-existing pg_cron jobs this supervisor now owns.
+
+    Clean-cut safety for a non-fresh deploy: the events/logs/IAM ``pg_cron``
+    registrations are gone from the code, but a database that was provisioned
+    before this change may still have those jobs scheduled in ``cron.job`` —
+    they would then run *alongside* the supervisor (double-run; the stuck-event
+    reaper would double-increment ``retry_count``). This unschedules them once.
+
+    No-op when ``pg_cron`` is absent (fresh / on-prem). Idempotent: after the
+    first run there are no matching rows, so subsequent boots delete nothing.
+    Returns the number of cron jobs unscheduled.
+    """
+    async with managed_transaction(engine) as conn:
+        if not await check_extension_exists(conn, "pg_cron"):
+            return 0
+        rows = await DQLQuery(
+            "SELECT cron.unschedule(jobid) FROM cron.job "
+            "WHERE jobname = ANY(:names) OR jobname LIKE :tenant_prefix",
+            result_handler=ResultHandler.ROWCOUNT,
+        ).execute(
+            conn,
+            names=list(_SUPERSEDED_CRON_JOBS),
+            tenant_prefix=f"{_SUPERSEDED_TENANT_LOG_PREFIX}%",
+        )
+    count = rows or 0
+    if count:
+        logger.info(
+            "maintenance_supervisor: unscheduled %d superseded pg_cron job(s) "
+            "(events/logs/IAM now driven by the supervisor).",
+            count,
+        )
+    return count
 
 
 async def register_supervisor_jobs(engine: Any) -> None:
