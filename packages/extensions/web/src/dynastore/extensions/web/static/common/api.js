@@ -444,6 +444,27 @@ const _normalizeCatalogList = (raw) => {
     .filter((c) => c.id);
 };
 
+// Page through the cross-tenant /stac/catalogs list. The endpoint caps a
+// single page at limit<=10000 (default 100), so a one-shot fetch silently
+// truncates on stacks with hundreds of catalogs — freshly created ones past
+// the first page then never appear in the picker (#1917). Loop with a large
+// page size and stop on the first short page; a hard page cap guards against
+// a misbehaving server returning full pages forever.
+const _fetchAllStacCatalogs = async () => {
+  const PAGE = 1000;
+  const MAX_PAGES = 50; // 50k catalogs ceiling — well past any real deployment
+  const out = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const offset = page * PAGE;
+    const batch = _normalizeCatalogList(
+      await getJSON(`/stac/catalogs?limit=${PAGE}&offset=${offset}`),
+    );
+    out.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+  return out;
+};
+
 export const fetchCatalogOptions = async () => {
   let mine = [];
   try {
@@ -460,7 +481,7 @@ export const fetchCatalogOptions = async () => {
   const wildcard = mine.some((c) => c.id === "*");
   if (wildcard) {
     try {
-      return _normalizeCatalogList(await getJSON("/stac/catalogs"));
+      return await _fetchAllStacCatalogs();
     } catch (_) { /* not permitted to enumerate cross-tenant */ }
   }
   return concrete;
