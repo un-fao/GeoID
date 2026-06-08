@@ -62,6 +62,7 @@ COLLECTION_RESERVED_MEMBERS: frozenset = frozenset({
     "summaries",
     "conformsTo",
 })
+_COLLECTION_I18N_FIELDS: frozenset = frozenset({"keywords"})
 
 
 def build_canonical_collection_doc(
@@ -79,8 +80,16 @@ def build_canonical_collection_doc(
     ``extent`` is carried opaquely as a reserved member (the driver
     enriches/unenriches it). Pure function — *metadata* is not mutated.
     """
-    return build_canonical_metadata_doc(
-        metadata,
+    md = dict(metadata or {})
+
+    i18n: Dict[str, Any] = {}
+    for field in _COLLECTION_I18N_FIELDS:
+        val = md.get(field)
+        if isinstance(val, dict):          # {"en": ["satellite", "sentinel"]}
+            i18n[field] = md.pop(field)    # remove from attribute bag
+
+    doc = build_canonical_metadata_doc(
+        md,
         identity={
             "id": collection_id,
             "catalog_id": catalog_id,
@@ -91,6 +100,9 @@ def build_canonical_collection_doc(
         access=access,
     )
 
+    if i18n:
+        doc["metadata"] = i18n
+    return doc
 
 def unproject_collection_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
     """Reconstruct a STAC Collection dict from a canonical ``_source`` (#1285).
@@ -104,11 +116,13 @@ def unproject_collection_from_es(source: Dict[str, Any]) -> Dict[str, Any]:
     ``extent`` is returned as stored (opaque) — the driver's ``_unenrich_doc``
     restores the STAC extent shape afterwards. Pure function.
     """
-    return unproject_metadata_from_es(
-        source,
-        reserved_member_keys=COLLECTION_RESERVED_MEMBERS,
-        wire_type="Collection",
-    )
+    out = unproject_metadata_from_es(source, ...)
+
+    meta = source.get("metadata")
+    if isinstance(meta, dict):
+        for k, v in meta.items():
+            out.setdefault(k, v)   # keywords → top-level wire document
+    return out
 
 
 __all__ = [
