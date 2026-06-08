@@ -146,8 +146,22 @@ __CATALOG_LOGS_CTX__
     target.appendChild(table);
   }
 
+  // Service root = the path up to (not including) "/web/". This keeps the
+  // absolute "/logs|/events|/tasks" calls working both at the bare root and
+  // behind a reverse-proxy prefix (e.g. /geospatial/dev/api/catalog).
+  function apiRoot() {
+    const i = window.location.pathname.indexOf("/web/");
+    return i > 0 ? window.location.pathname.slice(0, i) : "";
+  }
+
+  function authHeaders() {
+    const t = window.localStorage.getItem("ds_token");
+    return t ? { Authorization: "Bearer " + t } : {};
+  }
+
   async function fetchJson(url) {
-    const r = await fetch(url, { credentials: "include" });
+    const full = url.charAt(0) === "/" ? apiRoot() + url : url;
+    const r = await fetch(full, { headers: authHeaders() });
     if (!r.ok) throw new Error(url + " → " + r.status);
     return r.json();
   }
