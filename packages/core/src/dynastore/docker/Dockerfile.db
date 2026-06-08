@@ -2,20 +2,18 @@
 FROM postgres:17
 
 LABEL maintainer="carlo.cancellieri@gmail.com" \
-      description="Dynastore - Postgresql + postgis + pg_cron"
+      description="Dynastore - Postgresql + postgis"
 
-# Install PostGIS 3 and pg_cron from the PGDG apt repository
+# Install PostGIS 3 from the PGDG apt repository
 RUN apt-get update && \
     apt-get install -y \
         postgresql-17-postgis-3 \
-        postgresql-17-postgis-3-scripts \
-        postgresql-17-cron && \
+        postgresql-17-postgis-3-scripts && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Enable extensions on first volume creation
 RUN echo "CREATE EXTENSION IF NOT EXISTS postgis;" > /docker-entrypoint-initdb.d/001_postgis.sql && \
     echo "CREATE EXTENSION IF NOT EXISTS postgis_topology;" >> /docker-entrypoint-initdb.d/001_postgis.sql && \
-    echo "CREATE EXTENSION IF NOT EXISTS pg_cron;" > /docker-entrypoint-initdb.d/002_cron.sql && \
     echo "CREATE EXTENSION IF NOT EXISTS pgcrypto;" > /docker-entrypoint-initdb.d/003_pgcrypto.sql && \
     echo "CREATE SCHEMA IF NOT EXISTS keycloak;" > /docker-entrypoint-initdb.d/004_keycloak.sql

@@ -183,7 +183,7 @@ CREATE TRIGGER on_task_status_update
 """
 
 # ---------------------------------------------------------------------------
-# pg_cron-driven stuck-task reaper
+# stuck-task reaper (driven by the MaintenanceSupervisor)
 # ---------------------------------------------------------------------------
 #
 # Replaces the in-process dispatcher janitor (``_run_janitor``) — a
@@ -960,8 +960,8 @@ async def _warn_stuck_pending_tasks(
     Rows whose required capability is confirmed dead (``cap_live is False``)
     are skipped here — the proactive capability sweep owns their DLQ path.
 
-    The pg_cron-driven ``reap_stuck_tasks`` SQL function continues to handle
-    stuck *ACTIVE* tasks (heartbeat expired); this coroutine handles stuck
+    The MaintenanceSupervisor-driven ``reap_stuck_tasks`` SQL function continues
+    to handle stuck *ACTIVE* tasks (heartbeat expired); this coroutine handles stuck
     *PENDING* tasks (never claimed). Two orthogonal failure modes, two
     independent recovery paths.
 

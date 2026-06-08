@@ -26,7 +26,7 @@ parameter refers to the column value (tenant schema or 'system'), not a
 PostgreSQL schema qualifier.
 
 These tools are wired into the existing retention-policy infrastructure and
-can be called from admin endpoints or scheduled pg_cron jobs.
+can be called from admin endpoints or the MaintenanceSupervisor's periodic jobs.
 """
 
 import logging
