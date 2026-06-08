@@ -415,6 +415,10 @@ class CatalogModule(ModuleProtocol):
                     "dynastore.modules.stats.cascade_owner",
                     "stats telemetry ES index",
                 ),
+                (
+                    "dynastore.modules.catalog.maintenance_cascade_owner",
+                    "pending tasks/events for deleted element",
+                ),
             ]
             _register_cascade_owners(cascade_cleanup_registry, _owner_modules)
             # Freeze the registry immediately after all owners have been
