@@ -128,4 +128,11 @@ async def ensure_stored_procedures(conn: DbResource) -> None:
         UPDATE_COLLECTION_EXTENTS_SQL + ASSET_CLEANUP_SQL,
     ).execute(conn)
 
+    # Durable maintenance-schedule table (platform.maintenance_schedule).
+    # Schema is already guaranteed above.
+    from dynastore.modules.catalog.db_init.maintenance_schedule import (
+        ensure_maintenance_schedule,
+    )
+    await ensure_maintenance_schedule(conn)
+
     logger.info("Catalog stored procedures ensured.")
