@@ -110,7 +110,7 @@ The task system is designed for high-volume, ephemeral data management:
 *   **Partitioning:** ``tasks.tasks`` is partitioned by **RANGE** on the
     ``timestamp`` column. By default, partitions are created monthly
     (``ensure_future_partitions``).
-*   **Retention Policy:** A background process (`register_retention_policy`) manages the data lifecycle. COMPLETED and FAILED tasks are typically pruned after 1 month to prevent the database from growing indefinitely.
+*   **Retention Policy:** The ``MaintenanceSupervisor`` leader-elected loop manages the data lifecycle by calling the provisioned ``maintain_partitions_{schema}_tasks()`` function. COMPLETED and FAILED tasks are typically pruned after 1 month to prevent the database from growing indefinitely.
 *   **Recovery:** A 'Janitor' process detects tasks in `ACTIVE` state that have missed their heartbeats (exceeding `locked_until`) and automatically resets them to `PENDING` for retry or moves them to `DEAD_LETTER`.
 
 #### Multi-Application Distributed Execution
