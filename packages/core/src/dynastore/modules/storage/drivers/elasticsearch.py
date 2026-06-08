@@ -83,7 +83,10 @@ from dynastore.modules.storage.routing_config import Operation
 
 # Canonical ES write-boundary imports (#1800 Task 5).
 # Imported at module level so tests can patch them as module attributes.
-from dynastore.modules.catalog.canonical_index_read import read_canonical_index_inputs
+from dynastore.modules.catalog.canonical_index_read import (
+    canonical_input_from_feature,
+    read_canonical_index_inputs,
+)
 from dynastore.modules.elasticsearch.items_projection import resolve_catalog_known_fields
 
 # Geometry simplification — shapely is an optional dependency; guard so the
@@ -1852,12 +1855,24 @@ class ItemsElasticsearchDriver(
         )
         ci = inputs.get(op.entity_id)
         if ci is None:
-            # Row vanished between write and index (race / soft-delete) — skip.
-            logger.debug(
-                "ItemsElasticsearchDriver.index: %s/%s/%s — no raw row; skipping",
-                ctx.catalog, ctx.collection, op.entity_id,
-            )
-            return
+            # No raw PG row.  For a PG-primary collection this means the row
+            # vanished between write and index (race / soft-delete) → skip.
+            # For a file-backed collection there is never a PG row, so fall
+            # back to a feature-derived canonical doc built from op.payload.
+            if op.payload:
+                ci = canonical_input_from_feature(
+                    op.payload, ctx.catalog, ctx.collection,
+                    geoid=op.entity_id,
+                    external_id=op.payload.get("external_id"),
+                    asset_id=op.payload.get("asset_id"),
+                )
+            else:
+                logger.debug(
+                    "ItemsElasticsearchDriver.index: %s/%s/%s — no raw row and "
+                    "no payload; skipping",
+                    ctx.catalog, ctx.collection, op.entity_id,
+                )
+                return
         from dynastore.modules.elasticsearch.canonical_doc import build_canonical_index_doc
         doc = build_canonical_index_doc(
             ci.row,
@@ -1938,13 +1953,24 @@ class ItemsElasticsearchDriver(
             # op_type == "upsert": build canonical doc from raw-row inputs.
             ci = canonical_inputs.get(op.entity_id)
             if ci is None:
-                # Row vanished between write and index — skip silently.
-                logger.debug(
-                    "ItemsElasticsearchDriver.index_bulk: %s/%s/%s — no raw row; "
-                    "skipping upsert op",
-                    ctx.catalog, ctx.collection, op.entity_id,
-                )
-                continue
+                # No raw PG row.  PG-primary collection → row vanished between
+                # write and index (race / soft-delete), skip.  File-backed
+                # collection → never has a PG row, so fall back to a
+                # feature-derived canonical doc built from op.payload.
+                if op.payload:
+                    ci = canonical_input_from_feature(
+                        op.payload, ctx.catalog, ctx.collection,
+                        geoid=op.entity_id,
+                        external_id=op.payload.get("external_id"),
+                        asset_id=op.payload.get("asset_id"),
+                    )
+                else:
+                    logger.debug(
+                        "ItemsElasticsearchDriver.index_bulk: %s/%s/%s — no raw "
+                        "row and no payload; skipping upsert op",
+                        ctx.catalog, ctx.collection, op.entity_id,
+                    )
+                    continue
             doc = build_canonical_index_doc(
                 ci.row,
                 resolved_sidecars=ci.resolved_sidecars,
