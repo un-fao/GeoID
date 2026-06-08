@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Unit tests for the maintenance supervisor (jobs 4-9, #1911).
+"""Unit tests for the maintenance supervisor (jobs 4-12, #1911).
 
 Pure-mock style — no live DB.  Run with:
     PYTHONPATH=packages/core/src \
@@ -33,7 +33,7 @@ Covered:
 - Each job builds the correct SQL / predicate text (assert template + params)
 - Bounded-batch loop terminates at 0 rows
 - build_supervisor_config reads the right env vars
-- register_supervisor_jobs upserts all 6 job names
+- register_supervisor_jobs upserts all 9 job names (6 original + 3 task)
 """
 from __future__ import annotations
 
@@ -57,6 +57,9 @@ from dynastore.modules.catalog.maintenance_supervisor import (
     JOB_EVENTS_STUCK_REAPER,
     JOB_IAM_PRUNE,
     JOB_SYSTEM_LOGS_PRUNE,
+    JOB_TASK_PARTITION_CREATE,
+    JOB_TASK_REAPER,
+    JOB_TASK_RETENTION,
     JOB_TENANT_LOGS_PRUNE,
     MaintenanceSupervisor,
     _CADENCE_DLQ_PRUNE,
@@ -64,6 +67,9 @@ from dynastore.modules.catalog.maintenance_supervisor import (
     _CADENCE_PENDING_ALERT,
     _CADENCE_STUCK_REAPER,
     _CADENCE_SYSTEM_LOGS,
+    _CADENCE_TASK_PARTITION_CREATE,
+    _CADENCE_TASK_REAPER,
+    _CADENCE_TASK_RETENTION,
     _CADENCE_TENANT_LOGS,
     _PRUNE_BATCH,
     _STALE_AFTER_SECONDS,
@@ -587,8 +593,8 @@ def test_build_supervisor_config_reads_env_vars(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_supervisor_jobs_upserts_all_six():
-    """register_supervisor_jobs calls upsert_job for each of the 6 jobs."""
+async def test_register_supervisor_jobs_upserts_all_nine():
+    """register_supervisor_jobs calls upsert_job for each of the 9 jobs (6 original + 3 task)."""
     engine = _fake_engine()
     upserted: list[tuple[str, int]] = []
 
@@ -622,6 +628,9 @@ async def test_register_supervisor_jobs_upserts_all_six():
         JOB_TENANT_LOGS_PRUNE,
         JOB_SYSTEM_LOGS_PRUNE,
         JOB_IAM_PRUNE,
+        JOB_TASK_REAPER,
+        JOB_TASK_PARTITION_CREATE,
+        JOB_TASK_RETENTION,
     ])
 
     cadence_map = dict(upserted)
@@ -631,6 +640,9 @@ async def test_register_supervisor_jobs_upserts_all_six():
     assert cadence_map[JOB_TENANT_LOGS_PRUNE] == _CADENCE_TENANT_LOGS
     assert cadence_map[JOB_SYSTEM_LOGS_PRUNE] == _CADENCE_SYSTEM_LOGS
     assert cadence_map[JOB_IAM_PRUNE] == _CADENCE_IAM_PRUNE
+    assert cadence_map[JOB_TASK_REAPER] == _CADENCE_TASK_REAPER
+    assert cadence_map[JOB_TASK_PARTITION_CREATE] == _CADENCE_TASK_PARTITION_CREATE
+    assert cadence_map[JOB_TASK_RETENTION] == _CADENCE_TASK_RETENTION
 
 
 # ---------------------------------------------------------------------------

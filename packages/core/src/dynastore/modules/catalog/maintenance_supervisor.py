@@ -19,8 +19,9 @@
 """Leader-elected maintenance supervisor.
 
 Drives deadline-insensitive periodic jobs off ``platform.maintenance_schedule``
-(jobs 4–9 from the #1911 spec), replacing the pg_cron registrations for
-events DLQ/reaper/alert, tenant-logs prune, system-logs prune, and IAM prune.
+(jobs 4–12 from the #1911 spec), replacing ALL pg_cron registrations:
+events DLQ/reaper/alert, tenant-logs prune, system-logs prune, IAM prune,
+and the three task-queue jobs (stuck-task reaper, partition-create, retention).
 
 Architecture contract
 ---------------------
@@ -77,6 +78,9 @@ JOB_EVENTS_PENDING_ALERT = "events_pending_alert"
 JOB_TENANT_LOGS_PRUNE = "tenant_logs_prune"
 JOB_SYSTEM_LOGS_PRUNE = "system_logs_prune"
 JOB_IAM_PRUNE = "iam_prune"
+JOB_TASK_REAPER = "task_reaper"
+JOB_TASK_PARTITION_CREATE = "task_partition_create"
+JOB_TASK_RETENTION = "task_retention"
 
 # pg_cron job names this supervisor supersedes. On a non-fresh deploy these may
 # already be scheduled in cron.job from a prior boot; we unschedule them once so
@@ -88,8 +92,13 @@ _SUPERSEDED_CRON_JOBS = (
     "events_events_reaper",
     "monthly_cleanup_system_logs",
     "prune_expired_iam",
+    # Tasks pg_cron jobs (format: {policy}_{schema}_{table} / partcreate_{schema}_{table})
+    "prune_tasks_tasks",
+    "partcreate_tasks_tasks",
 )
 _SUPERSEDED_TENANT_LOG_PREFIX = "monthly_cleanup_logs_"
+# Task reaper jobs use the format "dynastore-task-reaper-{schema}"; match by prefix
+_SUPERSEDED_TASK_REAPER_PREFIX = "dynastore-task-reaper-"
 
 # Cadences (seconds)
 _CADENCE_DLQ_PRUNE = 86400        # daily
@@ -98,6 +107,9 @@ _CADENCE_PENDING_ALERT = 86400    # daily
 _CADENCE_TENANT_LOGS = 2592000    # monthly (30 days)
 _CADENCE_SYSTEM_LOGS = 2592000    # monthly (30 days)
 _CADENCE_IAM_PRUNE = 86400        # daily
+_CADENCE_TASK_REAPER = 60         # every minute (matches old "* * * * *")
+_CADENCE_TASK_PARTITION_CREATE = 86400   # daily (idempotent CREATE IF NOT EXISTS)
+_CADENCE_TASK_RETENTION = 86400   # daily (idempotent DROP old partitions)
 
 # Bounded-batch DELETE size — no single DELETE removes more than this many rows.
 _PRUNE_BATCH = 1000
@@ -114,6 +126,9 @@ _EVENTS_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
 
 # IAM schema — always "iam"
 _IAM_SCHEMA = "iam"
+
+# Tasks schema — mirrors tasks_module.get_task_schema()
+_TASKS_SCHEMA = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +365,59 @@ async def _run_iam_prune(conn: Any) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Task maintenance jobs
+# ---------------------------------------------------------------------------
+
+
+async def _run_task_reaper(conn: Any, hard_cap: int) -> int:
+    """Invoke ``{schema}.reap_stuck_tasks(3, hard_cap)`` via SQL.
+
+    The function body is provisioned by ``ensure_task_storage_exists`` on
+    every boot (CREATE OR REPLACE); we only drive it here.  Uses
+    p_max_retries=3 to match the old pg_cron command arg.
+    """
+    schema = _TASKS_SCHEMA
+    result = await DQLQuery(
+        f'SELECT "{schema}".reap_stuck_tasks(3, :hard_cap)',
+        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
+    ).execute(conn, hard_cap=hard_cap)
+    return int(result) if result is not None else 0
+
+
+async def _run_task_partition_create(conn: Any) -> int:
+    """Invoke the partition-creation function for the tasks table.
+
+    The function ``{schema}.create_partitions_{schema}_tasks()`` is
+    provisioned by ``ensure_task_storage_exists``; we call it here so
+    future monthly partitions are always created ahead of time.
+    Returns 0 (the function returns void).
+    """
+    schema = _TASKS_SCHEMA
+    func_name = f"create_partitions_{schema}_tasks"
+    await DQLQuery(
+        f'SELECT "{schema}"."{func_name}"()',
+        result_handler=ResultHandler.NONE,
+    ).execute(conn)
+    return 0
+
+
+async def _run_task_retention(conn: Any) -> int:
+    """Invoke the partition-retention function for the tasks table.
+
+    The function ``{schema}.maintain_partitions_{schema}_tasks()`` is
+    provisioned by ``ensure_task_storage_exists``; it drops monthly
+    partitions older than 1 month.  Returns 0 (function returns void).
+    """
+    schema = _TASKS_SCHEMA
+    func_name = f"maintain_partitions_{schema}_tasks"
+    await DQLQuery(
+        f'SELECT "{schema}"."{func_name}"()',
+        result_handler=ResultHandler.NONE,
+    ).execute(conn)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Job dispatch table
 # ---------------------------------------------------------------------------
 
@@ -378,6 +446,12 @@ async def _dispatch_job(job_name: str, conn: Any, config: dict[str, Any]) -> int
         return await _run_system_logs_prune(conn)
     if job_name == JOB_IAM_PRUNE:
         return await _run_iam_prune(conn)
+    if job_name == JOB_TASK_REAPER:
+        return await _run_task_reaper(conn, config["hard_cap"])
+    if job_name == JOB_TASK_PARTITION_CREATE:
+        return await _run_task_partition_create(conn)
+    if job_name == JOB_TASK_RETENTION:
+        return await _run_task_retention(conn)
     raise ValueError(f"maintenance_supervisor: unknown job_name {job_name!r}")
 
 
@@ -589,18 +663,21 @@ async def unschedule_superseded_cron_jobs(engine: Any) -> int:
             return 0
         rows = await DQLQuery(
             "SELECT cron.unschedule(jobid) FROM cron.job "
-            "WHERE jobname = ANY(:names) OR jobname LIKE :tenant_prefix",
+            "WHERE jobname = ANY(:names) "
+            "   OR jobname LIKE :tenant_prefix "
+            "   OR jobname LIKE :task_reaper_prefix",
             result_handler=ResultHandler.ROWCOUNT,
         ).execute(
             conn,
             names=list(_SUPERSEDED_CRON_JOBS),
             tenant_prefix=f"{_SUPERSEDED_TENANT_LOG_PREFIX}%",
+            task_reaper_prefix=f"{_SUPERSEDED_TASK_REAPER_PREFIX}%",
         )
     count = rows or 0
     if count:
         logger.info(
             "maintenance_supervisor: unscheduled %d superseded pg_cron job(s) "
-            "(events/logs/IAM now driven by the supervisor).",
+            "(events/logs/IAM/tasks now driven by the supervisor).",
             count,
         )
     return count
@@ -620,6 +697,9 @@ async def register_supervisor_jobs(engine: Any) -> None:
         (JOB_TENANT_LOGS_PRUNE, _CADENCE_TENANT_LOGS),
         (JOB_SYSTEM_LOGS_PRUNE, _CADENCE_SYSTEM_LOGS),
         (JOB_IAM_PRUNE, _CADENCE_IAM_PRUNE),
+        (JOB_TASK_REAPER, _CADENCE_TASK_REAPER),
+        (JOB_TASK_PARTITION_CREATE, _CADENCE_TASK_PARTITION_CREATE),
+        (JOB_TASK_RETENTION, _CADENCE_TASK_RETENTION),
     ]
     async with managed_transaction(engine) as conn:
         for job_name, cadence in jobs:
@@ -633,14 +713,23 @@ async def register_supervisor_jobs(engine: Any) -> None:
 def build_supervisor_config() -> dict[str, Any]:
     """Read config values needed by the supervisor from the same sources the old cron code used.
 
-    Mirrors events_module.PostgresEventsDriver.accumulation_policy and the
-    EVENT_PROCESSING_TIMEOUT_MINUTES env var — exact same sources, no drift.
+    Mirrors events_module.PostgresEventsDriver.accumulation_policy, the
+    EVENT_PROCESSING_TIMEOUT_MINUTES env var, and tasks_module.get_hard_retry_cap()
+    — exact same sources, no drift.
     """
     dead_letter_days = int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30"))
     timeout_minutes = int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15"))
     max_retries = 3  # mirrors events_module._MAX_RETRIES
+    # Import lazily to avoid circular import; tasks_module priority=15 starts before
+    # CatalogModule (priority=20) which hosts the supervisor.
+    try:
+        from dynastore.modules.tasks.tasks_module import get_hard_retry_cap
+        hard_cap = get_hard_retry_cap()
+    except Exception:
+        hard_cap = 5  # mirrors tasks_module._HARD_RETRY_CAP default
     return {
         "dead_letter_days": dead_letter_days,
         "timeout_minutes": timeout_minutes,
         "max_retries": max_retries,
+        "hard_cap": hard_cap,
     }
