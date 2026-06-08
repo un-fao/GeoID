@@ -5,7 +5,7 @@
 // strings are rendered via textContent / createElement — never innerHTML —
 // since logs and task names carry untrusted text.
 
-import { mountContextBar } from "../common/context-bar.js";
+import { mountContextBar } from "../static/common/context-bar.js";
 
 const app = {
     state: {
@@ -120,11 +120,11 @@ const app = {
 
     async loadOverview() {
         try {
-            const collectionId = this.state.collectionId;
-            // Relative URLs resolve against /web/dashboard/catalogs/{cat}/.
-            const url = collectionId
-                ? `collections/${encodeURIComponent(collectionId)}/stats`
-                : 'stats';
+            const { catalogId, collectionId } = this.state;
+            // Scope comes from the context-bar picker, not the page URL. Build an
+            // absolute, proxy-prefix-aware URL to the picked catalog's stats so the
+            // result does not depend on where the shell HTML is served from.
+            const url = this._statsUrl(catalogId, collectionId);
 
             const res = await fetch(url);
             const data = await res.json();
@@ -176,13 +176,37 @@ const app = {
         }
     },
 
-    // Build a proxy-prefix-aware absolute URL to the canonical logs API.
-    // The dashboard is served at {prefix}/web/dashboard/catalogs/{cat}/.
-    // Strip everything from '/web/' onward to get the proxy prefix.
-    _logsUrl(catalogId, collectionId) {
+    // Proxy prefix for absolute API URLs: everything before '/web/' in this
+    // page's path (e.g. '/geospatial/dev/api/catalog'). Empty at the bare root.
+    _apiPrefix() {
         const p = window.location.pathname;
         const webIdx = p.indexOf('/web/');
-        const prefix = webIdx >= 0 ? p.substring(0, webIdx) : '';
+        return webIdx >= 0 ? p.substring(0, webIdx) : '';
+    },
+
+    // Stats endpoint scoped to the picked catalog (and collection, if any).
+    // With no catalog selected, fall back to the platform-tier summary.
+    _statsUrl(catalogId, collectionId) {
+        const prefix = this._apiPrefix();
+        if (!catalogId) { return `${prefix}/web/dashboard/stats`; }
+        const base = `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}`;
+        return collectionId
+            ? `${base}/collections/${encodeURIComponent(collectionId)}/stats`
+            : `${base}/stats`;
+    },
+
+    // Tasks endpoint scoped to the picked catalog; platform-tier when unset.
+    _tasksUrl(catalogId) {
+        const prefix = this._apiPrefix();
+        return catalogId
+            ? `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}/tasks`
+            : `${prefix}/web/dashboard/tasks`;
+    },
+
+    // Proxy-prefix-aware absolute URL to the canonical logs API, scoped to the
+    // picked catalog/collection.
+    _logsUrl(catalogId, collectionId) {
+        const prefix = this._apiPrefix();
         if (collectionId) {
             return `${prefix}/logs/catalogs/${encodeURIComponent(catalogId)}/collections/${encodeURIComponent(collectionId)}/logs?limit=20`;
         }
@@ -281,7 +305,7 @@ const app = {
 
     async loadTasks() {
         try {
-            const res = await fetch('tasks');
+            const res = await fetch(this._tasksUrl(this.state.catalogId));
             const tasks = await res.json();
             this.state._allTasks = Array.isArray(tasks) ? tasks : [];
             this._renderTasks(this.state._allTasks);

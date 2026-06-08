@@ -144,9 +144,10 @@
 
     <div class="footnote">
       <strong>Per-catalog dashboard.</strong> Stats, logs and tasks are
-      scoped to the catalog in the page URL
-      (<code>/web/dashboard/catalogs/{catalog_id}/</code>). The picker
-      above narrows further to a single collection when one is selected.
+      scoped to the catalog selected in the picker above; pick a
+      collection to narrow further. The shell is served at
+      <code>/web/dashboard/</code> and resolves scope from the picker,
+      not from the page URL.
     </div>
   </main>
 
