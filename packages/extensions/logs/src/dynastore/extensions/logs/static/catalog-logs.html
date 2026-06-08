@@ -25,6 +25,9 @@
   </header>
 
   <div class="glass-panel p-4 rounded-xl flex flex-wrap gap-3 items-center">
+    <label class="text-xs text-slate-400 uppercase tracking-wider">Catalog</label>
+    <div id="catalog-logs-picker" class="catalog-logs-picker"></div>
+
     <label class="text-xs text-slate-400 uppercase tracking-wider">Event type</label>
     <select id="catalog-logs-event-type"
             class="bg-slate-900 text-white text-sm rounded px-2 py-1 border border-white/10">
@@ -76,6 +79,17 @@
   </article>
 </section>
 
+<style>
+  /* Match the shared context-bar select to this page's dark filter bar. */
+  .catalog-logs-picker { display: inline-flex; gap: 0.5rem; align-items: center; }
+  .catalog-logs-picker select {
+    background: #0f172a; color: #fff; font-size: 0.875rem;
+    border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.25rem;
+    padding: 0.25rem 0.5rem;
+  }
+  .catalog-logs-picker .context-empty-note { color: #94a3b8; font-size: 0.8rem; margin: 0; }
+</style>
+
 <script type="application/json" id="catalog-logs-ctx">
 __CATALOG_LOGS_CTX__
 </script>
@@ -92,7 +106,13 @@ __CATALOG_LOGS_CTX__
     if (panel) panel.classList.toggle("hidden", !present);
   }
 
+  // Catalog chosen via the in-page picker takes precedence over the
+  // ?catalog= query param and the server-injected __CATALOG_ID__, so the
+  // page is usable when reached from the sidebar with neither set (#1919).
+  let pickedCatalog = null;
+
   function getCatalogId() {
+    if (pickedCatalog) return pickedCatalog;
     const params = new URLSearchParams(window.location.search);
     return params.get("catalog") || (window.__catalogId__ || null);
   }
@@ -217,6 +237,31 @@ __CATALOG_LOGS_CTX__
   document.getElementById("catalog-logs-refresh").addEventListener("click", refresh);
   document.getElementById("catalog-logs-event-type").addEventListener("change", refresh);
   document.getElementById("catalog-logs-level").addEventListener("change", refresh);
+
+  // Mount the shared catalog picker so the page is self-service when reached
+  // from the sidebar with no ?catalog= / __CATALOG_ID__. context-bar.js is an
+  // ES module under the web extension's static root; import it by an absolute
+  // "/web/static/..." URL built from apiRoot() so it resolves both at the bare
+  // root and behind a reverse-proxy prefix (#1919).
+  (async function mountPicker() {
+    const host = document.getElementById("catalog-logs-picker");
+    if (!host) return;
+    try {
+      const { mountContextBar } = await import(apiRoot() + "/web/static/common/context-bar.js");
+      mountContextBar(host, {
+        mode: "select",
+        catalogOnly: true,
+        enableSearch: true,
+        initialCatalog: getCatalogId(),
+        onChange: ({ catalogId }) => {
+          pickedCatalog = catalogId || null;
+          refresh();
+        },
+      });
+    } catch (e) {
+      host.textContent = "Catalog picker unavailable.";
+    }
+  })();
 
   refresh();
 })();
