@@ -123,6 +123,17 @@ function mountBarMode(container, { onChange } = {}) {
   fieldset.appendChild(collectionSelect);
   container.appendChild(fieldset);
 
+  // Shown when the catalog list resolves empty (e.g. a platform admin with a
+  // wildcard "*" grant but without sysadmin, who cannot enumerate cross-tenant
+  // catalogs), so the empty Catalog/Collection selects are explained rather
+  // than reading as a broken picker (#1917).
+  const emptyNote = document.createElement("p");
+  emptyNote.className = "context-empty-note";
+  emptyNote.hidden = true;
+  emptyNote.style.cssText = "margin:0.35rem 0 0;font-size:0.8rem;color:#9ca3af;";
+  emptyNote.textContent = "No catalogs available for your account.";
+  container.appendChild(emptyNote);
+
   let scope = loadPersistedScope();
   let catalogs = [];
   const collectionsByCatalog = {};
@@ -201,6 +212,7 @@ function mountBarMode(container, { onChange } = {}) {
     } catch {
       catalogs = [];
     }
+    emptyNote.hidden = catalogs.length > 0;
     if (scope.kind !== "platform" && !scope.catalogId && catalogs.length) {
       scope.catalogId = catalogs[0].id;
     }
@@ -263,6 +275,18 @@ function mountSelectMode(container, {
     wrapper.appendChild(collectionSelect);
   }
 
+  // Shown when the catalog list resolves empty, so the deny-by-default
+  // behaviour is legible instead of reading as "the picker is broken".
+  // A platform admin with a wildcard "*" grant but without sysadmin cannot
+  // enumerate cross-tenant catalogs, so the dropdown would otherwise render
+  // with no options and no explanation (#1917).
+  const emptyNote = document.createElement("p");
+  emptyNote.className = "context-empty-note";
+  emptyNote.hidden = true;
+  emptyNote.style.cssText = "margin:0.35rem 0 0;font-size:0.8rem;color:#9ca3af;";
+  emptyNote.textContent = "No catalogs available for your account.";
+  wrapper.appendChild(emptyNote);
+
   container.appendChild(wrapper);
 
   let currentCatalog = initialCatalog;
@@ -299,6 +323,7 @@ function mountSelectMode(container, {
 
   async function populateCatalogSelect(catalogs) {
     allCatalogItems = catalogs;
+    emptyNote.hidden = (catalogs || []).length > 0;
     applySearchFilter(searchInput ? searchInput.value : "");
   }
 
