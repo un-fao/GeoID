@@ -39,10 +39,7 @@ from dynastore.models.shared_models import (
 )
 from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.catalog.lifecycle_manager import lifecycle_registry
-from dynastore.modules.db_config.maintenance_tools import (
-    ensure_schema_exists,
-    register_cron_job,
-)
+from dynastore.modules.db_config.maintenance_tools import ensure_schema_exists
 from dynastore.modules.db_config.locking_tools import (
     check_table_exists,
     safe_drop_relation,
@@ -105,30 +102,6 @@ CREATE TABLE IF NOT EXISTS {SYSTEM_SCHEMA}.{SYSTEM_LOGS_TABLE} (
 SYSTEM_LOGS_DL_DDL = None
 
 
-def _build_system_log_cron_jobs() -> list[tuple[str, str, str]]:
-    """pg_cron jobs for system-level logs: simple DELETE-based retention (no dead letter)."""
-    s = SYSTEM_SCHEMA
-    t = SYSTEM_LOGS_TABLE
-    return [
-        (
-            "monthly_cleanup_system_logs",
-            "30 3 1 * *",  # 1st of month 03:30
-            f'DELETE FROM "{s}"."{t}" WHERE "timestamp" < NOW() - INTERVAL \'1 year\';',
-        ),
-    ]
-
-
-def _build_tenant_log_cron_jobs(schema: str) -> list[tuple[str, str, str]]:
-    """pg_cron jobs for per-tenant logs: simple DELETE-based retention (no dead letter)."""
-    s = schema
-    return [
-        (
-            f"monthly_cleanup_logs_{s}",
-            "30 3 1 * *",  # 1st of month 03:30
-            f'DELETE FROM "{s}".logs WHERE "timestamp" < NOW() - INTERVAL \'1 year\';',
-        ),
-    ]
-
 
 @lifecycle_registry.sync_catalog_initializer(priority=50)
 async def _initialize_logs_tenant_slice(conn: DbResource, schema: str, catalog_id: str):
@@ -147,11 +120,7 @@ async def _initialize_logs_tenant_slice(conn: DbResource, schema: str, catalog_i
         check_query=_check_all_logs_tables_exist,
     ).execute(conn, schema=schema)
 
-    # --- pg_cron maintenance jobs ---
-    for job_name, schedule, command in _build_tenant_log_cron_jobs(schema):
-        await register_cron_job(
-            conn, job_name=job_name, schedule=schedule, command=command
-        )
+    # Retention is handled by the maintenance supervisor (job: tenant_logs_prune).
 
 
 async def initialize_system_logs(conn: DbResource):
@@ -160,14 +129,7 @@ async def initialize_system_logs(conn: DbResource):
     await ensure_schema_exists(conn, SYSTEM_SCHEMA)
 
     await DDLQuery(SYSTEM_LOGS_DDL).execute(conn)
-
-    # System logs have no dead-letter table; old rows are pruned directly via pg_cron.
-
-    # --- pg_cron maintenance jobs ---
-    for job_name, schedule, command in _build_system_log_cron_jobs():
-        await register_cron_job(
-            conn, job_name=job_name, schedule=schedule, command=command
-        )
+    # System logs retention is handled by the maintenance supervisor (job: system_logs_prune).
 
 
 # ==============================================================================

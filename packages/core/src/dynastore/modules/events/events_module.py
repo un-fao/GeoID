@@ -243,79 +243,6 @@ _ack_query = DQLQuery(
     result_handler=ResultHandler.NONE,
 )
 
-# ---------------------------------------------------------------------------
-# pg_cron job helpers (retention + reaper)
-# ---------------------------------------------------------------------------
-
-_RETENTION_JOB_NAME = f"events_{_EVENTS_SCHEMA}_retention"
-_PENDING_ALERT_JOB_NAME = f"events_{_EVENTS_SCHEMA}_pending_alert"
-_REAPER_JOB_NAME = f"events_{_EVENTS_SCHEMA}_reaper"
-
-
-def _cron_block(job_name: str, schedule: str, command: str) -> str:
-    """Idempotent pg_cron re-registration snippet.
-
-    pg_cron's `cron.schedule` treats the command as opaque text; we embed it
-    inside a dollar-quoted literal so inner single-quotes pass through safely.
-    """
-    return f"""
-    DO $SAFE$
-    BEGIN
-        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{job_name}') THEN
-            PERFORM cron.unschedule('{job_name}');
-        END IF;
-    END $SAFE$;
-    SELECT cron.schedule('{job_name}', '{schedule}', $CMD$ {command} $CMD$);
-    """
-
-
-async def _register_events_retention(conn: Any, dead_letter_days: int) -> None:
-    """Register DLQ pruning and PENDING-age alert cron jobs."""
-    prune_cmd = (
-        f"DELETE FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'DEAD_LETTER' "
-        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days'"
-    )
-    alert_cmd = (
-        "DO $ALERT$ DECLARE r RECORD; BEGIN "
-        f"FOR r IN SELECT shard, count(*) AS n, "
-        f"EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec "
-        f"FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'PENDING' "
-        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days' "
-        f"GROUP BY shard LOOP "
-        f"RAISE WARNING 'events.pending_stale shard=% count=% oldest_age_sec=%', "
-        f"r.shard, r.n, r.oldest_age_sec; "
-        "END LOOP; END $ALERT$"
-    )
-    await DDLQuery(
-        _cron_block(_RETENTION_JOB_NAME, "0 3 * * *", prune_cmd)
-        + _cron_block(_PENDING_ALERT_JOB_NAME, "15 3 * * *", alert_cmd)
-    ).execute(conn)
-
-
-async def _register_events_reaper(
-    conn: Any, timeout_minutes: int, max_retries: int
-) -> None:
-    """Register stuck-PROCESSING reaper (every 5 minutes)."""
-    reaper_cmd = (
-        f"WITH expired AS ("
-        f"SELECT shard, event_id, retry_count FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'PROCESSING' "
-        f"AND processed_at < NOW() - INTERVAL '{timeout_minutes} minutes' "
-        f"FOR UPDATE SKIP LOCKED"
-        f") "
-        f"UPDATE {_EVENTS_SCHEMA}.events e "
-        f"SET status = CASE WHEN expired.retry_count + 1 >= {max_retries} "
-        f"THEN 'DEAD_LETTER' ELSE 'PENDING' END, "
-        f"retry_count = expired.retry_count + 1, "
-        f"error_message = 'reaped stale PROCESSING' "
-        f"FROM expired "
-        f"WHERE e.shard = expired.shard AND e.event_id = expired.event_id"
-    )
-    await DDLQuery(
-        _cron_block(_REAPER_JOB_NAME, "*/5 * * * *", reaper_cmd)
-    ).execute(conn)
 
 
 _backlog_query = DQLQuery(
@@ -499,47 +426,6 @@ class EventsModule(ModuleProtocol):
             max_retries=_MAX_RETRIES,
         )
 
-    async def _register_cron_maintenance(self) -> None:
-        """Register pg_cron-backed retention + reaper jobs (best-effort).
-
-        pg_cron is an optional, superuser-installed extension and may be absent
-        (a fresh database, a restricted/managed instance, or any deployment
-        without it). Retention/reaper are best-effort maintenance, NOT a hard
-        dependency, so this MUST never abort the foundational EventsModule:
-        when pg_cron is missing — or any cron-registration call fails — we log
-        a WARNING and continue so the service still boots. Runs in its own
-        transaction, isolated from the critical shard-partition DDL.
-        """
-        from dynastore.modules.db_config.locking_tools import check_extension_exists
-
-        try:
-            async with managed_transaction(self._engine) as conn:
-                if not await check_extension_exists(conn, "pg_cron"):
-                    logger.warning(
-                        "EventsModule: pg_cron extension not installed — skipping "
-                        "events retention/reaper scheduling. Automatic DLQ pruning "
-                        "and the stuck-PROCESSING reaper are disabled until pg_cron "
-                        "is available; run maintenance out-of-band if needed."
-                    )
-                    return
-                policy = self.accumulation_policy
-                await _register_events_retention(conn, policy.dead_letter_days)
-                await _register_events_reaper(
-                    conn,
-                    timeout_minutes=int(
-                        os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15")
-                    ),
-                    max_retries=policy.max_retries,
-                )
-                logger.info(
-                    "EventsModule: pg_cron retention + reaper jobs registered."
-                )
-        except Exception:
-            logger.warning(
-                "EventsModule: failed to register pg_cron maintenance jobs "
-                "(best-effort) — continuing startup without them.",
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -591,10 +477,6 @@ class EventsModule(ModuleProtocol):
             ).execute(conn)
 
         logger.info("EventsModule: Global events shard partitions configured.")
-
-        # pg_cron retention/reaper jobs are best-effort maintenance, registered
-        # in their own transaction and never allowed to abort startup.
-        await self._register_cron_maintenance()
 
         # 2. Create webhook subscriptions table
         async with managed_transaction(self._engine) as conn:

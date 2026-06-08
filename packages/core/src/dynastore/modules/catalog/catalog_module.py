@@ -561,13 +561,43 @@ class CatalogModule(ModuleProtocol):
                     exc,
                 )
 
+            # 8. Register maintenance-supervisor job cadences and start the
+            # leader-elected supervisor loop (jobs 4–9: events, logs, IAM).
+            from dynastore.modules.catalog.maintenance_supervisor import (
+                MaintenanceSupervisor,
+                build_supervisor_config,
+                register_supervisor_jobs,
+                unschedule_superseded_cron_jobs,
+            )
+            _supervisor_shutdown = asyncio.Event()
+            _supervisor: Optional[MaintenanceSupervisor] = None
+            try:
+                supervisor_cfg = build_supervisor_config()
+                # Clean-cut safety: drop any pre-existing events/logs/IAM pg_cron
+                # jobs this supervisor now owns so they cannot double-run on a
+                # non-fresh deploy (no-op when pg_cron is absent).
+                await unschedule_superseded_cron_jobs(engine)
+                await register_supervisor_jobs(engine)
+                _supervisor = MaintenanceSupervisor(supervisor_cfg)
+                _supervisor.start(_supervisor_shutdown)
+                logger.info("CatalogModule: maintenance supervisor started.")
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "CatalogModule: maintenance supervisor failed to start: %s — "
+                    "events/logs/IAM pruning will not run automatically.",
+                    exc,
+                )
+
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
                 _reaper_shutdown.set()
+                _supervisor_shutdown.set()
                 if _reaper is not None:
                     await _reaper.stop()
+                if _supervisor is not None:
+                    await _supervisor.stop()
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
                 # Remove the services from the discovery registry so a future

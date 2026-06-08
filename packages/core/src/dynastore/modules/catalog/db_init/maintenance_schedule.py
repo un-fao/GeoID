@@ -105,6 +105,18 @@ _UPSERT_JOB = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
+_RECLAIM_STALE_JOBS = DQLQuery(
+    """
+    UPDATE platform.maintenance_schedule
+    SET running_since = NULL,
+        last_status   = 'error',
+        last_error    = 'reclaimed: running_since stale'
+    WHERE running_since IS NOT NULL
+      AND running_since < :cutoff
+    """,
+    result_handler=ResultHandler.ROWCOUNT,
+)
+
 
 # ---------------------------------------------------------------------------
 # Repository
@@ -158,6 +170,36 @@ class MaintenanceScheduleRepository:
         return await _UPSERT_JOB.execute(
             conn, job_name=job_name, interval_seconds=interval_seconds
         )
+
+    async def reclaim_stale_jobs(
+        self, conn: DbResource, *, now: datetime, stale_after_seconds: int
+    ) -> int:
+        """Clear ``running_since`` for rows whose leader crashed mid-run.
+
+        A row whose ``running_since`` is older than ``now - stale_after_seconds``
+        seconds is assumed to belong to a dead leader.  ``get_due_jobs`` filters
+        ``running_since IS NULL``, so without this reclaim a crashed-mid-run job
+        would be permanently wedged.
+
+        Returns the number of rows reclaimed.
+        """
+        from datetime import timedelta
+
+        cutoff = now - timedelta(seconds=stale_after_seconds)
+        return await _RECLAIM_STALE_JOBS.execute(conn, cutoff=cutoff)
+
+
+# Re-export for tests (mirrors existing pattern for _GET_DUE_JOBS, _MARK_RUNNING etc.)
+__all__ = [
+    "MAINTENANCE_SCHEDULE_DDL",
+    "MaintenanceScheduleRepository",
+    "ensure_maintenance_schedule",
+    "_GET_DUE_JOBS",
+    "_MARK_RUNNING",
+    "_MARK_DONE",
+    "_UPSERT_JOB",
+    "_RECLAIM_STALE_JOBS",
+]
 
 
 async def ensure_maintenance_schedule(conn: DbResource) -> None:
