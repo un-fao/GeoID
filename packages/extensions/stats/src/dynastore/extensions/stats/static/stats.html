@@ -42,7 +42,20 @@
 
 <script>
 (function() {
-  const STATS_API_PREFIX = '__STATS_API_PREFIX__';
+  // Derive the service root from the shell URL: the path segment before
+  // "/web/". This resolves root-absolute API calls correctly both at the
+  // bare root and behind a reverse-proxy prefix (e.g.
+  // /geospatial/dev/api/catalog), independent of whether the ASGI server
+  // was told its root_path. Falls back to the server-substituted root_path
+  // when "/web/" is not in the path.
+  function statsApiRoot() {
+    const p = (typeof window !== 'undefined' && window.location)
+      ? window.location.pathname : '';
+    const i = p.indexOf('/web/');
+    if (i > 0) return p.slice(0, i);
+    return '__STATS_API_PREFIX__';
+  }
+  const STATS_API_PREFIX = statsApiRoot();
   const tkey = (typeof TOKEN_KEY !== 'undefined') ? TOKEN_KEY : 'ds_token';
   const token = (typeof authToken !== 'undefined' && authToken)
     || localStorage.getItem(tkey)
