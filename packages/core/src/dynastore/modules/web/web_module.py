@@ -50,6 +50,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         # Registry for static content providers: { prefix: provider_callable }
         self.static_providers: Dict[str, Callable[[], List[str]]] = {}
 
+        # Metadata for static prefixes (owner, description) indexed by prefix.
+        # Populated alongside static_providers so the registry endpoint can
+        # return human-readable context without re-inspecting the callables.
+        self.static_prefix_meta: Dict[str, Dict[str, str]] = {}
+
         # Documentation registry
         self.docs_registry: Dict[str, Dict[str, Any]] = {}
 
@@ -138,13 +143,24 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             section_config["is_embed"] = True # section targets are always embedded
             self.register_web_page(section_config, provider)
 
-    def register_static_provider(self, prefix: str, provider: Any):
-        """Registers a static file provider."""
+    def register_static_provider(
+        self,
+        prefix: str,
+        provider: Any,
+        owner: str = "",
+        description: str = "",
+    ) -> None:
+        """Registers a static file provider.
+
+        ``owner`` and ``description`` are optional human-readable metadata
+        returned by the ``GET /web/config/static-prefixes`` registry endpoint.
+        """
         if prefix in self.static_providers:
             logger.warning(
                 f"WebModule: Overwriting static provider for prefix '{prefix}'"
             )
         self.static_providers[prefix] = provider
+        self.static_prefix_meta[prefix] = {"owner": owner, "description": description}
         logger.info(f"WebModule: Registered static provider for prefix '{prefix}'")
 
     async def is_static_file_provided(self, prefix: str, path: str) -> bool:
@@ -203,7 +219,10 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             try:
                 for asset in provider.get_static_assets():
                     self.register_static_provider(
-                        asset.prefix.strip("/"), asset.files_provider
+                        asset.prefix.strip("/"),
+                        asset.files_provider,
+                        owner=getattr(asset, "owner", "") or "",
+                        description=getattr(asset, "description", "") or "",
                     )
             except Exception as e:
                 logger.error(
@@ -358,6 +377,47 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             "Vary": "Accept-Encoding",
         }
 
+
+    def list_static_prefix_info(self) -> List[Dict[str, str]]:
+        """Return a list of dicts describing each registered static prefix.
+
+        Each entry contains ``prefix``, ``owner``, and ``description``.
+        Callers may use this to discover available CSS/JS namespaces.
+        """
+        result: List[Dict[str, str]] = []
+        for prefix in sorted(self.static_providers):
+            meta = self.static_prefix_meta.get(prefix, {})
+            result.append(
+                {
+                    "prefix": prefix,
+                    "owner": meta.get("owner", ""),
+                    "description": meta.get("description", ""),
+                }
+            )
+        return result
+
+    def list_page_providers(self, page_id: str) -> List[Dict[str, Any]]:
+        """Return introspection data for every handler registered for *page_id*.
+
+        Each entry contains ``priority`` (int), ``is_embed`` (bool), and
+        ``handler`` (qualified name string).  Returns an empty list when the
+        page id is not known.
+        """
+        entry = self.web_pages.get(page_id)
+        if not entry:
+            return []
+        result: List[Dict[str, Any]] = []
+        for priority, handler, is_embed in entry.get("providers", []):
+            qname = getattr(handler, "__qualname__", None) or repr(handler)
+            mod = getattr(handler, "__module__", None) or ""
+            result.append(
+                {
+                    "priority": priority,
+                    "is_embed": is_embed,
+                    "handler": f"{mod}.{qname}" if mod else qname,
+                }
+            )
+        return result
 
     def get_style_overrides(self) -> List[str]:
         """

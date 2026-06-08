@@ -33,15 +33,27 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def expose_static(virtual_path: str):
+def expose_static(
+    virtual_path: str,
+    owner: str = "",
+    description: str = "",
+):
     """Mark a method as a static-files provider.
 
     The decorated method must return a ``List[str]`` of absolute file
     paths that are allowed to be served under the virtual prefix.
+
+    ``owner`` identifies the extension that contributes this prefix
+    (e.g. ``"web"``, ``"geoid"``).  ``description`` is a short
+    human-readable summary surfaced by the registry endpoint at
+    ``GET /web/config/static-prefixes`` so page authors can discover
+    available CSS/JS namespaces without hardcoding URL paths.
     """
 
     def decorator(func: Callable[..., List[str]]) -> Callable[..., List[str]]:
         setattr(func, "_web_static_prefix", virtual_path)
+        setattr(func, "_web_static_owner", owner)
+        setattr(func, "_web_static_description", description)
         return func
 
     return decorator

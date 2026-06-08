@@ -109,6 +109,7 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/web/pages/governance",
                 "/web/pages/stac-authoring",
                 "/web/pages/ingest",
+                r"^/web/admin/pages/[^/]+/providers$",
             ],
             effect="ALLOW",
         ),
@@ -1245,7 +1246,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         else:
             logger.error("WebService: Cannot register static provider, WebModule not available")
 
-    @expose_static("static")
+    @expose_static(
+        "static",
+        owner="web",
+        description="Core platform CSS, JS, images, and fonts.",
+    )
     def _provide_default_static(self) -> List[str]:
         if not self.static_dir:
             return []
@@ -1255,7 +1260,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("website")
+    @expose_static(
+        "website",
+        owner="web",
+        description="Web shell entry-point (index.html) and its assets.",
+    )
     def _provide_website_static(self) -> List[str]:
         website_dir = os.path.join(os.path.dirname(__file__), "static", "website")
         files = []
@@ -1264,7 +1273,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("dashboard")
+    @expose_static(
+        "dashboard",
+        owner="web",
+        description="Per-catalog dashboard HTML shell and its assets.",
+    )
     def _provide_dashboard_static(self) -> List[str]:
         dashboard_dir = os.path.join(os.path.dirname(__file__), "static", "dashboard")
         files = []
@@ -1273,7 +1286,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("extension-static")
+    @expose_static(
+        "extension-static",
+        owner="web",
+        description="Alias for the 'static' prefix; kept for backward compatibility.",
+    )
     def _provide_extension_static(self) -> List[str]:
         return self._provide_default_static()
 
@@ -1440,6 +1457,61 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             results.sort(key=lambda x: x.get("priority", 0))
             return results
 
+
+        @self.router.get("/config/static-prefixes", response_class=JSONResponse)
+        async def list_static_prefixes():
+            """List every registered static-file prefix with its owner and description.
+
+            Anonymous-accessible (covered by the ``web_public_access`` policy via
+            the ``/web/config/.*`` resource pattern).  Returns a JSON array where
+            each entry has ``prefix``, ``owner``, and ``description`` fields.
+
+            Page authors can call this endpoint instead of hardcoding URL paths such
+            as ``/web/geoid/...`` — the prefix registry tells them which namespaces
+            are available and which extension owns them.
+            """
+            if not self.web_module:
+                return []
+            if hasattr(self.web_module, "list_static_prefix_info"):
+                return self.web_module.list_static_prefix_info()
+            # Fallback for older WebModule without the method
+            return [{"prefix": p, "owner": "", "description": ""} for p in sorted(self.web_module.static_providers)]
+
+        @self.router.get("/admin/pages/{page_id}/providers", response_class=JSONResponse)
+        async def get_page_providers(page_id: str):
+            """Sysadmin endpoint: list every handler registered for a page id.
+
+            Gated by the ``web_sysadmin_access`` policy.  Returns a JSON array
+            where each entry describes one handler:
+
+            - ``priority`` — lower values render first
+            - ``is_embed`` — ``true`` for fragment contributors, ``false`` for
+              the primary page handler
+            - ``handler`` — fully-qualified Python callable name (module.qualname)
+
+            Useful when debugging why an embed did not appear: compare
+            ``is_embed`` + ``priority`` values for all registered providers.
+            """
+            if not self.web_module:
+                raise HTTPException(status_code=500, detail="Web module not available")
+            if hasattr(self.web_module, "list_page_providers"):
+                providers = self.web_module.list_page_providers(page_id)
+            else:
+                entry = self.web_module.web_pages.get(page_id)
+                if not entry:
+                    providers = []
+                else:
+                    providers = [
+                        {
+                            "priority": p,
+                            "is_embed": e,
+                            "handler": getattr(h, "__qualname__", repr(h)),
+                        }
+                        for p, h, e in entry.get("providers", [])
+                    ]
+            if not providers and page_id not in (self.web_module.web_pages or {}):
+                raise HTTPException(status_code=404, detail=f"Page '{page_id}' not registered")
+            return providers
 
         @self.router.get("/pages/{page_id}", response_class=HTMLResponse)
         async def get_web_page_content(

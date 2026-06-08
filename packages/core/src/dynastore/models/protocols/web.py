@@ -47,12 +47,17 @@ class StaticFilesProtocol(Protocol):
 class WebModuleProtocol():
     web_pages: Dict[str, Dict[str, Any]]
     static_providers: Dict[str, Callable[..., Any]]
+    static_prefix_meta: Dict[str, Dict[str, str]]
 
     def register_web_page(
         self, config: Dict[str, Any], provider: Callable[..., Any]
     ): ...
     def register_static_provider(
-        self, prefix: str, provider: Callable[..., Any]
+        self,
+        prefix: str,
+        provider: Callable[..., Any],
+        owner: str = "",
+        description: str = "",
     ): ...
     async def get_web_pages_config(self, language: str = "en") -> List[Dict[str, Any]]: ...
     def get_web_page_content(self, page_id: str, request: Any, language: str = "en") -> Any: ...
@@ -60,4 +65,17 @@ class WebModuleProtocol():
     def get_doc_path(self, doc_id: str) -> Optional[str]: ...
     def generate_etag(self, content_parts: List[bytes]) -> str: ...
     def get_cache_headers(self, max_age: int = 3600) -> Dict[str, str]: ...
+    def list_static_prefix_info(self) -> List[Dict[str, str]]:
+        """Return metadata (prefix, owner, description) for every registered
+        static prefix.  Each entry is a plain dict with keys
+        ``prefix``, ``owner``, and ``description``."""
+        ...
+
+    def list_page_providers(self, page_id: str) -> List[Dict[str, Any]]:
+        """Return introspection data for every handler registered for *page_id*.
+
+        Each entry contains ``priority`` (int), ``is_embed`` (bool), and
+        ``handler`` (qualified name string).
+        """
+        ...
 

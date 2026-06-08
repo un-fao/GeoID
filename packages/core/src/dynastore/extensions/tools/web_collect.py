@@ -73,8 +73,15 @@ def collect_static_assets(instance: object) -> List[StaticAsset]:
         prefix = getattr(method, "_web_static_prefix", None)
         if prefix is None:
             continue
+        owner = getattr(method, "_web_static_owner", "") or ""
+        description = getattr(method, "_web_static_description", "") or ""
         assets.append(
-            StaticAsset(prefix=prefix.strip("/"), files_provider=method)  # type: ignore[arg-type]
+            StaticAsset(
+                prefix=prefix.strip("/"),
+                files_provider=method,  # type: ignore[arg-type]
+                owner=owner,
+                description=description,
+            )
         )
     return assets
 
