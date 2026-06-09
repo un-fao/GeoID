@@ -23,6 +23,33 @@ references in tracked files or commits; no `Co-Authored-By`/AI attribution.
 
 ---
 
+## Implementation status (as built)
+
+Phases 1–5 and 7 are implemented; Phase 6 (STAC/Features retrofit) remains gated on the
+per-extension web sections landing first. Two corrections to the plan were made during
+implementation and are the load-bearing facts for anyone extending this:
+
+1. **Static path resolution.** Pages are served at `/web/pages/{page_id}`. The web
+   extension's own static tree is the `static` prefix (`/web/static/...`); each other
+   extension's static is its own prefix (`/web/{prefix}/...`). Therefore:
+   - A page's HTML references its own JS as `../{prefix}/{file}.js` (e.g.
+     `../records/records_browser.js`) — **not** `../static/{prefix}/...`, which resolves
+     to the web extension's static tree and 404s.
+   - Extension JS imports the shared `common/` modules as `../static/common/...`.
+   - A module inside `common/` imports its siblings as `./{file}.js`.
+   - An adapter that ships in the same extension prefix is imported as `./{adapter}.js`.
+   The earlier draft used `../static/{prefix}/...` for page→JS; that form is incorrect and
+   was corrected here.
+
+2. **Catalog/collection navigation routes.** The shell lists catalogs via
+   `${basePath}/catalogs` and collections via `${basePath}/catalogs/{id}/collections`.
+   Records and EDR already exposed the collection listing but not the catalog listing;
+   Coverages exposed neither. Each service that lacked them now registers a thin
+   `list_catalogs` (and, for Coverages, `list_collections`) delegating to the catalogs
+   service — consistent with how STAC, Features, and MovingFeatures already do it.
+
+---
+
 ## File Structure
 
 | File | Responsibility |
