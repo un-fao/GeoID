@@ -139,7 +139,7 @@ _RESET = DQLQuery(
     result_handler=ResultHandler.ROWCOUNT,
 )
 
-# SQL shared with the pg_cron nightly prune function — see the SSOT
+# SQL shared with the MaintenanceSupervisor IAM prune job — see the SSOT
 # block in `iam_queries.REAP_EXPIRED_USAGE_COUNTERS_SQL`.
 _REAP_EXPIRED = DQLQuery(
     REAP_EXPIRED_USAGE_COUNTERS_SQL,
@@ -147,8 +147,8 @@ _REAP_EXPIRED = DQLQuery(
 )
 
 # Safety-net reaper for orphan lifetime rows whose policy is gone.
-# SSOT lives in `iam_queries.REAP_ORPHAN_USAGE_COUNTERS_SQL` and is the
-# same string the pg_cron prune function interpolates — keep them
+# SSOT lives in `iam_queries.REAP_ORPHAN_USAGE_COUNTERS_SQL` and shares its
+# WHERE clause with the MaintenanceSupervisor IAM prune job — keep them
 # aligned so a future tweak (e.g. archive-instead-of-delete) lands in
 # both places at once.
 _REAP_ORPHANS = DQLQuery(
@@ -305,8 +305,8 @@ class PostgresUsageCounter:
         ``reap_expired`` only, mirroring TTL semantics common to both PG
         and Valkey. Orphan-policy cleanup is PG-specific (Valkey has no
         notion of "policy"), and the canonical site in production is the
-        pg_cron prune function — this method is a local-dev / test
-        affordance using the same SSOT string the cron job interpolates.
+        leader-elected MaintenanceSupervisor IAM prune job — this method is
+        a local-dev / test affordance using the same SSOT WHERE clause.
         """
         async with managed_transaction(self._engine) as db:
             return int(await _REAP_ORPHANS.execute(conn=db, schema=self._schema) or 0)
