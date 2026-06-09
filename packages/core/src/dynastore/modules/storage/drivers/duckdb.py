@@ -73,6 +73,15 @@ _FORMAT_READERS: Dict[str, str] = {
     "ndjson": "read_json_auto",
 }
 
+# GeoParquet format aliases. These read via ``read_parquet`` (not ST_Read) but
+# require an extra WKB→GEOMETRY decode step for the geometry column because
+# ``read_parquet`` returns it as raw BLOB bytes rather than a DuckDB GEOMETRY.
+# Both ``geoparquet`` and the short alias ``gpq`` are accepted.
+_GEOPARQUET_FORMATS: FrozenSet[str] = frozenset({"geoparquet", "gpq"})
+
+# Default geometry column name per the GeoParquet 1.x specification.
+_GEOPARQUET_DEFAULT_GEOM_COL: str = "geometry"
+
 # Vector formats read through the spatial extension's GDAL-backed ``ST_Read``
 # (file-backed collections, #374). These have no native DuckDB table function;
 # ``ST_Read('path')`` returns a relation with a ``geom`` GEOMETRY column. The
@@ -442,15 +451,42 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
     def _is_vector_format(fmt: Optional[str]) -> bool:
         return bool(fmt) and fmt.lower() in _VECTOR_FORMATS
 
+    @staticmethod
+    def _is_geoparquet_format(fmt: Optional[str]) -> bool:
+        return bool(fmt) and fmt.lower() in _GEOPARQUET_FORMATS
+
     @classmethod
-    def _source_expr(cls, fmt: Optional[str], path: str) -> str:
+    def _source_expr(
+        cls,
+        fmt: Optional[str],
+        path: str,
+        geometry_column: Optional[str] = None,
+    ) -> str:
         """Build the DuckDB FROM-source expression for a file path.
 
         Vector formats (gpkg/shp/geojson/…) read through the spatial extension's
-        GDAL-backed ``ST_Read``; tabular formats use their native table function.
+        GDAL-backed ``ST_Read``; GeoParquet reads via ``read_parquet`` with an
+        inline WKB→GEOMETRY decode subquery; tabular formats use their native
+        table function.
+
+        GeoParquet decode pattern::
+
+            (SELECT * REPLACE (ST_GeomFromWKB("<geom>") AS "<geom>")
+             FROM read_parquet('<path>'))
+
+        This is a subquery alias so the rest of ``_read_entities_sync`` sees the
+        column as a real DuckDB GEOMETRY — spatial filtering, ST_AsGeoJSON
+        serialization, and extent computation all work without change.
+        The ``spatial`` extension must be loaded on the connection first.
         """
         if cls._is_vector_format(fmt):
             return f"ST_Read('{path}')"
+        if cls._is_geoparquet_format(fmt):
+            geom = geometry_column or _GEOPARQUET_DEFAULT_GEOM_COL
+            return (
+                f'(SELECT * REPLACE (ST_GeomFromWKB("{geom}") AS "{geom}") '
+                f"FROM read_parquet('{path}'))"
+            )
         return f"{cls._reader_func(fmt or 'parquet')}('{path}')"
 
     @staticmethod
@@ -552,11 +588,23 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
         # rows carry a native fid (not a geoid), so we stamp a deterministic geoid.
         file_backed = bool(loc.asset_id) or bool(loc.id_column)
         with _borrow_conn() as conn:
-            # Vector formats need the spatial extension's ST_Read; ensure it is
-            # loaded on this connection before building the source expression.
-            if self._is_vector_format(loc.format) and "spatial" not in _loaded_extensions:
+            # Vector formats need the spatial extension's ST_Read; GeoParquet
+            # needs it for ST_GeomFromWKB — ensure it is loaded on this
+            # connection before building the source expression. httpfs is also
+            # required for remote (gs://, s3://, https://) GeoParquet paths.
+            needs_spatial = (
+                self._is_vector_format(loc.format)
+                or self._is_geoparquet_format(loc.format)
+            )
+            if needs_spatial and "spatial" not in _loaded_extensions:
                 _try_load_extension_on(conn, "spatial")
-            source = self._source_expr(loc.format, loc.path or "")
+            if self._is_geoparquet_format(loc.format) and "httpfs" not in _loaded_extensions:
+                path_str = loc.path or ""
+                if path_str.startswith(("gs://", "s3://", "http://", "https://")):
+                    _try_load_extension_on(conn, "httpfs")
+
+            geom_col_override = getattr(loc, "geometry_column", None)
+            source = self._source_expr(loc.format, loc.path or "", geom_col_override)
 
             # Detect geometry column
             geo_col: Optional[str] = None
@@ -574,6 +622,19 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                         "duckdb: geometry-column detection failed; proceeding without it",
                         exc_info=True,
                     )
+
+            # GeoParquet guard: the decode subquery wraps the configured geometry
+            # column. If the spatial extension loaded successfully but detection
+            # found no GEOMETRY column, the configured name is absent in the file —
+            # raise early with an actionable message rather than silently returning
+            # rows with a null geometry.
+            if self._is_geoparquet_format(loc.format) and "spatial" in _loaded_extensions and not geo_col:
+                effective_geom = geom_col_override or _GEOPARQUET_DEFAULT_GEOM_COL
+                raise ValueError(
+                    f"DuckDB GeoParquet: geometry column '{effective_geom}' was not found "
+                    f"after WKB decode in '{loc.path}'. "
+                    f"Set geometry_column to the correct column name in the driver config."
+                )
 
             if geo_col:
                 schema_cols = [row[0] for row in conn.execute(

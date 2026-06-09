@@ -1306,6 +1306,20 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
         description="Source column holding the native feature id (fid) used to "
                     "derive a stable geoid. Falls back to a content hash if unset.",
     )
+    # GeoParquet geometry column. Only used when format is ``geoparquet`` or ``gpq``.
+    # The column contains raw WKB bytes that the driver decodes to a DuckDB GEOMETRY
+    # via ST_GeomFromWKB before any spatial operation. Default follows the GeoParquet
+    # convention ("geometry"). Set this only when the file uses a non-standard column
+    # name such as "geom" or "wkb_geometry".
+    geometry_column: Mutable[Optional[str]] = Field(
+        default=None,
+        description=(
+            "Name of the WKB geometry column in GeoParquet files. Defaults to "
+            "\"geometry\" (the GeoParquet 1.x convention). Set only when the "
+            "file uses a non-standard name such as \"geom\". Ignored for all "
+            "other formats."
+        ),
+    )
 
 
 _ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
