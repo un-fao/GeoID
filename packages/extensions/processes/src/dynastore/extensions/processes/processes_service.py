@@ -317,7 +317,6 @@ async def _render_process_list(
         scope_filter = set(_allowed_scopes_for(catalog_id, collection_id))
 
     entries = await build_process_inventory_entries(
-        request,
         catalog_id=catalog_id,
         collection_id=collection_id,
         scope_filter=scope_filter,
