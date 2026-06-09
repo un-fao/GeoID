@@ -28,6 +28,7 @@ import pystac
 from fastapi import HTTPException, Request, status
 from dynastore.modules.elasticsearch.items_projection import strip_reserved_members
 from dynastore.models.protocols import CatalogsProtocol, ConfigsProtocol
+from dynastore.models.protocols.asset_contrib import ResourceRef
 from dynastore.extensions.tools.url import (
     get_parent_url,
     get_root_url,
@@ -423,7 +424,9 @@ async def create_collection(
     temporal_extent = pystac.TemporalExtent(intervals=[temporal_interval_dates])
     extent = pystac.Extent(spatial=spatial_extent, temporal=temporal_extent)
 
-    stac_extensions_to_add = [STAC_LANGUAGE_EXTENSION_URI]
+    # Language (and any future STAC extension) is contributed via the
+    # StacContributor registry after construction; no longer hardcoded here.
+    stac_extensions_to_add: List[str] = []
     # Merge extension URIs declared in config (any-extension support)
     for ext_uri in stac_config.enabled_extensions:
         if ext_uri not in stac_extensions_to_add:
@@ -545,11 +548,20 @@ async def create_collection(
             )
         collection.extra_fields["item_assets"] = merged_item_assets
 
-    # Inject language metadata
-    if "language" in meta_dict:
-        collection.extra_fields["language"] = meta_dict["language"]
-    if "languages" in meta_dict:
-        collection.extra_fields["languages"] = meta_dict["languages"]
+    # Inject the STAC language extension (URI + language/languages) via the
+    # StacContributor registry. LanguageStacContributor reuses the same
+    # inject_stac_language_fields logic stac_localize applied to meta_dict, so
+    # populated collections are unchanged; the URI is now conditional on
+    # available languages (consistent with the catalog/item paths).
+    asset_factory.apply_stac_contributions(
+        collection,
+        ResourceRef(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            lang=lang,
+            extras={"available_languages": set(available_langs or [])},
+        ),
+    )
 
     # Merge localized extra metadata into collection extra fields.
     # This path surfaces STAC extras (cube:dimensions, themes, sci:citation, …)
