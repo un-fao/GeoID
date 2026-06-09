@@ -1,10 +1,10 @@
 // movingfeatures_browser.js — OGC API Moving Features browser.
 // Displays moving features per collection and renders trajectory paths on the map.
 
-import { mountOgcBrowser } from "../common/ogc-browser.js";
-import { makeItemsAdapter } from "../common/ogc-items-adapter.js";
-import { getJSON } from "../common/api.js";
-import { showGeoJSON } from "../common/leaflet-map.js";
+import { mountOgcBrowser } from "../static/common/ogc-browser.js";
+import { makeItemsAdapter } from "../static/common/ogc-items-adapter.js";
+import { getJSON } from "../static/common/api.js";
+import { showGeoJSON } from "../static/common/leaflet-map.js";
 
 // One shared layer reference so each trajectory view replaces the previous one.
 const trajRef = { current: null };
