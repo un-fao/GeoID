@@ -9,6 +9,7 @@
 import {
   fetchSchemas,
   fetchConfigSet,
+  fetchRefs,
   patchConfigSet,
   fetchMe,
 } from "../common/api.js";
@@ -39,7 +40,27 @@ const state = {
   tiers: ["default", "platform"],
   form: null,
   tabs: null,
+  schemaList: null,      // mountSchemaList handle (for setRefs on scope change)
 };
+
+// #1940 — refresh the left-rail multi-instance ref rows for the active scope.
+// The class registry is scope-independent (mounted once); only the {ref_key:
+// class_key} map changes per scope, so we re-push it via the list handle.
+// Degrade-safe: an older backend without /refs leaves the list unchanged.
+async function refreshRefsForScope() {
+  if (!state.schemaList) return;
+  let refMap = {};
+  try {
+    refMap = (await fetchRefs(state.scope)) || {};
+  } catch {
+    return; // endpoint absent / not permitted — keep class-only list
+  }
+  const byClass = {};
+  for (const [refKey, classKey] of Object.entries(refMap)) {
+    (byClass[classKey] = byClass[classKey] || []).push(refKey);
+  }
+  state.schemaList.setRefs(byClass);
+}
 
 function setStatus(msg, cls = "") {
   const s = $("#status");
@@ -60,6 +81,7 @@ async function refreshConfigsForScope() {
   state.explicitSet = flattenComposed(explicit, state.schemas);
   state.tierStack = tierData.stack;
   state.tiers = tierData.tiers;
+  await refreshRefsForScope();
 }
 
 // The merged value of everything BELOW the active scope (what the active
@@ -271,13 +293,21 @@ async function boot() {
     onKnobs: () => updateTabs(),  // re-render the GET curl when knobs change
   });
 
-  mountSchemaList($("#schema-list"), {
+  state.schemaList = mountSchemaList($("#schema-list"), {
     schemas: state.schemas,
     onSelect: async (classKey) => {
       state.selectedClassKey = classKey;
       renderForm();
     },
+    // #1940 — selecting a multi-instance ref resolves the form to its class.
+    // Per-instance edit/diff is the next slice; for now it opens the class.
+    onSelectRef: async (refKey, classKey) => {
+      state.selectedClassKey = classKey;
+      renderForm();
+    },
   });
+  // Seed the ref rows for the initial (platform) scope.
+  await refreshRefsForScope();
 
   mountContextBar($("#context-bar"), {
     onChange: async (scope) => {

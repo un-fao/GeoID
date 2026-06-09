@@ -171,6 +171,29 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
         )
+        # ---- Multi-instance ref discovery (read-only; #1940 / Refs #948) ----
+        # The ``{ref_key: class_key}`` map of rows stored at the scope. Lets
+        # the Configuration Hub surface instance rows authored under a
+        # non-canonical ``ref_key`` (``set_config_by_ref``), which the
+        # class-keyed registry list does not show. Tier-local (no waterfall).
+        self.router.add_api_route(
+            "/refs",
+            self.list_config_refs_platform,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at platform scope",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/refs",
+            self.list_config_refs_catalog,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at catalog scope",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/refs",
+            self.list_config_refs_collection,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at collection scope",
+        )
         # ---- Multi-plugin partial write (RFC 7396 merge-patch) ----
         # Body: ``{plugin_id: payload | null}``.  ``null`` deletes the override.
         # Atomic at the scope level.  Replaces the legacy ``/bulk`` endpoint.
@@ -545,6 +568,28 @@ class ConfigsService(ExtensionProtocol):
             view=view,
         )
         return JSONResponse(content=response.model_dump())
+
+    # --- Multi-instance ref discovery (#1940 / Refs #948) ---
+
+    async def list_config_refs_platform(self) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at platform scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=None, collection_id=None,
+        )
+
+    async def list_config_refs_catalog(self, catalog_id: str) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at a catalog scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=catalog_id, collection_id=None,
+        )
+
+    async def list_config_refs_collection(
+        self, catalog_id: str, collection_id: str,
+    ) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at a collection scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
 
     # --- Discovery Endpoint ---
 
