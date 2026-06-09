@@ -76,7 +76,10 @@ function scopeBadge(scope) {
   return el;
 }
 
-export function mountSchemaList(container, { schemas, onSelect, selected }) {
+export function mountSchemaList(
+  container,
+  { schemas, refs, onSelect, onSelectRef, selected } = {},
+) {
   container.classList.add("schema-list");
   clearNode(container);
 
@@ -90,7 +93,10 @@ export function mountSchemaList(container, { schemas, onSelect, selected }) {
   list.className = "schema-list-items";
   container.appendChild(list);
 
-  const state = { query: "", selected: selected || null };
+  // `refs` (#1940): {class_key: [ref_key, ...]} — extra instance rows whose
+  // ref_key diverges from the canonical class_key (set_config_by_ref). Scope-
+  // dependent, so the host refreshes it via the returned `setRefs` handle.
+  const state = { query: "", selected: selected || null, refs: refs || {} };
 
   const grouped = {};
   for (const [classKey, entry] of Object.entries(schemas || {})) {
@@ -155,6 +161,34 @@ export function mountSchemaList(container, { schemas, onSelect, selected }) {
         });
 
         group.appendChild(item);
+
+        // #1940 — render extra instance rows (ref_key != class_key) nested
+        // under their canonical class entry. Canonical rows (ref_key ==
+        // class_key) are already the `item` above, so they are skipped here.
+        const classRefs = (state.refs[classKey] || [])
+          .filter((refKey) => refKey !== classKey)
+          .sort((a, b) => a.localeCompare(b));
+        for (const refKey of classRefs) {
+          const refItem = document.createElement("button");
+          refItem.type = "button";
+          refItem.className = "schema-list-item schema-list-item-ref";
+          refItem.dataset.classKey = classKey;
+          refItem.dataset.refKey = refKey;
+          if (state.selected === refKey) refItem.classList.add("selected");
+
+          const refTitle = document.createElement("span");
+          refTitle.className = "item-title item-title-ref";
+          refTitle.textContent = refKey;
+          refItem.appendChild(refTitle);
+
+          refItem.addEventListener("click", () => {
+            state.selected = refKey;
+            render();
+            if (typeof onSelectRef === "function") onSelectRef(refKey, classKey);
+          });
+
+          group.appendChild(refItem);
+        }
       }
       list.appendChild(group);
     }
@@ -176,6 +210,12 @@ export function mountSchemaList(container, { schemas, onSelect, selected }) {
   return {
     setSelected: (key) => {
       state.selected = key;
+      render();
+    },
+    // #1940 — host pushes the scope's {class_key: [ref_key,...]} map; the
+    // class registry itself is scope-independent so only refs re-render.
+    setRefs: (refsMap) => {
+      state.refs = refsMap || {};
       render();
     },
   };

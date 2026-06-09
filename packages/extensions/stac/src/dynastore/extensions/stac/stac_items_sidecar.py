@@ -367,16 +367,11 @@ class StacItemsSidecar(SidecarProtocol):
         else:
             data = dict(source)
 
-        from dynastore.tools.discovery import get_protocols
-        from dynastore.extensions.stac.stac_extension_protocol import (
-            StacExtensionProtocol,
-        )
         from dynastore.extensions.stac.metadata_helpers import (
             prune_managed_content_sync,
         )
 
-        providers = get_protocols(StacExtensionProtocol)
-        pruned = prune_managed_content_sync(data, providers)
+        pruned = prune_managed_content_sync(data)
 
         payload: Dict[str, Any] = {
             "geoid": geoid,
