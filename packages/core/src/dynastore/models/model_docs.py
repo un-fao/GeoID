@@ -33,7 +33,7 @@ No dependency on any configs extension module — lives entirely in core.
 from __future__ import annotations
 
 import functools
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional
 
 
 @functools.lru_cache(maxsize=256)
