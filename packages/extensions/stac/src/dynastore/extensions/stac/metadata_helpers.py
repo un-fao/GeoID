@@ -26,64 +26,15 @@ Provides utilities to:
 """
 
 import logging
-from typing import Dict, Any, List, Sequence, Set, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING
 from dynastore.tools.language_utils import (
     resolve_localized_field,
 )
 
 if TYPE_CHECKING:
     import pystac
-    from dynastore.extensions.stac.stac_extension_protocol import StacExtensionProtocol, StacExtensionContext
 
 logger = logging.getLogger(__name__)
-
-
-# Mapping from ``StacPluginConfig.auto_render_extensions`` short names
-# to URI substrings that match a provider's ``get_stac_extensions()``.
-# Used by :func:`filter_providers_by_short_names` to gate which
-# auto-renderers contribute at item-render time.
-_SHORT_NAME_URI_MARKERS = {
-    "proj":   ("/projection/",),
-    "raster": ("/raster/",),
-    "vector": ("/vector/", "vector:"),
-}
-
-
-def filter_providers_by_short_names(
-    providers: List["StacExtensionProtocol"],
-    allowed_short_names: Sequence[str],
-) -> List["StacExtensionProtocol"]:
-    """Filter ``StacExtensionProtocol`` providers by collection-level
-    ``auto_render_extensions``.
-
-    A provider passes if at least one URI it advertises (via
-    ``get_stac_extensions()``) matches a short name in
-    ``allowed_short_names``.  Empty allowed list → no providers pass
-    (passthrough mode: only externally-supplied content surfaces).
-
-    Providers that don't match any known short name (e.g. a custom
-    extension plugin) are kept by default — this gate is strictly for
-    the proj / raster / vector auto-renderers documented today.
-    """
-    if not allowed_short_names:
-        return []
-    allowed_markers: Set[str] = set()
-    for short_name in allowed_short_names:
-        allowed_markers.update(_SHORT_NAME_URI_MARKERS.get(short_name, ()))
-
-    kept: List["StacExtensionProtocol"] = []
-    for p in providers:
-        uris = list(p.get_stac_extensions() or [])
-        # Keep if any URI matches an allowed marker, OR if no URIs
-        # match any *known* marker (custom / unknown extension — out of
-        # this gate's scope).
-        known_uris = [u for u in uris if any(any(m in u for m in markers) for markers in _SHORT_NAME_URI_MARKERS.values())]
-        if not known_uris:
-            kept.append(p)
-            continue
-        if any(any(m in u for m in allowed_markers) for u in uris):
-            kept.append(p)
-    return kept
 
 
 def normalize_i18n_field(value: Any, default_lang: str = "en") -> Dict[str, Any]:
@@ -127,18 +78,16 @@ def normalize_i18n_field(value: Any, default_lang: str = "en") -> Dict[str, Any]
 
 
 def prune_managed_content_sync(
-    item_dict: Dict[str, Any], providers: List["StacExtensionProtocol"]
+    item_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Synchronous version of prune_managed_content for use in sidecars.
-    """
-    # Identify managed assets/extensions
-    managed_keys = set()
-    managed_extensions = set()
 
-    for provider in providers:
-        managed_keys.update(provider.get_managed_asset_keys())
-        managed_extensions.update(provider.get_stac_extensions())
+    No platform-managed assets/extensions exist (the StacExtensionProtocol
+    that produced them was retired), so all external content is preserved.
+    """
+    managed_keys: set = set()
+    managed_extensions: set = set()
 
     # Prune assets
     external_assets = {}
@@ -214,7 +163,7 @@ def prune_managed_content_sync(
     }
 
 
-def prune_stac_managed_properties(properties: Dict[str, Any], providers: List) -> None:
+def prune_stac_managed_properties(properties: Dict[str, Any]) -> None:
     """
     Remove STAC-managed fields from a properties dictionary in-place.
     Used to prevent duplicate storage in generic attributes sidecars.
@@ -231,25 +180,20 @@ def prune_stac_managed_properties(properties: Dict[str, Any], providers: List) -
 
 
 async def prune_managed_content(
-    item_dict: Dict[str, Any], providers: List
+    item_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Extract only external content for storage in sidecar.
 
     Args:
         item_dict: Full STAC Item dictionary
-        providers: List of StacExtensionProtocol implementations
 
     Returns:
         Dict with external_assets, external_extensions, title, description, keywords, extra_fields
     """
-    # Identify managed assets/extensions
-    managed_keys = set()
-    managed_extensions = set()
-
-    for provider in providers:
-        managed_keys.update(provider.get_managed_asset_keys())
-        managed_extensions.update(provider.get_stac_extensions())
+    # No managed assets/extensions — external content passes through.
+    managed_keys: set = set()
+    managed_extensions: set = set()
 
     # Prune assets
     external_assets = {}
@@ -312,24 +256,20 @@ async def prune_managed_content(
 async def merge_stac_metadata(
     item: "pystac.Item",
     external_metadata: Dict[str, Any],
-    providers: List,
-    context: "StacExtensionContext",
+    lang: str,
 ) -> "pystac.Item":
     """
-    Merge external + managed content into STAC Item.
+    Merge external content into STAC Item.
 
     Args:
         item: Base STAC Item
         external_metadata: External metadata from sidecar
-        providers: List of StacExtensionProtocol implementations
-        context: Context for asset generation
+        lang: Active language for localizing per-item fields
 
     Returns:
         Enhanced STAC Item
     """
     import pystac
-
-    lang = context.lang
 
     # 1. Localize per-item metadata
     if external_metadata.get("title"):
@@ -362,21 +302,15 @@ async def merge_stac_metadata(
             )
         external_assets[key] = pystac.Asset.from_dict(localized_asset)
 
-    # 3. Generate managed assets
-    for provider in providers:
-        if provider.can_provide_assets("Item", context):
-            await provider.add_assets_to_item(item, context)
-
-    # 4. Merge: external first, managed can override
+    # 3. Merge external assets onto whatever the item already carries.
     all_assets = {**external_assets, **item.assets}
     item.assets = all_assets
 
-    # 5. Combine extensions
+    # 4. Combine extensions (external + the item's existing declarations).
     all_extensions = list(
         set(
             (external_metadata.get("external_extensions") or [])
             + (item.stac_extensions or [])
-            + [ext for p in providers for ext in p.get_stac_extensions()]
         )
     )
     item.stac_extensions = all_extensions

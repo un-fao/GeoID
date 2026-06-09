@@ -358,11 +358,7 @@ class ItemMetadataSidecar(SidecarProtocol):
         else:
             data = dict(feature)
 
-        from dynastore.tools.discovery import get_protocols
         try:
-            from dynastore.extensions.stac.stac_extension_protocol import (
-                StacExtensionProtocol,
-            )
             from dynastore.extensions.stac.metadata_helpers import (
                 prune_managed_content_sync,
                 prune_stac_managed_properties,
@@ -388,16 +384,14 @@ class ItemMetadataSidecar(SidecarProtocol):
                 ),
             ) from exc
 
-        providers = get_protocols(StacExtensionProtocol)
-
-        pruned = prune_managed_content_sync(data, providers)
+        pruned = prune_managed_content_sync(data)
 
         if isinstance(feature, dict) and "properties" in feature:
-            prune_stac_managed_properties(feature["properties"], providers)
+            prune_stac_managed_properties(feature["properties"])
         else:
             props = getattr(feature, "properties", None)
             if isinstance(props, dict):
-                prune_stac_managed_properties(props, providers)
+                prune_stac_managed_properties(props)
 
         payload = {
             "geoid": geoid,

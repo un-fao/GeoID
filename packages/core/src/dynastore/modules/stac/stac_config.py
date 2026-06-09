@@ -277,12 +277,13 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     # auto-generate at item-render time*.
     enabled_extensions: Mutable[List[str]] = Field(default_factory=list)
 
-    # Item-render gate.  Controls which auto-generators contribute content
-    # at render time (proj/raster/vector blocks from ``StacExtensionProtocol``
-    # providers, plus the collection-level ``proj:epsg``/``proj:wkt2``
-    # injection driven by ``storage_config.target_srid``).
+    # Render gate.  Today the ``proj`` entry gates the collection-level
+    # ``proj:epsg`` / ``proj:wkt2`` injection driven by
+    # ``storage_config.target_srid``.  The proj/raster/vector item-render
+    # auto-generators this once also gated were retired together with the
+    # zero-implementer ``StacExtensionProtocol``; ``raster`` / ``vector``
+    # are still accepted for backward compatibility but are currently inert.
     #
-    # Default keeps current behavior — all three auto-renderers run.
     # Empty list = passthrough mode: stored content (``external_extensions``
     # / ``external_assets`` / ``extra_fields`` from the ``stac_metadata``
     # sidecar) flows verbatim, no auto-generation; navigation / hierarchy

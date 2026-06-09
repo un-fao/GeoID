@@ -48,8 +48,7 @@ from dynastore.models.localization import (
     get_language_object,
 )
 from .stac_models import stac_localize
-from dynastore.tools.discovery import get_protocol, get_protocols
-from .stac_extension_protocol import StacExtensionProtocol, StacExtensionContext
+from dynastore.tools.discovery import get_protocol
 from .metadata_helpers import merge_stac_metadata
 
 logger = logging.getLogger(__name__)
@@ -1075,9 +1074,6 @@ async def create_item_from_feature(
     else:
         feat_asset_id = properties.get("asset_id")
 
-    # Extract geoid similarly
-    feat_geoid = feature.id if hasattr(feature, "id") else properties.get("geoid")
-
     # 4. Extract external_metadata from sidecar columns
     # StacItemsSidecar.map_row_to_feature already handles merging title,
     # description, etc into `feature.properties` but for extensions and assets
@@ -1108,27 +1104,11 @@ async def create_item_from_feature(
     elif "stac_extensions" in _raw_feature_props:
         external_metadata["external_extensions"] = _raw_feature_props["stac_extensions"]
 
-    extension_context = StacExtensionContext(
-        base_url=root_url,
-        catalog_id=catalog_id,
-        collection_id=collection_id,
-        item_id=item.id,
-        geoid=str(feat_geoid) if feat_geoid else "",
-        lang=lang,
-    )
-
-    # 3. Get all STAC extension providers, filtered by the collection's
-    # ``auto_render_extensions`` flag.  Empty list = passthrough; only
-    # externally-supplied content from the stac_metadata sidecar flows
-    # through, no auto-generation runs.
-    from dynastore.extensions.stac.metadata_helpers import filter_providers_by_short_names
-    providers = filter_providers_by_short_names(
-        get_protocols(StacExtensionProtocol),
-        stac_config.auto_render_extensions,
-    )
-
-    # 4. Merge external + managed metadata
-    await merge_stac_metadata(item, external_metadata, providers, extension_context)
+    # Merge external metadata (assets/extensions from the stac_metadata
+    # sidecar) into the item, localizing per-item fields. Managed-asset
+    # auto-generation was retired with StacExtensionProtocol (zero
+    # implementers); only externally-supplied content flows through.
+    await merge_stac_metadata(item, external_metadata, lang)
 
     # 5. Legacy dynamic assets (temporary until all providers migrate to Protocol)
     asset_context = asset_factory.AssetContext(

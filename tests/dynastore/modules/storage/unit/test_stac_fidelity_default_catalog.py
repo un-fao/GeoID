@@ -25,7 +25,7 @@ surviving keys were exactly the non-namespaced ones — the colon in the key nam
 was the bug signature.
 
 Root cause: ``ItemMetadataSidecar.prepare_upsert_payload`` (ordered PRUNE_FIRST)
-calls ``prune_stac_managed_properties(feature["properties"], providers)`` which
+calls ``prune_stac_managed_properties(feature["properties"])`` which
 strips ALL colon-namespaced keys from the live dict IN PLACE.
 ``FeatureAttributeSidecar.prepare_upsert_payload`` (JSONB mode) then reads from
 the already-pruned dict — all extension keys are gone.
