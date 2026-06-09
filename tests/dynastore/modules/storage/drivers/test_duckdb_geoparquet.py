@@ -18,14 +18,26 @@
 
 """Unit and integration tests for GeoParquet format support in the DuckDB driver.
 
-Three test layers:
-1. SQL-generation unit tests — verify ``_source_expr`` emits the correct
-   ST_GeomFromWKB decode subquery without touching DuckDB at all.
-2. Hermetic decode test — creates a tiny GeoParquet fixture using DuckDB's own
-   spatial extension (offline), reads it back through the geoparquet path, and
-   asserts the geometry comes back as a usable GeoJSON point.
-3. Optional live test — fetches the OGC GeoParquet example file over HTTPS;
-   skipped gracefully if the network is unavailable.
+Four test layers:
+
+1. SQL-generation unit tests — verify ``_source_expr`` emits the correct SQL
+   for each stored-type branch (BLOB→ST_GeomFromWKB, GEOMETRY→passthrough,
+   VARCHAR→ST_GeomFromText) without touching DuckDB at all.
+
+2. Hermetic WKB-blob decode test — creates a tiny parquet fixture using
+   ``ST_AsWKB(ST_Point(...))`` (stored as BLOB), reads it back through the
+   geoparquet path, and asserts the geometry comes back as a usable GeoJSON
+   point.  Exercises the BLOB→ST_GeomFromWKB branch.
+
+3. Hermetic native-GeoParquet test — creates a parquet fixture using
+   ``COPY ... (FORMAT PARQUET)`` with a real ST_Point geometry column.
+   DuckDB 1.x + spatial writes it with GeoParquet metadata so ``read_parquet``
+   returns a native GEOMETRY column.  Exercises the GEOMETRY passthrough branch.
+
+4. Live test — fetches the OGC GeoParquet example file over HTTPS;
+   skipped gracefully if the network is unavailable.  Uses
+   ``_probe_geom_col_stored_type`` to determine the correct decode branch at
+   runtime (the OGC file stores GEOMETRY natively in DuckDB 1.x + spatial).
 """
 from __future__ import annotations
 
@@ -77,9 +89,12 @@ def _spatial_available() -> bool:
 # ---------------------------------------------------------------------------
 
 class TestSourceExprGeoparquet:
-    """_source_expr generates the correct SQL for each format."""
+    """_source_expr generates the correct SQL for each format and stored type."""
+
+    # -- BLOB (raw WKB bytes) branch — default, exercises ST_GeomFromWKB -------
 
     def test_geoparquet_format_uses_st_geom_from_wkb(self):
+        """Default geom_col_stored_type='BLOB' emits the WKB decode subquery."""
         D = _driver_cls()
         sql = D._source_expr("geoparquet", "/data/places.parquet")
         assert "ST_GeomFromWKB" in sql
@@ -94,15 +109,107 @@ class TestSourceExprGeoparquet:
         assert "ST_GeomFromWKB" in sql
         assert "read_parquet" in sql
 
-    def test_geoparquet_geometry_column_override(self):
+    def test_geoparquet_geometry_column_override_blob(self):
+        """geometry_column override in BLOB path redirects the decode target."""
         D = _driver_cls()
         sql = D._source_expr("geoparquet", "/data/x.parquet", geometry_column="geom")
         assert '"geom"' in sql
         assert "ST_GeomFromWKB" in sql
-        # Should NOT contain the default "geometry" column name as the decode target
-        # (it may appear in path but not as the column being decoded)
-        # The REPLACE clause should reference "geom"
         assert 'ST_GeomFromWKB("geom")' in sql
+
+    # Keep original test name for back-compat.
+    test_geoparquet_geometry_column_override = test_geoparquet_geometry_column_override_blob
+
+    # -- GEOMETRY (native) branch — passthrough, no decode needed --------------
+
+    def test_geoparquet_geometry_stored_type_passthrough(self):
+        """When stored type is GEOMETRY the expression is a plain read_parquet subquery."""
+        D = _driver_cls()
+        sql = D._source_expr(
+            "geoparquet", "/data/native.parquet", geom_col_stored_type="GEOMETRY"
+        )
+        assert "ST_GeomFromWKB" not in sql
+        assert "ST_GeomFromText" not in sql
+        assert "read_parquet('/data/native.parquet')" in sql
+        # Still a parenthesised subquery.
+        assert sql.startswith("(")
+        assert sql.endswith(")")
+
+    def test_geoparquet_geometry_stored_type_passthrough_with_column_override(self):
+        """Identifier validation still applies in the passthrough path (no decode)."""
+        D = _driver_cls()
+        # Valid override — must not raise.
+        sql = D._source_expr(
+            "geoparquet", "/data/native.parquet",
+            geometry_column="geom",
+            geom_col_stored_type="GEOMETRY",
+        )
+        assert "ST_GeomFromWKB" not in sql
+        assert "read_parquet('/data/native.parquet')" in sql
+
+    # -- VARCHAR (WKT text) branch — ST_GeomFromText ---------------------------
+
+    def test_geoparquet_varchar_stored_type_uses_st_geom_from_text(self):
+        """When stored type is VARCHAR the expression wraps with ST_GeomFromText."""
+        D = _driver_cls()
+        sql = D._source_expr(
+            "geoparquet", "/data/wkt.parquet", geom_col_stored_type="VARCHAR"
+        )
+        assert "ST_GeomFromText" in sql
+        assert "ST_GeomFromWKB" not in sql
+        assert "read_parquet('/data/wkt.parquet')" in sql
+        assert sql.startswith("(")
+        assert sql.endswith(")")
+
+    # -- Security: identifier validation applies across all branches -----------
+
+    @pytest.mark.parametrize(
+        "malicious",
+        [
+            'geometry" AS x, (SELECT 1)) --',  # break out of the quoted identifier
+            "geom; DROP TABLE t",
+            "geom)",
+            'a" "b',
+            "1geom",  # starts with a digit
+            "geom col",  # whitespace
+        ],
+    )
+    def test_geoparquet_geometry_column_rejects_sql_injection(self, malicious):
+        """A non-identifier geometry_column must raise, never reach the SQL string."""
+        D = _driver_cls()
+        with pytest.raises(ValueError):
+            D._source_expr("geoparquet", "/data/x.parquet", geometry_column=malicious)
+
+    @pytest.mark.parametrize(
+        "malicious",
+        [
+            'geometry" AS x, (SELECT 1)) --',
+            "geom; DROP TABLE t",
+            "1geom",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "stored_type", ["BLOB", "GEOMETRY", "VARCHAR"]
+    )
+    def test_injection_rejected_in_all_decode_branches(self, malicious, stored_type):
+        """Identifier validation fires for all geom_col_stored_type branches."""
+        D = _driver_cls()
+        with pytest.raises(ValueError):
+            D._source_expr(
+                "geoparquet", "/data/x.parquet",
+                geometry_column=malicious,
+                geom_col_stored_type=stored_type,
+            )
+
+    def test_empty_geometry_column_falls_back_to_default(self):
+        """An empty geometry_column must use the default 'geometry', not raise."""
+        D = _driver_cls()
+        # None → default "geometry"
+        sql_none = D._source_expr("geoparquet", "/data/x.parquet", geometry_column=None)
+        assert '"geometry"' in sql_none
+        # empty string → also falls back to default via ``or``
+        sql_empty = D._source_expr("geoparquet", "/data/x.parquet", geometry_column="")
+        assert '"geometry"' in sql_empty
 
     def test_geoparquet_decode_subquery_is_parenthesised(self):
         """The returned expression must be a parenthesised subquery for use in FROM."""
@@ -152,7 +259,7 @@ class TestSourceExprGeoparquet:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: Hermetic decode test (requires duckdb + spatial extension)
+# Layer 2: Hermetic WKB-blob decode test (requires duckdb + spatial)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(
@@ -160,15 +267,16 @@ class TestSourceExprGeoparquet:
     reason="duckdb spatial extension not available in this environment",
 )
 class TestGeoparquetHermeticDecode:
-    """End-to-end decode test using a locally generated GeoParquet fixture."""
+    """End-to-end decode test using a locally generated parquet with WKB BLOB geometry.
+
+    This exercises the BLOB → ST_GeomFromWKB branch: the fixture is written
+    using ``ST_AsWKB(ST_Point(...))`` so the stored column type is BLOB, not
+    a native GeoParquet GEOMETRY.
+    """
 
     @pytest.fixture(scope="class")
     def geoparquet_fixture(self, tmp_path_factory) -> Path:
-        """Create a minimal GeoParquet file using DuckDB's spatial extension.
-
-        Uses ``ST_AsWKB(ST_Point(lon, lat))`` to write WKB bytes into the
-        geometry column — exactly what real GeoParquet files contain.
-        """
+        """Create a minimal parquet file with WKB geometry (BLOB column)."""
         import duckdb
 
         fixture_dir = tmp_path_factory.mktemp("geoparquet_fixtures")
@@ -197,7 +305,7 @@ class TestGeoparquetHermeticDecode:
         return fixture_path
 
     def test_raw_parquet_returns_bytes(self, geoparquet_fixture: Path):
-        """Sanity check: plain read_parquet returns the geometry as bytes, not GEOMETRY."""
+        """Sanity check: plain read_parquet returns the WKB geometry as bytes, not GEOMETRY."""
         import duckdb
 
         conn = duckdb.connect(":memory:")
@@ -205,30 +313,42 @@ class TestGeoparquetHermeticDecode:
             f"SELECT geometry FROM read_parquet('{geoparquet_fixture}') LIMIT 1"
         ).fetchone()
         conn.close()
-        # Raw WKB should come back as bytes
+        # Raw WKB should come back as bytes (BLOB)
         assert row is not None
         assert isinstance(row[0], (bytes, bytearray)), (
-            f"Expected bytes from plain read_parquet, got {type(row[0])}"
+            f"Expected bytes from plain read_parquet of WKB fixture, got {type(row[0])}"
         )
 
-    def test_geoparquet_path_decodes_geometry(self, geoparquet_fixture: Path):
-        """Reading via the geoparquet _source_expr yields a decoded GEOMETRY column."""
+    def test_probe_reports_blob_for_wkb_fixture(self, geoparquet_fixture: Path):
+        """_probe_geom_col_stored_type returns 'BLOB' for a WKB-stored fixture."""
         import duckdb
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(geoparquet_fixture))
+        conn = duckdb.connect(":memory:")
+        stored = D._probe_geom_col_stored_type(conn, str(geoparquet_fixture), "geometry")
+        conn.close()
+        assert stored == "BLOB", f"Expected 'BLOB', got {stored!r}"
+
+    def test_geoparquet_path_decodes_geometry(self, geoparquet_fixture: Path):
+        """Reading via the geoparquet _source_expr (BLOB path) yields a GEOMETRY column."""
+        import duckdb
+
+        D = _driver_cls()
+        # BLOB default → ST_GeomFromWKB decode
+        source = D._source_expr(
+            "geoparquet", str(geoparquet_fixture), geom_col_stored_type="BLOB"
+        )
 
         conn = duckdb.connect(":memory:")
         conn.install_extension("spatial")
         conn.load_extension("spatial")
 
-        # The geometry column must now be a GEOMETRY type, not BLOB/bytes.
         schema = conn.execute(
             f"DESCRIBE SELECT * FROM {source} LIMIT 0"
         ).fetchall()
         geom_col_type = {row[0]: row[1] for row in schema}.get("geometry", "")
         assert "GEOMETRY" in str(geom_col_type).upper(), (
-            f"Expected GEOMETRY column after decode, got: {geom_col_type}"
+            f"Expected GEOMETRY column after WKB decode, got: {geom_col_type}"
         )
         conn.close()
 
@@ -237,7 +357,9 @@ class TestGeoparquetHermeticDecode:
         import duckdb
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(geoparquet_fixture))
+        source = D._source_expr(
+            "geoparquet", str(geoparquet_fixture), geom_col_stored_type="BLOB"
+        )
 
         conn = duckdb.connect(":memory:")
         conn.install_extension("spatial")
@@ -258,7 +380,9 @@ class TestGeoparquetHermeticDecode:
         import duckdb
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(geoparquet_fixture))
+        source = D._source_expr(
+            "geoparquet", str(geoparquet_fixture), geom_col_stored_type="BLOB"
+        )
 
         conn = duckdb.connect(":memory:")
         conn.install_extension("spatial")
@@ -295,7 +419,11 @@ class TestGeoparquetHermeticDecode:
         )
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(fixture_path), geometry_column="geom")
+        source = D._source_expr(
+            "geoparquet", str(fixture_path),
+            geometry_column="geom",
+            geom_col_stored_type="BLOB",
+        )
 
         assert '"geom"' in source
         row = conn.execute(
@@ -309,7 +437,175 @@ class TestGeoparquetHermeticDecode:
 
 
 # ---------------------------------------------------------------------------
-# Layer 3: Optional live test — OGC example.parquet from HTTPS
+# Layer 3: Hermetic native-GeoParquet test (GEOMETRY passthrough branch)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not _spatial_available(),
+    reason="duckdb spatial extension not available in this environment",
+)
+class TestGeoparquetHermeticNative:
+    """End-to-end test for parquet files where DuckDB/spatial stores a native GEOMETRY.
+
+    DuckDB 1.x + spatial writes GeoParquet metadata when using
+    ``COPY ... (FORMAT PARQUET)`` with a geometry column produced by spatial
+    functions (e.g. ``ST_Point``).  ``read_parquet`` then decodes the column
+    automatically and returns it as a GEOMETRY, not BLOB.
+
+    This exercises the GEOMETRY passthrough branch: the probe returns
+    ``"GEOMETRY"`` and ``_source_expr`` emits a plain subquery with no
+    ST_GeomFromWKB wrapper.
+    """
+
+    @pytest.fixture(scope="class")
+    def native_geoparquet_fixture(self, tmp_path_factory) -> Path:
+        """Create a parquet file using DuckDB's native spatial GEOMETRY column."""
+        import duckdb
+
+        fixture_dir = tmp_path_factory.mktemp("native_geoparquet_fixtures")
+        fixture_path = fixture_dir / "native_points.parquet"
+
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+        # ST_Point produces a GEOMETRY; COPY writes GeoParquet metadata so
+        # read_parquet automatically returns a native GEOMETRY column.
+        conn.execute(
+            f"""
+            COPY (
+                SELECT
+                    1 AS id,
+                    'Tokyo' AS name,
+                    ST_Point(139.69, 35.68) AS geometry
+                UNION ALL
+                SELECT
+                    2 AS id,
+                    'Nairobi' AS name,
+                    ST_Point(36.82, -1.29) AS geometry
+            ) TO '{fixture_path}' (FORMAT PARQUET)
+            """
+        )
+        conn.close()
+        assert fixture_path.exists(), "Native GeoParquet fixture was not created"
+        return fixture_path
+
+    def test_raw_parquet_returns_geometry_not_bytes(self, native_geoparquet_fixture: Path):
+        """Sanity: plain read_parquet returns GEOMETRY for a native-spatial parquet."""
+        import duckdb
+
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+        schema = conn.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{native_geoparquet_fixture}') LIMIT 0"
+        ).fetchall()
+        col_types = {row[0]: row[1] for row in schema}
+        geom_type = str(col_types.get("geometry", "")).upper()
+        conn.close()
+        assert "GEOMETRY" in geom_type, (
+            f"Expected GEOMETRY type for native parquet, got: {geom_type!r}"
+        )
+
+    def test_probe_reports_geometry_for_native_fixture(self, native_geoparquet_fixture: Path):
+        """_probe_geom_col_stored_type returns 'GEOMETRY' for a native spatial parquet."""
+        import duckdb
+
+        D = _driver_cls()
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+        stored = D._probe_geom_col_stored_type(
+            conn, str(native_geoparquet_fixture), "geometry"
+        )
+        conn.close()
+        assert stored == "GEOMETRY", f"Expected 'GEOMETRY', got {stored!r}"
+
+    def test_passthrough_source_expr_has_no_wkb_wrap(self, native_geoparquet_fixture: Path):
+        """GEOMETRY passthrough branch emits no ST_GeomFromWKB."""
+        D = _driver_cls()
+        source = D._source_expr(
+            "geoparquet", str(native_geoparquet_fixture),
+            geom_col_stored_type="GEOMETRY",
+        )
+        assert "ST_GeomFromWKB" not in source
+        assert "ST_GeomFromText" not in source
+        assert f"read_parquet('{native_geoparquet_fixture}')" in source
+
+    def test_native_geoparquet_st_x_works_via_passthrough(self, native_geoparquet_fixture: Path):
+        """ST_X / ST_Y work after the GEOMETRY passthrough (no decode needed)."""
+        import duckdb
+
+        D = _driver_cls()
+        source = D._source_expr(
+            "geoparquet", str(native_geoparquet_fixture),
+            geom_col_stored_type="GEOMETRY",
+        )
+
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+
+        row = conn.execute(
+            f"SELECT ST_X(geometry), ST_Y(geometry) FROM {source} WHERE id = 1"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None, "No rows returned from native GeoParquet passthrough"
+        lon, lat = row
+        assert abs(lon - 139.69) < 0.01, f"Unexpected longitude: {lon}"
+        assert abs(lat - 35.68) < 0.01, f"Unexpected latitude: {lat}"
+
+    def test_native_geoparquet_geojson_via_passthrough(self, native_geoparquet_fixture: Path):
+        """ST_AsGeoJSON works on the native GEOMETRY column after passthrough."""
+        import duckdb
+
+        D = _driver_cls()
+        source = D._source_expr(
+            "geoparquet", str(native_geoparquet_fixture),
+            geom_col_stored_type="GEOMETRY",
+        )
+
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+
+        row = conn.execute(
+            f"SELECT ST_AsGeoJSON(geometry) FROM {source} WHERE id = 2"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        geom_json = json.loads(row[0])
+        assert geom_json["type"] == "Point"
+        coords = geom_json["coordinates"]
+        assert abs(coords[0] - 36.82) < 0.01
+        assert abs(coords[1] - -1.29) < 0.01
+
+    def test_probe_then_passthrough_round_trip(self, native_geoparquet_fixture: Path):
+        """Probe → source_expr → query: full round-trip for the GEOMETRY branch."""
+        import duckdb
+
+        D = _driver_cls()
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+
+        stored_type = D._probe_geom_col_stored_type(
+            conn, str(native_geoparquet_fixture), "geometry"
+        )
+        assert stored_type == "GEOMETRY"
+
+        source = D._source_expr(
+            "geoparquet", str(native_geoparquet_fixture),
+            geom_col_stored_type=stored_type,
+        )
+        count = conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]
+        conn.close()
+        assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Layer 4: Optional live test — OGC example.parquet from HTTPS
 # ---------------------------------------------------------------------------
 
 _OGC_EXAMPLE_URL = (
@@ -342,6 +638,11 @@ def _fetch_url_to_tmp(url: str) -> Optional[Path]:
 class TestGeoparquetLiveOgcExample:
     """Live test against the OGC reference GeoParquet file.
 
+    The OGC example.parquet is a spec-compliant GeoParquet file: DuckDB 1.x +
+    spatial returns its geometry column as a native GEOMETRY, not BLOB.  These
+    tests use ``_probe_geom_col_stored_type`` to determine the correct decode
+    branch at runtime, then pass the result into ``_source_expr``.
+
     Skipped when the file cannot be downloaded (offline / CI without egress).
     """
 
@@ -352,40 +653,94 @@ class TestGeoparquetLiveOgcExample:
             pytest.skip("OGC GeoParquet example not reachable; skipping live test")
         return path
 
-    def test_live_file_has_features(self, ogc_fixture: Path):
+    def test_probe_returns_geometry_for_ogc_file(self, ogc_fixture: Path):
+        """The OGC file's geometry column probes as GEOMETRY (not BLOB) in DuckDB 1.x."""
         import duckdb
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(ogc_fixture))
+        conn = duckdb.connect(":memory:")
+        stored = D._probe_geom_col_stored_type(conn, str(ogc_fixture), "geometry")
+        conn.close()
+        assert stored == "GEOMETRY", (
+            f"Expected OGC example to probe as GEOMETRY, got {stored!r}. "
+            "If DuckDB version changed the auto-decode behaviour, update this assertion."
+        )
 
+    def test_live_file_has_features(self, ogc_fixture: Path):
+        """The live OGC file returns > 0 features using the probed decode branch."""
+        import duckdb
+
+        D = _driver_cls()
         conn = duckdb.connect(":memory:")
         conn.install_extension("spatial")
         conn.load_extension("spatial")
+
+        stored_type = D._probe_geom_col_stored_type(conn, str(ogc_fixture), "geometry")
+        if stored_type == "UNKNOWN":
+            stored_type = "BLOB"
+        source = D._source_expr("geoparquet", str(ogc_fixture), geom_col_stored_type=stored_type)
 
         count = conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]
         conn.close()
 
         assert count > 0, "OGC example GeoParquet returned 0 features"
 
-    def test_live_file_geometry_is_decodable(self, ogc_fixture: Path):
+    def test_live_file_geometry_is_usable(self, ogc_fixture: Path):
+        """All rows produce a non-null ST_AsGeoJSON via the probed decode branch."""
         import duckdb
 
         D = _driver_cls()
-        source = D._source_expr("geoparquet", str(ogc_fixture))
-
         conn = duckdb.connect(":memory:")
         conn.install_extension("spatial")
         conn.load_extension("spatial")
 
-        # All rows must return a non-null ST_AsGeoJSON
+        stored_type = D._probe_geom_col_stored_type(conn, str(ogc_fixture), "geometry")
+        if stored_type == "UNKNOWN":
+            stored_type = "BLOB"
+        source = D._source_expr("geoparquet", str(ogc_fixture), geom_col_stored_type=stored_type)
+
         null_count = conn.execute(
             f"SELECT COUNT(*) FROM {source} WHERE ST_AsGeoJSON(geometry) IS NULL"
         ).fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]
+
+        # Sample one geometry to verify it's a real Point/Polygon/etc.
+        sample_row = conn.execute(
+            f"SELECT ST_AsGeoJSON(geometry) FROM {source} LIMIT 1"
+        ).fetchone()
         conn.close()
 
         assert null_count == 0, (
-            f"{null_count} rows have null geometry after WKB decode"
+            f"{null_count}/{total} rows have null geometry after decode "
+            f"(stored_type={stored_type!r})"
         )
+        assert sample_row is not None
+        sample_geom = json.loads(sample_row[0])
+        assert "type" in sample_geom, f"Sample geometry is not valid GeoJSON: {sample_geom}"
+
+    def test_live_file_sample_st_x_works(self, ogc_fixture: Path):
+        """ST_X returns a finite coordinate value on a sample geometry."""
+        import duckdb
+        import math
+
+        D = _driver_cls()
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("spatial")
+        conn.load_extension("spatial")
+
+        stored_type = D._probe_geom_col_stored_type(conn, str(ogc_fixture), "geometry")
+        if stored_type == "UNKNOWN":
+            stored_type = "BLOB"
+        source = D._source_expr("geoparquet", str(ogc_fixture), geom_col_stored_type=stored_type)
+
+        # Compute the centroid of each geometry and verify ST_X is finite.
+        row = conn.execute(
+            f"SELECT ST_X(ST_Centroid(geometry)) FROM {source} LIMIT 1"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None and row[0] is not None
+        assert math.isfinite(row[0]), f"ST_X(centroid) is not finite: {row[0]}"
 
     def test_cleanup(self, ogc_fixture: Path):
         """Remove the downloaded fixture after the live tests."""

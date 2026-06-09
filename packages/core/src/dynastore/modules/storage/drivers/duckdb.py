@@ -37,12 +37,31 @@ Connection lifecycle:
   - **Shutdown**: all connections closed in ``lifespan()`` on app shutdown.
   - **Async-safe**: all blocking DuckDB operations are offloaded to the
     thread pool via ``run_in_thread()`` from ``dynastore.modules.concurrency``.
+
+GeoParquet geometry decode:
+  DuckDB 1.x + spatial auto-decodes spec-compliant GeoParquet — the geometry
+  column arrives as a native GEOMETRY type from ``read_parquet``.  Older or
+  manually constructed parquet files that store raw WKB bytes carry a BLOB
+  column; those need an explicit ``ST_GeomFromWKB`` wrap.
+
+  ``_probe_geom_col_stored_type`` queries the stored column type via
+  ``DESCRIBE SELECT * FROM read_parquet(...) LIMIT 0`` at read time, and
+  ``_source_expr`` accepts the result as ``geom_col_stored_type`` to emit the
+  correct decode expression:
+
+  * ``"GEOMETRY"`` → passthrough (no decode needed; already a native GEOMETRY)
+  * ``"BLOB"``     → ``ST_GeomFromWKB("<col>")`` decode (raw WKB bytes)
+  * ``"VARCHAR"``  → ``ST_GeomFromText("<col>")`` decode (WKT text)
+
+  The default for ``geom_col_stored_type`` is ``"BLOB"`` so that existing
+  static SQL-generation unit tests remain valid without a live DuckDB probe.
 """
 
 import hashlib
 import json as _json
 import logging
 import queue
+import re
 import threading
 import uuid
 from contextlib import asynccontextmanager, contextmanager
@@ -81,6 +100,11 @@ _GEOPARQUET_FORMATS: FrozenSet[str] = frozenset({"geoparquet", "gpq"})
 
 # Default geometry column name per the GeoParquet 1.x specification.
 _GEOPARQUET_DEFAULT_GEOM_COL: str = "geometry"
+
+# A geometry column name is interpolated into a DuckDB identifier inside the
+# decode subquery, so it must be a plain SQL identifier — never operator text
+# that could break out of the quoted identifier and inject SQL.
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Vector formats read through the spatial extension's GDAL-backed ``ST_Read``
 # (file-backed collections, #374). These have no native DuckDB table function;
@@ -461,33 +485,110 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
         fmt: Optional[str],
         path: str,
         geometry_column: Optional[str] = None,
+        geom_col_stored_type: str = "BLOB",
     ) -> str:
         """Build the DuckDB FROM-source expression for a file path.
 
         Vector formats (gpkg/shp/geojson/…) read through the spatial extension's
-        GDAL-backed ``ST_Read``; GeoParquet reads via ``read_parquet`` with an
-        inline WKB→GEOMETRY decode subquery; tabular formats use their native
+        GDAL-backed ``ST_Read``; GeoParquet builds a decode subquery whose exact
+        form depends on the stored column type (probed at read time via
+        :meth:`_probe_geom_col_stored_type`); tabular formats use their native
         table function.
 
-        GeoParquet decode pattern::
+        ``geom_col_stored_type`` controls the GeoParquet decode branch:
+
+        * ``"GEOMETRY"`` — DuckDB/spatial already decoded it; pass through
+          as-is.  Expression: plain ``read_parquet`` (no subquery needed).
+        * ``"BLOB"`` (default) — raw WKB bytes; wrap with ``ST_GeomFromWKB``.
+        * ``"VARCHAR"`` — WKT text; wrap with ``ST_GeomFromText``.
+
+        The passthrough subquery for native GEOMETRY::
+
+            (SELECT * FROM read_parquet('<path>'))
+
+        The WKB decode subquery::
 
             (SELECT * REPLACE (ST_GeomFromWKB("<geom>") AS "<geom>")
              FROM read_parquet('<path>'))
 
-        This is a subquery alias so the rest of ``_read_entities_sync`` sees the
-        column as a real DuckDB GEOMETRY — spatial filtering, ST_AsGeoJSON
-        serialization, and extent computation all work without change.
+        Both are parenthesised subqueries so the rest of ``_read_entities_sync``
+        sees the column as a real DuckDB GEOMETRY.
         The ``spatial`` extension must be loaded on the connection first.
+
+        The ``geometry_column`` name is validated as a strict SQL identifier
+        before interpolation to prevent injection in both decode and passthrough
+        branches.
         """
         if cls._is_vector_format(fmt):
             return f"ST_Read('{path}')"
         if cls._is_geoparquet_format(fmt):
             geom = geometry_column or _GEOPARQUET_DEFAULT_GEOM_COL
+            if not _SQL_IDENTIFIER_RE.match(geom):
+                raise ValueError(
+                    f"Invalid geometry_column {geom!r}: must be a plain SQL "
+                    "identifier (letters, digits, underscore; not starting with "
+                    "a digit). The value is interpolated into a DuckDB query."
+                )
+            stored = geom_col_stored_type.upper()
+            if stored == "GEOMETRY":
+                # Already a native GEOMETRY — pass through without wrapping.
+                return f"(SELECT * FROM read_parquet('{path}'))"
+            if stored == "VARCHAR":
+                return (
+                    f'(SELECT * REPLACE (ST_GeomFromText("{geom}") AS "{geom}") '
+                    f"FROM read_parquet('{path}'))"
+                )
+            # Default / "BLOB" — raw WKB bytes need ST_GeomFromWKB.
             return (
                 f'(SELECT * REPLACE (ST_GeomFromWKB("{geom}") AS "{geom}") '
                 f"FROM read_parquet('{path}'))"
             )
         return f"{cls._reader_func(fmt or 'parquet')}('{path}')"
+
+    @staticmethod
+    def _probe_geom_col_stored_type(
+        conn,
+        path: str,
+        geom_col: str,
+    ) -> str:
+        """Probe the stored DuckDB type of *geom_col* in the parquet at *path*.
+
+        Issues ``DESCRIBE SELECT * FROM read_parquet('<path>') LIMIT 0`` on the
+        provided connection and returns the normalised type token for the
+        requested column:
+
+        * ``"GEOMETRY"`` — spatial has already decoded the column (spec-compliant
+          GeoParquet written by DuckDB/GDAL/PyGeoParquet etc.)
+        * ``"BLOB"``     — raw WKB bytes (manually constructed parquet or files
+          written before GeoParquet metadata was embedded)
+        * ``"VARCHAR"``  — WKT text
+        * ``"UNKNOWN"``  — column not found or DESCRIBE failed; caller falls back
+          to the BLOB path (safe default)
+
+        The probe is cheap (``LIMIT 0``) and uses a plain ``read_parquet`` call
+        (no spatial extension required) so it works even before spatial is loaded.
+        """
+        try:
+            rows = conn.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{path}') LIMIT 0"
+            ).fetchall()
+            for col_name, col_type, *_ in rows:
+                if col_name == geom_col:
+                    t = str(col_type).upper()
+                    if "GEOMETRY" in t:
+                        return "GEOMETRY"
+                    if "BLOB" in t or "BINARY" in t or "WKB" in t:
+                        return "BLOB"
+                    if "VARCHAR" in t or "TEXT" in t or "CHAR" in t:
+                        return "VARCHAR"
+                    return t  # return raw type for caller to handle
+        except Exception:
+            logger.debug(
+                "duckdb: geom-type probe failed for '%s' col '%s'; "
+                "defaulting to BLOB path",
+                path, geom_col, exc_info=True,
+            )
+        return "UNKNOWN"
 
     @staticmethod
     def _file_geoid_for_row(
@@ -604,7 +705,22 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                     _try_load_extension_on(conn, "httpfs")
 
             geom_col_override = getattr(loc, "geometry_column", None)
-            source = self._source_expr(loc.format, loc.path or "", geom_col_override)
+            # For GeoParquet, probe the stored column type so we emit the
+            # correct decode expression — DuckDB 1.x + spatial auto-decodes
+            # spec-compliant GeoParquet (GEOMETRY), while manually constructed
+            # files store raw WKB (BLOB). The probe is cheap (LIMIT 0) and does
+            # not require the spatial extension to be loaded first.
+            geom_stored_type = "BLOB"  # safe default
+            if self._is_geoparquet_format(loc.format) and loc.path:
+                effective_geom_col = geom_col_override or _GEOPARQUET_DEFAULT_GEOM_COL
+                geom_stored_type = self._probe_geom_col_stored_type(
+                    conn, loc.path, effective_geom_col
+                )
+                if geom_stored_type == "UNKNOWN":
+                    geom_stored_type = "BLOB"
+            source = self._source_expr(
+                loc.format, loc.path or "", geom_col_override, geom_stored_type
+            )
 
             # Detect geometry column
             geo_col: Optional[str] = None
