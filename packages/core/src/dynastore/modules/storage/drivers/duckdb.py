@@ -341,9 +341,94 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
+            config = await self._resolve_asset_path(config, catalog_id, collection_id)
             return config
         except Exception:
             return None
+
+    @staticmethod
+    def _asset_uri_to_path(uri: Optional[str]) -> Optional[str]:
+        """Normalize a resolved asset storage URI to a DuckDB-readable path.
+
+        ``file://`` is stripped to a local path; ``gs://`` / ``s3://`` /
+        ``http(s)://`` pass through (DuckDB reads them via httpfs/gcs).
+        """
+        if not uri:
+            return None
+        if uri.startswith("file://"):
+            return uri[len("file://"):]
+        return uri
+
+    async def _resolve_asset_path(
+        self,
+        config: Optional[ItemsDuckdbDriverConfig],
+        catalog_id: str,
+        collection_id: Optional[str],
+    ) -> Optional[ItemsDuckdbDriverConfig]:
+        """Bind the driver to a catalog asset (#377).
+
+        When the config carries ``asset_id`` the asset's storage URI is resolved
+        via :class:`AssetsProtocol` and used as the read ``path`` (asset wins over
+        a hand-written ``path``, per the config contract). If the asset or the
+        assets protocol is unavailable, the existing ``path`` is kept as fallback.
+        """
+        if config is None or not getattr(config, "asset_id", None):
+            return config
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.assets import AssetsProtocol
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                return config
+            asset = await assets.get_asset(str(config.asset_id), catalog_id, collection_id)
+            if asset is None:
+                logger.warning(
+                    "ItemsDuckdbDriver: asset_id=%s not found for %s/%s — "
+                    "falling back to configured path",
+                    config.asset_id, catalog_id, collection_id,
+                )
+                return config
+            path = self._asset_uri_to_path(
+                getattr(asset, "uri", None) or getattr(asset, "href", None)
+            )
+            if not path:
+                return config
+            return config.model_copy(update={"path": path})
+        except Exception:
+            logger.warning(
+                "ItemsDuckdbDriver: asset_id resolution failed for %s/%s",
+                catalog_id, collection_id, exc_info=True,
+            )
+            return config
+
+    async def _register_asset_guard(
+        self, asset_id: str, catalog_id: str, collection_id: str,
+    ) -> None:
+        """Register a protective (``cascade_delete=False``) asset reference so the
+        backing file cannot be hard-deleted while a file-backed collection reads
+        from it. Idempotent and best-effort — never raises into the caller."""
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.assets import AssetsProtocol
+            from dynastore.modules.catalog.models import CoreAssetReferenceType
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                return
+            await assets.add_asset_reference(
+                asset_id,
+                catalog_id,
+                CoreAssetReferenceType.COLLECTION,
+                collection_id,
+                cascade_delete=False,
+            )
+        except Exception:
+            logger.warning(
+                "ItemsDuckdbDriver: could not register protective asset reference "
+                "for asset=%s %s/%s — backing file is NOT delete-guarded",
+                asset_id, catalog_id, collection_id, exc_info=True,
+            )
 
     @staticmethod
     def _is_writable(loc: ItemsDuckdbDriverConfig) -> bool:
@@ -1122,6 +1207,14 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                 catalog_id, collection_id,
             )
             return
+
+        # File-backed collections (#377): register a protective reference so the
+        # backing asset cannot be hard-deleted while the collection reads from it.
+        # Idempotent; best-effort (a failure must not block provisioning).
+        if getattr(loc, "asset_id", None) and collection_id:
+            await self._register_asset_guard(
+                str(loc.asset_id), catalog_id, collection_id,
+            )
 
         # Project the materialised field set the storage backend must hold.
         # This is the cross-driver SSOT (#1291, #1295) — the same projection
