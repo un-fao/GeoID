@@ -345,7 +345,9 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 if hasattr(content, "body"):
                     # Duck-type: any response-like object with a .body attribute
                     # (e.g. FastAPI/Starlette Response) — extract the body bytes.
-                    body = content.body
+                    # getattr (not content.body) keeps this framework-free access
+                    # type-clean — content is statically ``object`` here.
+                    body = getattr(content, "body")
                     content_parts.append(body.tobytes().decode() if isinstance(body, memoryview) else body.decode())
                 else:
                     content_parts.append(str(content))
