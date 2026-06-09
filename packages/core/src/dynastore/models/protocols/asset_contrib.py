@@ -51,6 +51,7 @@ class ResourceRef:
     geometry: Optional[dict[str, Any]] = None
     base_url: str = ""
     style: Optional[str] = None
+    lang: Optional[str] = None
     extras: Mapping[str, Any] = field(default_factory=dict)
 
 
