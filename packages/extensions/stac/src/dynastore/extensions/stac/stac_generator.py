@@ -45,7 +45,6 @@ from dynastore.modules.stac.stac_config import (
 from dynastore.tools.language_utils import resolve_localized_field
 from dynastore.extensions.tools.conformance import get_active_conformance
 from dynastore.models.localization import (
-    STAC_LANGUAGE_EXTENSION_URI,
     get_language_object,
 )
 from .stac_models import stac_localize
@@ -60,7 +59,6 @@ from . import stac_db, asset_factory
 SUPPORTED_STAC_EXTENSIONS = [
     "https://stac-extensions.github.io/datacube/v2.3.0/schema.json",
     "https://stac-extensions.github.io/projection/v1.1.0/schema.json",
-    STAC_LANGUAGE_EXTENSION_URI,
 ]
 
 
@@ -121,15 +119,18 @@ async def create_root_catalog(request: Request, lang: str = "en") -> Dict[str, A
 
     # Dynamically inject the current server's conformance list
     root_catalog.extra_fields["conformsTo"] = get_active_conformance().conformsTo
-    root_catalog.stac_extensions.append(STAC_LANGUAGE_EXTENSION_URI)
-
-    # Note: Root catalog metadata is currently static/hardcoded in English.
-    # In a full implementation, this could be localized if stored in DB.
-    # For now, we manually inject the language block for consistency if requested.
-    from dynastore.models.localization import get_language_object
-
-    root_catalog.extra_fields["language"] = get_language_object(lang).model_dump(
-        exclude_none=True
+    # Root catalog metadata is static/hardcoded English. The StacContributor
+    # registry declares the language extension (URI + language field) for it;
+    # passing the active lang as the only available language preserves the
+    # prior single-language output.
+    asset_factory.apply_stac_contributions(
+        root_catalog,
+        ResourceRef(
+            catalog_id="",
+            collection_id="",
+            lang=lang,
+            extras={"available_languages": {lang}},
+        ),
     )
 
     root_catalog.set_self_href(base_url)
@@ -186,16 +187,19 @@ def create_catalog_summary(
         title=meta_dict.get("title") or f"Catalog: {catalog_model.id}",
     )
 
-    # Inject language metadata
-    if (
-        "language" in meta_dict
-        and STAC_LANGUAGE_EXTENSION_URI not in catalog.stac_extensions
-    ):
-        catalog.stac_extensions.append(STAC_LANGUAGE_EXTENSION_URI)
-    if "language" in meta_dict:
-        catalog.extra_fields["language"] = meta_dict["language"]
-    if "languages" in meta_dict:
-        catalog.extra_fields["languages"] = meta_dict["languages"]
+    # The StacContributor registry declares the language extension (URI +
+    # language/languages), reusing the inject_stac_language_fields output
+    # stac_localize already produced — unchanged for populated catalogs; the
+    # URI is now conditional on available languages.
+    asset_factory.apply_stac_contributions(
+        catalog,
+        ResourceRef(
+            catalog_id=catalog_model.id,
+            collection_id="",
+            lang=lang,
+            extras={"available_languages": set(available_langs or [])},
+        ),
+    )
 
     # Merge localized extra metadata into catalog extra fields
     # Use explicit variable to assist debugging if needed
@@ -258,16 +262,19 @@ async def create_catalog(
         title=meta_dict.get("title") or f"Catalog: {catalog_id}",
     )
 
-    # Inject language metadata
-    if (
-        "language" in meta_dict
-        and STAC_LANGUAGE_EXTENSION_URI not in catalog.stac_extensions
-    ):
-        catalog.stac_extensions.append(STAC_LANGUAGE_EXTENSION_URI)
-    if "language" in meta_dict:
-        catalog.extra_fields["language"] = meta_dict["language"]
-    if "languages" in meta_dict:
-        catalog.extra_fields["languages"] = meta_dict["languages"]
+    # The StacContributor registry declares the language extension (URI +
+    # language/languages), reusing the inject_stac_language_fields output
+    # stac_localize already produced — unchanged for populated catalogs; the
+    # URI is now conditional on available languages.
+    asset_factory.apply_stac_contributions(
+        catalog,
+        ResourceRef(
+            catalog_id=catalog_id,
+            collection_id="",
+            lang=lang,
+            extras={"available_languages": set(available_langs or [])},
+        ),
+    )
 
     # Merge localized extra metadata into catalog extra fields
     if "extra_metadata" in meta_dict and isinstance(meta_dict["extra_metadata"], dict):
@@ -987,18 +994,19 @@ async def create_item_from_feature(
         extra_fields=getattr(feature, "extra_fields", {}),
     )
 
-    if available_langs:
-        from .stac_models import inject_stac_language_fields
-
-        item_dict = item.to_dict()
-        inject_stac_language_fields(item_dict, available_langs, lang)
-        item.stac_extensions = item_dict.get("stac_extensions", item.stac_extensions)
-        item.extra_fields.update(
-            {k: v for k, v in item_dict.items() if k in ["language", "languages"]}
-        )
-        logger.debug(
-            f"Injected language extension. available_langs={available_langs}. extensions={item.stac_extensions}"
-        )
+    # The StacContributor registry declares the language extension (URI +
+    # language/languages) for the item, reusing inject_stac_language_fields.
+    # No-ops when no languages are available (mirrors the prior guard).
+    asset_factory.apply_stac_contributions(
+        item,
+        ResourceRef(
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            item_id=item.id,
+            lang=lang,
+            extras={"available_languages": set(available_langs or [])},
+        ),
+    )
 
     # Add hreflang to standard links
     if lang != "*":
