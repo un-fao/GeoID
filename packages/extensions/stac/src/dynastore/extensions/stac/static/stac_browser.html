@@ -3,14 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIP | STAC Browser</title>
+    <title>AIP | STAC Browser {{VERSION}}</title>
 
     <!-- Favicon and Fonts -->
     <link rel="icon" type="image/png" href="../static/dynastore.png">
     <link rel="stylesheet" href="../static/vendor/vendor.css"/>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind play CDN — no versioned SRI available for this build;
+         consistent with docs.html, map.html, features_browser.html in this repo. -->
+    <script src="https://cdn.tailwindcss.com" crossorigin=""></script>
     <!-- Marked.js for rendering description markdown -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" crossorigin=""></script>
+    <!-- Leaflet 1.9.4 (same version as map_viewer) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Shared base styles (read-only reuse) -->
+    <link rel="stylesheet" href="../static/common/admin.css">
 
     <style>
         body {
@@ -65,6 +72,12 @@
             padding: 0.5rem 1rem 0;
             min-height: 1.5rem;
         }
+        .bc-link {
+            cursor: pointer;
+            color: #94a3b8;
+        }
+        .bc-link:hover { color: #60a5fa; }
+
         #items-list {
             flex: 1;
             overflow-y: auto;
@@ -85,6 +98,92 @@
         .item-card .icon { color: #3b82f6; width: 1.25rem; text-align: center; flex-shrink: 0; }
         .item-card .label { font-size: 0.85rem; font-weight: 500; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .item-card .sublabel { font-size: 0.7rem; color: #64748b; }
+
+        /* Create action buttons in sidebar footer */
+        #sidebar-actions {
+            padding: 0.75rem 1rem;
+            border-top: 1px solid rgba(255,255,255,0.07);
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        .btn-action {
+            width: 100%;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(59,130,246,0.35);
+            background: rgba(59,130,246,0.1);
+            color: #93c5fd;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s;
+        }
+        .btn-action:hover { background: rgba(59,130,246,0.2); }
+
+        /* Create forms (initially hidden) */
+        .create-form {
+            padding: 1rem;
+            background: rgba(15,23,42,0.98);
+            border-top: 1px solid rgba(255,255,255,0.07);
+        }
+        .create-form h4 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin: 0 0 0.75rem 0;
+        }
+        .form-group { margin-bottom: 0.6rem; }
+        .form-label {
+            display: block;
+            font-size: 0.7rem;
+            color: #94a3b8;
+            margin-bottom: 0.25rem;
+        }
+        .form-input {
+            width: 100%;
+            padding: 0.4rem 0.6rem;
+            background: rgba(30,41,59,0.7);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 0.35rem;
+            color: #e2e8f0;
+            font-size: 0.82rem;
+            outline: none;
+            box-sizing: border-box;
+        }
+        .form-input:focus { border-color: rgba(59,130,246,0.5); }
+        .form-textarea {
+            resize: vertical;
+            min-height: 4rem;
+        }
+        .form-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+        .btn-submit {
+            flex: 1;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+            border-radius: 0.35rem;
+            border: none;
+            background: #3b82f6;
+            color: white;
+            cursor: pointer;
+        }
+        .btn-submit:hover { background: #2563eb; }
+        .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-cancel {
+            flex: 1;
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+            border-radius: 0.35rem;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: transparent;
+            color: #94a3b8;
+            cursor: pointer;
+        }
+        .btn-cancel:hover { background: rgba(255,255,255,0.05); }
 
         /* Detail pane */
         #detail-pane {
@@ -108,6 +207,7 @@
 
         .loading-spinner { text-align: center; padding: 3rem 1rem; color: #64748b; }
         .error-box { padding: 1rem; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); border-radius: 0.5rem; color: #f87171; font-size: 0.85rem; }
+        .success-box { padding: 0.6rem 0.75rem; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); border-radius: 0.4rem; color: #86efac; font-size: 0.8rem; margin-bottom: 0.5rem; }
         .search-input {
             width: 100%; padding: 0.5rem 0.75rem; background: rgba(30,41,59,0.7);
             border: 1px solid rgba(255,255,255,0.1); border-radius: 0.4rem;
@@ -136,16 +236,74 @@
     </header>
 
     <div class="main-layout">
+        <!-- Sidebar -->
         <div id="sidebar">
             <div id="sidebar-header">
-                <div id="cs-container" style="margin-bottom: 0.5rem;"></div>
-                <input class="search-input" id="search-box" type="text" placeholder="&#xf002;  Filter..." oninput="filterItems(this.value)">
+                <input class="search-input" id="search-box" type="text" placeholder="Filter…">
             </div>
             <div id="breadcrumb"></div>
             <div id="items-list">
-                <div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i><p class="mt-2 text-sm">Loading catalogs...</p></div>
+                <div class="loading-spinner">
+                    <i class="fa-solid fa-circle-notch fa-spin text-xl"></i>
+                    <p class="mt-2 text-sm">Loading catalogs…</p>
+                </div>
             </div>
+
+            <!-- Create-catalog action button (shown at catalog level) -->
+            <div id="sidebar-actions">
+                <button id="btn-create-catalog" class="btn-action" type="button">
+                    + Create catalog
+                </button>
+                <!-- shown only when a catalog is selected -->
+                <button id="btn-create-collection" class="btn-action" type="button" style="display:none;">
+                    + Create collection
+                </button>
+            </div>
+
+            <!-- Create catalog form (hidden until the button above is clicked) -->
+            <form id="form-create-catalog" class="create-form" hidden>
+                <h4 id="lbl-create-catalog">Create catalog</h4>
+                <div class="form-group">
+                    <label class="form-label" for="input-catalog-id" id="lbl-cat-id">ID</label>
+                    <input class="form-input" id="input-catalog-id" type="text" required autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="input-catalog-title" id="lbl-cat-title">Title</label>
+                    <input class="form-input" id="input-catalog-title" type="text" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="input-catalog-description" id="lbl-cat-desc">Description</label>
+                    <textarea class="form-input form-textarea" id="input-catalog-description"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button class="btn-cancel btn-cancel-form" type="button">Cancel</button>
+                    <button class="btn-submit btn-submit-form" id="btn-submit-catalog" type="submit">Create</button>
+                </div>
+            </form>
+
+            <!-- Create collection form (hidden until the button above is clicked) -->
+            <form id="form-create-collection" class="create-form" hidden>
+                <h4 id="lbl-create-collection">Create collection</h4>
+                <div class="form-group">
+                    <label class="form-label" for="input-coll-id" id="lbl-coll-id">ID</label>
+                    <input class="form-input" id="input-coll-id" type="text" required autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="input-coll-title" id="lbl-coll-title">Title</label>
+                    <input class="form-input" id="input-coll-title" type="text" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="input-coll-description" id="lbl-coll-desc">Description</label>
+                    <textarea class="form-input form-textarea" id="input-coll-description"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button class="btn-cancel btn-cancel-form" type="button">Cancel</button>
+                    <button class="btn-submit btn-submit-form" id="btn-submit-coll" type="submit">Create</button>
+                </div>
+            </form>
         </div>
+
+        <!-- Detail pane — item geometry, properties, collection/catalog metadata -->
         <div id="detail-pane">
             <div style="text-align:center; padding:4rem 1rem; color:#334155;">
                 <i class="fa-solid fa-layer-group text-5xl mb-4" style="color:#1e3a5f;"></i>
@@ -154,353 +312,7 @@
         </div>
     </div>
 
-    <script type="module">
-        // -----------------------------------------------
-        // AIP Self-contained STAC Browser
-        // Calls /stac/ API directly — no external class deps
-        // -----------------------------------------------
-        import { mountContextBar } from "../static/common/context-bar.js";
-
-        let allItems = [];  // flat list for sidebar filter
-
-        // Discover root STAC URL (handles /web/pages/ prefix)
-        function stacRoot() {
-            const p = window.location.pathname;
-            const idx = p.indexOf('/web/');
-            return idx !== -1
-                ? window.location.origin + p.substring(0, idx) + '/stac/'
-                : window.location.origin + '/stac/';
-        }
-
-        const ROOT = stacRoot();
-        console.log("STAC Root:", ROOT);
-
-        async function fetchJson(url) {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
-            return res.json();
-        }
-
-        // ---- Sidebar rendering ----
-        function setLoading(msg = 'Loading...') {
-            document.getElementById('items-list').innerHTML =
-                `<div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i><p class="mt-2 text-sm">${msg}</p></div>`;
-        }
-
-        function setError(msg, list=true) {
-            const el = list ? document.getElementById('items-list') : document.getElementById('detail-pane');
-            el.innerHTML = `<div class="error-box m-2"><i class="fa-solid fa-triangle-exclamation mr-2"></i>${msg}</div>`;
-        }
-
-        function renderItems(items) {
-            allItems = items;
-            applyItemFilter('');
-        }
-
-        function applyItemFilter(q) {
-            const filtered = q ? allItems.filter(i =>
-                (i.title||i.id||'').toLowerCase().includes(q.toLowerCase())
-            ) : allItems;
-
-            const list = document.getElementById('items-list');
-            if (filtered.length === 0) {
-                list.innerHTML = '<div class="loading-spinner text-sm">No items found.</div>';
-                return;
-            }
-            list.innerHTML = filtered.map(item => `
-                <div class="item-card" data-id="${item.id}" data-url="${item._self || ''}" onclick="openItem(this)" title="${item.id}">
-                    <span class="icon"><i class="fa-solid ${item._icon || 'fa-cube'}"></i></span>
-                    <div style="min-width:0">
-                        <div class="label">${item.title || item.id}</div>
-                        ${item._sub ? `<div class="sublabel">${item._sub}</div>` : ''}
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function filterItems(q) { applyItemFilter(q); }
-
-        function setBreadcrumb(parts) {
-            document.getElementById('breadcrumb').innerHTML = parts.map((p,i) =>
-                i < parts.length -1
-                    ? `<a href="#" class="hover:text-blue-400" onclick="p.action()">${p.label}</a> <span class="mx-1">/</span>`
-                    : `<span class="text-slate-400">${p.label}</span>`
-            ).join('');
-        }
-
-        function openItem(el) {
-            document.querySelectorAll('.item-card').forEach(c => c.classList.remove('active'));
-            el.classList.add('active');
-            const url = el.dataset.url;
-            if (url) loadDetail(url);
-        }
-
-        // ---- Detail pane ----
-        async function loadDetail(url) {
-            const pane = document.getElementById('detail-pane');
-            pane.innerHTML = `<div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin text-xl"></i></div>`;
-            try {
-                const data = await fetchJson(url);
-                renderDetail(data);
-                return data;
-            } catch(e) {
-                pane.innerHTML = `<div class="error-box">${e.message}</div>`;
-                throw e;
-            }
-        }
-
-        // ---- "View on map" deep-link ----
-        // Opens the map_viewer page with the given catalog+collection preselected.
-        // When embedded in the shell iframe: calls parent.switchTab + postMessage.
-        // When standalone: navigates to the map page with query params.
-        function openOnMap(catalogId, collectionId) {
-            if (window.parent !== window) {
-                if (typeof window.parent.switchTab === 'function') {
-                    window.parent.switchTab('map_viewer');
-                }
-                // postMessage lets map_viewer (also in an iframe) receive the context.
-                // Target our own origin only (never '*') so the message can't leak
-                // to a cross-origin parent.
-                window.parent.postMessage({ type: 'open-map', catalogId, collectionId }, window.location.origin);
-            } else {
-                const p = window.location.pathname;
-                const i = p.indexOf('/web/');
-                const base = i >= 0 ? p.slice(0, i) : '';
-                const params = new URLSearchParams({ catalog: catalogId, collection: collectionId });
-                window.location.href = base + '/web/pages/map_viewer?' + params.toString();
-            }
-        }
-
-        // Track the catalog inferred from the last collection detail rendered,
-        // so the "View on map" button has the right catalogId to pass.
-        let _lastCatalogId = null;
-
-        function renderDetail(d) {
-            const pane = document.getElementById('detail-pane');
-            const type = d.type || (d.collections ? 'Catalog' : d.features ? 'ItemCollection' : 'Unknown');
-            const links = d.links || [];
-            const selfLink = links.find(l => l.rel === 'self')?.href || '';
-            const collections = d.collections || [];
-            const features = d.features || [];
-
-            // Detect whether this is a Collection (has extent.spatial).
-            const isCollection = !!(d.extent && d.extent.spatial);
-
-            // Infer catalogId from the self-link when rendering a collection.
-            if (isCollection && selfLink) {
-                const catMatch = selfLink.match(/\/stac\/catalogs\/([^/]+)\/collections\//);
-                if (catMatch) _lastCatalogId = catMatch[1];
-            }
-
-            // "View on map" button — shown for collections when we know the catalog.
-            let viewOnMapBtn = '';
-            if (isCollection && _lastCatalogId && d.id) {
-                // Use data attributes so the IDs never land inside an onclick string.
-                viewOnMapBtn = `<button class="view-on-map-btn" data-catalog="${_escAttr(_lastCatalogId)}" data-collection="${_escAttr(d.id)}" style="margin-left:0.5rem;padding:0.2rem 0.75rem;font-size:0.75rem;border-radius:9999px;background:rgba(14,165,233,0.15);color:#7dd3fc;border:1px solid rgba(14,165,233,0.3);cursor:pointer;" title="Open this collection in the map viewer"><i class="fa-solid fa-map text-xs" style="margin-right:0.25rem;"></i>View on map</button>`;
-            }
-
-            let html = `
-                <div id="detail-title">${d.title || d.id || 'Catalog'}</div>
-                <div id="detail-desc">${d.description ? (typeof marked !== 'undefined' ? marked.parse(d.description) : d.description) : ''}</div>
-                <div class="detail-meta">
-                    <span class="badge badge-blue">${type}</span>
-                    ${d.id ? `<span class="badge badge-green">${d.id}</span>` : ''}
-                    ${viewOnMapBtn}
-                </div>
-            `;
-
-            // Spatial extent
-            if (d.extent?.spatial?.bbox) {
-                const bb = d.extent.spatial.bbox[0];
-                html += `<div class="detail-section-title">Spatial Extent</div>
-                <table class="prop-table">
-                    <tr><td>West / South</td><td>${bb[0]}, ${bb[1]}</td></tr>
-                    <tr><td>East / North</td><td>${bb[2]}, ${bb[3]}</td></tr>
-                </table>`;
-            }
-            if (d.extent?.temporal?.interval) {
-                const iv = d.extent.temporal.interval[0];
-                html += `<div class="detail-section-title">Temporal Extent</div>
-                <table class="prop-table">
-                    <tr><td>From</td><td>${iv[0] || '—'}</td></tr>
-                    <tr><td>To</td><td>${iv[1] || 'present'}</td></tr>
-                </table>`;
-            }
-
-            // Collections
-            if (collections.length > 0) {
-                html += `<div class="detail-section-title">Collections (${collections.length})</div>
-                <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">`;
-                for (const c of collections) {
-                    const cSelf = (c.links||[]).find(l=>l.rel==='self')?.href || `${selfLink}/collections/${c.id}`;
-                    html += `<div class="badge badge-blue" style="cursor:pointer;padding:0.3rem 0.75rem;font-size:0.75rem;" onclick="loadDetailAndHighlight('${cSelf}','${c.id}')">${c.title || c.id}</div>`;
-                }
-                html += '</div>';
-            }
-
-            // Items
-            if (features.length > 0) {
-                html += `<div class="detail-section-title">Items (${features.length})</div>
-                <table class="prop-table">
-                    <tr style="color:#64748b;"><td>ID</td><td>Date</td></tr>`;
-                for (const f of features) {
-                    html += `<tr><td style="font-family:monospace">${f.id}</td><td>${f.properties?.datetime || f.properties?.start_datetime || '—'}</td></tr>`;
-                }
-                html += '</table>';
-            }
-
-            // Links
-            if (links.length > 0) {
-                html += `<div class="detail-section-title">Links</div>
-                <table class="prop-table">`;
-                for (const l of links) {
-                    html += `<tr><td>${l.rel}</td><td><a href="${l.href}" target="_blank" class="text-blue-400 hover:underline" style="font-size:0.75rem;">${l.title || l.href}</a></td></tr>`;
-                }
-                html += '</table>';
-            }
-
-            // Properties
-            if (d.properties) {
-                html += `<div class="detail-section-title">Properties</div>
-                <table class="prop-table">`;
-                for (const [k,v] of Object.entries(d.properties)) {
-                    html += `<tr><td>${k}</td><td>${JSON.stringify(v)}</td></tr>`;
-                }
-                html += '</table>';
-            }
-
-            pane.innerHTML = html;
-
-            // Wire "View on map" button via DOM event listener — catalog/collection
-            // IDs are read from data attributes, never from an onclick string.
-            const mapBtn = pane.querySelector('.view-on-map-btn');
-            if (mapBtn) {
-                mapBtn.addEventListener('click', function() {
-                    openOnMap(mapBtn.dataset.catalog, mapBtn.dataset.collection);
-                });
-            }
-        }
-
-        // Escape a value for use in an HTML attribute (single or double quoted).
-        function _escAttr(s) {
-            return String(s)
-                .replace(/&/g, '&amp;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-        }
-
-        function loadDetailAndHighlight(url, id) {
-            // Temporarily highlight in sidebar
-            loadDetail(url);
-        }
-
-        function updateSidebarFromData(data, url) {
-            let items = [];
-            if (data.type === 'FeatureCollection' || data.features) {
-                items = (data.features || []).map(f => ({
-                    id: f.id,
-                    title: f.id,
-                    _self: (f.links||[]).find(l=>l.rel==='self')?.href || `${url}/items/${f.id}`,
-                    _icon: 'fa-file',
-                    _sub: 'item',
-                }));
-            } else if (data.collections) {
-                items = data.collections.map(c => ({
-                    id: c.id,
-                    title: c.title || c.id,
-                    _self: (c.links||[]).find(l=>l.rel==='self')?.href || `${url}/collections/${c.id}`,
-                    _icon: 'fa-folder-open',
-                    _sub: 'collection',
-                }));
-            } else {
-                const childLinks = (data.links || []).filter(l => ['child', 'collection', 'item'].includes(l.rel));
-                items = childLinks.map(l => ({
-                    id: l.title || l.href,
-                    title: l.title || l.href,
-                    _self: l.href,
-                    _icon: l.rel === 'item' ? 'fa-file' : (l.rel === 'collection' ? 'fa-folder-open' : 'fa-link'),
-                    _sub: l.rel,
-                }));
-            }
-            renderItems(items);
-        }
-
-        // ---- Initial load ----
-        async function init() {
-            setLoading('Connecting to STAC API…');
-
-            // Initialize context selector using the canonical shared component.
-            const csContainer = document.getElementById('cs-container');
-            if (csContainer) {
-                mountContextBar(csContainer, {
-                    mode: 'select',
-                    enableVirtualCollections: true,
-                    onChange: async ({ catalogId: catId, collectionId: colId }) => {
-                        let targetUrl = ROOT;
-                        if (catId && catId !== '_system_' && colId) {
-                            targetUrl = `${ROOT}catalogs/${catId}/collections/${colId}`;
-                        } else if (catId && catId !== '_system_') {
-                            targetUrl = `${ROOT}catalogs/${catId}`;
-                        }
-                        try {
-                            const data = await loadDetail(targetUrl);
-                            updateSidebarFromData(data, targetUrl);
-                        } catch (e) {
-                            console.error('Failed to update context detail:', e);
-                        }
-                    },
-                });
-            }
-
-            try {
-                const root = await fetchJson(ROOT);
-                const catalogLinks = (root.links || []).filter(l =>
-                    ['child', 'catalog', 'collection', 'data'].includes(l.rel)
-                );
-
-                let items = [];
-                if (catalogLinks.length > 0) {
-                    items = catalogLinks.map(l => ({
-                        id: l.title || l.href,
-                        title: l.title || l.href,
-                        _self: l.href,
-                        _icon: l.rel === 'collection' ? 'fa-folder-open' : 'fa-globe',
-                        _sub: l.rel,
-                    }));
-                } else {
-                    // Try /stac/catalogs
-                    try {
-                        const cats = await fetchJson(ROOT.replace(/\/$/, '') + '/catalogs');
-                        items = (Array.isArray(cats) ? cats : cats.catalogs || []).map(c => ({
-                            id: c.id,
-                            title: c.title || c.id,
-                            _self: (c.links||[]).find(l=>l.rel==='self')?.href || `${ROOT}catalogs/${c.id}`,
-                            _icon: 'fa-database',
-                            _sub: 'catalog',
-                        }));
-                    } catch(_) {}
-                }
-
-                if (items.length === 0) {
-                    document.getElementById('items-list').innerHTML =
-                        '<div class="loading-spinner text-sm text-yellow-400">No catalogs found in STAC root.</div>';
-                } else {
-                    renderItems(items);
-                }
-
-                // Show root in detail pane
-                renderDetail(root);
-
-            } catch(e) {
-                setError(`Could not connect to STAC API at <code>${ROOT}</code>: ${e.message}`);
-                console.error("STAC init error:", e);
-            }
-        }
-
-        init();
-    </script>
+    <script type="module" src="../stac/stac_browser.js"></script>
 
 </body>
 </html>

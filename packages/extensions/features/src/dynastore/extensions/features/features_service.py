@@ -21,6 +21,7 @@
 from typing import Optional, List, Any, FrozenSet, Union, cast
 
 import logging
+import os
 
 from dynastore.extensions.tools.ondemand_cache import ondemand_cache_lookup
 
@@ -64,6 +65,7 @@ from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
+from dynastore.extensions.web.decorators import expose_web_page, expose_static
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 import re
@@ -1218,3 +1220,46 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 catalog_id, collection_id, item_id, conn,
                 caller_id=self._principal_caller_id(request),
             )
+
+    # ------------------------------------------------------------------
+    # Web page contribution (WebPageContributor / StaticAssetProvider)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("features")
+    def provide_static_files(self) -> list:
+        """Exposes the internal static directory for the Features browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="features_browser",
+        title={"en": "Features", "fr": "Entités", "es": "Entidades"},
+        icon="fa-draw-polygon",
+        description={
+            "en": "Browse and create vector features on a map.",
+            "fr": "Explorer et créer des entités vectorielles sur une carte.",
+            "es": "Explorar y crear entidades vectoriales en un mapa.",
+        },
+    )
+    async def provide_features_browser(self, request: Request):
+        return await self._serve_page_template("features_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
