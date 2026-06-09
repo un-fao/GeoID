@@ -1,10 +1,10 @@
 // features_browser.js — OGC API Features browser: map-based browse + create-feature.
 // Imports shared helpers only; no build step required.
 
-import { getJSON, postJSON } from "../common/api.js";
-import { mountContextBar } from "../common/context-bar.js";
-import { register, t, lang } from "../common/i18n.js";
-import { initMap, showGeoJSON, bboxFromMap } from "../common/leaflet-map.js";
+import { getJSON, postJSON } from "../static/common/api.js";
+import { mountContextBar } from "../static/common/context-bar.js";
+import { register, t, lang } from "../static/common/i18n.js";
+import { initMap, showGeoJSON, bboxFromMap } from "../static/common/leaflet-map.js";
 
 // ---------------------------------------------------------------------------
 // i18n dictionaries
