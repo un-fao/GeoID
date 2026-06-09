@@ -1050,7 +1050,7 @@ async def run_dispatcher(
     while not shutdown_event.is_set():
         try:
             # Wait for a notification or periodic wakeup.  Periodic wakeup is
-            # a defensive fallback — the pg_cron reaper issues ``pg_notify
+            # a defensive fallback — the maintenance reaper issues ``pg_notify
             # 'new_task_queued'`` when it resets stuck rows, so we will be
             # woken promptly in steady state.
             await signal_bus.wait_for(NEW_TASK_QUEUED, timeout=signal_timeout)

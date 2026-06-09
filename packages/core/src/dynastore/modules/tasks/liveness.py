@@ -18,7 +18,7 @@
 
 """Runner-agnostic execution-liveness Protocol.
 
-The pg_cron reaper resets a lapsed-lease ``ACTIVE`` task back to ``PENDING``
+The maintenance reaper resets a lapsed-lease ``ACTIVE`` task back to ``PENDING``
 purely on a timer — correct for an in-process runner (the work genuinely died
 with the pod), but wrong for a runner whose execution outlives the dispatching
 process. A Cloud Run Job spawned fire-and-forget keeps running through its
@@ -50,7 +50,7 @@ class LivenessVerdict(str, Enum):
 
     - ``ALIVE``              — execution confirmed running/pending → extend the lease.
     - ``DEAD``               — execution gone/cancelled → ``fail_task(retry=True)`` now.
-    - ``UNKNOWN``            — probe inconclusive → leave for the pg_cron reaper backstop.
+    - ``UNKNOWN``            — probe inconclusive → leave for the maintenance reaper backstop.
     - ``TERMINAL_SUCCEEDED`` — execution exited 0 but the row is still ACTIVE →
       reconcile the row to COMPLETED.
     - ``TERMINAL_FAILED``    — execution exited non-zero but the row is still
@@ -97,7 +97,7 @@ def resolve_probe(owner_id: Optional[str]) -> Optional[LivenessProbeProtocol]:
     Resolution keys on ``owner_id`` — the durable record of *who claimed this
     row* — not on ``can_handle(task_type)``. ``None`` means the owner is an
     in-process / ephemeral / unrecognized runner: the reconciler no-ops and the
-    pg_cron reaper handles the row, exactly as today.
+    maintenance reaper handles the row, exactly as today.
     """
     if not owner_id:
         return None
