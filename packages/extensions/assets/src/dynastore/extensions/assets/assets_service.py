@@ -18,6 +18,7 @@
 
 import json
 import logging
+import os
 from typing import ClassVar, Dict, Any, FrozenSet, Optional, List, Union, cast
 from dynastore.modules import get_protocol
 from dynastore.tools.discovery import get_protocols
@@ -34,8 +35,10 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, ConfigDict
 
+from fastapi.responses import Response
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.extensions.ogc_models_shared import (
     BulkCreationResponse,
     IngestionReport,
@@ -172,6 +175,45 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         except Exception:
             return []
         return build_contributions()
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("assets")
+    def provide_static_files(self) -> list:
+        """Exposes the internal static directory for the Assets manager."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="assets_manager",
+        title={"en": "Assets", "fr": "Ressources", "es": "Recursos"},
+        icon="fa-folder-open",
+        description={
+            "en": "Upload, browse, and manage catalog and collection assets.",
+            "fr": "Téléverser, explorer et gérer les ressources.",
+            "es": "Cargar, explorar y gestionar recursos.",
+        },
+    )
+    async def provide_assets_manager(self, request: Request):
+        return await self._serve_page_template("assets_manager.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
 
     def __init__(self, app: FastAPI):
         self.app = app

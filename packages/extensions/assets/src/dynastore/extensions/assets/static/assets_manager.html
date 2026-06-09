@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIP | Assets Manager</title>
+
+    <link rel="icon" type="image/png" href="../static/dynastore.png">
+    <link rel="stylesheet" href="../static/vendor/vendor.css"/>
+    <link rel="stylesheet" href="../static/common/admin.css"/>
+    <!-- Tailwind play CDN — no versioned SRI available for this build;
+         matches the project-wide pattern used by stac_browser.html. -->
+    <script src="https://cdn.tailwindcss.com" crossorigin=""></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #020617;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1.5rem;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            flex-shrink: 0;
+            z-index: 10;
+        }
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: white;
+        }
+        .header-title img { width: 2rem; height: 2rem; border-radius: 0.4rem; }
+        .back-link {
+            color: #94a3b8;
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.2s;
+        }
+        .back-link:hover { color: white; }
+        .main-content {
+            flex: 1;
+            padding: 1.5rem 2rem;
+            max-width: 1200px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        .section-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #3b82f6;
+            margin: 1.5rem 0 0.75rem;
+        }
+        .card {
+            background: rgba(15, 23, 42, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+        }
+        .form-row {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+        .form-group { display: flex; flex-direction: column; gap: 0.25rem; flex: 1; min-width: 180px; }
+        .form-label { font-size: 0.75rem; color: #94a3b8; }
+        .form-input {
+            padding: 0.45rem 0.75rem;
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.4rem;
+            color: #e2e8f0;
+            font-size: 0.85rem;
+            outline: none;
+        }
+        .form-input:focus { border-color: rgba(59, 130, 246, 0.5); }
+        .btn {
+            padding: 0.45rem 1rem;
+            border-radius: 0.4rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            border: none;
+            font-weight: 500;
+            transition: background 0.15s;
+        }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+        .btn-sm { padding: 0.25rem 0.6rem; font-size: 0.75rem; }
+        .asset-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+        .asset-table th {
+            text-align: left;
+            color: #64748b;
+            font-weight: 600;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .asset-table td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            vertical-align: middle;
+        }
+        .asset-table tr:hover td { background: rgba(59, 130, 246, 0.04); }
+        .badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            font-weight: 600;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+        }
+        .badge-blue { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.25); }
+        .badge-green { background: rgba(34, 197, 94, 0.1); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.2); }
+        .badge-yellow { background: rgba(234, 179, 8, 0.1); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.2); }
+        .notice {
+            padding: 0.75rem 1rem;
+            border-radius: 0.4rem;
+            font-size: 0.85rem;
+            margin: 0.5rem 0;
+        }
+        .notice-ok { background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.2); color: #86efac; }
+        .notice-err { background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); color: #f87171; }
+        .notice-warn { background: rgba(234, 179, 8, 0.08); border: 1px solid rgba(234, 179, 8, 0.2); color: #fde047; }
+        .loading-spinner { text-align: center; padding: 2rem 1rem; color: #64748b; }
+        #context-bar-mount { margin-bottom: 1rem; }
+        #upload-status, #virtual-status, #delete-status { min-height: 1.5rem; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-title">
+            <img src="../static/dynastore.png" alt="AIP Logo">
+            <span id="page-title">Assets Manager</span>
+            <span style="font-size:0.65rem;color:#475569;font-weight:400;">v{{VERSION}}</span>
+        </div>
+        <a href="../"
+           class="back-link"
+           id="back-home-link"
+           onclick="(function(e){if(window.parent!==window&&typeof window.parent.switchTab==='function'){e.preventDefault();window.parent.switchTab('home');}})(event)">
+            <i class="fa-solid fa-arrow-left"></i> <span id="lbl-back">Back to Home</span>
+        </a>
+    </header>
+
+    <div class="main-content">
+
+        <!-- Catalog / collection picker -->
+        <div id="context-bar-mount"></div>
+
+        <!-- Asset list -->
+        <div class="section-title" id="lbl-assets-section">Assets</div>
+        <div class="card">
+            <div id="asset-list-container">
+                <div class="loading-spinner" id="asset-list-placeholder">
+                    <i class="fa-solid fa-folder-open" style="font-size:2rem;color:#1e3a5f;"></i>
+                    <p style="margin-top:0.75rem;font-size:0.85rem;" id="lbl-select-prompt">Select a catalog to browse assets.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload form -->
+        <div class="section-title" id="lbl-upload-section">Upload Asset</div>
+        <div class="card">
+            <form id="upload-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="upload-asset-id" id="lbl-asset-id">Asset ID</label>
+                        <input class="form-input" id="upload-asset-id" type="text" placeholder="e.g. my_raster_2025" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="upload-file" id="lbl-file">File</label>
+                        <input class="form-input" id="upload-file" type="file">
+                    </div>
+                    <button class="btn btn-primary" type="submit" id="upload-btn">
+                        <i class="fa-solid fa-upload"></i> <span id="lbl-upload-btn">Upload</span>
+                    </button>
+                </div>
+            </form>
+            <div id="upload-status" style="margin-top:0.5rem;"></div>
+        </div>
+
+        <!-- Virtual asset form -->
+        <div class="section-title" id="lbl-virtual-section">Register Virtual Asset</div>
+        <div class="card">
+            <form id="virtual-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="virtual-asset-id" id="lbl-v-asset-id">Asset ID</label>
+                        <input class="form-input" id="virtual-asset-id" type="text" placeholder="e.g. external_dem" autocomplete="off">
+                    </div>
+                    <div class="form-group" style="flex:2;">
+                        <label class="form-label" for="virtual-href" id="lbl-v-href">External URL</label>
+                        <input class="form-input" id="virtual-href" type="url" placeholder="https://example.org/dataset.tif" autocomplete="off">
+                    </div>
+                    <button class="btn btn-primary" type="submit" id="virtual-btn">
+                        <i class="fa-solid fa-link"></i> <span id="lbl-virtual-btn">Register</span>
+                    </button>
+                </div>
+            </form>
+            <div id="virtual-status" style="margin-top:0.5rem;"></div>
+        </div>
+
+        <div id="delete-status" style="margin-bottom:0.5rem;"></div>
+
+    </div>
+
+    <script type="module" src="../static/assets/assets_manager.js"></script>
+</body>
+</html>
