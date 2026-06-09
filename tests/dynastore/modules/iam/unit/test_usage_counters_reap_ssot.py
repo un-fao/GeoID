@@ -19,12 +19,14 @@
 """Pin the SQL SSOT for ``usage_counters`` expiry reaping.
 
 Gap #6 of issue #800: ``PostgresUsageCounter.reap_expired`` and the
-plpgsql function body that pg_cron fires nightly used to embed two
-copies of the same ``DELETE … WHERE expires_at IS NOT NULL AND
-expires_at < NOW()`` clause. If a grace period or any other predicate
-was later introduced on one side and not the other, lifetime quotas
-would silently stop being reaped (or windowed rows would be reaped
-early). This test pins the shared constant.
+out-of-process reaper used to embed two copies of the same
+``DELETE … WHERE expires_at IS NOT NULL AND expires_at < NOW()`` clause.
+If a grace period or any other predicate was later introduced on one
+side and not the other, lifetime quotas would silently stop being reaped
+(or windowed rows would be reaped early). These tests pin the shared
+constant. The out-of-process reaper is now the leader-elected
+``MaintenanceSupervisor`` IAM prune (it replaced the former plpgsql +
+pg_cron job, deleted in #1911 / #1927).
 """
 
 from __future__ import annotations
@@ -58,25 +60,22 @@ def test_reap_sql_targets_only_expired_windowed_rows() -> None:
     assert "expires_at < now()" in sql
 
 
-def test_plpgsql_prune_body_embeds_shared_sql() -> None:
-    """The plpgsql function body assembled in ``PostgresIamStorage``
-    must interpolate the SSOT constant, not a hand-typed copy. This
-    test guards against a future refactor that re-inlines the WHERE
-    clause."""
+def test_supervisor_prune_consumes_shared_reap_predicate() -> None:
+    """The ``MaintenanceSupervisor`` IAM prune — the canonical out-of-process
+    reaper since #1911 / #1927 — must consume the SSOT WHERE predicate, not a
+    hand-typed copy. Guards against re-inlining the windowed-expiry clause."""
     import inspect
 
-    from dynastore.modules.iam import postgres_iam_storage
+    from dynastore.modules.catalog import maintenance_supervisor
 
-    src = inspect.getsource(postgres_iam_storage)
-    assert "REAP_EXPIRED_USAGE_COUNTERS_SQL" in src, (
-        "plpgsql prune function must reference the SSOT constant; "
-        "found no import / usage in postgres_iam_storage.py"
+    src = inspect.getsource(maintenance_supervisor)
+    assert "REAP_EXPIRED_USAGE_COUNTERS_WHERE" in src, (
+        "supervisor IAM prune must reference the SSOT WHERE constant; "
+        "found no import / usage in maintenance_supervisor.py"
     )
-    # And the literal must NOT be re-typed near the usage_counters
-    # DELETE line — that's the drift pattern we want to prevent.
-    assert (
-        'WHERE expires_at IS NOT NULL AND expires_at < NOW()' not in src
-    ) or src.count('WHERE expires_at IS NOT NULL AND expires_at < NOW()') == 0, (
+    # And the predicate must NOT be re-typed as a literal — that's the
+    # drift pattern we want to prevent.
+    assert "expires_at IS NOT NULL AND expires_at < NOW()" not in src, (
         "found inline copy of the reap WHERE clause in "
-        "postgres_iam_storage.py — use REAP_EXPIRED_USAGE_COUNTERS_SQL"
+        "maintenance_supervisor.py — use REAP_EXPIRED_USAGE_COUNTERS_WHERE"
     )

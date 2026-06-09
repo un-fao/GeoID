@@ -330,21 +330,23 @@ def build_usage_counters_steps(hash_partitions: int) -> "list[DDLQuery]":
     return steps
 
 
-# SSOT for "what counts as an expired usage-counter row". Consumed by
-# both the in-process `PostgresUsageCounter.reap_expired` driver method
-# AND the plpgsql `prune_expired_rows_iam` function body that pg_cron
-# fires nightly (see `postgres_iam_storage.py`). Keeping the WHERE
-# clause in one place is gap #6 of #800 — without it, a grace-period
-# tweak (e.g. `expires_at < NOW() - INTERVAL '1 hour'`) would have to be
-# applied twice and silently drift if one site is forgotten.
+# SSOT for "what counts as an expired usage-counter row" — the WHERE
+# predicate, factored out so every reaper shares one definition. Consumed by:
+#   * the in-process `PostgresUsageCounter.reap_expired` driver method, and
+#   * the leader-elected `MaintenanceSupervisor._run_iam_prune`, which wraps
+#     this predicate in its bounded-batch `ctid … LIMIT` loop.
+# Keeping the WHERE clause in one place is gap #6 of #800 — without it, a
+# grace-period tweak (e.g. `expires_at < NOW() - INTERVAL '1 hour'`) would
+# have to be applied at every site and silently drift if one is forgotten.
 #
-# The canonical reaper in production is the pg_cron job — it runs even
-# when no Python pod is alive and survives Cloud Run scale-to-zero.
-# `PostgresUsageCounter.reap_expired` exists for local dev / test
-# environments without pg_cron and to satisfy `UsageCounterProtocol`.
+# The canonical reaper in production is the MaintenanceSupervisor running in
+# the always-on catalog pod (it replaced the former plpgsql + pg_cron job,
+# deleted in #1911 / #1927). `PostgresUsageCounter.reap_expired` remains the
+# in-process entry point that satisfies `UsageCounterProtocol`.
+REAP_EXPIRED_USAGE_COUNTERS_WHERE = "expires_at IS NOT NULL AND expires_at < NOW()"
 REAP_EXPIRED_USAGE_COUNTERS_SQL = (
     'DELETE FROM "{schema}".usage_counters '
-    "WHERE expires_at IS NOT NULL AND expires_at < NOW();"
+    "WHERE " + REAP_EXPIRED_USAGE_COUNTERS_WHERE + ";"
 )
 
 # Safety-net reaper for lifetime quotas whose policy is gone.
@@ -358,7 +360,7 @@ REAP_EXPIRED_USAGE_COUNTERS_SQL = (
 # for every incr).
 #
 # The transactional path on ``DELETE_POLICY`` already drops the rows in
-# the same transaction (gap #2 / PR #828), so this cron-side reaper is a
+# the same transaction (gap #2 / PR #828), so this reaper is a
 # defence-in-depth safety net for rows orphaned via non-transactional
 # paths — manual SQL, partial restore from backup, schema-level cascades
 # disabled in some envs. Without it, a backup-restore that drops the
@@ -368,12 +370,18 @@ REAP_EXPIRED_USAGE_COUNTERS_SQL = (
 # We deliberately do NOT use ``last_seen_at`` as a reap criterion —
 # lifetime means lifetime; a quiet principal must keep their counter.
 # ``last_seen_at`` is reserved for admin-sort in ``list_for_policy``.
-REAP_ORPHAN_USAGE_COUNTERS_SQL = (
-    'DELETE FROM "{schema}".usage_counters u '
-    "WHERE u.expires_at IS NULL "
+#
+# As with the windowed predicate above, the WHERE clause is the SSOT shared
+# by the in-process driver and the MaintenanceSupervisor's IAM prune job.
+REAP_ORPHAN_USAGE_COUNTERS_WHERE = (
+    "u.expires_at IS NULL "
     "  AND NOT EXISTS ("
     '    SELECT 1 FROM "{schema}".policies p WHERE p.id = u.policy_id'
-    "  );"
+    "  )"
+)
+REAP_ORPHAN_USAGE_COUNTERS_SQL = (
+    'DELETE FROM "{schema}".usage_counters u '
+    "WHERE " + REAP_ORPHAN_USAGE_COUNTERS_WHERE + ";"
 )
 
 # --- Audit Log Table ---

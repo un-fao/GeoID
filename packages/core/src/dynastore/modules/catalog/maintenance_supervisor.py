@@ -192,9 +192,9 @@ async def _run_events_stuck_reaper(
 ) -> int:
     """Reap PROCESSING events older than *timeout_minutes* minutes.
 
-    Ported verbatim from the pg_cron CTE in events_module._register_events_reaper.
-    Rows whose retry_count + 1 >= max_retries transition to DEAD_LETTER;
-    others reset to PENDING.
+    Ports the former events DLQ-reaper CTE (previously a pg_cron job, removed
+    with the events-module cron registrations). Rows whose retry_count + 1 >=
+    max_retries transition to DEAD_LETTER; others reset to PENDING.
     """
     sql = (
         f"WITH expired AS ("
@@ -225,7 +225,7 @@ async def _run_events_stuck_reaper(
 async def _run_events_pending_alert(conn: Any, dead_letter_days: int) -> int:
     """Emit a WARNING log per shard for stale PENDING events.
 
-    Ported verbatim from events_module._register_events_retention alert_cmd.
+    Ports the former events retention alert query (previously a pg_cron job).
     No DB state is changed; last_rows = total stale pending count.
     """
     sql = (
@@ -294,9 +294,20 @@ async def _run_system_logs_prune(conn: Any) -> int:
 async def _run_iam_prune(conn: Any) -> int:
     """Delete expired IAM tokens, grants, and usage counters.
 
-    Ported verbatim from the PL/pgSQL body in postgres_iam_storage._prune_function_ddl.
-    Uses bounded-batch DELETE on each table; returns total rows deleted.
+    Ports the former IAM prune PL/pgSQL body (deleted in #1911 / #1927) into a
+    bounded-batch DELETE on each table; returns total rows deleted. The
+    usage-counter predicates are not re-inlined here — they are imported from
+    ``iam_queries`` so the WHERE clause stays single-sourced with the
+    in-process driver (#800 gap #6).
     """
+    # Function-local import: keeps this catalog-module function's coupling to
+    # the IAM SQL predicates lazy and cycle-proof (constants only, not the
+    # AuthorizationProtocol).
+    from dynastore.modules.iam.iam_queries import (
+        REAP_EXPIRED_USAGE_COUNTERS_WHERE,
+        REAP_ORPHAN_USAGE_COUNTERS_WHERE,
+    )
+
     schema = _IAM_SCHEMA
     total = 0
 
@@ -340,23 +351,23 @@ async def _run_iam_prune(conn: Any) -> int:
     )
     total += await _bounded_batch_delete(conn, sql)
 
-    # Expired usage counter buckets (rate-limit windows)
+    # Expired usage counter buckets (rate-limit windows). The WHERE predicate
+    # is the iam_queries SSOT, wrapped in the bounded-batch ctid loop.
     sql = (
         f'DELETE FROM "{schema}".usage_counters '
         f'WHERE ctid IN ('
         f'  SELECT ctid FROM "{schema}".usage_counters '
-        f'  WHERE expires_at IS NOT NULL AND expires_at < NOW() LIMIT :batch_size'
+        f'  WHERE {REAP_EXPIRED_USAGE_COUNTERS_WHERE} LIMIT :batch_size'
         f')'
     )
     total += await _bounded_batch_delete(conn, sql)
 
-    # Orphan lifetime usage counters (parent policy gone)
+    # Orphan lifetime usage counters (parent policy gone). Single unbatched
+    # DELETE — the orphan set is tiny and bounded by deleted-policy count.
+    # WHERE predicate is the iam_queries SSOT (carries its own {schema} ref).
     sql = (
         f'DELETE FROM "{schema}".usage_counters u '
-        f'WHERE u.expires_at IS NULL '
-        f'  AND NOT EXISTS ('
-        f'    SELECT 1 FROM "{schema}".policies p WHERE p.id = u.policy_id'
-        f'  )'
+        "WHERE " + REAP_ORPHAN_USAGE_COUNTERS_WHERE.format(schema=schema)
     )
     rows = await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(conn)
     total += rows or 0

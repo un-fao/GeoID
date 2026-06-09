@@ -21,11 +21,13 @@
 Gap #5 of issue #800: lifetime rows (``expires_at IS NULL``) are
 intentionally skipped by the windowed-expiry reaper, so if a policy is
 deleted by a non-transactional path (manual SQL, partial restore from
-backup) its lifetime counters strand forever. The pg_cron prune
-function now interpolates a second SSOT string —
-``REAP_ORPHAN_USAGE_COUNTERS_SQL`` — that drops lifetime rows whose
-``policy_id`` no longer exists in ``iam.policies``. The same string
-backs the in-process ``PostgresUsageCounter.reap_orphans`` method.
+backup) its lifetime counters strand forever. The out-of-process reaper
+(the leader-elected ``MaintenanceSupervisor`` IAM prune, which replaced
+the former plpgsql + pg_cron job deleted in #1911 / #1927) interpolates a
+second SSOT string — ``REAP_ORPHAN_USAGE_COUNTERS_SQL`` — that drops
+lifetime rows whose ``policy_id`` no longer exists in ``iam.policies``.
+The same string backs the in-process
+``PostgresUsageCounter.reap_orphans`` method.
 
 These tests pin the contract so a future tweak (archive instead of
 delete, grace window, etc.) lands in one place and is reflected on
@@ -68,18 +70,18 @@ def test_orphan_reap_sql_targets_only_lifetime_rows_with_missing_policy() -> Non
     assert "last_seen_at" not in sql
 
 
-def test_plpgsql_prune_body_embeds_orphan_ssot() -> None:
-    """The plpgsql prune body assembled in ``PostgresIamStorage`` must
-    interpolate the SSOT constant, not a hand-typed copy. Guards against
-    a future refactor that re-inlines the orphan WHERE clause."""
+def test_supervisor_prune_consumes_shared_orphan_predicate() -> None:
+    """The ``MaintenanceSupervisor`` IAM prune must consume the orphan SSOT
+    WHERE predicate, not a hand-typed copy. Guards against a future refactor
+    that re-inlines the orphan ``NOT EXISTS`` clause."""
     import inspect
 
-    from dynastore.modules.iam import postgres_iam_storage
+    from dynastore.modules.catalog import maintenance_supervisor
 
-    src = inspect.getsource(postgres_iam_storage)
-    assert "REAP_ORPHAN_USAGE_COUNTERS_SQL" in src, (
-        "plpgsql prune function must reference the orphan-reap SSOT "
-        "constant; found no import / usage in postgres_iam_storage.py"
+    src = inspect.getsource(maintenance_supervisor)
+    assert "REAP_ORPHAN_USAGE_COUNTERS_WHERE" in src, (
+        "supervisor IAM prune must reference the orphan-reap SSOT WHERE "
+        "constant; found no import / usage in maintenance_supervisor.py"
     )
 
 
