@@ -19,8 +19,7 @@
 """Unit tests for presets/describe.py — pure, DB-free."""
 from __future__ import annotations
 
-import json
-from typing import Any, ClassVar, Tuple
+from typing import ClassVar, Tuple
 from unittest.mock import patch
 
 import pytest
