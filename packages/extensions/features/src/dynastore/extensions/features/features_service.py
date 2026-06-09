@@ -62,7 +62,6 @@ from dynastore.models.shared_models import (
 from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
-from dynastore.extensions.tools.localization_utils import detect_use_lang
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
