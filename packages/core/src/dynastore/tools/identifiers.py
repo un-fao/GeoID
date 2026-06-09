@@ -120,6 +120,38 @@ def generate_geoid() -> str:
     return str(generate_uuidv7())
 
 
+# Private namespace for deterministic file-sourced geoids. Never reuse or rotate:
+# every file-backed collection's item ids derive from it, so a change would shift
+# all ids and orphan their Elasticsearch documents.
+_FILE_GEOID_NS = uuid.UUID("7b3f1d28-5c4a-4e9b-8a16-2f9c0e7d4b61")
+
+
+def derive_file_geoid(catalog_id: str, collection_id: str, source_id) -> str:
+    """Derive a stable geoid for a feature read directly from a file asset.
+
+    File rows carry a native feature id (fid) but no geoid. PostgreSQL-backed
+    collections get a UUIDv7 geoid assigned at write time; a file-backed collection
+    has no write step, so we synthesise a deterministic UUIDv5 instead.
+
+    Scoped by ``(catalog_id, collection_id, source_id)`` so that the same source row
+    always maps to the same geoid across reads and reindexes, while the SAME file
+    published into two different collections — even within one catalog — never
+    clashes. This keeps ``GET /items/{id}``, self/next links, ``_id=geoid`` in ES and
+    STAC conformance working without a PostgreSQL row.
+
+    ``source_id`` is coerced to ``str`` so integer/float fids (common in
+    CSV/Parquet/Shapefile FID columns) are accepted without the caller
+    pre-stringifying. An empty or ``None`` fid raises ``ValueError`` — callers must
+    supply a content-hash fallback rather than collapse every row to one geoid.
+    """
+    if source_id is None:
+        raise ValueError("derive_file_geoid: source_id (fid) must not be None")
+    fid = str(source_id)
+    if not fid:
+        raise ValueError("derive_file_geoid: source_id (fid) must not be empty")
+    return str(uuid.uuid5(_FILE_GEOID_NS, f"{catalog_id}|{collection_id}|{fid}"))
+
+
 def generate_transaction_id() -> str:
     """Generates a unique transaction identifier (UUIDv7)."""
     return str(generate_uuidv7())

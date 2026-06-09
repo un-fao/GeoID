@@ -39,6 +39,7 @@ Connection lifecycle:
     thread pool via ``run_in_thread()`` from ``dynastore.modules.concurrency``.
 """
 
+import hashlib
 import json as _json
 import logging
 import queue
@@ -71,6 +72,15 @@ _FORMAT_READERS: Dict[str, str] = {
     "json": "read_json_auto",
     "ndjson": "read_json_auto",
 }
+
+# Vector formats read through the spatial extension's GDAL-backed ``ST_Read``
+# (file-backed collections, #374). These have no native DuckDB table function;
+# ``ST_Read('path')`` returns a relation with a ``geom`` GEOMETRY column. The
+# ``spatial`` extension must be loaded on the connection first.
+_VECTOR_FORMATS: FrozenSet[str] = frozenset({
+    "gpkg", "geopackage", "shp", "shapefile", "geojson",
+    "fgb", "flatgeobuf", "geojsonseq", "gml", "kml", "gdb",
+})
 
 # Canonical ``data_type`` (see :mod:`dynastore.models.field_types`) → DuckDB
 # native type name. The SQLite write backend is reached via DuckDB's ``sqlite``
@@ -286,6 +296,10 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
     supported_hints: FrozenSet[Hint] = frozenset({
         Hint.ANALYTICS,
         Hint.SPATIAL_FILTER, Hint.ATTRIBUTE_FILTER, Hint.SORT, Hint.GROUP_BY,
+        # File-backed collections (#374): the file is the exact source of truth,
+        # so DuckDB serves GEOMETRY_EXACT reads and the file→ES reindex; plus
+        # pushdown aggregation/count/feature listing.
+        Hint.GEOMETRY_EXACT, Hint.AGGREGATION, Hint.COUNT, Hint.FEATURES,
     })
 
     def is_available(self) -> bool:
@@ -327,9 +341,94 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
             )
+            config = await self._resolve_asset_path(config, catalog_id, collection_id)
             return config
         except Exception:
             return None
+
+    @staticmethod
+    def _asset_uri_to_path(uri: Optional[str]) -> Optional[str]:
+        """Normalize a resolved asset storage URI to a DuckDB-readable path.
+
+        ``file://`` is stripped to a local path; ``gs://`` / ``s3://`` /
+        ``http(s)://`` pass through (DuckDB reads them via httpfs/gcs).
+        """
+        if not uri:
+            return None
+        if uri.startswith("file://"):
+            return uri[len("file://"):]
+        return uri
+
+    async def _resolve_asset_path(
+        self,
+        config: Optional[ItemsDuckdbDriverConfig],
+        catalog_id: str,
+        collection_id: Optional[str],
+    ) -> Optional[ItemsDuckdbDriverConfig]:
+        """Bind the driver to a catalog asset (#377).
+
+        When the config carries ``asset_id`` the asset's storage URI is resolved
+        via :class:`AssetsProtocol` and used as the read ``path`` (asset wins over
+        a hand-written ``path``, per the config contract). If the asset or the
+        assets protocol is unavailable, the existing ``path`` is kept as fallback.
+        """
+        if config is None or not getattr(config, "asset_id", None):
+            return config
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.assets import AssetsProtocol
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                return config
+            asset = await assets.get_asset(str(config.asset_id), catalog_id, collection_id)
+            if asset is None:
+                logger.warning(
+                    "ItemsDuckdbDriver: asset_id=%s not found for %s/%s — "
+                    "falling back to configured path",
+                    config.asset_id, catalog_id, collection_id,
+                )
+                return config
+            path = self._asset_uri_to_path(
+                getattr(asset, "uri", None) or getattr(asset, "href", None)
+            )
+            if not path:
+                return config
+            return config.model_copy(update={"path": path})
+        except Exception:
+            logger.warning(
+                "ItemsDuckdbDriver: asset_id resolution failed for %s/%s",
+                catalog_id, collection_id, exc_info=True,
+            )
+            return config
+
+    async def _register_asset_guard(
+        self, asset_id: str, catalog_id: str, collection_id: str,
+    ) -> None:
+        """Register a protective (``cascade_delete=False``) asset reference so the
+        backing file cannot be hard-deleted while a file-backed collection reads
+        from it. Idempotent and best-effort — never raises into the caller."""
+        try:
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.assets import AssetsProtocol
+            from dynastore.modules.catalog.models import CoreAssetReferenceType
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                return
+            await assets.add_asset_reference(
+                asset_id,
+                catalog_id,
+                CoreAssetReferenceType.COLLECTION,
+                collection_id,
+                cascade_delete=False,
+            )
+        except Exception:
+            logger.warning(
+                "ItemsDuckdbDriver: could not register protective asset reference "
+                "for asset=%s %s/%s — backing file is NOT delete-guarded",
+                asset_id, catalog_id, collection_id, exc_info=True,
+            )
 
     @staticmethod
     def _is_writable(loc: ItemsDuckdbDriverConfig) -> bool:
@@ -338,6 +437,45 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
     @staticmethod
     def _reader_func(fmt: str) -> str:
         return _FORMAT_READERS.get(fmt, "read_parquet")
+
+    @staticmethod
+    def _is_vector_format(fmt: Optional[str]) -> bool:
+        return bool(fmt) and fmt.lower() in _VECTOR_FORMATS
+
+    @classmethod
+    def _source_expr(cls, fmt: Optional[str], path: str) -> str:
+        """Build the DuckDB FROM-source expression for a file path.
+
+        Vector formats (gpkg/shp/geojson/…) read through the spatial extension's
+        GDAL-backed ``ST_Read``; tabular formats use their native table function.
+        """
+        if cls._is_vector_format(fmt):
+            return f"ST_Read('{path}')"
+        return f"{cls._reader_func(fmt or 'parquet')}('{path}')"
+
+    @staticmethod
+    def _file_geoid_for_row(
+        catalog_id: str,
+        collection_id: str,
+        row_dict: Dict[str, Any],
+        id_column: Optional[str],
+    ) -> str:
+        """Derive a deterministic geoid for a file-sourced row.
+
+        Uses the declared ``id_column`` value as the fid when available; otherwise
+        falls back to a stable content hash of the row so rows without a natural id
+        still get a reproducible geoid (with the documented caveat that adding or
+        reordering rows changes the hash).
+        """
+        from dynastore.tools.identifiers import derive_file_geoid
+
+        fid: Optional[Any] = None
+        if id_column:
+            fid = row_dict.get(id_column)
+        if fid is None or str(fid) == "":
+            payload = _json.dumps(row_dict, sort_keys=True, default=str)
+            fid = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return derive_file_geoid(catalog_id, collection_id, fid)
 
     @staticmethod
     def _extract_external_id(row: Dict[str, Any], field: str) -> Optional[str]:
@@ -354,10 +492,28 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
     # Sync helpers (run inside thread pool)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _row_to_feature(row_dict: Dict[str, Any], geo_col: Optional[str]) -> Feature:
-        """Convert a row dict to a Feature, parsing geometry if needed."""
-        feature_id = row_dict.pop("id", None)
+    @classmethod
+    def _row_to_feature(
+        cls,
+        row_dict: Dict[str, Any],
+        geo_col: Optional[str],
+        *,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        id_column: Optional[str] = None,
+        file_backed: bool = False,
+    ) -> Feature:
+        """Convert a row dict to a Feature, parsing geometry if needed.
+
+        In file-backed mode (``file_backed=True`` with catalog/collection), the
+        feature id is a deterministic geoid derived from the row's fid (the
+        ``id_column`` value, or a content hash), so the file row's native id never
+        leaks as the wire id and republishing the same file is collision-free. The
+        native id column is left in ``properties`` so it stays queryable.
+
+        Otherwise the legacy behaviour is preserved: the row's ``id`` column (if
+        any) becomes the feature id.
+        """
         geometry = row_dict.pop(geo_col or "geometry", None)
         if isinstance(geometry, str):
             try:
@@ -366,6 +522,14 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                 geometry = None
         elif isinstance(geometry, (bytes, bytearray)):
             geometry = None
+
+        if file_backed and catalog_id is not None and collection_id is not None:
+            feature_id = cls._file_geoid_for_row(
+                catalog_id, collection_id, row_dict, id_column,
+            )
+        else:
+            feature_id = row_dict.pop("id", None)
+
         return Feature(
             type="Feature",
             id=feature_id,
@@ -380,11 +544,19 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
         request: Optional[QueryRequest],
         limit: int,
         offset: int,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
     ) -> List[Feature]:
         """Synchronous read — runs inside thread pool."""
+        # File-backed mode: an asset_id or id_column on the config signals that
+        # rows carry a native fid (not a geoid), so we stamp a deterministic geoid.
+        file_backed = bool(loc.asset_id) or bool(loc.id_column)
         with _borrow_conn() as conn:
-            reader = self._reader_func(loc.format)
-            source = f"{reader}('{loc.path}')"
+            # Vector formats need the spatial extension's ST_Read; ensure it is
+            # loaded on this connection before building the source expression.
+            if self._is_vector_format(loc.format) and "spatial" not in _loaded_extensions:
+                _try_load_extension_on(conn, "spatial")
+            source = self._source_expr(loc.format, loc.path or "")
 
             # Detect geometry column
             geo_col: Optional[str] = None
@@ -460,7 +632,13 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                         break
                     for row in chunk:
                         row_dict = dict(zip(columns, row))
-                        features.append(self._row_to_feature(row_dict, geo_col))
+                        features.append(self._row_to_feature(
+                            row_dict, geo_col,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                            id_column=loc.id_column,
+                            file_backed=file_backed,
+                        ))
             except Exception as e:
                 logger.error("DuckDB read_entities failed: %s", e)
 
@@ -923,7 +1101,8 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
             return
 
         features = await run_in_thread(
-            self._read_entities_sync, loc, entity_ids, request, limit, offset
+            self._read_entities_sync, loc, entity_ids, request, limit, offset,
+            catalog_id, collection_id,
         )
         for f in features:
             yield f
@@ -1028,6 +1207,14 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
                 catalog_id, collection_id,
             )
             return
+
+        # File-backed collections (#377): register a protective reference so the
+        # backing asset cannot be hard-deleted while the collection reads from it.
+        # Idempotent; best-effort (a failure must not block provisioning).
+        if getattr(loc, "asset_id", None) and collection_id:
+            await self._register_asset_guard(
+                str(loc.asset_id), catalog_id, collection_id,
+            )
 
         # Project the materialised field set the storage backend must hold.
         # This is the cross-driver SSOT (#1291, #1295) — the same projection

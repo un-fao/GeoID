@@ -459,4 +459,93 @@ def _extract_feature_parts(
     return geometry, bbox, user_properties, stac_reserved_members
 
 
-__all__ = ["CanonicalIndexInput", "read_canonical_index_inputs"]
+# ---------------------------------------------------------------------------
+# No-PG canonical input (file-backed collections, #375)
+# ---------------------------------------------------------------------------
+
+# GeoJSON/STAC reserved members that must sit at the ES document top level
+# (not inside ``properties``) so ``unproject_item_from_es`` restores them
+# verbatim on read.  Mirrors the set handled by ``_extract_feature_parts``.
+_STAC_TOP_LEVEL_KEYS: frozenset = frozenset({"assets", "stac_extensions"})
+
+
+def canonical_input_from_feature(
+    feature: Dict[str, Any],
+    catalog_id: str,
+    collection_id: str,
+    *,
+    geoid: str,
+    external_id: Optional[Any] = None,
+    asset_id: Optional[Any] = None,
+    sidecars: Optional[List[Any]] = None,
+) -> CanonicalIndexInput:
+    """Build a :class:`CanonicalIndexInput` from a serialized feature, no PG read.
+
+    The canonical ES document is normally assembled from a raw PostgreSQL row via
+    :func:`read_canonical_index_inputs`.  A file-backed collection has no PG rows,
+    so this elevates the feature-derived fallback (previously inline in
+    ``ItemsElasticsearchDriver.write_entities``) into a first-class, database-free
+    producer.  The result has the same canonical shape as the PG path; only the
+    ``stats``/``system`` sections that require a PG row + sidecars are absent.
+
+    Args:
+        feature:       Serialized GeoJSON/STAC feature dict (``IndexOp.payload``
+                       shape): ``geometry``, ``bbox``, ``properties``, optional
+                       ``assets`` / ``stac_extensions``.
+        catalog_id:    Catalog identifier (kept for symmetry / future per-catalog
+                       handling; not used to touch the database).
+        collection_id: Collection identifier.
+        geoid:         The geoid to stamp as ``row["geoid"]`` and, downstream, the
+                       canonical document ``id`` (``_id`` in ES).
+        external_id:   Optional external id to thread into the row.
+        asset_id:      Optional source asset id to thread into the row.
+        sidecars:      Optional resolved sidecars; defaults to ``[]`` (file path).
+
+    Returns:
+        A :class:`CanonicalIndexInput` ready for ``build_canonical_index_doc``.
+    """
+    from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+
+    _sys_keys = frozenset(SYSTEM_FIELD_KEYS)
+
+    raw_props = feature.get("properties") or {}
+    stac_reserved: Dict[str, Any] = {}
+    for _k in _STAC_TOP_LEVEL_KEYS:
+        if _k in feature and feature[_k] is not None:
+            stac_reserved[_k] = feature[_k]
+        elif _k in raw_props and raw_props[_k] is not None:
+            stac_reserved[_k] = raw_props[_k]
+
+    user_properties = {
+        k: v
+        for k, v in raw_props.items()
+        if k not in _sys_keys and k not in _STAC_TOP_LEVEL_KEYS
+    }
+
+    geom = feature.get("geometry")
+    geometry = geom if isinstance(geom, dict) else None
+    bbox_val = feature.get("bbox")
+    bbox = list(bbox_val) if bbox_val is not None else None
+
+    row: Dict[str, Any] = {"geoid": geoid}
+    if external_id is not None:
+        row["external_id"] = str(external_id)
+    if asset_id is not None:
+        row["asset_id"] = str(asset_id)
+
+    return CanonicalIndexInput(
+        row=row,
+        resolved_sidecars=list(sidecars) if sidecars else [],
+        geometry=geometry,
+        bbox=bbox,
+        user_properties=user_properties or None,
+        access=None,
+        stac_reserved_members=stac_reserved or None,
+    )
+
+
+__all__ = [
+    "CanonicalIndexInput",
+    "read_canonical_index_inputs",
+    "canonical_input_from_feature",
+]

@@ -58,6 +58,7 @@ from .assets_gcs_uploads import AssetsGcsUploadsPreset  # noqa: E402
 from .assets_local_only import AssetsLocalOnlyPreset, _local_backend_available  # noqa: E402
 from .defaults_postgres import DefaultsPostgresPreset  # noqa: E402
 from .demo_data import DEMO_DATA_PRESET  # noqa: E402
+from .file_backed import FileBackedPreset  # noqa: E402
 from .items_es_private import ItemsEsPrivatePreset  # noqa: E402
 from .private_catalog import PrivateCatalogPreset  # noqa: E402
 from .private_collection import PrivateCollectionPreset  # noqa: E402
@@ -73,6 +74,7 @@ register_preset(ItemsEsPrivatePreset())
 register_preset(DEMO_DATA_PRESET)
 register_preset(StacPreset())
 register_preset(PgOnlyCatalogPreset())
+register_preset(FileBackedPreset())
 register_preset(AssetsGcsUploadsPreset())
 # ``assets_local_only`` is on-prem only: only register when GCS is absent.
 if _local_backend_available():

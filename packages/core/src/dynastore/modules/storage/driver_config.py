@@ -1285,10 +1285,26 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
         {DriverCapability.ASYNC, DriverCapability.BATCH}
     )
     path: Mutable[Optional[str]] = Field(default=None, description="Read path (file or glob)")
-    format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, etc.")
+    format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, geojson, gpkg, shp, etc.")
     write_path: Mutable[Optional[str]] = Field(default=None, description="Separate write path (e.g., SQLite file)"
     )
     write_format: Mutable[Optional[str]] = Field(default=None, description="Write format if different from read"
+    )
+    # File-backed collections (#374/#377): bind the driver to a catalog asset
+    # instead of a hand-written path. When set, the driver resolves the asset's
+    # storage URI via AssetsProtocol at dispatch and reads from it. Preferred
+    # over ``path`` when both are present.
+    asset_id: Mutable[Optional[str]] = Field(
+        default=None,
+        description="Catalog asset id to read from. Resolved to the asset's "
+                    "storage URI at dispatch; preferred over `path` when set.",
+    )
+    # Declared id column whose value becomes the deterministic geoid source (fid).
+    # When unset, the driver falls back to a content hash of the feature.
+    id_column: Mutable[Optional[str]] = Field(
+        default=None,
+        description="Source column holding the native feature id (fid) used to "
+                    "derive a stable geoid. Falls back to a content hash if unset.",
     )
 
 
