@@ -29,7 +29,8 @@ Upload flow
    ``UploadTicket(backend="local", method="POST",
    upload_url="/local-upload/{ticket_id}")``.
 3. Client POSTs the file (multipart) to ``/local-upload/{ticket_id}``.
-4. The endpoint streams bytes to ``STAGING_DIR/{ticket_id}/{filename}``, then calls
+4. The assets extension HTTP handler calls ``receive_upload(ticket_id, stream)``
+   which streams bytes to ``STAGING_DIR/{ticket_id}/{filename}``, then calls
    ``complete_upload(ticket_id)`` synchronously:
    - moves the file to ``ASSET_DIR/{catalog_id}/{filename}``
    - registers the asset via ``AssetsProtocol.create_asset(owned_by="local")``
@@ -161,22 +162,6 @@ class LocalUploadModule(ModuleProtocol):
                 "skipping ticket-table provisioning (worker context?)."
             )
 
-        # Modules receive ``app.state`` (a starlette State / SimpleNamespace),
-        # not the FastAPI app itself. ``main.py`` exposes the app via
-        # ``app.state.app`` precisely so route-registering modules like this
-        # one can reach it. Skip route registration if absent (worker
-        # contexts use ``SimpleNamespace`` with no .app — uploads aren't
-        # meaningful there).
-        fastapi_app = getattr(app_state, "app", None)
-        if fastapi_app is not None:
-            self._register_route(fastapi_app)
-            self._register_download_route(fastapi_app)
-        else:
-            logger.warning(
-                "LocalUploadModule: app.state.app missing; skipping HTTP "
-                "route registration (worker context?)."
-            )
-
         # Register the local asset-download backend so the asset router
         # discovers it via get_protocols(AssetDownloadProtocol).
         self._download_process = LocalAssetDownload()
@@ -189,185 +174,76 @@ class LocalUploadModule(ModuleProtocol):
             unregister_plugin(self)
             logger.info("LocalUploadModule: unregistered.")
 
-    def _register_route(self, app: Any) -> None:
-        """Adds ``POST /local-upload/{ticket_id}`` to the FastAPI app.
+    # -------------------------------------------------------------------------
+    # Framework-free receive logic — called by the assets extension HTTP handler
+    # -------------------------------------------------------------------------
 
-        FastAPI's multipart support requires ``python-multipart``; without it
-        ``UploadFile = File(...)`` route registration raises at definition
-        time. Skip cleanly so deployments that don't ship multipart (most
-        slim API-only scopes) keep working — local upload simply isn't
-        available there.
+    async def receive_upload(
+        self,
+        ticket_id: str,
+        stream: AsyncIterator[bytes],
+    ) -> Any:
+        """Consume a byte stream and register the uploaded asset.
+
+        The caller (the assets extension HTTP handler) provides an async byte
+        iterator — typically obtained from ``UploadFile.read(chunk_size)`` — so
+        this method remains framework-free and testable with any byte source.
+
+        Returns an ``UploadStatusResponse`` with ``status=completed``.
+
+        Raises:
+            ValueError: ticket not found or expired (maps to HTTP 404 via the
+                global exception registry's ``ValidationExceptionHandler``).
+            RuntimeError: staging write failure or asset registration failure
+                (maps to HTTP 500).
         """
-        try:
-            import multipart  # noqa: F401  — availability probe only
-        except ImportError:
-            logger.warning(
-                "LocalUploadModule: python-multipart not installed — skipping "
-                "POST /local-upload/{ticket_id} registration. Install the "
-                "extra to enable local file uploads."
-            )
-            return
-
-        from fastapi import File, HTTPException, UploadFile, status as http_status
         from dynastore.models.protocols import UploadStatusResponse, UploadStatus
 
-        async def receive_upload(
-            ticket_id: str,
-            file: UploadFile = File(..., description="File to upload."),
-        ) -> UploadStatusResponse:
-            """
-            Receives the file for a previously initiated local upload session.
+        store = self._tickets
+        ticket = await store.get(ticket_id)
+        if not ticket:
+            raise ValueError(
+                f"Upload ticket '{ticket_id}' not found or expired."
+            )
 
-            Streams the bytes to staging, registers the asset synchronously, and
-            returns ``UploadStatusResponse(status=completed)`` immediately.
-            """
-            store = self._tickets
-            ticket = await store.get(ticket_id)
-            if not ticket:
-                # ``get`` already prunes an expired row and returns None, so a
-                # missing-or-expired ticket collapses to a single 404 here.
-                raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"Upload ticket '{ticket_id}' not found or expired.",
-                )
+        ticket["status"] = UploadStatus.UPLOADING
+        await store.update(ticket_id, {"status": UploadStatus.UPLOADING})
 
-            ticket["status"] = UploadStatus.UPLOADING
-            await store.update(ticket_id, {"status": UploadStatus.UPLOADING})
-
-            # 1. Stream to staging
-            staging_path = self._staging_root / ticket_id / ticket["filename"]
-            staging_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with staging_path.open("wb") as fh:
-                    while chunk := await file.read(1 << 20):  # 1 MiB chunks
+        # 1. Stream to staging
+        staging_path = self._staging_root / ticket_id / ticket["filename"]
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with staging_path.open("wb") as fh:
+                async for chunk in stream:
+                    if chunk:
                         fh.write(chunk)
-            except Exception as exc:
-                await store.update(
-                    ticket_id,
-                    {"status": UploadStatus.FAILED, "error": str(exc)},
-                )
-                logger.error(f"LocalUploadModule: write to staging failed: {exc}")
-                raise HTTPException(
-                    status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to write upload to staging: {exc}",
-                ) from exc
-
-            # 2. Register asset (moves file + creates DB record)
-            try:
-                asset = await self._complete_upload(ticket_id, staging_path, ticket)
-            except Exception as exc:
-                await store.update(
-                    ticket_id,
-                    {"status": UploadStatus.FAILED, "error": str(exc)},
-                )
-                logger.error(f"LocalUploadModule: complete_upload failed: {exc}")
-                raise HTTPException(
-                    status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Asset registration failed: {exc}",
-                ) from exc
-
-            return UploadStatusResponse(
-                ticket_id=ticket_id,
-                status=UploadStatus.COMPLETED,
-                asset_id=asset.asset_id,
+        except Exception as exc:
+            await store.update(
+                ticket_id,
+                {"status": UploadStatus.FAILED, "error": str(exc)},
             )
+            logger.error(f"LocalUploadModule: write to staging failed: {exc}")
+            raise RuntimeError(
+                f"Failed to write upload to staging: {exc}"
+            ) from exc
 
-        app.add_api_route(
-            "/local-upload/{ticket_id}",
-            receive_upload,
-            methods=["POST"],
-            response_model=UploadStatusResponse,
-            summary="Receive Local Upload",
-            description=(
-                "Server-side file receive endpoint for local-disk upload sessions. "
-                "Stream the file as ``multipart/form-data``. "
-                "The asset is registered synchronously — the response is already "
-                "``status=completed`` when this endpoint returns."
-            ),
-            tags=["Assets"],
-        )
-        logger.info("LocalUploadModule: registered POST /local-upload/{ticket_id}")
-
-    def _register_download_route(self, app: Any) -> None:
-        """Adds ``GET /local-download/{catalog_id}/{asset_id}`` to the FastAPI app.
-
-        Streams the underlying file referenced by the asset row to the
-        client. Authentication is provided by the global ``auth`` extension's
-        middleware (same protection model as ``POST /local-upload/...``); no
-        signed URLs are needed because bytes never leave the auth perimeter.
-
-        The asset's URI must start with ``file://`` and resolve to a path
-        under :attr:`_asset_root` (path-traversal guard).
-        """
-        from fastapi import HTTPException, status as http_status
-        from fastapi.responses import FileResponse
-        from urllib.parse import unquote, urlparse
-
-        asset_root = self._asset_root.resolve()
-
-        async def serve_local_asset(catalog_id: str, asset_id: str) -> FileResponse:
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.models.protocols import AssetsProtocol
-
-            assets = get_protocol(AssetsProtocol)
-            if not assets:
-                raise HTTPException(
-                    status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="AssetsProtocol not available.",
-                )
-
-            asset = await assets.get_asset(
-                catalog_id=catalog_id, asset_id=asset_id, collection_id=None,
+        # 2. Register asset (moves file + creates DB record)
+        try:
+            asset = await self._complete_upload(ticket_id, staging_path, ticket)
+        except Exception as exc:
+            await store.update(
+                ticket_id,
+                {"status": UploadStatus.FAILED, "error": str(exc)},
             )
-            if asset is None:
-                raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"Asset '{asset_id}' not found in catalog '{catalog_id}'.",
-                )
-            if asset.owned_by != "local" or not (asset.uri and asset.uri.startswith("file://")):
-                raise HTTPException(
-                    status_code=http_status.HTTP_409_CONFLICT,
-                    detail="Asset is not locally owned.",
-                )
+            logger.error(f"LocalUploadModule: complete_upload failed: {exc}")
+            raise RuntimeError(
+                f"Asset registration failed: {exc}"
+            ) from exc
 
-            parsed = urlparse(asset.uri)
-            file_path = Path(unquote(parsed.path)).resolve()
-            try:
-                file_path.relative_to(asset_root)
-            except ValueError as exc:
-                logger.error(
-                    "LocalUploadModule: refusing to serve %s — outside asset root %s",
-                    file_path, asset_root,
-                )
-                raise HTTPException(
-                    status_code=http_status.HTTP_403_FORBIDDEN,
-                    detail="Asset path is outside the local asset store.",
-                ) from exc
-            if not file_path.is_file():
-                raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"Local file backing asset '{asset_id}' not found on disk.",
-                )
-
-            return FileResponse(
-                path=str(file_path),
-                filename=file_path.name,
-            )
-
-        app.add_api_route(
-            "/local-download/{catalog_id}/{asset_id}",
-            serve_local_asset,
-            methods=["GET"],
-            summary="Serve Local Asset",
-            description=(
-                "Streams the local file backing the asset. Used as the redirect "
-                "target of ``LocalAssetDownload``. Auth is "
-                "provided by the global ``auth`` middleware."
-            ),
-            tags=["Assets"],
-        )
-        logger.info(
-            "LocalUploadModule: registered GET /local-download/{catalog_id}/{asset_id}"
+        return UploadStatusResponse(
+            ticket_id=ticket_id,
+            status=UploadStatus.COMPLETED,
+            asset_id=asset.asset_id,
         )
 
     # -------------------------------------------------------------------------
@@ -453,8 +329,11 @@ class LocalUploadModule(ModuleProtocol):
         Because ``complete_upload`` is called synchronously inside the POST
         endpoint, the status is typically already ``COMPLETED`` by the time the
         client polls this endpoint.
+
+        Raises:
+            ValueError: ticket not found, expired, or belongs to a different
+                catalog (maps to HTTP 404 via the global exception registry).
         """
-        from fastapi import HTTPException, status as http_status
         from dynastore.models.protocols import UploadStatus, UploadStatusResponse
 
         store = self._tickets
@@ -462,15 +341,13 @@ class LocalUploadModule(ModuleProtocol):
         if not ticket:
             # ``get`` prunes an expired row before returning None, so missing
             # and expired both collapse to this single 404.
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=f"Upload ticket '{ticket_id}' not found or expired.",
+            raise ValueError(
+                f"Upload ticket '{ticket_id}' not found or expired."
             )
 
         if ticket["catalog_id"] != catalog_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=f"Upload ticket '{ticket_id}' not found in catalog '{catalog_id}'.",
+            raise ValueError(
+                f"Upload ticket '{ticket_id}' not found in catalog '{catalog_id}'."
             )
 
         current_status = ticket.get("status", UploadStatus.PENDING)
