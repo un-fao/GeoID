@@ -1,7 +1,7 @@
 // upload.js — request an UploadTicket then deliver the file to the backend URL.
 // UploadTicket response fields: ticket_id, upload_url, method, headers, expires_at, backend.
 // UploadRequest body fields: filename, content_type (optional), asset { asset_id, asset_type, metadata }.
-import { postJSON } from "../common/api.js";
+import { postJSON } from "../static/common/api.js";
 
 /**
  * uploadAsset(cat, coll, file, assetId) -> UploadTicket JSON (or throws).

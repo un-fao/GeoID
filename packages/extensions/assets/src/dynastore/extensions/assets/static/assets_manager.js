@@ -1,8 +1,8 @@
 // assets_manager.js — Assets Manager page logic.
 // Imports shared helpers from the always-on common/ layer.
-import { getJSON, postJSON, deleteJSON } from "../common/api.js";
-import { mountContextBar } from "../common/context-bar.js";
-import { register, t, lang } from "../common/i18n.js";
+import { getJSON, postJSON, deleteJSON } from "../static/common/api.js";
+import { mountContextBar } from "../static/common/context-bar.js";
+import { register, t, lang } from "../static/common/i18n.js";
 import { uploadAsset } from "./upload.js";
 
 // ---------------------------------------------------------------------------
