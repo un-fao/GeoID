@@ -270,8 +270,16 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        # Policies declared via PolicyContributor; IAM forwards centrally.
-        yield
+        from dynastore.tools.discovery import register_plugin, unregister_plugin
+        from .stac_contributor import LanguageStacContributor
+
+        language_contributor = LanguageStacContributor()
+        register_plugin(language_contributor)
+        try:
+            # Policies declared via PolicyContributor; IAM forwards centrally.
+            yield
+        finally:
+            unregister_plugin(language_contributor)
 
     # NotebookContributorProtocol — opt-in surface picked up by
     # NotebooksModule via discovery. Returning an empty list when
