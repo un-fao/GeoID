@@ -974,6 +974,22 @@ hr.rule { border: 0; border-top: 1px solid var(--rule-hair); margin: 16px 0; }
   text-overflow: ellipsis;
 }
 
+/* #1940 — multi-instance ref rows nest under their canonical class entry.
+   Indented + a guide rail so the ref_key reads as an instance of the class. */
+.schema-list .schema-list-item-ref {
+  padding-left: 24px;
+  border-left: 2px solid var(--rule, rgba(0, 0, 0, 0.12));
+  margin-left: 8px;
+}
+.schema-list .schema-list-item-ref .item-title-ref {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+.schema-list .schema-list-item-ref.selected {
+  border-left-color: var(--terracotta);
+}
+
 /* Scope badge — displayed next to the plugin title in the schema list.
  * Indicates which config tiers the plugin is writable at:
  *   waterfall = platform → catalog → collection (full stack, default)

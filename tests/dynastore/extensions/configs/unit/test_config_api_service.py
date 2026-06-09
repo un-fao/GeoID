@@ -1950,3 +1950,39 @@ def test_abstract_subclass_without_address_ok():
 #   - test_build_meta_entry_full_waterfall
 #   - test_build_meta_entry_no_tier_data_returns_source_only
 #   - test_compose_tree_meta_includes_layers_when_tier_data_provided
+
+
+# ---------------------------------------------------------------------------
+# list_refs_map — raw {ref_key: class_key} discovery (#1940)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_refs_map_returns_raw_map():
+    """``list_refs_map`` returns the service's ``list_refs_at_scope`` result
+    verbatim (raw ``{ref_key: class_key}``), passing the scope through and
+    doing no payload read."""
+    svc = MagicMock()
+    ref_map = {"GcpBucketConfig": "GcpBucketConfig", "my-bucket": "GcpBucketConfig"}
+    svc.list_refs_at_scope = AsyncMock(return_value=ref_map)
+    api = ConfigApiService(config_service=svc)
+
+    out = await api.list_refs_map(catalog_id="cat-x", collection_id=None)
+
+    assert out == ref_map
+    svc.list_refs_at_scope.assert_awaited_once_with(
+        catalog_id="cat-x", collection_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_refs_map_degrades_when_method_absent():
+    """A backend/mock without ``list_refs_at_scope`` degrades to ``{}``
+    rather than raising (older deployments)."""
+
+    class _NoRefs:
+        async def list_configs(self, *a, **k):
+            return {"results": [], "total": 0}
+
+    api = ConfigApiService(config_service=_NoRefs())
+
+    assert await api.list_refs_map() == {}

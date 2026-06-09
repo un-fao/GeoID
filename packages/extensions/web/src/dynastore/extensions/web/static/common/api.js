@@ -140,6 +140,14 @@ export function fetchSchemas() {
   return getJSON("/configs/registry");
 }
 
+// Multi-instance ref discovery (#1940). Returns the {ref_key: class_key}
+// map of rows stored at the given scope — including instance rows authored
+// under a non-canonical ref_key (set_config_by_ref) that the class-keyed
+// registry list does not surface. Tier-local (no waterfall).
+export function fetchRefs(scope) {
+  return getJSON(`${scopeBasePath(scope)}/refs`);
+}
+
 // Identity — used to gate admin pages. Returns { principal, roles }.
 // `/iam/me` is the canonical "who am I + roles" surface. The OIDC-spec
 // `/auth/userinfo` returns only the token's claim set (no platform roles).
