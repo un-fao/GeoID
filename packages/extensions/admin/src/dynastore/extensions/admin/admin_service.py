@@ -2712,12 +2712,10 @@ class AdminService(ExtensionProtocol):
                 and hasattr(pm, "model_fields")
             )
             tier_str = _tier_value(preset) or None
+            # Only attach _meta when the preset has a documentable params model;
+            # a no-params preset gets no _meta envelope (rather than an empty {}).
             if has_real_params:
                 payload["_meta"] = build_meta_block(pm, tier=tier_str, mode=meta)
-            else:
-                payload["_meta"] = build_meta_block(
-                    type(None), tier=tier_str, mode="none"
-                )
 
         return payload
 

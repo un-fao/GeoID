@@ -523,16 +523,21 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
             return f"ST_Read('{path}')"
         if cls._is_geoparquet_format(fmt):
             geom = geometry_column or _GEOPARQUET_DEFAULT_GEOM_COL
+            stored = geom_col_stored_type.upper()
+            if stored == "GEOMETRY":
+                # Already a native GEOMETRY — pass through without wrapping.
+                # The column name is never interpolated here, so any valid
+                # Parquet column name (incl. non-ASCII) is fine.
+                return f"(SELECT * FROM read_parquet('{path}'))"
+            # Decode branches interpolate the column name into the query, so it
+            # must be a strict SQL identifier — never operator text that could
+            # break out of the quoted identifier and inject SQL.
             if not _SQL_IDENTIFIER_RE.match(geom):
                 raise ValueError(
                     f"Invalid geometry_column {geom!r}: must be a plain SQL "
                     "identifier (letters, digits, underscore; not starting with "
                     "a digit). The value is interpolated into a DuckDB query."
                 )
-            stored = geom_col_stored_type.upper()
-            if stored == "GEOMETRY":
-                # Already a native GEOMETRY — pass through without wrapping.
-                return f"(SELECT * FROM read_parquet('{path}'))"
             if stored == "VARCHAR":
                 return (
                     f'(SELECT * REPLACE (ST_GeomFromText("{geom}") AS "{geom}") '

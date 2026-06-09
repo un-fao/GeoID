@@ -1321,6 +1321,25 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
         ),
     )
 
+    @field_validator("path", "write_path")
+    @classmethod
+    def _reject_sql_breakout_chars(cls, v: Optional[str]) -> Optional[str]:
+        """Reject paths containing characters that could break out of the
+        single-quoted string literal the DuckDB driver interpolates them into.
+
+        ``path``/``write_path`` are operator-set (admin configs / preset apply),
+        but they reach the SQL string via ``read_parquet('{path}')`` /
+        ``ST_Read('{path}')`` etc., so a single quote, newline, or null byte
+        would be an injection vector. Legitimate local paths, cloud URIs
+        (``s3://``/``gs://``/``https://``), and glob patterns never contain them.
+        """
+        if v is not None and any(ch in v for ch in ("'", "\n", "\r", "\x00")):
+            raise ValueError(
+                "path must not contain single-quotes, newlines, or null bytes "
+                "(they are interpolated into a DuckDB query)."
+            )
+        return v
+
 
 _ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
     "catalog_name", "catalog_uri", "catalog_type", "catalog_properties",

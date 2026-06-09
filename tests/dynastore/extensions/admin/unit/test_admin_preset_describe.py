@@ -53,20 +53,29 @@ class TestGetPresetDetailWithMeta:
         assert "_meta" not in body
 
     def test_meta_field_injects_meta_key(self) -> None:
-        """?meta=field adds _meta with docs key."""
+        """?meta=field adds _meta with docs key (preset with real params)."""
+        client = TestClient(_app())
+        resp = client.get("/admin/presets/file_backed", params={"meta": "field"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "_meta" in body
+        assert "docs" in body["_meta"]
+
+    def test_meta_schema_injects_meta_key(self) -> None:
+        """?meta=schema adds _meta with json_schema key (preset with real params)."""
+        client = TestClient(_app())
+        resp = client.get("/admin/presets/file_backed", params={"meta": "schema"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "_meta" in body
+        assert "json_schema" in body["_meta"]
+
+    def test_meta_field_omitted_for_no_params_preset(self) -> None:
+        """A no-params preset gets no _meta envelope even under ?meta=field."""
         client = TestClient(_app())
         resp = client.get("/admin/presets/public_catalog", params={"meta": "field"})
         assert resp.status_code == 200
-        body = resp.json()
-        assert "_meta" in body
-
-    def test_meta_schema_injects_meta_key(self) -> None:
-        """?meta=schema adds _meta with json_schema key."""
-        client = TestClient(_app())
-        resp = client.get("/admin/presets/public_catalog", params={"meta": "schema"})
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "_meta" in body
+        assert "_meta" not in resp.json()
 
     def test_unknown_preset_returns_404(self) -> None:
         client = TestClient(_app())

@@ -189,10 +189,11 @@ class TestSourceExprGeoparquet:
         ],
     )
     @pytest.mark.parametrize(
-        "stored_type", ["BLOB", "GEOMETRY", "VARCHAR"]
+        "stored_type", ["BLOB", "VARCHAR"]
     )
-    def test_injection_rejected_in_all_decode_branches(self, malicious, stored_type):
-        """Identifier validation fires for all geom_col_stored_type branches."""
+    def test_injection_rejected_in_interpolating_branches(self, malicious, stored_type):
+        """Identifier validation fires for the branches that interpolate the
+        column name (BLOB→ST_GeomFromWKB, VARCHAR→ST_GeomFromText)."""
         D = _driver_cls()
         with pytest.raises(ValueError):
             D._source_expr(
@@ -200,6 +201,41 @@ class TestSourceExprGeoparquet:
                 geometry_column=malicious,
                 geom_col_stored_type=stored_type,
             )
+
+    @pytest.mark.parametrize(
+        "odd_name",
+        ['geometry" AS x, (SELECT 1)) --', "geom; DROP TABLE t", "geom col", "名前"],
+    )
+    def test_geometry_passthrough_ignores_column_name(self, odd_name):
+        """GEOMETRY passthrough never interpolates the column name, so even an
+        odd/non-identifier name is accepted (the name is irrelevant there)."""
+        D = _driver_cls()
+        sql = D._source_expr(
+            "geoparquet", "/data/native.parquet",
+            geometry_column=odd_name,
+            geom_col_stored_type="GEOMETRY",
+        )
+        assert sql == "(SELECT * FROM read_parquet('/data/native.parquet'))"
+        assert odd_name not in sql
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        ["/data/x.parquet' UNION SELECT 1 --", "a\nb.parquet", "x\x00.parquet"],
+    )
+    def test_driver_config_rejects_sql_breakout_path(self, bad_path):
+        """ItemsDuckdbDriverConfig rejects paths with quote/newline/null bytes."""
+        from dynastore.modules.storage.driver_config import ItemsDuckdbDriverConfig
+        with pytest.raises(ValueError):
+            ItemsDuckdbDriverConfig(path=bad_path, format="geoparquet")
+
+    def test_driver_config_accepts_legitimate_cloud_paths(self):
+        from dynastore.modules.storage.driver_config import ItemsDuckdbDriverConfig
+        for ok in (
+            "/data/x.parquet",
+            "s3://bucket/prefix/*.parquet",
+            "https://github.com/opengeospatial/geoparquet/raw/refs/heads/main/examples/example.parquet",
+        ):
+            ItemsDuckdbDriverConfig(path=ok, format="geoparquet")  # must not raise
 
     def test_empty_geometry_column_falls_back_to_default(self):
         """An empty geometry_column must use the default 'geometry', not raise."""
