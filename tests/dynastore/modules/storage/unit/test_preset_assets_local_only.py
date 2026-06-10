@@ -35,7 +35,7 @@ from unittest import mock
 import pytest
 from fastapi import HTTPException
 
-from dynastore.extensions.admin.admin_service import (
+from dynastore.extensions.configs.presets_api import (
     _preset_reachable_at,
     _resolve_preset_for_scope,
 )
