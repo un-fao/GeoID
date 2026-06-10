@@ -46,13 +46,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, Tuple
 
 from pydantic import Field
 
 from dynastore.models.mutability import Mutable
 from dynastore.models.plugin_config import PluginConfig
+from dynastore.modules.db_config.locking_tools import pg_advisory_leadership
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -212,31 +212,12 @@ class SoftDeleteReaper:
         """Leader-elected outer loop — exits when shutdown_event is set."""
         from dynastore.tools.async_utils import run_leader_loop
 
-        @asynccontextmanager
-        async def _acquire_leadership():
-            engine = get_engine()
-            if engine is None:
-                yield False
-                return
-            # Use AUTOCOMMIT advisory lock so the connection is not held
-            # inside a transaction (matches the event consumer pattern).
-            try:
-                async with managed_transaction(engine) as conn:
-                    row = await DQLQuery(
-                        "SELECT pg_try_advisory_lock(:key)",
-                        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-                    ).execute(conn, key=_REAPER_ADVISORY_LOCK_KEY)
-                    acquired = bool(row)
-                    if acquired:
-                        yield True
-                        await DQLQuery(
-                            "SELECT pg_advisory_unlock(:key)",
-                            result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-                        ).execute(conn, key=_REAPER_ADVISORY_LOCK_KEY)
-                    else:
-                        yield False
-            except Exception:
-                yield False
+        def _acquire_leadership():
+            return pg_advisory_leadership(
+                get_engine(),
+                _REAPER_ADVISORY_LOCK_KEY,
+                name="SoftDeleteReaper",
+            )
 
         async def _on_leader() -> None:
             await self.run_once()

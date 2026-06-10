@@ -26,8 +26,9 @@ and the three task-queue jobs (stuck-task reaper, partition-create, retention).
 Architecture contract
 ---------------------
 - One background loop per process; a pg session-level advisory lock (held
-  on a dedicated ``managed_transaction`` connection — never a pool checkout
-  held across work) ensures exactly one pod fleet-wide performs the jobs.
+  via ``pg_advisory_leadership`` on a dedicated AUTOCOMMIT connection —
+  never a pool checkout or an open transaction held across work) ensures
+  exactly one pod fleet-wide performs the jobs.
 - Tick behaviour: reclaim stale jobs → fetch due jobs → for each due job:
   mark_running, run with a bounded per-job statement_timeout, mark_done.
   A job raising an exception records status='error' and lets others proceed
@@ -44,14 +45,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from dynastore.modules.catalog.db_init.maintenance_schedule import (
     MaintenanceScheduleRepository,
 )
-from dynastore.modules.db_config.locking_tools import check_extension_exists
+from dynastore.modules.db_config.locking_tools import (
+    check_extension_exists,
+    pg_advisory_leadership,
+)
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
     ResultHandler,
@@ -516,29 +519,12 @@ class MaintenanceSupervisor:
         """Leader-elected outer loop — exits when shutdown_event is set."""
         from dynastore.tools.async_utils import run_leader_loop
 
-        @asynccontextmanager
-        async def _acquire_leadership():
-            engine = get_engine()
-            if engine is None:
-                yield False
-                return
-            try:
-                async with managed_transaction(engine) as conn:
-                    row = await DQLQuery(
-                        "SELECT pg_try_advisory_lock(:key)",
-                        result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-                    ).execute(conn, key=_SUPERVISOR_ADVISORY_LOCK_KEY)
-                    acquired = bool(row)
-                    if acquired:
-                        yield True
-                        await DQLQuery(
-                            "SELECT pg_advisory_unlock(:key)",
-                            result_handler=ResultHandler.SCALAR_ONE_OR_NONE,
-                        ).execute(conn, key=_SUPERVISOR_ADVISORY_LOCK_KEY)
-                    else:
-                        yield False
-            except Exception:
-                yield False
+        def _acquire_leadership():
+            return pg_advisory_leadership(
+                get_engine(),
+                _SUPERVISOR_ADVISORY_LOCK_KEY,
+                name="MaintenanceSupervisor",
+            )
 
         async def _on_leader() -> None:
             await self.run_once()

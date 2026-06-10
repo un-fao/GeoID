@@ -546,6 +546,14 @@ async def run_leader_loop(
     ``on_leader`` may run its own inner periodic loop, but MUST let exceptions
     propagate. Swallowing exceptions inside ``on_leader`` keeps the lock held
     and is the anti-pattern this helper exists to prevent.
+
+    ``acquire_leadership`` MUST yield exactly once on every code path. Do not
+    hand-roll it for Postgres advisory locks — use
+    ``dynastore.modules.db_config.locking_tools.pg_advisory_leadership``,
+    which holds the lock on a dedicated AUTOCOMMIT connection (no transaction
+    pinned across the tenure, no lock leaking into the pool) and never yields
+    from an ``except`` handler (the historical double-yield bug surfaced as
+    ``RuntimeError: generator didn't stop`` and resigned every cycle).
     """
     is_shutdown = is_shutdown or (lambda: False)
     while not is_shutdown():
