@@ -433,12 +433,9 @@ export async function postFeatures(catalogId, collectionId, payload) {
 // signed-in principal. Used to discover "catalog admin" scope.
 export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");
 
-// Catalog options for pickers, grant-filtered to the signed-in principal.
-// Sources from /iam/me/catalogs (allowed for any authenticated principal via
-// self_service_authorization_api) rather than the cross-tenant /stac/catalogs
-// or the bare /admin/catalogs list — both of which are denied to a plain
-// authenticated admin and made the admin pickers render empty (#1736).
-// Normalized to {id, catalog_id, title} so every dropdown reads a stable id.
+// Normalize a catalog payload (bare list, {catalogs:[...]}, or {items:[...]},
+// of strings or objects) to {id, catalog_id, title} so every dropdown reads a
+// stable id regardless of which provider produced the list.
 const _normalizeCatalogList = (raw) => {
   const list = Array.isArray(raw) ? raw : (raw.catalogs || raw.items || []);
   return list
@@ -452,47 +449,18 @@ const _normalizeCatalogList = (raw) => {
     .filter((c) => c.id);
 };
 
-// Page through the cross-tenant /stac/catalogs list. The endpoint caps a
-// single page at limit<=10000 (default 100), so a one-shot fetch silently
-// truncates on stacks with hundreds of catalogs — freshly created ones past
-// the first page then never appear in the picker (#1917). Loop with a large
-// page size and stop on the first short page; a hard page cap guards against
-// a misbehaving server returning full pages forever.
-const _fetchAllStacCatalogs = async () => {
-  const PAGE = 1000;
-  const MAX_PAGES = 50; // 50k catalogs ceiling — well past any real deployment
-  const out = [];
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const offset = page * PAGE;
-    const batch = _normalizeCatalogList(
-      await getJSON(`/stac/catalogs?limit=${PAGE}&offset=${offset}`),
-    );
-    out.push(...batch);
-    if (batch.length < PAGE) break;
-  }
-  return out;
-};
-
+// Catalog options for pickers — server-resolved via /web/catalogs. The
+// server picks the highest-priority available CatalogListProvider: IAM
+// (grant-filtered to the signed-in principal) when mounted, otherwise the
+// public protocol full list. Precedence and tenant-scope safety live on the
+// server (single source of truth, #1736); the picker just renders what it is
+// given. Returns [] on error so a dropdown degrades to empty, never throws.
 export const fetchCatalogOptions = async () => {
-  let mine = [];
   try {
-    mine = _normalizeCatalogList(await fetchMyCatalogs());
-  } catch (_) { mine = []; }
-  const concrete = mine.filter((c) => c.id !== "*");
-  if (concrete.length) return concrete;
-  // A wildcard ("*") grant or empty result means the caller is a platform-tier
-  // admin with no enumerated catalogs. Try the cross-tenant list, which is only
-  // permitted for sysadmin (sysadmin_full_access); if denied, return what we
-  // have rather than surfacing a meaningless "*" option. Cross-tenant
-  // enumeration for non-sysadmin platform admins is intentionally not granted
-  // (private-catalogs-never-aggregate invariant, #1736).
-  const wildcard = mine.some((c) => c.id === "*");
-  if (wildcard) {
-    try {
-      return await _fetchAllStacCatalogs();
-    } catch (_) { /* not permitted to enumerate cross-tenant */ }
+    return _normalizeCatalogList(await getJSON("/web/catalogs"));
+  } catch (_) {
+    return [];
   }
-  return concrete;
 };
 
 export const getCatalogProvisioning = (catalogId) =>
