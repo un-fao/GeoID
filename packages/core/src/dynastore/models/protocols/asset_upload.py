@@ -278,6 +278,7 @@ class AssetUploadProtocol(Protocol):
         filename: str,
         content_type: Optional[str] = None,
         collection_id: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> UploadTicket:
         """
         Prepares an upload session and returns a ticket the client uses to
@@ -299,6 +300,9 @@ class AssetUploadProtocol(Protocol):
                 content-type hints).
             content_type: MIME type of the file being uploaded.
             collection_id: Optional collection scope for the asset.
+            origin: Browser origin used to CORS-stamp direct-upload sessions
+                so the client can read upload responses cross-origin.
+                Backends without browser-direct uploads may ignore it.
 
         Returns:
             ``UploadTicket`` containing the upload URL and instructions.
