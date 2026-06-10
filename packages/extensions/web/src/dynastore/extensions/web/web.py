@@ -41,6 +41,7 @@ from dynastore.models.auth import Condition
 from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.models.protocols.policies import Policy, Role, Principal
 from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
+from dynastore.extensions.tools.language_utils import get_language
 
 # Register public access policy for web extension
 logger = logging.getLogger(__name__)
@@ -444,6 +445,14 @@ class Web(ExtensionProtocol, OGCServiceMixin):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         _register_anonymous_principal()
+
+        # Public, unfiltered catalog-list provider (priority 100) backing the
+        # /web/catalogs picker endpoint. An auth-aware provider (e.g. IAM)
+        # registers at a lower priority and outranks this one when mounted.
+        from dynastore.extensions.web.catalog_source import (
+            DefaultCatalogListProvider,
+        )
+        register_plugin(DefaultCatalogListProvider())
 
         # Register push-based CORS config handler
         from dynastore.modules.iam.security_config import SecurityPluginConfig
@@ -1681,6 +1690,35 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 return []
 
             return [c.model_dump() for c in cats]
+
+        @self.router.get("/catalogs", response_class=JSONResponse)
+        async def get_catalog_options(
+            request: Request,
+            language: str = Depends(get_language),
+        ):
+            """Catalog options for UI pickers — pluggable, server-resolved.
+
+            Returns ``{"catalogs": [{"id", "title"}]}`` from the
+            highest-priority *available* ``CatalogListProvider``: IAM when
+            mounted (grant-filtered for the principal), otherwise the public
+            full list. The winner is authoritative — an empty result from an
+            auth-aware provider is NOT overridden by a lower-priority full
+            list, so a tenant-scoped deployment never leaks catalogs the
+            caller cannot see. New protocols become selectable by registering
+            a provider; no front-end change is needed.
+            """
+            from dynastore.models.protocols.catalog_source import (
+                CatalogListProvider,
+            )
+
+            providers = get_protocols(CatalogListProvider)
+            if not providers:
+                return {"catalogs": []}
+            winner = providers[0]  # priority-sorted, is_available()-gated
+            options = await winner.list_catalogs(request, language)
+            return {
+                "catalogs": [{"id": o.id, "title": o.title} for o in options]
+            }
 
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/collections", response_class=JSONResponse
