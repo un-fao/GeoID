@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dynastore.modules.storage.driver_config import (
     ItemsDuckdbDriverConfig,
@@ -152,6 +152,28 @@ class FileBackedPresetParams(BaseModel):
         ),
         examples=["geometry", "geom", "wkb_geometry"],
     )
+
+    @field_validator("geometry_column")
+    @classmethod
+    def _validate_geometry_column_identifier(cls, v: Optional[str]) -> Optional[str]:
+        """Reject geometry_column values that are not plain SQL identifiers.
+
+        The column name is interpolated into a DuckDB quoted-identifier expression
+        (``"<geometry_column>"``), so any value that does not satisfy the plain
+        identifier grammar is an injection vector.  ``None`` (the default, which
+        causes the driver to fall back to ``"geometry"``) is always accepted.
+        """
+        if v is None:
+            return v
+        from dynastore.tools.db import validate_column_identifier, InvalidIdentifierError
+        try:
+            return validate_column_identifier(v)
+        except InvalidIdentifierError as exc:
+            raise ValueError(
+                f"geometry_column {v!r} is not a valid SQL identifier: {exc}. "
+                "The value is interpolated into a DuckDB query; use only letters, "
+                "digits, and underscores, starting with a letter or underscore."
+            ) from exc
 
 
 def _file_backed_routing(params: FileBackedPresetParams) -> ItemsRoutingConfig:
