@@ -204,6 +204,10 @@ _delete_subscription_query = DQLQuery(
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
+#: Public alias for the maximum event retry count.  Consumed by the
+#: maintenance supervisor to keep the stuck-event reaper threshold in sync
+#: with the accumulation-policy value set here.
+MAX_RETRIES: int = _MAX_RETRIES
 
 _publish_query = DQLQuery(
     f"""
