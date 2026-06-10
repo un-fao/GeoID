@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIP | 3D GeoVolumes Browser</title>
+
+    <!-- MapLibre GL JS v5.24.0 -->
+    <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+            integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp"
+            crossorigin="anonymous"></script>
+    <link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet"
+          integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK"
+          crossorigin="anonymous">
+
+    <!-- deck.gl 9.3.3 (full dist includes Tile3DLayer) -->
+    <script src="https://unpkg.com/deck.gl@9.3.3/dist.min.js"
+            integrity="sha384-z8EyTzFj0t4BRE6AqQpZFc+gmtLqmrnwc84a8UbzgaMOsXa5wufPG28M2Moz7YMI"
+            crossorigin="anonymous"></script>
+
+    <!-- Common helpers (plain scripts, not ES modules) -->
+    <script src="../static/common/i18n.js"></script>
+    <script src="../static/common/maplibre-map.js"></script>
+
+    <!-- Page logic -->
+    <script src="./geovolumes-globe.js"></script>
+
+    <!-- Favicon and vendor styles -->
+    <link rel="icon" type="image/png" href="../static/dynastore.png">
+    <link rel="stylesheet" href="../static/vendor/vendor.css"/>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #020617;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1.5rem;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            flex-shrink: 0;
+            z-index: 10;
+        }
+        .header-title { display: flex; align-items: center; gap: 0.75rem; font-weight: bold; font-size: 1.1rem; color: white; }
+        .header-title img { width: 2rem; height: 2rem; border-radius: 0.4rem; }
+        .back-link { color: #94a3b8; text-decoration: none; font-size: 0.875rem; transition: color 0.2s; }
+        .back-link:hover { color: white; }
+
+        .main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Left sidebar: container/collection tree */
+        #sidebar {
+            width: 300px;
+            min-width: 240px;
+            background: rgba(15, 23, 42, 0.95);
+            border-right: 1px solid rgba(255, 255, 255, 0.07);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 5;
+        }
+        #sidebar-header {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        #sidebar-header label {
+            display: block;
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-bottom: 0.25rem;
+        }
+        #catalog-select, #collection-select {
+            width: 100%;
+            padding: 0.4rem 0.6rem;
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.35rem;
+            color: #e2e8f0;
+            font-size: 0.82rem;
+            margin-bottom: 0.4rem;
+        }
+        #container-tree {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+        .container-node {
+            padding: 0.45rem 0.65rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+            border: 1px solid transparent;
+            margin-bottom: 0.2rem;
+            font-size: 0.82rem;
+            color: #e2e8f0;
+            transition: background 0.15s;
+        }
+        .container-node:hover { background: rgba(99, 102, 241, 0.12); border-color: rgba(99, 102, 241, 0.25); }
+        .container-node.active { background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); }
+        .container-node .node-type { font-size: 0.68rem; color: #64748b; margin-top: 0.1rem; }
+        .container-children { margin-left: 1rem; border-left: 1px solid rgba(255,255,255,0.07); padding-left: 0.4rem; }
+        .loading-spinner { text-align: center; padding: 2rem 1rem; color: #64748b; font-size: 0.85rem; }
+
+        /* Globe map area */
+        #map-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+        #geovolumes-map {
+            position: absolute;
+            inset: 0;
+        }
+
+        /* Popup / info panel for building attributes */
+        #info-panel {
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            width: 280px;
+            max-height: 40vh;
+            overflow-y: auto;
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            z-index: 10;
+            display: none;
+            backdrop-filter: blur(8px);
+        }
+        #info-panel h4 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #a5b4fc;
+            margin: 0 0 0.5rem 0;
+        }
+        #info-panel .close-btn {
+            float: right;
+            background: none;
+            border: none;
+            color: #64748b;
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 0;
+            margin-top: -0.1rem;
+        }
+        #info-panel .close-btn:hover { color: #e2e8f0; }
+        #info-props { font-size: 0.78rem; }
+        #info-props dt { color: #64748b; margin-top: 0.3rem; }
+        #info-props dd { color: #e2e8f0; margin: 0 0 0 0.5rem; word-break: break-all; }
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <div class="header-title">
+            <img src="../static/dynastore.png" alt="AIP Logo">
+            <span id="page-title">Agro-Informatics Platform: 3D GeoVolumes Browser</span>
+        </div>
+        <a href="../" class="back-link" id="back-home-link"
+           onclick="(function(e){if(window.parent!==window&&typeof window.parent.switchTab==='function'){e.preventDefault();window.parent.switchTab('home');}})(event)">
+            <i class="fa-solid fa-arrow-left"></i> <span id="lbl-back">Back to Home</span>
+        </a>
+    </header>
+
+    <div class="main-layout">
+        <!-- Sidebar: catalog selector + 3D container tree -->
+        <div id="sidebar">
+            <div id="sidebar-header">
+                <label for="catalog-select" id="lbl-catalog">Catalog</label>
+                <select id="catalog-select">
+                    <option value="">— select —</option>
+                </select>
+                <div id="container-status" class="loading-spinner" style="display:none; padding:0.5rem 0;">
+                    Loading containers…
+                </div>
+            </div>
+            <div id="container-tree">
+                <div class="loading-spinner">
+                    <p id="lbl-select-catalog">Select a catalog to browse 3D containers.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Globe map -->
+        <div id="map-area">
+            <div id="geovolumes-map"></div>
+
+            <!-- Building attribute popup -->
+            <div id="info-panel">
+                <h4 id="info-panel-title">
+                    Building
+                    <button class="close-btn" id="info-close" title="Close">&#x2715;</button>
+                </h4>
+                <dl id="info-props"></dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- VERSION: {{VERSION}} -->
+</body>
+</html>
