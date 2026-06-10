@@ -19,7 +19,7 @@
 """``private_collection`` preset — collection-tier private items routing.
 
 A ``COLLECTION``-tier preset (#972): applied at one collection via
-``POST /admin/catalogs/{cat}/collections/{col}/presets/private_collection``,
+``POST /configs/catalogs/{cat}/collections/{col}/presets/private_collection``,
 it pins the per-tenant private items indexer (``items_elasticsearch_private_driver``)
 on a single collection without touching catalog-tier templates. Use to
 make one collection inside an otherwise-public catalog private, or to

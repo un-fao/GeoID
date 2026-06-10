@@ -37,7 +37,7 @@ the list as operator-managed and does not append additional upload drivers.
 The preset objects are module-level singletons. ``_register()`` runs at
 import time (bottom of this module), publishing the presets into the
 storage preset registry at ``PresetTier.PLATFORM`` so they surface in the
-admin presets UI and ``/admin/presets`` with dry-run/apply/rollback.
+admin presets UI and ``/configs/presets`` with dry-run/apply/rollback.
 """
 from __future__ import annotations
 
