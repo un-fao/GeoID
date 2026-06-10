@@ -339,20 +339,17 @@ async def bootstrap_preset_if_absent(
 ) -> bool:
     """Apply a preset once per DB on cold-boot if no sentinel row exists.
 
-    Uses ``iam.applied_presets`` as a sentinel so subsequent restarts are
-    no-ops.  A PostgreSQL advisory lock serialises concurrent first boots.
+    Uses the single platform bootstrap guard (``catalog.shared_properties``
+    key ``platform.bootstrap_initialized``) to skip all non-force presets on
+    subsequent restarts.  When ``force`` is ``True`` the guard is bypassed and
+    the preset re-applies on every call — this is the ``public_access_baseline``
+    self-heal path that gates the Cloud Run ``/health`` probe.
 
-    When ``force`` is set the sentinel check is skipped and the preset is
-    re-applied on every call (the sentinel INSERT remains
-    ``ON CONFLICT DO NOTHING``, so the audit row is preserved). This is for
-    load-bearing, idempotent presets that MUST self-heal a drifted DB on
-    restart — e.g. ``public_access_baseline``, whose anonymous ``/health``
-    grant gates the Cloud Run startup probe: if that grant is ever lost the
-    sentinel would otherwise skip re-application and the service could never
-    pass its probe again.
+    Inside the advisory lock the guard is re-checked (double-checked locking)
+    before skipping, so two pods racing to first-boot never both skip.
 
     Returns ``True`` if the preset was applied this call, ``False`` if it was
-    skipped (sentinel already existed and ``force`` is False).
+    skipped (guard already set and ``force`` is False, or lock timed out).
     """
     from dynastore.modules.db_config.locking_tools import acquire_startup_lock
     from dynastore.modules.storage.presets.preset import NoParams
@@ -386,6 +383,18 @@ async def bootstrap_preset_if_absent(
     async with acquire_startup_lock(engine, _lock_key) as conn:
         if conn is None:
             return False
+
+        # Re-check bootstrap guard inside the lock (double-checked locking).
+        # force=True bypasses the guard — load-bearing self-heal presets must
+        # always run regardless of the guard state.
+        if not force:
+            from dynastore.modules.catalog.bootstrap_guard import is_initialized
+            if await is_initialized(db_resource=conn):
+                logger.debug(
+                    "bootstrap_preset_if_absent: bootstrap guard set — skipping %r (force=False).",
+                    preset_name,
+                )
+                return False
 
         row = await _select_sentinel.execute(conn, preset_name=preset_name, scope_key=scope_key)
         if row is not None and not force:

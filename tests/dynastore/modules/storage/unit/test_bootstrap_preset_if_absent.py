@@ -28,7 +28,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from unittest.mock import AsyncMock as _AsyncMock
+
 from dynastore.modules.storage.presets.preset import AppliedDescriptor, NoParams
+
+# Convenience: patches is_initialized to return False (guard not set) so
+# existing tests that don't care about the guard still exercise normal paths.
+_guard_unset = patch(
+    "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+    _AsyncMock(return_value=False),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +120,7 @@ async def test_bootstrap_applies_preset_when_sentinel_absent() -> None:
     ), patch(
         "dynastore.modules.storage.presets.lifecycle.DQLQuery",
         _MockDQL,
-    ):
+    ), _guard_unset:
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="default_roles_baseline"
         )
@@ -149,7 +158,7 @@ async def test_bootstrap_noop_when_sentinel_present() -> None:
     ), patch(
         "dynastore.modules.storage.presets.lifecycle.DQLQuery",
         _MockDQL,
-    ):
+    ), _guard_unset:
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="iam_baseline"
         )
@@ -200,7 +209,7 @@ async def test_bootstrap_force_reapplies_when_sentinel_present() -> None:
     ), patch(
         "dynastore.modules.storage.presets.lifecycle.DQLQuery",
         _MockDQL,
-    ):
+    ), _guard_unset:
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="public_access_baseline", force=True
         )
@@ -230,6 +239,7 @@ async def test_bootstrap_returns_false_on_lock_timeout() -> None:
         "dynastore.modules.storage.presets.lifecycle.find_preset",
         return_value=preset,
     ):
+        # Lock timeout means conn is None; is_initialized is never called.
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="public_access_baseline"
         )
@@ -274,8 +284,182 @@ async def test_bootstrap_propagates_apply_failure() -> None:
     ), patch(
         "dynastore.modules.storage.presets.lifecycle.DQLQuery",
         _MockDQL,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=False),
     ):
         with pytest.raises(RuntimeError, match="apply exploded"):
             await bootstrap_preset_if_absent(
                 MagicMock(), preset_name="broken_preset"
             )
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap guard integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_guard_set_skips_non_force_preset() -> None:
+    """When the bootstrap guard is set, non-force presets are skipped entirely."""
+    from dynastore.modules.storage.presets.lifecycle import bootstrap_preset_if_absent
+    from unittest.mock import AsyncMock
+
+    preset = _make_preset("default_roles_baseline")
+
+    with patch(
+        "dynastore.modules.db_config.locking_tools.acquire_startup_lock",
+        _FakeLockAcquired,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        return_value=preset,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=True),
+    ):
+        result = await bootstrap_preset_if_absent(
+            MagicMock(), preset_name="default_roles_baseline"
+        )
+
+    assert result is False
+    preset.apply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_guard_set_force_still_applies() -> None:
+    """force=True bypasses the bootstrap guard — public_access_baseline self-heal path."""
+    from dynastore.modules.storage.presets.lifecycle import bootstrap_preset_if_absent
+    from unittest.mock import AsyncMock
+
+    execute_calls: list = []
+
+    class _MockDQL:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            execute_calls.append(kw)
+            if len(execute_calls) == 1:
+                return (1,)  # SELECT sentinel → PRESENT
+            return None  # INSERT sentinel
+
+    preset = _make_preset("public_access_baseline")
+
+    with patch(
+        "dynastore.modules.db_config.locking_tools.acquire_startup_lock",
+        _FakeLockAcquired,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        return_value=preset,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle._build_context",
+        return_value=MagicMock(),
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
+        _MockDQL,
+    ), patch(
+        # Guard is set, but force=True must bypass it.
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=True),
+    ):
+        result = await bootstrap_preset_if_absent(
+            MagicMock(), preset_name="public_access_baseline", force=True
+        )
+
+    # Guard is set but force=True: preset must have applied.
+    assert result is True
+    preset.apply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_guard_unset_applies_normally() -> None:
+    """When the guard is not set, bootstrap logic applies the preset as usual."""
+    from dynastore.modules.storage.presets.lifecycle import bootstrap_preset_if_absent
+    from unittest.mock import AsyncMock
+
+    execute_calls: list = []
+
+    class _MockDQL:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            execute_calls.append(kw)
+            if len(execute_calls) == 1:
+                return None  # SELECT sentinel → absent
+            return None  # INSERT sentinel
+
+    preset = _make_preset("iam_baseline")
+
+    with patch(
+        "dynastore.modules.db_config.locking_tools.acquire_startup_lock",
+        _FakeLockAcquired,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        return_value=preset,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle._build_context",
+        return_value=MagicMock(),
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
+        _MockDQL,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=False),
+    ):
+        result = await bootstrap_preset_if_absent(
+            MagicMock(), preset_name="iam_baseline"
+        )
+
+    assert result is True
+    preset.apply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_failure_leaves_guard_unset() -> None:
+    """If apply() raises, the exception propagates — guard stays unset for retry."""
+    from dynastore.modules.storage.presets.lifecycle import bootstrap_preset_if_absent
+    from unittest.mock import AsyncMock
+
+    broken_preset = MagicMock()
+    broken_preset.name = "iam_baseline"
+    broken_preset.params_model = MagicMock(return_value=None)
+    from dynastore.modules.storage.presets.preset import NoParams
+    broken_preset.params_model = NoParams
+    broken_preset.apply = AsyncMock(side_effect=RuntimeError("db locked"))
+
+    class _MockDQL:
+        def __init__(self, *_a: Any, **_kw: Any) -> None:
+            pass
+
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            return None  # sentinel absent
+
+    mark_called = False
+
+    async def _fake_mark(db_resource=None):
+        nonlocal mark_called
+        mark_called = True
+
+    with patch(
+        "dynastore.modules.db_config.locking_tools.acquire_startup_lock",
+        _FakeLockAcquired,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        return_value=broken_preset,
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle._build_context",
+        return_value=MagicMock(),
+    ), patch(
+        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
+        _MockDQL,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=False),
+    ):
+        with pytest.raises(RuntimeError, match="db locked"):
+            await bootstrap_preset_if_absent(MagicMock(), preset_name="iam_baseline")
+
+    # mark_initialized is called from modules/__init__.py, not lifecycle.py,
+    # so it must NOT be called here on failure.
+    assert not mark_called
