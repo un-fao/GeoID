@@ -196,8 +196,9 @@ async def test_update_provisioning_status_fans_out_to_metadata_router() -> None:
     # Router fan-out actually happened with the new status carried in
     assert upsert_called_with["catalog_id"] == "cat_x"
     assert upsert_called_with["metadata"]["provisioning_status"] == "ready"
-    # Same connection passed through so the read participates in the txn
-    assert upsert_called_with["db_resource"] is sentinel_conn
+    # Post-#1895: the fan-out runs OUTSIDE the PG transaction (Phase 2) so no
+    # db_resource is forwarded — each metadata driver acquires its own connection.
+    assert upsert_called_with["db_resource"] is None
 
 
 @pytest.mark.asyncio

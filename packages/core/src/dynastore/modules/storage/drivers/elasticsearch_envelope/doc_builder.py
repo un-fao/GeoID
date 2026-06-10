@@ -209,12 +209,13 @@ def build_envelope_feature_doc(
         pass
 
     # --- Feature / dict path -------------------------------------------
-    if hasattr(item, "model_dump"):
-        src: Dict[str, Any] = item.model_dump(by_alias=True, exclude_none=True)
-    elif isinstance(item, dict):
-        src = item
+    _item: Any = item  # rebind to Any so pyright does not narrow further
+    if hasattr(_item, "model_dump"):
+        src: Dict[str, Any] = _item.model_dump(by_alias=True, exclude_none=True)
+    elif isinstance(_item, dict):
+        src = _item
     else:
-        src = dict(item)
+        src = dict(_item)  # type: ignore[arg-type]
 
     geoid = src.get("id") or src.get("geoid")
     raw_props = src.get("properties") or {}

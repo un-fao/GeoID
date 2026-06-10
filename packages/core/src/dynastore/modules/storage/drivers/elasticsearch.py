@@ -96,7 +96,14 @@ try:
     from dynastore.tools.geometry_simplify import maybe_simplify_for_es
 except ImportError:  # shapely not installed
 
-    def maybe_simplify_for_es(doc, *, simplify=False):  # type: ignore[misc]
+    def maybe_simplify_for_es(  # type: ignore[misc]
+        doc: dict,
+        *,
+        simplify: bool,
+        max_bytes: int = 10_000_000,
+        max_iterations: int = 3,
+        geometry_key: str = "geometry",
+    ) -> "tuple[dict, float, str]":
         """No-op fallback when shapely is not available."""
         return doc, 1.0, "none"
 
