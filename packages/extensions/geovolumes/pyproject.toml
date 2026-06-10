@@ -1,0 +1,38 @@
+#    Copyright 2026 FAO — Apache 2.0; see ../../LICENSE.
+
+[project]
+name = "dynastore-ext-geovolumes"
+dynamic = ["version"]
+description = "OGC API - 3D GeoVolumes + CityJSON support for dynastore"
+requires-python = ">=3.12"
+license-files = ["../../../LICENSE"]
+dependencies = [
+    "fastapi>=0.100",
+    "shapely>=2.1.1",
+    "geojson-pydantic>=1.0.0",
+    "cjio>=0.10.1",
+    "pyproj>=3.6",
+    "DynaStore",
+]
+
+[project.optional-dependencies]
+validation = ["cjvalpy>=0.4.1"]
+
+[project.entry-points."dynastore.extensions"]
+geovolumes = "dynastore.extensions.geovolumes.geovolumes_service:GeoVolumesService"
+
+[build-system]
+requires = ["setuptools>=80.9.0", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.uv.sources]
+dynastore = { workspace = true }
+
+[tool.setuptools_scm]
+version_file = "src/dynastore/extensions/geovolumes/_scm_version.py"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0+unknown"

@@ -143,6 +143,7 @@ extension_gcp_bucket = ["dynastore[extension_base,module_gcp]", "dynastore-ext-g
 extension_geoid = ["dynastore[extension_base,extension_web]", "user-agents>=2.2.0", "dynastore-ext-geoid"]
 extension_maps = ["dynastore[extension_base,geospatial_core,mvt]", "GDAL==3.13.0", "dynastore-ext-maps"]
 extension_coverages = ["dynastore[extension_base,geospatial_core]", "rasterio>=1.4.3", "dynastore-ext-coverages"]
+extension_geovolumes = ["dynastore[extension_base,geospatial_core]", "cjio>=0.10.1", "pyproj>=3.6", "dynastore-ext-geovolumes"]
 extension_edr = ["dynastore[extension_base,geospatial_core]", "dynastore-ext-edr"]
 extension_dggs = ["dynastore[extension_base,geospatial_core]", "h3>=4.1.0", "s2sphere>=0.2.5", "dynastore-ext-dggs"]
 module_coverages_netcdf = ["netCDF4>=1.6.0", "xarray>=2024.0.0"]

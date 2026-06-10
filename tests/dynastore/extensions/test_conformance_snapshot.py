@@ -205,3 +205,21 @@ def test_joins_declares_pass4_conformance_set():
     declared = _read_joins_conformance_uris_from_source()
     missing = EXPECTED_PASS4_JOINS_URIS - declared
     assert not missing, f"Joins missing Pass 4 URIs: {sorted(missing)}"
+
+
+EXPECTED_GEOVOLUMES_URIS = {
+    "http://www.opengis.net/spec/ogcapi-geovolumes-1/1.0/conf/core",
+    "http://www.opengis.net/spec/ogcapi-geovolumes-1/1.0/conf/spatialquery",
+}
+
+
+def _read_geovolumes_conformance_uris_from_source() -> set:
+    return _read_uri_list_from_source(
+        "extensions/geovolumes/geovolumes_service.py", "OGC_API_GEOVOLUMES_URIS",
+    )
+
+
+def test_geovolumes_declares_conformance_uris():
+    declared = _read_geovolumes_conformance_uris_from_source()
+    missing = EXPECTED_GEOVOLUMES_URIS - declared
+    assert not missing, f"GeoVolumes extension missing URIs: {sorted(missing)}"
