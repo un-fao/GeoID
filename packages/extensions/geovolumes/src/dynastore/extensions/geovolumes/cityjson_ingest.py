@@ -43,7 +43,10 @@ from dynastore.models.protocols.field_definition import (
 
 logger = logging.getLogger(__name__)
 
-_EPSG_RE = re.compile(r"(\d+)\s*$")
+# URI form: .../EPSG/<version>/<code>  (case-insensitive)
+_EPSG_URI_RE = re.compile(r"/EPSG/[^/]+/(\d+)\s*$", re.IGNORECASE)
+# URN form: EPSG::<code>              (case-insensitive)
+_EPSG_URN_RE = re.compile(r"EPSG::(\d+)\s*$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +122,20 @@ CITYOBJECT_FEATURE_TYPE: FeatureTypeDefinition = FeatureTypeDefinition(
 
 
 def _parse_epsg(reference_system: Optional[str]) -> Optional[int]:
-    """Extract the trailing integer code from an OGC CRS URI."""
+    """Extract the EPSG code from an OGC CRS URI or URN.
+
+    Only recognises EPSG-authority references:
+    - URI form:  .../EPSG/<version>/<code>  e.g. https://www.opengis.net/def/crs/EPSG/0/7415
+    - URN form:  EPSG::<code>               e.g. urn:ogc:def:crs:EPSG::28992
+
+    Returns None for non-EPSG authorities (e.g. OGC/CRS84) and for None/empty input.
+    """
     if not reference_system:
         return None
-    m = _EPSG_RE.search(reference_system)
+    m = _EPSG_URI_RE.search(reference_system)
+    if m:
+        return int(m.group(1))
+    m = _EPSG_URN_RE.search(reference_system)
     return int(m.group(1)) if m else None
 
 
@@ -411,9 +424,15 @@ def feature_to_item_input(
 
     footprint = _build_footprint_geojson(feature, transformer, vertices_3d)
 
+    def _lod_sort_key(v: str) -> tuple[int, float | str]:
+        try:
+            return (0, float(v))
+        except ValueError:
+            return (1, v)
+
     props: dict[str, Any] = {
         "citygml_type": root_type,
-        "lod": sorted(lod_set),
+        "lod": sorted(lod_set, key=_lod_sort_key),
         "zmin": zmin,
         "zmax": zmax,
     }
@@ -480,11 +499,28 @@ async def ingest_cityjson_file(
     3. Map each feature to an item-input dict.
     4. Bulk-create items in batches via item_service.upsert_bulk.
 
-    Returns a summary dict with keys "items" (int) and "warnings" (list[str]).
+    Batches are processed best-effort: a failure in one batch is recorded as a
+    warning and the remaining batches are still attempted.  The returned summary
+    therefore distinguishes successfully-ingested items from items in failed batches.
+
+    Returns a summary dict with keys:
+    - "items"    (int)       — count of items successfully ingested
+    - "failed"   (int)       — count of items in batches that raised
+    - "warnings" (list[str]) — per-feature and per-batch warning messages
+
+    Raises ValueError immediately (before any DB work) when the file header
+    carries no usable EPSG reference system, because reprojection is impossible.
     """
     path = pathlib.Path(path)
     header, features = parse_cityjsonseq(path)
     warnings = validate_cityjson(header, features)
+
+    # Fail fast: reprojection is required; without an EPSG code nothing can proceed.
+    if header.epsg is None:
+        raise ValueError(
+            f"Cannot ingest {path.name}: CityJSON header has no usable EPSG "
+            "reference system (metadata.referenceSystem)"
+        )
 
     # Store header provenance on the collection
     cityjson_meta: dict[str, Any] = {
@@ -505,9 +541,9 @@ async def ingest_cityjson_file(
 
     # Build the CRS transformer once per file; reuse across all features
     # to avoid repeated PROJ-db reads (one read per feature otherwise).
-    transformer: Optional[pyproj.Transformer] = None
-    if header.epsg is not None:
-        transformer = pyproj.Transformer.from_crs(header.epsg, 4326, always_xy=True)
+    transformer: pyproj.Transformer = pyproj.Transformer.from_crs(
+        header.epsg, 4326, always_xy=True
+    )
 
     # Map features → item dicts
     items: list[dict[str, Any]] = []
@@ -518,11 +554,19 @@ async def ingest_cityjson_file(
             fid = feat.get("id", "<unknown>")
             warnings.append(f"Skipped feature {fid!r}: {exc}")
 
-    # Bulk-create in batches
+    # Bulk-create in batches (best-effort: failures are recorded, not re-raised)
     total = 0
+    failed = 0
     for i in range(0, len(items), batch_size):
         batch = items[i : i + batch_size]
-        await item_service.upsert_bulk(catalog_id, collection_id, batch)
-        total += len(batch)
+        try:
+            await item_service.upsert_bulk(catalog_id, collection_id, batch)
+            total += len(batch)
+        except Exception as exc:
+            batch_num = i // batch_size
+            failed += len(batch)
+            warnings.append(
+                f"Batch {batch_num} failed ({len(batch)} items): {exc}"
+            )
 
-    return {"items": total, "warnings": warnings}
+    return {"items": total, "failed": failed, "warnings": warnings}

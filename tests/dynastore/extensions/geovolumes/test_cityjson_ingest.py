@@ -327,3 +327,130 @@ async def test_ingest_cityjson_file():
     upsert_args, upsert_kwargs = item_service.upsert_bulk.call_args
     items_passed = upsert_args[2] if len(upsert_args) > 2 else upsert_kwargs.get("items", [])
     assert len(items_passed) == 3
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — _parse_epsg authority-aware parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_epsg_uri_epsg_authority():
+    """URI with EPSG authority returns the numeric code."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+
+    assert _parse_epsg("https://www.opengis.net/def/crs/EPSG/0/7415") == 7415
+
+
+def test_parse_epsg_uri_ogc_authority_returns_none():
+    """URI with OGC authority (e.g. CRS84) must return None, not extract 84."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+
+    assert _parse_epsg("http://www.opengis.net/def/crs/OGC/1.3/CRS84") is None
+
+
+def test_parse_epsg_none_and_empty_return_none():
+    """None and empty string both return None without raising."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+
+    assert _parse_epsg(None) is None
+    assert _parse_epsg("") is None
+
+
+def test_parse_epsg_urn_form():
+    """URN form ``EPSG::<code>`` returns the numeric code."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+
+    assert _parse_epsg("urn:ogc:def:crs:EPSG::28992") == 28992
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — fail-fast when header lacks a reference system
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_raises_when_no_reference_system(tmp_path):
+    """ingest_cityjson_file raises ValueError before any DB call when header has no CRS."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import ingest_cityjson_file
+
+    # Build a minimal CityJSONSeq file without metadata.referenceSystem
+    header_line = {
+        "type": "CityJSONSeq",
+        "version": "2.0",
+        "transform": {
+            "scale": [0.001, 0.001, 0.001],
+            "translate": [85000.0, 446000.0, 0.0],
+        },
+        # Intentionally no "metadata" key
+    }
+    feature_line = {
+        "type": "CityJSONFeature",
+        "id": "bldg-x",
+        "CityObjects": {
+            "bldg-x": {
+                "type": "Building",
+                "attributes": {},
+                "geometry": [],
+            }
+        },
+        "vertices": [],
+    }
+    fixture = tmp_path / "no_crs.city.jsonl"
+    fixture.write_text(
+        json.dumps(header_line) + "\n" + json.dumps(feature_line) + "\n"
+    )
+
+    item_service = MagicMock()
+    item_service.upsert_bulk = AsyncMock()
+    catalog_service = MagicMock()
+    catalog_service.update_collection = AsyncMock()
+
+    with pytest.raises(ValueError, match="no usable EPSG"):
+        await ingest_cityjson_file(
+            "cat",
+            "col",
+            fixture,
+            item_service=item_service,
+            catalog_service=catalog_service,
+        )
+
+    # No DB writes should have been attempted
+    item_service.upsert_bulk.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — best-effort batch failure policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_best_effort_batch_failure():
+    """Batch failure is recorded as a warning; subsequent batches still run."""
+    from dynastore.extensions.geovolumes.cityjson_ingest import ingest_cityjson_file
+
+    # First upsert_bulk call raises; second succeeds
+    item_service = MagicMock()
+    item_service.upsert_bulk = AsyncMock(
+        side_effect=[RuntimeError("DB down"), None]
+    )
+    catalog_service = MagicMock()
+    catalog_service.update_collection = AsyncMock()
+
+    # minimal.city.jsonl has 3 features; batch_size=2 → 2 batches (2 + 1)
+    summary = await ingest_cityjson_file(
+        "test-cat",
+        "test-col",
+        FIXTURES / "minimal.city.jsonl",
+        item_service=item_service,
+        catalog_service=catalog_service,
+        batch_size=2,
+    )
+
+    # Second batch (1 item) succeeded; first batch (2 items) failed
+    assert summary["items"] == 1, "Only the second batch's item should be counted"
+    assert summary["failed"] == 2, "Two items in the failed first batch"
+    # A batch-failure warning must be present
+    batch_warnings = [w for w in summary["warnings"] if "Batch" in w and "failed" in w]
+    assert batch_warnings, "Expected at least one batch-failure warning"
+    # Both batches were attempted (2 calls total)
+    assert item_service.upsert_bulk.call_count == 2
