@@ -1579,6 +1579,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
 
     async def initiate_catalog_upload(
         self,
+        request: Request,
         catalog_id: str = Path(..., description="Catalog that will own the uploaded asset."),
         body: UploadRequest = Body(
             ...,
@@ -1655,10 +1656,12 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             catalog_id=catalog_id,
             collection_id=None,
             body=body,
+            origin=self._resolve_upload_origin(body, request),
         )
 
     async def initiate_collection_upload(
         self,
+        request: Request,
         catalog_id: str = Path(..., description="Catalog that will own the uploaded asset."),
         collection_id: str = Path(..., description="Collection scope for the asset."),
         body: UploadRequest = Body(
@@ -1711,7 +1714,27 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             catalog_id=catalog_id,
             collection_id=collection_id,
             body=body,
+            origin=self._resolve_upload_origin(body, request),
         )
+
+    @staticmethod
+    def _resolve_upload_origin(
+        body: UploadRequest, request: Request
+    ) -> Optional[str]:
+        """Resolve the browser origin used to CORS-stamp direct-upload sessions.
+
+        An explicit ``upload_options.origin`` in the request body wins (the
+        field is tolerated via ``extra="allow"`` so the declared payload
+        schema is unchanged); otherwise fall back to the request's ``Origin``
+        header, which browsers always send on cross-origin calls. Returns
+        ``None`` for non-browser clients, leaving session minting unchanged.
+        """
+        options = (body.model_extra or {}).get("upload_options")
+        if isinstance(options, dict):
+            origin = options.get("origin")
+            if isinstance(origin, str) and origin:
+                return origin
+        return request.headers.get("origin")
 
     async def _initiate_upload_with_policy(
         self,
@@ -1719,6 +1742,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         catalog_id: str,
         collection_id: Optional[str],
         body: UploadRequest,
+        origin: Optional[str] = None,
     ) -> UploadTicket:
         """Shared catalog/collection upload-create implementation.
 
@@ -1833,6 +1857,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
                 filename=body.filename,
                 content_type=body.content_type,
                 collection_id=collection_id,
+                origin=origin,
             )
         except HTTPException:
             await self._rollback_pending_row(engine, scope, payload.asset_id)
