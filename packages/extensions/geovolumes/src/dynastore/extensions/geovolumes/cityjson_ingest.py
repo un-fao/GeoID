@@ -86,17 +86,17 @@ CITYOBJECT_FEATURE_TYPE: FeatureTypeDefinition = FeatureTypeDefinition(
         "height": FieldDefinition(
             name="height",
             data_type="double",
-            capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+            capabilities=[FieldCapability.FILTERABLE],
         ),
         "zmin": FieldDefinition(
             name="zmin",
             data_type="double",
-            capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+            capabilities=[FieldCapability.FILTERABLE],
         ),
         "zmax": FieldDefinition(
             name="zmax",
             data_type="double",
-            capabilities=[FieldCapability.FILTERABLE, FieldCapability.SORTABLE],
+            capabilities=[FieldCapability.FILTERABLE],
         ),
         "name": FieldDefinition(
             name="name",
@@ -146,6 +146,15 @@ def _split_cityjson_to_features(doc: dict[str, Any]) -> list[dict[str, Any]]:
     Top-level CityObjects (those without "parents") become individual feature
     roots. Each root takes its children-closure with it. Global vertex indices
     are remapped to a compact per-feature array.
+
+    Note: cjio 0.10.x exposes feature splitting only through its CLI
+    (``cjio ... export cityjsonseq``). Its programmatic ``generate_features``
+    method follows ``"children"`` keys on parent objects to collect child
+    closures, so CityJSON documents that carry only ``"parents"`` on child
+    objects (without a matching ``"children"`` list on the parent) would
+    silently lose those children. This local implementation discovers children
+    from the ``"parents"`` key on each object, which is always present in
+    well-formed CityJSON, making it safe for all valid inputs.
     """
     city_objects: dict[str, Any] = doc.get("CityObjects", {})
     global_vertices: list[list[int]] = doc.get("vertices", [])
@@ -314,12 +323,15 @@ def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
 
 def _build_footprint_geojson(
     feature: dict[str, Any],
-    header: CityJsonHeader,
     transformer: pyproj.Transformer,
+    vertices_3d: list[tuple[float, float, float]],
 ) -> dict[str, Any]:
-    """Build a WGS84 MultiPolygon GeoJSON footprint from all surfaces."""
-    vertices_3d = dequantize(feature.get("vertices", []), header)
+    """Build a WGS84 MultiPolygon GeoJSON footprint from all surfaces.
 
+    ``vertices_3d`` must be the already-dequantized coordinates for this
+    feature — dequantization is the caller's responsibility so it is done
+    exactly once per feature.
+    """
     polygons: list[shapely.geometry.Polygon] = []
     for obj in feature.get("CityObjects", {}).values():
         for geom in obj.get("geometry", []):
@@ -355,17 +367,22 @@ def _build_footprint_geojson(
 def feature_to_item_input(
     feature: dict[str, Any],
     header: CityJsonHeader,
+    transformer: Optional[pyproj.Transformer] = None,
 ) -> dict[str, Any]:
     """Map a CityJSONFeature dict to an item-input dict for DynaStore ingestion.
 
-    Raises ValueError if header.epsg is None (cannot reproject to WGS84).
-    """
-    if header.epsg is None:
-        raise ValueError("Cannot reproject: header has no EPSG code")
+    ``transformer`` is optional: when None, one is built from ``header.epsg``.
+    Pass a pre-built Transformer when processing many features from the same
+    header to avoid repeated PROJ-db reads.
 
-    transformer = pyproj.Transformer.from_crs(
-        header.epsg, 4326, always_xy=True
-    )
+    Raises ValueError if header.epsg is None and no transformer is provided.
+    """
+    if transformer is None:
+        if header.epsg is None:
+            raise ValueError("Cannot reproject: header has no EPSG code")
+        transformer = pyproj.Transformer.from_crs(
+            header.epsg, 4326, always_xy=True
+        )
 
     feature_id = feature.get("id", "")
     city_objects = feature.get("CityObjects", {})
@@ -377,12 +394,12 @@ def feature_to_item_input(
     root_type = root_obj.get("type", "")
     root_attrs = root_obj.get("attributes", {})
 
+    # Dequantize once; reuse for both z-extent extraction and footprint building.
+    vertices_3d = dequantize(feature.get("vertices", []), header)
+
     # Collect lod values and z extents
     lod_set: set[str] = set()
-    z_values: list[float] = []
-    vertices_3d = dequantize(feature.get("vertices", []), header)
-    for v in vertices_3d:
-        z_values.append(v[2])
+    z_values: list[float] = [v[2] for v in vertices_3d]
     for obj in city_objects.values():
         for geom in obj.get("geometry", []):
             lod = geom.get("lod")
@@ -392,7 +409,7 @@ def feature_to_item_input(
     zmin = min(z_values) if z_values else 0.0
     zmax = max(z_values) if z_values else 0.0
 
-    footprint = _build_footprint_geojson(feature, header, transformer)
+    footprint = _build_footprint_geojson(feature, transformer, vertices_3d)
 
     props: dict[str, Any] = {
         "citygml_type": root_type,
@@ -486,11 +503,17 @@ async def ingest_cityjson_file(
         {"extras": cityjson_meta},
     )
 
+    # Build the CRS transformer once per file; reuse across all features
+    # to avoid repeated PROJ-db reads (one read per feature otherwise).
+    transformer: Optional[pyproj.Transformer] = None
+    if header.epsg is not None:
+        transformer = pyproj.Transformer.from_crs(header.epsg, 4326, always_xy=True)
+
     # Map features → item dicts
     items: list[dict[str, Any]] = []
     for feat in features:
         try:
-            items.append(feature_to_item_input(feat, header))
+            items.append(feature_to_item_input(feat, header, transformer))
         except Exception as exc:
             fid = feat.get("id", "<unknown>")
             warnings.append(f"Skipped feature {fid!r}: {exc}")

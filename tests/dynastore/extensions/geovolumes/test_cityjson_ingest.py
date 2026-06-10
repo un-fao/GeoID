@@ -308,13 +308,19 @@ async def test_ingest_cityjson_file():
     assert summary["items"] == 3
     assert isinstance(summary["warnings"], list)
 
-    # update_collection called once with header info
+    # update_collection called once with header provenance metadata
     catalog_service.update_collection.assert_called_once()
-    call_kwargs = catalog_service.update_collection.call_args
-    # Check catalog_id and collection_id passed positionally or as kwargs
-    args, kwargs = call_kwargs
+    args, kwargs = catalog_service.update_collection.call_args
     assert "test-cat" in args or kwargs.get("catalog_id") == "test-cat"
     assert "test-col" in args or kwargs.get("collection_id") == "test-col"
+    # Third positional argument is the extras payload
+    extras_payload = args[2] if len(args) > 2 else kwargs.get("extras", {})
+    meta = extras_payload.get("extras", {})
+    assert meta.get("cityjson:version") == "2.0", "cityjson:version must be set"
+    assert isinstance(meta.get("cityjson:transform"), dict), "cityjson:transform must be a dict"
+    assert "scale" in meta["cityjson:transform"] and "translate" in meta["cityjson:transform"]
+    # minimal.city.jsonl carries a referenceSystem
+    assert "cityjson:referenceSystem" in meta, "cityjson:referenceSystem must be present when set in header"
 
     # item_service.upsert_bulk called with 3 items total
     item_service.upsert_bulk.assert_called_once()
