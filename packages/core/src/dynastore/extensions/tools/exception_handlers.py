@@ -483,6 +483,103 @@ class ConfigValidationExceptionHandler(ExceptionHandler):
         )
 
 
+class ServiceUnavailableExceptionHandler(ExceptionHandler):
+    """Maps ``ServiceUnavailableError`` (e.g. DB engine not ready) to HTTP 503.
+
+    Registered ahead of the generic ``ValidationExceptionHandler`` so the
+    core preset layer can signal infrastructure unavailability without
+    coupling to FastAPI.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import ServiceUnavailableError
+
+        return isinstance(exception, ServiceUnavailableError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import ServiceUnavailableError
+
+        assert isinstance(exception, ServiceUnavailableError)
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=exception.detail,
+        )
+
+
+class PresetConflictExceptionHandler(ExceptionHandler):
+    """Maps ``PresetConflictError`` to HTTP 409 Conflict.
+
+    Detail may be a plain string or a structured dict — both are preserved
+    verbatim in the ``HTTPException.detail`` field.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetConflictError
+
+        return isinstance(exception, PresetConflictError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetConflictError
+
+        assert isinstance(exception, PresetConflictError)
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exception.detail,
+        )
+
+
+class PresetOperationExceptionHandler(ExceptionHandler):
+    """Maps ``PresetOperationError`` (apply/revoke failure) to HTTP 500.
+
+    The structured ``detail`` dict is passed through as-is so the operator
+    can see both the human message and the truncated error string.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetOperationError
+
+        return isinstance(exception, PresetOperationError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetOperationError
+
+        assert isinstance(exception, PresetOperationError)
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=exception.detail,
+        )
+
+
+class PresetNotFoundExceptionHandler(ExceptionHandler):
+    """Maps ``PresetNotFoundError`` to HTTP 404 Not Found.
+
+    Preserves the exact detail string from the lifecycle layer without
+    wrapping it in the generic ``ValidationExceptionHandler`` template.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetNotFoundError
+
+        return isinstance(exception, PresetNotFoundError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetNotFoundError
+
+        assert isinstance(exception, PresetNotFoundError)
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=exception.detail,
+        )
+
+
 class ConfigResolutionExceptionHandler(ExceptionHandler):
     """Handles ``ConfigResolutionError`` — waterfall produced no usable default.
 
@@ -626,6 +723,11 @@ class ExceptionHandlerRegistry:
         self.register(PluginNotFoundExceptionHandler())
         self.register(ConfigResolutionExceptionHandler())  # 500 — ops misconfig
         self.register(ConfigValidationExceptionHandler())
+        # Preset lifecycle domain exceptions (core layer, no FastAPI import)
+        self.register(ServiceUnavailableExceptionHandler())  # 503 — infra not ready
+        self.register(PresetConflictExceptionHandler())  # 409 — preset state conflict
+        self.register(PresetOperationExceptionHandler())  # 500 — apply/revoke failure
+        self.register(PresetNotFoundExceptionHandler())  # 404 — no audit row found
         self.register(
             ProgrammingErrorHandler()
         )  # Catch programming errors before generic validation
