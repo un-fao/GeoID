@@ -33,7 +33,7 @@ is empty.
 
 The seed content mirrors the legacy ``POST /admin/demo/populate`` web endpoint
 so that retiring those ``/admin/demo/*`` routes in favour of applying this
-preset (``POST/DELETE /admin/presets/demo_data``) causes no visible change to
+preset (``POST/DELETE /configs/presets/demo_data``) causes no visible change to
 the demo data — that route removal is tracked as a follow-up.
 """
 from __future__ import annotations

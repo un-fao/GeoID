@@ -1144,9 +1144,9 @@ class Web(ExtensionProtocol, OGCServiceMixin):
     async def presets_page(self, request: Request):
         """Preset registry browser and lifecycle operator (#1412).
 
-        Discovers all registered presets dynamically via GET /admin/presets and
+        Discovers all registered presets dynamically via GET /configs/presets and
         exposes apply / dry-run / rollback at platform, catalog, and collection
-        scope. Authorization is enforced server-side on every /admin/presets
+        scope. Authorization is enforced server-side on every /configs/presets
         mutation; the page is gated by web_sysadmin_access because preset apply
         is a destructive configuration operation.
         """
@@ -1537,8 +1537,8 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         # Demo-data provisioning is no longer a bespoke /admin/demo/* route.
         # Apply the standard `demo_data` preset instead:
-        #   POST   /admin/presets/demo_data   (provision)
-        #   DELETE /admin/presets/demo_data   (clean up)
+        #   POST   /configs/presets/demo_data   (provision)
+        #   DELETE /configs/presets/demo_data   (clean up)
 
         @self.router.get("/docs-manifest", response_class=JSONResponse)
         async def get_docs_manifest():

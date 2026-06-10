@@ -19,7 +19,7 @@
 """IAM presets — platform-tier presets that operate on IAM data.
 
 Imported by ``dynastore.modules.iam.module`` at module load time so
-registrations happen before ``GET /admin/presets`` is served.
+registrations happen before ``GET /configs/presets`` is served.
 """
 from dynastore.modules.storage.presets.registry import register_preset
 

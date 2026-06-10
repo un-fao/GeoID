@@ -1,5 +1,5 @@
 // Presets admin page (#1412). Vanilla JS, mirrors access-bindings.js style.
-// Exposes the preset registry and lifecycle via the /admin/presets endpoints
+// Exposes the preset registry and lifecycle via the /configs/presets endpoints
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
@@ -26,7 +26,7 @@ const state = {
   limit: 20,
 
   // Selected preset.
-  selectedPreset: null,   // full detail object returned by GET /admin/presets/{name}
+  selectedPreset: null,   // full detail object returned by GET /configs/presets/{name}
   paramsForm: null,       // { getPatch, reset } from mountSchemaForm
   paramsSchemaSupported: false,
 
@@ -62,14 +62,14 @@ function fmtDateTime(value) {
 function scopePrefix() {
   if (state.catalogId && state.collectionId) {
     return (
-      `/admin/catalogs/${encodeURIComponent(state.catalogId)}`
+      `/configs/catalogs/${encodeURIComponent(state.catalogId)}`
       + `/collections/${encodeURIComponent(state.collectionId)}`
     );
   }
   if (state.catalogId) {
-    return `/admin/catalogs/${encodeURIComponent(state.catalogId)}`;
+    return `/configs/catalogs/${encodeURIComponent(state.catalogId)}`;
   }
-  return "/admin";
+  return "/configs";
 }
 
 /**
@@ -113,7 +113,7 @@ async function loadPresets(resetPagination) {
   params.set("limit", String(state.limit));
 
   const qs = params.toString();
-  const path = `/admin/presets${qs ? "?" + qs : ""}`;
+  const path = `/configs/presets${qs ? "?" + qs : ""}`;
   setStatus($("#filter-status"), "Loading…");
 
   try {
@@ -233,7 +233,7 @@ async function selectPreset(name) {
 
   setStatus($("#detail-action-status"), "Loading…");
   try {
-    const detail = await getJSON(`/admin/presets/${encodeURIComponent(name)}`);
+    const detail = await getJSON(`/configs/presets/${encodeURIComponent(name)}`);
     state.selectedPreset = detail;
     renderDetail(detail);
     // Fetch docs in parallel with history — errors are swallowed inside.
@@ -251,7 +251,7 @@ function renderDetail(detail) {
   plate.style.display = "";
 
   $("#detail-title").textContent = detail.name || "—";
-  $("#detail-route").textContent = `GET /admin/presets/${detail.name}`;
+  $("#detail-route").textContent = `GET /configs/presets/${detail.name}`;
   $("#detail-description").textContent = detail.description || "";
 
   const tierEl = $("#detail-tier");
@@ -321,7 +321,7 @@ function renderParamsFallback(schema) {
 // ---------------------------------------------------------------- docs panel
 
 /**
- * Fetch GET /admin/presets/{name}/describe?format=json and render the
+ * Fetch GET /configs/presets/{name} and render the
  * How-to / Docs panel. Silently hides the panel on failure so it never
  * breaks the primary detail view.
  */
@@ -333,7 +333,7 @@ async function fetchAndRenderDocs(name) {
 
   try {
     const docs = await getJSON(
-      `/admin/presets/${encodeURIComponent(name)}/describe?format=json`,
+      `/configs/presets/${encodeURIComponent(name)}`,
     );
     renderDocsPanel(docs);
   } catch (_e) {
@@ -756,7 +756,7 @@ async function doRollback(forceSelfRevoke) {
 // ---------------------------------------------------------------- applied history
 
 /**
- * There is no bulk GET /admin/presets/applied endpoint in this revision.
+ * There is no bulk GET /configs/presets/applied endpoint in this revision.
  * We assemble the history client-side by issuing a dry-run for the selected
  * preset at the current scope and checking whether the bundle already matches.
  * A simpler heuristic is to attempt a dry-run and infer from the plan whether

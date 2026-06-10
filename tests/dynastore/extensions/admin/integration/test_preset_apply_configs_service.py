@@ -164,7 +164,7 @@ class TestPresetApplyAgainstRealConfigsService:
         catalog_id = fresh_catalog
 
         resp = await sysadmin_in_process_client.post(
-            f"/admin/catalogs/{catalog_id}/presets/public_catalog"
+            f"/configs/catalogs/{catalog_id}/presets/public_catalog"
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -230,7 +230,7 @@ class TestPresetApplyAgainstRealConfigsService:
         # 1. Make the catalog private (PG-only catalog routing — no public
         #    catalog ES envelope). Goes through the real set_config path.
         apply = await sysadmin_in_process_client.post(
-            f"/admin/catalogs/{catalog_id}/presets/private_catalog"
+            f"/configs/catalogs/{catalog_id}/presets/private_catalog"
         )
         assert apply.status_code == 200, apply.text
 

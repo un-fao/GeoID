@@ -22,12 +22,12 @@ An ``ITEMS``-tier preset (#972) with ``catalog_scopable=True``, so it
 reaches both admin URL families and a single preset covers the two
 items-tier rows from the #972 table:
 
-* **items @ catalog** — ``POST /admin/catalogs/{cat}/presets/items_es_private``
+* **items @ catalog** — ``POST /configs/catalogs/{cat}/presets/items_es_private``
   sets the catalog-tier items template (``ItemsRoutingConfig``) that
   *future* collections inherit. Per the #1079/#1139 snapshot model this is
   inherit-only: already-materialized collections are not retro-mutated.
 * **items @ collection** —
-  ``POST /admin/catalogs/{cat}/collections/{col}/presets/items_es_private``
+  ``POST /configs/catalogs/{cat}/collections/{col}/presets/items_es_private``
   pins the same items routing on one collection, overriding the catalog
   template for that collection only.
 

@@ -22,10 +22,10 @@ An ``ASSETS``-tier preset (#972) with ``catalog_scopable=True``, so it
 reaches both admin URL families:
 
 * **assets @ catalog** —
-  ``POST /admin/catalogs/{cat}/presets/assets_local_only``
+  ``POST /configs/catalogs/{cat}/presets/assets_local_only``
   sets the catalog-tier asset routing that future collections inherit.
 * **assets @ collection** —
-  ``POST /admin/catalogs/{cat}/collections/{col}/presets/assets_local_only``
+  ``POST /configs/catalogs/{cat}/collections/{col}/presets/assets_local_only``
   pins the same asset routing on one collection, overriding the catalog
   template for that collection only.
 

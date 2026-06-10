@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Unit tests for GET /admin/presets/applied (#1425)."""
+"""Unit tests for GET /configs/presets/applied (#1425)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -27,7 +27,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dynastore.extensions.admin.admin_service import AdminService
+from dynastore.extensions.configs.service import ConfigsService
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,8 @@ from dynastore.extensions.admin.admin_service import AdminService
 
 def _app() -> FastAPI:
     app = FastAPI()
-    app.include_router(AdminService.router)
+    svc = ConfigsService(app)
+    app.include_router(svc.router)
     return app
 
 
@@ -106,7 +107,7 @@ def test_list_applied_platform_scope_returns_200(monkeypatch):
     rows = [_make_row("defaults_postgres", "platform")]
 
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
 
@@ -116,7 +117,7 @@ def test_list_applied_platform_scope_returns_200(monkeypatch):
         return_value=(rows, None),
     ):
         client = TestClient(_app())
-        resp = client.get("/admin/presets/applied", params={"scope_key": "platform"})
+        resp = client.get("/configs/presets/applied", params={"scope_key": "platform"})
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -129,7 +130,7 @@ def test_list_applied_catalog_scope_returns_200(monkeypatch):
     rows = [_make_row("public_catalog", "catalog:my-cat")]
 
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
 
@@ -139,7 +140,7 @@ def test_list_applied_catalog_scope_returns_200(monkeypatch):
         return_value=(rows, None),
     ):
         client = TestClient(_app())
-        resp = client.get("/admin/presets/applied", params={"scope_key": "catalog:my-cat"})
+        resp = client.get("/configs/presets/applied", params={"scope_key": "catalog:my-cat"})
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["rows"][0]["scope_key"] == "catalog:my-cat"
@@ -150,7 +151,7 @@ def test_list_applied_collection_scope_returns_200(monkeypatch):
     rows = [_make_row("private_collection", scope)]
 
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
 
@@ -160,7 +161,7 @@ def test_list_applied_collection_scope_returns_200(monkeypatch):
         return_value=(rows, None),
     ):
         client = TestClient(_app())
-        resp = client.get("/admin/presets/applied", params={"scope_key": scope})
+        resp = client.get("/configs/presets/applied", params={"scope_key": scope})
 
     assert resp.status_code == 200, resp.text
 
@@ -178,18 +179,18 @@ def test_list_applied_collection_scope_returns_200(monkeypatch):
 ])
 def test_list_applied_bad_scope_key_returns_400(bad_scope, monkeypatch):
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
     client = TestClient(_app())
-    resp = client.get("/admin/presets/applied", params={"scope_key": bad_scope})
+    resp = client.get("/configs/presets/applied", params={"scope_key": bad_scope})
     assert resp.status_code == 400, f"Expected 400 for {bad_scope!r}, got {resp.status_code}"
 
 
 def test_list_applied_missing_scope_key_returns_422():
     """scope_key is a required query parameter."""
     client = TestClient(_app())
-    resp = client.get("/admin/presets/applied")
+    resp = client.get("/configs/presets/applied")
     assert resp.status_code == 422
 
 
@@ -199,12 +200,12 @@ def test_list_applied_missing_scope_key_returns_422():
 
 def test_list_applied_bad_cursor_returns_400(monkeypatch):
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
     client = TestClient(_app())
     resp = client.get(
-        "/admin/presets/applied",
+        "/configs/presets/applied",
         params={"scope_key": "platform", "cursor": "not_valid_base64!!!"},
     )
     assert resp.status_code == 400, resp.text
@@ -216,11 +217,11 @@ def test_list_applied_bad_cursor_returns_400(monkeypatch):
 
 def test_list_applied_503_when_iam_not_loaded(monkeypatch):
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_no_iam,
     )
     client = TestClient(_app())
-    resp = client.get("/admin/presets/applied", params={"scope_key": "platform"})
+    resp = client.get("/configs/presets/applied", params={"scope_key": "platform"})
     assert resp.status_code == 503, resp.text
     assert "IAM" in resp.json()["detail"]
 
@@ -236,7 +237,7 @@ def test_list_applied_returns_and_accepts_cursor(monkeypatch):
     next_cursor = _encode_cursor("2026-05-01T10:00:00+00:00", "preset_a")
 
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
 
@@ -248,13 +249,13 @@ def test_list_applied_returns_and_accepts_cursor(monkeypatch):
         client = TestClient(_app())
 
         # First page returns next_cursor.
-        resp1 = client.get("/admin/presets/applied", params={"scope_key": "platform"})
+        resp1 = client.get("/configs/presets/applied", params={"scope_key": "platform"})
         assert resp1.status_code == 200
         assert resp1.json()["next_cursor"] == next_cursor
 
         # Use the cursor on the next request — must succeed.
         resp2 = client.get(
-            "/admin/presets/applied",
+            "/configs/presets/applied",
             params={"scope_key": "platform", "cursor": next_cursor},
         )
         assert resp2.status_code == 200
@@ -273,7 +274,7 @@ def test_list_applied_no_iam_returns_503():
     """Without IAM loaded, get_protocol(IamService) returns None → 503."""
     # No monkeypatch: default get_protocol returns None (test env has no modules).
     client = TestClient(_app())
-    resp = client.get("/admin/presets/applied", params={"scope_key": "platform"})
+    resp = client.get("/configs/presets/applied", params={"scope_key": "platform"})
     # In tests without IAM, get_protocol(IamService) returns None → 503.
     assert resp.status_code == 503
 
@@ -284,7 +285,7 @@ def test_list_applied_no_iam_returns_503():
 
 def test_list_applied_state_filter_forwarded(monkeypatch):
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
 
@@ -295,7 +296,7 @@ def test_list_applied_state_filter_forwarded(monkeypatch):
     ) as mock_svc:
         client = TestClient(_app())
         resp = client.get(
-            "/admin/presets/applied",
+            "/configs/presets/applied",
             params={"scope_key": "platform", "state": "revoked"},
         )
 
@@ -306,12 +307,12 @@ def test_list_applied_state_filter_forwarded(monkeypatch):
 
 def test_list_applied_invalid_state_returns_400(monkeypatch):
     monkeypatch.setattr(
-        "dynastore.extensions.admin.admin_service.get_protocol",
+        "dynastore.extensions.configs.presets_api.get_protocol",
         _fake_get_protocol_with_iam,
     )
     client = TestClient(_app())
     resp = client.get(
-        "/admin/presets/applied",
+        "/configs/presets/applied",
         params={"scope_key": "platform", "state": "totally_invalid"},
     )
     assert resp.status_code == 400
