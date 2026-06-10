@@ -27,8 +27,10 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import cjio  # noqa: F401  # SCOPE gate: extension_geovolumes requires cjio
-import pyproj  # noqa: F401  # SCOPE gate: extension_geovolumes requires pyproj
+import cjio as _cjio_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires cjio
+import pyproj as _pyproj_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires pyproj
+_ = (_cjio_scope_gate, _pyproj_scope_gate)  # silence pyright "unused" — load-bearing for SCOPE filtering
+
 from fastapi import APIRouter, FastAPI
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
@@ -54,10 +56,10 @@ OGC_API_GEOVOLUMES_URIS = [
 class GeoVolumesService(ExtensionProtocol, OGCServiceMixin):
     """OGC API - 3D GeoVolumes extension.
 
-    Priority 170 — after Coverages (160), before Dimensions (200).
+    Priority 175 — after Coverages (160), EDR (165), DGGS (170); before Joins (180).
     """
 
-    priority: int = 170
+    priority: int = 175
     router: APIRouter
 
     # OGCServiceMixin class attributes

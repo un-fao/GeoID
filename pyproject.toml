@@ -50,6 +50,7 @@ dynastore-ext-dggs = { workspace = true }
 dynastore-ext-features = { workspace = true }
 dynastore-ext-records = { workspace = true }
 dynastore-ext-coverages = { workspace = true }
+dynastore-ext-geovolumes = { workspace = true }
 dynastore-ext-wfs = { workspace = true }
 dynastore-ext-dwh = { workspace = true }
 dynastore-ext-joins = { workspace = true }
