@@ -193,6 +193,28 @@ class ConfigApiService:
             out[ref_key] = (class_key, payload)
         return out
 
+    async def list_refs_map(
+        self,
+        catalog_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Return the raw ``{ref_key: class_key}`` map stored at the scope.
+
+        Discovery-only: tier-local (no waterfall), no payload read. This is
+        the lightweight surface behind the ``/configs/.../refs`` endpoints —
+        it lets the Configuration Hub enumerate multi-instance rows (where
+        ``ref_key != class_key``) without composing the full delta tree.
+
+        Degrades to ``{}`` when the bound service does not implement
+        ``list_refs_at_scope`` (older deployments / mocks).
+        """
+        list_refs = getattr(self._config_service, "list_refs_at_scope", None)
+        if list_refs is None:
+            return {}
+        return await list_refs(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
+
     async def _get_effective_configs(
         self,
         catalog_id: Optional[str],

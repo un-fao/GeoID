@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from starlette.requests import Request
 
 from .models import Condition
 from .exceptions import IamError, QuotaExceededError, RateLimitExceededError
@@ -126,7 +125,10 @@ async def _log_usage_counter_denied(
 
 @dataclass
 class EvaluationContext:
-    request: Optional[Request]
+    # At runtime this is a Starlette ``Request``, but the IAM core stays
+    # framework-free (no fastapi/starlette imports — see #1969): it only
+    # duck-types ``request.client``/``headers``/``state``/``json()``.
+    request: Optional[Any]
     storage: AbstractIamStorage
     manager: Optional[Any] = None # IamService
     token_identifier: Optional[str] = None # The ID of the specific Token/Session

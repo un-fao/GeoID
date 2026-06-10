@@ -89,7 +89,8 @@ def _build_service() -> AssetService:
     svc = AssetService.__new__(AssetService)
     svc.app = app
     from fastapi import APIRouter
-    svc.router = APIRouter(prefix="/assets", tags=["Assets"])
+    from dynastore.extensions.assets.assets_service import ASSETS_TAG
+    svc.router = APIRouter(prefix="/assets", tags=[ASSETS_TAG])
     svc._setup_routes()
     app.include_router(svc.router)
     return svc

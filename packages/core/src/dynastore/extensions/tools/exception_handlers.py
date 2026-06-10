@@ -398,6 +398,43 @@ class AssetSidecarRejectedExceptionHandler(ExceptionHandler):
         )
 
 
+class JobLockedExceptionHandler(ExceptionHandler):
+    """Maps ``JobLockedError`` to HTTP 423 Locked.
+
+    Raised by ``ExecutionEngine.update_job`` when the job has already
+    left the CREATED state and its inputs can no longer be changed.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.tasks.exceptions import JobLockedError
+
+        return isinstance(exception, JobLockedError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        return HTTPException(status_code=423, detail=str(exception))
+
+
+class JobStateConflictExceptionHandler(ExceptionHandler):
+    """Maps ``JobStateConflictError`` to HTTP 409 Conflict.
+
+    Raised by ``ExecutionEngine.start_job`` and ``ExecutionEngine.dismiss_job``
+    when the job's current status does not permit the requested transition
+    (e.g. starting an already-running job or dismissing a terminal one).
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.tasks.exceptions import JobStateConflictError
+
+        return isinstance(exception, JobStateConflictError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        return HTTPException(status_code=409, detail=str(exception))
+
+
 class ImmutableConfigExceptionHandler(ExceptionHandler):
     """Handles immutable configuration modification attempts."""
 
@@ -446,6 +483,103 @@ class ConfigValidationExceptionHandler(ExceptionHandler):
         )
 
 
+class ServiceUnavailableExceptionHandler(ExceptionHandler):
+    """Maps ``ServiceUnavailableError`` (e.g. DB engine not ready) to HTTP 503.
+
+    Registered ahead of the generic ``ValidationExceptionHandler`` so the
+    core preset layer can signal infrastructure unavailability without
+    coupling to FastAPI.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import ServiceUnavailableError
+
+        return isinstance(exception, ServiceUnavailableError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import ServiceUnavailableError
+
+        assert isinstance(exception, ServiceUnavailableError)
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=exception.detail,
+        )
+
+
+class PresetConflictExceptionHandler(ExceptionHandler):
+    """Maps ``PresetConflictError`` to HTTP 409 Conflict.
+
+    Detail may be a plain string or a structured dict — both are preserved
+    verbatim in the ``HTTPException.detail`` field.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetConflictError
+
+        return isinstance(exception, PresetConflictError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetConflictError
+
+        assert isinstance(exception, PresetConflictError)
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exception.detail,
+        )
+
+
+class PresetOperationExceptionHandler(ExceptionHandler):
+    """Maps ``PresetOperationError`` (apply/revoke failure) to HTTP 500.
+
+    The structured ``detail`` dict is passed through as-is so the operator
+    can see both the human message and the truncated error string.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetOperationError
+
+        return isinstance(exception, PresetOperationError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetOperationError
+
+        assert isinstance(exception, PresetOperationError)
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=exception.detail,
+        )
+
+
+class PresetNotFoundExceptionHandler(ExceptionHandler):
+    """Maps ``PresetNotFoundError`` to HTTP 404 Not Found.
+
+    Preserves the exact detail string from the lifecycle layer without
+    wrapping it in the generic ``ValidationExceptionHandler`` template.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.storage.presets.errors import PresetNotFoundError
+
+        return isinstance(exception, PresetNotFoundError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.storage.presets.errors import PresetNotFoundError
+
+        assert isinstance(exception, PresetNotFoundError)
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=exception.detail,
+        )
+
+
 class ConfigResolutionExceptionHandler(ExceptionHandler):
     """Handles ``ConfigResolutionError`` — waterfall produced no usable default.
 
@@ -488,6 +622,77 @@ class ConfigResolutionExceptionHandler(ExceptionHandler):
         )
 
 
+class GcpServiceUnavailableExceptionHandler(ExceptionHandler):
+    """Maps ``GcpServiceUnavailableError`` to HTTP 503.
+
+    Optionally forwards ``retry_after`` as a ``Retry-After`` response header
+    when the caller knows the back-off window.
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.gcp.errors import GcpServiceUnavailableError
+
+        return isinstance(exception, GcpServiceUnavailableError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        from dynastore.modules.gcp.errors import GcpServiceUnavailableError
+
+        assert isinstance(exception, GcpServiceUnavailableError)
+        headers = {}
+        if exception.retry_after is not None:
+            headers["Retry-After"] = str(exception.retry_after)
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exception),
+            headers=headers or None,
+        )
+
+
+class GcpFailedDependencyExceptionHandler(ExceptionHandler):
+    """Maps ``GcpFailedDependencyError`` to HTTP 424 (Failed Dependency)."""
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.gcp.errors import GcpFailedDependencyError
+
+        return isinstance(exception, GcpFailedDependencyError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        return HTTPException(
+            status_code=424,
+            detail=str(exception),
+        )
+
+
+class GcpInternalErrorHandler(ExceptionHandler):
+    """Maps ``GcpInternalError`` to HTTP 500 with the error message preserved.
+
+    Used for internal consistency failures within the GCP module that are
+    genuinely unexpected (e.g. GCS returns no session URI despite a
+    successful API call, or storage metadata is inconsistent with readiness
+    state).
+    """
+
+    def can_handle(self, exception: Exception) -> bool:
+        from dynastore.modules.gcp.errors import GcpInternalError
+
+        return isinstance(exception, GcpInternalError)
+
+    def handle(
+        self, exception: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> Optional[HTTPException]:
+        logger.error(
+            "GcpInternalError (500): %s", str(exception), exc_info=True
+        )
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exception),
+        )
+
+
 class ExceptionHandlerRegistry:
     """Central registry for managing pluggable exception handlers."""
 
@@ -502,7 +707,14 @@ class ExceptionHandlerRegistry:
         # ProblemException carries an explicit RFC 9457 status — must run
         # first so its 4xx isn't shadowed by a more generic handler downstream.
         self.register(ProblemExceptionHandler())
+        # Tasks domain: job-state transitions (423 Locked, 409 Conflict) must
+        # run before the generic ConflictExceptionHandler so their distinct
+        # status codes are preserved.
+        self.register(JobLockedExceptionHandler())
+        self.register(JobStateConflictExceptionHandler())
         self.register(ConflictExceptionHandler())
+        self.register(GcpServiceUnavailableExceptionHandler())
+        self.register(GcpFailedDependencyExceptionHandler())
         self.register(ConstraintViolationExceptionHandler())
         self.register(UnknownFieldsExceptionHandler())
         self.register(IndexMappingMismatchExceptionHandler())
@@ -511,9 +723,15 @@ class ExceptionHandlerRegistry:
         self.register(PluginNotFoundExceptionHandler())
         self.register(ConfigResolutionExceptionHandler())  # 500 — ops misconfig
         self.register(ConfigValidationExceptionHandler())
+        # Preset lifecycle domain exceptions (core layer, no FastAPI import)
+        self.register(ServiceUnavailableExceptionHandler())  # 503 — infra not ready
+        self.register(PresetConflictExceptionHandler())  # 409 — preset state conflict
+        self.register(PresetOperationExceptionHandler())  # 500 — apply/revoke failure
+        self.register(PresetNotFoundExceptionHandler())  # 404 — no audit row found
         self.register(
             ProgrammingErrorHandler()
         )  # Catch programming errors before generic validation
+        self.register(GcpInternalErrorHandler())  # GcpInternalError → 500 with message preserved
         self.register(DatabaseInputExceptionHandler())  # Catch DB input errors (400)
         self.register(ValidationExceptionHandler())  # Generic - must be last
 

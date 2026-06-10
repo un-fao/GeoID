@@ -18,6 +18,7 @@
 
 import json
 import logging
+import os
 from typing import ClassVar, Dict, Any, FrozenSet, Optional, List, Union, cast
 from dynastore.modules import get_protocol
 from dynastore.tools.discovery import get_protocols
@@ -34,8 +35,10 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, ConfigDict
 
+from fastapi.responses import Response
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.extensions.ogc_models_shared import (
     BulkCreationResponse,
     IngestionReport,
@@ -86,6 +89,7 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
+ASSETS_TAG = "Assets"
 
 
 class SearchQuery(BaseModel):
@@ -173,9 +177,48 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             return []
         return build_contributions()
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("assets")
+    def provide_static_files(self) -> list:
+        """Exposes the internal static directory for the Assets manager."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="assets_manager",
+        title={"en": "Assets", "fr": "Ressources", "es": "Recursos"},
+        icon="fa-folder-open",
+        description={
+            "en": "Upload, browse, and manage catalog and collection assets.",
+            "fr": "Téléverser, explorer et gérer les ressources.",
+            "es": "Cargar, explorar y gestionar recursos.",
+        },
+    )
+    async def provide_assets_manager(self, request: Request):
+        return await self._serve_page_template("assets_manager.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
+
     def __init__(self, app: FastAPI):
         self.app = app
-        self.router = APIRouter(prefix="/assets", tags=["Assets"])
+        self.router = APIRouter(prefix="/assets", tags=[ASSETS_TAG])
         self._setup_routes()
         # Surface the asset write-policy PluginConfigs to the Configs API.
         # Importing the module triggers ``TypedModelRegistry.register(cls)``
@@ -635,6 +678,167 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             methods=["POST"],
             status_code=status.HTTP_200_OK,
             summary="Execute Bucket Reconcile (Collection)",
+        )
+        # -----------------------------------------------------------------
+        # Local-backend HTTP endpoints (NOT under /assets prefix — registered
+        # directly on the app so the paths are top-level).
+        # -----------------------------------------------------------------
+        self._register_local_upload_route()
+        self._register_local_download_route()
+
+    def _register_local_upload_route(self) -> None:
+        """Register ``POST /local-upload/{ticket_id}`` on the FastAPI app.
+
+        FastAPI's multipart support requires ``python-multipart``; without it
+        the ``UploadFile = File(...)`` definition raises at import time.
+        Skip cleanly so slim API-only scopes keep working.
+        """
+        try:
+            import multipart  # noqa: F401 — availability probe only
+        except ImportError:
+            logger.warning(
+                "AssetsExtension: python-multipart not installed — skipping "
+                "POST /local-upload/{ticket_id} registration."
+            )
+            return
+
+        from fastapi import File, UploadFile
+        from dynastore.models.protocols import UploadStatusResponse
+
+        async def _local_upload_handler(
+            ticket_id: str,
+            file: UploadFile = File(..., description="File to upload."),
+        ) -> UploadStatusResponse:
+            """Receives the file for a previously initiated local upload session."""
+            from dynastore.modules.local.local_upload import LocalUploadModule
+            from dynastore.models.protocols import AssetUploadProtocol
+            from dynastore.tools.discovery import get_protocols
+
+            module: Optional[LocalUploadModule] = None
+            for provider in get_protocols(AssetUploadProtocol):
+                if isinstance(provider, LocalUploadModule):
+                    module = provider
+                    break
+            if module is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Local upload module is not registered.",
+                )
+
+            async def _stream():
+                while chunk := await file.read(1 << 20):  # 1 MiB chunks
+                    yield chunk
+
+            return await module.receive_upload(ticket_id, _stream())
+
+        self.app.add_api_route(
+            "/local-upload/{ticket_id}",
+            _local_upload_handler,
+            methods=["POST"],
+            response_model=UploadStatusResponse,
+            summary="Receive Local Upload",
+            description=(
+                "Server-side file receive endpoint for local-disk upload sessions. "
+                "Stream the file as ``multipart/form-data``. "
+                "The asset is registered synchronously — the response is already "
+                "``status=completed`` when this endpoint returns."
+            ),
+            tags=[ASSETS_TAG],
+        )
+        logger.info("AssetsExtension: registered POST /local-upload/{ticket_id}")
+
+    def _register_local_download_route(self) -> None:
+        """Register ``GET /local-download/{catalog_id}/{asset_id}`` on the FastAPI app.
+
+        Streams the underlying file referenced by the asset row to the client.
+        Authentication is provided by the global ``auth`` extension's middleware
+        (same protection model as the upload route). The asset URI must start
+        with ``file://`` and resolve to a path under the module's asset root
+        (path-traversal guard enforced here in the extension layer).
+        """
+        from fastapi.responses import FileResponse
+        from urllib.parse import unquote, urlparse
+
+        async def _local_download_handler(
+            catalog_id: str, asset_id: str
+        ) -> FileResponse:
+            from pathlib import Path as _Path
+            from dynastore.modules.local.local_upload import LocalUploadModule
+            from dynastore.models.protocols import AssetUploadProtocol, AssetsProtocol
+            from dynastore.tools.discovery import get_protocol, get_protocols
+
+            assets = get_protocol(AssetsProtocol)
+            if not assets:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AssetsProtocol not available.",
+                )
+
+            asset = await assets.get_asset(
+                catalog_id=catalog_id, asset_id=asset_id, collection_id=None,
+            )
+            if asset is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Asset '{asset_id}' not found in catalog '{catalog_id}'.",
+                )
+            if asset.owned_by != "local" or not (asset.uri and asset.uri.startswith("file://")):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Asset is not locally owned.",
+                )
+
+            # Resolve the asset root from the registered local upload module.
+            module: Optional[LocalUploadModule] = None
+            for provider in get_protocols(AssetUploadProtocol):
+                if isinstance(provider, LocalUploadModule):
+                    module = provider
+                    break
+            if module is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Local upload module is not registered.",
+                )
+
+            asset_root = module._asset_root.resolve()
+            parsed = urlparse(asset.uri)
+            file_path = _Path(unquote(parsed.path)).resolve()
+            try:
+                file_path.relative_to(asset_root)
+            except ValueError as exc:
+                logger.error(
+                    "AssetsExtension: refusing to serve %s — outside asset root %s",
+                    file_path, asset_root,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Asset path is outside the local asset store.",
+                ) from exc
+            if not file_path.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Local file backing asset '{asset_id}' not found on disk.",
+                )
+
+            return FileResponse(
+                path=str(file_path),
+                filename=file_path.name,
+            )
+
+        self.app.add_api_route(
+            "/local-download/{catalog_id}/{asset_id}",
+            _local_download_handler,
+            methods=["GET"],
+            summary="Serve Local Asset",
+            description=(
+                "Streams the local file backing the asset. Used as the redirect "
+                "target of ``LocalAssetDownload``. Auth is "
+                "provided by the global ``auth`` middleware."
+            ),
+            tags=[ASSETS_TAG],
+        )
+        logger.info(
+            "AssetsExtension: registered GET /local-download/{catalog_id}/{asset_id}"
         )
 
     @property

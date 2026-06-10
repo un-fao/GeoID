@@ -28,8 +28,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, Iterable, List, Literal, Optional, Set
 
-from fastapi import Request
-
 from dynastore.models.tasks import TaskExecutionMode
 from dynastore.modules.processes import models
 from dynastore.modules.processes.protocols import ProcessRegistryProtocol
@@ -175,7 +173,6 @@ def parse_runner_filter(raw: Optional[str]) -> Optional[Set[str]]:
 
 
 async def build_process_inventory_entries(
-    request: Request,
     *,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,
