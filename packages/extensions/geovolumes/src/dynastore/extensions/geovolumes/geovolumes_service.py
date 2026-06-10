@@ -27,14 +27,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import cjio as _cjio_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires cjio
-import pyproj as _pyproj_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires pyproj
-_ = (_cjio_scope_gate, _pyproj_scope_gate)  # silence pyright "unused" — load-bearing for SCOPE filtering
-
 from fastapi import APIRouter, FastAPI
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
+
+import cjio as _cjio_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires cjio
+import pyproj as _pyproj_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires pyproj
+_ = (_cjio_scope_gate, _pyproj_scope_gate)  # silence pyright "unused" — load-bearing for SCOPE filtering
 
 logger = logging.getLogger(__name__)
 
