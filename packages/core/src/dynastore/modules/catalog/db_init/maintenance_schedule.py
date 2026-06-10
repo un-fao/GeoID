@@ -82,6 +82,7 @@ _MARK_RUNNING = DQLQuery(
     UPDATE platform.maintenance_schedule
     SET running_since = :now
     WHERE job_name = :job_name
+      AND running_since IS NULL
     """,
     result_handler=ResultHandler.ROWCOUNT,
 )

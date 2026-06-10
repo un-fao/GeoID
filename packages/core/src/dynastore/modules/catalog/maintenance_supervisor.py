@@ -118,11 +118,22 @@ _CADENCE_TASK_RETENTION = 86400   # daily (idempotent DROP old partitions)
 _PRUNE_BATCH = 1000
 
 # Stale-after threshold for reclaim (seconds): a job running for more than
-# this long is assumed to belong to a dead leader.
-_STALE_AFTER_SECONDS = 3600  # 1 hour
+# this long is assumed to belong to a dead leader and its running_since is
+# cleared so the job can run again.  Set to 5× the shortest job cadence
+# (task_reaper = 60 s) so a crashed pod unblocks all jobs within 10 minutes.
+# Using 3600 (1 hour) was too long — it blocked every job for up to an hour
+# after a pod crash.
+_STALE_AFTER_SECONDS = 600  # 10 minutes (5× the 60 s task_reaper cadence)
 
 # Per-job statement timeout — a hung job resigns rather than wedging the supervisor.
 _JOB_STATEMENT_TIMEOUT_MS = 60_000  # 60 seconds
+
+# Total wall-clock cap for a single dispatched job.  Covers jobs that loop
+# internally (e.g. _run_tenant_logs_prune across thousands of schemas) or
+# stall waiting for IO.  Chosen as 15× the longest per-statement timeout so
+# a legitimate slow run across many schemas still completes; an actual hung
+# job is cancelled well before it wedges the supervisor for a full cycle.
+JOB_DISPATCH_TIMEOUT_SECONDS = 900  # 15 minutes
 
 # Events schema — mirrors events_module._EVENTS_SCHEMA
 _EVENTS_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
@@ -264,11 +275,17 @@ async def _list_active_catalog_schemas(conn: Any) -> list[str]:
 
 
 async def _run_tenant_logs_prune(conn: Any) -> int:
-    """Delete tenant log rows older than 1 year across all active catalogs."""
+    """Delete tenant log rows older than 1 year across all active catalogs.
+
+    Each schema is pruned in an independent try/except so a concurrently
+    dropped catalog schema does not abort the remaining schemas.  A WARNING
+    is emitted per failed schema so operators can investigate; the loop
+    always continues to the next schema.
+    """
     schemas = await _list_active_catalog_schemas(conn)
     total = 0
     for schema in schemas:
-        # Use parameterised ctid loop; schema is interpolated (identifier, not value).
+        # Schema name is an identifier, not a value; interpolate directly.
         sql = (
             f'DELETE FROM "{schema}".logs '
             f'WHERE ctid IN ('
@@ -277,7 +294,13 @@ async def _run_tenant_logs_prune(conn: Any) -> int:
             f'  LIMIT :batch_size'
             f')'
         )
-        total += await _bounded_batch_delete(conn, sql)
+        try:
+            total += await _bounded_batch_delete(conn, sql)
+        except Exception as exc:
+            logger.warning(
+                "maintenance_supervisor: tenant_logs_prune skipping schema %r: %s",
+                schema, exc,
+            )
     return total
 
 
@@ -596,9 +619,23 @@ class MaintenanceSupervisor:
         job_name: str,
         tick_now: datetime,
     ) -> None:
-        """Execute one maintenance job with full lifecycle tracking."""
+        """Execute one maintenance job with full lifecycle tracking.
+
+        mark_running uses AND running_since IS NULL so it returns 0 rows when
+        another leader already claimed the job this tick.  When that happens
+        we skip dispatch entirely and do not call mark_done — the other leader
+        owns the completion record.
+        """
         async with managed_transaction(engine) as conn:
-            await repo.mark_running(conn, job_name, now=tick_now)
+            claimed = await repo.mark_running(conn, job_name, now=tick_now)
+
+        if not claimed:
+            logger.warning(
+                "maintenance_supervisor: job %r already claimed by another leader "
+                "— skipping this tick.",
+                job_name,
+            )
+            return
 
         rows: Optional[int] = None
         status = "ok"
@@ -607,9 +644,21 @@ class MaintenanceSupervisor:
         try:
             async with managed_transaction(engine) as conn:
                 await _set_statement_timeout(conn, _JOB_STATEMENT_TIMEOUT_MS)
-                rows = await _dispatch_job(job_name, conn, self._config)
+                rows = await asyncio.wait_for(
+                    _dispatch_job(job_name, conn, self._config),
+                    timeout=JOB_DISPATCH_TIMEOUT_SECONDS,
+                )
             logger.info(
                 "maintenance_supervisor: job %r done — rows=%s.", job_name, rows
+            )
+        except asyncio.TimeoutError:
+            status = "error"
+            error = (
+                f"job {job_name!r} exceeded dispatch timeout "
+                f"({JOB_DISPATCH_TIMEOUT_SECONDS}s)"
+            )
+            logger.error(
+                "maintenance_supervisor: %s", error,
             )
         except Exception as exc:
             status = "error"
@@ -716,7 +765,15 @@ def build_supervisor_config() -> dict[str, Any]:
     """
     dead_letter_days = int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30"))
     timeout_minutes = int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15"))
-    max_retries = 3  # mirrors events_module._MAX_RETRIES
+    # Import lazily; events_module priority=10 starts before CatalogModule
+    # (priority=20).  MAX_RETRIES is the single-source value — importing it
+    # here prevents the supervisor's reaper threshold from silently drifting
+    # away from the events accumulation policy.
+    try:
+        from dynastore.modules.events.events_module import MAX_RETRIES
+        max_retries = MAX_RETRIES
+    except Exception:
+        max_retries = 3  # fallback if events module is not loaded
     # Import lazily to avoid circular import; tasks_module priority=15 starts before
     # CatalogModule (priority=20) which hosts the supervisor.
     try:

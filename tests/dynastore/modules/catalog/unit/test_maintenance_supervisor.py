@@ -37,6 +37,7 @@ Covered:
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -779,3 +780,239 @@ async def test_unschedule_superseded_unschedules_when_pgcron_present():
     # superseded global names + tenant-logs prefix forwarded as params
     assert exec_calls[0]["names"] == list(_SUPERSEDED_CRON_JOBS)
     assert exec_calls[0]["tenant_prefix"] == f"{_SUPERSEDED_TENANT_LOG_PREFIX}%"
+
+
+# ---------------------------------------------------------------------------
+# _MARK_RUNNING claim guard: AND running_since IS NULL
+# ---------------------------------------------------------------------------
+
+
+def test_mark_running_sql_has_running_since_is_null_guard():
+    """_MARK_RUNNING must include AND running_since IS NULL so a second claimer
+    gets 0 rows updated and cannot silently overwrite the first leader's claim."""
+    from dynastore.modules.catalog.db_init.maintenance_schedule import _MARK_RUNNING
+
+    sql = _MARK_RUNNING.template
+    assert "running_since IS NULL" in sql, (
+        "_MARK_RUNNING must have 'AND running_since IS NULL' to prevent a "
+        "second leader from overwriting the first leader's claim."
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_job_skips_when_mark_running_returns_zero_rows(caplog):
+    """_run_job must skip dispatch and log WARNING when mark_running returns 0.
+
+    A 0-rowcount from _MARK_RUNNING means another leader already claimed this
+    job. The job must NOT be dispatched and the skip must be logged at WARNING.
+    """
+    import logging
+
+    engine = _fake_engine()
+    supervisor = MaintenanceSupervisor(
+        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+    )
+
+    repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
+    # mark_running returns 0 → claimed by another leader
+    repo_mock.mark_running = AsyncMock(return_value=0)
+    repo_mock.mark_done = AsyncMock(return_value=1)
+
+    dispatched: list[str] = []
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor._dispatch_job",
+            new=AsyncMock(side_effect=lambda n, c, cfg: dispatched.append(n) or 0),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor._set_statement_timeout",
+            new=AsyncMock(),
+        ),
+    ):
+        fake_conn = AsyncMock()
+        mock_mtx.return_value.__aenter__ = AsyncMock(return_value=fake_conn)
+        mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with caplog.at_level(logging.WARNING, logger="dynastore.modules.catalog.maintenance_supervisor"):
+            await supervisor._run_job(engine, repo_mock, JOB_EVENTS_DLQ_PRUNE, _utc(2026, 6, 10))
+
+    assert dispatched == [], "dispatch must NOT be called when mark_running returns 0"
+    repo_mock.mark_done.assert_not_called()
+    assert any("claimed" in r.message.lower() for r in caplog.records), (
+        "Expected a WARNING about the job being claimed by another leader"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _STALE_AFTER_SECONDS is <= 600 (not 3600)
+# ---------------------------------------------------------------------------
+
+
+def test_stale_after_seconds_is_at_most_600():
+    """_STALE_AFTER_SECONDS must be <= 600 so a crashed leader unblocks within
+    10 minutes (5x the 60s task_reaper cadence, the shortest job cadence).
+    1 hour (3600) is too long — a crashed pod blocks all jobs for up to an hour."""
+    assert _STALE_AFTER_SECONDS <= 600, (
+        f"_STALE_AFTER_SECONDS={_STALE_AFTER_SECONDS} is too large; "
+        "it must be at most 600 (10 minutes) so a crashed leader unblocks within "
+        "10 minutes. The longest meaningful reclaim window is 5x the shortest "
+        "job cadence (task_reaper = 60s). See #1997."
+    )
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_job timeout: asyncio.wait_for with JOB_DISPATCH_TIMEOUT_SECONDS
+# ---------------------------------------------------------------------------
+
+
+def test_job_dispatch_timeout_constant_exists_and_reasonable():
+    """A module-level JOB_DISPATCH_TIMEOUT_SECONDS constant must exist and be
+    between 60 and 3600 seconds (1 min to 1 hour)."""
+    from dynastore.modules.catalog.maintenance_supervisor import JOB_DISPATCH_TIMEOUT_SECONDS
+
+    assert 60 <= JOB_DISPATCH_TIMEOUT_SECONDS <= 3600, (
+        f"JOB_DISPATCH_TIMEOUT_SECONDS={JOB_DISPATCH_TIMEOUT_SECONDS} is outside [60, 3600]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_job_raises_timeout_on_slow_job():
+    """_run_job must raise/record an error when the job exceeds JOB_DISPATCH_TIMEOUT_SECONDS.
+
+    We simulate a slow dispatch by making asyncio.wait_for raise TimeoutError.
+    The job must record status='error' with a message mentioning 'timeout'.
+    """
+    engine = _fake_engine()
+    supervisor = MaintenanceSupervisor(
+        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+    )
+
+    repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
+    repo_mock.mark_running = AsyncMock(return_value=1)
+    mark_done_kwargs: dict = {}
+
+    async def _capture_done(conn, job_name, **kw):
+        mark_done_kwargs.update(kw)
+
+    repo_mock.mark_done = _capture_done
+
+    async def _slow_dispatch(job_name, conn, config):
+        raise asyncio.TimeoutError("simulated timeout")
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor._dispatch_job",
+            new=AsyncMock(side_effect=_slow_dispatch),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor._set_statement_timeout",
+            new=AsyncMock(),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError("timed out"),
+        ),
+    ):
+        fake_conn = AsyncMock()
+        mock_mtx.return_value.__aenter__ = AsyncMock(return_value=fake_conn)
+        mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await supervisor._run_job(engine, repo_mock, JOB_TENANT_LOGS_PRUNE, _utc(2026, 6, 10))
+
+    assert mark_done_kwargs.get("status") == "error"
+    assert mark_done_kwargs.get("error") is not None
+    assert "timeout" in mark_done_kwargs["error"].lower(), (
+        f"Expected 'timeout' in error message, got: {mark_done_kwargs['error']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-schema isolation in _run_tenant_logs_prune
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tenant_logs_prune_continues_on_per_schema_error(caplog):
+    """_run_tenant_logs_prune must catch per-schema errors, log WARNING with
+    the schema name, and continue processing remaining schemas.
+
+    This covers concurrently-dropped catalog schemas — a common prod scenario.
+    """
+    import logging
+
+    conn = AsyncMock()
+    schemas = [("s_good",), ("s_dropped",), ("s_alsoGood",)]
+    schemas_attempted: list[str] = []
+    schemas_ok: list[str] = []
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
+        ) as MockDQL,
+        caplog.at_level(logging.WARNING, logger="dynastore.modules.catalog.maintenance_supervisor"),
+    ):
+        def _dql_factory(sql, **kwargs):
+            inst = MagicMock()
+            if "physical_schema" in sql:
+                # Schema listing query
+                inst.execute = AsyncMock(return_value=schemas)
+            else:
+                # Per-schema delete — track which schema and raise for s_dropped
+                matched_schema = None
+                for row in schemas:
+                    if f'"{row[0]}"' in sql:
+                        matched_schema = row[0]
+                        break
+
+                async def _exec(c, **kw):
+                    if matched_schema:
+                        schemas_attempted.append(matched_schema)
+                        if matched_schema == "s_dropped":
+                            raise RuntimeError("relation does not exist")
+                        schemas_ok.append(matched_schema)
+                    return 0
+
+                inst.execute = AsyncMock(side_effect=_exec)
+            return inst
+
+        MockDQL.side_effect = _dql_factory
+        await _run_tenant_logs_prune(conn)
+
+    # s_good and s_alsoGood should be processed
+    assert "s_good" in schemas_ok, "s_good should have been processed"
+    assert "s_alsoGood" in schemas_ok, "s_alsoGood should have been processed"
+
+    # A WARNING mentioning the dropped schema must be emitted
+    dropped_warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "s_dropped" in r.message
+    ]
+    assert dropped_warnings, (
+        "Expected a WARNING log message mentioning the dropped schema 's_dropped'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# build_supervisor_config imports max_retries from events_module
+# ---------------------------------------------------------------------------
+
+
+def test_build_supervisor_config_max_retries_matches_events_module():
+    """build_supervisor_config must import MAX_RETRIES from events_module,
+    not hardcode 3, to prevent silent drift between the supervisor and the
+    events consumer."""
+    from dynastore.modules.events.events_module import MAX_RETRIES as events_max_retries
+
+    cfg = build_supervisor_config()
+    assert cfg["max_retries"] == events_max_retries, (
+        f"build_supervisor_config max_retries={cfg['max_retries']} does not match "
+        f"events_module.MAX_RETRIES={events_max_retries}. "
+        "The supervisor must import this constant, not hardcode it."
+    )
