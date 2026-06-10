@@ -22,7 +22,7 @@ Extensions that ship route-level policies implement the structural duck-typing
 interface ``get_policies() -> Iterable[Policy]`` and
 ``get_role_bindings() -> Iterable[Role]``.  This adapter wraps such an object
 in the generalised ``Preset`` lifecycle so operators can apply or revoke the
-extension's policies via ``POST /admin/presets/{ext}_enable``.
+extension's policies via ``POST /configs/presets/{ext}_enable``.
 
 The ``contributor_factory`` callable is invoked at ``apply`` / ``revoke``
 / ``dry_run`` time, not at registration time, so the contributor is

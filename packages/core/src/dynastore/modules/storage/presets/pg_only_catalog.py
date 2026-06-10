@@ -19,7 +19,7 @@
 """``pg_only_catalog`` preset — catalog-tier PostgreSQL-only routing on all tiers.
 
 A ``CATALOG``-tier preset applied via
-``POST /admin/catalogs/{catalog_id}/presets/pg_only_catalog``.
+``POST /configs/catalogs/{catalog_id}/presets/pg_only_catalog``.
 
 Pins PG-only routing for all four resource tiers (catalog, collection, items,
 assets) under a specific catalog. No Elasticsearch at any level — not even a

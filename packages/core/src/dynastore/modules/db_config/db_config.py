@@ -195,6 +195,23 @@ class DBConfig:
     idle_in_transaction_session_timeout: str = _cfg_str(
         "DB_IDLE_IN_TRANSACTION_TIMEOUT", "30s"
     )
+    # How long SQLAlchemy's QueuePool will wait for a free connection before
+    # raising ``sqlalchemy.exc.TimeoutError`` (fail-fast, not wedge).
+    #
+    # Background (#1894): prior code fed ``pool_command_timeout`` (60s) to
+    # ``create_async_engine(pool_timeout=…)``, so the pool-acquire wait was
+    # silently bound by the *statement* timeout budget instead of its own
+    # tunable.  A saturated pool would block every waiting coroutine for up
+    # to 60s before failing, wedging Cloud Run worker threads under provisioning
+    # load spikes (incident #1895).
+    #
+    # A 30-second default matches ``connect_timeout`` (the companion "how long
+    # to wait for the TCP handshake") and is fast enough to surface saturation
+    # within the Cloud Run request deadline window, while generous enough not
+    # to trip on a brief burst.  Operators can tighten it per-environment:
+    #   DB_POOL_ACQUIRE_TIMEOUT=10  # review / staging — fail very fast
+    #   DB_POOL_ACQUIRE_TIMEOUT=30  # production default
+    pool_acquire_timeout: int = _cfg_int("DB_POOL_ACQUIRE_TIMEOUT", 30)
 
     def validate_pool_sizing(self) -> None:
         """Make a dangerously-small pool LOUD and SAFE at startup.
@@ -238,6 +255,24 @@ class DBConfig:
                 SAFE_POOL_TOTAL_FLOOR,
             )
             self.pool_max_size = SAFE_POOL_TOTAL_FLOOR
+
+        if self.pool_acquire_timeout <= 0:
+            logger.warning(
+                "DB_POOL_ACQUIRE_TIMEOUT (%d) must be > 0; resetting to the "
+                "default 30s so the pool-acquire wait is bounded (#1894).",
+                self.pool_acquire_timeout,
+            )
+            self.pool_acquire_timeout = 30
+
+        _LARGE_ACQUIRE_TIMEOUT_THRESHOLD = 120
+        if self.pool_acquire_timeout > _LARGE_ACQUIRE_TIMEOUT_THRESHOLD:
+            logger.warning(
+                "DB_POOL_ACQUIRE_TIMEOUT (%ds) is unusually high (> %ds); "
+                "a saturated pool will block callers for this long before "
+                "failing fast — consider lowering it (#1894).",
+                self.pool_acquire_timeout,
+                _LARGE_ACQUIRE_TIMEOUT_THRESHOLD,
+            )
 
     @property
     def pool_max_overflow(self) -> int:

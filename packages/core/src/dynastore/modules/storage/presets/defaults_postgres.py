@@ -19,7 +19,7 @@
 """``defaults_postgres`` preset — platform-tier PG-first routing defaults.
 
 A ``PLATFORM``-tier preset (#972): applied with no scope params via
-``POST /admin/presets/defaults_postgres``, it pins PG-first routing
+``POST /configs/presets/defaults_postgres``, it pins PG-first routing
 templates at the platform scope so freshly-created catalogs inherit a
 sane PostgreSQL-only baseline before any catalog/collection override.
 
@@ -112,7 +112,7 @@ class DefaultsPostgresPreset(BundlePreset):
     description = (
         "Platform-tier PostgreSQL-first routing defaults across the "
         "catalog, collection, and items tiers. Applied with no scope "
-        "(POST /admin/presets/defaults_postgres) so new catalogs inherit "
+        "(POST /configs/presets/defaults_postgres) so new catalogs inherit "
         "a PG-only baseline. No indexers, no audience opt-ins — a safe "
         "starting posture before catalog/collection overrides."
     )
@@ -125,7 +125,7 @@ class DefaultsPostgresPreset(BundlePreset):
                 "freshly-created catalogs inherit a safe PG-first posture (no "
                 "indexers, no anonymous surface) before any catalog/collection "
                 "override. Apply with no scope via "
-                "POST /admin/presets/defaults_postgres. Takes no parameters."
+                "POST /configs/presets/defaults_postgres. Takes no parameters."
             ),
             params={},
         ),

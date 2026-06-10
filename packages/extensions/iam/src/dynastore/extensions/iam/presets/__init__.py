@@ -21,7 +21,7 @@
 Importing this module registers ``iam_baseline`` into the global preset
 registry. The IAM extension's ``__init__`` ensures this module is imported
 at extension load time so the preset is discoverable via
-``GET /admin/presets`` as soon as the extension is installed.
+``GET /configs/presets`` as soon as the extension is installed.
 
 Only registration side-effects happen here — no DB I/O, no state.
 """

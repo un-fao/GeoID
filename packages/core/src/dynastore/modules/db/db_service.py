@@ -207,7 +207,13 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     normalize_db_url(db_config.database_url, is_async=True),
                     pool_size=db_config.pool_min_size,
                     max_overflow=db_config.pool_max_overflow,
-                    pool_timeout=db_config.pool_command_timeout,
+                    # pool_timeout = max seconds to wait for a free slot from
+                    # QueuePool before raising sqlalchemy.exc.TimeoutError
+                    # (fail-fast; not the statement/command execution budget).
+                    # Previously this was fed pool_command_timeout (60s) which
+                    # is the wrong semantic — see DBConfig.pool_acquire_timeout
+                    # and #1894.
+                    pool_timeout=db_config.pool_acquire_timeout,
                     pool_pre_ping=True,
                     pool_recycle=db_config.pool_recycle,
                     connect_args={

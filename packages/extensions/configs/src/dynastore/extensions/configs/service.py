@@ -282,6 +282,19 @@ class ConfigsService(ExtensionProtocol):
             methods=["POST"],
             summary="Derive a proposed items_schema for a collection from a vector asset's gdalinfo",
         )
+        # ---- Preset lifecycle (#847/#972) — platform/catalog/collection ----
+        # Presets are a configuration concern: applying one walks a bundle of
+        # validated configs through the standard ``set_config`` lifecycle. The
+        # sub-router inherits the ``/configs`` prefix + ``Configuration API``
+        # tag, yielding ``/configs/presets``,
+        # ``/configs/catalogs/{cat}/presets/{name}``, and the collection-scoped
+        # variant. Catalog-scoped routes are reachable by a catalog admin via
+        # the central catalog-scoped grant (ALLOW {protocol}/catalogs/{cat}/*);
+        # permissions are not a per-service concern, so no policy is declared
+        # here.
+        from .presets_api import router as _presets_router
+
+        self.router.include_router(_presets_router)
 
     @property
     def configs(self) -> ConfigsProtocol:

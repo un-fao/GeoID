@@ -374,6 +374,22 @@ class IamExtension(ExtensionProtocol):
                 "IamExtension: failed to register MembershipCacheProvider: %s", e
             )
 
+        # Register the IAM-side catalog-list provider (priority 10) so UI
+        # pickers reading /web/catalogs get the principal's grant-filtered
+        # catalogs. Outranks the public full-list provider and is
+        # authoritative — only registered in full-init mode (above the
+        # pass-through return), so a pass-through IAM never claims this.
+        try:
+            from dynastore.extensions.iam.catalog_source import (
+                IamCatalogListProvider,
+            )
+            from dynastore.tools.discovery import register_plugin
+            register_plugin(IamCatalogListProvider())
+        except Exception as e:
+            logger.error(
+                "IamExtension: failed to register IamCatalogListProvider: %s", e
+            )
+
         yield
 
     async def _get_iam_manager(self) -> IamService:

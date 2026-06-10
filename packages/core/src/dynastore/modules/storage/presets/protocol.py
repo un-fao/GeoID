@@ -65,12 +65,12 @@ class PresetTier(str, Enum):
     """The URL/scope tier a preset targets.
 
     URL dispatch in the admin router keys off this value to pick which
-    ``/admin/.../presets/{name}`` family the preset is reachable from:
+    ``/configs/.../presets/{name}`` family the preset is reachable from:
 
-    * ``PLATFORM``   — ``/admin/presets/{name}`` (no scope params; ``build()``)
-    * ``CATALOG``    — ``/admin/catalogs/{cat}/presets/{name}``
+    * ``PLATFORM``   — ``/configs/presets/{name}`` (no scope params; ``build()``)
+    * ``CATALOG``    — ``/configs/catalogs/{cat}/presets/{name}``
       (``build(catalog_id)``)
-    * ``COLLECTION`` — ``/admin/catalogs/{cat}/collections/{col}/presets/{name}``
+    * ``COLLECTION`` — ``/configs/catalogs/{cat}/collections/{col}/presets/{name}``
       (``build(catalog_id, collection_id)``)
     * ``ITEMS`` / ``ASSETS`` — attachable at the catalog **or** collection
       URL family. Which families are reachable is governed by

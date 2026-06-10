@@ -532,6 +532,10 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
             # Decode branches interpolate the column name into the query, so it
             # must be a strict SQL identifier — never operator text that could
             # break out of the quoted identifier and inject SQL.
+            # Defense-in-depth: the config/preset boundary already validates this
+            # via ItemsDuckdbDriverConfig / FileBackedPresetParams field_validators,
+            # but we re-check here so any path that skips the model boundary is
+            # still protected at query construction time.
             if not _SQL_IDENTIFIER_RE.match(geom):
                 raise ValueError(
                     f"Invalid geometry_column {geom!r}: must be a plain SQL "
@@ -1278,6 +1282,10 @@ class ItemsDuckdbDriver(TypedDriver[ItemsDuckdbDriverConfig], ModuleProtocol):
         offset: int = 0,
         db_resource: Optional[Any] = None,
     ) -> AsyncIterator[Feature]:
+        # Read-side (output) transform chains are not applied here by design
+        # (geoid#1643). The restore_transform_chain is wired only on
+        # Elasticsearch read paths; the routing-config validator emits a WARN
+        # if output_transformers are declared against a non-ES driver.
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc or not loc.path:
             return

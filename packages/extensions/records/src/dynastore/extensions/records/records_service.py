@@ -44,6 +44,7 @@ from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.web.decorators import expose_web_page, expose_static
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.language_utils import get_language
+from dynastore.tools.language_utils import resolve_localized_field
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.extensions.tools.query import (  # noqa: E402
     parse_hints_param,
@@ -234,15 +235,27 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
 
     async def list_catalogs(
         self,
+        language: str = Depends(get_language),
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
     ):
-        """List catalogs available to the Records service (web-browser nav)."""
+        """List catalogs available to the Records service (web-browser nav).
+
+        ``title`` is a ``LocalizedText`` on the stored catalog; resolve it to a
+        plain string for the requested language (same contract as
+        ``/stac/catalogs``) so the browser renders a label instead of the raw
+        multilingual object.
+        """
         catalogs_svc = await self._get_catalogs_service()
         catalogs = await catalogs_svc.list_catalogs(limit=limit, offset=offset)
         return {
             "catalogs": [
-                {"id": c.id, "title": getattr(c, "title", None)}
+                {
+                    "id": c.id,
+                    "title": resolve_localized_field(
+                        getattr(c, "title", None), language
+                    ),
+                }
                 for c in (catalogs or [])
             ]
         }
