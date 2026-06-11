@@ -177,7 +177,7 @@ class GeometriesSidecarConfig(SidecarConfig):
     # The PG driver populates this list at ``ensure_storage`` time with the
     # subset of ``ItemsWritePolicy.compute`` whose entries declare a
     # ``storage_mode`` (i.e. should land on disk via this sidecar). DDL
-    # emission, ``get_select_fields``, ``get_field_definitions``, and
+    # emission, ``get_select_fields``, ``get_queryable_fields``, and
     # ``prepare_upsert_payload`` all read this single list — there is no
     # second source for "which stats does this sidecar materialise". An
     # empty list means the sidecar carries geometry + spatial-index columns
