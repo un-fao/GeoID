@@ -149,7 +149,15 @@ class LocalizedDTO(BaseModel, Generic[T]):
         if lang == "*" and isinstance(updates, dict):
             # Full replacement logic for '*'
             # We create a new instance strictly from the updates, discarding current state.
-            return self.__class__.model_validate(updates)
+            # Canonicalise first: the create path accepts flat (non language-keyed)
+            # input via delocalize_input, so replace/update must accept the same
+            # shape — otherwise a PUT that re-sends what POST stored fails the
+            # language-key validation.
+            delocalize = getattr(self.__class__, "delocalize_input", None)
+            canonical: Any = (
+                delocalize(updates, lang) if callable(delocalize) else updates
+            )
+            return self.__class__.model_validate(canonical)
         
         # Partial update logic for specific language
         merged_data = self.model_dump(exclude_none=True)
