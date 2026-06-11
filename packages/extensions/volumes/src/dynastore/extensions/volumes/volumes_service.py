@@ -23,6 +23,9 @@ Delivers HTTP endpoints for:
   - GET /…/3dtiles/tiles/{id}.b3dm — B3DM tile (Cesium 3D Tiles 1.0)
   - GET /…/3dtiles/tiles/{id}.glb  — glTF 2.0 tile (3D Tiles 1.1)
   - GET /…/3dtiles/metadata        — service metadata + links
+  - GET /volumes/catalogs/{cat_id}/collections          — GeoVolumes Core listing
+  - GET /volumes/catalogs/{cat_id}/collections/{col_id} — single 3D container
+  - GET /volumes/catalogs/{cat_id}/collections/{col_id}/cityjsonseq — CityJSONSeq stream
 
 Tile content pipeline:
   1. The BSP tree (tileset dict with ``_feature_ids`` per leaf) is built
@@ -41,17 +44,28 @@ draft at Phase 5 spec authorship.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.volumes.config import VolumesConfig
+from dynastore.extensions.volumes.volumes_models import (
+    ContentExtent,
+    ContentLink,
+    ThreeDContainer,
+    ThreeDContainerList,
+    _bbox_intersects,
+    _parse_bbox,
+)
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.models.protocols.bounds_source import (
     BoundsSourceProtocol,
     EmptyBoundsSource,
@@ -74,6 +88,7 @@ OGC_API_VOLUMES_URIS = [
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/core",
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/3dtiles",
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/tileset",
+    "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/spatialquery",
 ]
 
 # Module-level BSP-tree cache: (catalog_id, collection_id) → (expires_at, tileset_dict)
@@ -145,6 +160,21 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             "/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/metadata",
             self.get_volumes_metadata, methods=["GET"],
         )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections",
+            self.list_3d_collections, methods=["GET"],
+            summary="List 3D container collections",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}",
+            self.get_3d_collection, methods=["GET"],
+            summary="Get a single 3D container",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/cityjsonseq",
+            self.stream_cityjsonseq, methods=["GET"],
+            summary="Stream CityJSONSeq for a 3D container collection",
+        )
 
     # ------------------------------------------------------------------
     # Tileset index
@@ -211,13 +241,168 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         }
 
     # ------------------------------------------------------------------
-    # Internals
+    # GeoVolumes Core + SpatialQuery container API
+    # ------------------------------------------------------------------
+
+    async def list_3d_collections(
+        self,
+        catalog_id: str,
+        limit: int = Query(100, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+        bbox: Optional[str] = Query(None),
+    ) -> Dict[str, Any]:
+        """List collections flagged as 3D containers.
+
+        A collection is 3D iff its extras carry ``cityjson:version`` or
+        the explicit marker ``geovolumes:enabled``. The optional ``bbox``
+        parameter (4 or 6 comma-separated floats) filters by spatial extent.
+        """
+        parsed_bbox: Optional[Tuple] = None
+        if bbox is not None:
+            try:
+                parsed_bbox = _parse_bbox(bbox)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        catalogs_svc = await self._get_catalogs_service()
+        all_collections = await catalogs_svc.list_collections(
+            catalog_id, limit=limit, offset=offset
+        )
+
+        containers: List[ThreeDContainer] = []
+        for coll in (all_collections or []):
+            if not _is_3d_collection(coll):
+                continue
+            container = _build_3d_container(coll, catalog_id)
+            if parsed_bbox is not None:
+                if not _bbox_intersects(container.contentExtent.bbox, parsed_bbox):
+                    continue
+            containers.append(container)
+
+        return ThreeDContainerList(
+            collections=containers,
+            links=[],
+        ).model_dump(exclude_none=True)
+
+    async def get_3d_collection(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> Dict[str, Any]:
+        """Return a ThreeDContainer for the given collection.
+
+        Returns 404 if the collection does not exist or is not 3D.
+        """
+        catalogs_svc = await self._get_catalogs_service()
+        coll = await catalogs_svc.get_collection(catalog_id, collection_id)
+        if coll is None:
+            raise HTTPException(status_code=404, detail="Collection not found.")
+        if not _is_3d_collection(coll):
+            raise HTTPException(
+                status_code=404,
+                detail="Collection is not a 3D GeoVolumes container.",
+            )
+        container = _build_3d_container(coll, catalog_id)
+        return container.model_dump(exclude_none=True)
+
+    async def stream_cityjsonseq(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        limit: int = Query(10000, ge=1, le=100000),
+    ) -> StreamingResponse:
+        """Stream a CityJSONSeq response for all items in a 3D collection.
+
+        Line 1 is a CityJSONSeq header reconstructed from collection extras.
+        Subsequent lines are individual CityJSONFeature objects (NDJSON).
+        Media type: ``application/city+json``.
+        """
+        catalogs_svc = await self._get_catalogs_service()
+        coll = await catalogs_svc.get_collection(catalog_id, collection_id)
+        if coll is None:
+            raise HTTPException(status_code=404, detail="Collection not found.")
+        if not _is_3d_collection(coll):
+            raise HTTPException(
+                status_code=404,
+                detail="Collection is not a 3D GeoVolumes container.",
+            )
+
+        extras = _get_extras(coll)
+        header = _build_cityjsonseq_header(extras)
+
+        from dynastore.models.query_builder import QueryRequest
+
+        features = await catalogs_svc.search_items(
+            catalog_id, collection_id, QueryRequest(limit=limit)
+        )
+
+        async def _generate():
+            yield json.dumps(header) + "\n"
+            for feat in (features or []):
+                cityjson = _extract_cityjson(feat)
+                if cityjson is not None:
+                    yield json.dumps(cityjson) + "\n"
+
+        return StreamingResponse(
+            _generate(),
+            media_type="application/city+json",
+        )
+
+    # ------------------------------------------------------------------
+    # Web page contributions (globe browser)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("volumes")
+    def provide_static_files(self) -> list:
+        """Exposes the static directory for the GeoVolumes globe browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        if os.path.isdir(static_dir):
+            for root, _, filenames in os.walk(static_dir):
+                for filename in filenames:
+                    files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="volumes_browser",
+        title={"en": "3D GeoVolumes", "fr": "GéoVolumes 3D", "es": "GeoVolúmenes 3D"},
+        icon="fa-cube",
+        description={
+            "en": "Browse 3D building volumes and CityJSON data on a globe.",
+            "fr": "Explorer des volumes de bâtiments 3D et des données CityJSON sur un globe.",
+            "es": "Explorar volúmenes de edificios 3D y datos CityJSON en un globo.",
+        },
+    )
+    async def provide_volumes_browser(self, request: Request):
+        return await self._serve_page_template("volumes_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(
+                content=f.read().replace("{{VERSION}}", VERSION),
+                media_type="text/html",
+            )
+
+    # ------------------------------------------------------------------
+    # Internals — tileset pipeline
     # ------------------------------------------------------------------
 
     async def _get_volumes_config(
         self, catalog_id: str, collection_id: Optional[str] = None,
     ) -> VolumesConfig:
-        # TODO(Phase 5d): replace with ConfigsProtocol resolver once confirmed.
         return VolumesConfig()
 
     async def _get_or_build_tileset(
@@ -288,3 +473,121 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             default_extrusion_height=cfg.default_extrusion_height,
         )
         return pack_glb(mesh)
+
+
+# ---------------------------------------------------------------------------
+# Collection classification and decoration helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_extras(coll: Any) -> Dict[str, Any]:
+    """Extract the extras dict from a Collection, tolerating varied shapes."""
+    raw_extra = getattr(coll, "model_extra", None) or {}
+    extras = raw_extra.get("extras") or {}
+    if not extras and isinstance(raw_extra, dict):
+        # Flat extras stored directly on model_extra
+        extras = {k: v for k, v in raw_extra.items() if ":" in k}
+    return extras
+
+
+def _is_3d_collection(coll: Any) -> bool:
+    """Return True iff the collection carries 3D GeoVolumes provenance."""
+    extras = _get_extras(coll)
+    return bool(extras.get("cityjson:version") or extras.get("geovolumes:enabled"))
+
+
+def _collection_bbox_3d(coll: Any, extras: Dict[str, Any]) -> List[float]:
+    """Build a 6-element 3D bbox from collection extent + z-range extras."""
+    bbox_2d: List[float] = []
+    extent = getattr(coll, "extent", None)
+    if extent is not None:
+        spatial = getattr(extent, "spatial", None)
+        if spatial is not None:
+            raw = getattr(spatial, "bbox", None) or []
+            if raw:
+                first = raw[0] if isinstance(raw[0], (list, tuple)) else raw
+                bbox_2d = list(first)
+
+    if len(bbox_2d) >= 4:
+        minx, miny, maxx, maxy = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3]
+    else:
+        minx, miny, maxx, maxy = 0.0, 0.0, 0.0, 0.0
+
+    zrange = extras.get("geovolumes:zrange") or {}
+    zmin = float(zrange.get("zmin", 0.0))
+    zmax = float(zrange.get("zmax", 0.0))
+    return [minx, miny, zmin, maxx, maxy, zmax]
+
+
+def _build_cityjsonseq_link(catalog_id: str, collection_id: str) -> ContentLink:
+    """Build the alternate CityJSONSeq content link for the given collection."""
+    return ContentLink(
+        rel="alternate",
+        href=f"/volumes/catalogs/{catalog_id}/collections/{collection_id}/cityjsonseq",
+        type="application/city+json",
+        title="CityJSONSeq stream",
+    )
+
+
+def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
+    """Build a ThreeDContainer wire model from a Collection.
+
+    Always emits the runtime 3D Tiles tileset link (served by this extension
+    at /volumes/.../3dtiles/tileset.json) plus the CityJSONSeq alternate link.
+    """
+    extras = _get_extras(coll)
+    bbox_3d = _collection_bbox_3d(coll, extras)
+    content: List[ContentLink] = [
+        ContentLink(
+            rel="http://www.opengis.net/def/rel/ogc/1.0/3dtiles",
+            href=f"/volumes/catalogs/{catalog_id}/collections/{coll.id}/3dtiles/tileset.json",
+            type="application/json",
+            title="3D Tiles tileset",
+        ),
+        _build_cityjsonseq_link(catalog_id, coll.id),
+    ]
+
+    return ThreeDContainer(
+        id=coll.id,
+        title=getattr(coll, "title", None),
+        collectionType="3dcontainer",
+        contentExtent=ContentExtent(bbox=bbox_3d),
+        content=content,
+        links=None,
+        children=None,
+    )
+
+
+def _build_cityjsonseq_header(extras: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconstruct a CityJSONSeq header dict from collection extras."""
+    transform = extras.get("cityjson:transform") or {
+        "scale": [1.0, 1.0, 1.0],
+        "translate": [0.0, 0.0, 0.0],
+    }
+    header: Dict[str, Any] = {
+        "type": "CityJSONSeq",
+        "version": extras.get("cityjson:version", "2.0"),
+        "transform": transform,
+    }
+    ref_sys = extras.get("cityjson:referenceSystem")
+    if ref_sys:
+        header["metadata"] = {"referenceSystem": ref_sys}
+    return header
+
+
+def _extract_cityjson(feat: Any) -> Optional[Dict[str, Any]]:
+    """Extract the stored CityJSONFeature dict from an item, or None."""
+    # Try model_extra path (extras container)
+    model_extra = getattr(feat, "model_extra", None) or {}
+    extras = model_extra.get("extras") or {}
+    cityjson = extras.get("cityjson")
+    if cityjson is not None:
+        return cityjson
+    # Flat model_extra path
+    cityjson = model_extra.get("cityjson")
+    if cityjson is not None:
+        return cityjson
+    # Plain dict from model_dump
+    if isinstance(feat, dict):
+        return feat.get("extras", {}).get("cityjson") or feat.get("cityjson")
+    return None
