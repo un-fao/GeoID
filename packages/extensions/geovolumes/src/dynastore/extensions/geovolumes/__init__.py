@@ -17,5 +17,6 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from .geovolumes_service import GeoVolumesService
+from . import presets as _geovolumes_presets  # noqa: F401  -- preset registration side-effect
 
 __all__ = ["GeoVolumesService"]
