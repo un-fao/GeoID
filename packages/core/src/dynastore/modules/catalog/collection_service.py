@@ -918,9 +918,27 @@ class CollectionService:
             conn, phys_schema, catalog_id, collection_id
         )
         if phys_table:
-            await shared_queries.delete_table_query.execute(
-                conn, schema=phys_schema, table=phys_table
-            )
+            pg_driver = await self._get_pg_driver()
+            if pg_driver is not None:
+                # Driver-owned teardown (hub + every sidecar), inside this
+                # transaction so a failed drop rolls back with the registry row.
+                await pg_driver.drop_storage(
+                    catalog_id,
+                    collection_id,
+                    db_resource=conn,
+                    physical_table=phys_table,
+                    physical_schema=phys_schema,
+                )
+            else:
+                # Degrade-safe for environments without StorageModule: drop the
+                # hub and the core sidecar suffixes inline.
+                for suffix in ("attributes", "geometries", "item_metadata", "stac_metadata"):
+                    await shared_queries.delete_table_query.execute(
+                        conn, schema=phys_schema, table=f"{phys_table}_{suffix}"
+                    )
+                await shared_queries.delete_table_query.execute(
+                    conn, schema=phys_schema, table=phys_table
+                )
         await DDLQuery(
             f'DELETE FROM "{phys_schema}".collections WHERE id = :id;'
         ).execute(conn, id=collection_id)
