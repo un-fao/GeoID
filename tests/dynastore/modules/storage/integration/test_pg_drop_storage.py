@@ -197,3 +197,93 @@ async def test_drop_storage_without_pin_is_noop(
         await pg_driver.drop_storage(catalog_id, collection_id)
     finally:
         await catalogs.delete_catalog(catalog_id, force=True)
+
+
+@pytest.mark.asyncio
+async def test_drop_storage_after_purge_is_noop(
+    app_lifespan,
+    catalog_id,
+    collection_id,
+):
+    """drop_storage called after delete_collection (cascade-owner shape) is a no-op.
+
+    The routing-driven cascade owner calls ``drop_storage`` on each driver AFTER
+    the service purge has already run.  At that point the physical-table pin is
+    gone, so the driver must return silently (no exception, no re-entrant delete).
+
+    Steps:
+    1. Create catalog + collection.
+    2. Write one item — triggers lazy provisioning of hub + sidecars.
+    3. Capture phys_schema and phys_table before delete.
+    4. Hard-delete via the service: delete_collection(force=True).
+    5. Call pg_driver.drop_storage(catalog_id, collection_id) with no extra kwargs.
+    6. Assert: no exception raised.
+    7. Assert: schema contains zero tables matching phys_table% (DB unchanged).
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None, "CatalogsProtocol not registered"
+
+    from dynastore.tools.discovery import get_protocols
+    from dynastore.models.protocols.storage_driver import Capability, CollectionItemsStore
+
+    pg_driver = None
+    for driver in get_protocols(CollectionItemsStore):
+        if Capability.QUERY_FALLBACK_SOURCE in driver.capabilities:
+            pg_driver = driver
+            break
+    assert pg_driver is not None, "ItemsPostgresqlDriver not registered"
+
+    # --- 1. Setup ---
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await catalogs.create_catalog({"id": catalog_id, "title": "Post-Purge Noop Test Catalog"})
+    await catalogs.create_collection(
+        catalog_id,
+        {
+            "id": collection_id,
+            "description": "Post-purge noop test collection",
+            "extent": {
+                "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                "temporal": {"interval": [[None, None]]},
+            },
+        },
+    )
+
+    try:
+        # --- 2. Write one item to trigger lazy provisioning ---
+        await catalogs.upsert(
+            catalog_id,
+            collection_id,
+            {
+                "id": "purge-noop-item-1",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [12.5, 41.9]},
+                "properties": {"name": "Post-Purge Noop Test Item"},
+            },
+        )
+
+        # --- 3. Capture physical coordinates before delete ---
+        phys_schema = await catalogs.resolve_physical_schema(catalog_id)
+        assert phys_schema, f"Could not resolve physical schema for {catalog_id!r}"
+
+        phys_table = await catalogs.resolve_physical_table(catalog_id, collection_id)
+        assert phys_table, (
+            f"Could not resolve physical table for {catalog_id!r}/{collection_id!r}"
+        )
+
+        # --- 4. Hard-delete via the service (simulates _purge_collection_storage path) ---
+        await catalogs.delete_collection(catalog_id, collection_id, force=True)
+
+        # --- 5. Call drop_storage with no extra kwargs (cascade-owner call shape) ---
+        await pg_driver.drop_storage(catalog_id, collection_id)
+
+        # --- 6 & 7. No exception above; assert DB is unchanged (still empty) ---
+        async with managed_transaction(app_lifespan.engine) as conn:
+            after = await _tables_with_prefix(conn, phys_schema, phys_table)
+
+        assert after == [], (
+            f"drop_storage after purge left unexpected tables for "
+            f"{catalog_id!r}/{collection_id!r}: {after}"
+        )
+
+    finally:
+        await catalogs.delete_catalog(catalog_id, force=True)
