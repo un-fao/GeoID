@@ -921,25 +921,75 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
-        from dynastore.tools.discovery import get_protocol
-        from dynastore.models.protocols.catalogs import CatalogsProtocol
+        """Tear down the PG physical footprint (hub + all sidecar tables).
 
-        catalogs = get_protocol(CatalogsProtocol)
-        if not catalogs:
-            raise RuntimeError("CatalogsProtocol not available")
-
+        Inverse of ``ensure_storage``; idempotent (DROP IF EXISTS, absent
+        pin is a no-op). Never calls back into catalog services — registry
+        rows, configs and metadata fan-out are owned by CollectionService.
+        Accepts ``db_resource`` (join the caller's transaction),
+        ``physical_table`` and ``physical_schema`` kwargs so the purge path
+        can drive teardown after it has wiped the config pin.
+        """
+        if collection_id is None:
+            # Catalog-level teardown is schema-scoped (DROP SCHEMA), owned
+            # by catalog deletion — nothing per-collection to do here.
+            return
         if soft:
             logger.info(
-                "ItemsPostgresqlDriver.drop_storage(soft=True): "
-                "catalog=%s collection=%s — marking as deleted via deleted_at",
+                "ItemsPostgresqlDriver.drop_storage(soft=True): catalog=%s "
+                "collection=%s — rows are tombstoned via deleted_at; no DDL.",
                 catalog_id, collection_id,
             )
+            return
 
-        if collection_id:
-            await catalogs.delete_collection(catalog_id, collection_id)
+        db_resource = kwargs.get("db_resource")
+        physical_table = kwargs.get("physical_table")
+        if physical_table is None:
+            physical_table = await self.resolve_physical_table(
+                catalog_id, collection_id, db_resource=db_resource
+            )
+        if physical_table is None:
+            return  # never provisioned, or pin already wiped after a prior teardown
+
+        physical_schema = kwargs.get("physical_schema")
+        if physical_schema is None:
+            physical_schema = await self._resolve_schema(catalog_id, db_resource=db_resource)
+        if physical_schema is None:
+            return
+
+        from dynastore.modules.db_config import shared_queries
+        from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+
+        sidecar_ids = sorted(set(SidecarRegistry.get_available_types()))
+
+        async def _drop_all(conn) -> None:
+            # Sidecars first (FKs point at the hub), hub last; IF EXISTS makes
+            # the superset of registered sidecar types free for collections
+            # provisioned with fewer sidecars.
+            for sid in sidecar_ids:
+                await shared_queries.delete_table_query.execute(
+                    conn, schema=physical_schema, table=f"{physical_table}_{sid}"
+                )
+            await shared_queries.delete_table_query.execute(
+                conn, schema=physical_schema, table=physical_table
+            )
+
+        if db_resource is not None:
+            await _drop_all(db_resource)
         else:
-            await catalogs.delete_catalog(catalog_id)
+            from dynastore.tools.discovery import get_protocol
+            from dynastore.models.protocols.database import DatabaseProtocol
+            db_proto = get_protocol(DatabaseProtocol)
+            if not db_proto:
+                raise RuntimeError("DatabaseProtocol not available")
+            from dynastore.modules.db_config.query_executor import managed_transaction
+            async with managed_transaction(db_proto.engine) as conn:
+                await _drop_all(conn)
+
+        from dynastore.modules.catalog.collection_service import _unmark_confirmed_active
+        _unmark_confirmed_active(catalog_id, collection_id)
 
     async def export_entities(
         self,
