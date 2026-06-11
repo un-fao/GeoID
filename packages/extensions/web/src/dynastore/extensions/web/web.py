@@ -1557,6 +1557,20 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             anonymous = IamRolesConfig().anonymous_role_name
 
             pages = await self.web_module.get_web_pages_config(language)
+
+            # Extension-exposure gate: pages owned by an extension the operator
+            # disabled at platform scope (Service Exposure / `enabled=false`
+            # plugin config) disappear from the navigation. Pages without an
+            # owner (core/web-module pages) are unaffected.
+            matrix = getattr(request.app.state, "exposure_matrix", None)
+            if matrix is not None:
+                snap = await matrix.get()
+                pages = [
+                    p for p in pages
+                    if p.get("owner") is None
+                    or snap.platform.get(p["owner"], True)
+                ]
+
             page_filter = get_protocol(PageVisibilityFilter)
             if page_filter is not None:
                 results = list(await page_filter.filter_visible(pages, request))
@@ -1632,7 +1646,25 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         ):
             if not self.web_module:
                 raise HTTPException(status_code=500, detail="Web module not available")
-            
+
+            # Extension-exposure gate: mirror the 503 the owning extension's
+            # own router returns when its `enabled` plugin config is false.
+            owner_ext = None
+            if hasattr(self.web_module, "get_page_owner_extension"):
+                owner_ext = self.web_module.get_page_owner_extension(page_id)
+            if owner_ext is not None:
+                matrix = getattr(request.app.state, "exposure_matrix", None)
+                if matrix is not None:
+                    snap = await matrix.get()
+                    if not snap.platform.get(owner_ext, True):
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                f"Service '{owner_ext}' is disabled on this "
+                                "platform. Contact the administrator."
+                            ),
+                        )
+
             content = await self.web_module.get_web_page_content(page_id, request, language)
             if content is None:
                 raise HTTPException(status_code=404, detail="Page not found")

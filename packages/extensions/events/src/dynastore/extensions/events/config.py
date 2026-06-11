@@ -16,7 +16,13 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# Register the events_enable preset into the global preset registry on import.
-from . import presets as _events_presets  # noqa: F401  -- preset registration side-effect
+from dynastore.models.plugin_config import PluginConfig
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
+from typing import ClassVar, Tuple
 
-from . import config as _events_exposure_config  # noqa: F401  -- service-exposure plugin registration
+
+class EventsPluginConfig(ExposableConfigMixin, PluginConfig):
+    """Service-exposure config for the events extension."""
+    _address: ClassVar[Tuple[str, ...]] = ("platform", "extensions", "events")
+
+    # `enabled` inherited from ExposableConfigMixin — no further fields.

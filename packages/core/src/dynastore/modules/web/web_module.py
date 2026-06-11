@@ -90,6 +90,34 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 "WebModule: Could not find project root. Docs scanning will be limited."
             )
 
+    @staticmethod
+    def _owner_extension_for(provider: Callable[..., Any]) -> Optional[str]:
+        """Derive the owning extension name from a page provider callable.
+
+        Providers are typically bound methods of an extension instance whose
+        class lives under ``dynastore.extensions.<ext>``; plain functions fall
+        back to their own ``__module__``. Returns ``None`` for providers that
+        do not belong to an extension package (e.g. core/web-module pages),
+        which exempts them from extension-exposure gating.
+        """
+        owner_obj = getattr(provider, "__self__", None)
+        module = (
+            getattr(type(owner_obj), "__module__", "")
+            if owner_obj is not None
+            else getattr(provider, "__module__", "") or ""
+        )
+        parts = module.split(".")
+        if len(parts) >= 3 and parts[0] == "dynastore" and parts[1] == "extensions":
+            return parts[2]
+        return None
+
+    def get_page_owner_extension(self, page_id: str) -> Optional[str]:
+        """Owning extension of a registered page, or ``None`` if unowned/unknown."""
+        entry = self.web_pages.get(page_id)
+        if not entry:
+            return None
+        return entry.get("owner_ext")
+
     def register_web_page(self, config: Dict[str, Any], provider: Callable[..., Any]):
         """Registers a web page handler."""
         page_id = config["id"]
@@ -102,6 +130,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             self.web_pages[page_id] = {
                 "config": WebPageConfig(**config),
                 "providers": [],
+                "owner_ext": self._owner_extension_for(provider),
             }
 
         # Guard: same handler may arrive from decorator scan (configure_app)
@@ -129,8 +158,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         # Only non-embed providers carry authoritative navigation metadata
         # (title, icon, section, required_roles).  An embed provider injecting
         # supplemental content must not overwrite the page's nav config.
+        # Ownership follows the same rule: the authoritative (non-embed)
+        # provider determines which extension's exposure toggle gates the page.
         if not is_embed and priority < self.web_pages[page_id]["config"].priority:
             self.web_pages[page_id]["config"] = WebPageConfig(**config)
+            self.web_pages[page_id]["owner_ext"] = self._owner_extension_for(provider)
 
         logger.info(f"WebModule: Registered {'embed ' if is_embed else ''}provider for '{page_id}' (priority: {priority})")
 
@@ -281,6 +313,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         results = []
         for p in self.web_pages.values():
             base_config: WebPageConfig = p["config"]
+            owner_ext = p.get("owner_ext")
             
             # Apply persistent overrides if available
             override = overrides.get(base_config.id)
@@ -318,6 +351,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                     "section": section,
                     "is_embed": config.is_embed,
                     "required_roles": config.required_roles,
+                    "owner": owner_ext,
                 }
             )
 

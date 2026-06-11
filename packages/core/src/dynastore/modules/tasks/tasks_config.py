@@ -20,11 +20,18 @@
 import os
 from typing import ClassVar, Tuple
 from pydantic import Field, model_validator
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.mutability import Mutable
 from dynastore.models.plugin_config import PluginConfig
 
-class TasksPluginConfig(PluginConfig):
-    """Configuration for the Background Tasks module."""
+class TasksPluginConfig(ExposableConfigMixin, PluginConfig):
+    """Configuration for the Background Tasks module.
+
+    Inherits ``enabled`` from ``ExposableConfigMixin`` so the tasks
+    extension's HTTP surface participates in the Service Exposure matrix
+    like every other togglable extension; the background tasks module
+    itself keeps running regardless of the toggle.
+    """
     _address: ClassVar[Tuple[str, ...]] = ("platform", "tasks")
 
 
