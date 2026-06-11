@@ -33,7 +33,10 @@ from .models import Principal, Role, RefreshToken, IdentityLink
 CREATE_PRINCIPALS_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.principals (
         id UUID PRIMARY KEY,
-        identifier VARCHAR(512),
+        -- NOT NULL: the JIT-auth upsert dedupes ON CONFLICT (identifier);
+        -- a NULL identifier never conflicts (SQL NULLs are pairwise
+        -- distinct), so each request would mint a duplicate principal row.
+        identifier VARCHAR(512) NOT NULL,
         display_name VARCHAR(255),
         is_active BOOLEAN DEFAULT TRUE,
         valid_from TIMESTAMPTZ DEFAULT NOW(),
@@ -80,7 +83,12 @@ CREATE_ROLE_HIERARCHY_TABLE = DDLQuery("""
     CREATE TABLE IF NOT EXISTS {schema}.role_hierarchy (
         parent_role VARCHAR(128) NOT NULL REFERENCES {schema}.roles(id) ON DELETE CASCADE,
         child_role VARCHAR(128) NOT NULL REFERENCES {schema}.roles(id) ON DELETE CASCADE,
-        PRIMARY KEY (parent_role, child_role)
+        PRIMARY KEY (parent_role, child_role),
+        -- Self-loops are the degenerate hierarchy cycle; longer cycles
+        -- terminate at read time (GET_FULL_ROLE_HIERARCHY recurses with
+        -- UNION, which dedupes), but a direct self-edge is always a data
+        -- error and is rejected at the source.
+        CHECK (parent_role <> child_role)
     );
 """)
 
@@ -169,34 +177,6 @@ CREATE_GRANTS_UNIQUE_WITH_RESOURCE = DDLQuery(
     "COALESCE(resource_kind, ''), COALESCE(resource_ref, ''));"
 )
 
-# Robustly drop the old auto-named UNIQUE constraint on existing DBs.
-# PG auto-names it (and may truncate at 63 chars), so we introspect
-# pg_constraint and drop any UNIQUE constraint on grants whose column set
-# is exactly (subject_kind, subject_ref, object_kind, object_ref, effect).
-#
-# This is a ``.format(schema=...)``-style template, NOT a DDLQuery: the
-# ``{schema}`` token appears inside a SQL string literal
-# (``nsp.nspname = '{schema}'``), where the DDLQuery identifier-quoting
-# formatter would wrongly double-quote it. The storage layer pre-substitutes
-# the schema with str.format and wraps the result in a fresh DDLQuery —
-# mirroring the prune-function DDL pattern in postgres_iam_storage.py.
-DROP_OLD_GRANTS_UNIQUE = """
-DO $$
-DECLARE c text;
-BEGIN
-  SELECT con.conname INTO c
-  FROM pg_constraint con
-  JOIN pg_class rel ON rel.oid = con.conrelid
-  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-  WHERE nsp.nspname = '{schema}' AND rel.relname = 'grants' AND con.contype = 'u'
-    AND (SELECT array_agg(att.attname::text ORDER BY att.attname::text)
-         FROM unnest(con.conkey) k JOIN pg_attribute att
-           ON att.attrelid = con.conrelid AND att.attnum = k)
-        = ARRAY['effect','object_kind','object_ref','subject_kind','subject_ref'];
-  IF c IS NOT NULL THEN EXECUTE format('ALTER TABLE {schema}.grants DROP CONSTRAINT %I', c); END IF;
-END $$;
-"""
-
 # Policies — platform-only for PR-1 (lives in `iam.policies`).
 #
 # Per-tenant policy registries (D11) are deferred to PR-2: changing
@@ -208,7 +188,7 @@ CREATE_POLICIES_TABLE = DDLQuery("""
         id VARCHAR(128) NOT NULL,
         version VARCHAR(16) DEFAULT '1.0',
         description TEXT,
-        effect VARCHAR(16) DEFAULT 'ALLOW',
+        effect VARCHAR(16) DEFAULT 'ALLOW' CHECK (effect IN ('ALLOW', 'DENY')),
         priority INTEGER NOT NULL DEFAULT 0,
         actions JSONB NOT NULL DEFAULT '[]'::jsonb,
         resources JSONB DEFAULT '["*"]'::jsonb,

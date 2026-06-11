@@ -174,7 +174,14 @@ class IamMiddleware(BaseHTTPMiddleware):
             current.append(self.catalog_admin_sentinel)
             return current
         except Exception as e:
-            logger.debug("catalog-sentinel augmentation skipped: %s", e)
+            # Dropping the sentinel removes authority (fail-closed for access),
+            # but doing it silently can lock a legitimate catalog admin out with
+            # no operator signal. Surface it at WARNING so the cause is visible.
+            logger.warning(
+                "catalog-sentinel augmentation failed for %s:%s — catalog-admin "
+                "authority withheld this request: %s",
+                provider, subject_id, e,
+            )
             return principal_role
 
     def _emit_audit(
@@ -491,6 +498,19 @@ class IamMiddleware(BaseHTTPMiddleware):
                     {"detail": str(exc)},
                     status_code=status_code,
                     headers=deny_headers or None,
+                )
+            except Exception as exc:
+                # A condition handler raised something other than IamError
+                # (a DB blip, a bug in a custom handler, a timeout). Fail
+                # CLOSED: an unhandled error must deny, not escape as a 500
+                # that leaves the request neither authorized nor audited.
+                logger.error(
+                    "Condition evaluation error for '%s' via '%s' — denying: %s",
+                    effective_principal_id, source, exc,
+                )
+                return JSONResponse(
+                    {"detail": "Access denied: authorization condition could not be evaluated."},
+                    status_code=403,
                 )
             if not allowed:
                 logger.warning(
