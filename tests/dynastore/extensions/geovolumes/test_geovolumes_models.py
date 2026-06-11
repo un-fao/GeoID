@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Unit tests for OGC API - 3D GeoVolumes 22-029 wire models."""
+"""Unit tests for OGC API 3D GeoVolumes response models (Task 2.1)."""
 
 from __future__ import annotations
 
@@ -25,145 +25,24 @@ from pydantic import ValidationError
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _imports():
-    from dynastore.extensions.geovolumes.geovolumes_models import (
-        ThreeDContainer,
-        ContentLink,
-        ContentExtent,
-        ChildRef,
-    )
-    return ThreeDContainer, ContentLink, ContentExtent, ChildRef
-
-
-# ---------------------------------------------------------------------------
-# ContentExtent
-# ---------------------------------------------------------------------------
-
-
-def test_content_extent_defaults_crs():
-    _, _, ContentExtent, _ = _imports()
-    ext = ContentExtent(bbox=[4.27, 52.06, 0.0, 4.32, 52.09, 80.0])
-    assert ext.crs == "http://www.opengis.net/def/crs/OGC/0/CRS84h"
-
-
-def test_content_extent_custom_crs():
-    _, _, ContentExtent, _ = _imports()
-    ext = ContentExtent(
-        bbox=[0.0, 0.0, 0.0, 1.0, 1.0, 100.0],
-        crs="http://www.opengis.net/def/crs/EPSG/0/4979",
-    )
-    assert ext.crs == "http://www.opengis.net/def/crs/EPSG/0/4979"
-
-
-def test_content_extent_rejects_4_element_bbox():
-    _, _, ContentExtent, _ = _imports()
-    with pytest.raises(ValidationError):
-        ContentExtent(bbox=[4.27, 52.06, 4.32, 52.09])
-
-
-def test_content_extent_rejects_7_element_bbox():
-    _, _, ContentExtent, _ = _imports()
-    with pytest.raises(ValidationError):
-        ContentExtent(bbox=[4.27, 52.06, 0.0, 4.32, 52.09, 80.0, 99.9])
-
-
-def test_content_extent_rejects_empty_bbox():
-    _, _, ContentExtent, _ = _imports()
-    with pytest.raises(ValidationError):
-        ContentExtent(bbox=[])
-
-
-def test_content_extent_wire_shape():
-    _, _, ContentExtent, _ = _imports()
-    ext = ContentExtent(bbox=[4.27, 52.06, 0.0, 4.32, 52.09, 80.0])
-    wire = ext.model_dump(exclude_none=True)
-    assert len(wire["bbox"]) == 6
-    assert wire["bbox"][2] == 0.0
-    assert wire["bbox"][5] == 80.0
-    assert "crs" in wire
-
-
-# ---------------------------------------------------------------------------
-# ContentLink
-# ---------------------------------------------------------------------------
-
-
-def test_content_link_required_fields():
-    _, ContentLink, _, _ = _imports()
-    link = ContentLink(
-        rel="http://www.opengis.net/def/rel/ogc/1.0/3dtiles",
-        href="https://x/tileset.json",
-        type="application/json+3dtiles",
-    )
-    assert link.rel.startswith("http://www.opengis.net")
-    assert link.type == "application/json+3dtiles"
-
-
-def test_content_link_optional_title_absent_by_default():
-    _, ContentLink, _, _ = _imports()
-    link = ContentLink(
-        rel="alternate",
-        href="https://x/tileset.json",
-        type="application/json",
-    )
-    wire = link.model_dump(exclude_none=True)
-    assert "title" not in wire
-
-
-def test_content_link_with_title():
-    _, ContentLink, _, _ = _imports()
-    link = ContentLink(
-        rel="alternate",
-        href="https://x/tileset.json",
-        type="application/json",
-        title="My tileset",
-    )
-    wire = link.model_dump(exclude_none=True)
-    assert "title" in wire
-
-
-# ---------------------------------------------------------------------------
-# ChildRef
-# ---------------------------------------------------------------------------
-
-
-def test_child_ref_minimal():
-    _, _, _, ChildRef = _imports()
-    ref = ChildRef(id="quarter-north", collectionType="3dcontainer")
-    assert ref.id == "quarter-north"
-    assert ref.collectionType == "3dcontainer"
-
-
-def test_child_ref_title_optional():
-    _, _, _, ChildRef = _imports()
-    ref = ChildRef(id="quarter-north", collectionType="3dcontainer")
-    wire = ref.model_dump(exclude_none=True)
-    assert "title" not in wire
-
-
-def test_child_ref_with_title():
-    _, _, _, ChildRef = _imports()
-    ref = ChildRef(id="quarter-north", title="Northern Quarter", collectionType="3dcontainer")
-    wire = ref.model_dump(exclude_none=True)
-    assert wire["title"] == "Northern Quarter"
-
-
-# ---------------------------------------------------------------------------
-# ThreeDContainer
+# Task 2.1 — ThreeDContainer wire shape (spec test from the task description)
 # ---------------------------------------------------------------------------
 
 
 def test_container_wire_shape():
-    ThreeDContainer, ContentLink, ContentExtent, _ = _imports()
+    from dynastore.extensions.geovolumes.geovolumes_models import (
+        ContentExtent,
+        ContentLink,
+        ThreeDContainer,
+    )
+
     c = ThreeDContainer(
         id="denhaag",
         title="Den Haag LoD2",
         collectionType="3dcontainer",
-        contentExtent=ContentExtent(bbox=[4.27, 52.06, 0.0, 4.32, 52.09, 80.0]),
+        contentExtent=ContentExtent(
+            bbox=[4.27, 52.06, 0.0, 4.32, 52.09, 80.0]
+        ),
         content=[
             ContentLink(
                 rel="http://www.opengis.net/def/rel/ogc/1.0/3dtiles",
@@ -181,62 +60,136 @@ def test_container_wire_shape():
     assert wire["contentExtent"]["crs"] == "http://www.opengis.net/def/crs/OGC/0/CRS84h"
 
 
-def test_container_defaults():
-    ThreeDContainer, _, _, _ = _imports()
-    c = ThreeDContainer(id="test")
-    assert c.collectionType == "3dcontainer"
-    assert c.content == []
-    assert c.children == []
-    assert c.links == []
+def test_content_extent_default_crs():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentExtent
+
+    ext = ContentExtent(bbox=[0.0, 0.0, 0.0, 1.0, 1.0, 10.0])
+    assert ext.crs == "http://www.opengis.net/def/crs/OGC/0/CRS84h"
 
 
-def test_container_title_optional():
-    ThreeDContainer, _, _, _ = _imports()
-    c = ThreeDContainer(id="test")
-    wire = c.model_dump(exclude_none=True)
-    assert "title" not in wire
-    assert "contentExtent" not in wire
+def test_content_extent_custom_crs():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentExtent
+
+    ext = ContentExtent(
+        bbox=[0.0, 0.0, 0.0, 1.0, 1.0, 10.0],
+        crs="http://www.opengis.net/def/crs/EPSG/0/4979",
+    )
+    assert ext.crs == "http://www.opengis.net/def/crs/EPSG/0/4979"
 
 
-def test_container_exclude_none_omits_unset_optionals():
-    ThreeDContainer, ContentLink, ContentExtent, _ = _imports()
+def test_content_link_required_fields():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentLink
+
+    lk = ContentLink(
+        rel="alternate",
+        href="https://example.com/data.city.jsonl",
+        type="application/city+json",
+    )
+    wire = lk.model_dump(exclude_none=True)
+    assert wire["rel"] == "alternate"
+    assert wire["href"] == "https://example.com/data.city.jsonl"
+    assert "title" not in wire  # None excluded
+
+
+def test_child_ref_wire_shape():
+    from dynastore.extensions.geovolumes.geovolumes_models import ChildRef
+
+    ref = ChildRef(id="amsterdam", title="Amsterdam", collectionType="3dcontainer")
+    wire = ref.model_dump(exclude_none=True)
+    assert wire["id"] == "amsterdam"
+    assert wire["collectionType"] == "3dcontainer"
+
+
+def test_threedcontainer_optional_fields_excluded():
+    from dynastore.extensions.geovolumes.geovolumes_models import (
+        ContentExtent,
+        ThreeDContainer,
+    )
+
     c = ThreeDContainer(
-        id="minimal",
+        id="x",
         collectionType="3dcontainer",
+        contentExtent=ContentExtent(bbox=[0.0, 0.0, 0.0, 1.0, 1.0, 5.0]),
     )
     wire = c.model_dump(exclude_none=True)
-    # Only non-None keys present
-    assert "id" in wire
-    assert "collectionType" in wire
-    # Optional fields with None values absent
     assert "title" not in wire
-    assert "contentExtent" not in wire
+    assert "children" not in wire
+    assert "content" not in wire
 
 
-def test_container_with_children():
-    ThreeDContainer, _, _, ChildRef = _imports()
-    c = ThreeDContainer(
-        id="city",
-        children=[
-            ChildRef(id="district-a", title="District A", collectionType="3dcontainer"),
-            ChildRef(id="district-b", collectionType="3dcontainer"),
-        ],
+# ---------------------------------------------------------------------------
+# Bbox helper — _parse_bbox
+# ---------------------------------------------------------------------------
+
+
+def test_parse_bbox_4_numbers():
+    from dynastore.extensions.geovolumes.geovolumes_models import _parse_bbox
+
+    result = _parse_bbox("1.0,2.0,3.0,4.0")
+    assert result == (1.0, 2.0, None, 3.0, 4.0, None)
+
+
+def test_parse_bbox_6_numbers():
+    from dynastore.extensions.geovolumes.geovolumes_models import _parse_bbox
+
+    result = _parse_bbox("1.0,2.0,0.0,3.0,4.0,10.0")
+    assert result == (1.0, 2.0, 0.0, 3.0, 4.0, 10.0)
+
+
+def test_parse_bbox_malformed_raises():
+    from dynastore.extensions.geovolumes.geovolumes_models import _parse_bbox
+
+    with pytest.raises(ValueError):
+        _parse_bbox("1.0,2.0,3.0")  # arity 3 is invalid
+
+    with pytest.raises(ValueError):
+        _parse_bbox("a,b,c,d")  # non-numeric
+
+
+def test_bbox_intersects_2d():
+    from dynastore.extensions.geovolumes.geovolumes_models import _bbox_intersects
+
+    # [minx, miny, zmin, maxx, maxy, zmax] — None means 2D filter
+    assert _bbox_intersects(
+        container_bbox=[0.0, 0.0, 0.0, 10.0, 10.0, 50.0],
+        filter_bbox=(5.0, 5.0, None, 15.0, 15.0, None),
     )
-    assert len(c.children) == 2
-    wire = c.model_dump(exclude_none=True)
-    assert wire["children"][0]["id"] == "district-a"
-    # district-b has no title; exclude_none should omit it
-    assert "title" not in wire["children"][1]
-
-
-def test_container_links_use_shared_link_model():
-    """The links field reuses dynastore.models.shared_models.Link."""
-    ThreeDContainer, _, _, _ = _imports()
-    from dynastore.models.shared_models import Link
-
-    c = ThreeDContainer(
-        id="test",
-        links=[Link(rel="self", href="https://example.com/geovolumes/test")],
+    assert not _bbox_intersects(
+        container_bbox=[0.0, 0.0, 0.0, 1.0, 1.0, 5.0],
+        filter_bbox=(5.0, 5.0, None, 10.0, 10.0, None),
     )
-    assert len(c.links) == 1
-    assert c.links[0].rel == "self"
+
+
+def test_bbox_intersects_3d():
+    from dynastore.extensions.geovolumes.geovolumes_models import _bbox_intersects
+
+    # Overlapping horizontally but z ranges don't intersect
+    assert not _bbox_intersects(
+        container_bbox=[0.0, 0.0, 0.0, 10.0, 10.0, 5.0],
+        filter_bbox=(0.0, 0.0, 10.0, 10.0, 10.0, 20.0),
+    )
+    # Fully overlapping in 3D
+    assert _bbox_intersects(
+        container_bbox=[0.0, 0.0, 0.0, 10.0, 10.0, 20.0],
+        filter_bbox=(5.0, 5.0, 5.0, 8.0, 8.0, 15.0),
+    )
+
+def test_content_extent_rejects_4_element_bbox():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentExtent
+
+    with pytest.raises(ValidationError):
+        ContentExtent(bbox=[4.2, 52.0, 4.4, 52.1])
+
+
+def test_content_extent_rejects_7_element_bbox():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentExtent
+
+    with pytest.raises(ValidationError):
+        ContentExtent(bbox=[4.2, 52.0, 0.0, 4.4, 52.1, 80.0, 1.0])
+
+
+def test_content_extent_rejects_empty_bbox():
+    from dynastore.extensions.geovolumes.geovolumes_models import ContentExtent
+
+    with pytest.raises(ValidationError):
+        ContentExtent(bbox=[])

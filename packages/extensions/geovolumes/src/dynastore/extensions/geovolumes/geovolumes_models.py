@@ -16,134 +16,146 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""OGC API - 3D GeoVolumes draft 22-029 wire shapes.
+"""OGC API - 3D GeoVolumes response models (OGC 22-029).
 
-All 22-029 response models live in this single file so that future field
-renames mandated by the evolving draft require changes in exactly one place.
-
-The shared ``Link`` model from ``dynastore.models.shared_models`` is reused
-for the ``links`` array on ``ThreeDContainer`` — it is the repo-wide OGC link
-primitive used by every other extension.
+All wire shapes for the GeoVolumes protocol live here. Models are
+pydantic-v2 BaseModel with field aliases matching the 22-029 spec.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from dynastore.models.shared_models import Link
+# ---------------------------------------------------------------------------
+# Canonical CRS for 3D WGS84 (OGC 22-029 §7.1)
+# ---------------------------------------------------------------------------
+
+_CRS84H = "http://www.opengis.net/def/crs/OGC/0/CRS84h"
 
 
 # ---------------------------------------------------------------------------
-# ContentExtent
+# Bbox helpers (module-level — imported by tests and routes)
 # ---------------------------------------------------------------------------
 
-#: Default CRS for 3D bounding-box coordinates (WGS 84 + ellipsoidal height).
-_DEFAULT_CRS = "http://www.opengis.net/def/crs/OGC/0/CRS84h"
+
+def _parse_bbox(raw: str) -> Tuple[float, float, Optional[float], float, float, Optional[float]]:
+    """Parse a bbox query-string value into a 6-tuple (minx, miny, zmin, maxx, maxy, zmax).
+
+    Accepts 4 numbers (2D) or 6 numbers (3D). All other arities raise ValueError.
+    Non-numeric values also raise ValueError.
+    """
+    try:
+        parts = [float(p) for p in raw.split(",")]
+    except ValueError as exc:
+        raise ValueError(f"bbox values must be numeric: {raw!r}") from exc
+
+    if len(parts) == 4:
+        minx, miny, maxx, maxy = parts
+        return (minx, miny, None, maxx, maxy, None)
+    if len(parts) == 6:
+        minx, miny, zmin, maxx, maxy, zmax = parts
+        return (minx, miny, zmin, maxx, maxy, zmax)
+    raise ValueError(
+        f"bbox must have 4 (2D) or 6 (3D) values, got {len(parts)}: {raw!r}"
+    )
+
+
+def _bbox_intersects(
+    container_bbox: List[float],
+    filter_bbox: Tuple[float, float, Optional[float], float, float, Optional[float]],
+) -> bool:
+    """Return True if the container's 3D bbox intersects the filter bbox.
+
+    ``container_bbox`` is a 6-element list [minx, miny, zmin, maxx, maxy, zmax].
+    ``filter_bbox`` is the parsed tuple from ``_parse_bbox`` (zmin/zmax may be None for 2D).
+
+    Two intervals [a, b] and [c, d] intersect iff a <= d and c <= b.
+    A None z component means the z dimension is unconstrained on that side.
+    """
+    if len(container_bbox) < 6:
+        return False
+
+    c_minx, c_miny, c_zmin, c_maxx, c_maxy, c_zmax = container_bbox
+    f_minx, f_miny, f_zmin, f_maxx, f_maxy, f_zmax = filter_bbox
+
+    # 2D intersection check
+    if not (c_minx <= f_maxx and f_minx <= c_maxx):
+        return False
+    if not (c_miny <= f_maxy and f_miny <= c_maxy):
+        return False
+
+    # 3D z-range check (only when filter carries z values)
+    if f_zmin is not None and f_zmax is not None:
+        if not (c_zmin <= f_zmax and f_zmin <= c_zmax):
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Wire models
+# ---------------------------------------------------------------------------
 
 
 class ContentExtent(BaseModel):
-    """3D bounding box and optional CRS for a GeoVolumes container.
+    """3D bounding box extent for a 3D container (OGC 22-029 §7.2).
 
-    ``bbox`` must contain exactly 6 values: [minX, minY, minZ, maxX, maxY, maxZ]
-    in the coordinate order of ``crs`` (default: CRS84h — lon, lat, height).
+    ``bbox`` must have exactly 6 floats: [minLon, minLat, minH, maxLon, maxLat, maxH].
+    The ``crs`` defaults to CRS84h (WGS84 + ellipsoidal height).
     """
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    bbox: List[float] = Field(
-        description="Minimum bounding box [minX, minY, minZ, maxX, maxY, maxZ].",
-    )
-    crs: str = Field(
-        default=_DEFAULT_CRS,
-        description="CRS URI for the bbox coordinates.",
-    )
+    bbox: List[float] = Field(..., description="6-element 3D bbox [minX,minY,minZ,maxX,maxY,maxZ]")
+    crs: str = Field(default=_CRS84H, description="CRS URI for the extent")
 
     @field_validator("bbox")
     @classmethod
     def _validate_bbox_arity(cls, v: List[float]) -> List[float]:
         if len(v) != 6:
             raise ValueError(
-                f"bbox must have exactly 6 elements [minX, minY, minZ, maxX, maxY, maxZ], "
-                f"got {len(v)}."
+                "bbox must have exactly 6 elements "
+                f"[minX, minY, minZ, maxX, maxY, maxZ], got {len(v)}."
             )
         return v
 
 
-# ---------------------------------------------------------------------------
-# ContentLink
-# ---------------------------------------------------------------------------
-
-
 class ContentLink(BaseModel):
-    """Link to a 3D content resource (e.g. 3D Tiles, I3S, CityJSON).
+    """Link to a 3D content resource (e.g. a 3D Tiles tileset or CityJSONSeq stream)."""
 
-    Field names match the 22-029 wire schema verbatim.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    rel: str = Field(description="Link relation type URI or registered token.")
-    href: str = Field(description="Target URL of the content resource.")
-    type: Optional[str] = Field(default=None, description="Media type of the content resource.")
-    title: Optional[str] = Field(default=None, description="Human-readable label for the link.")
-
-
-# ---------------------------------------------------------------------------
-# ChildRef
-# ---------------------------------------------------------------------------
+    rel: str
+    href: str
+    type: Optional[str] = None
+    title: Optional[str] = None
 
 
 class ChildRef(BaseModel):
-    """Reference to a child 3D container (used in ``ThreeDContainer.children``).
+    """Reference to a child 3D container."""
 
-    Carries the minimal identity fields needed for a client to navigate into
-    a nested container without fetching the full child document.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str = Field(description="Identifier of the child container.")
-    title: Optional[str] = Field(default=None, description="Human-readable label for the child.")
-    collectionType: str = Field(  # noqa: N815 — wire name
-        description="Collection type discriminator (typically '3dcontainer').",
-    )
-
-
-# ---------------------------------------------------------------------------
-# ThreeDContainer
-# ---------------------------------------------------------------------------
+    id: str
+    title: Optional[str] = None
+    collectionType: str = "3dcontainer"
 
 
 class ThreeDContainer(BaseModel):
-    """Root wire shape for an OGC API - 3D GeoVolumes container (22-029 §7.2).
+    """OGC API 3D GeoVolumes collection resource (22-029 §7.3).
 
-    A container aggregates 3D content links (e.g. 3D Tiles, I3S, CityJSON)
-    and optional child containers, enabling hierarchical scene decomposition.
+    Represents a single 3D container with its spatial extent, content links,
+    and optional child references.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    collectionType: str = "3dcontainer"
+    contentExtent: ContentExtent
+    content: Optional[List[ContentLink]] = None
+    links: Optional[List[Dict[str, Any]]] = None
+    children: Optional[List[ChildRef]] = None
 
-    id: str = Field(description="Unique identifier for this 3D container.")
-    title: Optional[str] = Field(default=None, description="Human-readable title.")
-    collectionType: str = Field(  # noqa: N815 — wire name
-        default="3dcontainer",
-        description="Discriminator field; always '3dcontainer' for this resource type.",
-    )
-    contentExtent: Optional[ContentExtent] = Field(  # noqa: N815 — wire name
-        default=None,
-        description="3D bounding box covering all content in this container.",
-    )
-    content: List[ContentLink] = Field(
-        default_factory=list,
-        description="Links to the 3D content resources held by this container.",
-    )
-    children: List[ChildRef] = Field(
-        default_factory=list,
-        description="References to nested child containers.",
-    )
-    links: List[Link] = Field(
-        default_factory=list,
-        description="OGC API navigational links (self, alternate, etc.).",
-    )
+
+class ThreeDContainerList(BaseModel):
+    """Response envelope for the GeoVolumes collections listing."""
+
+    collections: List[ThreeDContainer]
+    links: List[Dict[str, Any]] = Field(default_factory=list)
