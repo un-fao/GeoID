@@ -930,17 +930,14 @@ class CollectionService:
                     physical_schema=phys_schema,
                 )
             else:
-                # Degrade-safe for environments without StorageModule: the union
-                # covers extension-registered sidecars when the registry is
-                # importable, falling back to the core suffixes only when the
-                # storage module is absent.
-                suffixes: set[str] = {"attributes", "geometries", "item_metadata", "stac_metadata"}
-                try:
-                    from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
-                    suffixes |= set(SidecarRegistry.get_available_types())
-                except ImportError:
-                    pass  # storage module absent: fall back to the core suffixes only
-                for suffix in sorted(suffixes):
+                # Degrade-safe for environments without StorageModule. The
+                # literal core suffixes are deliberate: this branch only runs
+                # when no PG driver is registered, and without the storage
+                # module no extension sidecar can have provisioned tables
+                # either — so the core set is exhaustive here. (Importing the
+                # sidecar registry from a driver package is also forbidden in
+                # service code; see test_services_have_no_driver_imports.)
+                for suffix in ("attributes", "geometries", "item_metadata", "stac_metadata"):
                     await shared_queries.delete_table_query.execute(
                         conn, schema=phys_schema, table=f"{phys_table}_{suffix}"
                     )
