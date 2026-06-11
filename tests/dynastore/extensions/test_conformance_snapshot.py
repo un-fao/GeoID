@@ -175,6 +175,7 @@ EXPECTED_PASS5_VOLUMES_URIS = {
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/core",
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/3dtiles",
     "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/tileset",
+    "http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/spatialquery",
 }
 
 

@@ -12,6 +12,9 @@ deck.gl, and other 3D Tiles 1.0 clients.
 ```
 /volumes/                                                                        landing page
 /volumes/conformance                                                             OGC conformance
+/volumes/catalogs/{catalog_id}/collections                                       list 3D containers
+/volumes/catalogs/{catalog_id}/collections/{collection_id}                       single 3D container
+/volumes/catalogs/{catalog_id}/collections/{collection_id}/cityjsonseq           CityJSONSeq stream
 /volumes/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tileset.json  Cesium tileset descriptor
 /volumes/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tiles/{id}.b3dm  B3DM tile content
 /volumes/catalogs/{catalog_id}/collections/{collection_id}/3dtiles/tiles/{id}.glb   GLB tile content
@@ -23,6 +26,7 @@ OGC conformance declared:
 http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/core
 http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/3dtiles
 http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/tileset
+http://www.opengis.net/spec/ogcapi-3d-geovolumes-1/0.0/conf/spatialquery
 ```
 
 ---
@@ -109,6 +113,33 @@ When `SidecarBoundsSource` is registered, it also registers a companion
 | `modules/volumes/writers/tileset_json.py` | Tileset dict → streamed JSON |
 | `models/protocols/bounds_source.py` | `BoundsSourceProtocol` interface |
 | `models/protocols/geometry_fetcher.py` | `GeometryFetcherProtocol` interface |
+
+---
+
+## CityJSON ingestion
+
+Collections that carry CityJSON provenance extras (`cityjson:version` or `geovolumes:enabled`)
+are exposed as 3D containers via the GeoVolumes Core API. The `cityjson_ingest` module:
+
+- Parses CityJSONSeq (`.city.jsonl`) and plain CityJSON (`.city.json`) files.
+- Dequantizes vertices and reprojects to WGS84 (EPSG:4326) using the header's EPSG code.
+- Maps each CityObject to a DynaStore item with `geometry` (MultiPolygon footprint),
+  `citygml_type`, `lod`, `height`, `zmin`, `zmax`, and raw `cityjson` blob in extras.
+- Bulk-creates items in configurable batches (best-effort; failures recorded as warnings).
+- Raises `ValueError` before any DB work when the header carries no usable EPSG code.
+
+The `geovolumes_demo` preset seeds a `demo-3d / denhaag` catalog with the Den Haag LoD2
+CityJSON dataset (2498 buildings, EPSG:7415). 3D Tiles are served at runtime by the
+volumes extension — no offline task is enqueued.
+
+---
+
+## Globe browser page
+
+A MapLibre GL + deck.gl globe page is served at `/web/volumes/volumes_browser.html`.
+It fetches the GeoVolumes container listing, renders 3D bounding-box extents as extruded
+polygons (deck.PolygonLayer), loads 3D Tiles for the selected container (deck.Tile3DLayer),
+and overlays building footprints from the Features API (deck.GeoJsonLayer).
 
 ---
 
