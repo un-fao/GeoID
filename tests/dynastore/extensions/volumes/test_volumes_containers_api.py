@@ -99,6 +99,19 @@ def volumes_app():
     catalogs_mock.get_collection = AsyncMock(return_value=_COLLECTION_3D)
     catalogs_mock.search_items = AsyncMock(return_value=[_ITEM_WITH_CITYJSON])
 
+    # stream_cityjsonseq consumes the streaming surface: an object whose
+    # .items is an async iterator over features. Build a fresh iterator
+    # per call so multiple requests in one test don't share state.
+    async def _stream_items(*_a, **_k):
+        async def _items_iter():
+            yield _ITEM_WITH_CITYJSON
+
+        stream_response = MagicMock()
+        stream_response.items = _items_iter()
+        return stream_response
+
+    catalogs_mock.stream_items = AsyncMock(side_effect=_stream_items)
+
     svc._get_catalogs_service = AsyncMock(return_value=catalogs_mock)
 
     app = FastAPI()

@@ -332,13 +332,16 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 
         from dynastore.models.query_builder import QueryRequest
 
-        features = await catalogs_svc.search_items(
-            catalog_id, collection_id, QueryRequest(limit=limit)
+        # Stream instead of materializing: each item carries the full
+        # CityJSONFeature payload, so buffering the whole collection can
+        # cost hundreds of MB at the default limit.
+        query_response = await catalogs_svc.stream_items(
+            catalog_id, collection_id, QueryRequest(limit=limit), ctx=None
         )
 
         async def _generate():
             yield json.dumps(header) + "\n"
-            for feat in (features or []):
+            async for feat in query_response.items:
                 cityjson = _extract_cityjson(feat)
                 if cityjson is not None:
                     yield json.dumps(cityjson) + "\n"

@@ -364,7 +364,18 @@ def _build_footprint_geojson(
     if not polygons:
         raise ValueError("No valid surface geometry found in feature")
 
-    merged = shapely.ops.unary_union(polygons)
+    # Repair self-intersecting rings before the union — LoD2 wall/roof
+    # surfaces projected to 2D routinely produce bow-tie rings that make
+    # unary_union raise or return degenerate geometry, losing the building.
+    repaired = [p if p.is_valid else p.buffer(0) for p in polygons]
+    repaired = [p for p in repaired if not p.is_empty]
+
+    merged = shapely.ops.unary_union(repaired if repaired else polygons)
+    if not merged.is_valid:
+        merged = merged.buffer(0)
+    if merged.is_empty:
+        raise ValueError("No valid surface geometry found in feature")
+
     if isinstance(merged, shapely.geometry.Polygon):
         merged = shapely.geometry.MultiPolygon([merged])
     elif not isinstance(merged, shapely.geometry.MultiPolygon):
