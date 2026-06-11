@@ -58,6 +58,7 @@ CLOUD_PROCESS_CONSUMERS: Dict[str, List[str]] = {
     "gdal": ["catalog", "maps"],
     "tiles_preseed": ["maps"],
     "tiles_export": ["maps"],
+    "geovolumes_tileset": ["maps"],
 }
 
 # Processes that must stay in-process even under the cloud profile
