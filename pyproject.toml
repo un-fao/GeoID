@@ -458,7 +458,7 @@ api_catalog = ["dynastore[api_open,auth_grp]"]
 # (now gated by auth_grp post per-extension wheel migration).
 # Excluded vs. legacy: catalog_routes_grp (stac/assets/search/records),
 # gcp_routes_grp, monitor_grp (stats/logs), dimensions, notebooks.
-api_maps_open = ["dynastore[core,catalog_data_grp,maps_grp,dwh_grp,tools_core_grp,module_catalog_elasticsearch]"]
+api_maps_open = ["dynastore[core,catalog_data_grp,maps_grp,dwh_grp,tools_core_grp,module_catalog_elasticsearch,extension_geovolumes]"]
 # api_maps: same surface WITH auth (kept for reference / future use)
 api_maps = ["dynastore[api_maps_open,auth_grp]"]
 # api_features: lightweight local-dev service — OGC Features + STAC, no GCP/tools/index
@@ -479,7 +479,7 @@ worker_local = ["dynastore[worker_service,monitor_grp]"]
 # Prefixed with scope_ to avoid collision with module-level extras above.
 # ==========================================================================
 # scope_catalog: catalog API without auth — open for local testing
-scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp]"]
+scope_catalog = ["dynastore[core,catalog_grp,google_grp,monitor_grp,index_grp,processes,tasks,catalog_task_gcp_provision,catalog_task_gcp_catalog_cleanup,module_cache,notebooks,dimensions,drivers_grp,extension_geovolumes]"]
 # scope_catalog_review: scope_catalog + gdal running in-process as a background
 # async runner on the catalog pod.  For review / local images ONLY — not
 # referenced by scope_catalog, scope_geoid, or any production scope.
