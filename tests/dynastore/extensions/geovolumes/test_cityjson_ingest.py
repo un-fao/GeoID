@@ -330,37 +330,37 @@ async def test_ingest_cityjson_file():
 
 
 # ---------------------------------------------------------------------------
-# Fix 2 — _parse_epsg authority-aware parsing
+# Fix 2 — parse_epsg authority-aware parsing
 # ---------------------------------------------------------------------------
 
 
-def test_parse_epsg_uri_epsg_authority():
+def testparse_epsg_uri_epsg_authority():
     """URI with EPSG authority returns the numeric code."""
-    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+    from dynastore.extensions.geovolumes.cityjson_ingest import parse_epsg
 
-    assert _parse_epsg("https://www.opengis.net/def/crs/EPSG/0/7415") == 7415
+    assert parse_epsg("https://www.opengis.net/def/crs/EPSG/0/7415") == 7415
 
 
-def test_parse_epsg_uri_ogc_authority_returns_none():
+def testparse_epsg_uri_ogc_authority_returns_none():
     """URI with OGC authority (e.g. CRS84) must return None, not extract 84."""
-    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+    from dynastore.extensions.geovolumes.cityjson_ingest import parse_epsg
 
-    assert _parse_epsg("http://www.opengis.net/def/crs/OGC/1.3/CRS84") is None
+    assert parse_epsg("http://www.opengis.net/def/crs/OGC/1.3/CRS84") is None
 
 
-def test_parse_epsg_none_and_empty_return_none():
+def testparse_epsg_none_and_empty_return_none():
     """None and empty string both return None without raising."""
-    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+    from dynastore.extensions.geovolumes.cityjson_ingest import parse_epsg
 
-    assert _parse_epsg(None) is None
-    assert _parse_epsg("") is None
+    assert parse_epsg(None) is None
+    assert parse_epsg("") is None
 
 
-def test_parse_epsg_urn_form():
+def testparse_epsg_urn_form():
     """URN form ``EPSG::<code>`` returns the numeric code."""
-    from dynastore.extensions.geovolumes.cityjson_ingest import _parse_epsg
+    from dynastore.extensions.geovolumes.cityjson_ingest import parse_epsg
 
-    assert _parse_epsg("urn:ogc:def:crs:EPSG::28992") == 28992
+    assert parse_epsg("urn:ogc:def:crs:EPSG::28992") == 28992
 
 
 # ---------------------------------------------------------------------------

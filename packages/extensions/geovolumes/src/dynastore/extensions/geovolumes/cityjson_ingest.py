@@ -121,7 +121,7 @@ CITYOBJECT_FEATURE_TYPE: FeatureTypeDefinition = FeatureTypeDefinition(
 # ---------------------------------------------------------------------------
 
 
-def _parse_epsg(reference_system: Optional[str]) -> Optional[int]:
+def parse_epsg(reference_system: Optional[str]) -> Optional[int]:
     """Extract the EPSG code from an OGC CRS URI or URN.
 
     Only recognises EPSG-authority references:
@@ -139,6 +139,9 @@ def _parse_epsg(reference_system: Optional[str]) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+# Backwards-compat alias
+
+
 def _header_from_dict(d: dict[str, Any]) -> CityJsonHeader:
     transform = d.get("transform", {})
     meta = d.get("metadata", {})
@@ -148,7 +151,7 @@ def _header_from_dict(d: dict[str, Any]) -> CityJsonHeader:
         transform_scale=transform.get("scale", [1.0, 1.0, 1.0]),
         transform_translate=transform.get("translate", [0.0, 0.0, 0.0]),
         reference_system=ref_sys,
-        epsg=_parse_epsg(ref_sys),
+        epsg=parse_epsg(ref_sys),
         metadata=meta,
     )
 
@@ -300,7 +303,7 @@ def dequantize(
     ]
 
 
-def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
+def extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
     """Return outer rings (list of vertex indices) for all surfaces in one geometry.
 
     CityJSON nesting per type:
@@ -312,7 +315,7 @@ def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
     """
     geom_type = geometry.get("type", "")
     boundaries = geometry.get("boundaries", [])
-    surfaces = []
+    surfaces: list[list[int]] = []
 
     if geom_type in ("MultiSurface", "CompositeSurface"):
         # boundaries[surface][ring][vertex_idx]
@@ -334,6 +337,9 @@ def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
     return surfaces
 
 
+# Backwards-compat alias
+
+
 def _build_footprint_geojson(
     feature: dict[str, Any],
     transformer: pyproj.Transformer,
@@ -348,7 +354,7 @@ def _build_footprint_geojson(
     polygons: list[shapely.geometry.Polygon] = []
     for obj in feature.get("CityObjects", {}).values():
         for geom in obj.get("geometry", []):
-            for ring_indices in _extract_surfaces(geom):
+            for ring_indices in extract_surfaces(geom):
                 # ring_indices is a flat list of int vertex indices
                 ring_3d = [vertices_3d[i] for i in ring_indices]
                 ring_2d = [transformer.transform(p[0], p[1]) for p in ring_3d]
