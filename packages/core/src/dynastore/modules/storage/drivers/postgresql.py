@@ -988,9 +988,6 @@ class ItemsPostgresqlDriver(TypedDriver[ItemsPostgresqlDriverConfig], ModuleProt
             async with managed_transaction(db_proto.engine) as conn:
                 await _drop_all(conn)
 
-        from dynastore.modules.catalog.collection_service import _unmark_confirmed_active
-        _unmark_confirmed_active(catalog_id, collection_id)
-
     async def export_entities(
         self,
         catalog_id: str,

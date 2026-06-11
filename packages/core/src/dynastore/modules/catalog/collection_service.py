@@ -930,9 +930,17 @@ class CollectionService:
                     physical_schema=phys_schema,
                 )
             else:
-                # Degrade-safe for environments without StorageModule: drop the
-                # hub and the core sidecar suffixes inline.
-                for suffix in ("attributes", "geometries", "item_metadata", "stac_metadata"):
+                # Degrade-safe for environments without StorageModule: the union
+                # covers extension-registered sidecars when the registry is
+                # importable, falling back to the core suffixes only when the
+                # storage module is absent.
+                suffixes: set[str] = {"attributes", "geometries", "item_metadata", "stac_metadata"}
+                try:
+                    from dynastore.modules.storage.drivers.pg_sidecars.registry import SidecarRegistry
+                    suffixes |= set(SidecarRegistry.get_available_types())
+                except ImportError:
+                    pass  # storage module absent: fall back to the core suffixes only
+                for suffix in sorted(suffixes):
                     await shared_queries.delete_table_query.execute(
                         conn, schema=phys_schema, table=f"{phys_table}_{suffix}"
                     )
@@ -1084,6 +1092,8 @@ class CollectionService:
                 )
 
         _invalidate_collection_model_cache(catalog_id, collection_id)
+        if force:
+            _unmark_confirmed_active(catalog_id, collection_id)
 
         if force and phys_schema:
             lifecycle_registry.destroy_async_collection(

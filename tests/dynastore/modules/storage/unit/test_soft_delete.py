@@ -64,9 +64,6 @@ class TestUnifiedSoftDeletePg:
                 return_value=["attributes"],
             ),
             patch.object(sq.delete_table_query, "execute", mock_execute),
-            patch(
-                "dynastore.modules.catalog.collection_service._unmark_confirmed_active"
-            ),
         ):
             await driver.drop_storage("cat1", "col1", soft=False, db_resource=mock_conn)
 

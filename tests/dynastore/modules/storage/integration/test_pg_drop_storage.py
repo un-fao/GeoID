@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Unit-tests for ``ItemsPostgresqlDriver.drop_storage`` (#1994).
+"""Integration tests for ``ItemsPostgresqlDriver.drop_storage`` (#1994).
 
 Exercises the driver method directly (not through the catalog service) so
 that teardown ownership — hub + every sidecar in a single call — is verified

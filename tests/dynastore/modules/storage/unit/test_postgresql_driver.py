@@ -247,9 +247,6 @@ class TestLifecycleMethods:
                 return_value=["attributes", "geometries"],
             ),
             patch.object(sq.delete_table_query, "execute", mock_execute),
-            patch(
-                "dynastore.modules.catalog.collection_service._unmark_confirmed_active"
-            ),
         ):
             await driver.drop_storage("cat1", "col1", db_resource=mock_conn)
 
