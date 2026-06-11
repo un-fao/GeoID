@@ -50,6 +50,7 @@ dynastore-ext-dggs = { workspace = true }
 dynastore-ext-features = { workspace = true }
 dynastore-ext-records = { workspace = true }
 dynastore-ext-coverages = { workspace = true }
+dynastore-ext-volumes = { workspace = true }
 dynastore-ext-wfs = { workspace = true }
 dynastore-ext-dwh = { workspace = true }
 dynastore-ext-joins = { workspace = true }
@@ -121,7 +122,7 @@ extension_template = ["dynastore[extension_base]", "attrs>=25.3.0", "aiohttp>=3.
 extension_processes = ["dynastore[extension_base]", "jsonschema", "dynastore-ext-processes"]
 extension_features = ["dynastore[extension_base,geospatial_core,geospatial_io]", "pygeofilter[backend-sqlalchemy]", "dynastore-ext-features"]
 extension_tiles = ["dynastore[extension_base,module_tiles]", "dynastore-ext-tiles"]
-extension_volumes = ["dynastore[extension_base]", "shapely>=2.0"]
+extension_volumes = ["dynastore[extension_base,geospatial_core]", "shapely>=2.0", "pyproj>=3.0.0", "cjio>=0.10.1", "dynastore-ext-volumes"]
 extension_tasks = ["dynastore[extension_base,module_tasks]", "dynastore-ext-tasks"]
 extension_proxy = ["dynastore[extension_base,module_proxy]", "dynastore-ext-proxy"]
 extension_gdal = ["dynastore[extension_base,module_gdal]", "dynastore-ext-gdal"]
@@ -514,7 +515,7 @@ all = ["dynastore[api_full,geoid_service,worker_service]"]
 # `everything` = `all` + every `extension_*` extra, so all 35 ext wheels resolve.
 # Build the CI test image with SCOPE=everything. Keep service images on the
 # narrow `scope_*` extras to stay slim.
-everything = ["dynastore[all,extension_admin,extension_assets,extension_auth,extension_configs,extension_connected_systems,extension_coverages,extension_crs,extension_dggs,extension_dimensions,extension_dwh,extension_edr,extension_events,extension_features,extension_gcp_bucket,extension_gdal,extension_geoid,extension_httpx,extension_iam,extension_logs,extension_maps,extension_moving_features,extension_notebooks,extension_processes,extension_proxy,extension_records,extension_stac,extension_stats,extension_styles,extension_tasks,extension_template,extension_tiles,extension_web,extension_wfs]"]
+everything = ["dynastore[all,extension_admin,extension_assets,extension_auth,extension_configs,extension_connected_systems,extension_coverages,extension_crs,extension_dggs,extension_dimensions,extension_dwh,extension_edr,extension_events,extension_features,extension_gcp_bucket,extension_gdal,extension_geoid,extension_httpx,extension_iam,extension_logs,extension_maps,extension_moving_features,extension_notebooks,extension_processes,extension_proxy,extension_records,extension_stac,extension_stats,extension_styles,extension_tasks,extension_template,extension_tiles,extension_volumes,extension_web,extension_wfs]"]
 # Superset of `everything` that pulls in every optional driver / task-only
 # dependency referenced anywhere in src/. Pyright/mypy need these resolvable to
 # clear `reportMissingImports` on optional code paths (duckdb, pyiceberg,
