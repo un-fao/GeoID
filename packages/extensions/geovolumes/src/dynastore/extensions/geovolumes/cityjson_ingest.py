@@ -118,12 +118,16 @@ CITYOBJECT_FEATURE_TYPE: FeatureTypeDefinition = FeatureTypeDefinition(
 # ---------------------------------------------------------------------------
 
 
-def _parse_epsg(reference_system: Optional[str]) -> Optional[int]:
+def parse_epsg(reference_system: Optional[str]) -> Optional[int]:
     """Extract the trailing integer code from an OGC CRS URI."""
     if not reference_system:
         return None
     m = _EPSG_RE.search(reference_system)
     return int(m.group(1)) if m else None
+
+
+# Backwards-compat alias
+_parse_epsg = parse_epsg
 
 
 def _header_from_dict(d: dict[str, Any]) -> CityJsonHeader:
@@ -135,7 +139,7 @@ def _header_from_dict(d: dict[str, Any]) -> CityJsonHeader:
         transform_scale=transform.get("scale", [1.0, 1.0, 1.0]),
         transform_translate=transform.get("translate", [0.0, 0.0, 0.0]),
         reference_system=ref_sys,
-        epsg=_parse_epsg(ref_sys),
+        epsg=parse_epsg(ref_sys),
         metadata=meta,
     )
 
@@ -278,7 +282,7 @@ def dequantize(
     ]
 
 
-def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
+def extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
     """Return outer rings (list of vertex indices) for all surfaces in one geometry.
 
     CityJSON nesting per type:
@@ -290,7 +294,7 @@ def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
     """
     geom_type = geometry.get("type", "")
     boundaries = geometry.get("boundaries", [])
-    surfaces = []
+    surfaces: list[list[int]] = []
 
     if geom_type in ("MultiSurface", "CompositeSurface"):
         # boundaries[surface][ring][vertex_idx]
@@ -310,6 +314,10 @@ def _extract_surfaces(geometry: dict[str, Any]) -> list[list[int]]:
                     if surface and surface[0]:
                         surfaces.append(surface[0])
     return surfaces
+
+
+# Backwards-compat alias
+_extract_surfaces = extract_surfaces
 
 
 def _build_footprint_geojson(

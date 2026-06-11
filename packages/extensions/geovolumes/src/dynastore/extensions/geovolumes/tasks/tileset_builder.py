@@ -49,7 +49,7 @@ except ImportError as exc:  # pragma: no cover
 from dynastore.extensions.geovolumes.cityjson_ingest import (
     CityJsonHeader,
     dequantize,
-    _extract_surfaces,
+    extract_surfaces,
 )
 
 # ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ def _feature_to_mesh(
             lod_val = geom.get("lod")
             if lod_filter is not None and str(lod_val) != lod_filter:
                 continue
-            for ring_indices in _extract_surfaces(geom):
+            for ring_indices in extract_surfaces(geom):
                 ring_3d = [real_verts[i] for i in ring_indices]
                 if len(ring_3d) < 3:
                     continue
@@ -204,8 +204,13 @@ def build_glb(
             fid = feature.get("id", "mesh")
             scene.add_geometry(mesh, geom_name=str(fid))
 
-    glb_bytes: bytes = scene.export(file_type="glb")
-    return glb_bytes
+    result = scene.export(file_type="glb")
+    if not isinstance(result, bytes):
+        raise RuntimeError(
+            f"trimesh.Scene.export returned {type(result).__name__!r} instead of bytes; "
+            "GLB export failed unexpectedly."
+        )
+    return result
 
 
 def build_tileset_json(

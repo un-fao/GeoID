@@ -31,22 +31,20 @@ No runtime DDL is performed.
 
 from __future__ import annotations
 
-import io
 import logging
 from typing import Any, Optional
 
-from dynastore.models.protocols import CatalogsProtocol
+from dynastore.models.protocols import CatalogsProtocol, StorageProtocol
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
 from dynastore.modules.tasks.models import TaskPayload
-from dynastore.modules.tiles.tiles_module import TileArchiveStorageProtocol
 from dynastore.tools.discovery import get_protocol
 from dynastore.tools.protocol_helpers import get_engine
 
 from .definition import GEOVOLUMES_TILESET_PROCESS_DEFINITION
 from .models import GeoVolumesTilesetRequest
 from .tileset_builder import build_glb, build_tileset_json, export_tileset_bytes
-from dynastore.extensions.geovolumes.cityjson_ingest import CityJsonHeader
+from dynastore.extensions.geovolumes.cityjson_ingest import CityJsonHeader, parse_epsg
 
 logger = logging.getLogger(__name__)
 
@@ -60,22 +58,15 @@ def _get_item_service(catalog_module: Any) -> Any:
 
 def _build_header_from_extras(extras: dict[str, Any]) -> CityJsonHeader:
     """Reconstruct a CityJsonHeader from the collection extras dict."""
-    import re
-
     transform = extras.get("cityjson:transform", {})
     ref_sys = extras.get("cityjson:referenceSystem")
-
-    epsg: Optional[int] = None
-    if ref_sys:
-        m = re.search(r"(\d+)\s*$", ref_sys)
-        epsg = int(m.group(1)) if m else None
 
     return CityJsonHeader(
         version=extras.get("cityjson:version", "2.0"),
         transform_scale=transform.get("scale", [1.0, 1.0, 1.0]),
         transform_translate=transform.get("translate", [0.0, 0.0, 0.0]),
         reference_system=ref_sys,
-        epsg=epsg,
+        epsg=parse_epsg(ref_sys),
     )
 
 
@@ -124,9 +115,9 @@ class GeoVolumesTilesetTask(
         if catalog_module is None:
             raise RuntimeError("CatalogsProtocol is unavailable.")
 
-        archive_storage = get_protocol(TileArchiveStorageProtocol)
-        if archive_storage is None:
-            raise RuntimeError("TileArchiveStorageProtocol is unavailable.")
+        storage = get_protocol(StorageProtocol)
+        if storage is None:
+            raise RuntimeError("StorageProtocol is unavailable.")
 
         catalog_id = request.catalog_id
         collection_id = request.collection_id
@@ -148,10 +139,23 @@ class GeoVolumesTilesetTask(
             collection_id,
         )
 
+        if not features:
+            raise RuntimeError(
+                f"No CityJSON features found in {catalog_id}/{collection_id}; "
+                "ingest the collection before running this process."
+            )
+
         bbox = _collect_bbox_from_features(features, header)
 
+        bucket_name = await storage.ensure_storage_for_catalog(catalog_id)
+        if not bucket_name:
+            raise RuntimeError(
+                f"No storage bucket available for catalog '{catalog_id}'."
+            )
+
         glb_refs, tile_count = await self._build_and_upload_glbs(
-            archive_storage=archive_storage,
+            storage=storage,
+            bucket_name=bucket_name,
             features=features,
             header=header,
             catalog_id=catalog_id,
@@ -162,7 +166,8 @@ class GeoVolumesTilesetTask(
         tileset = build_tileset_json(bbox, glb_refs)
         tileset_bytes = export_tileset_bytes(tileset)
         tileset_uri = await self._upload_tileset_json(
-            archive_storage=archive_storage,
+            storage=storage,
+            bucket_name=bucket_name,
             tileset_bytes=tileset_bytes,
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -216,7 +221,8 @@ class GeoVolumesTilesetTask(
     async def _build_and_upload_glbs(
         self,
         *,
-        archive_storage: Any,
+        storage: Any,
+        bucket_name: str,
         features: list[dict[str, Any]],
         header: CityJsonHeader,
         catalog_id: str,
@@ -229,39 +235,34 @@ class GeoVolumesTilesetTask(
 
         batches = [
             features[i : i + batch_size]
-            for i in range(0, max(len(features), 1), batch_size)
+            for i in range(0, len(features), batch_size)
         ]
-        if not batches:
-            batches = [[]]
 
         for idx, batch in enumerate(batches):
             glb_bytes = build_glb(batch, header, lod_filter)
             filename = f"tile_{idx}.glb"
-            glb_io = io.BytesIO(glb_bytes)
-            glb_io.name = filename
-            uri = await archive_storage.save_archive(
-                catalog_id, collection_id, filename, glb_io
+            target_path = f"gs://{bucket_name}/3dtiles/{collection_id}/{filename}"
+            await storage.upload_file_content(
+                target_path, glb_bytes, "model/gltf-binary"
             )
             glb_refs.append(filename)
-            logger.debug("Uploaded GLB: %s", uri)
+            logger.debug("Uploaded GLB: %s", target_path)
 
         return glb_refs, len(batches)
 
     async def _upload_tileset_json(
         self,
         *,
-        archive_storage: Any,
+        storage: Any,
+        bucket_name: str,
         tileset_bytes: bytes,
         catalog_id: str,
         collection_id: str,
     ) -> str:
         """Upload tileset.json and return its storage URI."""
-        ts_io = io.BytesIO(tileset_bytes)
-        ts_io.name = "tileset.json"
-        uri: str = await archive_storage.save_archive(
-            catalog_id, collection_id, "tileset.json", ts_io
-        )
-        return uri
+        target_path = f"gs://{bucket_name}/3dtiles/{collection_id}/tileset.json"
+        await storage.upload_file_content(target_path, tileset_bytes, "application/json")
+        return target_path
 
     async def _register_tileset_asset(
         self,

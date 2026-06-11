@@ -287,6 +287,79 @@ def test_geovolumes_tileset_request_lod() -> None:
 
 
 @pytest.mark.asyncio
+async def test_geovolumes_tileset_task_raises_on_empty_features() -> None:
+    """GeoVolumesTilesetTask.run() raises RuntimeError when no CityJSON features are found."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import uuid
+    from dynastore.extensions.geovolumes.tasks.tileset_task import GeoVolumesTilesetTask
+    from dynastore.modules.processes.models import ExecuteRequest
+    from dynastore.modules.tasks.models import TaskPayload
+
+    header = _make_header()
+    collection_extras = {
+        "cityjson:transform": {
+            "scale": header.transform_scale,
+            "translate": header.transform_translate,
+        },
+        "cityjson:referenceSystem": header.reference_system,
+    }
+
+    mock_catalog_module = MagicMock()
+    mock_catalog_module.get_collection = AsyncMock(
+        return_value=MagicMock(extras=collection_extras)
+    )
+
+    # Empty item stream — no CityJSON features ingested yet
+    async def _empty_stream(*args: object, **kwargs: object):
+        return
+        yield  # make it an async generator
+
+    mock_item_service = MagicMock()
+    mock_item_service.stream_items = _empty_stream
+
+    mock_storage = AsyncMock()
+    mock_storage.ensure_storage_for_catalog = AsyncMock(return_value="test-bucket")
+
+    mock_catalog_module.assets = AsyncMock()
+
+    task = GeoVolumesTilesetTask()
+    execute_request = ExecuteRequest(inputs={"catalog_id": "cat1", "collection_id": "col1"})
+    payload = TaskPayload(
+        inputs=execute_request,
+        task_id=uuid.uuid4(),
+        caller_id="test@example.com",
+    )
+
+    from dynastore.models.protocols import CatalogsProtocol, StorageProtocol
+
+    protocol_map = {
+        CatalogsProtocol: mock_catalog_module,
+        StorageProtocol: mock_storage,
+    }
+
+    with (
+        patch(
+            "dynastore.extensions.geovolumes.tasks.tileset_task.get_protocol",
+            side_effect=lambda proto: protocol_map.get(proto),
+        ),
+        patch(
+            "dynastore.extensions.geovolumes.tasks.tileset_task._get_item_service",
+            return_value=mock_item_service,
+        ),
+        patch(
+            "dynastore.extensions.geovolumes.tasks.tileset_task.get_engine",
+            return_value=MagicMock(),
+        ),
+        pytest.raises(RuntimeError, match="No CityJSON features found"),
+    ):
+        await task.run(payload)
+
+    # Storage must NOT have been written to
+    mock_storage.upload_file_content.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_geovolumes_tileset_task_run_mocked() -> None:
     """GeoVolumesTilesetTask.run() with mocked protocols completes and returns outputs."""
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -335,9 +408,10 @@ async def test_geovolumes_tileset_task_run_mocked() -> None:
     mock_item_service = MagicMock()
     mock_item_service.stream_items = _item_stream
 
-    mock_archive_storage = AsyncMock()
-    mock_archive_storage.save_archive = AsyncMock(
-        return_value="gs://bucket/3dtiles/col1/tileset.json"
+    mock_storage = AsyncMock()
+    mock_storage.ensure_storage_for_catalog = AsyncMock(return_value="test-bucket")
+    mock_storage.upload_file_content = AsyncMock(
+        return_value="gs://test-bucket/3dtiles/col1/tileset.json"
     )
 
     mock_asset_manager = AsyncMock()
@@ -353,12 +427,11 @@ async def test_geovolumes_tileset_task_run_mocked() -> None:
         caller_id="test@example.com",
     )
 
-    from dynastore.models.protocols import CatalogsProtocol
-    from dynastore.modules.tiles.tiles_module import TileArchiveStorageProtocol
+    from dynastore.models.protocols import CatalogsProtocol, StorageProtocol
 
     protocol_map = {
         CatalogsProtocol: mock_catalog_module,
-        TileArchiveStorageProtocol: mock_archive_storage,
+        StorageProtocol: mock_storage,
     }
 
     with (
@@ -377,7 +450,18 @@ async def test_geovolumes_tileset_task_run_mocked() -> None:
     ):
         await task.run(payload)
 
-    # The task should have called save_archive at least once
-    assert mock_archive_storage.save_archive.called
+    # The task should have called upload_file_content at least twice (GLBs + tileset.json)
+    assert mock_storage.upload_file_content.called
+    assert mock_storage.upload_file_content.call_count >= 2
+    # Verify tileset.json was uploaded with the correct content type
+    calls = mock_storage.upload_file_content.call_args_list
+    tileset_call = next(
+        (c for c in calls if "tileset.json" in str(c.args[0])), None
+    )
+    assert tileset_call is not None
+    assert tileset_call.args[2] == "application/json"
+    # GLBs must use model/gltf-binary
+    glb_calls = [c for c in calls if c.args[0].endswith(".glb")]
+    assert all(c.args[2] == "model/gltf-binary" for c in glb_calls)
     # And registered the tileset asset
     assert mock_asset_manager.create_asset.called
