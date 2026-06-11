@@ -17,7 +17,7 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.drivers.postgresql import ItemsPostgresqlDriver
@@ -42,21 +42,52 @@ class TestUnifiedSoftDeletePg:
 
     @pytest.mark.asyncio
     async def test_hard_drop_storage(self):
+        """Hard drop with db_resource supplied: issues DDL for sidecars + hub."""
+        import dynastore.modules.db_config.shared_queries as sq
+
         driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_gp.return_value = mock_catalogs
-            await driver.drop_storage("cat1", "col1", soft=False)
-            mock_catalogs.delete_collection.assert_called_once()
+        mock_conn = AsyncMock()
+        mock_execute = AsyncMock()
+
+        with (
+            patch.object(
+                driver, "resolve_physical_table", new_callable=AsyncMock,
+                return_value="items_hub"
+            ),
+            patch.object(
+                driver, "_resolve_schema", new_callable=AsyncMock,
+                return_value="cat1_schema"
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.pg_sidecars.registry"
+                ".SidecarRegistry.get_available_types",
+                return_value=["attributes"],
+            ),
+            patch.object(sq.delete_table_query, "execute", mock_execute),
+            patch(
+                "dynastore.modules.catalog.collection_service._unmark_confirmed_active"
+            ),
+        ):
+            await driver.drop_storage("cat1", "col1", soft=False, db_resource=mock_conn)
+
+        # 1 sidecar + 1 hub
+        assert mock_execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_soft_drop_storage_logs_and_proceeds(self):
+        """soft=True: no DDL issued, no catalog service calls."""
         driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_gp.return_value = mock_catalogs
+        with (
+            patch.object(
+                driver, "resolve_physical_table", new_callable=AsyncMock
+            ) as mock_rpt,
+            patch.object(
+                driver, "_resolve_schema", new_callable=AsyncMock
+            ) as mock_rs,
+        ):
             await driver.drop_storage("cat1", "col1", soft=True)
-            mock_catalogs.delete_collection.assert_called_once()
+            mock_rpt.assert_not_called()
+            mock_rs.assert_not_called()
 
 
 class TestSoftDeleteNotSupportedError:

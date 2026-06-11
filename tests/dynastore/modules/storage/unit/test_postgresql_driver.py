@@ -225,30 +225,73 @@ class TestLifecycleMethods:
 
     @pytest.mark.asyncio
     async def test_drop_storage_collection(self):
+        """Hard drop with a known collection: drops every sidecar table then the hub."""
+        import dynastore.modules.db_config.shared_queries as sq
+
         driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_gp.return_value = mock_catalogs
-            await driver.drop_storage("cat1", "col1")
-            mock_catalogs.delete_collection.assert_called_once_with("cat1", "col1")
+        mock_conn = AsyncMock()
+        mock_execute = AsyncMock()
+
+        with (
+            patch.object(
+                driver, "resolve_physical_table", new_callable=AsyncMock,
+                return_value="items_hub"
+            ),
+            patch.object(
+                driver, "_resolve_schema", new_callable=AsyncMock,
+                return_value="cat1_schema"
+            ),
+            patch(
+                "dynastore.modules.storage.drivers.pg_sidecars.registry"
+                ".SidecarRegistry.get_available_types",
+                return_value=["attributes", "geometries"],
+            ),
+            patch.object(sq.delete_table_query, "execute", mock_execute),
+            patch(
+                "dynastore.modules.catalog.collection_service._unmark_confirmed_active"
+            ),
+        ):
+            await driver.drop_storage("cat1", "col1", db_resource=mock_conn)
+
+        assert mock_execute.call_count == 3  # 2 sidecars + 1 hub
+        called_tables = [
+            kw["table"] for _, kw in mock_execute.call_args_list
+        ]
+        assert "items_hub_attributes" in called_tables
+        assert "items_hub_geometries" in called_tables
+        assert "items_hub" in called_tables
 
     @pytest.mark.asyncio
     async def test_drop_storage_catalog(self):
+        """Catalog-level call (collection_id=None) is a no-op: no DDL, no service calls."""
         driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_gp.return_value = mock_catalogs
+        with (
+            patch.object(
+                driver, "resolve_physical_table", new_callable=AsyncMock
+            ) as mock_rpt,
+            patch.object(
+                driver, "_resolve_schema", new_callable=AsyncMock
+            ) as mock_rs,
+        ):
             await driver.drop_storage("cat1")
-            mock_catalogs.delete_catalog.assert_called_once_with("cat1")
+            mock_rpt.assert_not_called()
+            mock_rs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_drop_storage_soft(self):
+        """soft=True: logs intent and returns without issuing any DDL."""
         driver = ItemsPostgresqlDriver()
-        with patch("dynastore.tools.discovery.get_protocol") as mock_gp:
-            mock_catalogs = AsyncMock()
-            mock_gp.return_value = mock_catalogs
+        with (
+            patch.object(
+                driver, "resolve_physical_table", new_callable=AsyncMock
+            ) as mock_rpt,
+            patch.object(
+                driver, "_resolve_schema", new_callable=AsyncMock
+            ) as mock_rs,
+        ):
             await driver.drop_storage("cat1", "col1", soft=True)
-            mock_catalogs.delete_collection.assert_called_once_with("cat1", "col1")
+            mock_rpt.assert_not_called()
+            mock_rs.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_export_entities_not_implemented(self):
