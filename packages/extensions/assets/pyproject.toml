@@ -23,7 +23,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"dynastore.extensions.assets" = ["notebooks/*.ipynb"]
+"dynastore.extensions.assets" = ["notebooks/*.ipynb", "static/**/*"]
 
 [tool.uv.sources]
 dynastore = { workspace = true }

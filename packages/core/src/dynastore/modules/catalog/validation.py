@@ -75,7 +75,7 @@ async def get_valid_properties(conn: DbResource, catalog_id: str, collection_id:
                     sidecar = SidecarRegistry.get_sidecar(sc_config)
                     if sidecar is None:
                         continue
-                    field_defs = sidecar.get_field_definitions()
+                    field_defs = sidecar.get_queryable_fields()
                     schema_properties.update(field_defs.keys())
                 except Exception as e:
                     logger.warning(f"Failed to get field definitions from sidecar {type(sc_config).__name__}: {e}")

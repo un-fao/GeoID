@@ -18,3 +18,5 @@
 
 # Register the events_enable preset into the global preset registry on import.
 from . import presets as _events_presets  # noqa: F401  -- preset registration side-effect
+
+from . import config as _events_exposure_config  # noqa: F401  -- service-exposure plugin registration

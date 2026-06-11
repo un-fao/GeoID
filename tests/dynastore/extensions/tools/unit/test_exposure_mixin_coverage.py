@@ -57,6 +57,8 @@ import dynastore.extensions.edr  # noqa: F401
 import dynastore.extensions.joins  # noqa: F401
 import dynastore.extensions.moving_features  # noqa: F401
 import dynastore.extensions.connected_systems  # noqa: F401
+import dynastore.extensions.tasks  # noqa: F401, E402
+import dynastore.extensions.events  # noqa: F401, E402
 
 import pytest
 from dynastore.extensions.tools.exposure_mixin import (
@@ -75,12 +77,7 @@ _TOGGLABLE = frozenset({
     "stac", "features", "wfs", "coverages", "edr", "records", "processes", "dggs",
     "tiles", "maps", "styles", "dimensions", "dwh", "joins", "stats",
     "gcp", "logs", "notebooks", "crs", "gdal", "assets", "moving_features",
-    "connected_systems",
-    # ``volumes`` lives in ``packages/core`` and registers no
-    # ``dynastore.extensions`` entry-point; until it is split into its own
-    # distribution, its config does not inherit ``ExposableConfigMixin``
-    # (the framework would flag it as a dead toggle — see
-    # ``find_dead_exposable_configs()``).
+    "connected_systems", "tasks", "events", "volumes",
 })
 
 

@@ -389,7 +389,7 @@ class FeatureAttributeSidecarConfig(SidecarConfig):
     # The PG driver populates this list at ``ensure_storage`` time with the
     # subset of ``ItemsWritePolicy.compute`` whose entries target the attributes
     # sidecar (``ComputedKind.ATTRIBUTE_STAT``) and declare a ``storage_mode``.
-    # DDL emission, ``get_select_fields``, ``get_field_definitions``,
+    # DDL emission, ``get_select_fields``, ``get_queryable_fields``,
     # ``resolve_computed_value`` and ``prepare_upsert_payload`` all read this
     # single list. COLUMNAR fields get their own ``DOUBLE PRECISION`` column;
     # JSONB fields share an ``attribute_stats`` JSONB column. An empty list means

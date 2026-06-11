@@ -91,3 +91,9 @@ class WebModuleProtocol():
         """
         ...
 
+    def get_page_owner_extension(self, page_id: str) -> Optional[str]:
+        """Name of the extension owning *page_id*, derived from its
+        authoritative (non-embed) provider's module path, or ``None`` for
+        core/web-module pages that no extension-exposure toggle gates."""
+        ...
+

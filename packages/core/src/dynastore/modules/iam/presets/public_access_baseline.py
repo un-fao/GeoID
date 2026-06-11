@@ -55,12 +55,12 @@ _ROLE_NAME = "unauthenticated"
 _PUBLIC_ACCESS_POLICY = Policy(
     id=_POLICY_ID,
     description=(
-        "Anonymous access to liveness probe, OpenAPI doc, and .well-known "
-        "discovery. Required for headless infrastructure probes "
-        "(e.g. Cloud Run startup probe)."
+        "Anonymous access to liveness and readiness probes, OpenAPI doc, and "
+        ".well-known discovery. Required for headless infrastructure probes "
+        "(e.g. Cloud Run startup/readiness probes)."
     ),
     actions=["GET", "OPTIONS"],
-    resources=["/health$", "/openapi.json", "/.well-known/.*"],
+    resources=["/health$", "/ready$", "/openapi.json", "/.well-known/.*"],
     effect="ALLOW",
     priority=0,
 )

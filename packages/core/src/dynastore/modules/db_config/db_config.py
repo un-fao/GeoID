@@ -64,8 +64,8 @@ def _cfg_int(
     The failure mode behind #1581: a deploy templates the var through (e.g.
     ``iac.yml``) but leaves it undefined, so the container receives the literal
     ``${DB_POOL_RECYCLE}`` (or an empty string) rather than a number. A bare
-    ``int(os.getenv(name, "1800"))`` only uses the default when the var is
-    *unset* — a non-numeric literal makes ``int()`` raise ``ValueError`` at
+    ``int()`` over ``os.getenv(name, "1800")`` only uses the default when the
+    var is *unset* — a non-numeric literal makes ``int()`` raise ``ValueError`` at
     import, the gunicorn worker dies, and the Cloud Run startup probe fails the
     whole revision rollout.
 
@@ -137,10 +137,57 @@ def _cfg_str(
     return default
 
 
-class DBConfig:
-    database_url: str = _cfg_str(
-        "DATABASE_URL", "postgresql://testuser:testpassword@db:5432/gis_dev"
+_HARDCODED_DEV_DATABASE_URL = "postgresql://testuser:testpassword@db:5432/gis_dev"
+
+
+def _resolve_database_url() -> str:
+    """Resolve DATABASE_URL, gating the hardcoded dev fallback.
+
+    Resolution order: valid env var → ``db_config.json`` → hardcoded dev
+    default (gated behind ``DYNASTORE_ALLOW_DEV_SECRET=1``).
+
+    An explicitly set ``DATABASE_URL`` env var or a value in ``db_config.json``
+    is always accepted — only the hardcoded fallback is restricted.
+    """
+    url = _cfg_str("DATABASE_URL", "")
+    if url:
+        return url
+    if os.getenv("DYNASTORE_ALLOW_DEV_SECRET") != "1":
+        raise RuntimeError(
+            "DATABASE_URL is not set and no db_config.json provides it. "
+            "Set DATABASE_URL (or provide it via db_config.json) before "
+            "starting in a non-development environment. "
+            "To allow the hardcoded dev default, set DYNASTORE_ALLOW_DEV_SECRET=1."
+        )
+    logger.warning(
+        "DATABASE_URL not configured; falling back to the hardcoded development "
+        "database URL because DYNASTORE_ALLOW_DEV_SECRET=1. "
+        "NEVER use this default in production."
     )
+    return _HARDCODED_DEV_DATABASE_URL
+
+
+class _LazyDatabaseUrl:
+    """Descriptor deferring DATABASE_URL resolution to first access.
+
+    Resolving at class-definition time would make ``import dynastore``
+    raise on hosts with no DATABASE_URL and no dev flag (unit-test runs,
+    CLI tooling). Deferring keeps the fail-fast guarantee — the
+    RuntimeError fires at engine creation / first real use — without
+    poisoning imports. Works for both ``DBConfig.database_url`` (class
+    access) and instance access; the resolved value is cached.
+    """
+
+    _resolved: str | None = None
+
+    def __get__(self, obj: object | None, objtype: type | None = None) -> str:
+        if self._resolved is None:
+            self._resolved = _resolve_database_url()
+        return self._resolved
+
+
+class DBConfig:
+    database_url = _LazyDatabaseUrl()
     pool_min_size: int = _cfg_int("DB_POOL_MIN_SIZE", 5)
     pool_max_size: int = _cfg_int("DB_POOL_MAX_SIZE", 100)
     pool_max_queries: int = _cfg_int("DB_POOL_MAX_QUERIES", 50000)

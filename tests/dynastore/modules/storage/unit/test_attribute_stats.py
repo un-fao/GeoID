@@ -255,7 +255,7 @@ class TestAttributeStatProjection:
         assert any("attribute_stats" in f for f in fields)
 
     def test_field_definitions_columnar(self) -> None:
-        defs = _sidecar(_attr_field(name="pop", mode=StatisticStorageMode.COLUMNAR)).get_field_definitions()
+        defs = _sidecar(_attr_field(name="pop", mode=StatisticStorageMode.COLUMNAR)).get_queryable_fields()
         assert "pop" in defs
 
 

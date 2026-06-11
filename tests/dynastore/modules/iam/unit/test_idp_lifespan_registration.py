@@ -18,13 +18,12 @@
 
 """Behavioural tests for ``IamModule._register_identity_provider`` (geoid#1500).
 
-The IdP factory is now config-first with a one-release deprecated ENV fallback:
+The IdP factory is config-first (``IdpConfig`` via ``PlatformConfigsProtocol``):
 
 - when ``IdpConfig`` selects an implemented + addressed backend, the provider
-  is registered from the config and the ENV is never read;
+  is registered from the config;
 - when the config does not select one (no row → zero-arg default, or a row
-  with ``issuer_url`` unset), the lifespan falls back to ``IDP_*`` /
-  ``KEYCLOAK_*`` env vars and emits a deprecation WARNING;
+  with ``issuer_url`` unset), no provider is registered;
 - ``type=saml2`` registers nothing (reserved placeholder).
 
 ``IamModule._register_identity_provider`` only touches module-level
@@ -65,16 +64,6 @@ def _patch_runtime(monkeypatch, configs, captured):
     )
 
 
-def _clear_idp_env(monkeypatch):
-    for key in (
-        "IDP_TYPE", "IDP_ISSUER_URL", "IDP_CLIENT_ID", "IDP_CLIENT_SECRET",
-        "IDP_AUDIENCE", "IDP_PUBLIC_URL", "IDP_ROLES_CLAIM_PATH",
-        "KEYCLOAK_ISSUER_URL", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET",
-        "KEYCLOAK_AUDIENCE", "KEYCLOAK_PUBLIC_URL",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-
 @pytest.mark.asyncio
 async def test_registers_from_config_when_configured(monkeypatch, caplog):
     captured: list = []
@@ -85,7 +74,6 @@ async def test_registers_from_config_when_configured(monkeypatch, caplog):
         roles_claim_path="realm_access.roles",
     )
     _patch_runtime(monkeypatch, _FakeConfigs(cfg), captured)
-    _clear_idp_env(monkeypatch)  # prove ENV is not consulted
 
     mod = object.__new__(IamModule)
     with caplog.at_level("WARNING"):
@@ -97,34 +85,26 @@ async def test_registers_from_config_when_configured(monkeypatch, caplog):
     assert provider.client_id == "my-client"
     assert provider.client_secret == "topsecret"  # revealed for the provider
     assert provider.roles_claim_path == "realm_access.roles"
-    # Config path must NOT emit the ENV deprecation warning.
-    assert "DEPRECATED" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_falls_back_to_env_when_config_unconfigured(monkeypatch, caplog):
+async def test_registers_nothing_when_config_unconfigured(monkeypatch):
+    """When IdpConfig has no issuer_url set, no provider is registered."""
     captured: list = []
     _patch_runtime(monkeypatch, _FakeConfigs(IdpConfig()), captured)
-    _clear_idp_env(monkeypatch)
-    monkeypatch.setenv("IDP_ISSUER_URL", "https://env-issuer/realms/legacy")
-    monkeypatch.setenv("IDP_CLIENT_ID", "env-client")
 
     mod = object.__new__(IamModule)
-    with caplog.at_level("WARNING"):
-        await mod._register_identity_provider()
+    await mod._register_identity_provider()
 
-    assert len(captured) == 1
-    assert captured[0].issuer_url == "https://env-issuer/realms/legacy"
-    assert captured[0].client_id == "env-client"
-    # The ENV fallback must announce its deprecation.
-    assert "DEPRECATED" in caplog.text
+    assert captured == []
 
 
 @pytest.mark.asyncio
-async def test_registers_nothing_when_unconfigured_and_no_env(monkeypatch):
+async def test_registers_nothing_when_no_configs_protocol(monkeypatch):
+    """When PlatformConfigsProtocol is unregistered (get_protocol → None),
+    no provider is registered and the startup continues without crashing."""
     captured: list = []
-    _patch_runtime(monkeypatch, _FakeConfigs(IdpConfig()), captured)
-    _clear_idp_env(monkeypatch)
+    _patch_runtime(monkeypatch, None, captured)
 
     mod = object.__new__(IamModule)
     await mod._register_identity_provider()
@@ -137,7 +117,6 @@ async def test_saml2_config_registers_nothing(monkeypatch, caplog):
     captured: list = []
     cfg = IdpConfig(type="saml2", issuer_url="https://kc/x")
     _patch_runtime(monkeypatch, _FakeConfigs(cfg), captured)
-    _clear_idp_env(monkeypatch)
 
     mod = object.__new__(IamModule)
     with caplog.at_level("WARNING"):
@@ -145,21 +124,3 @@ async def test_saml2_config_registers_nothing(monkeypatch, caplog):
 
     assert captured == []
     assert "saml2" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_no_configs_protocol_uses_env_fallback(monkeypatch, caplog):
-    """When PlatformConfigsProtocol is unregistered (get_protocol → None),
-    the helper still falls back to ENV rather than crashing."""
-    captured: list = []
-    _patch_runtime(monkeypatch, None, captured)
-    _clear_idp_env(monkeypatch)
-    monkeypatch.setenv("IDP_ISSUER_URL", "https://env-only/realms/x")
-
-    mod = object.__new__(IamModule)
-    with caplog.at_level("WARNING"):
-        await mod._register_identity_provider()
-
-    assert len(captured) == 1
-    assert captured[0].issuer_url == "https://env-only/realms/x"
-    assert "DEPRECATED" in caplog.text

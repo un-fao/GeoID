@@ -98,6 +98,7 @@ async def seed_default_configs(engine: DbResource) -> None:
     - ``PlatformConfigsProtocol`` isn't registered yet (caller called us
       too early; logged as a warning, returns silently).
     - Another process holds the advisory lock (no contention; we just skip).
+    - The platform bootstrap guard is already set (fast path on restarts).
 
     Rejected seeds (missing class_key, bad value, bad JSON) are collected and
     surfaced together: ERROR-logged in production, raised as
@@ -105,6 +106,9 @@ async def seed_default_configs(engine: DbResource) -> None:
     class_key is tolerated — logged at WARNING and skipped in every tier — so
     a stale seed from a not-yet-redeployed sibling repo can't abort boot.
     Per-row ``set_config`` failures are logged at WARNING and never abort.
+
+    Seeds with ``"override": true`` in the JSON file bypass the bootstrap
+    guard and are applied on every boot regardless.
     """
     if not DEFAULTS_DIR.exists():
         logger.info(
@@ -139,6 +143,11 @@ async def seed_default_configs(engine: DbResource) -> None:
             )
             return
 
+        # Re-check bootstrap guard inside the lock (double-checked locking).
+        # Seeds with override=true bypass the guard and always apply.
+        from dynastore.modules.catalog.bootstrap_guard import is_initialized
+        _already_initialized = await is_initialized(db_resource=conn)
+
         # Lexical-order pass — later files override earlier ones for same class_key.
         # We deduplicate first so an overlay is applied once with the final payload.
         merged: Dict[str, Dict[str, Any]] = {}
@@ -155,9 +164,19 @@ async def seed_default_configs(engine: DbResource) -> None:
                 continue
             merged[class_key] = payload  # last-write-wins per class_key
 
+        if _already_initialized:
+            logger.info(
+                "config_seeder: bootstrap guard set — skipping non-override seeds.",
+            )
+
         applied = 0
+        skipped_initialized = 0
         skipped_unknown = 0
         for class_key, payload in merged.items():
+            override = bool(payload.get("override", False))
+            if _already_initialized and not override:
+                skipped_initialized += 1
+                continue
             try:
                 outcome = await _apply_one(config_mgr, class_key, payload)
             except Exception as exc:  # noqa: BLE001 — never fail boot
@@ -180,8 +199,9 @@ async def seed_default_configs(engine: DbResource) -> None:
                 rejections.append(f"{class_key}: 'value' must be a JSON object")
 
         logger.info(
-            "config_seeder: applied %d/%d seed(s) from %s (%d unknown skipped)",
-            applied, len(merged), DEFAULTS_DIR, skipped_unknown,
+            "config_seeder: applied %d/%d seed(s) from %s "
+            "(%d guard-skipped, %d unknown skipped)",
+            applied, len(merged), DEFAULTS_DIR, skipped_initialized, skipped_unknown,
         )
 
         if rejections:

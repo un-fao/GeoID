@@ -261,15 +261,11 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     async def _register_identity_provider(self) -> None:
         """Register the OIDC identity provider from :class:`IdpConfig`.
 
-        Config-first: read ``IdpConfig`` via ``PlatformConfigsProtocol`` and,
-        when it selects an implemented + addressed backend
-        (``IdpConfig.is_configured``), register the provider from it.
-
-        One-release ENV fallback (geoid#1500): when the config does not select
-        an IdP — no row, or a row that leaves ``issuer_url`` unset — fall back
-        to the deprecated ``IDP_*`` / ``KEYCLOAK_*`` environment variables and
-        emit a startup WARNING so deployments running the prod IdP via ENV keep
-        working mid-upgrade. This fallback is removed in the next release.
+        Reads ``IdpConfig`` via ``PlatformConfigsProtocol`` and, when it
+        selects an implemented + addressed backend (``IdpConfig.is_configured``),
+        registers the provider from it.  When no config is present or the config
+        does not select a backend, no provider is registered and startup
+        continues unauthenticated.
         """
         from dynastore.models.protocols.platform_configs import (
             PlatformConfigsProtocol,
@@ -287,9 +283,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                     else IdpConfig.model_validate(resolved)
                 )
             except Exception:
-                logger.debug(
-                    "IdpConfig unavailable; trying ENV fallback", exc_info=True
-                )
+                logger.debug("IdpConfig unavailable", exc_info=True)
 
         if cfg is not None and cfg.is_configured:
             from .identity_providers.oidc_identity import OidcIdentityProvider
@@ -315,64 +309,6 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             logger.warning(
                 "IdpConfig.type=saml2 is not yet implemented; no IdP "
                 "registered. See modules/iam/identity_providers/README.md."
-            )
-            return
-
-        # Deprecated ENV fallback — removed next release.
-        self._register_identity_provider_from_env()
-
-    def _register_identity_provider_from_env(self) -> None:
-        """DEPRECATED one-release fallback: register the IdP from ``IDP_*`` /
-        ``KEYCLOAK_*`` environment variables when no :class:`IdpConfig` selects
-        one. Emits a WARNING pointing operators at the IdpConfig migration."""
-        import os
-
-        idp_type = os.environ.get("IDP_TYPE", "oidc").lower()
-        idp_issuer = (
-            os.environ.get("IDP_ISSUER_URL")
-            or os.environ.get("KEYCLOAK_ISSUER_URL")
-        )
-        if idp_type == "oidc" and idp_issuer:
-            from .identity_providers.oidc_identity import OidcIdentityProvider
-
-            logger.warning(
-                "DEPRECATED: registered OIDC identity provider from ENV "
-                "(IDP_*/KEYCLOAK_*). Migrate to the IdpConfig platform config "
-                "(class_key 'idp_config') via the Configs API — the ENV "
-                "fallback is removed in the next release. Issuer: %s",
-                idp_issuer,
-            )
-            register_plugin(
-                OidcIdentityProvider(
-                    issuer_url=idp_issuer,
-                    client_id=(
-                        os.environ.get("IDP_CLIENT_ID")
-                        or os.environ.get("KEYCLOAK_CLIENT_ID", "dynastore-api")
-                    ),
-                    client_secret=(
-                        os.environ.get("IDP_CLIENT_SECRET")
-                        or os.environ.get("KEYCLOAK_CLIENT_SECRET")
-                    ),
-                    audience=(
-                        os.environ.get("IDP_AUDIENCE")
-                        or os.environ.get("KEYCLOAK_AUDIENCE")
-                    ),
-                    public_url=(
-                        os.environ.get("IDP_PUBLIC_URL")
-                        or os.environ.get("KEYCLOAK_PUBLIC_URL")
-                    ),
-                    roles_claim_path=os.environ.get("IDP_ROLES_CLAIM_PATH"),
-                )
-            )
-        elif idp_type == "saml2":
-            logger.warning(
-                "IDP_TYPE=saml2 is not yet implemented; no IdP registered. "
-                "See modules/iam/identity_providers/README.md."
-            )
-        elif idp_issuer:
-            logger.warning(
-                "Unknown IDP_TYPE=%r with IDP_ISSUER_URL set; no IdP registered.",
-                idp_type,
             )
 
     async def _register_usage_counter_drivers(self, stack: AsyncExitStack) -> None:

@@ -46,3 +46,6 @@ register_preset(PolicyContributorPreset(
     keywords=("iam", "volumes", "platform"),
     contributor_factory=_VolumesPolicyContributor,
 ))
+
+# Import demo preset to trigger its self-registration on package import.
+from dynastore.extensions.volumes.presets import cityjson_demo as _cityjson_demo  # noqa: E402, F401
