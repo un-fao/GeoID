@@ -20,6 +20,7 @@
 
 from typing import Any, Dict, Optional, List
 import json
+import logging
 
 from dynastore.modules.db_config import maintenance_tools
 from dynastore.modules.db_config.query_executor import DDLQuery, DQLQuery, ResultHandler, DbResource, managed_transaction
@@ -29,6 +30,8 @@ from dynastore.models.protocols import DatabaseProtocol
 from .models import Policy
 from .policy_storage import AbstractPolicyStorage
 
+logger = logging.getLogger(__name__)
+
 # --- Queries ---
 
 CREATE_POLICIES_TABLE = DDLQuery("""
@@ -36,7 +39,7 @@ CREATE_POLICIES_TABLE = DDLQuery("""
         id VARCHAR(128) NOT NULL,
         version VARCHAR(16) DEFAULT '1.0',
         description TEXT,
-        effect VARCHAR(16) DEFAULT 'ALLOW',
+        effect VARCHAR(16) DEFAULT 'ALLOW' CHECK (effect IN ('ALLOW', 'DENY')),
         priority INTEGER NOT NULL DEFAULT 0,
         actions JSONB NOT NULL DEFAULT '[]'::jsonb,
         resources JSONB DEFAULT '["*"]'::jsonb,
@@ -188,7 +191,24 @@ class PostgresPolicyStorage(AbstractPolicyStorage):
         safe_key = partition_key.replace("'", "''")
         # Quote partition table name to handle dashes in partition keys (e.g., catalog IDs with dashes)
         ddl = f'CREATE TABLE IF NOT EXISTS {{schema}}."{partition_table}" PARTITION OF {{schema}}.policies FOR VALUES IN (\'{safe_key}\');'
-        await DDLQuery(ddl).execute(conn, schema=schema)
+        try:
+            await DDLQuery(ddl).execute(conn, schema=schema)
+        except Exception as e:
+            # IF NOT EXISTS does not close the create-create race: two pods
+            # provisioning the same tenant both pass the existence check and
+            # one loses with duplicate_table (42P07). That loser's partition
+            # exists — same harmless outcome partition_tools.ensure_partition_exists
+            # tolerates for data partitions.
+            orig = getattr(e, "orig", None)
+            if "already exists" in str(e) or (
+                orig is not None and getattr(orig, "pgcode", None) == "42P07"
+            ):
+                logger.debug(
+                    "Policy partition %s.%s existed (concurrently created).",
+                    schema, partition_table,
+                )
+            else:
+                raise
 
     async def _bump_binding_version(self, schema: str) -> None:
         """Best-effort invalidation of the phantom-token cache (#1343).

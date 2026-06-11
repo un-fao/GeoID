@@ -28,8 +28,6 @@ from fastapi.responses import Response
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import ConfigsProtocol
-from dynastore.models.protocols.authentication import AuthenticatorProtocol
-from dynastore.models.protocols.authorization import IamRolesConfig
 
 
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -490,30 +488,16 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         offset: int = Query(0, ge=0),
         language: str = Depends(get_language),
     ):
-        """Lists available STAC catalogs, filtered by catalog admin access for non-sysadmin roles."""
+        """Lists available STAC catalogs.
+
+        Catalog visibility is governed entirely by the policy layer
+        (IamMiddleware gates this route and the per-catalog routes); this
+        handler performs no role-based response filtering. The admin
+        catalog picker (GET /admin/catalogs) is the surface that narrows
+        the list per caller.
+        """
         catalogs_svc = await self._get_catalogs_service()
         catalogs = await catalogs_svc.list_catalogs(limit=limit, offset=offset, lang=language)
-
-        # Role-based catalog visibility:
-        #   sysadmin → all catalogs (no filter)
-        #   admin (global, not sysadmin) → only catalogs where they have catalog-scoped roles
-        #   anonymous / user → all public catalogs (policy middleware already controls access)
-        principal = getattr(request.state, "principal", None)
-        if principal and principal.roles:
-            roles = set(principal.roles)
-            _roles_cfg = IamRolesConfig()
-            if _roles_cfg.admin_role_name in roles and _roles_cfg.sysadmin_role_name not in roles:
-                try:
-                    iam = get_protocol(AuthenticatorProtocol)
-                    if iam and iam.storage:  # type: ignore[attr-defined]
-                        accessible_ids = set(
-                            await iam.storage.get_catalogs_for_identity(  # type: ignore[attr-defined]
-                                principal.provider, principal.subject_id
-                            )
-                        )
-                        catalogs = [c for c in catalogs if c.id in accessible_ids]
-                except Exception as e:
-                    logger.warning(f"Failed to filter catalogs by admin access: {e}")
 
         content = [
             stac_generator.create_catalog_summary(request, c, lang=language)

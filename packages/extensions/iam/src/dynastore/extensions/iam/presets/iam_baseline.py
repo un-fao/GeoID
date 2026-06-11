@@ -124,6 +124,11 @@ def _iam_service_policies() -> List[Policy]:
                 r"^/admin/principals(/.*)?$",
                 r"^/admin/roles(/.*)?$",
                 r"^/admin/policies(/.*)?$",
+                # Role-registry enumeration (platform or per-catalog) is an
+                # admin capability: it backs the role-grant dropdowns, and
+                # exposing it on the self-service surface would let any
+                # authenticated user enumerate every role definition.
+                r"^/iam/me/available-roles$",
             ],
             effect="ALLOW",
             partition_key="global",
@@ -134,7 +139,19 @@ def _iam_service_policies() -> List[Policy]:
                 "Allows authenticated users to view their own roles and catalog access"
             ),
             actions=["GET"],
-            resources=["/iam/me", "/iam/me/.*", "/auth/userinfo"],
+            # Fully anchored: matches_resource uses start-anchored re.match,
+            # so an unanchored "/iam/me" would prefix-match any sibling route
+            # (e.g. a future /iam/metrics) and silently widen this ALLOW.
+            # Self-service sub-routes are enumerated explicitly instead of
+            # "/iam/me/.*" so /iam/me/available-roles (the full role registry,
+            # platform or per-catalog) stays out of the anonymous/default
+            # surface — it is granted via admin_authorization_api below.
+            resources=[
+                r"^/iam/me$",
+                r"^/iam/me/roles(/.*)?$",
+                r"^/iam/me/catalogs(/.*)?$",
+                r"^/auth/userinfo$",
+            ],
             effect="ALLOW",
             partition_key="global",
         ),
@@ -301,13 +318,14 @@ class IamBaseline:
             logger.debug("iam_baseline: upserted policy %s", pol.id)
 
         # Upsert the updated admin_catalog_access policy with delegation roles.
-        # NOTE: the admin extension's PolicyContributor still declares
-        # admin_catalog_access with required_roles=[] and the contributor loop
-        # runs on every startup. Until PR-5 removes the contributor loop, this
-        # update is reset to required_roles=[] on the next process restart.
-        # Operators who need persistent catalog-admin delegation should apply
-        # iam_baseline and then NOT restart until PR-5 is in place, or set
-        # delegation via the admin extension's role-binding REST API.
+        # The startup contributor loop is gone (PR-5 of #1412): the admin
+        # extension's declaration only lands via an explicit `admin_enable`
+        # preset apply (or a composite containing it), and that declaration now
+        # seeds the configured admin role rather than the deny-all empty list.
+        # Residual ordering caveat: re-applying `admin_enable` AFTER this preset
+        # overwrites custom delegation_role_names back to the default — the
+        # adapter logs a warning when it overwrites a differing body; re-apply
+        # iam_baseline to restore the custom list.
         admin_cat_pol = _admin_catalog_access_policy(p.delegation_role_names)
         await policy_service.update_policy(admin_cat_pol)
         applied_policy_ids.append(admin_cat_pol.id)

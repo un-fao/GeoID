@@ -236,9 +236,11 @@ def _principal_key_for(scope: str, ctx: EvaluationContext) -> Optional[str]:
         return f"ip:{host}" if host else None
     if scope == "catalog":
         return ctx.catalog_id
-    # Unknown scope — log once and fail-open via None.
-    logger.warning("rate_limit/max_count: unknown scope %r", scope)
-    return None
+    # Unknown scope is a policy mis-configuration, not absent identity — fail
+    # CLOSED so a typo'd scope can't silently disable the limit. (A legitimately
+    # absent key for a known scope still returns None above and fails open.)
+    logger.error("rate_limit/max_count: unknown scope %r — denying", scope)
+    raise IamError(f"Unknown rate-limit/quota scope {scope!r} in policy.")
 
 
 def _path_method_matches(config: Dict[str, Any], ctx: EvaluationContext) -> bool:
@@ -582,23 +584,25 @@ class TimeWindowHandler(ConditionHandler):
             try:
                 start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
             except ValueError as e:
-                logger.warning(
-                    "Ignoring malformed time-window 'start' value %r in validity condition: %s",
+                # Fail closed: a malformed bound must not silently disable the
+                # time gate. Mirrors TimeExpirationHandler's posture below.
+                logger.error(
+                    "Malformed time-window 'start' value %r in validity condition: %s",
                     start_str, e,
                 )
-                start_dt = None
-            if start_dt is not None and now < start_dt:
+                raise IamError("Invalid time-window 'start' date format in policy.") from e
+            if now < start_dt:
                 raise IamError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
         if end_str:
             try:
                 end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
             except ValueError as e:
-                logger.warning(
-                    "Ignoring malformed time-window 'end' value %r in validity condition: %s",
+                logger.error(
+                    "Malformed time-window 'end' value %r in validity condition: %s",
                     end_str, e,
                 )
-                end_dt = None
-            if end_dt is not None and now > end_dt:
+                raise IamError("Invalid time-window 'end' date format in policy.") from e
+            if now > end_dt:
                 raise IamError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
 
         # Hour-based recurring windows

@@ -41,11 +41,13 @@ def admin_policies() -> List[Policy]:
       add/remove via REST.
 
     - ``admin_catalog_access`` — per-catalog mutation surface gated by
-      ``catalog_admin_required``. Ships with ``required_roles=[]``: no
-      role gains catalog-admin authority unless an operator names it
-      (either by editing the policy's condition or by binding a role to
-      the policy via ``POST /admin/roles``). Behaves like a custom role
-      end-to-end.
+      ``catalog_admin_required``. Ships with the configured admin role
+      (``IamRolesConfig().admin_role_name``) as the default delegation
+      role so catalog-admin delegation works out of the box; operators
+      override the list via the ``iam_baseline`` preset's
+      ``delegation_role_names`` or by editing the policy's condition.
+      An empty ``required_roles`` list is treated as deny-all by the
+      condition handler.
 
     - ``admin_catalogs_list`` — narrow ALLOW for ``GET /admin/catalogs``
       (the catalog picker, #723). Bound by default to the
@@ -116,7 +118,13 @@ def admin_policies() -> List[Policy]:
             conditions=[
                 Condition(
                     type="catalog_admin_required",
-                    config={"required_roles": []},
+                    # Seed the configured catalog-admin role as the default so
+                    # catalog-admin delegation works out of the box and survives
+                    # a process restart (this contributor re-runs on every boot).
+                    # iam_baseline may override with operator-configured
+                    # delegation roles; the default must never be the empty list,
+                    # which catalog_admin_required treats as deny-all.
+                    config={"required_roles": [IamRolesConfig().admin_role_name]},
                 )
             ],
         ),

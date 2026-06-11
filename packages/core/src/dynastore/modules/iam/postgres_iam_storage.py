@@ -28,7 +28,6 @@ import time
 from dynastore.modules.db_config.exceptions import TableNotFoundError
 from dynastore.modules.db_config.query_executor import (
     DDLBatch,
-    DDLQuery,
     DQLQuery,
     ResultHandler,
     DbResource,
@@ -38,6 +37,7 @@ from dynastore.tools.protocol_helpers import get_engine
 from dynastore.modules.db_config import maintenance_tools
 from .models import (
     Principal,
+    Policy,
     Role,
     RefreshToken,
     IdentityLink,
@@ -199,14 +199,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
 
         # 1b. Grants indexes — the unique index expresses the (subject,
         # object, effect, resource) constraint and the partial index
-        # covers the resource-scoped lookup path. The DROP cleans up a
-        # pre-resource-scope auto-named UNIQUE constraint if one is
-        # carried in from an older snapshot; on a fresh DB it finds no
-        # matching constraint and is a no-op. The DROP is a str.format
-        # template (its {schema} sits in a SQL string literal that the
-        # DDLQuery identifier-quoter would mangle), wrapped in a fresh
-        # DDLQuery — same pattern as the prune-function DDL below.
-        await DDLQuery(DROP_OLD_GRANTS_UNIQUE.format(schema=schema)).execute(conn)
+        # covers the resource-scoped lookup path.
         await CREATE_GRANTS_UNIQUE_WITH_RESOURCE.execute(conn, schema=schema)
         await CREATE_IDX_GRANTS_RESOURCE.execute(conn, schema=schema)
 
@@ -1200,7 +1193,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         provider: str,
         subject_id: str,
         conn: Optional[DbResource] = None,
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> Optional[List[Policy]]:
         """Get custom policies for an identity.
 
         Custom policies live on the platform `principals` row (one row
@@ -1210,12 +1203,7 @@ class PostgresIamStorage(AbstractIamStorage, AuthorizationStorageProtocol):
         principal = await self._resolve_principal_by_identity(provider, subject_id, conn)
         if not principal:
             return None
-        policies = getattr(principal, "custom_policies", None) or getattr(principal, "policies", None)
-        if not policies:
-            return []
-        if isinstance(policies, str):
-            return json.loads(policies)
-        return policies
+        return principal.custom_policies or []
 
     async def get_catalogs_for_identity(
         self, provider: str, subject_id: str
