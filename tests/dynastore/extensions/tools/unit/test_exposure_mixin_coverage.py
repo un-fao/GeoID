@@ -77,12 +77,7 @@ _TOGGLABLE = frozenset({
     "stac", "features", "wfs", "coverages", "edr", "records", "processes", "dggs",
     "tiles", "maps", "styles", "dimensions", "dwh", "joins", "stats",
     "gcp", "logs", "notebooks", "crs", "gdal", "assets", "moving_features",
-    "connected_systems", "tasks", "events",
-    # ``volumes`` lives in ``packages/core`` and registers no
-    # ``dynastore.extensions`` entry-point; until it is split into its own
-    # distribution, its config does not inherit ``ExposableConfigMixin``
-    # (the framework would flag it as a dead toggle — see
-    # ``find_dead_exposable_configs()``).
+    "connected_systems", "tasks", "events", "volumes",
 })
 
 
