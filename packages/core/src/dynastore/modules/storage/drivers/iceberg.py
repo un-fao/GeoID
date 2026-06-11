@@ -1100,6 +1100,7 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
