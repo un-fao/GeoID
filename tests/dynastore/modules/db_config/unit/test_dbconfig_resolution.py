@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from dynastore.modules.db_config import instance
 from dynastore.modules.db_config.db_config import _cfg_int, _cfg_str
@@ -264,10 +265,13 @@ def test_no_bare_int_getenv_remains_in_db_config():
 def test_string_tunables_route_through_cfg_str():
     """The free-form string reads must go through ``_cfg_str`` (not bare
     ``os.getenv``) so an unsubstituted ${...} can't silently mis-configure the
-    connection."""
+    connection. Whitespace-insensitive so a formatter line-wrap of the call
+    cannot break the guard."""
     text = _db_config_source()
     for name in ("DATABASE_URL", "DB_LOCK_TIMEOUT", "DB_IDLE_IN_TRANSACTION_TIMEOUT"):
-        assert f'_cfg_str("{name}"' in text, f"{name} must resolve via _cfg_str"
-        assert f'os.getenv("{name}"' not in text, (
+        assert re.search(rf'_cfg_str\(\s*"{name}"', text), (
+            f"{name} must resolve via _cfg_str"
+        )
+        assert not re.search(rf'os\.getenv\(\s*"{name}"', text), (
             f"{name} still read via bare os.getenv — route it through _cfg_str"
         )

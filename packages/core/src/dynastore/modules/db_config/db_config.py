@@ -64,8 +64,8 @@ def _cfg_int(
     The failure mode behind #1581: a deploy templates the var through (e.g.
     ``iac.yml``) but leaves it undefined, so the container receives the literal
     ``${DB_POOL_RECYCLE}`` (or an empty string) rather than a number. A bare
-    ``int(os.getenv(name, "1800"))`` only uses the default when the var is
-    *unset* — a non-numeric literal makes ``int()`` raise ``ValueError`` at
+    ``int()`` over ``os.getenv(name, "1800")`` only uses the default when the
+    var is *unset* — a non-numeric literal makes ``int()`` raise ``ValueError`` at
     import, the gunicorn worker dies, and the Cloud Run startup probe fails the
     whole revision rollout.
 
