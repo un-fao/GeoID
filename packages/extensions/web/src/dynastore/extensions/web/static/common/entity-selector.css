@@ -1,0 +1,109 @@
+/* common/entity-selector.css — styles for .ds-entity-selector (dark-glass palette). */
+
+.ds-entity-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* Search input */
+.ds-entity-selector .es-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.6rem;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.35rem;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ds-entity-selector .es-search:focus {
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.ds-entity-selector .es-search::placeholder {
+  color: #64748b;
+}
+
+/* Status line (loading / empty / error) */
+.ds-entity-selector .es-status {
+  font-size: 0.78rem;
+  color: #64748b;
+  text-align: center;
+  min-height: 1em;
+}
+
+/* Listbox */
+.ds-entity-selector .es-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* Item buttons */
+.ds-entity-selector .es-list li {
+  margin: 0;
+  padding: 0;
+}
+
+.ds-entity-selector .es-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.7rem;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  word-break: break-word;
+}
+
+.ds-entity-selector .es-item:hover {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+.ds-entity-selector .es-item:focus {
+  outline: none;
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.ds-entity-selector .es-item[aria-selected="true"],
+.ds-entity-selector li.es-active .es-item {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+/* Disabled state */
+.ds-entity-selector.es-disabled .es-item,
+.ds-entity-selector .es-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Load-more button */
+.ds-entity-selector .es-more {
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 0.78rem;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.12s;
+}
+
+.ds-entity-selector .es-more:hover {
+  color: #94a3b8;
+}
