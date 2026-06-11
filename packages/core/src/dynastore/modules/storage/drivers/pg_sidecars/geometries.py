@@ -280,7 +280,6 @@ class GeometriesSidecar(SidecarProtocol):
         Returns all queryable geometry fields.
 
         Single source of truth for geometry field definitions.
-        ``get_field_definitions()`` delegates here via the base shim.
         """
         # Alias must match builder convention
         alias = f"sc_{self.sidecar_id}"

@@ -23,9 +23,9 @@ columnar attribute columns are created with quoted, case-preserving DDL
 (``"CODE" TEXT``), so every query reference must also be quoted. The feature
 read path quotes via ``get_select_fields`` (and works), but the explicit-field
 path used by MVT tile generation resolves ``FieldDefinition.sql_expression``
-from ``get_queryable_fields`` / ``get_field_definitions``. Those built the
-expression unquoted (``sc_attributes.CODE``), which PostgreSQL folds to
-``sc_attributes.code`` and fails for any column whose name is not all-lowercase.
+from ``get_queryable_fields``. That built the expression unquoted
+(``sc_attributes.CODE``), which PostgreSQL folds to ``sc_attributes.code``
+and fails for any column whose name is not all-lowercase.
 """
 
 from dynastore.modules.storage.drivers.pg_sidecars.attributes import (
@@ -54,9 +54,7 @@ def test_queryable_fields_quote_uppercase_attribute_column() -> None:
     assert fields["CODE"].sql_expression == 'sc_attributes."CODE"'
 
 
-def test_field_definitions_quote_uppercase_attribute_column() -> None:
-    # get_field_definitions() is a deprecated alias for get_queryable_fields();
-    # it no longer accepts a sidecar_alias argument.
+def test_queryable_fields_quote_uppercase_attribute_column() -> None:
     fields = _columnar_sidecar("CODE").get_queryable_fields()
     assert fields["CODE"].sql_expression == 'sc_attributes."CODE"'
 

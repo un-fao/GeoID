@@ -225,8 +225,6 @@ class FeatureAttributeSidecar(SidecarProtocol):
         Returns all queryable attribute fields.
 
         Single source of truth for attribute field definitions.
-        ``get_field_definitions()`` delegates here via the base shim.
-
         Fields with expose=False are queryable but not included in Feature output.
         """
         # Alias must match builder convention

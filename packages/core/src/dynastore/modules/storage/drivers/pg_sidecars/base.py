@@ -1205,20 +1205,6 @@ class SidecarProtocol(ABC):
         """
         return True
 
-    def get_field_definitions(self) -> Dict[str, FieldDefinition]:
-        """
-        Returns all queryable fields exposed by this sidecar.
-
-        DEPRECATED: Use ``get_queryable_fields()`` directly.  This shim
-        delegates to ``get_queryable_fields()`` and does not accept a
-        ``sidecar_alias`` argument — the alias is determined internally by
-        ``get_queryable_fields`` from the sidecar configuration.
-
-        Returns:
-            Dict mapping field name to FieldDefinition
-        """
-        return self.get_queryable_fields()
-
     def get_dynamic_field_definition(
         self, field_name: str, sidecar_alias: Optional[str] = None
     ) -> Optional[FieldDefinition]:
@@ -1239,13 +1225,13 @@ class SidecarProtocol(ABC):
 
     def supports_aggregation(self, field_name: str, agg_func: str) -> bool:
         """Check if field supports specific aggregation."""
-        fields = self.get_field_definitions()
+        fields = self.get_queryable_fields()
         field = fields.get(field_name)
         return field is not None and field.supports_aggregation(agg_func)
 
     def supports_transformation(self, field_name: str, transform_func: str) -> bool:
         """Check if field supports specific transformation."""
-        fields = self.get_field_definitions()
+        fields = self.get_queryable_fields()
         field = fields.get(field_name)
         return field is not None and field.supports_transformation(transform_func)
 

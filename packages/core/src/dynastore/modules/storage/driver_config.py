@@ -1078,7 +1078,7 @@ class ItemsPostgresqlDriverConfig(CollectionDriverConfig):
             sidecar = SidecarRegistry.get_sidecar(sc_config)
             if sidecar is None:
                 continue
-            all_fields.update(sidecar.get_field_definitions())
+            all_fields.update(sidecar.get_queryable_fields())
         return all_fields
 
 
