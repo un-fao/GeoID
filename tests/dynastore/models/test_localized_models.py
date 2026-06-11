@@ -75,3 +75,42 @@ def test_license_wrapping():
     bm2 = BaseMetadata(id="test2", license=lic_info)
     assert bm2.license.license_id == "CC-BY-4.0"
     assert bm2.license.localized_content.en.name == "Creative Commons"
+
+
+def test_merge_updates_wildcard_accepts_flat_dict():
+    """Regression: lang='*' replacement must canonicalise flat input the same
+    way the create path does (via delocalize_input). A PUT re-sending the flat
+    extras dict that POST stored used to fail language-key validation, which
+    broke idempotent re-runs of collection upserts."""
+    from dynastore.models.localization import LocalizedExtraMetadata
+
+    existing = LocalizedExtraMetadata.model_validate({"en": {"old": "v"}})
+    merged = existing.merge_updates(
+        {"bands": ["B1"], "cube:dimensions": {"x": {}}}, "*"
+    )
+    assert merged.model_dump(exclude_none=True) == {
+        "en": {"bands": ["B1"], "cube:dimensions": {"x": {}}}
+    }
+
+    # Same shape through a fresh (empty) instance — the merge layer builds one
+    # when the field was previously unset.
+    merged_fresh = LocalizedExtraMetadata().merge_updates({"bands": ["B1"]}, "*")
+    assert merged_fresh.model_dump(exclude_none=True) == {"en": {"bands": ["B1"]}}
+
+
+def test_merge_updates_wildcard_language_keyed_replaces_verbatim():
+    from dynastore.models.localization import LocalizedExtraMetadata
+
+    existing = LocalizedExtraMetadata.model_validate({"en": {"old": "v"}})
+    merged = existing.merge_updates({"fr": {"nouveau": 1}}, "*")
+    assert merged.model_dump(exclude_none=True) == {"fr": {"nouveau": 1}}
+
+    # Text/keywords wildcard replacement is unaffected by the canonicalisation.
+    t = LocalizedText.model_validate({"en": "hello"})
+    assert t.merge_updates({"fr": "salut"}, "*").model_dump(exclude_none=True) == {
+        "fr": "salut"
+    }
+    k = LocalizedKeywords.model_validate({"en": ["a"]})
+    assert k.merge_updates({"fr": ["b"]}, "*").model_dump(exclude_none=True) == {
+        "fr": ["b"]
+    }
