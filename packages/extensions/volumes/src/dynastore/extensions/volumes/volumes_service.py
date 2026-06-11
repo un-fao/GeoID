@@ -481,13 +481,38 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 
 
 def _get_extras(coll: Any) -> Dict[str, Any]:
-    """Extract the extras dict from a Collection, tolerating varied shapes."""
+    """Extract the extras dict from a Collection, tolerating varied shapes.
+
+    Search-routed collections carry extras in ``model_extra`` (nested under
+    an ``extras`` key or flat namespaced keys).  Read-routed collections
+    only expose the PG-persisted ``extra_metadata`` column, so fall back to
+    it — the ingest writes the CityJSON provenance to both surfaces.
+    """
     raw_extra = getattr(coll, "model_extra", None) or {}
     extras = raw_extra.get("extras") or {}
     if not extras and isinstance(raw_extra, dict):
         # Flat extras stored directly on model_extra
         extras = {k: v for k, v in raw_extra.items() if ":" in k}
+    if not extras:
+        extra_metadata = getattr(coll, "extra_metadata", None) or {}
+        if isinstance(extra_metadata, dict):
+            nested = extra_metadata.get("extras")
+            if isinstance(nested, dict) and nested:
+                extras = nested
+            else:
+                extras = {k: v for k, v in extra_metadata.items() if ":" in k}
     return extras
+
+
+def _plain_text(value: Any) -> Optional[str]:
+    """Coerce a LocalizedText (or plain string) to a single string for the wire."""
+    if value is None or isinstance(value, str):
+        return value
+    resolve = getattr(value, "resolve", None)
+    if callable(resolve):
+        resolved = resolve("en")
+        return resolved if isinstance(resolved, str) else None
+    return str(value)
 
 
 def _is_3d_collection(coll: Any) -> bool:
@@ -549,7 +574,7 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
 
     return ThreeDContainer(
         id=coll.id,
-        title=getattr(coll, "title", None),
+        title=_plain_text(getattr(coll, "title", None)),
         collectionType="3dcontainer",
         contentExtent=ContentExtent(bbox=bbox_3d),
         content=content,

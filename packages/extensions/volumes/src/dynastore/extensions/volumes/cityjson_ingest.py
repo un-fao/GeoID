@@ -528,7 +528,12 @@ async def ingest_cityjson_file(
             "reference system (metadata.referenceSystem)"
         )
 
-    # Store header provenance on the collection
+    # Store header provenance on the collection.  The metadata is written
+    # to BOTH surfaces because the PG core driver persists only its
+    # declared columns: ``extras`` reaches the search/index slice while
+    # ``extra_metadata`` is the PG-persisted column the READ path returns
+    # — without the latter, GET /collections/{id} cannot detect the
+    # collection as a 3D container.
     cityjson_meta: dict[str, Any] = {
         "cityjson:version": header.version,
         "cityjson:transform": {
@@ -542,7 +547,7 @@ async def ingest_cityjson_file(
     await catalog_service.update_collection(
         catalog_id,
         collection_id,
-        {"extras": cityjson_meta},
+        {"extras": cityjson_meta, "extra_metadata": cityjson_meta},
     )
 
     # Build the CRS transformer once per file; reuse across all features
@@ -566,7 +571,7 @@ async def ingest_cityjson_file(
     for i in range(0, len(items), batch_size):
         batch = items[i : i + batch_size]
         try:
-            await item_service.upsert_bulk(catalog_id, collection_id, batch)
+            await item_service.upsert(catalog_id, collection_id, batch)
             total += len(batch)
         except Exception as exc:
             batch_num = i // batch_size
@@ -575,4 +580,62 @@ async def ingest_cityjson_file(
                 f"Batch {batch_num} failed ({len(batch)} items): {exc}"
             )
 
+    # Update the collection's spatial extent + vertical range from the
+    # ingested footprints.  Collections are typically created with an
+    # empty extent; without this step the GeoVolumes contentExtent stays
+    # [0,0,0,0,0,0] and bbox filtering is useless.
+    if total and items:
+        try:
+            bounds = _dataset_bounds(items)
+            if bounds is not None:
+                minx, miny, maxx, maxy, zmin, zmax = bounds
+                meta_with_range = {
+                    **cityjson_meta,
+                    "geovolumes:zrange": {"zmin": zmin, "zmax": zmax},
+                }
+                await catalog_service.update_collection(
+                    catalog_id,
+                    collection_id,
+                    {
+                        "extras": meta_with_range,
+                        "extra_metadata": meta_with_range,
+                        "extent": {
+                            "spatial": {"bbox": [[minx, miny, maxx, maxy]]},
+                            "temporal": {"interval": [[None, None]]},
+                        },
+                    },
+                )
+        except Exception as exc:
+            warnings.append(f"Failed to update collection extent: {exc}")
+
     return {"items": total, "failed": failed, "warnings": warnings}
+
+
+def _dataset_bounds(
+    items: list[dict[str, Any]],
+) -> Optional[tuple[float, float, float, float, float, float]]:
+    """Compute (minx, miny, maxx, maxy, zmin, zmax) across all item inputs."""
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+    zmin = float("inf")
+    zmax = float("-inf")
+    found = False
+    for item in items:
+        geom = item.get("geometry")
+        if not geom:
+            continue
+        try:
+            gminx, gminy, gmaxx, gmaxy = shapely.geometry.shape(geom).bounds
+        except Exception:
+            continue
+        found = True
+        minx = min(minx, gminx)
+        miny = min(miny, gminy)
+        maxx = max(maxx, gmaxx)
+        maxy = max(maxy, gmaxy)
+        props = item.get("properties") or {}
+        zmin = min(zmin, float(props.get("zmin", 0.0)))
+        zmax = max(zmax, float(props.get("zmax", 0.0)))
+    if not found:
+        return None
+    return (minx, miny, maxx, maxy, zmin, zmax)

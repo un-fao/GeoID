@@ -291,7 +291,7 @@ async def test_ingest_cityjson_file():
     from dynastore.extensions.volumes.cityjson_ingest import ingest_cityjson_file
 
     item_service = MagicMock()
-    item_service.upsert_bulk = AsyncMock(return_value=[{}, {}, {}])
+    item_service.upsert = AsyncMock(return_value=[{}, {}, {}])
 
     catalog_service = MagicMock()
     catalog_service.update_collection = AsyncMock(return_value=MagicMock())
@@ -308,9 +308,9 @@ async def test_ingest_cityjson_file():
     assert summary["items"] == 3
     assert isinstance(summary["warnings"], list)
 
-    # update_collection called once with header provenance metadata
-    catalog_service.update_collection.assert_called_once()
-    args, kwargs = catalog_service.update_collection.call_args
+    # update_collection called twice: header provenance, then extent/zrange
+    assert catalog_service.update_collection.call_count == 2
+    args, kwargs = catalog_service.update_collection.call_args_list[0]
     assert "test-cat" in args or kwargs.get("catalog_id") == "test-cat"
     assert "test-col" in args or kwargs.get("collection_id") == "test-col"
     # Third positional argument is the extras payload
@@ -321,10 +321,22 @@ async def test_ingest_cityjson_file():
     assert "scale" in meta["cityjson:transform"] and "translate" in meta["cityjson:transform"]
     # minimal.city.jsonl carries a referenceSystem
     assert "cityjson:referenceSystem" in meta, "cityjson:referenceSystem must be present when set in header"
+    # PG read path only returns extra_metadata — meta must be mirrored there
+    assert extras_payload.get("extra_metadata") == meta
 
-    # item_service.upsert_bulk called with 3 items total
-    item_service.upsert_bulk.assert_called_once()
-    upsert_args, upsert_kwargs = item_service.upsert_bulk.call_args
+    # Second call carries the computed extent + vertical range
+    args2, kwargs2 = catalog_service.update_collection.call_args_list[1]
+    final_payload = args2[2] if len(args2) > 2 else kwargs2.get("extras", {})
+    extent = final_payload.get("extent", {})
+    bbox = extent.get("spatial", {}).get("bbox", [[]])[0]
+    assert len(bbox) == 4
+    assert bbox[0] <= bbox[2] and bbox[1] <= bbox[3]
+    zrange = final_payload.get("extras", {}).get("geovolumes:zrange", {})
+    assert "zmin" in zrange and "zmax" in zrange
+
+    # item_service.upsert called with 3 items total
+    item_service.upsert.assert_called_once()
+    upsert_args, upsert_kwargs = item_service.upsert.call_args
     items_passed = upsert_args[2] if len(upsert_args) > 2 else upsert_kwargs.get("items", [])
     assert len(items_passed) == 3
 
@@ -401,7 +413,7 @@ async def test_ingest_raises_when_no_reference_system(tmp_path):
     )
 
     item_service = MagicMock()
-    item_service.upsert_bulk = AsyncMock()
+    item_service.upsert = AsyncMock()
     catalog_service = MagicMock()
     catalog_service.update_collection = AsyncMock()
 
@@ -415,7 +427,7 @@ async def test_ingest_raises_when_no_reference_system(tmp_path):
         )
 
     # No DB writes should have been attempted
-    item_service.upsert_bulk.assert_not_called()
+    item_service.upsert.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +440,9 @@ async def test_ingest_best_effort_batch_failure():
     """Batch failure is recorded as a warning; subsequent batches still run."""
     from dynastore.extensions.volumes.cityjson_ingest import ingest_cityjson_file
 
-    # First upsert_bulk call raises; second succeeds
+    # First upsert call raises; second succeeds
     item_service = MagicMock()
-    item_service.upsert_bulk = AsyncMock(
+    item_service.upsert = AsyncMock(
         side_effect=[RuntimeError("DB down"), None]
     )
     catalog_service = MagicMock()
@@ -453,4 +465,4 @@ async def test_ingest_best_effort_batch_failure():
     batch_warnings = [w for w in summary["warnings"] if "Batch" in w and "failed" in w]
     assert batch_warnings, "Expected at least one batch-failure warning"
     # Both batches were attempted (2 calls total)
-    assert item_service.upsert_bulk.call_count == 2
+    assert item_service.upsert.call_count == 2
