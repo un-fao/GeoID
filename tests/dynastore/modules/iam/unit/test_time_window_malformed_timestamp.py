@@ -21,12 +21,13 @@
 Three invariants:
 
 1. **In-window** — a valid ``start`` in the past passes without error.
-2. **Out-of-window** — a valid ``start`` in the future raises ``IamError``
-   so the key is rejected (the propagation must NOT be swallowed).
+2. **Out-of-window** — a valid ``start`` in the future raises
+   ``AccessDeniedError`` (HTTP 403: a deliberate authorization denial,
+   not a server fault; the propagation must NOT be swallowed).
 3. **Malformed timestamp** — an unparseable ``start`` or ``end`` value
    logs an ERROR naming the offending bound and value, then raises
-   ``IamError`` (fail closed: a policy with an unparseable validity bound
-   must never grant access).
+   ``IamError`` (HTTP 500 — a broken policy is a server-side config
+   fault; fail closed: it must never grant access).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dynastore.modules.iam.conditions import EvaluationContext, TimeWindowHandler
-from dynastore.modules.iam.exceptions import IamError
+from dynastore.modules.iam.exceptions import AccessDeniedError, IamError
 
 _LOGGER_NAME = "dynastore.modules.iam.conditions"
 
@@ -86,8 +87,9 @@ async def test_out_of_window_start_in_future_raises_iam_error() -> None:
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    with pytest.raises(IamError, match="valid from"):
+    with pytest.raises(AccessDeniedError, match="valid from") as exc_info:
         await handler.evaluate(config, _ctx())
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -99,8 +101,9 @@ async def test_out_of_window_end_in_past_raises_iam_error() -> None:
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    with pytest.raises(IamError, match="expired at"):
+    with pytest.raises(AccessDeniedError, match="expired at") as exc_info:
         await handler.evaluate(config, _ctx())
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

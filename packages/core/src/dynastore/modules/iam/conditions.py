@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 
 from .models import Condition
-from .exceptions import IamError, QuotaExceededError, RateLimitExceededError
+from .exceptions import AccessDeniedError, IamError, QuotaExceededError, RateLimitExceededError
 from dynastore.models.protocols.usage_counter import UsageCounterProtocol
 from dynastore.modules.iam.iam_storage import AbstractIamStorage
 from dynastore.models.protocols.authorization import IamRolesConfig
@@ -592,7 +592,7 @@ class TimeWindowHandler(ConditionHandler):
                 )
                 raise IamError("Invalid time-window 'start' date format in policy.") from e
             if now < start_dt:
-                raise IamError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
+                raise AccessDeniedError(f"Key is outside of its valid time window (valid from {start_dt.isoformat()}).")
         if end_str:
             try:
                 end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
@@ -603,7 +603,7 @@ class TimeWindowHandler(ConditionHandler):
                 )
                 raise IamError("Invalid time-window 'end' date format in policy.") from e
             if now > end_dt:
-                raise IamError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
+                raise AccessDeniedError(f"Key is outside of its valid time window (expired at {end_dt.isoformat()}).")
 
         # Hour-based recurring windows
         start_h = config.get("start_hour", 0)
@@ -611,9 +611,9 @@ class TimeWindowHandler(ConditionHandler):
         weekdays_only = config.get("weekdays_only", False)
         
         if weekdays_only and now.weekday() > 4:
-            raise IamError("Key is outside of its valid time window (only valid on weekdays).")
+            raise AccessDeniedError("Key is outside of its valid time window (only valid on weekdays).")
         if not (start_h <= now.hour < end_h):
-            raise IamError(f"Key is outside of its valid time window (only valid between {start_h}:00 and {end_h}:00 UTC).")
+            raise AccessDeniedError(f"Key is outside of its valid time window (only valid between {start_h}:00 and {end_h}:00 UTC).")
         return True
 
 class TimeExpirationHandler(ConditionHandler):
@@ -627,7 +627,7 @@ class TimeExpirationHandler(ConditionHandler):
             exp_date = datetime.fromisoformat(exp_str.replace('Z', '+00:00'))
             now = datetime.now(timezone.utc)
             if now > exp_date:
-                raise IamError(f"Key expired at {exp_date.isoformat()}.")
+                raise AccessDeniedError(f"Key expired at {exp_date.isoformat()}.")
         except ValueError as e:
             logger.error(f"Invalid date format in policy: {exp_str}")
             raise IamError("Invalid expiration date format in policy.") from e
