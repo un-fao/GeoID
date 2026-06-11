@@ -78,17 +78,28 @@ def _derive_key() -> bytes:
         1. ``DYNASTORE_SECRET_KEY`` — dedicated secret-encryption key.
         2. ``JWT_SECRET`` — reused so single-tenant deploys don't need to
            configure two keys.
-        3. Hard-coded dev fallback — emits a WARNING once per process.
+        3. Hard-coded dev fallback — only allowed when
+           ``DYNASTORE_ALLOW_DEV_SECRET=1`` is set. Raises ``RuntimeError``
+           otherwise so production containers fail fast instead of silently
+           encrypting credentials with a publicly known key.
 
     Returns a URL-safe base64 32-byte blob suitable for ``cryptography.fernet.Fernet``.
     """
     source = os.getenv("DYNASTORE_SECRET_KEY") or os.getenv("JWT_SECRET")
     if not source:
+        if os.getenv("DYNASTORE_ALLOW_DEV_SECRET") != "1":
+            raise RuntimeError(
+                "Neither DYNASTORE_SECRET_KEY nor JWT_SECRET is set and "
+                "DYNASTORE_ALLOW_DEV_SECRET is not '1'. "
+                "Set one of DYNASTORE_SECRET_KEY or JWT_SECRET to a strong "
+                "random secret before starting in a non-development environment."
+            )
         global _warned_about_dev_key
         if not _warned_about_dev_key:
             logger.warning(
                 "SECRET ENCRYPTION: neither DYNASTORE_SECRET_KEY nor JWT_SECRET is "
-                "set; using a deterministic development key. NEVER use this in "
+                "set; using a deterministic development key because "
+                "DYNASTORE_ALLOW_DEV_SECRET=1. NEVER use this in "
                 "production — rotate immediately after setting a real key."
             )
             _warned_about_dev_key = True

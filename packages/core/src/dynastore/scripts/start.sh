@@ -98,9 +98,48 @@ case "$MODE" in
 
     worker)
         echo "Starting Worker (${WORKER_CONCURRENCY} concurrent processes)..."
-        # Optionally expose a minimal HTTP health check endpoint for Cloud Run liveness probes.
+        # Expose a minimal HTTP probe for Cloud Run liveness checks.
+        # The probe returns 200 only while the worker process is alive.
+        #
+        # Implementation note: `exec` below replaces this shell with the Python
+        # process, so the shell PID ($$) becomes the worker PID.  We write it
+        # to a well-known file before exec so the probe server can verify the
+        # process is still running via os.kill(pid, 0).
         if [ -n "$TCP_PORT" ]; then
-            python -m http.server "$TCP_PORT" &>/dev/null &
+            _PROBE_PID_FILE="/tmp/dynastore-worker.pid"
+            echo "$$" > "$_PROBE_PID_FILE"
+            python - "$TCP_PORT" "$_PROBE_PID_FILE" &>/dev/null <<'PROBE_EOF' &
+import http.server
+import os
+import sys
+
+
+class _WorkerProbeHandler(http.server.BaseHTTPRequestHandler):
+    pid_file = ""
+
+    def do_GET(self):
+        alive = False
+        try:
+            pid = int(open(self.pid_file).read().strip())
+            os.kill(pid, 0)
+            alive = True
+        except Exception:
+            pass
+        code = 200 if alive else 503
+        self.send_response(code)
+        self.end_headers()
+        self.wfile.write(b"ok\n" if alive else b"worker dead\n")
+
+    def log_message(self, *args):
+        pass  # suppress access log noise
+
+
+if __name__ == "__main__":
+    port = int(sys.argv[1])
+    _WorkerProbeHandler.pid_file = sys.argv[2]
+    server = http.server.HTTPServer(("0.0.0.0", port), _WorkerProbeHandler)
+    server.serve_forever()
+PROBE_EOF
         fi
 
         # Run with --concurrency to spawn multiple worker processes.
