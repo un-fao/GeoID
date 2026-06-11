@@ -1,0 +1,8 @@
+{
+  "class_key": "task_routing_config",
+  "override": false,
+  "value": {
+    "tasks": {},
+    "processes": {}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "class_key": "oidc_role_sync_config",
+  "override": false,
+  "value": {
+    "reconcile_enabled": false,
+    "role_mapping": {"geoid.sysadmin": "sysadmin"},
+    "ttl_seconds": 60,
+    "issuer_whitelist": null
+  }
+}
