@@ -232,6 +232,112 @@ async def health_check():
         "status": "ok",
     }
 
+
+@app.get("/ready", tags=["Web Health"])
+async def readiness_check():
+    """Deep readiness probe — checks every required backing service.
+
+    Returns 200 with per-dependency status JSON when all configured
+    required dependencies are reachable; 503 with the same structure
+    when any required dependency is down.
+
+    Dependencies that are not loaded in this deployment are reported as
+    ``"disabled"`` rather than ``"failed"`` and do not affect the HTTP
+    status code.
+    """
+    deps: dict = {}
+    all_ok = True
+
+    # --- PostgreSQL ---
+    try:
+        from dynastore.models.protocols.database import DatabaseProtocol
+        db = get_protocol(DatabaseProtocol)
+        if db is None or db.async_engine is None:
+            deps["postgres"] = {"status": "disabled"}
+        else:
+            from sqlalchemy import text as sa_text
+            async with asyncio.timeout(2):
+                async with db.async_engine.connect() as conn:
+                    await conn.execute(sa_text("SELECT 1"))
+            deps["postgres"] = {"status": "ok"}
+    except TimeoutError as exc:
+        all_ok = False
+        deps["postgres"] = {"status": "failed", "detail": "timed out"}
+        logger.warning("readiness: postgres timeout: %s", exc)
+    except Exception as exc:
+        all_ok = False
+        deps["postgres"] = {"status": "failed", "detail": str(exc)}
+        logger.warning("readiness: postgres error: %s", exc)
+
+    # --- Elasticsearch / OpenSearch ---
+    try:
+        from dynastore.modules.elasticsearch.client import get_client as _get_es
+        es = _get_es()
+        if es is None:
+            deps["elasticsearch"] = {"status": "disabled"}
+        else:
+            async with asyncio.timeout(2):
+                reachable = await es.ping()
+            if reachable:
+                deps["elasticsearch"] = {"status": "ok"}
+            else:
+                all_ok = False
+                deps["elasticsearch"] = {"status": "failed", "detail": "ping returned false"}
+    except TimeoutError as exc:
+        all_ok = False
+        deps["elasticsearch"] = {"status": "failed", "detail": "timed out"}
+        logger.warning("readiness: elasticsearch timeout: %s", exc)
+    except ImportError:
+        deps["elasticsearch"] = {"status": "disabled"}
+    except Exception as exc:
+        all_ok = False
+        deps["elasticsearch"] = {"status": "failed", "detail": str(exc)}
+        logger.warning("readiness: elasticsearch error: %s", exc)
+
+    # --- Valkey ---
+    try:
+        from dynastore.tools.cache import get_cache_manager
+        from dynastore.tools.cache_valkey import ValkeyCacheBackend, _CACHE_DEPS_OK
+        if not _CACHE_DEPS_OK:
+            deps["valkey"] = {"status": "disabled"}
+        else:
+            manager = get_cache_manager()
+            valkey_backend = None
+            try:
+                backend = manager.get_async_backend()
+                if isinstance(backend, ValkeyCacheBackend):
+                    valkey_backend = backend
+            except RuntimeError:
+                pass  # no backends registered
+            if valkey_backend is None:
+                deps["valkey"] = {"status": "disabled"}
+            else:
+                async with asyncio.timeout(2):
+                    ok = await valkey_backend.ping()
+                if ok:
+                    deps["valkey"] = {"status": "ok"}
+                else:
+                    all_ok = False
+                    deps["valkey"] = {"status": "failed", "detail": "ping returned false"}
+    except TimeoutError as exc:
+        all_ok = False
+        deps["valkey"] = {"status": "failed", "detail": "timed out"}
+        logger.warning("readiness: valkey timeout: %s", exc)
+    except ImportError:
+        deps["valkey"] = {"status": "disabled"}
+    except Exception as exc:
+        all_ok = False
+        deps["valkey"] = {"status": "failed", "detail": str(exc)}
+        logger.warning("readiness: valkey error: %s", exc)
+
+    payload = {"status": "ready" if all_ok else "not_ready", "dependencies": deps}
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=payload,
+        status_code=200 if all_ok else 503,
+    )
+
+
 # /docs is registered later by ``documentation.service.configure_swagger_ui``,
 # which builds the custom Swagger UI (theme + OAuth2 redirect handler).
 # /redoc is currently not exposed; if reintroduced it should also live in the

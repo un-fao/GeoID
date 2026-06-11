@@ -26,7 +26,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"dynastore.extensions.features" = ["*.md", "notebooks/*"]
+"dynastore.extensions.features" = ["*.md", "notebooks/*", "static/**/*"]
 
 [tool.uv.sources]
 dynastore = { workspace = true }
