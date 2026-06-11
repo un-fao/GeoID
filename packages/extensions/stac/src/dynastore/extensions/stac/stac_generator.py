@@ -736,6 +736,12 @@ async def create_collection(
     # case where they ARE set (sidecar active) by dropping the duplicate key.
     _apply_extra_metadata_fallbacks(collection, merged_summaries)
 
+    # Remove folded typed keys immediately after the extras merge so that any
+    # code inserted between here and the stac_top_level batch pop below cannot
+    # accidentally double-serialize them as top-level STAC fields.
+    for _folded_key in ("extent", "providers", "summaries"):
+        collection.extra_fields.pop(_folded_key, None)
+
     # Union stored stac_extensions (from _pack_stac_extras) into the collection's
     # list after contributors have already appended their URIs.  This preserves
     # operator-supplied extension URIs that survive via extra_metadata without
