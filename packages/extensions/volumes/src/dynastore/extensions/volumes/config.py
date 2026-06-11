@@ -29,23 +29,19 @@ from typing import ClassVar, List, Literal, Tuple
 from pydantic import Field
 
 # Match the base-class import used by CoveragesConfig.
+from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.mutability import Mutable
 from dynastore.models.plugin_config import PluginConfig
 
 
-class VolumesConfig(PluginConfig):
+class VolumesConfig(ExposableConfigMixin, PluginConfig):
     """Volumes (3D tile hierarchy) guardrails.
 
-    ``volumes`` lives in ``packages/core`` and ships no
-    ``[project.entry-points."dynastore.extensions"]`` entry — i.e. the
-    framework does not discover a ``VolumesService`` extension at boot.
-    Inheriting ``ExposableConfigMixin`` would therefore expose an
-    ``enabled`` toggle that ``ExposureMatrix`` cannot enforce (the
-    dead-config audit guarded by ``find_dead_exposable_configs()``).
-
-    If/when ``volumes`` is split into its own ``packages/extensions/volumes``
-    distribution and registers a ``dynastore.extensions`` entry-point,
-    re-introduce the mixin.
+    ``volumes`` ships as its own ``packages/extensions/volumes`` distribution
+    with a ``[project.entry-points."dynastore.extensions"]`` entry, so the
+    framework discovers ``VolumesService`` at boot and the Service Exposure
+    matrix can enforce the inherited ``enabled`` toggle. ``enabled`` comes
+    from ``ExposableConfigMixin``; do not redeclare it locally.
     """
 
     _address: ClassVar[Tuple[str, ...]] = ("platform", "extensions", "volumes")
