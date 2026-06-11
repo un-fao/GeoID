@@ -35,8 +35,8 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
 )
 from dynastore.modules.db_config.locking_tools import (
-    _get_stable_lock_id,
     check_trigger_exists,
+    pg_advisory_leadership,
 )
 from dynastore.models.protocols import (
     PropertiesProtocol,
@@ -204,6 +204,10 @@ _delete_subscription_query = DQLQuery(
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
+#: Public alias for the maximum event retry count.  Consumed by the
+#: maintenance supervisor to keep the stuck-event reaper threshold in sync
+#: with the accumulation-policy value set here.
+MAX_RETRIES: int = _MAX_RETRIES
 
 _publish_query = DQLQuery(
     f"""
@@ -580,6 +584,10 @@ class EventsModule(ModuleProtocol):
 
         The lock is held for the lifetime of the context. On connection drop
         (pod/worker death) it is released automatically — no heartbeat needed.
+
+        Thin protocol adapter over :func:`pg_advisory_leadership` (the shared
+        leadership primitive); kept so non-PG drivers can implement the same
+        ``EventDriverProtocol`` surface differently.
         """
         engine = self._engine
         if not isinstance(engine, AsyncEngine):
@@ -592,40 +600,10 @@ class EventsModule(ModuleProtocol):
                 self._sync_engine_warned = True
             yield False
             return
-        lock_id = _get_stable_lock_id(key)
-        conn_ctx = engine.connect()
-        try:
-            conn = await conn_ctx.__aenter__()
-        except Exception as exc:
-            logger.debug(
-                "EventsModule: acquire_consumer_lock connect failed (%s); yielding non-leader.", exc
-            )
-            yield False
-            return
-        try:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            acquired = await DQLQuery(
-                "SELECT pg_try_advisory_lock(:id)",
-                result_handler=ResultHandler.SCALAR,
-            ).execute(conn, id=lock_id)
-            if not acquired:
-                yield False
-                return
-            logger.info("EventsModule: consumer lock acquired (key=%s).", key)
-            try:
-                yield True
-            finally:
-                try:
-                    await DQLQuery(
-                        "SELECT pg_advisory_unlock(:id)", result_handler=ResultHandler.NONE
-                    ).execute(conn, id=lock_id)
-                except Exception:
-                    pass  # connection drop releases lock automatically
-        finally:
-            try:
-                await conn_ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
+        async with pg_advisory_leadership(
+            engine, key, name=f"EventsModule[{key}]"
+        ) as is_leader:
+            yield is_leader
 
     # ------------------------------------------------------------------
     # Backlog monitor (leader-elected)

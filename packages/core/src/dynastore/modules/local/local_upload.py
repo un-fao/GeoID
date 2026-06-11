@@ -267,13 +267,16 @@ class LocalUploadModule(ModuleProtocol):
         filename: str,
         content_type: Optional[str] = None,
         collection_id: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> Any:
         """
         Reserves a staging slot and returns an ``UploadTicket`` directing the
         client to ``POST /local-upload/{ticket_id}``.
 
         Unlike GCS, no cloud storage is provisioned — the ticket is ready
-        immediately.
+        immediately. ``origin`` is accepted for protocol parity but ignored:
+        the upload goes through the server itself, so no CORS stamping is
+        needed.
         """
         from dynastore.models.protocols import UploadTicket
 

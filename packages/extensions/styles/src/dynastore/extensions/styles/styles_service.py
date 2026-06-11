@@ -32,6 +32,7 @@ _ = _lxml_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filt
 
 import json as _json
 import logging
+import os  # noqa: E402
 from contextlib import asynccontextmanager
 from typing import FrozenSet, List, Optional
 
@@ -43,6 +44,7 @@ from starlette import status
 
 from dynastore.extensions import protocols
 from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.web.decorators import expose_web_page, expose_static  # noqa: E402
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.protocols import StylesProtocol
@@ -147,6 +149,45 @@ class StylesService(protocols.ExtensionProtocol, OGCServiceMixin, StylesProtocol
         logger.info("StylesService: started.")
         yield
         logger.info("StylesService: stopped.")
+
+    # ------------------------------------------------------------------
+    # Web page contribution (WebPageContributor / StaticAssetProvider)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("styles")
+    def provide_static_files(self) -> List[str]:
+        """Exposes the internal static directory for the Styles browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="styles_browser",
+        title="Styles Browser",
+        icon="fa-palette",
+        description="Browse styles, stylesheets, and legends.",
+    )
+    async def provide_styles_browser(self, request: Request):
+        return await self._serve_page_template("styles_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
 
     # ------------------------------------------------------------------
     # Route registration (Pattern B)

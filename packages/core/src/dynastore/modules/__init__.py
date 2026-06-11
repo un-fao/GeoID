@@ -371,6 +371,23 @@ async def lifespan(app_state: object):
         except Exception as audit_err:  # pragma: no cover — diagnostic best-effort
             logger.error("Runtime-protocol audit failed: %s", audit_err)
 
+        # All module lifespans entered successfully. Mark the platform bootstrap
+        # complete so subsequent restarts skip the idempotent one-time work.
+        # Failure is non-fatal — the mark stays unset and the next boot retries.
+        try:
+            from dynastore.modules.catalog.bootstrap_guard import (
+                is_initialized,
+                mark_initialized,
+            )
+            if not await is_initialized():
+                await mark_initialized()
+        except Exception as _guard_err:
+            logger.warning(
+                "Could not persist platform bootstrap guard: %s — "
+                "next restart will re-run idempotent initialisation.",
+                _guard_err,
+            )
+
         yield
 
         # Wait for all background tasks before shutting down modules

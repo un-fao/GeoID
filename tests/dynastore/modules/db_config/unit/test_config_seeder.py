@@ -294,3 +294,83 @@ async def test_no_protocol_registered_returns(monkeypatch, tmp_path, caplog):
         "PlatformConfigsProtocol not registered" in r.message
         for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap guard integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guard_set_skips_non_override_seeds(monkeypatch, tmp_path):
+    """When the bootstrap guard is set, non-override seeds are not applied."""
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "task_routing_config",
+        "value": {"tasks": {"t_a": [{"consumers": ["catalog"], "runner": "background"}]}},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock), \
+         patch(
+             "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+             AsyncMock(return_value=True),
+         ):
+        await seeder.seed_default_configs(engine=object())
+
+    # Non-override seed must be skipped when guard is set.
+    config_mgr.set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_guard_set_still_applies_override_seeds(monkeypatch, tmp_path):
+    """override:true seeds always apply even when the bootstrap guard is set."""
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "task_routing_config",
+        "value": {"tasks": {"t_a": [{"consumers": ["catalog"], "runner": "background"}]}},
+        "override": True,
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock), \
+         patch(
+             "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+             AsyncMock(return_value=True),
+         ):
+        await seeder.seed_default_configs(engine=object())
+
+    # override:true seed must apply despite the guard.
+    config_mgr.set_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_guard_unset_seeds_then_runs_normally(monkeypatch, tmp_path):
+    """When the guard is not set, normal seeding logic runs unchanged."""
+    _write_seed(tmp_path / "defaults", "task-routing.json", {
+        "class_key": "task_routing_config",
+        "value": {"tasks": {"t_a": [{"consumers": ["catalog"], "runner": "background"}]}},
+    })
+    monkeypatch.setattr(seeder, "DEFAULTS_DIR", tmp_path / "defaults")
+
+    config_mgr = AsyncMock()
+    config_mgr.list_configs = AsyncMock(return_value={})
+    config_mgr.set_config = AsyncMock()
+
+    with patch("dynastore.tools.discovery.get_protocol", return_value=config_mgr), \
+         patch.object(seeder, "acquire_startup_lock", _fake_lock), \
+         patch(
+             "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+             AsyncMock(return_value=False),
+         ):
+        await seeder.seed_default_configs(engine=object())
+
+    config_mgr.set_config.assert_awaited_once()

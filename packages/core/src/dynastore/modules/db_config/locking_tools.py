@@ -22,7 +22,7 @@ import asyncio
 import functools
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import Optional, Callable, Awaitable, ClassVar, TypeVar, Dict, AsyncGenerator, Iterator, Set, cast
+from typing import Optional, Callable, Awaitable, ClassVar, TypeVar, Dict, AsyncGenerator, Iterator, Set, Union, cast
 from sqlalchemy import text, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from dynastore.tools.async_utils import LoopLocalLock
@@ -153,6 +153,100 @@ def _get_stable_lock_id(key: str) -> int:
     """Generates a stable 64-bit integer from a string key for Postgres advisory locks."""
     hashed = hashlib.sha256(key.encode("utf-8")).digest()
     return int.from_bytes(hashed[:8], byteorder="big", signed=True)
+
+
+@asynccontextmanager
+async def pg_advisory_leadership(
+    engine: Optional[DbResource],
+    key: Union[int, str],
+    *,
+    name: str = "leader",
+) -> AsyncGenerator[bool, None]:
+    """Non-blocking leadership election via a PG session advisory lock.
+
+    Canonical leadership context manager for :func:`dynastore.tools.
+    async_utils.run_leader_loop`. Yields ``True`` if this process became the
+    leader, ``False`` otherwise — exactly once on every path, as required of
+    a context-manager generator.
+
+    Design invariants (each one fixes a production failure mode):
+
+    * The lock is taken on a **dedicated AUTOCOMMIT connection**, never on a
+      pooled transaction. Session advisory locks belong to the connection; on
+      a pooled one a failed unlock would leak the lock into pool inventory and
+      permanently block leadership fleet-wide. Here the connection is closed
+      in ``finally``, which releases the lock even if the explicit unlock
+      fails — and a long leadership tenure never holds a transaction open.
+    * Failures *before* leadership is yielded (connect, AUTOCOMMIT switch,
+      acquire query) degrade to ``yield False``: the caller is simply not the
+      leader this round.
+    * Failures *after* ``yield True`` (raised in the caller's body, or by the
+      unlock/close steps) propagate so the loop can resign loudly and retry.
+      Never ``yield`` from an ``except`` around the leadership ``yield`` — a
+      second yield makes ``contextlib`` raise ``generator didn't stop``.
+
+    ``key`` may be a 64-bit int used as-is, or a string folded to one via
+    :func:`_get_stable_lock_id`. Requires an :class:`AsyncEngine`; any other
+    engine (or ``None``) yields ``False`` with a warning, matching the events
+    consumer precedent — single-process sync deployments get no election.
+
+    Known property: if the lock connection dies mid-tenure PG releases the
+    lock and another instance may become leader while this one finishes its
+    tick. Leader-run jobs must stay idempotent under that overlap.
+    """
+    if not isinstance(engine, AsyncEngine):
+        logger.warning(
+            "%s: leadership requires AsyncEngine (got %s); not a leader.",
+            name,
+            type(engine).__name__ if engine is not None else "None",
+        )
+        yield False
+        return
+    lock_id = key if isinstance(key, int) else _get_stable_lock_id(key)
+    conn_ctx = engine.connect()
+    try:
+        conn = await conn_ctx.__aenter__()
+    except Exception as exc:
+        logger.warning(
+            "%s: leadership connect failed (%s); not a leader.", name, exc
+        )
+        yield False
+        return
+    try:
+        try:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            acquired = bool(
+                await DQLQuery(
+                    "SELECT pg_try_advisory_lock(:id)",
+                    result_handler=ResultHandler.SCALAR,
+                ).execute(conn, id=lock_id)
+            )
+        except Exception as exc:
+            logger.warning(
+                "%s: leadership acquisition failed (%s); not a leader.",
+                name,
+                exc,
+            )
+            acquired = False
+        if not acquired:
+            yield False
+            return
+        logger.info("%s: leadership lock acquired (key=%s).", name, key)
+        try:
+            yield True
+        finally:
+            try:
+                await DQLQuery(
+                    "SELECT pg_advisory_unlock(:id)",
+                    result_handler=ResultHandler.NONE,
+                ).execute(conn, id=lock_id)
+            except Exception:
+                pass  # closing the dedicated connection releases the lock
+    finally:
+        try:
+            await conn_ctx.__aexit__(None, None, None)
+        except Exception:
+            pass
 
 
 @contextmanager
@@ -413,9 +507,16 @@ async def check_trigger_exists(
 
 
 async def check_cron_job_exists(conn: DbResource, job_name: str) -> bool:
-    """Checks if a pg_cron job exists."""
+    """Checks if a pg_cron job exists.
+
+    Returns ``False`` when the ``cron.job`` table is absent (pg_cron not
+    installed), mirroring the graceful-false behaviour of
+    :func:`check_extension_exists`.
+    """
     from dynastore.modules.db_config.maintenance_tools import DQLQuery, ResultHandler
 
+    if not await check_extension_exists(conn, "pg_cron"):
+        return False
     query = DQLQuery(
         "SELECT 1 FROM cron.job WHERE jobname = :job_name",
         result_handler=ResultHandler.SCALAR,

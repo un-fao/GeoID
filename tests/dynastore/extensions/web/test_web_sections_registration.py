@@ -57,6 +57,20 @@ SECTIONS = [
         "assets",
         "provide_assets_manager",
     ),
+    (
+        "dynastore.extensions.processes.processes_service",
+        "ProcessesService",
+        "processes_browser",
+        "processes",
+        "provide_processes_browser",
+    ),
+    (
+        "dynastore.extensions.styles.styles_service",
+        "StylesService",
+        "styles_browser",
+        "styles",
+        "provide_styles_browser",
+    ),
 ]
 
 

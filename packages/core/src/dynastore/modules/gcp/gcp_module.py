@@ -414,8 +414,8 @@ class GCPModule(
 
             # --- Liveness reconciler (#735) ---
             # Replaces the fixed spawn-lease guess: probe lapsed-lease Cloud Run
-            # task rows for real execution liveness before the pg_cron reaper
-            # blindly reclaims them. Gated by _should_register_gcp_job_runner()
+            # task rows for real execution liveness before the MaintenanceSupervisor
+            # task_reaper blindly reclaims them. Gated by _should_register_gcp_job_runner()
             # — Cloud Run Job containers and opted-out services must NOT run it
             # (they would compete needlessly and never own a gcp_cloud_run_ row).
             #
@@ -432,7 +432,7 @@ class GCPModule(
             except AssertionError:
                 # No DB engine available at all; schema-init's warning above
                 # already covers operator visibility. Reconciler stays inert,
-                # pg_cron reaper remains the backstop.
+                # MaintenanceSupervisor task_reaper remains the backstop.
                 reconciler_engine = None
             if _should_register_gcp_job_runner() and reconciler_engine is not None:
                 try:
@@ -457,7 +457,7 @@ class GCPModule(
                 except Exception as e:
                     logger.error(
                         "GCP Module: failed to start liveness reconciler "
-                        "(%s). pg_cron reaper remains the backstop.", e,
+                        "(%s). MaintenanceSupervisor task_reaper remains the backstop.", e,
                         exc_info=True,
                     )
                     self._liveness_reconciler = None
@@ -701,6 +701,20 @@ class GCPModule(
         # Use common region fallback if metadata server fails or local
         region = region or os.getenv("REGION", "europe-west1")
 
+        # dev and review environments share the same GCP project
+        # (fao-aip-geospatial-review). Without environment-scoped filtering,
+        # both fleets list each other's jobs and the last enumerated job wins
+        # for any given TASK_TYPE — causing dev to dispatch review's jobs.
+        # When ENVIRONMENT is set on this service we keep only jobs carrying
+        # the same value; jobs with a different or absent ENVIRONMENT tag are
+        # skipped. When ENVIRONMENT is unset (on-prem, local, single-env
+        # deployments) all APP=dynastore jobs are accepted — back-compat path.
+        own_env = os.getenv("ENVIRONMENT", "").strip()
+        if not own_env:
+            logger.info(
+                "ENVIRONMENT is not set; Cloud Run job discovery is environment-unfiltered."
+            )
+
         try:
             client = self.get_jobs_client()
             parent = f"projects/{project_id}/locations/{region}"
@@ -722,6 +736,19 @@ class GCPModule(
                 # Only process jobs marked as dynastore task runners
                 if env_map.get("APP") != "dynastore":
                     continue
+
+                # When this service declares an environment, skip any job whose
+                # ENVIRONMENT tag does not match exactly — including untagged
+                # jobs. This prevents cross-environment pollution when dev and
+                # review share a GCP project.
+                if own_env:
+                    job_env = env_map.get("ENVIRONMENT", "").strip()
+                    if job_env != own_env:
+                        logger.info(
+                            f"Skipping job '{job_name}': ENVIRONMENT='{job_env}' "
+                            f"does not match service ENVIRONMENT='{own_env}'."
+                        )
+                        continue
 
                 # Strategy 1 (explicit): TASK_TYPE env var — canonical task name
                 task_type = env_map.get("TASK_TYPE", "").strip() or None

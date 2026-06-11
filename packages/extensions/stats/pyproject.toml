@@ -31,7 +31,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"dynastore.extensions.stats" = ["*.md", "static/*"]
+"dynastore.extensions.stats" = ["*.md", "static/*", "static/**/*"]
 
 [tool.uv.sources]
 dynastore = { workspace = true }

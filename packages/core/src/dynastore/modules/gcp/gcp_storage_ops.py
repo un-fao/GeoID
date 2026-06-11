@@ -157,6 +157,7 @@ class GcpStorageOpsMixin:
         filename: str,
         content_type: Optional[str] = None,
         collection_id: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> "UploadTicket":
         """
         Prepares a GCS resumable upload session and returns a backend-agnostic
@@ -241,8 +242,13 @@ class GcpStorageOpsMixin:
         blob.metadata = {k: str(v) if not isinstance(v, str) else v for k, v in final_metadata.items()}
 
         try:
+            # The Origin supplied here CORS-stamps the resumable session:
+            # GCS only adds Access-Control-Allow-Origin to responses on the
+            # session URI when the initiating POST carried a matching Origin
+            # header (bucket CORS config does not apply to session URIs).
             session_uri = blob.create_resumable_upload_session(
-                content_type=content_type or "application/octet-stream"
+                content_type=content_type or "application/octet-stream",
+                origin=origin,
             )
         except google.api_core.exceptions.GoogleAPICallError as e:
             raise GcpServiceUnavailableError(

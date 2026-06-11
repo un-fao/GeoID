@@ -50,10 +50,10 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         # Registry for static content providers: { prefix: provider_callable }
         self.static_providers: Dict[str, Callable[[], List[str]]] = {}
 
-        # Metadata for static prefixes (owner, description) indexed by prefix.
-        # Populated alongside static_providers so the registry endpoint can
-        # return human-readable context without re-inspecting the callables.
-        self.static_prefix_meta: Dict[str, Dict[str, str]] = {}
+        # Metadata for static prefixes (owner, description, public) indexed by
+        # prefix. Populated alongside static_providers so the registry endpoint
+        # can return human-readable context without re-inspecting the callables.
+        self.static_prefix_meta: Dict[str, Dict[str, Any]] = {}
 
         # Documentation registry
         self.docs_registry: Dict[str, Dict[str, Any]] = {}
@@ -90,6 +90,34 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 "WebModule: Could not find project root. Docs scanning will be limited."
             )
 
+    @staticmethod
+    def _owner_extension_for(provider: Callable[..., Any]) -> Optional[str]:
+        """Derive the owning extension name from a page provider callable.
+
+        Providers are typically bound methods of an extension instance whose
+        class lives under ``dynastore.extensions.<ext>``; plain functions fall
+        back to their own ``__module__``. Returns ``None`` for providers that
+        do not belong to an extension package (e.g. core/web-module pages),
+        which exempts them from extension-exposure gating.
+        """
+        owner_obj = getattr(provider, "__self__", None)
+        module = (
+            getattr(type(owner_obj), "__module__", "")
+            if owner_obj is not None
+            else getattr(provider, "__module__", "") or ""
+        )
+        parts = module.split(".")
+        if len(parts) >= 3 and parts[0] == "dynastore" and parts[1] == "extensions":
+            return parts[2]
+        return None
+
+    def get_page_owner_extension(self, page_id: str) -> Optional[str]:
+        """Owning extension of a registered page, or ``None`` if unowned/unknown."""
+        entry = self.web_pages.get(page_id)
+        if not entry:
+            return None
+        return entry.get("owner_ext")
+
     def register_web_page(self, config: Dict[str, Any], provider: Callable[..., Any]):
         """Registers a web page handler."""
         page_id = config["id"]
@@ -102,6 +130,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             self.web_pages[page_id] = {
                 "config": WebPageConfig(**config),
                 "providers": [],
+                "owner_ext": self._owner_extension_for(provider),
             }
 
         # Guard: same handler may arrive from decorator scan (configure_app)
@@ -129,8 +158,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         # Only non-embed providers carry authoritative navigation metadata
         # (title, icon, section, required_roles).  An embed provider injecting
         # supplemental content must not overwrite the page's nav config.
+        # Ownership follows the same rule: the authoritative (non-embed)
+        # provider determines which extension's exposure toggle gates the page.
         if not is_embed and priority < self.web_pages[page_id]["config"].priority:
             self.web_pages[page_id]["config"] = WebPageConfig(**config)
+            self.web_pages[page_id]["owner_ext"] = self._owner_extension_for(provider)
 
         logger.info(f"WebModule: Registered {'embed ' if is_embed else ''}provider for '{page_id}' (priority: {priority})")
 
@@ -149,18 +181,25 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         provider: Any,
         owner: str = "",
         description: str = "",
+        public: bool = True,
     ) -> None:
         """Registers a static file provider.
 
         ``owner`` and ``description`` are optional human-readable metadata
         returned by the ``GET /web/config/static-prefixes`` registry endpoint.
+        ``public`` records whether anonymous users may read this prefix; the
+        web policy builder reads it when constructing the anonymous ALLOW list.
         """
         if prefix in self.static_providers:
             logger.warning(
                 f"WebModule: Overwriting static provider for prefix '{prefix}'"
             )
         self.static_providers[prefix] = provider
-        self.static_prefix_meta[prefix] = {"owner": owner, "description": description}
+        self.static_prefix_meta[prefix] = {
+            "owner": owner,
+            "description": description,
+            "public": public,
+        }
         logger.info(f"WebModule: Registered static provider for prefix '{prefix}'")
 
     async def is_static_file_provided(self, prefix: str, path: str) -> bool:
@@ -223,6 +262,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                         asset.files_provider,
                         owner=getattr(asset, "owner", "") or "",
                         description=getattr(asset, "description", "") or "",
+                        public=getattr(asset, "public", True),
                     )
             except Exception as e:
                 logger.error(
@@ -273,6 +313,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
         results = []
         for p in self.web_pages.values():
             base_config: WebPageConfig = p["config"]
+            owner_ext = p.get("owner_ext")
             
             # Apply persistent overrides if available
             override = overrides.get(base_config.id)
@@ -310,6 +351,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                     "section": section,
                     "is_embed": config.is_embed,
                     "required_roles": config.required_roles,
+                    "owner": owner_ext,
                 }
             )
 
@@ -394,6 +436,17 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 }
             )
         return result
+
+    def get_static_prefix_meta(self) -> Dict[str, Any]:
+        """Return the raw metadata dict keyed by prefix.
+
+        Each value contains at least ``owner``, ``description``, and
+        ``public`` (bool, defaults to True when absent for pre-existing
+        registrations). Used by the web policy builder to derive the
+        anonymous ALLOW list for prefixes that were registered after the
+        literal baseline was written.
+        """
+        return dict(self.static_prefix_meta)
 
     def list_page_providers(self, page_id: str) -> List[Dict[str, Any]]:
         """Return introspection data for every handler registered for *page_id*.

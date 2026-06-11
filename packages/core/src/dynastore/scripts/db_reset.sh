@@ -130,9 +130,18 @@ case "$cmd" in
         fi
 
         # Wipe orphaned cron jobs (jobs for now-gone schemas). System jobs preserved.
+        # pg_cron is optional — the dev image no longer ships it — so guard the
+        # wipe on extension presence (db_reset.py does the same) instead of
+        # hard-failing the boot-tier reset under ON_ERROR_STOP.
         if [[ $keep_cron -eq 0 ]]; then
-            echo "Wiping non-system cron.job rows (preserving: $SYSTEM_CRON_JOBS)..."
-            run_psql "DELETE FROM cron.job WHERE jobname NOT IN (${SYSTEM_CRON_IN});"
+            echo "Wiping non-system cron.job rows if pg_cron is installed (preserving: $SYSTEM_CRON_JOBS)..."
+            run_psql "DO \$do\$ BEGIN
+                IF EXISTS (SELECT FROM pg_extension WHERE extname = 'pg_cron') THEN
+                    DELETE FROM cron.job WHERE jobname NOT IN (${SYSTEM_CRON_IN});
+                ELSE
+                    RAISE NOTICE 'pg_cron not installed; skipping cron.job wipe.';
+                END IF;
+            END \$do\$;"
         fi
 
         # Idempotent recreate — covers the rare case where someone dropped it manually.

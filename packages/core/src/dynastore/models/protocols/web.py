@@ -58,6 +58,7 @@ class WebModuleProtocol():
         provider: Callable[..., Any],
         owner: str = "",
         description: str = "",
+        public: bool = True,
     ): ...
     async def get_web_pages_config(self, language: str = "en") -> List[Dict[str, Any]]: ...
     def get_web_page_content(self, page_id: str, request: Any, language: str = "en") -> Any: ...
@@ -71,11 +72,28 @@ class WebModuleProtocol():
         ``prefix``, ``owner``, and ``description``."""
         ...
 
+    def get_static_prefix_meta(self) -> Dict[str, Any]:
+        """Return the raw metadata dict keyed by prefix.
+
+        Each value is a dict with at least ``owner``, ``description``, and
+        ``public`` (bool).  Callers must treat unknown keys as forward-
+        compatible additions and absent ``public`` as ``True``.  The web
+        policy builder uses this to derive the anonymous ALLOW list for
+        prefixes registered after the literal baseline was written.
+        """
+        ...
+
     def list_page_providers(self, page_id: str) -> List[Dict[str, Any]]:
         """Return introspection data for every handler registered for *page_id*.
 
         Each entry contains ``priority`` (int), ``is_embed`` (bool), and
         ``handler`` (qualified name string).
         """
+        ...
+
+    def get_page_owner_extension(self, page_id: str) -> Optional[str]:
+        """Name of the extension owning *page_id*, derived from its
+        authoritative (non-embed) provider's module path, or ``None`` for
+        core/web-module pages that no extension-exposure toggle gates."""
         ...
 
