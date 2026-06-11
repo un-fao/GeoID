@@ -24,11 +24,12 @@ including CityJSON content negotiation and spatial query (OGC 22-029).
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
@@ -40,6 +41,7 @@ from dynastore.extensions.geovolumes.geovolumes_models import (
     _bbox_intersects,
     _parse_bbox,
 )
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 
 import cjio as _cjio_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires cjio
 import pyproj as _pyproj_scope_gate  # noqa: F401  # SCOPE gate: extension_geovolumes requires pyproj
@@ -223,6 +225,51 @@ class GeoVolumesService(ExtensionProtocol, OGCServiceMixin):
             _generate(),
             media_type="application/city+json",
         )
+
+    # ------------------------------------------------------------------
+    # Web page contribution (WebPageContributor / StaticAssetProvider)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("geovolumes")
+    def provide_static_files(self) -> list:
+        """Exposes the static directory for the GeoVolumes globe browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="geovolumes_browser",
+        title={"en": "3D GeoVolumes", "fr": "GéoVolumes 3D", "es": "GeoVolúmenes 3D"},
+        icon="fa-cube",
+        description={
+            "en": "Browse 3D building volumes and CityJSON data on a globe.",
+            "fr": "Explorer des volumes de bâtiments 3D et des données CityJSON sur un globe.",
+            "es": "Explorar volúmenes de edificios 3D y datos CityJSON en un globo.",
+        },
+    )
+    async def provide_geovolumes_browser(self, request: Request):
+        return await self._serve_page_template("geovolumes_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
+
+
 
 
 # ---------------------------------------------------------------------------
