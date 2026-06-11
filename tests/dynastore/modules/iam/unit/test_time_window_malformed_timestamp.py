@@ -16,16 +16,18 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Pin the malformed-timestamp warning emitted by TimeWindowHandler.
+"""Pin the malformed-timestamp handling of TimeWindowHandler.
 
 Three invariants:
 
 1. **In-window** — a valid ``start`` in the past passes without error.
-2. **Out-of-window** — a valid ``start`` in the future raises ``IamError``
-   so the key is rejected (the propagation must NOT be swallowed).
+2. **Out-of-window** — a valid ``start`` in the future raises
+   ``AccessDeniedError`` (HTTP 403: a deliberate authorization denial,
+   not a server fault; the propagation must NOT be swallowed).
 3. **Malformed timestamp** — an unparseable ``start`` or ``end`` value
-   emits a WARNING naming the offending bound and value, and the handler
-   falls through to the safe fallback (does not raise).
+   logs an ERROR naming the offending bound and value, then raises
+   ``IamError`` (HTTP 500 — a broken policy is a server-side config
+   fault; fail closed: it must never grant access).
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dynastore.modules.iam.conditions import EvaluationContext, TimeWindowHandler
-from dynastore.modules.iam.exceptions import IamError
+from dynastore.modules.iam.exceptions import AccessDeniedError, IamError
 
 _LOGGER_NAME = "dynastore.modules.iam.conditions"
 
@@ -85,8 +87,9 @@ async def test_out_of_window_start_in_future_raises_iam_error() -> None:
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    with pytest.raises(IamError, match="valid from"):
+    with pytest.raises(AccessDeniedError, match="valid from") as exc_info:
         await handler.evaluate(config, _ctx())
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -98,57 +101,59 @@ async def test_out_of_window_end_in_past_raises_iam_error() -> None:
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    with pytest.raises(IamError, match="expired at"):
+    with pytest.raises(AccessDeniedError, match="expired at") as exc_info:
         await handler.evaluate(config, _ctx())
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_malformed_start_logs_warning_and_does_not_raise(
+async def test_malformed_start_logs_error_and_raises(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An unparseable ``start`` value must emit a WARNING and fall through.
+    """An unparseable ``start`` value must log an ERROR and raise ``IamError``.
 
-    The key must NOT be rejected — the fail-open fallback is intentional
-    (per maintainer decision); it just has to be observable.
+    Fail closed: a policy whose validity bound cannot be parsed must reject
+    the request, never silently grant access. The log line must name the
+    offending value so operators can locate the broken policy.
     """
-    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    caplog.set_level(logging.ERROR, logger=_LOGGER_NAME)
     config: Dict[str, Any] = {
         "start": "not-a-date",
         "start_hour": 0,
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    result = await handler.evaluate(config, _ctx())
-    assert result is True
+    with pytest.raises(IamError, match="'start' date format"):
+        await handler.evaluate(config, _ctx())
 
-    warning_lines = [
+    error_lines = [
         r for r in caplog.records
-        if r.levelno == logging.WARNING and "start" in r.getMessage()
+        if r.levelno == logging.ERROR and "start" in r.getMessage()
     ]
-    assert len(warning_lines) >= 1, "expected at least one WARNING for malformed 'start'"
-    msg = warning_lines[0].getMessage()
-    assert "not-a-date" in msg, f"offending value missing from warning: {msg!r}"
+    assert len(error_lines) >= 1, "expected at least one ERROR for malformed 'start'"
+    msg = error_lines[0].getMessage()
+    assert "not-a-date" in msg, f"offending value missing from error log: {msg!r}"
 
 
 @pytest.mark.asyncio
-async def test_malformed_end_logs_warning_and_does_not_raise(
+async def test_malformed_end_logs_error_and_raises(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An unparseable ``end`` value must emit a WARNING and fall through."""
-    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    """An unparseable ``end`` value must log an ERROR and raise ``IamError``."""
+    caplog.set_level(logging.ERROR, logger=_LOGGER_NAME)
     config: Dict[str, Any] = {
         "end": "INVALID-TIMESTAMP",
         "start_hour": 0,
         "end_hour": 24,
     }
     handler = TimeWindowHandler()
-    result = await handler.evaluate(config, _ctx())
-    assert result is True
+    with pytest.raises(IamError, match="'end' date format"):
+        await handler.evaluate(config, _ctx())
 
-    warning_lines = [
+    error_lines = [
         r for r in caplog.records
-        if r.levelno == logging.WARNING and "end" in r.getMessage()
+        if r.levelno == logging.ERROR and "end" in r.getMessage()
     ]
-    assert len(warning_lines) >= 1, "expected at least one WARNING for malformed 'end'"
-    msg = warning_lines[0].getMessage()
-    assert "INVALID-TIMESTAMP" in msg, f"offending value missing from warning: {msg!r}"
+    assert len(error_lines) >= 1, "expected at least one ERROR for malformed 'end'"
+    msg = error_lines[0].getMessage()
+    assert "INVALID-TIMESTAMP" in msg, f"offending value missing from error log: {msg!r}"
