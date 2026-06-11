@@ -25,7 +25,7 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"dynastore.extensions.logs" = ["static/*.html", "kibana/*.ndjson"]
+"dynastore.extensions.logs" = ["static/*.html", "kibana/*.ndjson", "static/**/*"]
 
 [tool.uv.sources]
 dynastore = { workspace = true }

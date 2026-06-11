@@ -18,6 +18,7 @@
 
 import logging
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import FrozenSet, List, Union, Any, Optional, cast
@@ -26,6 +27,8 @@ import jsonschema as _jsonschema_scope_gate  # noqa: F401  # SCOPE gate: extensi
 _ = _jsonschema_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
 
 from pydantic import ValidationError
+
+from dynastore.extensions.web.decorators import expose_web_page, expose_static  # noqa: E402
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -1365,6 +1368,45 @@ class ProcessesService(ExtensionProtocol, OGCServiceMixin):
         from dynastore.extensions.processes.runners import FastAPIBackgroundRunner
         register_plugin(FastAPIBackgroundRunner())
         yield
+
+    # ------------------------------------------------------------------
+    # Web page contribution (WebPageContributor / StaticAssetProvider)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("processes")
+    def provide_static_files(self) -> List[str]:
+        """Exposes the internal static directory for the Processes browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="processes_browser",
+        title="Processes Browser",
+        icon="fa-gears",
+        description="Discover processes and inspect submitted jobs.",
+    )
+    async def provide_processes_browser(self, request: Request):
+        return await self._serve_page_template("processes_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
 
 
 
