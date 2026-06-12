@@ -369,7 +369,17 @@ function clearOverlayLayers() {
 function find3dTilesHref(container) {
   const links = (container.content || []).concat(container.links || []);
   for (const link of links) {
-    if (link.rel === REL_3DTILES) return link.href;
+    if (link.rel === REL_3DTILES) return resolveApiHref(link.href);
   }
   return null;
+}
+
+// The API emits root-relative hrefs ("/volumes/..."), which miss any gateway
+// path prefix the deployment sits behind. Re-base them onto API_BASE so they
+// resolve through the same prefix as every other request this page makes.
+function resolveApiHref(href) {
+  if (typeof href === "string" && href.startsWith("/volumes/")) {
+    return `${API_BASE}${href.slice("/volumes".length)}`;
+  }
+  return href;
 }

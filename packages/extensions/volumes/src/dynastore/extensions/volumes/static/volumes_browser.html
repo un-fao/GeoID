@@ -86,6 +86,11 @@
         #catalog-selector {
             margin-bottom: 0.4rem;
         }
+        /* Cap the catalog list so the container tree below stays visible. */
+        #catalog-selector .es-list {
+            max-height: 32vh;
+            overflow-y: auto;
+        }
         #container-tree {
             flex: 1;
             overflow-y: auto;
