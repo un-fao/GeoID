@@ -603,6 +603,11 @@ async def ingest_cityjson_file(
                 meta_with_range = {
                     **cityjson_meta,
                     "geovolumes:zrange": {"zmin": zmin, "zmax": zmax},
+                    # The extent column only persists where the optional
+                    # STAC collection sidecar is materialized; stamp the
+                    # 2D bbox into extras too so the GeoVolumes
+                    # contentExtent survives on core-only deployments.
+                    "geovolumes:bbox": [minx, miny, maxx, maxy],
                 }
                 await catalog_service.update_collection(
                     catalog_id,

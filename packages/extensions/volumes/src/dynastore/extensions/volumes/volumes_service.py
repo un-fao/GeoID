@@ -498,7 +498,21 @@ def _get_extras(coll: Any) -> Dict[str, Any]:
         extras = {k: v for k, v in raw_extra.items() if ":" in k}
     if not extras:
         extra_metadata = getattr(coll, "extra_metadata", None) or {}
+        dump = getattr(extra_metadata, "model_dump", None)
+        if callable(dump):
+            extra_metadata = dump()
         if isinstance(extra_metadata, dict):
+            # The BaseMetadata validator always stores extra_metadata
+            # language-keyed ({"en": {...}}); unwrap before scanning.
+            if extra_metadata and not any(":" in k for k in extra_metadata):
+                localized = extra_metadata.get("en")
+                if not isinstance(localized, dict):
+                    localized = next(
+                        (v for v in extra_metadata.values() if isinstance(v, dict)),
+                        None,
+                    )
+                if isinstance(localized, dict):
+                    extra_metadata = localized
             nested = extra_metadata.get("extras")
             if isinstance(nested, dict) and nested:
                 extras = nested
@@ -535,6 +549,16 @@ def _collection_bbox_3d(coll: Any, extras: Dict[str, Any]) -> List[float]:
             if raw:
                 first = raw[0] if isinstance(raw[0], (list, tuple)) else raw
                 bbox_2d = list(first)
+
+    # The collection ``extent`` column only persists where the optional
+    # STAC collection sidecar is materialized; ingest therefore also
+    # stamps the dataset bbox into extras (geovolumes:bbox), which the
+    # always-present core driver persists.  Prefer a real extent, fall
+    # back to the stamped bbox.
+    if len(bbox_2d) < 4 or not any(bbox_2d[:4]):
+        stamped = extras.get("geovolumes:bbox")
+        if isinstance(stamped, (list, tuple)) and len(stamped) >= 4:
+            bbox_2d = [float(v) for v in stamped[:4]]
 
     if len(bbox_2d) >= 4:
         minx, miny, maxx, maxy = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3]

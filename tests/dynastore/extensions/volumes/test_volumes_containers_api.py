@@ -309,3 +309,53 @@ def test_list_collections_malformed_bbox_returns_400(volumes_app):
         f"/volumes/catalogs/{_CAT}/collections?bbox=1.0,2.0,3.0"
     )
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# READ-path extras resolution (PG core driver shapes)
+# ---------------------------------------------------------------------------
+
+
+def test_get_extras_unwraps_localized_extra_metadata():
+    """BaseMetadata always persists extra_metadata language-keyed; the READ
+    path must unwrap {"en": {...}} before scanning for namespaced keys."""
+    from dynastore.extensions.volumes.volumes_service import _get_extras
+
+    coll = MagicMock()
+    coll.model_extra = {}
+    coll.extra_metadata = {"en": {"cityjson:version": "2.0"}}
+    extras = _get_extras(coll)
+    assert extras.get("cityjson:version") == "2.0"
+
+
+def test_get_extras_localized_non_en_fallback():
+    from dynastore.extensions.volumes.volumes_service import _get_extras
+
+    coll = MagicMock()
+    coll.model_extra = {}
+    coll.extra_metadata = {"fr": {"cityjson:version": "2.0"}}
+    extras = _get_extras(coll)
+    assert extras.get("cityjson:version") == "2.0"
+
+
+def test_collection_bbox_3d_falls_back_to_stamped_bbox():
+    """When the extent column is empty/zero (no STAC sidecar), contentExtent
+    must come from the geovolumes:bbox stamped into extras at ingest."""
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent = None
+    extras = {
+        "geovolumes:bbox": [4.27, 52.06, 4.32, 52.09],
+        "geovolumes:zrange": {"zmin": 1.0, "zmax": 50.0},
+    }
+    assert _collection_bbox_3d(coll, extras) == [4.27, 52.06, 1.0, 4.32, 52.09, 50.0]
+
+
+def test_collection_bbox_3d_prefers_real_extent():
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent.spatial.bbox = [[1.0, 2.0, 3.0, 4.0]]
+    extras = {"geovolumes:bbox": [9.0, 9.0, 9.9, 9.9]}
+    assert _collection_bbox_3d(coll, extras)[:2] == [1.0, 2.0]

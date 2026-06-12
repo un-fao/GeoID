@@ -333,6 +333,11 @@ async def test_ingest_cityjson_file():
     assert bbox[0] <= bbox[2] and bbox[1] <= bbox[3]
     zrange = final_payload.get("extras", {}).get("geovolumes:zrange", {})
     assert "zmin" in zrange and "zmax" in zrange
+    # The 2D bbox must also be stamped into extras — the extent column only
+    # persists where the optional STAC collection sidecar is materialized.
+    stamped = final_payload.get("extras", {}).get("geovolumes:bbox")
+    assert stamped == [bbox[0], bbox[1], bbox[2], bbox[3]]
+    assert final_payload.get("extra_metadata", {}).get("geovolumes:bbox") == stamped
 
     # item_service.upsert called with 3 items total
     item_service.upsert.assert_called_once()
