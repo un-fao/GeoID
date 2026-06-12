@@ -363,6 +363,13 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         from dynastore.extensions.tools.web_collect import collect_static_assets
         return collect_static_assets(self)
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     @expose_static("volumes")
     def provide_static_files(self) -> list:
         """Exposes the static directory for the GeoVolumes globe browser."""
