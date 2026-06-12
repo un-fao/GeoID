@@ -364,6 +364,17 @@ COPY --from=builder /opt/ /opt/
 COPY --from=builder /usr/local/bin/start.sh /usr/local/bin/start.sh
 COPY --from=builder /usr/local/bin/start-task.sh /usr/local/bin/start-task.sh
 
+# Base on-prem defaults layer — consumed by config_seeder.py on first boot.
+# Files under docker/config/defaults/ supply initial values for PluginConfig
+# classes (task_routing_config, oidc_role_sync_config, …) when no DB row
+# exists yet (override=false).  On-prem installs that run the geoid image
+# directly need no deployment wrapper to bootstrap sensible defaults.
+#
+# dynastore's per-environment Dockerfile overlays its env-specific folder
+# on top of this base so the seeder finds a single merged defaults/ path.
+# The overlay pattern and documented delta live in dynastore/docker/Dockerfile.
+COPY packages/core/src/dynastore/docker/config/defaults/ ${APP_DIR}/config/defaults/
+
 # Ownership
 RUN chown -R $APP_USER:$APP_USER ${APP_DIR} ${VENV_PATH}
 

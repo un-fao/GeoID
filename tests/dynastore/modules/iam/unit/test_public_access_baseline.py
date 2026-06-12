@@ -256,32 +256,32 @@ async def test_bootstrap_runs_when_sentinel_absent() -> None:
         async def __aexit__(self, *_: Any) -> bool:
             return False
 
-    call_count = [0]
+    # Patch the module-level sentinel objects in bootstrap.py directly.
+    sel_mock = MagicMock()
+    sel_mock.execute = AsyncMock(return_value=None)  # SELECT → absent
+    ins_mock = MagicMock()
 
-    async def _mock_dql_execute(conn: Any, **kw: Any) -> Any:
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return None  # SELECT sentinel → absent
+    async def _capture_insert(conn: Any, **kw: Any) -> Any:
         insert_calls.append(kw)
-        return None  # INSERT sentinel
+        return None
 
-    class _MockDQL:
-        def __init__(self, *_a: Any, **_kw: Any) -> None:
-            pass
-
-        execute = AsyncMock(side_effect=_mock_dql_execute)
+    ins_mock.execute = AsyncMock(side_effect=_capture_insert)
 
     with patch(
         "dynastore.modules.db_config.locking_tools.acquire_startup_lock", _FakeLock
     ), patch(
-        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        "dynastore.modules.storage.presets.registry.find_preset",
         return_value=_PRESET,
     ), patch(
         "dynastore.modules.storage.presets.lifecycle._build_context",
         return_value=_make_ctx(iam_svc, policy_svc),
     ), patch(
-        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
-        _MockDQL,
+        "dynastore.modules.presets.bootstrap._SELECT_SENTINEL", sel_mock,
+    ), patch(
+        "dynastore.modules.presets.bootstrap._INSERT_SENTINEL", ins_mock,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=False),
     ):
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="public_access_baseline"
@@ -316,23 +316,19 @@ async def test_bootstrap_skips_when_sentinel_present() -> None:
         async def __aexit__(self, *_: Any) -> bool:
             return False
 
-    async def _select_present(conn: Any, **kw: Any) -> Any:
-        return (1,)  # SELECT sentinel → present
-
-    class _MockDQL:
-        def __init__(self, *_a: Any, **_kw: Any) -> None:
-            pass
-
-        execute = AsyncMock(side_effect=_select_present)
+    sel_mock = MagicMock()
+    sel_mock.execute = AsyncMock(return_value=(1,))  # SELECT → present
 
     with patch(
         "dynastore.modules.db_config.locking_tools.acquire_startup_lock", _FakeLock
     ), patch(
-        "dynastore.modules.storage.presets.lifecycle.find_preset",
+        "dynastore.modules.storage.presets.registry.find_preset",
         return_value=_PRESET,
     ), patch(
-        "dynastore.modules.storage.presets.lifecycle.DQLQuery",
-        _MockDQL,
+        "dynastore.modules.presets.bootstrap._SELECT_SENTINEL", sel_mock,
+    ), patch(
+        "dynastore.modules.catalog.bootstrap_guard.is_initialized",
+        AsyncMock(return_value=False),
     ):
         result = await bootstrap_preset_if_absent(
             MagicMock(), preset_name="public_access_baseline"
