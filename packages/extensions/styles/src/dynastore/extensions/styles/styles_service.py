@@ -162,6 +162,13 @@ class StylesService(protocols.ExtensionProtocol, OGCServiceMixin, StylesProtocol
         from dynastore.extensions.tools.web_collect import collect_static_assets
         return collect_static_assets(self)
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     @expose_static("styles")
     def provide_static_files(self) -> List[str]:
         """Exposes the internal static directory for the Styles browser."""
