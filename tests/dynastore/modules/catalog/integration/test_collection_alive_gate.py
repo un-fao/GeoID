@@ -201,6 +201,114 @@ async def test_ensure_alive_soft_deleted_raises_tombstoned(
 
 
 # ---------------------------------------------------------------------------
+# Write-path gate test (#1995): no resurrection through lazy activation
+# ---------------------------------------------------------------------------
+
+
+async def _snapshot_tables(engine, schema: str) -> set:
+    """Set of table names currently present in the given schema."""
+    from sqlalchemy import text
+
+    from dynastore.modules.db_config.query_executor import managed_transaction
+
+    async with managed_transaction(engine) as conn:
+        res = await conn.execute(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = :s"
+            ),
+            {"s": schema},
+        )
+        return {row[0] for row in res}
+
+
+async def _count_collection_config_rows(engine, schema: str, collection_id: str) -> int:
+    """Rows pinned at collection scope (e.g. ItemsRoutingConfig) for the collection."""
+    from sqlalchemy import text
+
+    from dynastore.modules.db_config.query_executor import managed_transaction
+
+    async with managed_transaction(engine) as conn:
+        res = await conn.execute(
+            text(
+                f'SELECT COUNT(*) FROM "{schema}".collection_configs '
+                "WHERE collection_id = :c"
+            ),
+            {"c": collection_id},
+        )
+        return int(res.scalar_one())
+
+
+@pytest.mark.asyncio
+async def test_upsert_after_hard_delete_is_rejected_and_does_not_reprovision(
+    app_lifespan,
+    catalog_id,
+    collection_id,
+):
+    """A write to a hard-deleted collection must fail with
+    CollectionNotAliveError and must NOT re-provision storage: no new
+    physical tables, no fresh collection-scope routing pin.
+    """
+    catalogs = get_protocol(CatalogsProtocol)
+    assert catalogs is not None
+    engine = app_lifespan.engine
+
+    item = {
+        "id": "alive-gate-race-item",
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [12.5, 41.9]},
+        "properties": {"name": "Race Item"},
+    }
+
+    await catalogs.delete_catalog(catalog_id, force=True)
+    await catalogs.create_catalog({"id": catalog_id, "title": "Alive Gate Race"})
+    await catalogs.create_collection(
+        catalog_id,
+        {
+            "id": collection_id,
+            "description": "Race test collection",
+            "extent": {
+                "spatial": {"bbox": [[-180, -90, 180, 90]]},
+                "temporal": {"interval": [[None, None]]},
+            },
+        },
+    )
+
+    try:
+        # First write provisions storage (lazy activation).
+        await catalogs.upsert(catalog_id, collection_id, item)
+
+        # Hard delete: registry row gone, storage torn down.
+        await catalogs.delete_collection(catalog_id, collection_id, force=True)
+
+        schema = await catalogs.resolve_physical_schema(catalog_id)
+        assert schema is not None
+        tables_before = await _snapshot_tables(engine, schema)
+        pins_before = await _count_collection_config_rows(
+            engine, schema, collection_id
+        )
+
+        # The race: a late writer retries its upsert after the delete.
+        with pytest.raises(CollectionNotAliveError) as exc_info:
+            await catalogs.upsert(catalog_id, collection_id, item)
+        assert exc_info.value.reason == "missing"
+
+        # The rejected write must not have re-provisioned anything.
+        tables_after = await _snapshot_tables(engine, schema)
+        assert tables_after == tables_before, (
+            f"Rejected write re-created tables: {tables_after - tables_before}"
+        )
+        pins_after = await _count_collection_config_rows(
+            engine, schema, collection_id
+        )
+        assert pins_after == pins_before == 0, (
+            "Rejected write must not pin collection-scope config"
+        )
+    finally:
+        await catalogs.delete_catalog(catalog_id, force=True)
+
+
+# ---------------------------------------------------------------------------
 # Driver-level test (get_lifecycle states via PG CollectionStore)
 # ---------------------------------------------------------------------------
 

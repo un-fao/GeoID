@@ -381,6 +381,10 @@ class CollectionService:
         from dynastore.modules.storage.router import get_driver
         from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
+        # Defense in depth: never provision storage for a collection that is
+        # not alive, regardless of which caller reached this point.
+        await self.ensure_alive(catalog_id, collection_id, db_resource=conn)
+
         # Provision storage. `ensure_storage` is idempotent; concurrent
         # first-inserts will both call it safely.  Each driver self-fetches
         # its own config — no cross-driver type confusion possible.
