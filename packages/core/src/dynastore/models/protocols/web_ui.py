@@ -87,6 +87,11 @@ class WebPageSpec:
     excluded from the navigation sidebar; the parent page aggregates all
     fragments in priority order."""
     enabled: bool = True
+    show_as_tile: bool = False
+    """When ``True`` this page appears as an application tile in the
+    extensions grid.  Defaults to ``False`` so only pages that
+    explicitly opt in (e.g. Configuration Hub, Presets) are surfaced
+    there; extension-owned admin pages do not become unwanted tiles."""
 
     def to_config(self) -> Dict[str, Any]:
         """Render the spec as the legacy config dict consumed by WebModule."""
@@ -101,6 +106,7 @@ class WebPageSpec:
             "section": self.section,
             "is_embed": self.is_embed,
             "enabled": self.enabled,
+            "show_as_tile": self.show_as_tile,
         }
 
 

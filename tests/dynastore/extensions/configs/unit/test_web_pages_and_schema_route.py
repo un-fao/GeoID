@@ -227,3 +227,90 @@ class TestIamAbsentPagesVisible:
         assert "presets" in ids, (
             f"'presets' page not visible without IAM: {ids}"
         )
+
+
+# ---------------------------------------------------------------------------
+# show_as_tile opt-in flag
+# ---------------------------------------------------------------------------
+
+
+class TestShowAsTileFlag:
+    """show_as_tile=True must be set on the two configs pages and absent
+    (False) by default on any page that does not opt in.
+
+    This guards against the regression where p.owner was used as the
+    apps-grid predicate, causing every extension-owned admin page
+    (governance, exposure, access-bindings, …) to appear as a tile.
+    """
+
+    def test_configuration_page_has_show_as_tile_true(self):
+        from dynastore.extensions.configs.service import ConfigsService
+
+        svc = ConfigsService(FastAPI())
+        pages = {p.page_id: p for p in svc.get_web_pages()}
+        assert pages["configuration"].show_as_tile is True, (
+            "configuration page must opt in with show_as_tile=True"
+        )
+
+    def test_presets_page_has_show_as_tile_true(self):
+        from dynastore.extensions.configs.service import ConfigsService
+
+        svc = ConfigsService(FastAPI())
+        pages = {p.page_id: p for p in svc.get_web_pages()}
+        assert pages["presets"].show_as_tile is True, (
+            "presets page must opt in with show_as_tile=True"
+        )
+
+    def test_show_as_tile_default_is_false(self):
+        """A page created without show_as_tile=True defaults to False."""
+        from dynastore.models.protocols.web_ui import WebPageSpec
+
+        spec = WebPageSpec(
+            page_id="governance",
+            title="Governance",
+            handler=lambda: "",
+        )
+        assert spec.show_as_tile is False, (
+            "show_as_tile must default to False so admin pages are not surfaced as tiles"
+        )
+
+    def test_show_as_tile_propagates_through_to_config(self):
+        """to_config() must include show_as_tile so WebModule passes it downstream."""
+        from dynastore.models.protocols.web_ui import WebPageSpec
+
+        spec = WebPageSpec(
+            page_id="mypage",
+            title="My Page",
+            handler=lambda: "",
+            show_as_tile=True,
+        )
+        cfg = spec.to_config()
+        assert cfg["show_as_tile"] is True
+
+    def test_show_as_tile_present_in_web_module_output(self):
+        """get_web_pages_config() must include show_as_tile in each page dict."""
+        import asyncio
+
+        from dynastore.modules.web.web_module import WebModule
+
+        wm = WebModule()
+
+        class _FakeExt:
+            async def page(self):
+                return ""
+
+        _FakeExt.__module__ = "dynastore.extensions.fakeext.service"
+
+        handler = _FakeExt().page
+        wm.register_web_page(
+            {"id": "fakeext_page", "title": "Fake", "show_as_tile": True},
+            handler,
+        )
+
+        pages = asyncio.new_event_loop().run_until_complete(
+            wm.get_web_pages_config("en")
+        )
+        entry = next((p for p in pages if p["id"] == "fakeext_page"), None)
+        assert entry is not None, "fakeext_page not found in output"
+        assert "show_as_tile" in entry, "show_as_tile key missing from page dict"
+        assert entry["show_as_tile"] is True

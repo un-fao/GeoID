@@ -298,7 +298,7 @@ async function loadExtensions() {
         
         const corePageIds = ['home', 'docs', 'extensions', 'dashboard'];
         const appPages = pages.filter(p =>
-            (p.owner || p.section === 'extensions' || !p.section) &&
+            (p.show_as_tile || p.section === 'extensions' || !p.section) &&
             !corePageIds.includes(p.id) &&
             !p.is_embed
         );

@@ -121,6 +121,7 @@ class ConfigsService(ExtensionProtocol):
         audience_policy_id="configs_access",
         section="admin",
         priority=10,
+        show_as_tile=True,
     )
     async def configuration_page(self, request: Request):
         """Serve the schema-driven Configuration Hub HTML page."""
@@ -141,6 +142,7 @@ class ConfigsService(ExtensionProtocol):
         audience_policy_id="configs_access",
         section="admin",
         priority=9,
+        show_as_tile=True,
     )
     async def presets_page(self, request: Request):
         """Serve the Presets HTML page."""
