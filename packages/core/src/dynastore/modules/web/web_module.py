@@ -352,6 +352,7 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                     "is_embed": config.is_embed,
                     "required_roles": config.required_roles,
                     "owner": owner_ext,
+                    "show_as_tile": config.show_as_tile,
                 }
             )
 

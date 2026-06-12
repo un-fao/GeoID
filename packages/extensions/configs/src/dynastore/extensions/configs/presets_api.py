@@ -134,10 +134,13 @@ def _preset_reachable_at(preset, url_tier: "PresetTier") -> bool:  # noqa: F821
     """Whether ``preset`` may be applied at the ``url_tier`` URL family.
 
     Single-family tiers (``PLATFORM`` / ``CATALOG`` / ``COLLECTION``) match
-    only their own URL family. ``ITEMS`` / ``ASSETS`` presets bind to the
+    their own URL family. ``ITEMS`` / ``ASSETS`` presets bind to the
     collection family always and additionally to the catalog family when
-    ``catalog_scopable`` is set. Mismatches are surfaced as HTTP 409 by
-    the caller — the preset exists but is not valid at that scope.
+    ``catalog_scopable`` is set. A ``PLATFORM`` preset with
+    ``catalog_scopable=True`` (the composite bundles) is additionally
+    reachable from the catalog family, scoping its writes to that catalog.
+    Mismatches are surfaced as HTTP 409 by the caller — the preset exists
+    but is not valid at that scope.
     """
     from dynastore.modules.storage.presets import PresetTier
 
@@ -149,6 +152,8 @@ def _preset_reachable_at(preset, url_tier: "PresetTier") -> bool:  # noqa: F821
             return True
         if url_tier == PresetTier.CATALOG:
             return bool(getattr(preset, "catalog_scopable", False))
+    if preset_tier == PresetTier.PLATFORM and url_tier == PresetTier.CATALOG:
+        return bool(getattr(preset, "catalog_scopable", False))
     return False
 
 
@@ -431,6 +436,35 @@ async def get_preset_detail(
     result = search_presets(name=preset_name, limit=1)
     items = result.get("items", [])
     return items[0] if items else {}
+
+
+@router.get(
+    "/presets/{preset_name}/schema",
+    summary="JSON Schema for a preset's params model (A7)",
+)
+async def get_preset_params_schema(preset_name: str) -> Dict[str, Any]:
+    """Return the JSON Schema for ``preset.params_model``.
+
+    * A preset with a real params model → ``model_json_schema()``
+    * ``NoParams`` or absent ``params_model`` → ``{"type": "object", "properties": {}}``
+    * Unknown preset name → 404
+    """
+    from dynastore.modules.storage.presets import get_preset
+    from dynastore.modules.storage.presets.bundle_preset import NoParams
+
+    try:
+        preset = get_preset(preset_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    params_model = getattr(preset, "params_model", None)
+    _empty: Dict[str, Any] = {"type": "object", "properties": {}}
+    if params_model is None or params_model is NoParams:
+        return _empty
+    try:
+        return params_model.model_json_schema()
+    except Exception:
+        return _empty
 
 
 # ----- Platform tier: /configs/presets/{name} ---------------------------

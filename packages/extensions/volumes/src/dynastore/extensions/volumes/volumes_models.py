@@ -152,6 +152,7 @@ class ThreeDContainer(BaseModel):
     content: Optional[List[ContentLink]] = None
     links: Optional[List[Dict[str, Any]]] = None
     children: Optional[List[ChildRef]] = None
+    attribution: Optional[str] = None
 
 
 class ThreeDContainerList(BaseModel):

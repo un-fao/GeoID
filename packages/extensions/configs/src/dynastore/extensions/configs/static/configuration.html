@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration Hub — DynaStore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="../static/common/admin.css">
+</head>
+<body class="page-config-hub">
+  <main>
+    <header class="masthead">
+      <div class="folio">I.</div>
+      <div>
+        <div class="kicker">DynaStore — Atlas of configuration</div>
+        <h1>Configuration Hub</h1>
+      </div>
+      <div class="stamp" id="masthead-stamp"></div>
+    </header>
+
+    <p class="subtitle">
+      Every plugin exposing a Pydantic model is rendered here from its JSON
+      Schema. Changes are scoped — platform, catalog, or collection — and
+      applied as shallow patches. No driver-specific code; what the server
+      emits is what you edit.
+    </p>
+
+    <div id="context-bar" class="context-bar"></div>
+
+    <div class="layout-3">
+      <aside id="schema-list" class="plate">
+        <div class="plate-header">
+          <h3>Plugins</h3>
+          <div class="plate-meta">SCHEMAS</div>
+        </div>
+      </aside>
+
+      <section class="plate">
+        <div class="plate-header">
+          <h3 id="form-header">Editor</h3>
+          <div class="plate-meta">OVERRIDES</div>
+        </div>
+        <div id="schema-form"></div>
+        <hr class="rule">
+        <div class="row">
+          <button id="revert" class="btn btn-secondary" disabled>Revert</button>
+          <button id="apply" class="btn" disabled>Save</button>
+          <span id="status" class="status"></span>
+        </div>
+      </section>
+
+      <aside class="plate preview-plate">
+        <div class="plate-header">
+          <h3>Insight</h3>
+          <div class="plate-meta">PROVENANCE · WIRE · DIFF</div>
+        </div>
+        <div id="config-tabs"></div>
+      </aside>
+    </div>
+
+    <p class="footnote">
+      <strong>No “Asset” scope.</strong> Configuration tiers are
+      <code>platform → catalog → collection</code> only. Asset behaviour is
+      configured through plugin classes such as <code>AssetRoutingConfig</code>
+      at one of those three tiers — there is no separate asset radio.
+      Each field’s <em>from</em> badge shows which tier supplied its effective
+      value; the <strong>Diff</strong> and <strong>Wire</strong> tabs preview
+      and explain the exact <code>PATCH</code> Save will send.
+    </p>
+  </main>
+
+  <script>
+    document.getElementById("masthead-stamp").textContent =
+      `FOLIO ${new Date().toISOString().slice(0, 10)}\nREV. ${Math.floor(Math.random()*900+100)}`;
+  </script>
+  <script type="module" src="../configs/configuration.js"></script>
+</body>
+</html>

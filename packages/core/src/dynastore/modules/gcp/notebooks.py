@@ -16,20 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Platform notebook registrations for the GCP module."""
-from pathlib import Path
+"""Platform notebook registrations for the GCP module.
 
-from dynastore.modules.notebooks.example_registry import register_platform_notebook
-
-_HERE = Path(__file__).parent / "notebooks"
-_REG = "dynastore.modules.gcp"
-
-
-register_platform_notebook(
-    notebook_id="gcp_bucket_init_upload_and_ingest",
-    registered_by=_REG,
-    notebook_path=_HERE / "gc01_bucket_init_upload_and_ingest.ipynb",
-    title={"en": "GCP — Bucket Init, Upload, Ingest"},
-    description={"en": "Provision a tenant bucket, upload an asset, and ingest it into a collection."},
-    tags=["gcp", "bucket", "upload", "ingest"],
-)
+GCP-specific demo notebooks have been superseded. This module is retained
+so the import in notebooks_module.py remains valid but registers nothing.
+"""

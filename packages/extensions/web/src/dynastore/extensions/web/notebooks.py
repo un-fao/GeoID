@@ -29,13 +29,8 @@ module — ``NotebookContribution`` and the folder-discovery helper are
 imported lazily so the extension stays loadable in SCOPEs that don't
 include the notebooks module.
 
-Auto-discovers every ``*.ipynb`` in the colocated ``notebooks/`` dir.
-Filename prefixes group the showcases:
-  ``01_ui_…``   UI walkthrough (4)
-  ``cfg…``       Config API patterns (4)
-  ``proc…``      OGC Processes execution (3)
-  ``qry…``       Queryables / collection search (1)
-  ``uc…``        Cycle-F use cases — config API end-to-end (4)
+Auto-discovers every ``*.ipynb`` in the colocated ``notebooks/`` dir:
+OGC Processes execution and the presets discovery/dry-run walkthrough.
 """
 from pathlib import Path
 

@@ -361,6 +361,70 @@ def test_collection_bbox_3d_prefers_real_extent():
     assert _collection_bbox_3d(coll, extras)[:2] == [1.0, 2.0]
 
 
+# ---------------------------------------------------------------------------
+# _normalize_bbox — 4-element vs 6-element bbox coercion
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_bbox_6_element_preserves_order():
+    """6-element CRS84h bbox [minLon,minLat,minH,maxLon,maxLat,maxH] must map to
+    (minx, miny, zmin, maxx, maxy, zmax) in that exact order."""
+    from dynastore.extensions.volumes.volumes_service import _normalize_bbox
+
+    raw = [-75.62, 40.03, 0.0, -75.60, 40.05, 100.0]
+    result = _normalize_bbox(raw)
+    assert result == (-75.62, 40.03, 0.0, -75.60, 40.05, 100.0)
+
+
+def test_normalize_bbox_4_element_zero_z():
+    """4-element bbox gets zmin=zmax=0.0."""
+    from dynastore.extensions.volumes.volumes_service import _normalize_bbox
+
+    raw = [4.27, 52.06, 4.32, 52.09]
+    result = _normalize_bbox(raw)
+    assert result == (4.27, 52.06, 0.0, 4.32, 52.09, 0.0)
+
+
+def test_normalize_bbox_none_on_garbage():
+    """Non-numeric or too-short values return None."""
+    from dynastore.extensions.volumes.volumes_service import _normalize_bbox
+
+    assert _normalize_bbox(None) is None
+    assert _normalize_bbox("not-a-bbox") is None
+    assert _normalize_bbox([1.0, 2.0]) is None
+    assert _normalize_bbox([0.0, 0.0, 0.0, 0.0]) is None
+    assert _normalize_bbox(["a", "b", "c", "d"]) is None
+
+
+def test_collection_bbox_3d_6element_stamped_correct_output():
+    """Tiles3d-samples preset stamps a 6-element CRS84h bbox; the returned
+    contentExtent must preserve the correct [minx,miny,zmin,maxx,maxy,zmax] order."""
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent = None
+    extras = {
+        "geovolumes:bbox": [-75.62, 40.03, 0.0, -75.60, 40.05, 100.0],
+    }
+    result = _collection_bbox_3d(coll, extras)
+    assert result == [-75.62, 40.03, 0.0, -75.60, 40.05, 100.0]
+
+
+def test_collection_bbox_3d_6element_zero_z_picks_up_zrange():
+    """6-element bbox where z values are both 0 should still be overridden by
+    geovolumes:zrange when available."""
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent = None
+    extras = {
+        "geovolumes:bbox": [-75.62, 40.03, 0.0, -75.60, 40.05, 0.0],
+        "geovolumes:zrange": {"zmin": 5.0, "zmax": 200.0},
+    }
+    result = _collection_bbox_3d(coll, extras)
+    assert result == [-75.62, 40.03, 5.0, -75.60, 40.05, 200.0]
+
+
 def test_extract_cityjson_from_properties():
     """Items persist the CityJSONFeature under properties.cityjson — the
     only surface every driver round-trips."""
@@ -370,3 +434,133 @@ def test_extract_cityjson_from_properties():
     feat.properties = {"cityjson": {"type": "CityJSONFeature", "id": "b-1"}}
     feat.model_extra = {}
     assert _extract_cityjson(feat)["id"] == "b-1"
+
+
+# ---------------------------------------------------------------------------
+# _build_3d_container — external tileset URL support
+# ---------------------------------------------------------------------------
+
+
+def _make_external_collection(tileset_url: str, attribution: str | None = None) -> MagicMock:
+    """Build a mock collection with geovolumes:tileset_url set."""
+    coll = MagicMock()
+    coll.id = "ext-tiles"
+    coll.title = "External Tileset"
+    extras: dict = {
+        "geovolumes:enabled": True,
+        "geovolumes:tileset_url": tileset_url,
+        "geovolumes:bbox": [-75.62, 40.03, -75.60, 40.05],
+        "geovolumes:zrange": {"zmin": 0.0, "zmax": 100.0},
+    }
+    if attribution:
+        extras["geovolumes:attribution"] = attribution
+    coll.model_extra = {"extras": extras}
+    coll.extent = None
+    return coll
+
+
+def test_build_3d_container_external_url_emits_absolute_href():
+    """When extras carry geovolumes:tileset_url the container href must be that URL."""
+    from dynastore.extensions.volumes.volumes_service import _build_3d_container
+
+    url = "https://example.com/tiles/tileset.json"
+    coll = _make_external_collection(url)
+    container = _build_3d_container(coll, "test-cat")
+
+    tiles_link = next(
+        lk for lk in (container.content or [])
+        if lk.rel == "http://www.opengis.net/def/rel/ogc/1.0/3dtiles"
+    )
+    assert tiles_link.href == url
+    assert "external" in (tiles_link.title or "").lower()
+
+
+def test_build_3d_container_external_url_no_cityjsonseq_link():
+    """External containers must NOT emit a CityJSONSeq alternate link."""
+    from dynastore.extensions.volumes.volumes_service import _build_3d_container
+
+    coll = _make_external_collection("https://example.com/tiles/tileset.json")
+    container = _build_3d_container(coll, "test-cat")
+
+    types = [lk.type for lk in (container.content or [])]
+    assert "application/city+json" not in types, (
+        "CityJSONSeq link must not appear for external 3D Tiles containers"
+    )
+
+
+def test_build_3d_container_external_url_attribution_passthrough():
+    """When extras carry geovolumes:attribution it must appear in the container model."""
+    from dynastore.extensions.volumes.volumes_service import _build_3d_container
+
+    attribution = "© Test Attribution CC BY 4.0"
+    coll = _make_external_collection(
+        "https://example.com/tiles/tileset.json",
+        attribution=attribution,
+    )
+    container = _build_3d_container(coll, "test-cat")
+    assert container.attribution == attribution
+
+
+def test_build_3d_container_native_cityjson_keeps_runtime_href_and_cityjsonseq():
+    """CityJSON collections must keep the native runtime href and CityJSONSeq link."""
+    from dynastore.extensions.volumes.volumes_service import _build_3d_container
+
+    coll = MagicMock()
+    coll.id = "denhaag"
+    coll.title = "Den Haag"
+    coll.model_extra = {
+        "extras": {
+            "cityjson:version": "2.0",
+            "geovolumes:zrange": {"zmin": 0.0, "zmax": 50.0},
+        }
+    }
+    coll.extent = MagicMock()
+    coll.extent.spatial = MagicMock()
+    coll.extent.spatial.bbox = [[4.27, 52.06, 4.32, 52.09]]
+
+    container = _build_3d_container(coll, "test-cat")
+
+    tiles_link = next(
+        lk for lk in (container.content or [])
+        if lk.rel == "http://www.opengis.net/def/rel/ogc/1.0/3dtiles"
+    )
+    # Native href must point to the runtime volumes endpoint
+    assert "/volumes/catalogs/" in tiles_link.href
+    assert "3dtiles/tileset.json" in tiles_link.href
+
+    types = [lk.type for lk in (container.content or [])]
+    assert "application/city+json" in types, (
+        "CityJSONSeq link must be present for native CityJSON collections"
+    )
+
+    # No attribution on a bare CityJSON collection
+    assert container.attribution is None
+
+
+def test_build_3d_container_no_cityjsonseq_for_geovolumes_enabled_without_cityjson():
+    """A collection with only geovolumes:enabled (no cityjson:version) and no
+    tileset_url emits the native href but NO CityJSONSeq link."""
+    from dynastore.extensions.volumes.volumes_service import _build_3d_container
+
+    coll = MagicMock()
+    coll.id = "generic-3d"
+    coll.title = "Generic 3D"
+    coll.model_extra = {
+        "extras": {
+            "geovolumes:enabled": True,
+            "geovolumes:bbox": [-75.62, 40.03, -75.60, 40.05],
+            "geovolumes:zrange": {"zmin": 0.0, "zmax": 100.0},
+        }
+    }
+    coll.extent = None
+
+    container = _build_3d_container(coll, "test-cat")
+
+    tiles_link = next(
+        lk for lk in (container.content or [])
+        if lk.rel == "http://www.opengis.net/def/rel/ogc/1.0/3dtiles"
+    )
+    assert "/volumes/catalogs/" in tiles_link.href
+
+    types = [lk.type for lk in (container.content or [])]
+    assert "application/city+json" not in types

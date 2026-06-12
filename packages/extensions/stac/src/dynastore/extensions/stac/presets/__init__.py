@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""STAC extension preset — auto-register on import.
+"""STAC extension presets — auto-register on import.
 
 The contributor lives inside the preset, not on the service. Services
 don't mutate platform IAM state; presets do.
@@ -32,3 +32,6 @@ OGCServiceMixin.register_ogc_preset(
     policies_factory=stac_policies,
     role_bindings_factory=stac_role_bindings,
 )
+
+# Harvest preset — catalog-scoped; submits an async stac_harvest job.
+from dynastore.extensions.stac.presets import stac_harvester as _stac_harvester  # noqa: F401, E402

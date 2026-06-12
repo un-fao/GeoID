@@ -37,6 +37,18 @@ EXTENSION_NOTEBOOK_MODULES = [
     "dynastore.extensions.coverages.notebooks",
     "dynastore.extensions.assets.notebooks",
     "dynastore.extensions.web.notebooks",
+    # extensions with new demo notebooks (batch 1)
+    "dynastore.extensions.volumes.notebooks",
+    "dynastore.extensions.edr.notebooks",
+    "dynastore.extensions.moving_features.notebooks",
+    "dynastore.extensions.tiles.notebooks",
+    "dynastore.extensions.styles.notebooks",
+    # extensions with new demo notebooks (batch 2)
+    "dynastore.extensions.maps.notebooks",
+    "dynastore.extensions.processes.notebooks",
+    "dynastore.extensions.joins.notebooks",
+    "dynastore.extensions.wfs.notebooks",
+    "dynastore.extensions.dggs.notebooks",
 ]
 
 

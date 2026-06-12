@@ -135,7 +135,6 @@ class NotebooksModule(ModuleProtocol):
                 "dynastore.modules.notebooks.showcase_registrations",
                 "dynastore.modules.notebooks.geoid_demo_registrations",
                 "dynastore.tasks.ingestion.notebooks",
-                "dynastore.tasks.dimensions_materialize.notebooks",
             ):
                 try:
                     __import__(mod_path)

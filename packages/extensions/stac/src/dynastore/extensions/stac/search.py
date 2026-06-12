@@ -637,6 +637,40 @@ async def _maybe_dispatch_to_es_search(
     return features, total, None
 
 
+async def _expand_collections_for_search(
+    catalogs: Any,
+    cat_id: str,
+    search_request: ItemSearchRequest,
+    db_resource: DbResource,
+) -> ItemSearchRequest:
+    """Scope an unscoped search to ALL collections of the catalog.
+
+    The search-driver dispatch requires explicit collection scoping to
+    resolve a (uniform) SEARCH driver, so an unscoped request used to skip
+    it and land on the PostgreSQL fallback — which drops every collection
+    whose READ driver carries no PG layer config. For a catalog whose items
+    routing pins an ES search driver that meant ``GET /search`` (and
+    ``ids``-only lookups) answered ``numberMatched: 0`` while the same query
+    scoped with ``collections=`` matched.
+
+    Returns the request unchanged when it is already scoped or the catalog
+    has no collections; otherwise returns a copy scoped to every collection
+    id (one ``list_collections`` round-trip — the PG fallback reuses the
+    explicit scope instead of enumerating again).
+    """
+    if search_request.collections:
+        return search_request
+    all_cids = [
+        c.id
+        for c in await catalogs.list_collections(
+            cat_id, limit=1000, ctx=DriverContext(db_resource=db_resource)
+        )
+    ]
+    if not all_cids:
+        return search_request
+    return search_request.model_copy(update={"collections": all_cids})
+
+
 async def search_items(
     db_resource: DbResource,
     search_request: ItemSearchRequest,
@@ -653,6 +687,13 @@ async def search_items(
     assert catalogs is not None, "CatalogsProtocol not registered"
     assert search_request.catalog_id is not None, "search_request.catalog_id required"
     cat_id: str = search_request.catalog_id
+
+    # An unscoped request is rewritten to explicitly scope all collections of
+    # the catalog so the routing-aware dispatch below can serve it; see
+    # :func:`_expand_collections_for_search`.
+    search_request = await _expand_collections_for_search(
+        catalogs, cat_id, search_request, db_resource
+    )
 
     # ── Routing-aware search-driver dispatch (issues #222, #989) ──────
     # For structural-filter-only requests (no CQL2 ``filter``), dispatch to
@@ -712,6 +753,19 @@ async def search_items(
     target_collections = list(collection_configs.keys())
 
     if not target_collections:
+        # Every scoped collection resolved a READ driver with no PG layer
+        # config — typically a search-driver catalog whose request could not
+        # be served by the dispatch above (mixed drivers, untranslatable
+        # filter). Returning empty is the only safe answer here, but it must
+        # never be silent: the caller sees numberMatched=0 for data that
+        # exists.
+        logger.warning(
+            "search_items: PG fallback has no layer config for any of the "
+            "%d scoped collection(s) in catalog '%s' — returning empty. "
+            "The catalog's search driver could not serve this request "
+            "(mixed drivers or untranslatable filter?).",
+            len(initial_collection_ids), cat_id,
+        )
         return [], 0, None
 
     # Get column names for filtering

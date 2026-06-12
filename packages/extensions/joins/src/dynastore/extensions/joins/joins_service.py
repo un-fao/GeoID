@@ -159,6 +159,13 @@ class JoinsService(ExtensionProtocol, OGCServiceMixin):
         register_plugin(JoinsLinkContributor())
         yield
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def _register_routes(self) -> None:
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/join",

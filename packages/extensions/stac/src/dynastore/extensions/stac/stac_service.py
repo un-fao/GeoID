@@ -346,6 +346,10 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
             # Catalog Discovery
             ("/", "get_stac_root_catalog", ["GET"], {}),
             ("/conformance", "ogc_conformance_handler", ["GET"], {}),
+            # Cross-catalog Item Search over the platform public items alias —
+            # the root catalog has always advertised rel=search → /search.
+            ("/search", "search_items_global_get", ["GET"], {"response_class": _J}),
+            ("/search", "search_items_global_post", ["POST"], {"response_class": _J}),
             ("/catalogs", "list_stac_catalogs", ["GET"], {"response_class": _J}),
             ("/catalogs/{catalog_id}", "get_stac_catalog", ["GET"], {"response_class": _J}),
             ("/catalogs/{catalog_id}/collections", "list_stac_collections", ["GET"], {"response_class": _J}),
@@ -1591,6 +1595,235 @@ class STACService(ExtensionProtocol, StaticFilesProtocol, StacVirtualMixin, OGCS
         if aggregations:
             results["aggregations"] = aggregations
         return JSONResponse(content=results)
+
+    async def _global_search_response(
+        self,
+        request: Request,
+        *,
+        ids: Optional[List[str]],
+        collections: Optional[List[str]],
+        bbox: Optional[Any],
+        intersects: Optional[Dict[str, Any]],
+        datetime: Optional[str],
+        sortby: Optional[List[str]],
+        limit: int,
+        offset: int,
+        language: str,
+    ):
+        """Shared core of the cross-catalog ``/search`` GET and POST routes.
+
+        Queries the platform public items alias (every per-catalog public
+        items index — see ``modules/elasticsearch/global_search``) and
+        serializes through the same ItemCollection presenter the
+        catalog-scoped search uses, attributing each hit to its owning
+        catalog. Item links are rendered with the platform-default STAC
+        config: per-catalog render policies do not apply at this
+        cross-catalog surface.
+        """
+        from dynastore.modules.elasticsearch.global_search import (
+            search_public_items,
+        )
+
+        page = await search_public_items(
+            ids=ids,
+            collections=collections,
+            bbox=bbox,
+            intersects=intersects,
+            datetime=datetime,
+            sortby=sortby,
+            limit=limit,
+            offset=offset,
+        )
+        if page is None:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Cross-catalog search requires the platform search "
+                    "backend (Elasticsearch), which is not configured on "
+                    "this deployment."
+                ),
+            )
+
+        features: List[Feature] = []
+        for hit in page.hits:
+            feature = Feature.model_validate(hit.item)
+            if feature.properties is None:
+                feature.properties = {}
+            # Cross-collection tracking consumed by the serializer — the same
+            # markers the catalog-scoped dispatch injects.
+            feature.properties["_catalog_id"] = hit.catalog_id or ""
+            feature.properties["_collection_id"] = hit.item.get("collection") or ""
+            features.append(feature)
+
+        results = await stac_generator.create_search_results_collection(
+            request,
+            features,
+            page.total,
+            limit,
+            offset,
+            StacPluginConfig(),
+            lang=language,
+        )
+        return JSONResponse(content=results)
+
+    async def search_items_global_get(
+        self,
+        request: Request,
+        language: str = Depends(get_language),
+        bbox: Optional[str] = Query(
+            None,
+            description="Bounding box as comma-separated: minx,miny,maxx,maxy (EPSG:4326).",
+        ),
+        datetime: Optional[str] = Query(
+            None,
+            description="RFC 3339 date-time or interval (e.g. 2021-01-01T00:00:00Z or 2021-01-01/2021-12-31).",
+        ),
+        ids: Optional[str] = Query(None, description="Comma-separated Item IDs."),
+        collections: Optional[str] = Query(None, description="Comma-separated Collection IDs."),
+        limit: int = Query(10, ge=1, le=1000, description="Maximum number of items to return."),
+        offset: int = Query(0, ge=0, description="Number of items to skip."),
+        sortby: Optional[str] = Query(
+            None,
+            description=(
+                "Comma-separated sort fields with optional '+' (asc) or '-' (desc) prefix. "
+                "Example: '+datetime,-id'."
+            ),
+        ),
+    ):
+        """STAC API cross-catalog Item Search — GET /search.
+
+        Discovery across every catalog's public items via the platform
+        alias. Structural parameters only; CQL2 ``filter`` is not supported
+        at this surface (use the catalog-scoped ``/catalogs/{id}/search``).
+        """
+        parsed_bbox = None
+        if bbox:
+            parts = bbox.split(",")
+            if len(parts) != 4:
+                raise HTTPException(
+                    status_code=400,
+                    detail="bbox must be four comma-separated numbers: minx,miny,maxx,maxy",
+                )
+            try:
+                parsed_bbox = [float(p) for p in parts]
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="bbox values must be numbers"
+                ) from exc
+
+        parsed_ids = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
+        parsed_collections = (
+            [c.strip() for c in collections.split(",") if c.strip()]
+            if collections
+            else None
+        )
+        parsed_sortby = (
+            [s.strip() for s in sortby.split(",") if s.strip()] if sortby else None
+        )
+
+        return await self._global_search_response(
+            request,
+            ids=parsed_ids,
+            collections=parsed_collections,
+            bbox=parsed_bbox,
+            intersects=None,
+            datetime=datetime,
+            sortby=parsed_sortby,
+            limit=limit,
+            offset=offset,
+            language=language,
+        )
+
+    async def search_items_global_post(
+        self,
+        request: Request,
+        search_request: ItemSearchRequest,
+        language: str = Depends(get_language),
+    ):
+        """STAC API cross-catalog Item Search — POST /search.
+
+        Accepts the same body as the catalog-scoped search minus
+        ``catalog_id`` (scoping across catalogs is the point). A CQL2
+        ``filter`` is rejected: filter translation is a per-catalog,
+        queryables-aware concern served by ``/catalogs/{id}/search``.
+        """
+        if search_request.catalog_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "catalog_id is not accepted on the cross-catalog /search; "
+                    "use /catalogs/{catalog_id}/search for a scoped search."
+                ),
+            )
+        if search_request.filter is not None:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "CQL2 filter is not supported on the cross-catalog "
+                    "/search; use /catalogs/{catalog_id}/search."
+                ),
+            )
+
+        return await self._global_search_response(
+            request,
+            ids=search_request.ids,
+            collections=search_request.collections,
+            bbox=list(search_request.bbox) if search_request.bbox else None,
+            intersects=search_request.intersects,
+            datetime=search_request.datetime,
+            sortby=search_request.sortby,
+            limit=search_request.limit,
+            offset=search_request.offset,
+            language=language,
+        )
+
+    async def search_stac_collections_post(
+        self,
+        request: Request,
+        search_req: CollectionSearchRequest,
+        engine=Depends(get_async_engine),
+        language: str = Depends(get_language),
+    ):
+        try:
+            async with managed_transaction(engine) as conn:
+                collections, total_count = await search_collections(conn, search_req)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        # Release connection before PySTAC processing
+        stac_collections = []
+        for coll in collections:
+            # Localize before creating PySTAC collection
+            localized_coll, _ = stac_localize(coll, language)
+            if coll.extent is None:
+                continue
+            stac_coll = pystac.Collection(
+                id=str(localized_coll.get("id") or ""),
+                description=str(localized_coll.get("description") or ""),
+                title=localized_coll.get("title"),
+                license=str(localized_coll.get("license") or ""),
+                extent=pystac.Extent(
+                    spatial=pystac.SpatialExtent(coll.extent.spatial.bbox),
+                    temporal=pystac.TemporalExtent(coll.extent.temporal.interval),
+                ),
+            )
+            # Inject language metadata
+            if "language" in localized_coll:
+                stac_coll.extra_fields["language"] = localized_coll["language"]
+            if "languages" in localized_coll:
+                stac_coll.extra_fields["languages"] = localized_coll["languages"]
+
+            stac_collections.append(stac_coll.to_dict())
+        return JSONResponse(
+            content={
+                "collections": stac_collections,
+                "context": {
+                    "limit": search_req.limit,
+                    "matched": total_count,
+                    "returned": len(stac_collections),
+                },
+            }
+        )
 
     @router.post(
         "/catalogs/{catalog_id}/collections/{collection_id}/aggregate",

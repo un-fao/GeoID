@@ -152,24 +152,15 @@ construct the requests themselves — those go through the helpers above.
 
 ### Notebooks (in-repo)
 
-- `packages/core/src/dynastore/modules/iam/notebooks/iam01_provision_tenant_and_assign_roles.ipynb`
-  — uses `/admin/principals`, `/admin/principals/{principal_id}`, `/admin/catalogs/{cid}/...`.
-- `.../iam/notebooks/iam02_self_service_permission_introspection.ipynb`
-  — uses `/iam/me/available-roles`, `/iam/me/catalogs`, `/iam/me/catalogs/{cid}`,
-  `/iam/me/roles/catalogs/{cid}`, `/iam/me/roles/global`.
-- `.../iam/notebooks/iam03_custom_roles_and_policies.ipynb`
-  — uses `/admin/{users,roles,roles/{name},policies,policies/{id},catalogs/{cid}/...}`.
-- `packages/core/src/dynastore/modules/catalog/notebooks/cat01_provision_tenant_catalog.ipynb`
-  — `/admin/catalogs/{cid}/...`, `/admin/principals`.
-- `packages/core/src/dynastore/modules/elasticsearch/notebooks/collection_vault_geoid_only.ipynb`
-  — `/admin/{users,users/{pid},roles,roles/{name},policies,policies/{id}}`. Contains
-  one prose mention of a long-removed `/iam/governance/hierarchies` endpoint
-  in retrospective-analysis text — not an actual call; flag for prose cleanup
-  separate from this audit.
-- `packages/extensions/web/.../notebooks/uc_lookup_only_anonymous_write.ipynb`
-  — `/admin/{policies,policies/{id},roles,roles/{name}}`.
-- `notebooks/admin_boundaries_fixed_schema/walkthrough.ipynb`
-  — no admin/iam/auth calls.
+All notebooks listed in the original audit (iam01–iam03, cat01,
+collection_vault_geoid_only, uc_lookup_only_anonymous_write, the
+admin-boundaries walkthrough) were retired by the teaching-notebook
+consolidation — the surviving notebooks configure via presets and drive
+OGC surfaces only, so the in-repo notebook consumers of the raw
+`/admin/*` and `/iam/me/*` routes are gone. The HTTP-surface coverage
+claims in this audit now rest on the tests below; the policy bundle the
+lookup-only notebook used to exercise is pinned by
+`tests/dynastore/extensions/admin/unit/test_admin_policies_condition_shape.py`.
 
 ### Tests
 

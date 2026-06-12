@@ -16,14 +16,18 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, status, Request, FastAPI
-from fastapi.responses import Response
+from fastapi import APIRouter, HTTPException, status, Request, FastAPI
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.extensions.configs._composed_query_params import (
     IncludeQuery,
     LinksQuery,
@@ -82,6 +86,71 @@ class ConfigsService(ExtensionProtocol):
     def get_web_pages(self):
         from dynastore.extensions.tools.web_collect import collect_web_pages
         return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static(
+        "configs",
+        owner="configs",
+        description="Static assets for the Configuration Hub and Presets pages.",
+        public=False,
+    )
+    def _provide_configs_static(self) -> List[str]:
+        """Expose the configs extension static directory under the 'configs' prefix."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @staticmethod
+    async def _serve_html_template(html_path: str) -> HTMLResponse:
+        """Read an HTML file and replace {{VERSION}} with the running package version."""
+        from dynastore._version import VERSION
+        content = await asyncio.to_thread(Path(html_path).read_text, encoding="utf-8")
+        return HTMLResponse(content.replace("{{VERSION}}", VERSION))
+
+    @expose_web_page(
+        page_id="configuration",
+        title="Configuration Hub",
+        icon="fa-sliders",
+        description="Schema-driven editor for every registered plugin configuration.",
+        audience_policy_id="configs_access",
+        section="admin",
+        priority=10,
+        show_as_tile=True,
+    )
+    async def configuration_page(self, request: Request):
+        """Serve the schema-driven Configuration Hub HTML page."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        html_path = os.path.join(static_dir, "configuration.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
+        return await self._serve_html_template(html_path)
+
+    @expose_web_page(
+        page_id="presets",
+        title="Presets",
+        icon="fa-wand-magic-sparkles",
+        description=(
+            "Apply, roll back, and inspect named configuration bundles "
+            "(presets) at platform, catalog, or collection scope."
+        ),
+        audience_policy_id="configs_access",
+        section="admin",
+        priority=9,
+        show_as_tile=True,
+    )
+    async def presets_page(self, request: Request):
+        """Serve the Presets HTML page."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        html_path = os.path.join(static_dir, "presets.html")
+        if not os.path.exists(html_path):
+            raise HTTPException(status_code=404, detail="Presets template not found.")
+        return await self._serve_html_template(html_path)
 
     def configure_app(self, app: FastAPI):
         """Web pages are discovered by WebModule via the WebPageContributor

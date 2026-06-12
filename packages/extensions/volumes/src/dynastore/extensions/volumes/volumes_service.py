@@ -70,6 +70,9 @@ from dynastore.models.protocols.bounds_source import (
     BoundsSourceProtocol,
     EmptyBoundsSource,
 )
+from dynastore.extensions.volumes.platform_bounds_source import (
+    register_sidecar_bounds_source,
+)
 from dynastore.models.protocols.geometry_fetcher import GeometryFetcherProtocol
 from dynastore.modules.volumes.mesh_builder import (
     build_mesh_from_geometries,
@@ -141,6 +144,17 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
+        # Wire the runtime tiler: register the sidecar-backed bounds source and
+        # geometry fetcher so tileset.json carries real content (and tiles
+        # render real geometry) for CityJSON collections. Registration is
+        # lazy — the DB is only touched per request — and the read paths
+        # degrade to an empty tileset for collections without a geometries
+        # sidecar (e.g. external 3D Tiles references), so this is safe to do
+        # unconditionally. A registration failure must never block startup.
+        try:
+            register_sidecar_bounds_source()
+        except Exception as exc:  # pragma: no cover - defensive startup guard
+            logger.warning("volumes: could not register sidecar bounds source: %s", exc)
         yield
 
     def _register_routes(self) -> None:
@@ -363,6 +377,13 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         from dynastore.extensions.tools.web_collect import collect_static_assets
         return collect_static_assets(self)
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     @expose_static("volumes")
     def provide_static_files(self) -> list:
         """Exposes the static directory for the GeoVolumes globe browser."""
@@ -422,7 +443,17 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         bounds_source: BoundsSourceProtocol = (
             get_protocol(BoundsSourceProtocol) or EmptyBoundsSource()
         )
-        bounds = list(await bounds_source.get_bounds(catalog_id, collection_id))
+        try:
+            bounds = list(await bounds_source.get_bounds(catalog_id, collection_id))
+        except Exception as exc:
+            # A collection without a geometries sidecar (e.g. an external 3D
+            # Tiles reference or a non-CityJSON collection) makes the bounds
+            # query fail; serve an empty tileset rather than a 500.
+            logger.warning(
+                "volumes: bounds lookup failed for %s/%s (%s); serving empty tileset",
+                catalog_id, collection_id, exc,
+            )
+            bounds = []
 
         base = str(request.url).rstrip("/").rsplit("/", 1)[0]
         primary_fmt = cfg.supported_formats[0] if cfg.supported_formats else "b3dm"
@@ -470,7 +501,14 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             )
             return pack_glb(empty_mesh())
 
-        geometries = await fetcher.get_geometries(catalog_id, collection_id, feature_ids)
+        try:
+            geometries = await fetcher.get_geometries(catalog_id, collection_id, feature_ids)
+        except Exception as exc:
+            logger.warning(
+                "volumes: geometry fetch failed for %s/%s (%s); returning empty tile",
+                catalog_id, collection_id, exc,
+            )
+            return pack_glb(empty_mesh())
         mesh = build_mesh_from_geometries(
             geometries,
             default_extrusion_height=cfg.default_extrusion_height,
@@ -538,9 +576,33 @@ def _is_3d_collection(coll: Any) -> bool:
     return bool(extras.get("cityjson:version") or extras.get("geovolumes:enabled"))
 
 
+def _normalize_bbox(raw: Any) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """Coerce a 4-element 2D or 6-element CRS84h bbox to (minx, miny, zmin, maxx, maxy, zmax).
+
+    Returns None when the value is not a usable bbox (wrong shape, non-numeric,
+    or all-zero horizontal axes).
+    """
+    if not isinstance(raw, (list, tuple)):
+        return None
+    try:
+        vals = [float(v) for v in raw]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) >= 6:
+        minx, miny, zmin, maxx, maxy, zmax = vals[:6]
+    elif len(vals) >= 4:
+        minx, miny, maxx, maxy = vals[:4]
+        zmin = zmax = 0.0
+    else:
+        return None
+    if not any((minx, miny, maxx, maxy)):
+        return None
+    return (minx, miny, zmin, maxx, maxy, zmax)
+
+
 def _collection_bbox_3d(coll: Any, extras: Dict[str, Any]) -> List[float]:
     """Build a 6-element 3D bbox from collection extent + z-range extras."""
-    bbox_2d: List[float] = []
+    bbox: Optional[Tuple[float, float, float, float, float, float]] = None
     extent = getattr(coll, "extent", None)
     if extent is not None:
         spatial = getattr(extent, "spatial", None)
@@ -548,26 +610,24 @@ def _collection_bbox_3d(coll: Any, extras: Dict[str, Any]) -> List[float]:
             raw = getattr(spatial, "bbox", None) or []
             if raw:
                 first = raw[0] if isinstance(raw[0], (list, tuple)) else raw
-                bbox_2d = list(first)
+                bbox = _normalize_bbox(first)
 
     # The collection ``extent`` column only persists where the optional
     # STAC collection sidecar is materialized; ingest therefore also
     # stamps the dataset bbox into extras (geovolumes:bbox), which the
     # always-present core driver persists.  Prefer a real extent, fall
-    # back to the stamped bbox.
-    if len(bbox_2d) < 4 or not any(bbox_2d[:4]):
-        stamped = extras.get("geovolumes:bbox")
-        if isinstance(stamped, (list, tuple)) and len(stamped) >= 4:
-            bbox_2d = [float(v) for v in stamped[:4]]
+    # back to the stamped bbox.  The stamped value is 4-element for
+    # ingested CityJSON collections (z carried by geovolumes:zrange) and
+    # 6-element CRS84h for external-reference containers.
+    if bbox is None:
+        bbox = _normalize_bbox(extras.get("geovolumes:bbox"))
 
-    if len(bbox_2d) >= 4:
-        minx, miny, maxx, maxy = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3]
-    else:
-        minx, miny, maxx, maxy = 0.0, 0.0, 0.0, 0.0
+    minx, miny, zmin, maxx, maxy, zmax = bbox or (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    zrange = extras.get("geovolumes:zrange") or {}
-    zmin = float(zrange.get("zmin", 0.0))
-    zmax = float(zrange.get("zmax", 0.0))
+    if zmin == 0.0 and zmax == 0.0:
+        zrange = extras.get("geovolumes:zrange") or {}
+        zmin = float(zrange.get("zmin", 0.0))
+        zmax = float(zrange.get("zmax", 0.0))
     return [minx, miny, zmin, maxx, maxy, zmax]
 
 
@@ -584,20 +644,42 @@ def _build_cityjsonseq_link(catalog_id: str, collection_id: str) -> ContentLink:
 def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
     """Build a ThreeDContainer wire model from a Collection.
 
-    Always emits the runtime 3D Tiles tileset link (served by this extension
-    at /volumes/.../3dtiles/tileset.json) plus the CityJSONSeq alternate link.
+    When extras carry ``geovolumes:tileset_url`` (a non-empty string), that
+    absolute URL is emitted as the 3D Tiles content href and the CityJSONSeq
+    alternate link is omitted (external containers have no CityJSON payload).
+    Otherwise the native runtime tileset href is used and the CityJSONSeq
+    link is included (CityJSON collections only).
     """
     extras = _get_extras(coll)
     bbox_3d = _collection_bbox_3d(coll, extras)
+
+    external_url: Optional[str] = extras.get("geovolumes:tileset_url") or None
+    if external_url and isinstance(external_url, str) and external_url.strip():
+        tiles_href = external_url.strip()
+        tiles_title = "3D Tiles tileset (external)"
+    else:
+        external_url = None
+        tiles_href = (
+            f"/volumes/catalogs/{catalog_id}/collections/{coll.id}/3dtiles/tileset.json"
+        )
+        tiles_title = "3D Tiles tileset"
+
     content: List[ContentLink] = [
         ContentLink(
             rel="http://www.opengis.net/def/rel/ogc/1.0/3dtiles",
-            href=f"/volumes/catalogs/{catalog_id}/collections/{coll.id}/3dtiles/tileset.json",
+            href=tiles_href,
             type="application/json",
-            title="3D Tiles tileset",
+            title=tiles_title,
         ),
-        _build_cityjsonseq_link(catalog_id, coll.id),
     ]
+
+    # Include the CityJSONSeq alternate link only for native CityJSON collections.
+    if not external_url and extras.get("cityjson:version"):
+        content.append(_build_cityjsonseq_link(catalog_id, coll.id))
+
+    attribution: Optional[str] = extras.get("geovolumes:attribution") or None
+    if attribution and isinstance(attribution, str):
+        attribution = attribution.strip() or None
 
     return ThreeDContainer(
         id=coll.id,
@@ -607,6 +689,7 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
         content=content,
         links=None,
         children=None,
+        attribution=attribution if attribution else None,
     )
 
 

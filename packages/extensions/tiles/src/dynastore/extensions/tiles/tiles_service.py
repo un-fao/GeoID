@@ -101,6 +101,13 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
         from dynastore.extensions.tools.web_collect import collect_static_assets
         return collect_static_assets(self)
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def configure_app(self, app: FastAPI):
         """Early configuration for the Tiles extension."""
         pass

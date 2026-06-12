@@ -350,13 +350,51 @@ if __name__ == "__main__":
     parser.add_argument("--schema", type=str, help="The database schema where the task is registered.", default="tasks")
     args = parser.parse_args()
 
+    # Cloud Run does NOT shell-expand a Job's declared ``args:``. When a job is
+    # executed without per-execution --args overrides (e.g. a manual
+    # ``gcloud run jobs execute <job>`` for debugging/recovery, rather than the
+    # in-app GcpJobRunner which always sends ContainerOverrides), the literal
+    # default arguments from iac-job.yml reach this entrypoint verbatim. Two
+    # guards keep that path from dying with a cryptic JSONDecodeError:
+    _USAGE = (
+        "Run a real task with explicit arguments, e.g.:\n"
+        "  gcloud run jobs execute <job> --args '<task_name>,<json_payload>'\n"
+        "or dispatch it through the platform task runner (GcpJobRunner), which "
+        "always sends per-execution overrides."
+    )
+
+    # 1. ``noop`` sentinel — the documented default task in iac-job.yml. Lets an
+    #    operator prove a job is wired up correctly without any side effect.
+    if args.task_name == "noop":
+        logger.info(
+            "Task runner invoked with the 'noop' sentinel (no per-execution "
+            "overrides); nothing to do.\n%s",
+            _USAGE,
+        )
+        sys.exit(0)
+
+    # 2. Unexpanded ``${...}`` literal — an older/misconfigured job still
+    #    carrying pseudo-shell defaults like ``${TASK_NAME:-default-task}``.
+    #    Fail loud with actionable guidance instead of a JSON parse error.
+    if "${" in args.task_name or "${" in args.payload:
+        logger.critical(
+            "Task runner received unexpanded placeholder arguments "
+            "(task_name=%r, payload=%r). Cloud Run does not shell-expand a "
+            "Job's default args; this job was executed without the required "
+            "--args overrides.\n%s",
+            args.task_name,
+            args.payload,
+            _USAGE,
+        )
+        sys.exit(1)
+
     task_id = None
     try:
         payload_dict = json.loads(args.payload)
         task_id = payload_dict.get("task_id")
         asyncio.run(main(args.task_name, payload_dict, args.schema))
     except (json.JSONDecodeError) as e:
-        msg = f"Fatal: Invalid JSON payload for task '{args.task_name}'.\n{e}"
+        msg = f"Fatal: Invalid JSON payload for task '{args.task_name}'.\n{e}\n{_USAGE}"
         logger.critical(msg, exc_info=True)
         # We probably don't have a task_id if JSON is invalid, so just exit
         sys.exit(1)

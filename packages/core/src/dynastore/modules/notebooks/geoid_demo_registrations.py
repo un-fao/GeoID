@@ -32,41 +32,39 @@ _REG = "geoid_demo"
 
 
 register_platform_notebook(
-    notebook_id="lookup_only_demo",
+    notebook_id="nb07_public_vs_private_presets",
     registered_by=_REG,
-    notebook_path=_HERE / "lookup_only_demo.ipynb",
-    title={"en": "Lookup-only public catalog — anonymous demo"},
+    notebook_path=_HERE / "nb07_public_vs_private_presets.ipynb",
+    title={"en": "Public vs Private Collections — preset-driven demo"},
     description={
         "en": (
-            "Anonymous demo of the lookup-only profile: geoid lookup + "
-            "exact-item GET on STAC/Features both succeed without a token, "
-            "while collection list / items list / STAC search return 401/403. "
-            "Drives POST /search/catalogs/{cat}/geoid-search (PG-backed) "
-            "and contrasts the open catalog surface against the auth-gated "
-            "surface to show DENY policies firing as expected."
+            "Two-scenario walkthrough driven entirely by the presets API. "
+            "Scenario A applies the public_open_data composite preset and "
+            "proves both authenticated and anonymous STAC search return "
+            "ingested items. Scenario B applies the private_tenant composite "
+            "preset and proves anonymous search is denied while the "
+            "authenticated user sees all items. Includes catalog-readiness "
+            "polls, OUTBOX drain polls, and a PG-hint fallback probe. "
+            "No inline routing or driver config payloads."
         )
     },
-    tags=["geoid", "lookup", "anonymous", "iam", "demo"],
+    tags=["geoid", "stac", "presets", "privacy", "demo"],
 )
 register_platform_notebook(
-    notebook_id="public_and_private_collections",
+    notebook_id="nb08_geoid_lookup",
     registered_by=_REG,
-    notebook_path=_HERE / "public_and_private_collections.ipynb",
-    title={"en": "Public vs Private Collections — customer demo"},
+    notebook_path=_HERE / "nb08_geoid_lookup.ipynb",
+    title={"en": "GeoID Lookup — preset-driven anonymous access demo"},
     description={
         "en": (
-            "End-to-end walkthrough of the two access scenarios on the "
-            "live review env. Scenario A creates a public catalog + "
-            "collection, ingests 3 STAC items, polls the OUTBOX drain, "
-            "and proves both authenticated and anonymous STAC search "
-            "return them. Scenario B repeats the flow with "
-            "the items + collection routing configs pinned to the "
-            "private driver variants and proves anonymous "
-            "STAC search returns 0 features while the authenticated "
-            "user still sees everything. Includes catalog-readiness "
-            "polls, OUTBOX drain polls, and a PG-hint fallback probe "
-            "so failures point at the actual layer at fault."
+            "Demonstrates the lookup-only access model enabled by the geoid "
+            "catalog-tier preset. Setup applies the geoid preset (sysadmin "
+            "token) and ingests two items. The anonymous section shows that "
+            "POST /search/catalogs/{cat}/geoid-search (by geoid or external_id) "
+            "and exact-item GET succeed without a token, while collection list, "
+            "items list, and STAC search return 401/403. Route used: "
+            "POST /search/catalogs/{cat}/geoid-search; response field: results."
         )
     },
-    tags=["geoid", "stac", "elasticsearch", "privacy", "demo"],
+    tags=["geoid", "lookup", "anonymous", "iam", "presets", "demo"],
 )
