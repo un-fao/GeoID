@@ -489,7 +489,22 @@ class CollectionCorePostgresqlDriver(
         context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Keyword search on title/description (CORE columns only)."""
+        """Keyword search on title/description (CORE columns only).
+
+        Listing visibility: translates the request's collection constraint
+        (``RequestVisibility`` → ``resolve_collection_listing_ids``) into
+        this driver's own predicate — ``c.id = ANY(...)`` ahead of the
+        count and LIMIT/OFFSET — so both the listing page and its total
+        reflect only what the caller may see. No constraint (background
+        work, or no authorization layer) ⟹ unfiltered.
+        """
+        from dynastore.models.protocols.visibility import (
+            resolve_collection_listing_ids,
+        )
+
+        visible_ids = await resolve_collection_listing_ids(catalog_id)
+        if visible_ids is not None and not visible_ids:
+            return [], 0
         engine = db_resource or _get_engine()
         if not engine:
             return [], 0
@@ -499,6 +514,9 @@ class CollectionCorePostgresqlDriver(
                 return [], 0
             where_clauses = ["c.deleted_at IS NULL"]
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
+            if visible_ids is not None:
+                where_clauses.append("c.id = ANY(:visible_ids)")
+                params["visible_ids"] = list(visible_ids)
             if q:
                 where_clauses.append(
                     "(c.id ILIKE :q OR m.title->>'en' ILIKE :q "

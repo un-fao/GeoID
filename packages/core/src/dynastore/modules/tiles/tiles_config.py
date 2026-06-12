@@ -68,9 +68,9 @@ class TilesCachingConfig(PluginConfig):
     Bucket selection is intentionally NOT exposed here — buckets are
     provisioned per-catalog by ``StorageProtocol.ensure_storage_for_catalog``
     and surfacing an override would break the per-catalog isolation
-    invariants enforced by the catalog lifecycle. The bucket in use can
-    be discovered at runtime via ``GET /admin/catalogs/{cat}`` (the
-    storage block surfaces the resolved bucket name).
+    invariants enforced by the catalog lifecycle. The bucket in use is
+    logged at provisioning time (gcp_provision_catalog task) and visible
+    in the catalog's storage configuration.
 
     Live edits via ``PUT /configs/plugins/tiles_caching_config`` apply on
     the next tile save / fetch — no rewrite of already-cached objects.

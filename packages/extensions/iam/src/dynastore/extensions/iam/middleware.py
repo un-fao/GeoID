@@ -34,6 +34,11 @@ from dynastore.models.protocols.stats import StatsProtocol
 from dynastore.models.protocols.policies import PermissionProtocol
 from dynastore.models.protocols.authentication import AuthenticatorProtocol
 from dynastore.models.protocols.authorization import IamRolesConfig
+from dynastore.models.protocols.visibility import (
+    RequestVisibility,
+    reset_request_visibility,
+    set_request_visibility,
+)
 from dynastore.modules.iam.models import PolicyBundle
 from dynastore.modules.iam.exceptions import InvalidAuthTokenError
 
@@ -530,7 +535,22 @@ class IamMiddleware(BaseHTTPMiddleware):
             except Exception:
                 logger.debug("inspect_all failed; skipping rate-limit headers", exc_info=True)
 
-        response = await call_next(request)
+        # Publish the caller snapshot for transparent listing visibility.
+        # Storage implementations behind CatalogsProtocol consult it (via
+        # ListingVisibilityProtocol) to narrow catalog/collection listings to
+        # what this caller may see; downstream handlers inherit the context
+        # through call_next's task. This middleware is the only writer.
+        visibility_token = set_request_visibility(
+            RequestVisibility(
+                principals=tuple(principals_to_check),
+                principal=principal_obj,
+                principal_id=principal_uuid,
+            )
+        )
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_visibility(visibility_token)
         for k, v in rate_limit_headers.items():
             response.headers[k] = v
 

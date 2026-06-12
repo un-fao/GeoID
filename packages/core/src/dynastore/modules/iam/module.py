@@ -75,6 +75,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
     _iam_manager: Optional[IamService] = None
     _policy_service: Optional[PolicyService] = None
     _authorizer: Optional[IamAuthorizer] = None
+    _listing_visibility: Optional[Any] = None
     storage: Optional[AbstractIamStorage] = None
 
     @asynccontextmanager
@@ -210,6 +211,17 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             self._authorizer = IamAuthorizer()
             register_plugin(self._authorizer)
 
+            # Listing visibility: serves the per-caller catalog/collection
+            # listing scope (ListingVisibilityProtocol) compiled from the
+            # same policy/grant graph as evaluate_access. Storage drivers
+            # resolve it via get_protocol; IamMiddleware publishes the
+            # caller snapshot it consumes.
+            from dynastore.modules.iam.listing_visibility import (
+                IamListingVisibility,
+            )
+            self._listing_visibility = IamListingVisibility(self)
+            register_plugin(self._listing_visibility)
+
             # Usage-counter drivers for rate-limit / quota conditions.
             # Always register PG (the durable single-source-of-truth).
             # Layer on Valkey when a CountingCacheBackend is up so
@@ -253,6 +265,9 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
             if self._authorizer is not None:
                 unregister_plugin(self._authorizer)
                 self._authorizer = None
+            if self._listing_visibility is not None:
+                unregister_plugin(self._listing_visibility)
+                self._listing_visibility = None
             # IamService stops via AsyncExitStack
         
         # Finally unregister self

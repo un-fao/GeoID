@@ -18,12 +18,7 @@ Covers:
 - CatalogListProvider structural matching, including the #1990 regression:
   a storage-layer object with ``list_catalogs(limit, offset, ...)`` and a
   ``priority`` attribute must NOT satisfy the provider protocol.
-- Winner-takes-all resolution: get_protocols orders providers by priority
-  (lower wins) regardless of registration order.
 - DefaultCatalogListProvider: localized titles, id fallback, pagination stop.
-- IamCatalogListProvider: sysadmin sees the full list, a principal gets the
-  principal_id-filtered list (with TypeError fallback for older
-  CatalogsProtocol implementations), and an anonymous caller gets nothing.
 """
 from __future__ import annotations
 
@@ -33,17 +28,10 @@ from typing import Any, List, Optional
 
 import pytest
 
-from dynastore.extensions.iam.catalog_source import IamCatalogListProvider
 from dynastore.extensions.web.catalog_source import DefaultCatalogListProvider
-from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.models.protocols.catalog_source import (
     CatalogListProvider,
     CatalogOption,
-)
-from dynastore.tools.discovery import (
-    get_protocols,
-    register_plugin,
-    unregister_plugin,
 )
 
 
@@ -89,7 +77,6 @@ def _request(roles: Any = None, principal: Any = None) -> Any:
 
 def test_providers_satisfy_protocol() -> None:
     assert isinstance(DefaultCatalogListProvider(), CatalogListProvider)
-    assert isinstance(IamCatalogListProvider(), CatalogListProvider)
 
 
 def test_storage_impostor_does_not_match_protocol() -> None:
@@ -105,32 +92,6 @@ def test_storage_impostor_does_not_match_protocol() -> None:
         ): ...
 
     assert not isinstance(StorageImpostor(), CatalogListProvider)
-
-
-# ---------------------------------------------------------------------------
-# Winner-takes-all registry resolution
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("iam_first", [True, False])
-def test_iam_provider_wins_regardless_of_registration_order(
-    iam_first: bool,
-) -> None:
-    iam = IamCatalogListProvider()
-    default = DefaultCatalogListProvider()
-    plugins = [iam, default] if iam_first else [default, iam]
-    for p in plugins:
-        register_plugin(p)
-    try:
-        providers = [
-            p
-            for p in get_protocols(CatalogListProvider)
-            if p in (iam, default)
-        ]
-        assert providers == [iam, default]
-    finally:
-        for p in plugins:
-            unregister_plugin(p)
 
 
 # ---------------------------------------------------------------------------
@@ -189,79 +150,3 @@ async def test_default_provider_empty_without_catalogs_protocol(
         await DefaultCatalogListProvider().list_catalog_options(_request())
         == []
     )
-
-
-# ---------------------------------------------------------------------------
-# IamCatalogListProvider
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_iam_provider_sysadmin_gets_full_list(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stub = _StubCatalogs(
-        [_CatalogRow("granted_1"), _CatalogRow("other_1")]
-    )
-    monkeypatch.setattr(
-        "dynastore.extensions.iam.catalog_source.get_protocol",
-        lambda proto: stub,
-    )
-    sysadmin = IamRolesConfig().sysadmin_role_name
-    options = await IamCatalogListProvider().list_catalog_options(
-        _request(roles=[sysadmin])
-    )
-    assert [o.id for o in options] == ["granted_1", "other_1"]
-    assert "principal_id" not in stub.calls[0]
-
-
-@pytest.mark.asyncio
-async def test_iam_provider_filters_by_principal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stub = _StubCatalogs(
-        [_CatalogRow("granted_1"), _CatalogRow("other_1")]
-    )
-    monkeypatch.setattr(
-        "dynastore.extensions.iam.catalog_source.get_protocol",
-        lambda proto: stub,
-    )
-    options = await IamCatalogListProvider().list_catalog_options(
-        _request(principal=SimpleNamespace(id="user-1", subject_id=None))
-    )
-    assert [o.id for o in options] == ["granted_1"]
-    assert stub.calls[0]["principal_id"] == "user-1"
-
-
-@pytest.mark.asyncio
-async def test_iam_provider_falls_back_when_filter_unsupported(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stub = _StubCatalogs(
-        [_CatalogRow("granted_1"), _CatalogRow("other_1")],
-        supports_principal_filter=False,
-    )
-    monkeypatch.setattr(
-        "dynastore.extensions.iam.catalog_source.get_protocol",
-        lambda proto: stub,
-    )
-    options = await IamCatalogListProvider().list_catalog_options(
-        _request(principal=SimpleNamespace(id="user-1", subject_id=None))
-    )
-    # Older CatalogsProtocol without principal_id support → unfiltered call.
-    assert [o.id for o in options] == ["granted_1", "other_1"]
-    assert "principal_id" not in stub.calls[0]
-
-
-@pytest.mark.asyncio
-async def test_iam_provider_denies_anonymous(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stub = _StubCatalogs([_CatalogRow("granted_1")])
-    monkeypatch.setattr(
-        "dynastore.extensions.iam.catalog_source.get_protocol",
-        lambda proto: stub,
-    )
-    options = await IamCatalogListProvider().list_catalog_options(_request())
-    assert options == []
-    assert stub.calls == []  # never touches storage for anonymous callers
