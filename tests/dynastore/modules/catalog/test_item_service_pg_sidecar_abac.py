@@ -352,8 +352,11 @@ def _patch_phase1_helpers(
     sidecars_ordered: List[Any],
 ) -> None:
     """Stub all the async DB helpers that Phase 1 of Branch B calls."""
-    # CatalogsProtocol — is_active + activate_collection.
+    # CatalogsProtocol — ensure_alive + is_active + activate_collection.
     class _FakeCatalogs:
+        async def ensure_alive(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
         async def is_active(self, *_a: Any, **_kw: Any) -> bool:
             return True
 
@@ -437,7 +440,11 @@ def _patch_phase1_helpers(
             # assert non-None will catch the error explicitly.
             return None
 
-        # CatalogsProtocol interface (Phase 1 calls is_active / activate_collection).
+        # CatalogsProtocol interface (Phase 1 calls ensure_alive / is_active /
+        # activate_collection).
+        async def ensure_alive(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
         async def is_active(self, *_a: Any, **_kw: Any) -> bool:
             return True
 
