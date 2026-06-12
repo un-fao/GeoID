@@ -584,20 +584,42 @@ def _build_cityjsonseq_link(catalog_id: str, collection_id: str) -> ContentLink:
 def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
     """Build a ThreeDContainer wire model from a Collection.
 
-    Always emits the runtime 3D Tiles tileset link (served by this extension
-    at /volumes/.../3dtiles/tileset.json) plus the CityJSONSeq alternate link.
+    When extras carry ``geovolumes:tileset_url`` (a non-empty string), that
+    absolute URL is emitted as the 3D Tiles content href and the CityJSONSeq
+    alternate link is omitted (external containers have no CityJSON payload).
+    Otherwise the native runtime tileset href is used and the CityJSONSeq
+    link is included (CityJSON collections only).
     """
     extras = _get_extras(coll)
     bbox_3d = _collection_bbox_3d(coll, extras)
+
+    external_url: Optional[str] = extras.get("geovolumes:tileset_url") or None
+    if external_url and isinstance(external_url, str) and external_url.strip():
+        tiles_href = external_url.strip()
+        tiles_title = "3D Tiles tileset (external)"
+    else:
+        external_url = None
+        tiles_href = (
+            f"/volumes/catalogs/{catalog_id}/collections/{coll.id}/3dtiles/tileset.json"
+        )
+        tiles_title = "3D Tiles tileset"
+
     content: List[ContentLink] = [
         ContentLink(
             rel="http://www.opengis.net/def/rel/ogc/1.0/3dtiles",
-            href=f"/volumes/catalogs/{catalog_id}/collections/{coll.id}/3dtiles/tileset.json",
+            href=tiles_href,
             type="application/json",
-            title="3D Tiles tileset",
+            title=tiles_title,
         ),
-        _build_cityjsonseq_link(catalog_id, coll.id),
     ]
+
+    # Include the CityJSONSeq alternate link only for native CityJSON collections.
+    if not external_url and extras.get("cityjson:version"):
+        content.append(_build_cityjsonseq_link(catalog_id, coll.id))
+
+    attribution: Optional[str] = extras.get("geovolumes:attribution") or None
+    if attribution and isinstance(attribution, str):
+        attribution = attribution.strip() or None
 
     return ThreeDContainer(
         id=coll.id,
@@ -607,6 +629,7 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
         content=content,
         links=None,
         children=None,
+        attribution=attribution if attribution else None,
     )
 
 
