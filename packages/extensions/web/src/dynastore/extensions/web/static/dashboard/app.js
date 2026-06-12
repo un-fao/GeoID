@@ -6,20 +6,8 @@
 // since logs and task names carry untrusted text.
 
 import { mountContextBar } from "../static/common/context-bar.js";
-
-// Build an Authorization header from the Bearer token stored by the login
-// flow. Mirrors the pattern in common/api.js — kept local because authHeader
-// is not a public export of that module.
-function _authHeader() {
-    const key = (typeof window !== "undefined" && window.DS_TOKEN_KEY) || "ds_token";
-    const ls = (typeof localStorage !== "undefined") ? localStorage : null;
-    const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
-    const token = (ls && ls.getItem(key))
-        || (ss && ss.getItem(key))
-        || (ls && ls.getItem("ds_token"))
-        || (ss && ss.getItem("ds_token"));
-    return token ? { Authorization: `Bearer ${token}` } : {};
-}
+import { apiBase } from "../static/common/url.js";
+import { authHeader as _authHeader } from "../static/common/api.js";
 
 const app = {
     state: {
@@ -194,18 +182,10 @@ const app = {
         }
     },
 
-    // Proxy prefix for absolute API URLs: everything before '/web/' in this
-    // page's path (e.g. '/geospatial/dev/api/catalog'). Empty at the bare root.
-    _apiPrefix() {
-        const p = window.location.pathname;
-        const webIdx = p.indexOf('/web/');
-        return webIdx >= 0 ? p.substring(0, webIdx) : '';
-    },
-
     // Stats endpoint scoped to the picked catalog (and collection, if any).
     // With no catalog selected, fall back to the platform-tier summary.
     _statsUrl(catalogId, collectionId) {
-        const prefix = this._apiPrefix();
+        const prefix = apiBase();
         if (!catalogId) { return `${prefix}/web/dashboard/stats`; }
         const base = `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}`;
         return collectionId
@@ -215,7 +195,7 @@ const app = {
 
     // Tasks endpoint scoped to the picked catalog; platform-tier when unset.
     _tasksUrl(catalogId) {
-        const prefix = this._apiPrefix();
+        const prefix = apiBase();
         return catalogId
             ? `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}/tasks`
             : `${prefix}/web/dashboard/tasks`;
@@ -224,7 +204,7 @@ const app = {
     // Proxy-prefix-aware absolute URL to the canonical logs API, scoped to the
     // picked catalog/collection.
     _logsUrl(catalogId, collectionId) {
-        const prefix = this._apiPrefix();
+        const prefix = apiBase();
         if (collectionId) {
             return `${prefix}/logs/catalogs/${encodeURIComponent(catalogId)}/collections/${encodeURIComponent(collectionId)}/logs?limit=20`;
         }

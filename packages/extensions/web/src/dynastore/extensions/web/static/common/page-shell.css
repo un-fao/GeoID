@@ -10,8 +10,12 @@
  */
 
 /* --- Shared header ---------------------------------------------------- */
+/*
+ * All rules below are scoped to ds-page-shell so they cannot collide with
+ * admin.css or inline .header CSS on non-migrated pages.
+ */
 
-.header {
+ds-page-shell .header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -23,7 +27,7 @@
     z-index: 10;
 }
 
-.header-title {
+ds-page-shell .header-title {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -32,24 +36,24 @@
     color: white;
 }
 
-.header-title img {
+ds-page-shell .header-title img {
     width: 2rem;
     height: 2rem;
     border-radius: 0.4rem;
 }
 
-.header-breadcrumb {
+ds-page-shell .header-breadcrumb {
     color: #94a3b8;
     font-size: 0.9rem;
     font-weight: normal;
 }
 
-.header-breadcrumb-sep {
+ds-page-shell .header-breadcrumb-sep {
     color: #475569;
     font-weight: normal;
 }
 
-.back-link {
+ds-page-shell .back-link {
     color: #94a3b8;
     text-decoration: none;
     font-size: 0.875rem;
@@ -59,7 +63,7 @@
     gap: 0.35rem;
 }
 
-.back-link:hover { color: white; }
+ds-page-shell .back-link:hover { color: white; }
 
 /* --- Opt-in layout utilities ----------------------------------------- */
 
