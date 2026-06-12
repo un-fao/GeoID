@@ -119,6 +119,7 @@ def expose_web_page(
     section: Optional[Union[str, Dict[str, str]]] = None,
     is_embed: bool = False,
     enabled: bool = True,
+    show_as_tile: bool = False,
 ):
     """Mark a method as a web-page provider (metadata only).
 
@@ -151,6 +152,7 @@ def expose_web_page(
                 "section": section,
                 "is_embed": is_embed,
                 "enabled": enabled,
+                "show_as_tile": show_as_tile,
             },
         )
         return func

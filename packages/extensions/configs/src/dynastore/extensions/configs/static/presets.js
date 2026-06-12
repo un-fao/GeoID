@@ -3,9 +3,9 @@
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
-import { getJSON, postJSON, deleteJSON } from "../common/api.js";
-import { mountSchemaForm } from "../common/schema-form.js";
-import { mountContextBar } from "../common/context-bar.js";
+import { getJSON, postJSON, deleteJSON } from "../static/common/api.js";
+import { mountSchemaForm } from "../static/common/schema-form.js";
+import { mountContextBar } from "../static/common/context-bar.js";
 
 // ---------------------------------------------------------------- state
 

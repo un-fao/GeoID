@@ -24,7 +24,7 @@ duck-type and forwarded by ``PolicyContributorPreset``
 (see ``modules/storage/presets/policy_contributor_adapter.py``).
 """
 
-from typing import List
+from typing import List, Optional
 
 from dynastore.models.auth import Policy
 from dynastore.models.auth_models import Role
@@ -37,20 +37,37 @@ def configs_policies() -> List[Policy]:
     return [
         Policy(
             id=_CONFIGS_ACCESS_POLICY_ID,
-            description="Grants full access to configuration management endpoints.",
+            description="Grants full access to configuration management endpoints and "
+                        "the Configuration Hub / Presets web pages.",
             actions=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             resources=[
                 "/configs",
                 "/configs/",
                 "/configs/.*",
-                "/web/pages/configs_editor",
+                "/web/pages/configuration",
+                "/web/pages/presets",
+                "/web/configs/.*",
             ],
             effect="ALLOW",
         ),
     ]
 
 
-def configs_role_bindings() -> List[Role]:
-    # No role binding: ``configs_access`` is reachable via ``sysadmin_full_access``
-    # already; operator can bind it to additional roles via the IAM admin UI.
-    return []
+def configs_role_bindings(
+    sysadmin_role_name: Optional[str] = None,
+    admin_role_name: Optional[str] = None,
+) -> List[Role]:
+    """Bind ``configs_access`` to ``sysadmin`` and ``admin`` roles by default.
+
+    When IAM is absent, these bindings are never consulted and the
+    ``audience_policy_id`` on the web pages is not enforced, so the pages
+    are visible to all users (which is the intended IAM-absent behaviour).
+    """
+    from dynastore.models.protocols.authorization import IamRolesConfig
+    cfg = IamRolesConfig()
+    sysadmin = sysadmin_role_name or cfg.sysadmin_role_name
+    admin = admin_role_name or cfg.admin_role_name
+    return [
+        Role(name=sysadmin, policies=[_CONFIGS_ACCESS_POLICY_ID]),
+        Role(name=admin, policies=[_CONFIGS_ACCESS_POLICY_ID]),
+    ]

@@ -12,11 +12,11 @@ import {
   fetchRefs,
   patchConfigSet,
   fetchMe,
-} from "../common/api.js";
-import { mountContextBar } from "../common/context-bar.js";
-import { mountSchemaList } from "../common/schema-list.js";
-import { mountSchemaForm } from "../common/schema-form.js";
-import { mountConfigTabs } from "../common/config-tabs.js";
+} from "../static/common/api.js";
+import { mountContextBar } from "../static/common/context-bar.js";
+import { mountSchemaList } from "../static/common/schema-list.js";
+import { mountSchemaForm } from "../static/common/schema-form.js";
+import { mountConfigTabs } from "../static/common/config-tabs.js";
 import {
   fetchTierStack,
   flattenComposed,
@@ -26,7 +26,7 @@ import {
   curlForPatch,
   curlForGet,
   tiersForScope,
-} from "../common/config-insight.js";
+} from "../static/common/config-insight.js";
 
 const $ = (sel) => document.querySelector(sel);
 

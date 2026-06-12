@@ -200,7 +200,6 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/web/admin/",
                 "/web/admin/.*",
                 "/web/pages/exposure",
-                "/web/pages/configuration",
                 "/web/pages/governance",
                 "/web/pages/stac-authoring",
                 "/web/pages/ingest",
@@ -1137,28 +1136,6 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         return await self._serve_html_template(html_path)
 
     @expose_web_page(
-        page_id="configuration",
-        title="Configuration Hub",
-        icon="fa-sliders",
-        description="Schema-driven editor for every registered plugin configuration.",
-        audience_policy_id="web_sysadmin_access",
-        section="admin",
-        priority=10,
-    )
-    async def configuration_page(self, request: Request):
-        """Serve the schema-driven Configuration Hub HTML page.
-
-        Lists every Pydantic-backed plugin config (routing, drivers,
-        anything else that registers a schema) and renders its form
-        from the ``/configs/registry`` response.
-        """
-        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
-        html_path = os.path.join(static_dir, "configuration.html")
-        if not os.path.exists(html_path):
-            raise HTTPException(status_code=404, detail="Configuration Hub template not found.")
-        return await self._serve_html_template(html_path)
-
-    @expose_web_page(
         page_id="governance",
         title="Governance",
         icon="fa-scale-balanced",
@@ -1221,33 +1198,6 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         html_path = os.path.join(static_dir, "stac-authoring.html")
         if not os.path.exists(html_path):
             raise HTTPException(status_code=404, detail="STAC authoring template not found.")
-        return await self._serve_html_template(html_path)
-
-    @expose_web_page(
-        page_id="presets",
-        title="Presets",
-        icon="fa-wand-magic-sparkles",
-        description=(
-            "Apply, roll back, and inspect named configuration bundles "
-            "(presets) at platform, catalog, or collection scope."
-        ),
-        audience_policy_id="web_sysadmin_access",
-        section="admin",
-        priority=9,
-    )
-    async def presets_page(self, request: Request):
-        """Preset registry browser and lifecycle operator (#1412).
-
-        Discovers all registered presets dynamically via GET /configs/presets and
-        exposes apply / dry-run / rollback at platform, catalog, and collection
-        scope. Authorization is enforced server-side on every /configs/presets
-        mutation; the page is gated by web_sysadmin_access because preset apply
-        is a destructive configuration operation.
-        """
-        static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
-        html_path = os.path.join(static_dir, "presets.html")
-        if not os.path.exists(html_path):
-            raise HTTPException(status_code=404, detail="Presets page template not found.")
         return await self._serve_html_template(html_path)
 
     @expose_web_page(

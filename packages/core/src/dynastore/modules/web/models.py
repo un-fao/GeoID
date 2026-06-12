@@ -34,6 +34,7 @@ class WebPageConfig(BaseModel):
     is_embed: bool = False
     required_roles: Optional[List[str]] = None
     enabled: bool = True
+    show_as_tile: bool = False
 
 
     @field_validator("title", "description", "section", mode="before")
