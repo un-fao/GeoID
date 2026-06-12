@@ -21,8 +21,7 @@ End-to-end walkthrough demonstrating the recipe described in
 
 | Path | Role |
 |---|---|
-| `walkthrough.ipynb` | Single end-to-end notebook (lift-cells composition of 7 sources) |
-| `fixtures/admin_boundaries.geojson` | 3-feature country sample with `code` external-id field |
+| `fixtures/admin_boundaries.geojson` | 3-feature country sample with `code` external-id field (used by test_bootstrap_schema_composition.py) |
 
 ## Source notebooks
 
@@ -64,23 +63,17 @@ a `**Gap A/B/C**` markdown cell at the relevant step:
 - **Gap A** — by design, there is **no** bespoke `bootstrap-schema` endpoint.
   The platform's contract is that every HTTP surface is an OGC conformance
   class; bootstrapping a fixed schema is a composition of two existing
-  surfaces (issue #473, PR #477). Step 0b in `walkthrough.ipynb` shows the
-  full sequence: `POST .../processes/gdal/execution` with `{"inputs":
-  {"asset_id": "..."}}` (OGC API - Processes) → local OGR→Postgres type map →
+  surfaces (issue #473, PR #477). The bootstrap sequence is:
+  `POST .../processes/gdal/execution` with `{"inputs": {"asset_id": "..."}}` (OGC API
+  - Processes) → local OGR→Postgres type map →
   `GET`/`PUT /configs/.../plugins/items_postgresql_driver` (PluginConfig API).
   The PluginConfig PUT works at either **collection scope**
-  (`/configs/catalogs/{cat}/collections/{col}/plugins/{plugin_id}`, used in
-  the notebook) or **catalog scope**
+  (`/configs/catalogs/{cat}/collections/{col}/plugins/{plugin_id}`) or **catalog scope**
   (`/configs/catalogs/{cat}/plugins/{plugin_id}`, sysadmin) when the same
   schema should apply by default to every collection in the catalog.
-  The cell is gated by `BOOTSTRAP_FROM = None` and is documentary; users
-  copy-paste the snippet to bootstrap from a real asset.
-  **Regression-risk:** because the cell is gated off, the notebook test
-  pass never drives the Process→PluginConfig sequence — changes to the
-  `gdal` Process payload, the OGR→PG type map, the PluginConfig PUT
-  shape, or the sync/async response contract will not be caught by CI
-  from this notebook. Cover with a `TestClient` integration test if you
-  depend on this bootstrap path.
+  The sequence is covered by `tests/dynastore/extensions/configs/integration/test_bootstrap_schema_composition.py`
+  using a `TestClient` integration test. The walkthrough notebook has been removed; the fixture
+  geojson used in its cells is retained for the test.
 - **Gap B** — OTF as **WRITE-primary** is not live-tested in review env;
   the notebook keeps PG as primary and notes how to swap.
 - **Gap C** — L2 bucket-cache config (`TilesCachingConfig`: `key_prefix` +

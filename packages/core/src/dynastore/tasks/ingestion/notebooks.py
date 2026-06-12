@@ -18,10 +18,7 @@
 
 """Platform notebook registrations for the ingestion task.
 
-Registers ingestion workflow notebooks:
-  - ingestion_basic      -- core ingestion pipeline (CSV, GeoJSON, column mapping)
-  - ingestion_operations -- pre/post operations (encoding detection, asset download)
-  - ingestion_advanced   -- write policies, reporters, multi-driver, temporal validity
+Registers ingestion workflow notebooks using presets and OGC protocols.
 
 Import this module during NotebooksModule lifespan (before seeding).
 """
@@ -33,28 +30,15 @@ _HERE = Path(__file__).parent / "notebooks"
 _REG = "dynastore.tasks.ingestion"
 
 register_platform_notebook(
-    notebook_id="ingestion_basic",
+    notebook_id="ingestion_virtual_asset",
     registered_by=_REG,
-    notebook_path=_HERE / "basic_ingestion.ipynb",
-    title={"en": "Data Ingestion \u2014 Getting Started"},
-    description={"en": "Ingest CSV, GeoJSON, and Shapefile data into collections via the OGC Processes API."},
-    tags=["ingestion", "csv", "geojson", "shapefile", "processes"],
-)
-
-register_platform_notebook(
-    notebook_id="ingestion_operations",
-    registered_by=_REG,
-    notebook_path=_HERE / "ingestion_operations.ipynb",
-    title={"en": "Ingestion Pre/Post Operations"},
-    description={"en": "Configure pre-ingestion and post-ingestion operations: asset download, encoding detection, custom hooks."},
-    tags=["ingestion", "operations", "pre-processing", "post-processing"],
-)
-
-register_platform_notebook(
-    notebook_id="ingestion_advanced",
-    registered_by=_REG,
-    notebook_path=_HERE / "ingestion_advanced.ipynb",
-    title={"en": "Advanced Ingestion Patterns"},
-    description={"en": "Write policies, reporters, multi-driver ingestion, and temporal validity during data ingestion."},
-    tags=["ingestion", "write-policy", "reporters", "multi-driver", "temporal"],
+    notebook_path=_HERE / "nb06_ingestion_virtual_asset.ipynb",
+    title={"en": "Ingestion via Virtual Asset"},
+    description={
+        "en": (
+            "Register a virtual (external href) asset and trigger the ingestion task. "
+            "Verifies items appear via STAC /items after the task completes."
+        )
+    },
+    tags=["ingestion", "virtual-asset", "preset", "stac", "processes"],
 )

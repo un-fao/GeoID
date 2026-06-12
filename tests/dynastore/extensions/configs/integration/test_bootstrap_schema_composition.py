@@ -16,11 +16,11 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Bootstrap-schema composition regression — covers the **Gap A** path documented
-in ``notebooks/admin_boundaries_fixed_schema/walkthrough.ipynb`` (Step 0b).
+"""Bootstrap-schema composition regression — covers the **Gap A** bootstrap-schema path
+(OGR→PG map → PluginConfig PUT sequence).
 
-The walkthrough's Step 0b cell is gated behind ``BOOTSTRAP_FROM = None`` by
-default, so the notebook-CI pass never drives the
+The original walkthrough cell was gated behind ``BOOTSTRAP_FROM = None`` by
+default, so the notebook-CI pass never drove the
 ``Process → OGR→PG map → PluginConfig PUT`` sequence. A breaking change to any
 of the four surfaces below would silently slip through:
 

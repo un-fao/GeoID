@@ -168,7 +168,7 @@ construct the requests themselves — those go through the helpers above.
   separate from this audit.
 - `packages/extensions/web/.../notebooks/uc_lookup_only_anonymous_write.ipynb`
   — `/admin/{policies,policies/{id},roles,roles/{name}}`.
-- `notebooks/admin_boundaries_fixed_schema/walkthrough.ipynb`
+- `notebooks/admin_boundaries_fixed_schema/walkthrough.ipynb` (removed)
   — no admin/iam/auth calls.
 
 ### Tests
