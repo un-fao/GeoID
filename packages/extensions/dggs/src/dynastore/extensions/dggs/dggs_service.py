@@ -153,6 +153,13 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
     async def lifespan(self, app: FastAPI):
         yield
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     # ------------------------------------------------------------------
     # Route registration
     # ------------------------------------------------------------------
