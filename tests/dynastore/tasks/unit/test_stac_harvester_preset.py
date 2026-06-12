@@ -1,0 +1,378 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""Unit tests for the ``stac_harvester`` preset and the ``stac_harvest`` task mappers.
+
+These tests do NOT touch the database, network, or OGC process engine.  All
+external collaborators are mocked.  The test suite has two sections:
+
+1. Preset apply() — verifies that applying stac_harvester with {url: ...} seeds
+   a stac_harvest process/task with correctly mapped inputs.
+2. Worker mapping — verifies that map_collection and map_item produce expected
+   dynastore payloads from sample source dicts.
+"""
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal PresetContext with a fake DB engine
+# ---------------------------------------------------------------------------
+
+
+def _make_ctx(db: Any = None, principal: Any = None) -> Any:
+    from dynastore.modules.storage.presets.preset import PresetContext
+
+    return PresetContext(
+        db=db or MagicMock(),
+        iam=None,
+        policy=None,
+        config=None,
+        tasks=None,
+        cron=None,
+        libs=None,
+        principal=principal,
+        scope="catalog:test-cat",
+        catalogs=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1. Preset apply() — seeds stac_harvest process with mapped inputs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preset_apply_submits_stac_harvest_process() -> None:
+    """apply() must call execute_process with process_id='stac_harvest' and
+    the inputs mapped from StacHarvesterParams."""
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    captured: list[dict] = []
+
+    async def _fake_execute(process_id: str, exec_request: Any, *, engine: Any,
+                             caller_id: str, preferred_mode: Any,
+                             dedup_key: Any) -> MagicMock:
+        result = MagicMock()
+        result.jobID = "job-abc-123"
+        captured.append({
+            "process_id": process_id,
+            "inputs": dict(exec_request.inputs),
+        })
+        return result
+
+    ctx = _make_ctx()
+    params = StacHarvesterParams(url="https://example.test/stac")
+
+    with patch(
+        "dynastore.modules.processes.processes_module.execute_process",
+        _fake_execute,
+    ):
+        descriptor = await STAC_HARVESTER_PRESET.apply(params, "catalog:test-cat", ctx)
+
+    assert len(captured) == 1, "execute_process should be called exactly once"
+    call = captured[0]
+    assert call["process_id"] == "stac_harvest"
+    assert call["inputs"]["catalog_url"] == "https://example.test/stac"
+    assert call["inputs"]["target_catalog"] == "test-cat"
+    assert call["inputs"]["max_collections"] == 0
+    assert call["inputs"]["max_items"] == 0
+    assert call["inputs"]["with_assets"] is True
+    assert call["inputs"]["es_only"] is True
+
+    # Descriptor should record the job id and parameters.
+    assert descriptor.payload["job_id"] == "job-abc-123"
+    assert descriptor.payload["catalog_url"] == "https://example.test/stac"
+    assert descriptor.payload["target_catalog"] == "test-cat"
+
+
+@pytest.mark.asyncio
+async def test_preset_apply_explicit_target_catalog_overrides_scope() -> None:
+    """When target_catalog is explicitly set in params it wins over the scope."""
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    captured: list[dict] = []
+
+    async def _fake_execute(process_id: str, exec_request: Any, **_kw: Any) -> MagicMock:
+        captured.append({"inputs": dict(exec_request.inputs)})
+        return MagicMock(jobID="job-xyz")
+
+    ctx = _make_ctx()
+    params = StacHarvesterParams(
+        url="https://example.test/stac",
+        target_catalog="explicit-cat",
+    )
+
+    with patch(
+        "dynastore.modules.processes.processes_module.execute_process",
+        _fake_execute,
+    ):
+        descriptor = await STAC_HARVESTER_PRESET.apply(params, "catalog:scope-cat", ctx)
+
+    assert captured[0]["inputs"]["target_catalog"] == "explicit-cat"
+    assert descriptor.payload["target_catalog"] == "explicit-cat"
+
+
+@pytest.mark.asyncio
+async def test_preset_apply_maps_all_params() -> None:
+    """Custom max_collections / max_items / with_assets / es_only are forwarded."""
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    captured: list[dict] = []
+
+    async def _fake_execute(process_id: str, exec_request: Any, **_kw: Any) -> MagicMock:
+        captured.append({"inputs": dict(exec_request.inputs)})
+        return MagicMock(jobID="job-params")
+
+    ctx = _make_ctx()
+    params = StacHarvesterParams(
+        url="http://example.test/stac",
+        max_collections=5,
+        max_items=100,
+        with_assets=False,
+        es_only=False,
+    )
+
+    with patch(
+        "dynastore.modules.processes.processes_module.execute_process",
+        _fake_execute,
+    ):
+        await STAC_HARVESTER_PRESET.apply(params, "catalog:test-cat", ctx)
+
+    inp = captured[0]["inputs"]
+    assert inp["max_collections"] == 5
+    assert inp["max_items"] == 100
+    assert inp["with_assets"] is False
+    assert inp["es_only"] is False
+
+
+@pytest.mark.asyncio
+async def test_preset_apply_raises_without_db() -> None:
+    """apply() must raise RuntimeError when ctx.db is None (engine absent)."""
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    ctx = _make_ctx(db=None)
+    ctx.db = None  # explicit sentinel
+
+    params = StacHarvesterParams(url="https://example.test/stac")
+
+    with pytest.raises(RuntimeError, match="engine.*is None"):
+        await STAC_HARVESTER_PRESET.apply(params, "catalog:test-cat", ctx)
+
+
+def test_preset_params_rejects_non_http_url() -> None:
+    """StacHarvesterParams must reject URLs that are not http(s)."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        StacHarvesterParams(url="ftp://example.com/stac")
+
+
+def test_preset_params_strips_trailing_slash() -> None:
+    """StacHarvesterParams normalises trailing slashes in the URL."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+
+    p = StacHarvesterParams(url="https://example.test/stac/")
+    assert p.url == "https://example.test/stac"
+
+
+@pytest.mark.asyncio
+async def test_preset_revoke_is_noop() -> None:
+    """revoke() must not raise and must not call any write method."""
+    from dynastore.extensions.stac.presets.stac_harvester import STAC_HARVESTER_PRESET
+    from dynastore.modules.storage.presets.preset import AppliedDescriptor
+
+    ctx = _make_ctx()
+    descriptor = AppliedDescriptor(payload={
+        "catalog_url": "https://example.test/stac",
+        "target_catalog": "test-cat",
+        "job_id": "job-abc",
+    })
+    # Should complete without raising.
+    await STAC_HARVESTER_PRESET.revoke(descriptor, ctx)
+
+
+def test_preset_registered_in_registry() -> None:
+    """After importing the STAC extension's presets package the preset is in the registry."""
+    import dynastore.extensions.stac.presets  # noqa: F401 — side-effect import
+    from dynastore.modules.storage.presets.registry import get_preset
+
+    preset = get_preset("stac_harvester")
+    assert preset is not None
+    assert preset.name == "stac_harvester"
+
+
+def test_preset_dry_run_returns_trigger_task_entry() -> None:
+    """dry_run() returns a PresetPlan with a trigger_task entry for stac_harvest."""
+    import asyncio
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    ctx = _make_ctx()
+    params = StacHarvesterParams(url="https://example.test/stac")
+
+    plan = asyncio.get_event_loop().run_until_complete(
+        STAC_HARVESTER_PRESET.dry_run(params, "catalog:test-cat", ctx)
+    )
+
+    assert plan.preset_name == "stac_harvester"
+    assert len(plan.entries) == 1
+    entry = plan.entries[0]
+    assert entry.kind == "trigger_task"
+    assert entry.target == "stac_harvest"
+    assert entry.detail["inputs"]["catalog_url"] == "https://example.test/stac"
+    assert entry.detail["inputs"]["target_catalog"] == "test-cat"
+
+
+# ---------------------------------------------------------------------------
+# 2. Worker mapping — map_collection and map_item
+# ---------------------------------------------------------------------------
+
+
+def test_map_collection_normalises_id_and_sets_defaults() -> None:
+    """map_collection lowercases the id and inserts fallback extent/description."""
+    from dynastore.tasks.stac_harvest.task import map_collection
+
+    raw = {
+        "id": "MyCollection",
+        "title": "My Collection",
+        "links": [{"rel": "self", "href": "https://example.test"}],
+        "assets": {"thumbnail": {"href": "https://thumb.example.test/t.png"}},
+    }
+    result = map_collection(raw)
+
+    assert result["id"] == "mycollection", "id must be lowercased"
+    assert "links" not in result, "links must be stripped"
+    assert "assets" not in result, "collection-level assets must be stripped"
+    assert result["type"] == "Collection"
+    assert "extent" in result
+    assert "description" in result
+
+
+def test_map_collection_preserves_existing_extent() -> None:
+    """map_collection does not overwrite an extent that is already present."""
+    from dynastore.tasks.stac_harvest.task import map_collection
+
+    custom_extent = {
+        "spatial": {"bbox": [[10.0, 20.0, 30.0, 40.0]]},
+        "temporal": {"interval": [["2020-01-01T00:00:00Z", None]]},
+    }
+    raw = {"id": "col1", "extent": custom_extent}
+    result = map_collection(raw)
+
+    assert result["extent"] == custom_extent
+
+
+def test_map_item_sets_collection_and_strips_links() -> None:
+    """map_item rewrites collection reference and drops navigation links."""
+    from dynastore.tasks.stac_harvest.task import map_item
+
+    raw = {
+        "id": "item-001",
+        "type": "Feature",
+        "collection": "original-collection",
+        "links": [{"rel": "self", "href": "https://example.test/item-001"}],
+        "geometry": {"type": "Point", "coordinates": [12.0, 41.0]},
+        "properties": {"datetime": "2024-01-01T00:00:00Z"},
+        "assets": {
+            "data": {"href": "https://data.example.test/item-001.tif", "type": "image/tiff"}
+        },
+    }
+    result = map_item(raw, "target-collection")
+
+    assert result["type"] == "Feature"
+    assert result["collection"] == "target-collection", "collection must be rewritten"
+    assert "links" not in result, "links must be stripped"
+    # Assets are preserved on items.
+    assert "assets" in result
+    assert result["id"] == "item-001"
+
+
+def test_virtual_assets_for_yields_raster_asset() -> None:
+    """virtual_assets_for yields a RASTER entry for tiff assets."""
+    from dynastore.tasks.stac_harvest.task import virtual_assets_for
+
+    feature = {
+        "id": "item-001",
+        "assets": {
+            "visual": {
+                "href": "https://data.example.test/item-001.tif",
+                "type": "image/tiff; application=geotiff",
+                "roles": ["data"],
+                "title": "Visual band",
+            }
+        },
+    }
+    results = list(virtual_assets_for(feature))
+
+    assert len(results) == 1
+    va = results[0]
+    assert va["asset_id"] == "item-001.visual"
+    assert va["href"] == "https://data.example.test/item-001.tif"
+    assert va["asset_type"] == "RASTER"
+    assert va["metadata"]["source_asset_key"] == "visual"
+
+
+def test_virtual_assets_for_skips_missing_href() -> None:
+    """virtual_assets_for skips assets with no href."""
+    from dynastore.tasks.stac_harvest.task import virtual_assets_for
+
+    feature = {
+        "id": "item-002",
+        "assets": {
+            "no_href": {"type": "application/json"},
+        },
+    }
+    results = list(virtual_assets_for(feature))
+    assert results == []
+
+
+def test_virtual_assets_for_gcs_owned_by() -> None:
+    """virtual_assets_for marks GCS hrefs as owned_by='gcs'."""
+    from dynastore.tasks.stac_harvest.task import virtual_assets_for
+
+    feature = {
+        "id": "item-003",
+        "assets": {
+            "data": {
+                "href": "https://storage.googleapis.com/my-bucket/item-003.tif",
+                "type": "image/tiff",
+            }
+        },
+    }
+    results = list(virtual_assets_for(feature))
+    assert results[0]["owned_by"] == "gcs"
