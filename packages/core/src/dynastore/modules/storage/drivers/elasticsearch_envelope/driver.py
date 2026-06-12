@@ -60,29 +60,14 @@ from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.driver_config import (
     ItemsElasticsearchEnvelopeDriverConfig,
 )
-from dynastore.modules.storage.drivers.elasticsearch import _ItemsElasticsearchBase
+from dynastore.modules.storage.drivers.elasticsearch import (
+    _ItemsElasticsearchBase,
+    _stamp_simplification,
+)
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.hints import Hint
 
 logger = logging.getLogger(__name__)
-
-
-def _stamp_simplification(doc: Dict[str, Any], factor: float, mode: str) -> None:
-    """Write simplification metadata into ``doc["system"]["geometry_simplification"]``.
-
-    Only emits the container when ``mode != "none"`` (exact geometry indexed,
-    no simplification applied). When simplification ran, the canonical shape is:
-
-        doc["system"]["geometry_simplification"] = {"factor": factor, "mode": mode}
-
-    ``system`` is created if absent; pre-existing system keys are preserved.
-    The old flat ``simplification_factor`` / ``simplification_mode`` root keys
-    are NOT written — only the canonical nested path is used.
-    """
-    if mode == "none":
-        return
-    system = doc.setdefault("system", {})
-    system["geometry_simplification"] = {"factor": factor, "mode": mode}
 
 
 class ItemsElasticsearchEnvelopeDriver(
@@ -158,6 +143,9 @@ class ItemsElasticsearchEnvelopeDriver(
     # ``geoid`` / ``external_id``) at the root, so structural queries built by
     # the shared SSOT must address that shape.
     _envelope_fields: ClassVar[EnvelopeFields] = ENVELOPE_FIELDS
+
+    # Config class resolved by :meth:`_ItemsElasticsearchBase._resolve_simplify_geometry`.
+    _driver_config_class: ClassVar[Any] = ItemsElasticsearchEnvelopeDriverConfig
 
     def _items_index_name(self, catalog_id: str) -> str:
         """Per-tenant envelope index ``{prefix}-{catalog_id}-envelope-items``.
@@ -270,33 +258,6 @@ class ItemsElasticsearchEnvelopeDriver(
             owner=ctx.get("owner"),
             attrs=ctx.get("attrs"),
         )
-
-    async def _resolve_simplify_geometry(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> bool:
-        """Resolve the ``simplify_geometry`` flag for the envelope driver.
-
-        Exact geometry is indexed by default; simplification is opt-in via the
-        per-driver ``ItemsElasticsearchEnvelopeDriverConfig``.
-        """
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.models.driver_context import DriverContext
-        from dynastore.tools.discovery import get_protocol
-
-        configs = get_protocol(ConfigsProtocol)
-        if configs is None:
-            return False
-        config = await configs.get_config(
-            ItemsElasticsearchEnvelopeDriverConfig,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            ctx=DriverContext(db_resource=db_resource),
-        )
-        return bool(getattr(config, "simplify_geometry", False))
 
     async def write_entities(
         self,

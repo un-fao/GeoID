@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import ItemsWritePolicy
     from dynastore.modules.storage.read_policy import ItemsReadPolicy
     from dynastore.modules.storage.storage_location import StorageLocation
+    from typing import Type
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
@@ -222,6 +223,9 @@ def _apply_geometry_simplification(
     The flat ``_simplification_factor`` / ``_simplification_mode`` keys
     are intentionally NOT written — the canonical nested object under
     ``system`` is the authoritative location (#1828 Phase 2).
+
+    Alias for :func:`_stamp_simplification`; both names are kept so
+    internal callers in this module need no churn.
     """
     if mode == "none":
         return
@@ -229,6 +233,10 @@ def _apply_geometry_simplification(
         "factor": factor,
         "mode": mode,
     }
+
+
+# Canonical name used by private and envelope drivers; same implementation.
+_stamp_simplification = _apply_geometry_simplification
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +452,14 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
     # ``items_query.EnvelopeFields``).
     _envelope_fields: ClassVar[EnvelopeFields] = PUBLIC_ENVELOPE_FIELDS
 
+    # Driver-specific config class resolved by :meth:`_resolve_simplify_geometry`.
+    # Each concrete driver overrides this to its own
+    # ``ItemsElasticsearch*DriverConfig`` subclass so the shared base can
+    # look up the per-driver config row without knowing the subclass name.
+    # The public driver uses ``ItemsElasticsearchDriverConfig`` (the default
+    # set here); private and envelope drivers override with their own types.
+    _driver_config_class: ClassVar[Any] = None  # set per-driver below
+
     # ------------------------------------------------------------------
     # Override seams
     # ------------------------------------------------------------------
@@ -588,6 +604,52 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
                 resp.get("errors") if isinstance(resp, dict) else None,
             )
         return succeeded, failures
+
+    # ------------------------------------------------------------------
+    # Shared simplification helper
+    # ------------------------------------------------------------------
+
+    async def _resolve_simplify_geometry(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> bool:
+        """Return the ``simplify_geometry`` flag from this driver's config.
+
+        Resolves the per-driver ``ItemsElasticsearch*DriverConfig`` via the
+        ConfigsProtocol waterfall, using :attr:`_driver_config_class` to
+        address the right config row.  Each concrete driver sets
+        ``_driver_config_class`` to its own config type; the public driver
+        falls back to ``get_driver_config`` (which already resolves
+        ``ItemsElasticsearchDriverConfig``).
+
+        Degrade-safe: returns ``False`` (exact geometry) when the configs
+        protocol is unavailable or the config row is missing.
+        """
+        config_cls = self.__class__._driver_config_class
+        if config_cls is None:
+            # Public driver path: delegate to the generic get_driver_config.
+            driver_config = await self.get_driver_config(
+                catalog_id, collection_id, db_resource=db_resource,
+            )
+            return bool(getattr(driver_config, "simplify_geometry", False))
+
+        from dynastore.models.protocols.configs import ConfigsProtocol
+        from dynastore.models.driver_context import DriverContext
+        from dynastore.tools.discovery import get_protocol
+
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return False
+        config = await configs.get_config(
+            config_cls,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+            ctx=DriverContext(db_resource=db_resource),
+        )
+        return bool(getattr(config, "simplify_geometry", False))
 
     # ------------------------------------------------------------------
     # CollectionItemsStore Protocol — data-side ops
@@ -1384,23 +1446,6 @@ class ItemsElasticsearchDriver(
             pass
         return ItemsWritePolicy()
 
-    async def _resolve_simplify_geometry(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> bool:
-        """Return the ``simplify_geometry`` flag from the driver config.
-
-        Centralises the flag lookup so ``write_entities``, ``index``, and
-        ``index_bulk`` all read from a single code path.
-        """
-        driver_config = await self.get_driver_config(
-            catalog_id, collection_id, db_resource=db_resource,
-        )
-        return bool(getattr(driver_config, "simplify_geometry", False))
-
     @staticmethod
     async def _resolve_read_policy(
         catalog_id: str, collection_id: str,
@@ -2028,45 +2073,6 @@ class ItemsElasticsearchDriver(
             failed=len(failures),
             failures=failures,
         )
-
-    # ------------------------------------------------------------------
-    # Serialization helpers (reuse existing DynaStore services)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    async def _serialize_item(
-        catalog_id: str, collection_id: str, item_id: str,
-    ) -> Optional[dict]:
-        try:
-            from dynastore.modules.catalog.item_service import ItemService
-            from typing import cast as _cast4
-            from dynastore.models.protocols import DbProtocol
-            from dynastore.modules.db_config.query_executor import DbResource
-            from dynastore.tools.discovery import get_protocol
-
-            db = get_protocol(DbProtocol)
-            item_svc = get_protocol(ItemService)
-            if not item_svc:
-                item_svc = ItemService(engine=_cast4(Optional[DbResource], db))
-
-            # Privileged system read: ES indexer serialization has no end-user
-            # principal; allow all rows from the envelope JOIN.
-            from dynastore.models.protocols.access_filter import AccessFilter
-            feature = await item_svc.get_item(
-                catalog_id, collection_id, item_id,
-                access_filter=AccessFilter.allow_everything(),
-            )
-            if feature is None:
-                return None
-
-            doc = feature.model_dump(by_alias=True, exclude_none=True)
-            doc["collection"] = collection_id
-            doc["catalog_id"] = catalog_id
-            return doc
-        except Exception as e:
-            logger.warning("Failed to serialize item %s/%s/%s: %s",
-                           catalog_id, collection_id, item_id, e)
-            return None
 
     async def location(
         self,

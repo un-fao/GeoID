@@ -58,7 +58,10 @@ from dynastore.modules.protocols import ModuleProtocol
 from dynastore.modules.storage.driver_config import (
     ItemsElasticsearchPrivateDriverConfig,
 )
-from dynastore.modules.storage.drivers.elasticsearch import _ItemsElasticsearchBase
+from dynastore.modules.storage.drivers.elasticsearch import (
+    _ItemsElasticsearchBase,
+    _stamp_simplification,
+)
 from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
 from dynastore.modules.storage.hints import Hint
 
@@ -148,6 +151,9 @@ class ItemsElasticsearchPrivateDriver(
     # structural queries built by the shared SSOT must address that shape.
     _envelope_fields: ClassVar[EnvelopeFields] = PRIVATE_ENVELOPE_FIELDS
 
+    # Config class resolved by :meth:`_ItemsElasticsearchBase._resolve_simplify_geometry`.
+    _driver_config_class: ClassVar[Any] = ItemsElasticsearchPrivateDriverConfig
+
     def _items_index_name(self, catalog_id: str) -> str:
         """Private per-tenant index ``{prefix}-{catalog_id}-private-items``.
 
@@ -162,35 +168,6 @@ class ItemsElasticsearchPrivateDriver(
     def _collection_routing(self, collection_id: Optional[str]) -> Optional[str]:
         """The private index is not sharded by collection — no ``_routing``."""
         return None
-
-    async def _resolve_simplify_geometry(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> bool:
-        """Resolve the ``simplify_geometry`` flag for the private driver (#1248).
-
-        Exact geometry is indexed by default; simplification is opt-in via
-        the per-driver ``ItemsElasticsearchPrivateDriverConfig`` config. The
-        inherited ``_ElasticsearchBase.get_driver_config`` resolves the
-        *public* config class, so the private driver reads its own.
-        """
-        from dynastore.models.protocols.configs import ConfigsProtocol
-        from dynastore.models.driver_context import DriverContext
-        from dynastore.tools.discovery import get_protocol
-
-        configs = get_protocol(ConfigsProtocol)
-        if configs is None:
-            return False
-        config = await configs.get_config(
-            ItemsElasticsearchPrivateDriverConfig,
-            catalog_id=catalog_id,
-            collection_id=collection_id,
-            ctx=DriverContext(db_resource=db_resource),
-        )
-        return bool(getattr(config, "simplify_geometry", False))
 
     @asynccontextmanager
     async def lifespan(self, app_state: object):
@@ -268,11 +245,7 @@ class ItemsElasticsearchPrivateDriver(
             doc, factor, mode = maybe_simplify_for_es(
                 doc, simplify=simplify_geometry,
             )
-            if mode != "none":
-                doc.setdefault("system", {})["geometry_simplification"] = {
-                    "factor": factor,
-                    "mode": mode,
-                }
+            _stamp_simplification(doc, factor, mode)
             doc = project_private_doc(doc, known_fields)
             bulk_body.append({"index": {"_index": index_name, "_id": geoid}})
             bulk_body.append(doc)
@@ -578,11 +551,7 @@ class ItemsElasticsearchPrivateDriver(
             ctx.catalog, ctx.collection,
         )
         doc, factor, mode = maybe_simplify_for_es(doc, simplify=simplify_geometry)
-        if mode != "none":
-            doc.setdefault("system", {})["geometry_simplification"] = {
-                "factor": factor,
-                "mode": mode,
-            }
+        _stamp_simplification(doc, factor, mode)
         doc = project_private_doc(doc, known_fields)
         await es.index(index=index_name, id=op.entity_id, body=doc)
 
@@ -641,11 +610,7 @@ class ItemsElasticsearchPrivateDriver(
             doc, factor, mode = maybe_simplify_for_es(
                 doc, simplify=simplify_geometry,
             )
-            if mode != "none":
-                doc.setdefault("system", {})["geometry_simplification"] = {
-                    "factor": factor,
-                    "mode": mode,
-                }
+            _stamp_simplification(doc, factor, mode)
             doc = project_private_doc(doc, known_fields)
             body.append({"index": {"_index": index_name, "_id": op.entity_id}})
             body.append(doc)
