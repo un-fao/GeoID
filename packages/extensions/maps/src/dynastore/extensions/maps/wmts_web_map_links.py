@@ -53,8 +53,11 @@ WEB_MAP_LINKS_EXTENSION_URI = (
 )
 
 # Preferred tile matrix set for slippy-map viewers.  Fall back to any
-# EPSG:3857 variant if the source already carries one; otherwise inject this.
-_PREFERRED_TMS = "WebMercatorQuad"
+# web-mercator variant the source already carries; otherwise inject this.
+# Default to "EPSG:3857" — the id legacy GeoServer/MapServer WMTS actually
+# advertise (the FAO source WMTS advertises EPSG:3857 and GoogleMapsCompatible,
+# not the OGC API "WebMercatorQuad" id, so emitting WebMercatorQuad would 404).
+_PREFERRED_TMS = "EPSG:3857"
 _EPSG3857_VARIANTS = frozenset(
     {"WebMercatorQuad", "EPSG:3857", "GoogleMapsCompatible", "GoogleCRS84Quad"}
 )

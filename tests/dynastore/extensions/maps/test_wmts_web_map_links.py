@@ -26,8 +26,8 @@ Covers:
 - An item with no WMTS-style preview asset produces no link.
 - An item with a malformed href produces no link and does not raise.
 - GetPreview-only params (width, height) are stripped from the template.
-- tilematrixset is forced to WebMercatorQuad when the source carries a
-  non-slippy-map CRS (EPSG:4326).
+- tilematrixset is forced to the preferred web-mercator id (EPSG:3857) when
+  the source carries a non-slippy-map CRS (EPSG:4326).
 """
 
 import pytest
@@ -108,11 +108,12 @@ def test_derive_get_tile_strips_preview_only_params():
 
 
 def test_derive_get_tile_forces_web_mercator_for_epsg4326():
-    """EPSG:4326 source should be overridden with WebMercatorQuad."""
+    """A non-mercator source TMS (EPSG:4326) is overridden with the preferred
+    web-mercator id EPSG:3857 (the id legacy WMTS actually advertise)."""
     result = _derive_wmts_get_tile_href(_FAO_PREVIEW_HREF)
     assert result is not None
     params = _parse_template(result)
-    assert params.get("tilematrixset") == "WebMercatorQuad"
+    assert params.get("tilematrixset") == "EPSG:3857"
 
 
 def test_derive_get_tile_keeps_epsg3857():
@@ -131,7 +132,7 @@ def test_derive_get_tile_injects_tms_when_absent():
     result = _derive_wmts_get_tile_href(href)
     assert result is not None
     params = _parse_template(result)
-    assert params.get("tilematrixset") == "WebMercatorQuad"
+    assert params.get("tilematrixset") == "EPSG:3857"
 
 
 def test_derive_get_tile_version_fixed_to_1_0_0():
