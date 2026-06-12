@@ -28,55 +28,16 @@ module — imports are lazy.
 from pathlib import Path
 
 _HERE = Path(__file__).parent / "notebooks"
-_REG = "dynastore.extensions.stac"
 
 
 def build_contributions():
     try:
-        from dynastore.modules.notebooks.contribution import NotebookContribution
         from dynastore.modules.notebooks.folder_discovery import discover_notebooks
     except Exception:
         return []
 
-    # Explicit entries with rich titles/descriptions take precedence.
-    explicit = [
-        NotebookContribution(
-            notebook_id="stac_catalog_collection_lifecycle",
-            title={"en": "Catalog / Collection Lifecycle — STAC"},
-            description={
-                "en": (
-                    "Walks the full STAC lifecycle: create catalog, create "
-                    "collection with inline schema/layer_config/write_policy, "
-                    "localized update (en + es), round-trip, soft-delete, and "
-                    "the zero-config variant where every config falls back to "
-                    "code defaults."
-                )
-            },
-            tags=["stac", "catalog", "collection", "lifecycle", "demo"],
-            notebook_path=_HERE / "catalog_collection_lifecycle.ipynb",
-            registered_by=_REG,
-        ),
-        NotebookContribution(
-            notebook_id="stac_virtual_asset_collections",
-            title={"en": "Virtual Asset Collections — STAC"},
-            description={
-                "en": (
-                    "End-to-end loop using the /virtual/assets/... STAC endpoints "
-                    "to expose a single uploaded asset across every collection it "
-                    "belongs to. Demonstrates registering one asset_id under two "
-                    "collections and listing membership via the new virtual route."
-                )
-            },
-            tags=["stac", "virtual", "assets", "demo"],
-            notebook_path=_HERE / "virtual_asset_collections.ipynb",
-            registered_by=_REG,
-        ),
-    ]
-    explicit_paths = {c.notebook_path for c in explicit}
-
-    # Auto-discover anything else in the folder (e.g. se01_gdal_to_stac_…).
-    discovered = [
-        c for c in discover_notebooks(_HERE, prefix="stac")
-        if c.notebook_path not in explicit_paths
-    ]
-    return explicit + discovered
+    # The STAC lifecycle walkthrough lives in modules/catalog; the
+    # virtual-asset flow is covered by the ingestion notebook in
+    # tasks/ingestion. Any notebook placed in this folder is picked up
+    # automatically.
+    return list(discover_notebooks(_HERE, prefix="stac"))

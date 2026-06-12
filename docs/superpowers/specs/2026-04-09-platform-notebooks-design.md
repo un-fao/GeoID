@@ -297,4 +297,4 @@ ALTER TABLE {schema}.notebooks
 
 ### Example Notebook Provenance
 
-The two existing example notebooks (`01_creating_dimensions.ipynb`, `02_asis_dimensions.ipynb`) are dimension-related and should be moved to the module that owns dimension logic. Each module that ships examples places `.ipynb` files in its own `examples/` directory and calls `register_platform_notebook()` in its init.
+The dimension-related example notebooks have been consolidated into `nb12_datacube_dimensions.ipynb` (in `extensions/dimensions/examples/`) which covers the end-to-end dimensions API via presets. Each module that ships examples places `.ipynb` files in its own `examples/` directory and calls `register_platform_notebook()` in its init.

@@ -34,22 +34,27 @@ _REG = "dynastore.extensions.features"
 
 
 def build_contributions():
-    from dynastore.modules.notebooks.contribution import NotebookContribution
+    try:
+        from dynastore.models.localization import LocalizedText
+        from dynastore.modules.notebooks.contribution import NotebookContribution
+    except Exception:
+        return []
 
     return [
         NotebookContribution(
-            notebook_id="features_ingestion_and_diagnostics",
-            title={"en": "Features — Ingestion & Diagnostics"},
-            description={
-                "en": (
-                    "Walks the waterfall-driven ingestion path: zero-config "
-                    "collection accepts items via code defaults, policy-driven "
-                    "rejections return an IngestionReport (HTTP 207 partial / "
-                    "200 fully accepted) with diagnostic links."
+            notebook_id="features_ogc_features",
+            title=LocalizedText(
+                en="OGC API Features — Collections / Items CRUD + CQL2 Filter"
+            ),
+            description=LocalizedText(
+                en=(
+                    "Demonstrates OGC API — Features (Parts 1–4): catalog setup via "
+                    "the public_open_data preset, collection and item CRUD, CQL2-text "
+                    "and CQL2-JSON filtering, queryables."
                 )
-            },
-            tags=["features", "ingestion", "ogc", "demo"],
-            notebook_path=_HERE / "ingestion_and_diagnostics.ipynb",
+            ),
+            tags=["features", "ogc", "cql2", "crud", "demo"],
+            notebook_path=_HERE / "nb02_ogc_features.ipynb",
             registered_by=_REG,
         ),
     ]

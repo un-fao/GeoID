@@ -17,11 +17,11 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Lock in that ``POST /admin/policies?catalog_id=...`` accepts the full
-Policy + Condition shape used by the lookup-only-anonymous-write demo.
+Policy + Condition shape used by the lookup-only deployment profile.
 
-The demo notebook (``uc_lookup_only_anonymous_write``) POSTs a catalog-scoped
-policy bundle built by ``deny_all_except_lookup``. Each policy in that bundle
-exercises a different corner of the wire schema:
+A lookup-only setup POSTs a catalog-scoped policy bundle built by
+``deny_all_except_lookup``. Each policy in that bundle exercises a
+different corner of the wire schema:
 
 - multiple ``actions`` per policy (e.g. ``["GET", "POST"]``),
 - ``resources`` as a regex list,

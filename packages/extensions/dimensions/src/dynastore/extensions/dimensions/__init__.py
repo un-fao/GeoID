@@ -24,10 +24,19 @@ from . import presets as _dimensions_presets  # noqa: F401 -- preset registratio
 
 _examples_dir = Path(__file__).parent / "examples"
 
-if _examples_dir.is_dir():
-    for ipynb in sorted(_examples_dir.glob("*.ipynb")):
-        register_platform_notebook(
-            notebook_id=ipynb.stem,
-            registered_by="dimensions_extension",
-            notebook_path=ipynb,
-        )
+_nb12 = _examples_dir / "nb12_datacube_dimensions.ipynb"
+if _nb12.is_file():
+    register_platform_notebook(
+        notebook_id="nb12_datacube_dimensions",
+        registered_by="dimensions_extension",
+        notebook_path=_nb12,
+        title={"en": "OGC Datacube Dimensions — End-to-End"},
+        description={
+            "en": (
+                "Register dimensions via the common_dimensions preset, "
+                "query dekadal and admin-hierarchy dimensions via the OGC "
+                "Dimensions API, and monitor the materialisation job."
+            )
+        },
+        tags=["dimensions", "ogc", "datacube", "stac", "preset"],
+    )

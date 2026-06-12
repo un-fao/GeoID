@@ -147,6 +147,27 @@ def test_apply_collection_preset_at_catalog_url_returns_409():
     assert "catalog" in resp.json()["detail"]
 
 
+def test_platform_preset_catalog_scopable_reachable_at_catalog_url():
+    """A PLATFORM-tier preset with ``catalog_scopable=True`` (the composite
+    bundles) is reachable from the catalog URL family; without the flag it
+    stays platform-only."""
+    from dynastore.extensions.configs.presets_api import _preset_reachable_at
+    from dynastore.modules.storage.presets import PresetTier
+
+    class _Scopable:
+        tier = PresetTier.PLATFORM
+        catalog_scopable = True
+
+    class _PlatformOnly:
+        tier = PresetTier.PLATFORM
+        catalog_scopable = False
+
+    assert _preset_reachable_at(_Scopable(), PresetTier.CATALOG) is True
+    assert _preset_reachable_at(_Scopable(), PresetTier.PLATFORM) is True
+    assert _preset_reachable_at(_Scopable(), PresetTier.COLLECTION) is False
+    assert _preset_reachable_at(_PlatformOnly(), PresetTier.CATALOG) is False
+
+
 def test_apply_collection_preset_unknown_collection_returns_404(monkeypatch):
     """Unknown collection segment → 404 before any config write."""
     catalogs_mock = MagicMock()
