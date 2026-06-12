@@ -253,6 +253,21 @@ function selectContainer(container) {
     _map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50, duration: 1500 });
   }
 
+  // Show or hide the attribution line for this container.
+  let attrEl = document.getElementById("container-attribution");
+  if (!attrEl) {
+    attrEl = document.createElement("div");
+    attrEl.id = "container-attribution";
+    attrEl.style.cssText = (
+      "font-size:0.7rem;color:#64748b;margin-top:0.4rem;"
+      + "word-break:break-word;line-height:1.4;"
+    );
+    const tree = document.getElementById("container-tree");
+    if (tree) tree.parentElement.appendChild(attrEl);
+  }
+  attrEl.textContent = container.attribution || "";
+  attrEl.style.display = container.attribution ? "block" : "none";
+
   setOverlayLayers(buildContainerLayers(container));
 }
 
