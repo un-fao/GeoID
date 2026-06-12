@@ -46,7 +46,10 @@
   function authHeaders() {
     const headers = { "Accept": "application/json" };
     try {
-      const key = (typeof window !== "undefined" && window.DS_TOKEN_KEY) || "ds_token";
+      // Same storage-key convention as custom.js: the platform config may
+      // override the token key; "ds_token" is the platform default.
+      const cfg = (typeof window !== "undefined" && window.platformConfig) || {};
+      const key = cfg.token_key || window.DS_TOKEN_KEY || "ds_token";
       const token = localStorage.getItem(key) || sessionStorage.getItem(key);
       if (token) headers["Authorization"] = "Bearer " + token;
     } catch (_) { /* storage unavailable (sandboxed embed) — probe anonymously */ }
@@ -56,16 +59,14 @@
   async function probe(standard) {
     const url = getApiRoot() + standard.url;
     const cached = readCache(url);
-    if (cached !== null) {
-      if (cached.__denied) return { state: STATE_FALLBACK, count: standard.classes.length, denied: true };
-      return classify(cached);
-    }
+    if (cached !== null) return classify(cached);
     try {
       const res = await fetch(url, { headers: authHeaders() });
       if (res.status === 401 || res.status === 403) {
-        // Conformance is access-gated for this principal. Remember the denial
-        // so reloads inside the cache window stay quiet.
-        writeCache(url, { __denied: true });
+        // Conformance is access-gated for this principal. Deliberately NOT
+        // cached: the render() canary already keeps the page to a single
+        // gated request, and caching the denial would pin a signed-in user
+        // to snapshot data for the cache TTL after an anonymous visit.
         return { state: STATE_FALLBACK, count: standard.classes.length, denied: true };
       }
       if (!res.ok) return { state: STATE_FALLBACK, count: standard.classes.length };
@@ -185,16 +186,19 @@
         rootEl.replaceChild(firstBadge, oldFirst);
       }
       let okCount = canary.state === STATE_OK ? 1 : 0;
-      await Promise.all(standards.slice(1).map(async (s, i) => {
-        const status = await probe(s);
-        const newBadge = buildBadge(s, status);
-        const oldBadge = rootEl.children[i + 1];
-        if (oldBadge && oldBadge.parentNode === rootEl) {
-          rootEl.replaceChild(newBadge, oldBadge);
-        }
-        if (status.state === STATE_OK) okCount += 1;
-      }));
-      setFooterText(standards.length, okCount, false);
+      try {
+        await Promise.all(standards.slice(1).map(async (s, i) => {
+          const status = await probe(s);
+          const newBadge = buildBadge(s, status);
+          const oldBadge = rootEl.children[i + 1];
+          if (oldBadge && oldBadge.parentNode === rootEl) {
+            rootEl.replaceChild(newBadge, oldBadge);
+          }
+          if (status.state === STATE_OK) okCount += 1;
+        }));
+      } finally {
+        setFooterText(standards.length, okCount, false);
+      }
     }
   }
 
