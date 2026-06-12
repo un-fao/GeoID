@@ -39,10 +39,11 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 import urllib.request
 from typing import Any, ClassVar, Optional, Tuple, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from dynastore.extensions.volumes.cityjson_ingest import (
     CITYOBJECT_FEATURE_TYPE,
@@ -70,6 +71,9 @@ _DEFAULT_COLLECTION_ID = "denhaag"
 # ---------------------------------------------------------------------------
 
 
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
 class GeoVolumesDemoParams(BaseModel):
     """Parameters for the geovolumes_demo preset."""
 
@@ -78,6 +82,26 @@ class GeoVolumesDemoParams(BaseModel):
     source_url: str = _DEFAULT_SOURCE_URL
     local_path: Optional[str] = None
     max_features: Optional[int] = None
+
+    @field_validator("catalog_id", "collection_id")
+    @classmethod
+    def _validate_identifier(cls, v: str) -> str:
+        # Identifiers are joined into filesystem cache paths — reject
+        # separators and traversal sequences outright.
+        if not _SAFE_ID_RE.match(v):
+            raise ValueError(
+                "must contain only letters, digits, '-' or '_' and not start with a separator"
+            )
+        return v
+
+    @field_validator("source_url")
+    @classmethod
+    def _validate_source_url(cls, v: str) -> str:
+        # The URL is fetched server-side: restrict to https to rule out
+        # file://, gopher:// and cleartext schemes (SSRF surface).
+        if not v.startswith("https://"):
+            raise ValueError("source_url must use https://")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -89,14 +113,13 @@ def _download_source(source_url: str, catalog_id: str, collection_id: str) -> pa
     """Download ``source_url`` to a cache directory and return the local path."""
     import tempfile
 
-    cache_dir = (
-        pathlib.Path(tempfile.gettempdir())
-        / "dynastore_geovolumes"
-        / catalog_id
-        / collection_id
-    )
+    cache_root = (pathlib.Path(tempfile.gettempdir()) / "dynastore_geovolumes").resolve()
+    cache_dir = (cache_root / catalog_id / collection_id).resolve()
+    if not cache_dir.is_relative_to(cache_root):
+        raise ValueError("catalog_id/collection_id escape the cache directory")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    filename = source_url.rsplit("/", 1)[-1] or "dataset.city.json"
+    raw_name = source_url.rsplit("/", 1)[-1] or "dataset.city.json"
+    filename = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name) or "dataset.city.json"
     dest = cache_dir / filename
     if not dest.exists():
         logger.info("Downloading %s -> %s", source_url, dest)

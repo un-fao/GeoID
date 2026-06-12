@@ -1,372 +1,385 @@
-// geovolumes-globe.js — OGC API 3D GeoVolumes globe browser.
-// Depends on: maplibre-gl.js, deck.gl dist.min.js, common/i18n.js,
-// common/maplibre-map.js — all loaded as plain scripts before this file.
+// volumes-globe.js — OGC API 3D GeoVolumes globe browser (ES module).
+// Depends on: maplibre-gl.js and deck.gl dist.min.js loaded as CDN plain scripts
+// before this module (they expose window.maplibregl and window.deck).
 
-(function () {
-  "use strict";
+import { mountEntitySelector } from "../static/common/entity-selector.js";
+import { catalogSource } from "../static/common/entity-sources.js";
+import { createMapLibreGlobe } from "../static/common/maplibre-map.js";
+import { register, t } from "../static/common/i18n.js";
 
-  // ---------------------------------------------------------------------------
-  // Constants
-  // ---------------------------------------------------------------------------
+register({
+  en: {
+    "vol.title": "Agro-Informatics Platform: 3D GeoVolumes Browser",
+    "vol.back": "Back to Home",
+    "vol.catalog": "Catalog",
+    "vol.selectCatalog": "Select a catalog to browse 3D containers.",
+    "vol.loading": "Loading containers…",
+    "vol.loadFailed": "Failed to load 3D containers.",
+    "vol.noContainers": "No 3D containers found.",
+  },
+  fr: {
+    "vol.title": "Plateforme agro-informatique : navigateur 3D GeoVolumes",
+    "vol.back": "Retour à l'accueil",
+    "vol.catalog": "Catalogue",
+    "vol.selectCatalog": "Sélectionnez un catalogue pour parcourir les conteneurs 3D.",
+    "vol.loading": "Chargement des conteneurs…",
+    "vol.loadFailed": "Échec du chargement des conteneurs 3D.",
+    "vol.noContainers": "Aucun conteneur 3D trouvé.",
+  },
+  es: {
+    "vol.title": "Plataforma agroinformática: navegador 3D GeoVolumes",
+    "vol.back": "Volver al inicio",
+    "vol.catalog": "Catálogo",
+    "vol.selectCatalog": "Seleccione un catálogo para explorar contenedores 3D.",
+    "vol.loading": "Cargando contenedores…",
+    "vol.loadFailed": "Error al cargar los contenedores 3D.",
+    "vol.noContainers": "No se encontraron contenedores 3D.",
+  },
+});
 
-  // Base path for the OGC API (same origin, rooted at /geovolumes).
-  // The HTML page is served at /web/geovolumes/ so ../../geovolumes reaches
-  // the API mount at /geovolumes.
-  var API_BASE = "../../volumes";
-  var FEATURES_BASE = "../../features";
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-  // 3D Tiles relationship URI per OGC API GeoVolumes spec.
-  var REL_3DTILES = "http://www.opengis.net/def/rel/ogc/1.0/3dtiles";
+// Base path for the OGC API (same origin, rooted at /volumes).
+// The HTML page is served at /web/volumes/ so ../../volumes reaches
+// the API mount at /volumes.
+const API_BASE      = "../../volumes";
+const FEATURES_BASE = "../../features";
 
-  // ---------------------------------------------------------------------------
-  // State
-  // ---------------------------------------------------------------------------
+// 3D Tiles relationship URI per OGC API GeoVolumes spec.
+const REL_3DTILES = "http://www.opengis.net/def/rel/ogc/1.0/3dtiles";
 
-  var _map = null;
-  var _overlay = null;
-  var _activeLayers = [];
-  var _catalogId = null;
-  var _containers = [];       // flat list of loaded ThreeDContainer objects
-  var _activeContainerId = null;
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // DOM refs (populated after DOMContentLoaded)
-  // ---------------------------------------------------------------------------
+let _map            = null;
+let _overlay        = null;
+let _catalogId      = null;
+let _containers     = [];
+let _activeContainerId = null;
 
-  var catalogSelect, containerTree, infoPanel, infoPropsDl, infoClose;
+// ---------------------------------------------------------------------------
+// DOM refs (populated after DOMContentLoaded)
+// ---------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // Initialise globe after DOM is ready
-  // ---------------------------------------------------------------------------
+let containerTree, infoPanel, infoPropsDl, infoClose;
 
-  document.addEventListener("DOMContentLoaded", function () {
-    catalogSelect  = document.getElementById("catalog-select");
-    containerTree  = document.getElementById("container-tree");
-    infoPanel      = document.getElementById("info-panel");
-    infoPropsDl    = document.getElementById("info-props");
-    infoClose      = document.getElementById("info-close");
+// ---------------------------------------------------------------------------
+// Initialise globe after DOM is ready
+// ---------------------------------------------------------------------------
 
-    var globe = createMapLibreGlobe("geovolumes-map");
-    _map     = globe.map;
-    _overlay = globe.overlay;
+document.addEventListener("DOMContentLoaded", () => {
+  containerTree = document.getElementById("container-tree");
+  infoPanel     = document.getElementById("info-panel");
+  infoPropsDl   = document.getElementById("info-props");
+  infoClose     = document.getElementById("info-close");
 
-    infoClose.addEventListener("click", function () { infoPanel.style.display = "none"; });
+  applyTranslations();
 
-    catalogSelect.addEventListener("change", function () {
-      _catalogId = catalogSelect.value || null;
+  const globe = createMapLibreGlobe("geovolumes-map");
+  _map     = globe.map;
+  _overlay = globe.overlay;
+
+  infoClose.addEventListener("click", () => { infoPanel.style.display = "none"; });
+
+  mountEntitySelector({
+    root:      "#catalog-selector",
+    source:    catalogSource(),
+    onChange:  (cat) => {
+      _catalogId = cat ? cat.id : null;
       if (_catalogId) loadContainers(_catalogId);
-      else resetTree("Select a catalog to browse 3D containers.");
-    });
+      else resetTree(t("vol.selectCatalog"));
+    },
+  });
+});
 
-    loadCatalogs();
+function applyTranslations() {
+  const labels = {
+    "page-title": "vol.title",
+    "lbl-back": "vol.back",
+    "lbl-catalog": "vol.catalog",
+    "lbl-select-catalog": "vol.selectCatalog",
+  };
+  for (const [id, key] of Object.entries(labels)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = t(key);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch helpers
+// ---------------------------------------------------------------------------
+
+function fetchJSON(url) {
+  return fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+    return r.json();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Container tree
+// ---------------------------------------------------------------------------
+
+function loadContainers(catalogId) {
+  resetTree(t("vol.loading"));
+  fetchJSON(`${API_BASE}/catalogs/${encodeURIComponent(catalogId)}/collections`)
+    .then((data) => {
+      const containers = (data.collections || []).filter(
+        (c) => c.collectionType === "3dcontainer",
+      );
+      _containers = containers;
+      renderContainerTree(containers);
+      renderVolumeLayers(containers);
+    })
+    .catch(() => { resetTree(t("vol.loadFailed")); });
+}
+
+function resetTree(msg) {
+  const spinner = document.createElement("div");
+  spinner.className = "loading-spinner";
+  const p = document.createElement("p");
+  p.textContent = msg;
+  spinner.appendChild(p);
+  containerTree.replaceChildren(spinner);
+  _containers = [];
+  _activeContainerId = null;
+  clearOverlayLayers();
+}
+
+function renderContainerTree(containers) {
+  containerTree.replaceChildren();
+  if (!containers || containers.length === 0) {
+    const spinner = document.createElement("div");
+    spinner.className = "loading-spinner";
+    const p = document.createElement("p");
+    p.textContent = t("vol.noContainers");
+    spinner.appendChild(p);
+    containerTree.appendChild(spinner);
+    return;
+  }
+  for (const c of containers) {
+    containerTree.appendChild(buildNodeEl(c));
+  }
+}
+
+function buildNodeEl(container) {
+  const wrapper = document.createElement("div");
+
+  const node = document.createElement("div");
+  node.className = "container-node";
+  node.dataset.id = container.id;
+
+  const titleSpan = document.createElement("span");
+  titleSpan.textContent = container.title || container.id;
+
+  const typeDiv = document.createElement("div");
+  typeDiv.className = "node-type";
+  typeDiv.textContent = container.collectionType || "";
+
+  node.appendChild(titleSpan);
+  node.appendChild(typeDiv);
+  node.addEventListener("click", () => { selectContainer(container); });
+  wrapper.appendChild(node);
+
+  const children = container.children || [];
+  if (children.length > 0) {
+    const childDiv = document.createElement("div");
+    childDiv.className = "container-children";
+    for (const ch of children) {
+      childDiv.appendChild(buildNodeEl(ch));
+    }
+    wrapper.appendChild(childDiv);
+  }
+
+  return wrapper;
+}
+
+// ---------------------------------------------------------------------------
+// Volume (extruded polygon) layers — one per container
+// ---------------------------------------------------------------------------
+
+function renderVolumeLayers(containers) {
+  /* global deck */
+  const polygonData = [];
+  for (const c of containers) {
+    const ext  = c.contentExtent || {};
+    const bbox = ext.bbox;
+    if (!bbox || bbox.length < 6) continue;
+    const [w, s, zmin, e, n, zmax] = bbox;
+    polygonData.push({
+      id: c.id,
+      contour: [[w, s], [e, s], [e, n], [w, n], [w, s]],
+      elevation: zmin,
+      extrudedHeight: zmax,
+      container: c,
+    });
+  }
+
+  const volumeLayer = new deck.PolygonLayer({
+    id:        "geovolumes-extents",
+    data:      polygonData,
+    extruded:  true,
+    wireframe: true,
+    getPolygon:      (d) => d.contour,
+    getElevation:    (d) => d.extrudedHeight - d.elevation,
+    getFillColor:    [99, 102, 241, 64],
+    getLineColor:    [99, 102, 241, 180],
+    lineWidthMinPixels: 1,
+    pickable:  true,
+    onClick:   (info) => { if (info.object) selectContainer(info.object.container); },
   });
 
-  // ---------------------------------------------------------------------------
-  // Fetch helpers
-  // ---------------------------------------------------------------------------
+  setOverlayLayers([volumeLayer]);
+}
 
-  function fetchJSON(url) {
-    return fetch(url).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status + " for " + url);
-      return r.json();
+// ---------------------------------------------------------------------------
+// Container selection: fly to + add 3D Tiles + footprints layer
+// ---------------------------------------------------------------------------
+
+function selectContainer(container) {
+  document.querySelectorAll(".container-node").forEach((el) => {
+    el.classList.toggle("active", el.dataset.id === container.id);
+  });
+  _activeContainerId = container.id;
+
+  const ext  = container.contentExtent || {};
+  const bbox = ext.bbox;
+  if (bbox && bbox.length >= 5) {
+    const lng = (bbox[0] + bbox[3]) / 2;
+    const lat = (bbox[1] + bbox[4]) / 2;
+    _map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50, duration: 1500 });
+  }
+
+  setOverlayLayers(buildContainerLayers(container));
+}
+
+function buildContainerLayers(container) {
+  /* global deck */
+  const polygonData = [];
+  for (const c of _containers) {
+    const ext  = c.contentExtent || {};
+    const bbox = ext.bbox;
+    if (!bbox || bbox.length < 6) continue;
+    const [w, s, zmin, e, n, zmax] = bbox;
+    polygonData.push({
+      id: c.id,
+      contour: [[w, s], [e, s], [e, n], [w, n], [w, s]],
+      elevation: zmin,
+      extrudedHeight: zmax,
+      container: c,
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Catalog selection
-  // ---------------------------------------------------------------------------
-
-  function loadCatalogs() {
-    fetchJSON(API_BASE + "/catalogs")
-      .then(function (data) {
-        var cats = data.catalogs || data.collections || [];
-        cats.forEach(function (c) {
-          var opt = document.createElement("option");
-          opt.value = c.id;
-          opt.textContent = c.title || c.id;
-          catalogSelect.appendChild(opt);
-        });
-      })
-      .catch(function () {
-        resetTree("Failed to load catalogs.");
-      });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Container tree
-  // ---------------------------------------------------------------------------
-
-  function loadContainers(catalogId) {
-    resetTree("Loading containers…");
-    fetchJSON(API_BASE + "/catalogs/" + encodeURIComponent(catalogId) + "/collections")
-      .then(function (data) {
-        var containers = (data.collections || []).filter(function (c) {
-          return c.collectionType === "3dcontainer";
-        });
-        _containers = containers;
-        renderContainerTree(containers);
-        renderVolumeLayers(containers);
-      })
-      .catch(function () {
-        resetTree("Failed to load 3D containers.");
-      });
-  }
-
-  function resetTree(msg) {
-    var spinner = document.createElement("div");
-    spinner.className = "loading-spinner";
-    var p = document.createElement("p");
-    p.textContent = msg;
-    spinner.appendChild(p);
-    containerTree.replaceChildren(spinner);
-    _containers = [];
-    _activeContainerId = null;
-    clearOverlayLayers();
-  }
-
-  // Recursive tree render (handles children nesting).
-  function renderContainerTree(containers) {
-    containerTree.replaceChildren();
-    if (!containers || containers.length === 0) {
-      var spinner = document.createElement("div");
-      spinner.className = "loading-spinner";
-      var p = document.createElement("p");
-      p.textContent = "No 3D containers found.";
-      spinner.appendChild(p);
-      containerTree.appendChild(spinner);
-      return;
-    }
-    containers.forEach(function (c) {
-      containerTree.appendChild(buildNodeEl(c, 0));
-    });
-  }
-
-  function buildNodeEl(container, depth) {
-    var wrapper = document.createElement("div");
-
-    var node = document.createElement("div");
-    node.className = "container-node";
-    node.dataset.id = container.id;
-
-    var titleSpan = document.createElement("span");
-    titleSpan.textContent = container.title || container.id;
-
-    var typeDiv = document.createElement("div");
-    typeDiv.className = "node-type";
-    typeDiv.textContent = container.collectionType || "";
-
-    node.appendChild(titleSpan);
-    node.appendChild(typeDiv);
-    node.addEventListener("click", function () { selectContainer(container); });
-    wrapper.appendChild(node);
-
-    // Render nested children if present.
-    var children = container.children || [];
-    if (children.length > 0) {
-      var childDiv = document.createElement("div");
-      childDiv.className = "container-children";
-      children.forEach(function (ch) {
-        childDiv.appendChild(buildNodeEl(ch, depth + 1));
-      });
-      wrapper.appendChild(childDiv);
-    }
-
-    return wrapper;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Volume (extruded polygon) layers — one per container
-  // ---------------------------------------------------------------------------
-
-  function renderVolumeLayers(containers) {
-    var polygonData = [];
-    containers.forEach(function (c) {
-      var ext = c.contentExtent || {};
-      var bbox = ext.bbox;  // [w, s, zmin, e, n, zmax]
-      if (!bbox || bbox.length < 6) return;
-      var w = bbox[0], s = bbox[1], zmin = bbox[2], e = bbox[3], n = bbox[4], zmax = bbox[5];
-      polygonData.push({
-        id: c.id,
-        contour: [[w, s], [e, s], [e, n], [w, n], [w, s]],
-        elevation: zmin,
-        extrudedHeight: zmax,
-        container: c,
-      });
-    });
-
-    var volumeLayer = new deck.PolygonLayer({
-      id: "geovolumes-extents",
-      data: polygonData,
-      extruded: true,
+  const layers = [
+    new deck.PolygonLayer({
+      id:        "geovolumes-extents",
+      data:      polygonData,
+      extruded:  true,
       wireframe: true,
-      getPolygon: function (d) { return d.contour; },
-      getElevation: function (d) { return d.extrudedHeight - d.elevation; },
-      getFillColor: [99, 102, 241, 64],   // indigo, ~0.25 opacity
-      getLineColor: [99, 102, 241, 180],
+      getPolygon:   (d) => d.contour,
+      getElevation: (d) => d.extrudedHeight - d.elevation,
+      getFillColor: (d) => d.id === container.id ? [99, 102, 241, 100] : [99, 102, 241, 40],
+      getLineColor:    [99, 102, 241, 180],
       lineWidthMinPixels: 1,
+      pickable:  true,
+      onClick:   (info) => { if (info.object) selectContainer(info.object.container); },
+    }),
+  ];
+
+  const tilesHref = find3dTilesHref(container);
+  if (tilesHref) {
+    layers.push(new deck.Tile3DLayer({
+      id:       `3dtiles-${container.id}`,
+      data:     tilesHref,
       pickable: true,
-      onClick: function (info) {
-        if (info.object) selectContainer(info.object.container);
-      },
-    });
-
-    setOverlayLayers([volumeLayer]);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Container selection: fly to + add 3D Tiles + footprints layer
-  // ---------------------------------------------------------------------------
-
-  function selectContainer(container) {
-    // Mark active in sidebar.
-    document.querySelectorAll(".container-node").forEach(function (el) {
-      el.classList.toggle("active", el.dataset.id === container.id);
-    });
-    _activeContainerId = container.id;
-
-    // Fly to contentExtent centre.
-    var ext = container.contentExtent || {};
-    var bbox = ext.bbox;
-    if (bbox && bbox.length >= 5) {
-      var lng = (bbox[0] + bbox[3]) / 2;
-      var lat = (bbox[1] + bbox[4]) / 2;
-      _map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50, duration: 1500 });
-    }
-
-    // Build deck layers for this container.
-    var layers = buildContainerLayers(container);
-    setOverlayLayers(layers);
-  }
-
-  function buildContainerLayers(container) {
-    var layers = [];
-
-    // --- Re-render all volume footprints (so they stay visible) ---
-    var polygonData = [];
-    _containers.forEach(function (c) {
-      var ext = c.contentExtent || {};
-      var bbox = ext.bbox;
-      if (!bbox || bbox.length < 6) return;
-      var w = bbox[0], s = bbox[1], zmin = bbox[2], e = bbox[3], n = bbox[4], zmax = bbox[5];
-      polygonData.push({
-        id: c.id,
-        contour: [[w, s], [e, s], [e, n], [w, n], [w, s]],
-        elevation: zmin,
-        extrudedHeight: zmax,
-        container: c,
-      });
-    });
-
-    layers.push(new deck.PolygonLayer({
-      id: "geovolumes-extents",
-      data: polygonData,
-      extruded: true,
-      wireframe: true,
-      getPolygon: function (d) { return d.contour; },
-      getElevation: function (d) { return d.extrudedHeight - d.elevation; },
-      getFillColor: function (d) {
-        return d.id === container.id ? [99, 102, 241, 100] : [99, 102, 241, 40];
-      },
-      getLineColor: [99, 102, 241, 180],
-      lineWidthMinPixels: 1,
-      pickable: true,
-      onClick: function (info) {
-        if (info.object) selectContainer(info.object.container);
-      },
+      onTilesetLoad: () => {},
     }));
-
-    // --- 3D Tiles layer (if a 3dtiles link is present) ---
-    var tilesHref = find3dTilesHref(container);
-    if (tilesHref) {
-      layers.push(new deck.Tile3DLayer({
-        id: "3dtiles-" + container.id,
-        data: tilesHref,
-        pickable: true,
-        onTilesetLoad: function () {},
-      }));
-    }
-
-    // --- GeoJSON footprints layer (items from Features API) ---
-    if (_catalogId) {
-      var itemsUrl =
-        FEATURES_BASE +
-        "/catalogs/" + encodeURIComponent(_catalogId) +
-        "/collections/" + encodeURIComponent(container.id) +
-        "/items?limit=200";
-
-      layers.push(new deck.GeoJsonLayer({
-        id: "footprints-" + container.id,
-        data: itemsUrl,
-        pickable: true,
-        stroked: true,
-        filled: true,
-        getFillColor: [99, 200, 241, 40],
-        getLineColor: [99, 200, 241, 180],
-        lineWidthMinPixels: 1,
-        onClick: function (info) {
-          if (info.object) showBuildingPopup(info.object);
-        },
-      }));
-    }
-
-    return layers;
   }
 
-  // ---------------------------------------------------------------------------
-  // Building attribute popup
-  // ---------------------------------------------------------------------------
+  if (_catalogId) {
+    const itemsUrl =
+      `${FEATURES_BASE}/catalogs/${encodeURIComponent(_catalogId)}`
+      + `/collections/${encodeURIComponent(container.id)}/items?limit=200`;
+    layers.push(new deck.GeoJsonLayer({
+      id:       `footprints-${container.id}`,
+      data:     itemsUrl,
+      pickable: true,
+      stroked:  true,
+      filled:   true,
+      getFillColor:    [99, 200, 241, 40],
+      getLineColor:    [99, 200, 241, 180],
+      lineWidthMinPixels: 1,
+      onClick: (info) => { if (info.object) showBuildingPopup(info.object); },
+    }));
+  }
 
-  function showBuildingPopup(feature) {
-    var props = feature.properties || {};
-    infoPropsDl.innerHTML = "";
+  return layers;
+}
 
-    var keys = Object.keys(props);
-    if (keys.length === 0) {
-      var dt = document.createElement("dt");
-      dt.textContent = "(no properties)";
+// ---------------------------------------------------------------------------
+// Building attribute popup
+// ---------------------------------------------------------------------------
+
+function showBuildingPopup(feature) {
+  const props = feature.properties || {};
+  infoPropsDl.replaceChildren();
+
+  const keys = Object.keys(props);
+  if (keys.length === 0) {
+    const dt = document.createElement("dt");
+    dt.textContent = "(no properties)";
+    infoPropsDl.appendChild(dt);
+  } else {
+    const preferred = ["citygml_type", "height", "lod"];
+    const rest      = keys.filter((k) => !preferred.includes(k));
+    const ordered   = preferred.filter((k) => k in props).concat(rest);
+
+    for (const key of ordered) {
+      const dt = document.createElement("dt");
+      dt.textContent = key;
+      const dd = document.createElement("dd");
+      dd.textContent = String(props[key]);
       infoPropsDl.appendChild(dt);
-    } else {
-      // Preferred keys first, then remainder.
-      var preferred = ["citygml_type", "height", "lod"];
-      var rest = keys.filter(function (k) { return preferred.indexOf(k) === -1; });
-      var ordered = preferred.filter(function (k) { return k in props; }).concat(rest);
-
-      ordered.forEach(function (key) {
-        var dt = document.createElement("dt");
-        dt.textContent = key;
-        var dd = document.createElement("dd");
-        dd.textContent = String(props[key]);
-        infoPropsDl.appendChild(dt);
-        infoPropsDl.appendChild(dd);
-      });
+      infoPropsDl.appendChild(dd);
     }
-
-    infoPanel.style.display = "block";
   }
 
-  // ---------------------------------------------------------------------------
-  // Overlay layer management
-  // ---------------------------------------------------------------------------
+  infoPanel.style.display = "block";
+}
 
-  function setOverlayLayers(layers) {
-    _activeLayers = layers;
-    _overlay.setProps({ layers: layers });
+// ---------------------------------------------------------------------------
+// Overlay layer management
+// ---------------------------------------------------------------------------
+
+function setOverlayLayers(layers) {
+  _overlay.setProps({ layers });
+}
+
+function clearOverlayLayers() {
+  _overlay.setProps({ layers: [] });
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function find3dTilesHref(container) {
+  const links = (container.content || []).concat(container.links || []);
+  for (const link of links) {
+    if (link.rel === REL_3DTILES) return resolveApiHref(link.href);
   }
+  return null;
+}
 
-  function clearOverlayLayers() {
-    _activeLayers = [];
-    _overlay.setProps({ layers: [] });
+// The API emits root-relative hrefs ("/volumes/..."), which miss any gateway
+// path prefix the deployment sits behind. Re-base them onto API_BASE so they
+// resolve through the same prefix as every other request this page makes.
+function resolveApiHref(href) {
+  if (typeof href === "string" && href.startsWith("/volumes/")) {
+    return `${API_BASE}${href.slice("/volumes".length)}`;
   }
-
-  // ---------------------------------------------------------------------------
-  // Utilities
-  // ---------------------------------------------------------------------------
-
-  function find3dTilesHref(container) {
-    var links = (container.content || []).concat(container.links || []);
-    for (var i = 0; i < links.length; i++) {
-      if (links[i].rel === REL_3DTILES) return links[i].href;
-    }
-    return null;
-  }
-})();
+  return href;
+}

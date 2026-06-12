@@ -153,26 +153,62 @@ def test_html_includes_deckgl_script_with_integrity():
     )
 
 
-def test_html_common_i18n_path():
-    """Common helpers are at ../static/common/ from the extension page."""
-    html = _html_content()
-    assert "../static/common/i18n.js" in html, (
-        "HTML does not reference i18n.js via the correct ../static/common/ path"
+def _globe_js_content() -> str:
+    js_path = os.path.join(
+        os.path.dirname(__file__),
+        "..", "..", "..", "..",
+        "packages", "extensions", "volumes", "src",
+        "dynastore", "extensions", "volumes", "static",
+        "volumes-globe.js",
+    )
+    js_path = os.path.normpath(js_path)
+    with open(js_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def test_globe_js_imports_common_i18n():
+    """The ES module imports common helpers relative to its own URL
+    (/web/volumes/), so common assets resolve via ../static/common/."""
+    js = _globe_js_content()
+    assert 'from "../static/common/i18n.js"' in js, (
+        "volumes-globe.js does not import i18n.js via the correct ../static/common/ path"
     )
 
 
-def test_html_common_maplibre_map_path():
-    html = _html_content()
-    assert "../static/common/maplibre-map.js" in html, (
-        "HTML does not reference maplibre-map.js via the correct ../static/common/ path"
+def test_globe_js_imports_common_maplibre_map():
+    js = _globe_js_content()
+    assert 'from "../static/common/maplibre-map.js"' in js, (
+        "volumes-globe.js does not import maplibre-map.js via the correct ../static/common/ path"
+    )
+
+
+def test_globe_js_imports_entity_selector():
+    js = _globe_js_content()
+    assert 'from "../static/common/entity-selector.js"' in js, (
+        "volumes-globe.js does not import entity-selector.js via the correct ../static/common/ path"
+    )
+    assert 'from "../static/common/entity-sources.js"' in js, (
+        "volumes-globe.js does not import entity-sources.js via the correct ../static/common/ path"
     )
 
 
 def test_html_own_js_path():
-    """Own JS is in the same directory as the HTML: ./volumes-globe.js."""
+    """The page is served at /web/pages/{page_id}; the extension's own JS is
+    served under the static prefix, so the HTML references ../volumes/ and
+    loads it as an ES module."""
     html = _html_content()
-    assert "./volumes-globe.js" in html, (
-        "HTML does not reference volumes-globe.js via the correct ./ path"
+    assert '../volumes/volumes-globe.js' in html, (
+        "HTML does not reference volumes-globe.js via the correct ../volumes/ path"
+    )
+    assert 'type="module"' in html, (
+        "volumes-globe.js must be loaded as an ES module (type=\"module\")"
+    )
+
+
+def test_html_common_selector_css_path():
+    html = _html_content()
+    assert "../static/common/entity-selector.css" in html, (
+        "HTML does not reference entity-selector.css via the correct ../static/common/ path"
     )
 
 
