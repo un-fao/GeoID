@@ -1,0 +1,470 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""Task implementation for the ``stac_harvest`` OGC Process.
+
+Harvests a remote STAC catalog into a local dynastore catalog.  Uses INTERNAL
+service protocols — no HTTP self-calls.  Cross-module dependencies are via
+protocols only (no direct module imports).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, List, Optional
+
+from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
+from dynastore.modules.processes.protocols import ProcessTaskProtocol
+from dynastore.modules.tasks.models import TaskPayload
+from dynastore.tools.protocol_helpers import get_engine
+
+from .definition import STAC_HARVEST_PROCESS_DEFINITION
+from .models import StacHarvestRequest
+
+logger = logging.getLogger(__name__)
+
+_BATCH_SIZE = 200
+_PAGE_LIMIT = 500
+_STRIP_LINKS = frozenset({"links"})
+
+
+# ---------------------------------------------------------------------------
+# Remote STAC walk helpers (stdlib only — no extra deps)
+# ---------------------------------------------------------------------------
+
+
+def _http_get_json(url: str, *, timeout: int = 60) -> Any:
+    """Perform a single GET and return parsed JSON.  Raises on non-2xx."""
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "dynastore-stac-harvest/1.0",
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return json.loads(resp.read().decode())
+
+
+def _next_href(page: Dict[str, Any]) -> Optional[str]:
+    for link in page.get("links") or []:
+        if isinstance(link, dict) and link.get("rel") == "next":
+            href = link.get("href")
+            if href:
+                return str(href)
+    return None
+
+
+def iter_collections(catalog_url: str) -> Iterator[Dict[str, Any]]:
+    """Walk source /collections with rel=next cursor pagination."""
+    url: Optional[str] = f"{catalog_url}/collections"
+    while url:
+        try:
+            page = _http_get_json(url)
+        except Exception as exc:
+            logger.warning("stac_harvest: GET %s failed: %s", url, exc)
+            return
+        for coll in page.get("collections") or []:
+            yield coll
+        url = _next_href(page)
+
+
+def iter_items(catalog_url: str, collection_id: str) -> Iterator[Dict[str, Any]]:
+    """Walk source /collections/{id}/items with rel=next cursor pagination."""
+    url: Optional[str] = (
+        f"{catalog_url}/collections/{collection_id}/items?limit={_PAGE_LIMIT}"
+    )
+    while url:
+        try:
+            page = _http_get_json(url)
+        except Exception as exc:
+            logger.warning(
+                "stac_harvest: GET items for %s failed: %s", collection_id, exc
+            )
+            return
+        for feat in page.get("features") or []:
+            yield feat
+        url = _next_href(page)
+
+
+# ---------------------------------------------------------------------------
+# Mapping source → dynastore payloads
+# ---------------------------------------------------------------------------
+
+_FALLBACK_EXTENT: Dict[str, Any] = {
+    "spatial": {"bbox": [[-180.0, -90.0, 180.0, 90.0]]},
+    "temporal": {"interval": [[None, None]]},
+}
+
+
+def map_collection(coll: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a source STAC collection dict to a dynastore collection payload.
+
+    - Drops ``links`` (server-managed navigation).
+    - Drops ``assets`` at collection level (can cause 409 on STAC item writes;
+      per-item assets pass through unaffected).
+    - Lowercases the ``id`` (dynastore normalises ids; mismatched case between
+      collection creation and item writes causes 409 collisions).
+    - Ensures required ``extent``.
+    """
+    out = {k: v for k, v in coll.items() if k not in _STRIP_LINKS and k != "assets"}
+    out.setdefault("type", "Collection")
+    out["id"] = str(out.get("id", "")).lower()
+    out.setdefault("description", out.get("title") or out["id"])
+    out.setdefault("extent", _FALLBACK_EXTENT)
+    return out
+
+
+def map_item(feature: Dict[str, Any], target_collection: str) -> Dict[str, Any]:
+    """Map a source STAC item; strip navigation links, fix collection reference."""
+    out = {k: v for k, v in feature.items() if k not in _STRIP_LINKS}
+    out["type"] = "Feature"
+    out["collection"] = target_collection
+    return out
+
+
+def virtual_assets_for(feature: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Yield VirtualAssetCreate-compatible dicts for each asset on a source item."""
+    item_id = feature.get("id", "item")
+    for key, asset in (feature.get("assets") or {}).items():
+        href = asset.get("href")
+        if not href:
+            continue
+        media = (asset.get("type") or "").lower()
+        asset_type = "RASTER" if ("tiff" in media or "image/" in media) else "ASSET"
+        owned_by = "gcs" if "storage.googleapis.com" in href else "http"
+        yield {
+            "asset_id": f"{item_id}.{key}",
+            "href": href,
+            "asset_type": asset_type,
+            "kind": "virtual",
+            "owned_by": owned_by,
+            "metadata": {
+                "roles": asset.get("roles", []),
+                "title": asset.get("title"),
+                "media_type": asset.get("type"),
+                "source_asset_key": key,
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# Stats dataclass (survives task run)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HarvestStats:
+    collections_seen: int = 0
+    collections_written: int = 0
+    items_written: int = 0
+    items_failed: int = 0
+    virtual_assets_written: int = 0
+    errors: List[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Core harvest logic — uses internal protocols only
+# ---------------------------------------------------------------------------
+
+
+async def _ensure_collection(
+    catalogs: Any,
+    catalog_id: str,
+    coll: Dict[str, Any],
+) -> bool:
+    """Upsert the collection; return True on success."""
+    cid = coll["id"]
+    try:
+        existing = await catalogs.get_collection(catalog_id, cid, lang="*")
+        if existing is None:
+            await catalogs.create_collection(catalog_id, coll, lang="*")
+        else:
+            await catalogs.update_collection(catalog_id, cid, coll, lang="*")
+        return True
+    except Exception as exc:
+        logger.warning("stac_harvest: upsert collection %s/%s failed: %s", catalog_id, cid, exc)
+        return False
+
+
+async def _upsert_items_batch(
+    catalogs: Any,
+    catalog_id: str,
+    collection_id: str,
+    batch: List[Dict[str, Any]],
+) -> int:
+    """Bulk-upsert a batch of STAC items via the CatalogsProtocol."""
+    payload: Dict[str, Any] = {
+        "type": "FeatureCollection",
+        "stac_version": "1.1.0",
+        "features": batch,
+    }
+    try:
+        await catalogs.upsert(catalog_id, collection_id, payload)
+        return len(batch)
+    except Exception as exc:
+        logger.warning(
+            "stac_harvest: bulk async write %d items into %s/%s failed: %s",
+            len(batch), catalog_id, collection_id, exc,
+        )
+        return 0
+
+
+async def _register_virtual_assets(
+    catalogs: Any,
+    catalog_id: str,
+    collection_id: str,
+    batch: List[Dict[str, Any]],
+) -> int:
+    """Register virtual assets for a batch of items; best-effort."""
+    from dynastore.modules.catalog.asset_service import VirtualAssetCreate  # late import
+
+    written = 0
+    for feat in batch:
+        for va_dict in virtual_assets_for(feat):
+            try:
+                va = VirtualAssetCreate(
+                    asset_id=va_dict["asset_id"],
+                    href=va_dict["href"],
+                    metadata=va_dict.get("metadata", {}),
+                )
+                await catalogs.assets.create_asset(
+                    catalog_id=catalog_id,
+                    asset=va,
+                    collection_id=collection_id,
+                )
+                written += 1
+            except Exception as exc:
+                # 409 = already registered; treat as success silently
+                if "already" in str(exc).lower() or "exists" in str(exc).lower() or "409" in str(exc):
+                    written += 1
+                else:
+                    logger.debug(
+                        "stac_harvest: virtual asset %s skip: %s", va_dict.get("asset_id"), exc
+                    )
+    return written
+
+
+async def _apply_stac_presets(
+    ctx_config: Any,
+    scope: str,
+    catalog_id: str,
+    es_only: bool,
+) -> None:
+    """Apply stac_routing + stac_storage presets to pin catalog to ES-only storage.
+
+    Uses the preset registry + lifecycle directly — no HTTP self-call.
+    Failures are logged but non-fatal: a deployment whose platform default
+    already matches will behave correctly without these config writes.
+    """
+    if not es_only:
+        return
+    try:
+        from dynastore.modules.storage.presets.registry import find_preset
+        from dynastore.modules.storage.presets.stac import StacPresetParams
+        from dynastore.modules.stac.stac_storage_config import (
+            StacLevel,
+            StacStorageBackend,
+        )
+
+        params = StacPresetParams(
+            stac_level=StacLevel.ITEMS,
+            stac_storage=StacStorageBackend.ES,
+        )
+        for preset_name in ("stac_routing", "stac_storage"):
+            preset = find_preset(preset_name)
+            await preset.apply(params, scope, ctx_config)
+            logger.info("stac_harvest: applied preset %s on scope %s", preset_name, scope)
+    except Exception as exc:
+        logger.warning(
+            "stac_harvest: STAC preset apply failed (non-fatal) on %s: %s", catalog_id, exc
+        )
+
+
+async def run_harvest(
+    request: StacHarvestRequest,
+    catalogs: Any,
+    preset_ctx: Any,
+    scope: str,
+) -> HarvestStats:
+    """Walk the source STAC catalog and async-write into the local dynastore catalog.
+
+    Parameters
+    ----------
+    request:
+        Validated harvest inputs.
+    catalogs:
+        CatalogsProtocol implementation from the runtime registry.
+    preset_ctx:
+        PresetContext built for this scope — used to apply STAC presets.
+    scope:
+        Resolved scope string (e.g. ``"catalog:fao-gismgr"``).
+    """
+    stats = HarvestStats()
+    stac_presets_applied = False
+
+    for coll_raw in iter_collections(request.catalog_url):
+        if request.max_collections and stats.collections_seen >= request.max_collections:
+            break
+        stats.collections_seen += 1
+        coll = map_collection(coll_raw)
+        cid = coll["id"]
+
+        if not await _ensure_collection(catalogs, request.target_catalog, coll):
+            stats.errors.append(f"collection:{cid}")
+            continue
+        stats.collections_written += 1
+
+        # Apply ES-only STAC presets once the first collection is created
+        # (catalog provisioning is complete at that point).
+        if not stac_presets_applied and preset_ctx is not None:
+            await _apply_stac_presets(preset_ctx, scope, request.target_catalog, request.es_only)
+            stac_presets_applied = True
+
+        batch: List[Dict[str, Any]] = []
+        n_items = 0
+        for feat_raw in iter_items(request.catalog_url, coll_raw.get("id", cid)):
+            if request.max_items and n_items >= request.max_items:
+                break
+            batch.append(map_item(feat_raw, cid))
+            n_items += 1
+            if len(batch) >= _BATCH_SIZE:
+                written = await _upsert_items_batch(
+                    catalogs, request.target_catalog, cid, batch
+                )
+                stats.items_written += written
+                stats.items_failed += len(batch) - written
+                if request.with_assets:
+                    stats.virtual_assets_written += await _register_virtual_assets(
+                        catalogs, request.target_catalog, cid, batch
+                    )
+                batch = []
+
+        if batch:
+            written = await _upsert_items_batch(
+                catalogs, request.target_catalog, cid, batch
+            )
+            stats.items_written += written
+            stats.items_failed += len(batch) - written
+            if request.with_assets:
+                stats.virtual_assets_written += await _register_virtual_assets(
+                    catalogs, request.target_catalog, cid, batch
+                )
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# OGC Process task class
+# ---------------------------------------------------------------------------
+
+
+class StacHarvestTask(
+    ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]
+):
+    """OGC Process task: walk a remote STAC catalog and async-write into a local one.
+
+    Registered as ``stac_harvest`` via the ``dynastore.tasks`` entry-point.
+    Dispatched asynchronously by the ``stac_harvester`` preset's TaskSeed.
+    Uses INTERNAL service protocols — no HTTP self-calls.
+    """
+
+    task_type: str = "stac_harvest"
+
+    @staticmethod
+    def get_definition() -> Process:
+        return STAC_HARVEST_PROCESS_DEFINITION
+
+    def __init__(self, app_state: Any = None) -> None:
+        self.app_state = app_state
+        self.engine = get_engine()
+
+    async def run(
+        self, payload: TaskPayload[ExecuteRequest]
+    ) -> Optional[StatusInfo]:
+        """Entry point called by the task runner.
+
+        The OGC Processes dispatcher wraps user inputs in an ``ExecuteRequest``
+        at ``payload.inputs``; the actual harvest params are in
+        ``payload.inputs.inputs``.
+        """
+        from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        raw_inputs = payload.inputs
+        if hasattr(raw_inputs, "inputs"):
+            inputs_dict = raw_inputs.inputs
+        elif isinstance(raw_inputs, dict):
+            inputs_dict = raw_inputs.get("inputs", {})
+        else:
+            inputs_dict = {}
+
+        request = StacHarvestRequest.model_validate(inputs_dict)
+
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            raise RuntimeError(
+                "stac_harvest: CatalogsProtocol not available in this service."
+            )
+
+        scope = f"catalog:{request.target_catalog}"
+
+        # Build a minimal PresetContext so the STAC preset application can
+        # access config write services.  Full PresetContext is unavailable in
+        # the task runner (no HTTP request context), so the preset apply is
+        # best-effort: it will no-op gracefully on any import/attribute error.
+        preset_ctx = None
+        try:
+            from dynastore.modules.storage.presets.preset import PresetContext
+
+            preset_ctx = PresetContext(
+                db=self.engine,
+                iam=None,
+                policy=None,
+                config=None,
+                tasks=None,
+                cron=None,
+                libs=None,
+                principal=None,
+                scope=scope,
+                catalogs=catalogs,
+            )
+        except Exception as exc:
+            logger.debug(
+                "stac_harvest: could not build PresetContext (STAC presets will be "
+                "skipped): %s", exc
+            )
+
+        stats = await run_harvest(request, catalogs, preset_ctx, scope)
+
+        logger.info(
+            "stac_harvest: finished — collections=%d/%d items_written=%d "
+            "items_failed=%d virtual_assets=%d errors=%d",
+            stats.collections_written,
+            stats.collections_seen,
+            stats.items_written,
+            stats.items_failed,
+            stats.virtual_assets_written,
+            len(stats.errors),
+        )
+
+        if stats.errors:
+            logger.warning("stac_harvest: errors: %s", stats.errors[:20])
+
+        return None

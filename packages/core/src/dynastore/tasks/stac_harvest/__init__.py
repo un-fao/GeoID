@@ -15,23 +15,3 @@
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
-
-"""STAC extension presets — auto-register on import.
-
-The contributor lives inside the preset, not on the service. Services
-don't mutate platform IAM state; presets do.
-"""
-
-from dynastore.extensions.ogc_base import OGCServiceMixin
-from dynastore.extensions.stac.policies import stac_policies, stac_role_bindings
-
-OGCServiceMixin.register_ogc_preset(
-    name="stac_enable",
-    description="STAC extension IAM policies + anonymous read access",
-    keywords=("iam", "stac", "platform"),
-    policies_factory=stac_policies,
-    role_bindings_factory=stac_role_bindings,
-)
-
-# Harvest preset — catalog-scoped; submits an async stac_harvest job.
-from dynastore.extensions.stac.presets import stac_harvester as _stac_harvester  # noqa: F401, E402
