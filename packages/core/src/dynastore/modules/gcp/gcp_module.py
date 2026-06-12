@@ -106,6 +106,20 @@ def _task_type_from_scope_token(token: str) -> Optional[str]:
     return None
 
 
+# Cloud Run Jobs that serve more than one task_type from the same image.
+# The elasticsearch-indexer Job hosts BOTH the operator full-reindex
+# (task_type ``elasticsearch_indexer``) and the continuous ``storage_outbox``
+# drain (task_type ``index_drain``, introduced when #1807 de-overloaded
+# ``outbox_drain`` into ``event_drain``/``index_drain``). Job discovery reads
+# only each job's single ``TASK_TYPE`` env, so this table re-attaches the
+# co-hosted task_type(s) to the same job. Without it, ``GcpJobRunner`` resolves
+# ``job_map.get("index_drain")`` to ``None`` and the ES outbox is never drained
+# — items land in ``storage_outbox`` but are never indexed into Elasticsearch.
+_CO_HOSTED_JOB_TASK_TYPES: Dict[str, tuple[str, ...]] = {
+    "elasticsearch_indexer": ("index_drain",),
+}
+
+
 # ---------------------------------------------------------------------------
 # Provisioning retry tunables
 # ---------------------------------------------------------------------------
@@ -763,7 +777,6 @@ class GCPModule(
                             break
 
                 if task_type:
-                    job_map[task_type] = job_name
                     # Side-channel: capture per-job MAX_RETRIES env so
                     # GcpJobRunner can stamp it on the task row at create-time
                     # (caps long-running expensive jobs at deploy-time intent
@@ -777,13 +790,29 @@ class GCPModule(
                             logger.warning(
                                 f"Job '{job_name}' has non-integer MAX_RETRIES='{max_retries_raw}'; ignoring."
                             )
-                    if extras:
-                        from dynastore.modules.gcp.tools.jobs import set_job_extras
-                        set_job_extras(task_type, extras)
-                    logger.info(
-                        f"Discovered GCP job: task '{task_type}' -> job '{job_name}' "
-                        f"(extras={extras or '{}'})"
+
+                    # A single Cloud Run Job may serve more than one task_type
+                    # (see _CO_HOSTED_JOB_TASK_TYPES). Register the primary
+                    # task_type plus any co-hosted siblings against this job so
+                    # every dispatched task_type resolves to it.
+                    task_types = (
+                        task_type,
+                        *_CO_HOSTED_JOB_TASK_TYPES.get(task_type, ()),
                     )
+                    for tt in task_types:
+                        # A co-hosted alias must never clobber a job that
+                        # explicitly advertises that task_type as its own
+                        # primary; the explicit mapping always wins.
+                        if tt != task_type and tt in job_map:
+                            continue
+                        job_map[tt] = job_name
+                        if extras:
+                            from dynastore.modules.gcp.tools.jobs import set_job_extras
+                            set_job_extras(tt, extras)
+                        logger.info(
+                            f"Discovered GCP job: task '{tt}' -> job '{job_name}' "
+                            f"(extras={extras or '{}'})"
+                        )
         except Exception as e:
             logger.error(
                 f"Error discovering GCP jobs (Project: {project_id}, Region: {region}): {e}",

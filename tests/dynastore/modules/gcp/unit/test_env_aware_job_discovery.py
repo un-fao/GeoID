@@ -207,7 +207,11 @@ async def test_no_env_var_passes_all_dynastore_jobs(monkeypatch):
          patch("dynastore.modules.gcp.tools.jobs.set_job_extras"):
         result = await module.get_job_config()
 
-    assert set(result.keys()) == {"ingestion", "export", "elasticsearch_indexer"}
+    # The elasticsearch_indexer job is co-hosted: it also registers index_drain.
+    assert set(result.keys()) == {
+        "ingestion", "export", "elasticsearch_indexer", "index_drain",
+    }
+    assert result["index_drain"] == "dynastore-reindex-job"
 
 
 @pytest.mark.asyncio
@@ -289,6 +293,66 @@ async def test_collision_own_env_listed_first(monkeypatch):
         result = await module.get_job_config()
 
     assert result == {"ingestion": "dev-dynastore-ingestion-job"}
+
+
+# ---------------------------------------------------------------------------
+# (d) Co-hosted task_types: the elasticsearch-indexer Job also serves index_drain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_elasticsearch_indexer_job_also_serves_index_drain(monkeypatch):
+    """The elasticsearch-indexer Cloud Run Job hosts BOTH the operator
+    full-reindex ('elasticsearch_indexer') and the continuous storage_outbox
+    drain ('index_drain', #1807). Discovery reads only the job's single
+    TASK_TYPE env, so get_job_config() must register the job under BOTH
+    task_types — otherwise GcpJobRunner.run() resolves
+    job_map.get('index_drain') -> None and the ES outbox never drains.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+
+    jobs = [
+        _make_job("dev-dynastore-elasticsearch-indexer", {
+            "APP": "dynastore", "TASK_TYPE": "elasticsearch_indexer",
+            "ENVIRONMENT": "dev",
+        }),
+    ]
+    module = _make_module(jobs)
+
+    with patch("dynastore.modules.gcp.gcp_module.run_v2", _run_v2_stub()), \
+         patch("dynastore.modules.gcp.tools.jobs.set_job_extras"):
+        result = await module.get_job_config()
+
+    assert result == {
+        "elasticsearch_indexer": "dev-dynastore-elasticsearch-indexer",
+        "index_drain": "dev-dynastore-elasticsearch-indexer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_index_drain_primary_not_clobbered_by_cohost(monkeypatch):
+    """If a dedicated job ever advertises TASK_TYPE=index_drain as its own
+    primary, the co-hosted alias from the elasticsearch-indexer job must not
+    overwrite it — the explicit mapping always wins.
+    """
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    jobs = [
+        _make_job("dynastore-index-drain-job", {
+            "APP": "dynastore", "TASK_TYPE": "index_drain",
+        }),
+        _make_job("dynastore-elasticsearch-indexer", {
+            "APP": "dynastore", "TASK_TYPE": "elasticsearch_indexer",
+        }),
+    ]
+    module = _make_module(jobs)
+
+    with patch("dynastore.modules.gcp.gcp_module.run_v2", _run_v2_stub()), \
+         patch("dynastore.modules.gcp.tools.jobs.set_job_extras"):
+        result = await module.get_job_config()
+
+    assert result["index_drain"] == "dynastore-index-drain-job"
+    assert result["elasticsearch_indexer"] == "dynastore-elasticsearch-indexer"
 
 
 # ---------------------------------------------------------------------------
