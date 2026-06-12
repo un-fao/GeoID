@@ -433,6 +433,35 @@ async def get_preset_detail(
     return items[0] if items else {}
 
 
+@router.get(
+    "/presets/{preset_name}/schema",
+    summary="JSON Schema for a preset's params model (A7)",
+)
+async def get_preset_params_schema(preset_name: str) -> Dict[str, Any]:
+    """Return the JSON Schema for ``preset.params_model``.
+
+    * A preset with a real params model → ``model_json_schema()``
+    * ``NoParams`` or absent ``params_model`` → ``{"type": "object", "properties": {}}``
+    * Unknown preset name → 404
+    """
+    from dynastore.modules.storage.presets import get_preset
+    from dynastore.modules.storage.presets.bundle_preset import NoParams
+
+    try:
+        preset = get_preset(preset_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    params_model = getattr(preset, "params_model", None)
+    _empty: Dict[str, Any] = {"type": "object", "properties": {}}
+    if params_model is None or params_model is NoParams:
+        return _empty
+    try:
+        return params_model.model_json_schema()
+    except Exception:
+        return _empty
+
+
 # ----- Platform tier: /configs/presets/{name} ---------------------------
 
 

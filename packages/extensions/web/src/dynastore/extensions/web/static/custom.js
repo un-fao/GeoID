@@ -86,11 +86,16 @@ async function loadSidebar() {
         container.innerHTML = topLevelPages.map(page => {
             // Find pages targeting this one as a section
             const subPages = pages.filter(p => p.section === page.id).sort((a, b) => (b.priority || 0) - (a.priority || 0));
-            
+            const hasSubPages = subPages.length > 0;
+
+            // Restore collapsed state from localStorage (default: expanded)
+            const storageKey = `ds_nav_section_${page.id}`;
+            const isCollapsed = hasSubPages && localStorage.getItem(storageKey) === 'collapsed';
+
             let subHtml = '';
-            if (subPages.length > 0) {
+            if (hasSubPages) {
                 subHtml = `
-                    <div class="mt-1 mb-3 ml-4 border-l border-white/5 pl-2 space-y-1 hidden lg:block">
+                    <div class="nav-subsection mt-1 mb-3 ml-4 border-l border-white/5 pl-2 space-y-1 hidden lg:block${isCollapsed ? ' ds-nav-hidden' : ''}">
                         ${subPages.map(s => `
                             <button onclick="switchTab('${s.id}')" id="nav-${s.id}" class="nav-btn w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-white/5 transition-all text-xs">
                                 <i class="fa-solid ${s.icon} w-4 text-center text-[10px]"></i>
@@ -101,12 +106,23 @@ async function loadSidebar() {
                 `;
             }
 
+            const chevronHtml = hasSubPages ? `
+                <button class="nav-chevron ml-auto hidden lg:flex items-center justify-center w-5 h-5 text-slate-500 hover:text-slate-300 transition-all flex-shrink-0${isCollapsed ? ' ds-chevron-collapsed' : ''}"
+                        aria-label="Toggle ${page.title} section"
+                        onclick="event.stopPropagation(); toggleNavSection('${page.id}', this)">
+                    <i class="fa-solid fa-chevron-down text-[10px] transition-transform duration-200"></i>
+                </button>
+            ` : '';
+
             return `
-                <div class="nav-group">
-                    <button onclick="switchTab('${page.id}')" id="nav-${page.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all group">
-                        <i class="fa-solid ${page.icon} text-lg w-6 text-center group-hover:text-blue-400 transition-colors"></i>
-                        <span class="hidden lg:block text-sm font-medium">${page.title}</span>
-                    </button>
+                <div class="nav-group${isCollapsed ? ' ds-nav-group-collapsed' : ''}" data-section-id="${page.id}">
+                    <div class="flex items-center gap-1">
+                        <button onclick="switchTab('${page.id}')" id="nav-${page.id}" class="nav-btn flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all group">
+                            <i class="fa-solid ${page.icon} text-lg w-6 text-center group-hover:text-blue-400 transition-colors"></i>
+                            <span class="hidden lg:block text-sm font-medium">${page.title}</span>
+                        </button>
+                        ${chevronHtml}
+                    </div>
                     ${subHtml}
                 </div>
             `;
@@ -117,6 +133,29 @@ async function loadSidebar() {
 
     } catch (e) {
         console.error("Sidebar load error:", e);
+    }
+}
+
+function toggleNavSection(sectionId, chevronBtn) {
+    const storageKey = `ds_nav_section_${sectionId}`;
+    const group = document.querySelector(`.nav-group[data-section-id="${sectionId}"]`);
+    if (!group) return;
+    const subSection = group.querySelector('.nav-subsection');
+    if (!subSection) return;
+
+    const isCurrentlyCollapsed = subSection.classList.contains('ds-nav-hidden');
+    if (isCurrentlyCollapsed) {
+        // Expand
+        subSection.classList.remove('ds-nav-hidden');
+        group.classList.remove('ds-nav-group-collapsed');
+        if (chevronBtn) chevronBtn.classList.remove('ds-chevron-collapsed');
+        localStorage.setItem(storageKey, 'expanded');
+    } else {
+        // Collapse
+        subSection.classList.add('ds-nav-hidden');
+        group.classList.add('ds-nav-group-collapsed');
+        if (chevronBtn) chevronBtn.classList.add('ds-chevron-collapsed');
+        localStorage.setItem(storageKey, 'collapsed');
     }
 }
 
@@ -258,9 +297,9 @@ async function loadExtensions() {
         const pages = await res.json();
         
         const corePageIds = ['home', 'docs', 'extensions', 'dashboard'];
-        const appPages = pages.filter(p => 
-            (p.section === 'extensions' || !p.section) && 
-            !corePageIds.includes(p.id) && 
+        const appPages = pages.filter(p =>
+            (p.owner || p.section === 'extensions' || !p.section) &&
+            !corePageIds.includes(p.id) &&
             !p.is_embed
         );
 
