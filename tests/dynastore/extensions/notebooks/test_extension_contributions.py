@@ -37,6 +37,12 @@ EXTENSION_NOTEBOOK_MODULES = [
     "dynastore.extensions.coverages.notebooks",
     "dynastore.extensions.assets.notebooks",
     "dynastore.extensions.web.notebooks",
+    # extensions with new demo notebooks
+    "dynastore.extensions.volumes.notebooks",
+    "dynastore.extensions.edr.notebooks",
+    "dynastore.extensions.moving_features.notebooks",
+    "dynastore.extensions.tiles.notebooks",
+    "dynastore.extensions.styles.notebooks",
 ]
 
 
