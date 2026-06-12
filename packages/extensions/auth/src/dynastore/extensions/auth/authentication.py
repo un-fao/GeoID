@@ -100,9 +100,9 @@ def _derive_fernet_key(jwt_secret: str) -> bytes:
 #
 # Two-client OAuth/OIDC is the standard layout: a public SPA login client
 # (``IDP_CLIENT_ID``, e.g. ``geoid-fe``) and a separate API audience
-# (``IDP_AUDIENCE``, e.g. ``geoid-be``). Single-client legacy setups can leave
-# ``IDP_AUDIENCE`` unset; it falls back to ``IDP_CLIENT_ID`` and a one-shot
-# deprecation warning is emitted at startup.
+# (``IDP_AUDIENCE``, e.g. ``geoid-be``). Two-client deployments must set
+# ``IDP_AUDIENCE`` explicitly. In single-client setups it may be left unset;
+# ``OidcIdentityProvider`` then validates tokens against ``IDP_CLIENT_ID``.
 IDP_ISSUER_URL       = os.getenv("IDP_ISSUER_URL")    or os.getenv("KEYCLOAK_ISSUER_URL")
 IDP_CLIENT_ID        = os.getenv("IDP_CLIENT_ID")     or os.getenv("KEYCLOAK_CLIENT_ID")
 IDP_CLIENT_SECRET    = os.getenv("IDP_CLIENT_SECRET") or os.getenv("KEYCLOAK_CLIENT_SECRET")
@@ -114,14 +114,6 @@ IDP_AUDIENCE         = os.getenv("IDP_AUDIENCE")      or os.getenv("KEYCLOAK_AUD
 # ``resource_access.account.roles`` (sysadmin role on Keycloak's built-in
 # account client) or ``realm_access.roles``.
 IDP_ROLES_CLAIM_PATH = os.getenv("IDP_ROLES_CLAIM_PATH")
-
-if IDP_CLIENT_ID and not IDP_AUDIENCE:
-    IDP_AUDIENCE = IDP_CLIENT_ID
-    logger.warning(
-        "IDP_AUDIENCE is unset, falling back to IDP_CLIENT_ID for token "
-        "audience validation. This is deprecated and will be removed in the "
-        "next minor; set IDP_AUDIENCE explicitly."
-    )
 
 
 class Authentication(ExtensionProtocol):
@@ -342,9 +334,9 @@ class Authentication(ExtensionProtocol):
 
         if IDP_ISSUER_URL and IDP_CLIENT_ID:
             from dynastore.modules.iam.identity_providers import OidcIdentityProvider
-            # Pass ``audience`` explicitly so the constructor fallback
-            # (``audience or client_id``) cannot silently mask a missing
-            # IDP_AUDIENCE in two-client setups.
+            # ``audience`` may be None in single-client setups; the provider
+            # then validates tokens against ``client_id``. Two-client
+            # deployments must set IDP_AUDIENCE explicitly.
             self.identity_provider = OidcIdentityProvider(
                 issuer_url=IDP_ISSUER_URL,
                 client_id=IDP_CLIENT_ID,

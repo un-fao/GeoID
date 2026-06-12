@@ -10,7 +10,7 @@ DynaStore v2.0 delegates authentication to external OIDC-compliant identity prov
 |---------------------|----------|-------------|
 | `IDP_ISSUER_URL` (alias: `KEYCLOAK_ISSUER_URL`) | Yes* | IdP realm issuer URL (e.g., `https://keycloak.example.com/realms/dynastore`) |
 | `IDP_CLIENT_ID` (alias: `KEYCLOAK_CLIENT_ID`) | Yes* | SPA / login client ID (e.g., `geoid-fe`). Used for the OAuth2 authorization-code redirect; **not** used for audience validation. |
-| `IDP_AUDIENCE` (alias: `KEYCLOAK_AUDIENCE`) | Recommended | API audience client ID (e.g., `geoid-be`) — the value PyJWT enforces against the token's `aud` claim. Falls back to `IDP_CLIENT_ID` for legacy single-client setups (with a deprecation warning). |
+| `IDP_AUDIENCE` (alias: `KEYCLOAK_AUDIENCE`) | Recommended | API audience client ID (e.g., `geoid-be`) — the value PyJWT enforces against the token's `aud` claim. May be left unset in single-client setups, where the provider validates tokens against `IDP_CLIENT_ID`. |
 | `IDP_CLIENT_SECRET` (alias: `KEYCLOAK_CLIENT_SECRET`) | If client is confidential | OAuth2 client secret for the SPA / login client. |
 | `IDP_PUBLIC_URL` (alias: `KEYCLOAK_PUBLIC_URL`) | No | Browser-reachable IdP URL (if different from internal `IDP_ISSUER_URL`). |
 | `IDP_ROLES_CLAIM_PATH` | No | Dotted JSON path used to locate roles inside the JWT. Defaults to `resource_access.${IDP_AUDIENCE}.roles`. See "Role claim path" below. |
@@ -18,19 +18,16 @@ DynaStore v2.0 delegates authentication to external OIDC-compliant identity prov
 
 *Required when using Keycloak. Other IdP implementations may use different env vars.
 
-### Migrating from `IDP_CLIENT_ID`-as-audience to `IDP_AUDIENCE`
+### Choosing the audience
 
-Earlier releases used `IDP_CLIENT_ID` for both the OAuth2 client identifier
-(in the `/authorize` redirect) **and** for the JWT `aud` claim that the
-resource server validates. That conflation breaks when the SPA login client
-and the API audience are separate Keycloak clients (the standard two-client
-layout).
+`IDP_CLIENT_ID` identifies the OAuth2 login client (used in the `/authorize`
+redirect); `IDP_AUDIENCE` is the JWT `aud` claim the resource server
+validates. They differ whenever the SPA login client and the API audience are
+separate Keycloak clients (the standard two-client layout).
 
-- **Single-client legacy setup** (one client used for both login and as the
-  API audience): set `IDP_AUDIENCE=$IDP_CLIENT_ID` to silence the
-  deprecation warning while keeping today's behaviour. Leaving `IDP_AUDIENCE`
-  unset still works during the deprecation window — the resource server
-  falls back to `IDP_CLIENT_ID` and logs a warning at startup.
+- **Single-client setup** (one client used for both login and as the API
+  audience): `IDP_AUDIENCE` may be left unset — the provider validates
+  tokens against `IDP_CLIENT_ID`.
 - **Two-client setup** (recommended): set `IDP_CLIENT_ID=geoid-fe` (the
   public PKCE login client) and `IDP_AUDIENCE=geoid-be` (the bearer-only
   API audience). The frontend obtains a token via `geoid-fe` audienced for
