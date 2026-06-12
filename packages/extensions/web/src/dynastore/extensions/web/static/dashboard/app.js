@@ -7,6 +7,20 @@
 
 import { mountContextBar } from "../static/common/context-bar.js";
 
+// Build an Authorization header from the Bearer token stored by the login
+// flow. Mirrors the pattern in common/api.js — kept local because authHeader
+// is not a public export of that module.
+function _authHeader() {
+    const key = (typeof window !== "undefined" && window.DS_TOKEN_KEY) || "ds_token";
+    const ls = (typeof localStorage !== "undefined") ? localStorage : null;
+    const ss = (typeof sessionStorage !== "undefined") ? sessionStorage : null;
+    const token = (ls && ls.getItem(key))
+        || (ss && ss.getItem(key))
+        || (ls && ls.getItem("ds_token"))
+        || (ss && ss.getItem("ds_token"));
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 const app = {
     state: {
         activeTab: 'overview',
@@ -126,7 +140,11 @@ const app = {
             // result does not depend on where the shell HTML is served from.
             const url = this._statsUrl(catalogId, collectionId);
 
-            const res = await fetch(url);
+            const res = await fetch(url, {
+                credentials: "same-origin",
+                headers: { ..._authHeader() },
+            });
+            if (!res.ok) { throw new Error(`${res.status} ${url}`); }
             const data = await res.json();
 
             const setText = (id, value) => {
@@ -224,7 +242,11 @@ const app = {
 
             if (!url) { return; }
 
-            const res = await fetch(url);
+            const res = await fetch(url, {
+                credentials: "same-origin",
+                headers: { ..._authHeader() },
+            });
+            if (!res.ok) { throw new Error(`${res.status} ${url}`); }
             // Response is LogsListResponse: {logs: [...], kibana_dashboard_url?, total?}
             const logs = (await res.json()).logs || [];
 
@@ -305,7 +327,11 @@ const app = {
 
     async loadTasks() {
         try {
-            const res = await fetch(this._tasksUrl(this.state.catalogId));
+            const res = await fetch(this._tasksUrl(this.state.catalogId), {
+                credentials: "same-origin",
+                headers: { ..._authHeader() },
+            });
+            if (!res.ok) { throw new Error(`${res.status} ${this._tasksUrl(this.state.catalogId)}`); }
             const tasks = await res.json();
             this.state._allTasks = Array.isArray(tasks) ? tasks : [];
             this._renderTasks(this.state._allTasks);

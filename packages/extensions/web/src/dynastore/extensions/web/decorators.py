@@ -25,6 +25,49 @@ class uses `collect_web_pages(self)` / `collect_static_assets(self)` from
 `get_web_pages()` / `get_static_assets()` implementation.
 
 No reflective class-walking happens outside the contributing class.
+
+
+ds-page-shell contract
+----------------------
+``static/common/page-shell.js`` registers the ``ds-page-shell`` custom element.
+``static/common/page-shell.css`` contains the shared header rules and opt-in
+utility classes (``.ds-page-body``, ``.ds-sidebar``).
+
+Attributes accepted by ``<ds-page-shell>``:
+
+    data-title       Page title text (pass a pre-localised string; server-side
+                     template substitution runs before the browser parses HTML).
+    data-breadcrumb  Optional supplementary breadcrumb shown before the title.
+    data-logo-src    URL to the brand logo.  Defaults to the ``dynastore.png``
+                     resolved from the script's own directory, which works in
+                     both serving contexts (see below).
+    data-back-label  Label for the back-link; defaults to "Back to Home".
+    data-back-href   Override the back-link href; defaults to ``../``.
+
+Serving contexts and path rules:
+
+    Admin pages (prefix ``static``) are served at ``/web/static/{page}.html``
+    and load common assets via ``../common/page-shell.{js,css}``.
+
+    Extension pages are served at ``/web/{prefix}/{page}.html`` and load
+    common assets via ``../static/common/page-shell.{js,css}``.
+
+    The component derives the logo URL from ``document.currentScript.src``
+    so it lands on ``/web/static/dynastore.png`` in both contexts without
+    requiring a hard-coded depth.
+
+Adding a new page:
+
+    1. Load the stylesheet:
+       - Admin page:    ``<link rel="stylesheet" href="../common/page-shell.css">``
+       - Extension page: ``<link rel="stylesheet" href="../static/common/page-shell.css">``
+    2. Load the script (plain ``<script>``, not ``type="module"``):
+       - Admin page:    ``<script src="../common/page-shell.js"></script>``
+       - Extension page: ``<script src="../static/common/page-shell.js"></script>``
+    3. Place the element as the first child of ``<body>`` (before any layout
+       containers), passing a pre-localised ``data-title``::
+
+           <ds-page-shell data-title="My Page Title"></ds-page-shell>
 """
 
 from typing import Any, Callable, Dict, List, Optional, Union
