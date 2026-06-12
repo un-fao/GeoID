@@ -34,8 +34,11 @@ _REG = "dynastore.extensions.features"
 
 
 def build_contributions():
-    from dynastore.models.localization import LocalizedText
-    from dynastore.modules.notebooks.contribution import NotebookContribution
+    try:
+        from dynastore.models.localization import LocalizedText
+        from dynastore.modules.notebooks.contribution import NotebookContribution
+    except Exception:
+        return []
 
     return [
         NotebookContribution(
