@@ -43,10 +43,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, ClassVar, Dict, FrozenSet, List, Optional, Union
-
-if TYPE_CHECKING:
-    from dynastore.modules.storage.storage_location import StorageLocation
+from typing import Any, AsyncIterator, ClassVar, Dict, FrozenSet, List, Optional, Union
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.protocols.storage_driver import Capability
