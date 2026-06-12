@@ -12,7 +12,7 @@
 //
 // Auth: api.js attaches the Bearer token; server-side IamMiddleware enforces authz.
 
-import { getJSON, authHeader } from "../static/common/api.js";
+import { getJSON, authHeader, fetchCatalogOptions } from "../static/common/api.js";
 import { apiUrl } from "../static/common/url.js";
 import { mountSchemaForm } from "../static/common/schema-form.js";
 import { register, t, lang } from "../static/common/i18n.js";
@@ -146,7 +146,7 @@ function _processListUrl() {
 }
 
 function _processDescUrl(processId) {
-  return `/processes/processes/${encodeURIComponent(processId)}`;
+  return `/processes/processes/${encodeURIComponent(processId)}?language=${lang()}`;
 }
 
 function _executionUrl(processId) {
@@ -206,28 +206,29 @@ function buildScopeBar(container, onScopeChange) {
 
   container.appendChild(bar);
 
-  // Load catalogs and populate catSel
+  // Load catalogs and populate catSel — uses the IAM-filtered /web/catalogs
+  // picker (via fetchCatalogOptions) so only catalogs visible to the current
+  // user appear in the dropdown.
   async function loadCatalogs() {
     catSel.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = "— select —";
     catSel.appendChild(placeholder);
-    try {
-      const res = await getJSON("/stac/catalogs");
-      const catalogs = res.catalogs || res || [];
-      for (const c of catalogs) {
-        const id = c.id || c.catalog_id || c.name;
-        if (!id) continue;
-        const opt = document.createElement("option");
-        opt.value = id;
-        opt.textContent = c.title || id;
-        catSel.appendChild(opt);
-      }
-    } catch (_) {
+    const catalogs = await fetchCatalogOptions();
+    if (catalogs.length === 0) {
       const e = document.createElement("option");
-      e.textContent = "Failed to load catalogs";
+      e.textContent = "No catalogs available";
       catSel.appendChild(e);
+      return;
+    }
+    for (const c of catalogs) {
+      const id = c.id || c.catalog_id;
+      if (!id) continue;
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = c.title || id;
+      catSel.appendChild(opt);
     }
   }
 
@@ -340,16 +341,26 @@ async function executeProcess(url, body, preferAsync) {
 const TERMINAL_STATUSES = new Set(["successful", "failed", "dismissed"]);
 const POLL_INTERVAL_MS = 2500;
 
+// Cancel token: before starting a new poll chain, set _pollToken = {}.
+// Each chain captures its own reference; if a new chain starts (or a new
+// execute is submitted) the captured token no longer matches and the stale
+// chain silently stops.
+let _pollToken = null;
+
 async function pollJob(jobId, resultEl, onDone) {
+  _pollToken = {};
+  const myToken = _pollToken;
   let attempts = 0;
   const statusUrl = _jobStatusUrl(jobId);
 
   async function tick() {
+    if (myToken !== _pollToken) return; // stale chain — cancel
     attempts++;
     let statusInfo;
     try {
       statusInfo = await getJSON(statusUrl);
     } catch (e) {
+      if (myToken !== _pollToken) return;
       // Network error during polling — retry up to ~2 min
       if (attempts < 50) {
         setTimeout(tick, POLL_INTERVAL_MS);
@@ -359,6 +370,8 @@ async function pollJob(jobId, resultEl, onDone) {
       }
       return;
     }
+
+    if (myToken !== _pollToken) return;
 
     const status = statusInfo.status || "unknown";
     const progress = statusInfo.progress != null ? ` (${statusInfo.progress}%)` : "";
@@ -472,76 +485,50 @@ function buildRunPanel(process) {
   formWrap.id = "exec-form-wrap";
   panel.appendChild(formWrap);
 
-  // Build a synthetic JSON Schema from the process inputs.
-  // OGC ProcessInput has .schema (JSON Schema) per input name.
-  // We render each input individually so we can control hidden fields.
-  const inputNames = Object.keys(process.inputs || {});
+  // catalog_id and collection_id are injected by the server from the URL path;
+  // sending them in the body causes 400 conflicts. Exclude them entirely.
   const hiddenInputs = new Set(["catalog_id", "collection_id"]);
 
-  // Build per-input renderers using mountSchemaForm
-  const inputRenderers = {}; // name → schemaForm result
+  // Build ONE synthetic wrapper object schema from all visible process inputs.
+  // mountSchemaForm requires a top-level object schema with `properties` —
+  // rendering each primitive schema individually produces nothing.
+  const wrapperProps = {};
+  const wrapperRequired = [];
+  for (const [name, def] of Object.entries(process.inputs || {})) {
+    if (hiddenInputs.has(name)) continue;
+    wrapperProps[name] = def.schema || {};
+    // Preserve description and title via x-ui hints on the sub-schema so the
+    // object renderer can show them as field-desc / label overrides.
+    if (def.title && !wrapperProps[name].title) {
+      wrapperProps[name] = { ...wrapperProps[name], title: def.title };
+    }
+    if (def.description && !wrapperProps[name].description) {
+      wrapperProps[name] = { ...wrapperProps[name], description: def.description };
+    }
+    if (def.minOccurs !== undefined && def.minOccurs > 0) {
+      wrapperRequired.push(name);
+    }
+  }
+  const wrapperSchema = { type: "object", properties: wrapperProps, required: wrapperRequired };
 
-  if (inputNames.length === 0) {
+  let execForm = null;
+
+  if (Object.keys(wrapperProps).length === 0) {
     const note = document.createElement("p");
     note.style.color = "#64748b";
     note.style.fontSize = "0.82rem";
     note.textContent = "This process takes no inputs.";
     formWrap.appendChild(note);
-  }
-
-  for (const name of inputNames) {
-    const inputDef = process.inputs[name];
-    const schema = inputDef.schema || {};
-    const isHidden = hiddenInputs.has(name);
-
-    const fieldDiv = document.createElement("div");
-    fieldDiv.className = "field-row";
-    if (isHidden) fieldDiv.style.display = "none";
-
-    const label = document.createElement("label");
-    label.textContent = inputDef.title || name;
-    if (inputDef.description) {
-      const desc = document.createElement("div");
-      desc.className = "field-desc";
-      desc.textContent = inputDef.description;
-      fieldDiv.appendChild(label);
-      fieldDiv.appendChild(desc);
-    } else {
-      fieldDiv.appendChild(label);
-    }
-
-    // Determine the initial value for hidden injected inputs
-    let initialValue = undefined;
-    if (name === "catalog_id") initialValue = _catalogId || "";
-    if (name === "collection_id") initialValue = _collectionId || "";
-
-    // Use mountSchemaForm for the input schema (wraps a single field)
-    const container = document.createElement("div");
-    const sf = mountSchemaForm(container, {
-      schema: schema,
-      resolved: initialValue !== undefined ? initialValue : (schema.default !== undefined ? schema.default : undefined),
+  } else {
+    const formContainer = document.createElement("div");
+    formWrap.appendChild(formContainer);
+    execForm = mountSchemaForm(formContainer, {
+      schema: wrapperSchema,
+      resolved: {},
       explicit: {},
       allowInherit: false,
       onDirty: () => {},
     });
-    // Override: for simple primitives, mountSchemaForm wraps the full schema as
-    // an object form if it has properties; for primitives it renders directly.
-    // We access the value via sf.getPatch() which returns { fieldName: val } for
-    // dirty fields only. Since we need ALL values, we use a different approach:
-    // render with a wrapper object schema so we get fieldRenderers.
-    fieldDiv.appendChild(container);
-    formWrap.appendChild(fieldDiv);
-    inputRenderers[name] = { sf, schema, isHidden, fieldDiv };
-  }
-
-  // --- Rebuild form when scope changes (update hidden fields) ---
-  function refreshHiddenFields() {
-    for (const [name, r] of Object.entries(inputRenderers)) {
-      if (name === "catalog_id" && r.isHidden) {
-        // update the hidden field value by re-mounting isn't ideal; skip silent refresh
-        // (inject at submit time instead)
-      }
-    }
   }
 
   // --- Submit button ---
@@ -556,37 +543,25 @@ function buildRunPanel(process) {
   panel.appendChild(resultDiv);
 
   submitBtn.addEventListener("click", async () => {
+    // Cancel any stale poll chain from a previous submit
+    _pollToken = {};
     submitBtn.disabled = true;
     submitBtn.textContent = t("proc.run.submitting");
     resultDiv.replaceChildren();
 
-    // Collect inputs from schema forms
-    // For each input: build a per-field schema wrapper to get values
-    // Since mountSchemaForm with a primitive schema doesn't expose fieldRenderers,
-    // we re-collect via the DOM inputs directly for simplicity.
+    // Collect ALL field values from the unified wrapper form.
+    // form.get() returns { fieldName: value } for every property in the schema.
+    // Drop null/empty values for non-required inputs to keep the payload clean.
     const inputs = {};
-
-    for (const [name, r] of Object.entries(inputRenderers)) {
-      if (r.isHidden) {
-        // Inject path-level values
-        if (name === "catalog_id") inputs[name] = _catalogId || "";
-        else if (name === "collection_id") inputs[name] = _collectionId || "";
-        continue;
-      }
-      // For non-hidden fields, collect the raw DOM value
-      // getPatch() returns only dirty fields; use raw DOM instead
-      const inputEl = r.sf && r.sf._inputEl; // not available; use DOM query
-      const domInput = r.fieldDiv.querySelector("input,select,textarea");
-      if (domInput) {
-        if (domInput.type === "checkbox") {
-          inputs[name] = domInput.checked;
-        } else if (domInput.type === "number") {
-          const v = domInput.value;
-          inputs[name] = v === "" ? null : (r.schema.type === "integer" ? parseInt(v, 10) : Number(v));
-        } else if (domInput.dataset && domInput.dataset.widget === "json") {
-          try { inputs[name] = JSON.parse(domInput.value); } catch { inputs[name] = domInput.value; }
+    if (execForm) {
+      const allValues = execForm.get();
+      for (const [name, val] of Object.entries(allValues)) {
+        const isRequired = wrapperRequired.includes(name);
+        if (val === null || val === undefined || val === "") {
+          if (isRequired) inputs[name] = val; // keep even if empty for required
+          // else omit
         } else {
-          inputs[name] = domInput.value;
+          inputs[name] = val;
         }
       }
     }
