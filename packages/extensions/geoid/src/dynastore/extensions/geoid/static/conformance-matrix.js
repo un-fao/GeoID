@@ -43,12 +43,31 @@
     return "";
   }
 
+  function authHeaders() {
+    const headers = { "Accept": "application/json" };
+    try {
+      const key = (typeof window !== "undefined" && window.DS_TOKEN_KEY) || "ds_token";
+      const token = localStorage.getItem(key) || sessionStorage.getItem(key);
+      if (token) headers["Authorization"] = "Bearer " + token;
+    } catch (_) { /* storage unavailable (sandboxed embed) — probe anonymously */ }
+    return headers;
+  }
+
   async function probe(standard) {
     const url = getApiRoot() + standard.url;
     const cached = readCache(url);
-    if (cached !== null) return classify(cached);
+    if (cached !== null) {
+      if (cached.__denied) return { state: STATE_FALLBACK, count: standard.classes.length, denied: true };
+      return classify(cached);
+    }
     try {
-      const res = await fetch(url, { headers: { "Accept": "application/json" } });
+      const res = await fetch(url, { headers: authHeaders() });
+      if (res.status === 401 || res.status === 403) {
+        // Conformance is access-gated for this principal. Remember the denial
+        // so reloads inside the cache window stay quiet.
+        writeCache(url, { __denied: true });
+        return { state: STATE_FALLBACK, count: standard.classes.length, denied: true };
+      }
       if (!res.ok) return { state: STATE_FALLBACK, count: standard.classes.length };
       const body = await res.json();
       writeCache(url, body);
@@ -133,9 +152,14 @@
     return a;
   }
 
-  function setFooterText(standardsCount, okCount) {
+  function setFooterText(standardsCount, okCount, gated) {
     const footer = document.getElementById("ogc-matrix-footer");
     if (!footer) return;
+    if (gated) {
+      footer.textContent =
+        standardsCount + " OGC API standards from the published snapshot — sign in for live conformance checks";
+      return;
+    }
     footer.textContent =
       okCount + " of " + standardsCount + " OGC API standards declared conformant — fetched live from /…/conformance";
   }
@@ -144,19 +168,34 @@
     const standards = snapshot.standards;
     const initial = standards.map((s) => buildBadge(s, { state: STATE_FALLBACK, count: s.classes.length }));
     rootEl.replaceChildren(...initial);
-    setFooterText(standards.length, 0);
+    setFooterText(standards.length, 0, false);
 
-    let okCount = 0;
-    await Promise.all(standards.map(async (s, i) => {
-      const status = await probe(s);
-      const newBadge = buildBadge(s, status);
-      const oldBadge = rootEl.children[i];
-      if (oldBadge && oldBadge.parentNode === rootEl) {
-        rootEl.replaceChild(newBadge, oldBadge);
+    // Canary probe: if the first /conformance is access-gated for this
+    // principal, the rest will be too — keep the snapshot badges and skip
+    // the remaining requests instead of erroring once per standard.
+    if (standards.length > 0) {
+      const canary = await probe(standards[0]);
+      if (canary.denied) {
+        setFooterText(standards.length, 0, true);
+        return;
       }
-      if (status.state === STATE_OK) okCount += 1;
-    }));
-    setFooterText(standards.length, okCount);
+      const firstBadge = buildBadge(standards[0], canary);
+      const oldFirst = rootEl.children[0];
+      if (oldFirst && oldFirst.parentNode === rootEl) {
+        rootEl.replaceChild(firstBadge, oldFirst);
+      }
+      let okCount = canary.state === STATE_OK ? 1 : 0;
+      await Promise.all(standards.slice(1).map(async (s, i) => {
+        const status = await probe(s);
+        const newBadge = buildBadge(s, status);
+        const oldBadge = rootEl.children[i + 1];
+        if (oldBadge && oldBadge.parentNode === rootEl) {
+          rootEl.replaceChild(newBadge, oldBadge);
+        }
+        if (status.state === STATE_OK) okCount += 1;
+      }));
+      setFooterText(standards.length, okCount, false);
+    }
   }
 
   async function init() {
