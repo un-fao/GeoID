@@ -1772,6 +1772,7 @@ class ItemsElasticsearchDriver(
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
         from dynastore.modules.elasticsearch.aliases import (
             remove_index_from_public_alias,
@@ -2508,6 +2509,7 @@ class AssetElasticsearchDriver(
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(
