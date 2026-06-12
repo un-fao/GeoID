@@ -44,26 +44,23 @@ Attributes accepted by ``<ds-page-shell>``:
     data-back-label  Label for the back-link; defaults to "Back to Home".
     data-back-href   Override the back-link href; defaults to ``../``.
 
-Serving contexts and path rules:
+Serving context and path rules:
 
-    Admin pages (prefix ``static``) are served at ``/web/static/{page}.html``
-    and load common assets via ``../common/page-shell.{js,css}``.
+    Every page — admin and extension — is served at ``/web/pages/{page_id}``.
+    Common assets therefore always resolve via ``../static/common/``, e.g.:
 
-    Extension pages are served at ``/web/{prefix}/{page}.html`` and load
-    common assets via ``../static/common/page-shell.{js,css}``.
+        ``<link rel="stylesheet" href="../static/common/page-shell.css">``
+        ``<script src="../static/common/page-shell.js"></script>``
 
     The component derives the logo URL from ``document.currentScript.src``
-    so it lands on ``/web/static/dynastore.png`` in both contexts without
-    requiring a hard-coded depth.
+    so it lands on ``/web/static/dynastore.png`` without a hard-coded depth.
 
 Adding a new page:
 
     1. Load the stylesheet:
-       - Admin page:    ``<link rel="stylesheet" href="../common/page-shell.css">``
-       - Extension page: ``<link rel="stylesheet" href="../static/common/page-shell.css">``
+       ``<link rel="stylesheet" href="../static/common/page-shell.css">``
     2. Load the script (plain ``<script>``, not ``type="module"``):
-       - Admin page:    ``<script src="../common/page-shell.js"></script>``
-       - Extension page: ``<script src="../static/common/page-shell.js"></script>``
+       ``<script src="../static/common/page-shell.js"></script>``
     3. Place the element as the first child of ``<body>`` (before any layout
        containers), passing a pre-localised ``data-title``::
 
