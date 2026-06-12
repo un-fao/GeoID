@@ -162,4 +162,19 @@ class ItemsBigQueryDriverConfig(CollectionDriverConfig):
         ),
     )
 
+    # ---- Storage provisioning (opt-in, off by default) -------------------
+    # BigQuery tables in production are typically managed by an external team.
+    # Set manage_storage=True only when dynastore owns the dataset/table
+    # lifecycle.  A bare ItemsBigQueryDriverConfig() still produces an empty
+    # model_dump(exclude_unset=True) and ensure_storage() is a no-op.
+    manage_storage: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "When True, ensure_storage() will create the BigQuery dataset and "
+            "table if they do not already exist, building the table schema from "
+            "materialize_feature_fields(). When False (default), ensure_storage() "
+            "is a no-op — use this when the BQ table is managed externally."
+        ),
+    )
+
 
