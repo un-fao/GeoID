@@ -61,7 +61,6 @@ if TYPE_CHECKING:
     from dynastore.modules.storage.driver_config import ItemsWritePolicy
     from dynastore.modules.storage.read_policy import ItemsReadPolicy
     from dynastore.modules.storage.storage_location import StorageLocation
-    from typing import Type
 
 from dynastore.models.ogc import Feature, FeatureCollection
 from dynastore.models.driver_context import DriverContext
@@ -130,54 +129,6 @@ def _tenant_items_index(catalog_id: str) -> str:
     from dynastore.modules.elasticsearch.mappings import get_tenant_items_index
 
     return get_tenant_items_index(get_index_prefix(), catalog_id)
-
-
-# Fields that the items ES mapping models as multilingual ``object`` blocks
-# (one ``text`` sub-property per supported locale — see
-# ``items_projection._localized_text_field``). The platform's read pipeline
-# (``ItemMetadataSidecar.map_row_to_feature``) collapses these to a plain
-# string for the requested ``context.lang`` before the Feature is dumped to
-# the dispatch payload. Sending a string to an ``object``-typed field would
-# trip ``object mapping for [properties.<field>] tried to parse field [..]
-# as object, but found a concrete value`` and fail every item write on the
-# dispatcher path. Re-wrap the collapsed string back into the canonical
-# ``{<lang>: <value>}`` dict so the ES mapping accepts it.
-_LOCALIZED_OBJECT_PROPERTIES: tuple = ("title", "description")
-# ``keywords`` is mapped as keyword + .text — concrete values are fine
-# there, so it intentionally stays out of the wrap list.
-
-
-def _ensure_localized_object_shape(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Re-wrap localised string fields back into ``{<lang>: <value>}`` dicts.
-
-    The read pipeline collapses multilingual fields (``properties.title``,
-    ``properties.description``) into a plain string for the active
-    ``context.lang``. The ES items mapping types those fields as ``object``
-    with per-locale sub-properties, so a string payload is rejected by ES.
-
-    This helper restores the canonical object shape — non-destructive when
-    the field is already a dict or absent. Pure function; the input is not
-    mutated. The lang label defaults to ``en`` (matches
-    ``FeaturePipelineContext.lang`` default and aligns with the only
-    language the dispatch path resolves at present).
-    """
-    if not isinstance(doc, dict):
-        return doc
-    props = doc.get("properties")
-    if not isinstance(props, dict):
-        return doc
-    new_props: Optional[Dict[str, Any]] = None
-    for field in _LOCALIZED_OBJECT_PROPERTIES:
-        value = props.get(field)
-        if isinstance(value, str):
-            if new_props is None:
-                new_props = dict(props)
-            new_props[field] = {"en": value}
-    if new_props is None:
-        return doc
-    out = dict(doc)
-    out["properties"] = new_props
-    return out
 
 
 # Per-process cache: catalogs whose tenant items index has already been
@@ -291,81 +242,6 @@ class _ElasticsearchBase:
         if config is None:
             return ItemsElasticsearchDriverConfig()
         return config
-
-    @staticmethod
-    async def _is_secondary_for(
-        driver_ref: str, catalog_id: str, collection_id: Optional[str],
-    ) -> bool:
-        """Check if this driver is listed in the routing config for the given scope."""
-        try:
-            from typing import cast as _cast
-            from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.storage.routing_config import (
-                ItemsRoutingConfig,
-            )
-
-            configs = get_protocol(ConfigsProtocol)
-            if not configs:
-                return False
-            routing = _cast(
-                Optional[ItemsRoutingConfig],
-                await configs.get_config(
-                    ItemsRoutingConfig,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                ),
-            )
-            if routing is None:
-                return False
-            from typing import cast as _cast2
-            ops = _cast2(Dict[str, list], routing.operations)
-            return any(
-                entry.driver_ref == driver_ref
-                for entries in ops.values()
-                for entry in entries
-            )
-        except Exception:
-            return False
-
-    @staticmethod
-    async def _is_write_driver_for(
-        driver_ref: str, catalog_id: str, collection_id: Optional[str],
-    ) -> bool:
-        """Check if this driver is listed in the WRITE operation of the routing config.
-
-        When True, the router fan-out already handles writes for this
-        collection — event-driven indexing should be skipped to avoid
-        double-indexing.
-        """
-        try:
-            from typing import cast as _cast
-            from dynastore.models.protocols.configs import ConfigsProtocol
-            from dynastore.tools.discovery import get_protocol
-            from dynastore.modules.storage.routing_config import (
-                Operation,
-                ItemsRoutingConfig,
-            )
-
-            configs = get_protocol(ConfigsProtocol)
-            if not configs:
-                return False
-            routing = _cast(
-                Optional[ItemsRoutingConfig],
-                await configs.get_config(
-                    ItemsRoutingConfig,
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                ),
-            )
-            if routing is None:
-                return False
-            from typing import cast as _cast3
-            ops2 = _cast3(Dict[str, list], routing.operations)
-            write_entries = ops2.get(Operation.WRITE, [])
-            return any(e.driver_ref == driver_ref for e in write_entries)
-        except Exception:
-            return False
 
     @staticmethod
     def _feature_to_stac_item(
@@ -650,6 +526,151 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
             ctx=DriverContext(db_resource=db_resource),
         )
         return bool(getattr(config, "simplify_geometry", False))
+
+    # ------------------------------------------------------------------
+    # Shared concrete methods — identical across private and envelope drivers
+    # (and the public driver where noted)
+    # ------------------------------------------------------------------
+
+    # Backend label for StorageLocation.  The public driver overrides this by
+    # providing its own ``location()`` impl; private and envelope set their own
+    # values and inherit the base implementation below.
+    _location_backend: ClassVar[str] = ""
+
+    async def get_entity_fields(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        entity_level: str = "item",
+        db_resource: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Return the introspected field set as a dict keyed by field name.
+
+        Delegates to the inherited ``introspect_schema`` so the ES-type →
+        canonical/capability mapping lives in exactly one place
+        (``es_introspect_mapping``), shared across all three ES items drivers.
+        """
+        if entity_level != "item" or not collection_id:
+            return {}
+        fields = await self.introspect_schema(catalog_id, collection_id)
+        return {getattr(f, "name", str(f)): f for f in fields}
+
+    async def export_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        *,
+        format: str = "parquet",
+        target_path: str = "",
+        db_resource: Optional[Any] = None,
+    ) -> str:
+        raise NotImplementedError(
+            f"{type(self).__name__}.export_entities: not supported. "
+            "Export from the primary driver instead."
+        )
+
+    async def rename_storage(
+        self,
+        catalog_id: str,
+        old_collection_id: str,
+        new_collection_id: str,
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__}: rename_storage is not supported. "
+            "Renaming on this backend would require a full reindex."
+        )
+
+    async def restore_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
+        raise SoftDeleteNotSupportedError(
+            f"{type(self).__name__}: restore_entities is not implemented; "
+            "deletes are physical removals (no soft-delete tombstone)."
+        )
+
+    async def delete_entities(
+        self,
+        catalog_id: str,
+        collection_id: str,
+        entity_ids: List[str],
+        *,
+        soft: bool = False,
+        db_resource: Optional[Any] = None,
+    ) -> int:
+        """Delete items by geoid from this driver's index.
+
+        Shared by the private and envelope drivers: raises on ``soft=True``
+        (neither index tracks a soft-delete tombstone), then hard-deletes each
+        geoid, swallowing per-item exceptions.  The public driver overrides
+        this because it (a) accepts ``soft=True`` with a log instead of raising
+        and (b) passes ``routing=collection_id`` on each delete call.
+        """
+        from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
+
+        if soft:
+            raise SoftDeleteNotSupportedError(
+                f"{type(self).__name__} does not support soft delete."
+            )
+
+        index_name = self._items_index_name(catalog_id)
+        es = self._get_client()
+        deleted = 0
+
+        for geoid in entity_ids:
+            try:
+                await es.delete(index=index_name, id=geoid)
+                deleted += 1
+            except Exception:
+                pass
+
+        return deleted
+
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Idempotent index creation; each concrete driver implements this."""
+        raise NotImplementedError
+
+    async def ensure_indexer(self, ctx) -> None:
+        """Idempotent bootstrap — delegates to :meth:`ensure_storage`."""
+        await self.ensure_storage(ctx.catalog, ctx.collection)
+
+    async def location(
+        self,
+        catalog_id: str,
+        collection_id: str,
+    ) -> "StorageLocation":
+        """Return typed physical storage coordinates for this index.
+
+        Shared by the private and envelope drivers; both use the same
+        ``{prefix}/{catalog_id}`` identifier shape and no collection
+        routing key.  The public driver overrides this method because
+        its identifiers include a ``routing`` key.
+        """
+        from dynastore.modules.elasticsearch.client import get_index_prefix as _get_index_prefix
+        from dynastore.modules.storage.storage_location import StorageLocation
+
+        prefix = _get_index_prefix()
+        index_name = self._items_index_name(catalog_id)
+        backend = self.__class__._location_backend or type(self).__name__
+        return StorageLocation(
+            backend=backend,
+            canonical_uri=f"es://{index_name}",
+            identifiers={"index": index_name, "prefix": prefix, "catalog_id": catalog_id},
+            display_label=index_name,
+        )
 
     # ------------------------------------------------------------------
     # CollectionItemsStore Protocol — data-side ops
@@ -1558,29 +1579,6 @@ class ItemsElasticsearchDriver(
         except Exception:
             return False
 
-    async def get_entity_fields(
-        self,
-        catalog_id: str,
-        collection_id: Optional[str] = None,
-        *,
-        entity_level: str = "item",
-        db_resource: Optional[Any] = None,
-    ) -> Dict[str, Any]:
-        """Return the introspected field set as a dict keyed by field name.
-
-        Delegates to the inherited ``introspect_schema`` so the ES-type →
-        canonical/capability mapping lives in exactly one place (the
-        ``es_introspect_mapping`` SSOT helper), shared with the envelope driver.
-        The previous inline copy of those tables had drifted — it mapped
-        ``object``/``nested`` to ``string`` and dropped ``date_nanos``, and only
-        skipped four named internal fields rather than every ``_``-prefixed one
-        (#1216).
-        """
-        if entity_level != "item" or not collection_id:
-            return {}
-        fields = await self.introspect_schema(catalog_id, collection_id)
-        return {getattr(f, "name", str(f)): f for f in fields}
-
     async def read_entities(
         self,
         catalog_id: str,
@@ -1845,34 +1843,11 @@ class ItemsElasticsearchDriver(
             except Exception as e:
                 logger.warning("drop_storage catalog delete failed: %s", e)
 
-    async def export_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        *,
-        format: str = "parquet",
-        target_path: str = "",
-        db_resource: Optional[Any] = None,
-    ) -> str:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver.export_entities: not supported. "
-            "Export from the primary driver instead."
-        )
-
     # ------------------------------------------------------------------
     # Generic Indexer Protocol — slim, dispatcher-facing surface
     # ------------------------------------------------------------------
-
-    async def ensure_indexer(self, ctx) -> None:
-        """Idempotent bootstrap — creates the per-tenant items index
-        ``{prefix}-items-{catalog_id}`` with ``ITEM_MAPPING`` if missing
-        and enrols it in the platform alias ``{prefix}-items-public``.
-
-        Delegates to :meth:`ensure_storage` so a single code path
-        handles both per-collection-creation eager bootstrap and the
-        dispatcher's lazy first-write check.
-        """
-        await self.ensure_storage(ctx.catalog, ctx.collection)
+    # export_entities and ensure_indexer are inherited from
+    # _ItemsElasticsearchBase.
 
     async def index(self, ctx, op) -> None:
         """Apply a single :class:`IndexOp` to the per-tenant items index.
@@ -1882,11 +1857,11 @@ class ItemsElasticsearchDriver(
         configured ``FailurePolicy`` (FATAL → caller rollback, OUTBOX
         → enqueue retry row in same TX, WARN → log).
 
-        No ``_is_secondary_for`` / ``_is_write_driver_for`` guards: the
-        dispatcher only invokes drivers pinned as secondary-index ``WRITE``
-        entries (``secondary_index=True``) in ``operations[WRITE]`` for this
-        ``(catalog, collection)`` — guard is moved out of the driver into the
-        routing layer.
+        No routing-membership guard here: the dispatcher only invokes
+        drivers pinned as secondary-index ``WRITE`` entries
+        (``secondary_index=True``) in ``operations[WRITE]`` for this
+        ``(catalog, collection)`` — the guard lives in the routing layer,
+        not the driver.
         """
         if op.entity_type != "item":
             # Items driver only handles item-tier ops.  Non-item routes
@@ -1909,7 +1884,7 @@ class ItemsElasticsearchDriver(
             return
 
         # op_type == "upsert": build the canonical doc from a raw PG read.
-        # Bypasses op.payload and _serialize_item so the indexed document
+        # Bypasses op.payload entirely so the indexed document
         # uses the canonical envelope (stats/system/properties/access) built
         # directly from the raw row + resolved sidecars — no read-policy
         # filtering, no external_id_as_feature_id id-flip (#1800).
@@ -2098,43 +2073,12 @@ class ItemsElasticsearchDriver(
             display_label=f"{index_name} (routing={collection_id})",
         )
 
-    # Data-side ops (count/extents/aggregate/introspect) are inherited from
-    # :class:`_ItemsElasticsearchBase`; the public per-tenant index is sharded
-    # by ``_routing=collection_id`` so the default ``_collection_routing``
-    # (returns ``collection_id``) and ``_items_index_name`` above suffice.
-
-    # --- Admin ops not supported on this backend ---
-
-    async def rename_storage(
-        self,
-        catalog_id: str,
-        old_collection_id: str,
-        new_collection_id: str,
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> None:
-        raise NotImplementedError(
-            "ItemsElasticsearchDriver: rename_storage is not supported. "
-            "Renaming a collection on this backend would require a full "
-            "reindex; perform the reindex explicitly via the "
-            "elasticsearch_indexer process."
-        )
-
-    async def restore_entities(
-        self,
-        catalog_id: str,
-        collection_id: str,
-        entity_ids: List[str],
-        *,
-        db_resource: Optional[Any] = None,
-    ) -> int:
-        from dynastore.modules.storage.errors import SoftDeleteNotSupportedError
-
-        raise SoftDeleteNotSupportedError(
-            "ItemsElasticsearchDriver: restore_entities is not implemented; "
-            "soft-deleted entities are not tracked separately on this "
-            "backend (deletes are physical removals from the index)."
-        )
+    # Data-side ops (count/extents/aggregate/introspect), get_entity_fields,
+    # export_entities, rename_storage, restore_entities, and ensure_indexer are
+    # inherited from :class:`_ItemsElasticsearchBase`; the public per-tenant
+    # index is sharded by ``_routing=collection_id`` so the default
+    # ``_collection_routing`` (returns ``collection_id``) and
+    # ``_items_index_name`` above suffice.
 
 
 
