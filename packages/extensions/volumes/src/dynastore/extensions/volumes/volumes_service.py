@@ -628,7 +628,19 @@ def _build_cityjsonseq_header(extras: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_cityjson(feat: Any) -> Optional[Dict[str, Any]]:
-    """Extract the stored CityJSONFeature dict from an item, or None."""
+    """Extract the stored CityJSONFeature dict from an item, or None.
+
+    Ingest persists the payload under ``properties.cityjson`` (the only
+    surface every item driver round-trips); older shapes carried it in
+    ``extras``/top-level, kept here as fallbacks.
+    """
+    properties = getattr(feat, "properties", None)
+    if not isinstance(properties, dict) and isinstance(feat, dict):
+        properties = feat.get("properties")
+    if isinstance(properties, dict):
+        cityjson = properties.get("cityjson")
+        if cityjson is not None:
+            return cityjson
     # Try model_extra path (extras container)
     model_extra = getattr(feat, "model_extra", None) or {}
     extras = model_extra.get("extras") or {}

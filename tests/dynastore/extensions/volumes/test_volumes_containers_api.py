@@ -359,3 +359,14 @@ def test_collection_bbox_3d_prefers_real_extent():
     coll.extent.spatial.bbox = [[1.0, 2.0, 3.0, 4.0]]
     extras = {"geovolumes:bbox": [9.0, 9.0, 9.9, 9.9]}
     assert _collection_bbox_3d(coll, extras)[:2] == [1.0, 2.0]
+
+
+def test_extract_cityjson_from_properties():
+    """Items persist the CityJSONFeature under properties.cityjson — the
+    only surface every driver round-trips."""
+    from dynastore.extensions.volumes.volumes_service import _extract_cityjson
+
+    feat = MagicMock()
+    feat.properties = {"cityjson": {"type": "CityJSONFeature", "id": "b-1"}}
+    feat.model_extra = {}
+    assert _extract_cityjson(feat)["id"] == "b-1"

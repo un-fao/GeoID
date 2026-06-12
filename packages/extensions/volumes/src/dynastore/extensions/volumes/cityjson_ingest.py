@@ -462,11 +462,16 @@ def feature_to_item_input(
         if k not in props:
             props[k] = v
 
+    # The raw CityJSONFeature rides INSIDE properties: free-form top-level
+    # keys are dropped by the item write path (producer-props contract),
+    # while properties persist across every driver — and /cityjsonseq
+    # needs the full payload back per item.
+    props["cityjson"] = feature
+
     return {
         "id": feature_id,
         "geometry": footprint,
         "properties": props,
-        "cityjson": feature,
     }
 
 

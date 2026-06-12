@@ -146,7 +146,10 @@ def test_feature_to_item_input():
     assert props["height"] == 12.5
 
     # cityjson must be the exact input dict
-    assert item["cityjson"] is feature
+    # The raw CityJSONFeature must ride inside properties — free-form
+    # top-level keys are dropped by the item write path.
+    assert item["properties"]["cityjson"] is feature
+    assert "cityjson" not in item
 
 
 def test_feature_to_item_input_raises_without_epsg():
