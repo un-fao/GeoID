@@ -216,6 +216,13 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
         logger.info("WFSService initialized.")
         yield
 
+    def get_notebooks(self):
+        try:
+            from .notebooks import build_contributions
+        except Exception:
+            return []
+        return build_contributions()
+
     def configure_app(self, app: FastAPI):
         """
         Registers the WFS-specific exception handler with the main FastAPI application.
