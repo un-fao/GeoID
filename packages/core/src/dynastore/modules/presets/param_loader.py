@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from dynastore.modules.db_config.instance import CONFIG_ROOT
 
@@ -95,3 +95,87 @@ def load_preset_params(preset_name: str) -> Optional[Dict[str, Any]]:
         return None
 
     return params  # may be None if key is absent — caller falls back to default
+
+
+def load_preset_payloads(name: str) -> Optional[List[Dict[str, Any]]]:
+    """Load a list of raw preset payload dicts for *name* from the presets directory.
+
+    Accepts three file shapes:
+
+    * Legacy single object ``{"preset_name": ..., "params": {...}}`` — returned
+      as a 1-element list.  If ``preset_name`` is absent the key is injected
+      from *name* so the caller always receives a complete payload dict.
+    * Chain object ``{"presets": [...]}`` — the ``"presets"`` list is returned
+      directly.
+    * Bare JSON array ``[{"preset_name": ..., "params": {...}}, ...]`` — returned
+      as-is.
+
+    Returns ``None`` when:
+    - ``PRESETS_DIR`` does not exist.
+    - No file named ``<name>.json`` is present.
+    - The file cannot be read or parsed.
+    - The file contains an unrecognised shape.
+
+    The caller is responsible for coercing the raw dicts to ``PresetPayload``
+    instances (e.g. via ``coerce_payloads``).  This function never raises on
+    bad files — it warns and returns ``None`` to keep boot resilient.
+    """
+    if not PRESETS_DIR.exists():
+        return None
+
+    candidate = PRESETS_DIR / f"{name}.json"
+    if not candidate.exists():
+        return None
+
+    try:
+        raw = json.loads(candidate.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "preset param_loader: could not read %s: %s", candidate, exc
+        )
+        return None
+
+    # Shape 3: bare JSON list.
+    if isinstance(raw, list):
+        for idx, item in enumerate(raw):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "preset param_loader: %s list item %d must be a JSON object, got %s",
+                    candidate, idx, type(item).__name__,
+                )
+                return None
+        return raw  # type: ignore[return-value]
+
+    if not isinstance(raw, dict):
+        logger.warning(
+            "preset param_loader: %s must be a JSON object or array, got %s",
+            candidate,
+            type(raw).__name__,
+        )
+        return None
+
+    # Shape 2: chain object {"presets": [...]}.
+    if "presets" in raw:
+        presets = raw["presets"]
+        if not isinstance(presets, list):
+            logger.warning(
+                "preset param_loader: %s 'presets' must be a JSON array, got %s",
+                candidate,
+                type(presets).__name__,
+            )
+            return None
+        for idx, item in enumerate(presets):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "preset param_loader: %s presets[%d] must be a JSON object, got %s",
+                    candidate, idx, type(item).__name__,
+                )
+                return None
+        return presets  # type: ignore[return-value]
+
+    # Shape 1: legacy single object {"preset_name": ..., "params": {...}}.
+    # Inject preset_name from the file name if absent.
+    entry: Dict[str, Any] = dict(raw)
+    if "preset_name" not in entry:
+        entry["preset_name"] = name
+    return [entry]

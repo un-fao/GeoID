@@ -204,3 +204,195 @@ def test_iam_presets_registered_in_registry() -> None:
 
     assert get_preset("default_roles_baseline") is not None
     assert get_preset("public_access_baseline") is not None
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_preset_if_absent — explicit params persisted in sentinel
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bootstrap_explicit_params_persisted_in_snapshot() -> None:
+    """When explicit params are passed, the sentinel snapshot reflects them."""
+    import json as _json
+    from pydantic import BaseModel as _BM
+
+    class _MyParams(_BM):
+        level: str = "read"
+
+    preset = MagicMock()
+    preset.name = "parameterised_preset"
+    preset.params_model = _MyParams
+
+    captured_insert_kwargs: list = []
+
+    class _SelectDQL:
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            return None  # sentinel absent
+
+    class _InsertDQL:
+        async def execute(self, conn: Any, **kw: Any) -> Any:
+            captured_insert_kwargs.append(kw)
+            return None
+
+    async def _apply(params: Any, scope: str, ctx: Any) -> Any:
+        from dynastore.modules.storage.presets.preset import AppliedDescriptor
+        return AppliedDescriptor(payload={"applied": True})
+
+    preset.apply = AsyncMock(side_effect=_apply)
+
+    from dynastore.modules.presets.bootstrap import bootstrap_preset_if_absent
+
+    with patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _FakeLockAcquired), \
+         patch("dynastore.modules.storage.presets.registry.find_preset", return_value=preset), \
+         patch("dynastore.modules.presets.bootstrap._SELECT_SENTINEL", _SelectDQL()), \
+         patch("dynastore.modules.presets.bootstrap._INSERT_SENTINEL", _InsertDQL()), \
+         patch("dynastore.modules.storage.presets.lifecycle._build_context", return_value=MagicMock()), \
+         _guard_unset:
+        result = await bootstrap_preset_if_absent(
+            MagicMock(),
+            preset_name="parameterised_preset",
+            params={"level": "admin"},
+        )
+
+    assert result is True
+    preset.apply.assert_awaited_once()
+    assert len(captured_insert_kwargs) == 1
+    snapshot = _json.loads(captured_insert_kwargs[0]["params_snapshot"])
+    assert snapshot == {"level": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_preset_if_absent — invalid params returns False, apply not called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bootstrap_invalid_params_returns_false_no_apply() -> None:
+    """Params that fail the preset's params_model validation cause False return."""
+    from pydantic import BaseModel as _BM
+
+    class _StrictParams(_BM):
+        model_config = {"extra": "forbid"}
+        required_field: str
+
+    preset = MagicMock()
+    preset.name = "strict_preset"
+    preset.params_model = _StrictParams
+    preset.apply = AsyncMock()
+
+    from dynastore.modules.presets.bootstrap import bootstrap_preset_if_absent
+
+    with patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _FakeLockAcquired), \
+         patch("dynastore.modules.storage.presets.registry.find_preset", return_value=preset), \
+         patch("dynastore.modules.presets.bootstrap._SELECT_SENTINEL", MagicMock(execute=AsyncMock(return_value=None))), \
+         _guard_unset:
+        result = await bootstrap_preset_if_absent(
+            MagicMock(),
+            preset_name="strict_preset",
+            params={},  # missing required_field
+        )
+
+    assert result is False
+    preset.apply.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_preset_if_absent — resolution order: explicit beats file
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bootstrap_explicit_params_beats_file() -> None:
+    """Explicit params take priority over what load_preset_params would return."""
+    from pydantic import BaseModel as _BM
+
+    class _LevelParams(_BM):
+        level: str = "read"
+
+    preset = MagicMock()
+    preset.name = "resolution_test"
+    preset.params_model = _LevelParams
+
+    received_params: list = []
+
+    async def _apply(params: Any, scope: str, ctx: Any) -> Any:
+        from dynastore.modules.storage.presets.preset import AppliedDescriptor
+        received_params.append(params)
+        return AppliedDescriptor()
+
+    preset.apply = AsyncMock(side_effect=_apply)
+
+    from dynastore.modules.presets.bootstrap import bootstrap_preset_if_absent
+
+    # File loader would return {"level": "from_file"} — but we pass explicit.
+    with patch("dynastore.modules.db_config.locking_tools.acquire_startup_lock", _FakeLockAcquired), \
+         patch("dynastore.modules.storage.presets.registry.find_preset", return_value=preset), \
+         patch("dynastore.modules.presets.bootstrap._SELECT_SENTINEL", MagicMock(execute=AsyncMock(return_value=None))), \
+         patch("dynastore.modules.presets.bootstrap._INSERT_SENTINEL", MagicMock(execute=AsyncMock(return_value=None))), \
+         patch("dynastore.modules.storage.presets.lifecycle._build_context", return_value=MagicMock()), \
+         patch("dynastore.modules.presets.param_loader.load_preset_params", return_value={"level": "from_file"}), \
+         _guard_unset:
+        result = await bootstrap_preset_if_absent(
+            MagicMock(),
+            preset_name="resolution_test",
+            params={"level": "explicit"},
+        )
+
+    assert result is True
+    assert received_params[0].level == "explicit"
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_presets — chain ordering and continue-on-failure
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bootstrap_presets_chain_ordering() -> None:
+    """Presets in a chain are applied in list order."""
+    from dynastore.modules.presets.bootstrap import bootstrap_presets
+
+    order: list = []
+
+    async def _fake_bootstrap(engine: Any, *, preset_name: str, scope_key: str,
+                               force: bool, params: Any, **_kw: Any) -> bool:
+        order.append(preset_name)
+        return True
+
+    with patch(
+        "dynastore.modules.presets.bootstrap.bootstrap_preset_if_absent",
+        _fake_bootstrap,
+    ):
+        result = await bootstrap_presets(
+            MagicMock(),
+            [{"preset_name": "first"}, {"preset_name": "second"}, {"preset_name": "third"}],
+        )
+
+    assert order == ["first", "second", "third"]
+    assert result == {"first": True, "second": True, "third": True}
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_presets_continues_after_failure() -> None:
+    """A failed preset logs and the chain continues — the dict records False for it."""
+    from dynastore.modules.presets.bootstrap import bootstrap_presets
+
+    call_log: list = []
+
+    async def _fake_bootstrap(engine: Any, *, preset_name: str, scope_key: str,
+                               force: bool, params: Any, **_kw: Any) -> bool:
+        call_log.append(preset_name)
+        if preset_name == "failing":
+            raise RuntimeError("simulated failure")
+        return True
+
+    with patch(
+        "dynastore.modules.presets.bootstrap.bootstrap_preset_if_absent",
+        _fake_bootstrap,
+    ):
+        result = await bootstrap_presets(
+            MagicMock(),
+            [{"preset_name": "ok_before"}, {"preset_name": "failing"}, {"preset_name": "ok_after"}],
+        )
+
+    assert call_log == ["ok_before", "failing", "ok_after"]
+    assert result["ok_before"] is True
+    assert result["failing"] is False
+    assert result["ok_after"] is True

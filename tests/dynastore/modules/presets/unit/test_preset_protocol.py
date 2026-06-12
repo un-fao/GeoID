@@ -23,7 +23,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from dynastore.modules.presets.protocol import PresetProtocol
-from dynastore.modules.storage.presets.preset import AppliedDescriptor, NoParams, PresetContext
+from dynastore.modules.storage.presets.preset import AppliedDescriptor, NoParams
 
 
 class _MinimalPreset:

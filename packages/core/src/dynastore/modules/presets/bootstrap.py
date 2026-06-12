@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
 
@@ -101,6 +101,7 @@ async def bootstrap_preset_if_absent(
     scope_key: str = "platform",
     lock_key: Optional[str] = None,
     force: bool = False,
+    params: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Apply a preset once per DB on cold-boot if no sentinel row exists.
 
@@ -113,9 +114,24 @@ async def bootstrap_preset_if_absent(
     Inside the advisory lock the guard is re-checked (double-checked locking)
     before skipping, so two pods racing to first-boot never both skip.
 
+    Parameter resolution order for the params passed to ``preset.apply``:
+
+    1. The explicit ``params`` keyword argument, if provided and non-None.
+    2. ``load_preset_params(preset_name)`` from the file-based param loader.
+    3. An empty dict ``{}``.
+
+    The resolved dict is validated against ``preset.params_model`` before
+    ``apply`` is called.  When validation fails, an ERROR is logged and
+    ``False`` is returned — a bad seed file must not crash the platform.
+    The validated model's JSON dump is stored in the sentinel row so that
+    audit rows always reflect the actual params used.
+
     Returns ``True`` if the preset was applied this call, ``False`` if it was
-    skipped (guard already set and ``force`` is False, or lock timed out).
+    skipped (guard already set and ``force`` is False, lock timed out, preset
+    not registered, or params validation failed).
     """
+    from pydantic import ValidationError
+
     from dynastore.modules.db_config.locking_tools import acquire_startup_lock
     from dynastore.modules.storage.presets.preset import NoParams
     from dynastore.modules.storage.presets.registry import find_preset
@@ -168,17 +184,38 @@ async def bootstrap_preset_if_absent(
             )
             return False
 
-        ctx = _build_ctx(engine)
-        params = preset.params_model() if callable(getattr(preset, "params_model", None)) else NoParams()
+        # Resolve params: explicit arg → file loader → empty dict.
+        if params is not None:
+            resolved_raw = params
+        else:
+            from dynastore.modules.presets.param_loader import load_preset_params
+            file_params = load_preset_params(preset_name)
+            resolved_raw = file_params if file_params is not None else {}
 
-        descriptor = await preset.apply(params, scope_key, ctx)
+        # Validate against the preset's own params_model.
+        params_model = getattr(preset, "params_model", None)
+        try:
+            if callable(params_model):
+                validated = params_model.model_validate(resolved_raw)
+            else:
+                validated = NoParams.model_validate(resolved_raw)
+        except ValidationError as exc:
+            logger.error(
+                "bootstrap_preset_if_absent: params validation failed for %r: %s — skipping",
+                preset_name,
+                exc,
+            )
+            return False
+
+        ctx = _build_ctx(engine)
+        descriptor = await preset.apply(validated, scope_key, ctx)
 
         payload = descriptor.payload if hasattr(descriptor, "payload") else {}
         await _INSERT_SENTINEL.execute(
             conn,
             preset_name=preset_name,
             scope_key=scope_key,
-            params_snapshot=json.dumps({}),
+            params_snapshot=json.dumps(validated.model_dump(mode="json")),
             revoke_descriptor=json.dumps(payload),
         )
         logger.info(
@@ -187,3 +224,53 @@ async def bootstrap_preset_if_absent(
             scope_key,
         )
         return True
+
+
+async def bootstrap_presets(
+    engine: Any,
+    payloads: Any,
+    *,
+    default_scope_key: str = "platform",
+) -> Dict[str, bool]:
+    """Apply an ordered sequence of presets, continuing on per-preset failure.
+
+    *payloads* is coerced via ``coerce_payloads`` — it accepts any shape
+    that function accepts (single dict, chain dict, bare list, or already-built
+    ``PresetPayload`` / ``PresetChainPayload`` instances).
+
+    Each preset in the resolved list is applied sequentially via
+    ``bootstrap_preset_if_absent``.  A failed or skipped preset is logged and
+    the chain continues — partial application is preferred over full abort
+    because boot resilience matters more than atomicity here.  Callers that
+    need atomicity should use ``CompositePreset`` instead.
+
+    ``payload.scope_key`` overrides ``default_scope_key`` per entry.
+
+    Returns a dict mapping ``preset_name`` to the applied bool from
+    ``bootstrap_preset_if_absent``.
+    """
+    from dynastore.modules.presets.payload import coerce_payloads
+
+    preset_list = coerce_payloads(payloads)
+    results: Dict[str, bool] = {}
+
+    for entry in preset_list:
+        scope = entry.scope_key if entry.scope_key != "platform" else default_scope_key
+        try:
+            applied = await bootstrap_preset_if_absent(
+                engine,
+                preset_name=entry.preset_name,
+                scope_key=scope,
+                force=entry.force,
+                params=entry.params or None,
+            )
+        except Exception as exc:
+            logger.error(
+                "bootstrap_presets: preset %r raised unexpectedly — continuing chain: %s",
+                entry.preset_name,
+                exc,
+            )
+            applied = False
+        results[entry.preset_name] = applied
+
+    return results
