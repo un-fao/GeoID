@@ -20,6 +20,12 @@ class IamError(Exception):
     """Base exception for IAM module."""
     status_code = 500
 
+class AccessDeniedError(IamError):
+    """A policy condition evaluated and denied access (e.g. outside a
+    time window, expired key). Distinguishes a deliberate authorization
+    denial (403) from a server-side policy/config fault (500)."""
+    status_code = 403
+
 class PrincipalNotFoundError(IamError):
     status_code = 404
 
