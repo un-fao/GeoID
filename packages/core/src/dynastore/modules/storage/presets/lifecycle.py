@@ -35,11 +35,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal, Mapping, Optional
+from typing import Any, Awaitable, Literal, Mapping, Optional
 
 from pydantic import BaseModel
 
-from dynastore.modules.db_config.query_executor import managed_transaction, DbResource, DQLQuery, ResultHandler
+from dynastore.modules.db_config.query_executor import managed_transaction, DbResource
 from dynastore.modules.iam.applied_presets_service import AppliedPresetsService, AppliedRow
 
 from .errors import PresetConflictError, PresetNotFoundError, PresetOperationError, ServiceUnavailableError
@@ -329,116 +329,34 @@ def _scope_from_base(base_scope: Mapping[str, str]) -> str:
     return "platform"
 
 
-async def bootstrap_preset_if_absent(
+def bootstrap_preset_if_absent(
     engine: Any,
     *,
     preset_name: str,
     scope_key: str = "platform",
     lock_key: Optional[str] = None,
     force: bool = False,
-) -> bool:
-    """Apply a preset once per DB on cold-boot if no sentinel row exists.
+) -> "Awaitable[bool]":
+    """Backward-compatible shim — delegates to ``modules.presets.bootstrap``.
 
-    Uses the single platform bootstrap guard (``catalog.shared_properties``
-    key ``platform.bootstrap_initialized``) to skip all non-force presets on
-    subsequent restarts.  When ``force`` is ``True`` the guard is bypassed and
-    the preset re-applies on every call — this is the ``public_access_baseline``
-    self-heal path that gates the Cloud Run ``/health`` probe.
+    The implementation lives in the neutral ``modules/presets/bootstrap.py``
+    package which has no IAM or storage-driver imports.  All existing callers
+    (``modules/iam/module.py``, ``extensions/auth``, ``extensions/web``)
+    continue to work without import changes.
 
-    Inside the advisory lock the guard is re-checked (double-checked locking)
-    before skipping, so two pods racing to first-boot never both skip.
-
-    Returns ``True`` if the preset was applied this call, ``False`` if it was
-    skipped (guard already set and ``force`` is False, or lock timed out).
+    See ``modules/presets/bootstrap.bootstrap_preset_if_absent`` for the full
+    docstring.
     """
-    from dynastore.modules.db_config.locking_tools import acquire_startup_lock
-    from dynastore.modules.storage.presets.preset import NoParams
-
-    _select_sentinel = DQLQuery(
-        """
-        SELECT 1 FROM iam.applied_presets
-        WHERE preset_name = :preset_name
-          AND scope_key   = :scope_key
-        """,
-        result_handler=ResultHandler.ONE_OR_NONE,
+    from dynastore.modules.presets.bootstrap import (
+        bootstrap_preset_if_absent as _bootstrap,
     )
-
-    _insert_sentinel = DQLQuery(
-        """
-        INSERT INTO iam.applied_presets
-            (preset_name, scope_key, state, applied_at, applied_by,
-             params_snapshot, revoke_descriptor, updated_at)
-        VALUES
-            (:preset_name, :scope_key, 'applied', NOW(), NULL,
-             :params_snapshot, :revoke_descriptor, NOW())
-        ON CONFLICT (preset_name, scope_key) DO NOTHING
-        """,
-        # INSERT … DO NOTHING returns no rows; ONE_OR_NONE's fetchone() would
-        # raise ResourceClosedError. ROWCOUNT is the write-query convention.
-        result_handler=ResultHandler.ROWCOUNT,
+    return _bootstrap(
+        engine,
+        preset_name=preset_name,
+        scope_key=scope_key,
+        lock_key=lock_key,
+        force=force,
     )
-
-    _lock_key = lock_key or f"iam_seed:{preset_name}:{scope_key}"
-
-    async with acquire_startup_lock(engine, _lock_key) as conn:
-        if conn is None:
-            return False
-
-        # Re-check bootstrap guard inside the lock (double-checked locking).
-        # force=True bypasses the guard — load-bearing self-heal presets must
-        # always run regardless of the guard state.
-        if not force:
-            from dynastore.modules.catalog.bootstrap_guard import is_initialized
-            if await is_initialized(db_resource=conn):
-                logger.debug(
-                    "bootstrap_preset_if_absent: bootstrap guard set — skipping %r (force=False).",
-                    preset_name,
-                )
-                return False
-
-        row = await _select_sentinel.execute(conn, preset_name=preset_name, scope_key=scope_key)
-        if row is not None and not force:
-            logger.debug(
-                "bootstrap_preset_if_absent: sentinel present for %r at %r — skipping",
-                preset_name,
-                scope_key,
-            )
-            return False
-        if row is not None and force:
-            logger.debug(
-                "bootstrap_preset_if_absent: sentinel present for %r at %r — "
-                "re-applying (force=True) to self-heal",
-                preset_name,
-                scope_key,
-            )
-
-        preset = find_preset(preset_name)
-        if preset is None:
-            logger.warning(
-                "bootstrap_preset_if_absent: preset %r not registered — skipping",
-                preset_name,
-            )
-            return False
-
-        ctx = _build_context(engine, principal=None, scope=scope_key)
-        params = preset.params_model() if callable(getattr(preset, "params_model", None)) else NoParams()
-
-        descriptor = await preset.apply(params, scope_key, ctx)
-
-        payload = descriptor.payload if hasattr(descriptor, "payload") else {}
-        await _insert_sentinel.execute(
-            conn,
-            preset_name=preset_name,
-            scope_key=scope_key,
-            params_snapshot=json.dumps({}),
-            revoke_descriptor=json.dumps(payload),
-        )
-        logger.info(
-            "bootstrap_preset_if_absent: preset %r applied at scope %r on cold-boot",
-            preset_name,
-            scope_key,
-        )
-        return True
 
 
 def _check_self_lockout(
