@@ -334,8 +334,97 @@ class ItemsBigQueryDriver(TypedDriver[ItemsBigQueryDriverConfig]):
             cfg.target.project_id,
             credentials=cfg.credentials,
         )
+        # Blocking google-cloud-bigquery call — matches the existing convention
+        # in this file (introspect_schema also calls client.get_table
+        # synchronously). For production use, prefer a managed thread pool;
+        # this driver's pattern pre-dates the run_in_thread helper adoption.
         table = client.get_table(cfg.target.fqn())
         return [_bq_field_to_field_definition(f) for f in table.schema]
+
+    async def ensure_storage(
+        self,
+        catalog_id: str,
+        collection_id: Optional[str] = None,
+        *,
+        db_resource: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Provision the BigQuery dataset and table for a collection (opt-in).
+
+        A no-op unless ``ItemsBigQueryDriverConfig.manage_storage`` is True.
+        When provisioning is enabled:
+
+        - Creates the dataset if it does not exist (idempotent via exists_ok).
+        - Creates the table only if it does not exist — NEVER alters an
+          existing table.  The table schema is built from
+          ``materialize_feature_fields`` so it matches the full materialised
+          field set (author-declared schema + policy-derived special fields).
+        - Collection-level only: ``collection_id is None`` returns immediately
+          because BQ provisions per-collection tables, not per-catalog
+          namespaces.
+
+        BigQuery note on free-text search: both FULLTEXT and FILTERABLE fields
+        are stored as STRING columns.  BQ free-text search uses the ``SEARCH()``
+        function over a STRING column, optionally accelerated by a SEARCH INDEX
+        (separate DDL, not created here).
+        """
+        if collection_id is None:
+            return
+
+        cfg = await self.get_driver_config(catalog_id, collection_id)
+        if cfg is None or not cfg.manage_storage:
+            return
+
+        if not cfg.target.is_fully_qualified():
+            raise ValueError(
+                f"BigQuery driver requires a fully-qualified target "
+                f"(project_id, dataset_id, table_name) for "
+                f"{catalog_id}/{collection_id}",
+            )
+
+        from google.cloud import bigquery
+        from google.cloud.exceptions import NotFound
+
+        from dynastore.modules.storage.field_projection import materialize_feature_fields
+
+        project = cfg.target.project_id
+        dataset_id = cfg.target.dataset_id
+        assert project is not None and dataset_id is not None  # is_fully_qualified() guarantee
+
+        client = _make_bq_client(project, credentials=cfg.credentials)
+        try:
+            dataset_ref = bigquery.Dataset(f"{project}.{dataset_id}")
+            dataset_ref.location = cfg.location
+            client.create_dataset(dataset_ref, exists_ok=True)
+
+            fqn = cfg.target.fqn()
+            try:
+                client.get_table(fqn)
+                # Table already exists — leave untouched (NEVER ALTER).
+                return
+            except NotFound:
+                pass
+
+            schema_cfg = await _resolve_items_schema(catalog_id, collection_id)
+            policy = await _resolve_write_policy(catalog_id, collection_id)
+            projected = materialize_feature_fields(schema_cfg, policy)
+            bq_schema = _build_bq_schema_from_projection(projected)
+            client.create_table(bigquery.Table(fqn, schema=bq_schema))
+            logger.info(
+                "BigQuery: created table %s for %s/%s", fqn, catalog_id, collection_id,
+            )
+        finally:
+            client.close()
+
+    @staticmethod
+    async def _resolve_write_policy(catalog_id: str, collection_id: str):
+        """Resolve ItemsWritePolicy from the config waterfall."""
+        return await _resolve_write_policy(catalog_id, collection_id)
+
+    @staticmethod
+    async def _resolve_items_schema(catalog_id: str, collection_id: str):
+        """Resolve ItemsSchema from the config waterfall, or None."""
+        return await _resolve_items_schema(catalog_id, collection_id)
 
 
 def _is_safe_identifier(name: str) -> bool:
@@ -399,6 +488,106 @@ def _bq_field_to_field_definition(f) -> FieldDefinition:
         data_type=dtype,
         required=(f.mode == "REQUIRED"),
     )
+
+
+# Canonical data_type -> BigQuery SchemaField type (inverse of _bq_field_to_field_definition).
+# Unknown canonical tokens fall back to STRING.
+_CANONICAL_TO_BQ: "Dict[str, str]" = {
+    "string": "STRING",
+    "bigint": "INT64",
+    "double": "FLOAT64",
+    "numeric": "NUMERIC",
+    "boolean": "BOOL",
+    "timestamp": "TIMESTAMP",
+    "date": "DATE",
+    "time": "TIME",
+    "binary": "BYTES",
+    "jsonb": "JSON",
+    "geometry": "GEOGRAPHY",
+}
+
+
+def _build_bq_schema_from_projection(
+    projected: "Dict[str, FieldDefinition]",
+) -> "List[Any]":
+    """Build a list of ``bigquery.SchemaField`` from the driver-agnostic projection.
+
+    Canonical -> BQ type map mirrors :func:`_bq_field_to_field_definition` in
+    reverse.  Unknown canonical tokens fall back to STRING.
+
+    FULLTEXT and FILTERABLE capabilities both yield a STRING column — BigQuery
+    has no analyzed-vs-keyword column distinction.  BQ free-text search is the
+    ``SEARCH()`` function over a STRING column; a SEARCH INDEX can accelerate
+    it but is a separate DDL step outside the scope of ensure_storage.
+
+    Mode is ``"REQUIRED"`` when ``FieldDefinition.required`` is True, otherwise
+    ``"NULLABLE"``.
+    """
+    from google.cloud import bigquery
+
+    fields = []
+    for name, fd in projected.items():
+        bq_type = _CANONICAL_TO_BQ.get(fd.data_type, "STRING")
+        mode = "REQUIRED" if fd.required else "NULLABLE"
+        fields.append(bigquery.SchemaField(name, bq_type, mode=mode))
+    return fields
+
+
+async def _resolve_write_policy(catalog_id: str, collection_id: str):
+    """Resolve ``ItemsWritePolicy`` from the config waterfall.
+
+    Mirrors the same helper in the Iceberg driver (#1295). Returns a default
+    ``ItemsWritePolicy()`` when resolution fails or ConfigsProtocol is absent.
+    """
+    from dynastore.modules.storage.driver_config import ItemsWritePolicy
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.tools.discovery import get_protocol
+
+    try:
+        configs = get_protocol(ConfigsProtocol)
+        if configs:
+            cfg = await configs.get_config(
+                ItemsWritePolicy,
+                catalog_id=catalog_id,
+                collection_id=collection_id,
+            )
+            if isinstance(cfg, ItemsWritePolicy):
+                return cfg
+    except Exception:
+        logger.debug(
+            "bigquery: write-policy resolution failed; using default", exc_info=True,
+        )
+    return ItemsWritePolicy()
+
+
+async def _resolve_items_schema(catalog_id: str, collection_id: str):
+    """Resolve ``ItemsSchema`` from the config waterfall, or ``None``.
+
+    Mirrors the same helper in the Iceberg driver (#1295). ``None`` is a valid
+    return — ``materialize_feature_fields`` treats it as "no author-declared
+    fields" and only policy-derived envelope columns are materialised.
+    """
+    from dynastore.modules.storage.driver_config import ItemsSchema
+    from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.tools.discovery import get_protocol
+
+    try:
+        configs = get_protocol(ConfigsProtocol)
+        if configs is None:
+            return None
+        cfg = await configs.get_config(
+            ItemsSchema,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
+        )
+        if isinstance(cfg, ItemsSchema):
+            return cfg
+    except Exception:
+        logger.debug(
+            "bigquery: ItemsSchema resolution failed; treating as no declared schema",
+            exc_info=True,
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
