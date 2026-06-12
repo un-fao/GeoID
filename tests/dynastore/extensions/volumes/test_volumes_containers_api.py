@@ -99,6 +99,19 @@ def volumes_app():
     catalogs_mock.get_collection = AsyncMock(return_value=_COLLECTION_3D)
     catalogs_mock.search_items = AsyncMock(return_value=[_ITEM_WITH_CITYJSON])
 
+    # stream_cityjsonseq consumes the streaming surface: an object whose
+    # .items is an async iterator over features. Build a fresh iterator
+    # per call so multiple requests in one test don't share state.
+    async def _stream_items(*_a, **_k):
+        async def _items_iter():
+            yield _ITEM_WITH_CITYJSON
+
+        stream_response = MagicMock()
+        stream_response.items = _items_iter()
+        return stream_response
+
+    catalogs_mock.stream_items = AsyncMock(side_effect=_stream_items)
+
     svc._get_catalogs_service = AsyncMock(return_value=catalogs_mock)
 
     app = FastAPI()
@@ -296,3 +309,64 @@ def test_list_collections_malformed_bbox_returns_400(volumes_app):
         f"/volumes/catalogs/{_CAT}/collections?bbox=1.0,2.0,3.0"
     )
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# READ-path extras resolution (PG core driver shapes)
+# ---------------------------------------------------------------------------
+
+
+def test_get_extras_unwraps_localized_extra_metadata():
+    """BaseMetadata always persists extra_metadata language-keyed; the READ
+    path must unwrap {"en": {...}} before scanning for namespaced keys."""
+    from dynastore.extensions.volumes.volumes_service import _get_extras
+
+    coll = MagicMock()
+    coll.model_extra = {}
+    coll.extra_metadata = {"en": {"cityjson:version": "2.0"}}
+    extras = _get_extras(coll)
+    assert extras.get("cityjson:version") == "2.0"
+
+
+def test_get_extras_localized_non_en_fallback():
+    from dynastore.extensions.volumes.volumes_service import _get_extras
+
+    coll = MagicMock()
+    coll.model_extra = {}
+    coll.extra_metadata = {"fr": {"cityjson:version": "2.0"}}
+    extras = _get_extras(coll)
+    assert extras.get("cityjson:version") == "2.0"
+
+
+def test_collection_bbox_3d_falls_back_to_stamped_bbox():
+    """When the extent column is empty/zero (no STAC sidecar), contentExtent
+    must come from the geovolumes:bbox stamped into extras at ingest."""
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent = None
+    extras = {
+        "geovolumes:bbox": [4.27, 52.06, 4.32, 52.09],
+        "geovolumes:zrange": {"zmin": 1.0, "zmax": 50.0},
+    }
+    assert _collection_bbox_3d(coll, extras) == [4.27, 52.06, 1.0, 4.32, 52.09, 50.0]
+
+
+def test_collection_bbox_3d_prefers_real_extent():
+    from dynastore.extensions.volumes.volumes_service import _collection_bbox_3d
+
+    coll = MagicMock()
+    coll.extent.spatial.bbox = [[1.0, 2.0, 3.0, 4.0]]
+    extras = {"geovolumes:bbox": [9.0, 9.0, 9.9, 9.9]}
+    assert _collection_bbox_3d(coll, extras)[:2] == [1.0, 2.0]
+
+
+def test_extract_cityjson_from_properties():
+    """Items persist the CityJSONFeature under properties.cityjson — the
+    only surface every driver round-trips."""
+    from dynastore.extensions.volumes.volumes_service import _extract_cityjson
+
+    feat = MagicMock()
+    feat.properties = {"cityjson": {"type": "CityJSONFeature", "id": "b-1"}}
+    feat.model_extra = {}
+    assert _extract_cityjson(feat)["id"] == "b-1"

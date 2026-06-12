@@ -18,12 +18,11 @@
             integrity="sha384-z8EyTzFj0t4BRE6AqQpZFc+gmtLqmrnwc84a8UbzgaMOsXa5wufPG28M2Moz7YMI"
             crossorigin="anonymous"></script>
 
-    <!-- Common helpers (plain scripts, not ES modules) -->
-    <script src="../static/common/i18n.js"></script>
-    <script src="../static/common/maplibre-map.js"></script>
+    <!-- Selector styles (common helper) -->
+    <link rel="stylesheet" href="../static/common/entity-selector.css">
 
-    <!-- Page logic -->
-    <script src="./volumes-globe.js"></script>
+    <!-- Page logic (ES module; imports common helpers via ../static/common/) -->
+    <script type="module" src="../volumes/volumes-globe.js"></script>
 
     <!-- Favicon and vendor styles -->
     <link rel="icon" type="image/png" href="../static/dynastore.png">
@@ -84,15 +83,13 @@
             color: #64748b;
             margin-bottom: 0.25rem;
         }
-        #catalog-select, #collection-select {
-            width: 100%;
-            padding: 0.4rem 0.6rem;
-            background: rgba(30, 41, 59, 0.8);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 0.35rem;
-            color: #e2e8f0;
-            font-size: 0.82rem;
+        #catalog-selector {
             margin-bottom: 0.4rem;
+        }
+        /* Cap the catalog list so the container tree below stays visible. */
+        #catalog-selector .es-list {
+            max-height: 32vh;
+            overflow-y: auto;
         }
         #container-tree {
             flex: 1;
@@ -181,10 +178,8 @@
         <!-- Sidebar: catalog selector + 3D container tree -->
         <div id="sidebar">
             <div id="sidebar-header">
-                <label for="catalog-select" id="lbl-catalog">Catalog</label>
-                <select id="catalog-select">
-                    <option value="">— select —</option>
-                </select>
+                <label id="lbl-catalog">Catalog</label>
+                <div id="catalog-selector" class="ds-entity-selector"></div>
                 <div id="container-status" class="loading-spinner" style="display:none; padding:0.5rem 0;">
                     Loading containers…
                 </div>

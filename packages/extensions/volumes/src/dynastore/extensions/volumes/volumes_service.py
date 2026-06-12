@@ -332,13 +332,16 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 
         from dynastore.models.query_builder import QueryRequest
 
-        features = await catalogs_svc.search_items(
-            catalog_id, collection_id, QueryRequest(limit=limit)
+        # Stream instead of materializing: each item carries the full
+        # CityJSONFeature payload, so buffering the whole collection can
+        # cost hundreds of MB at the default limit.
+        query_response = await catalogs_svc.stream_items(
+            catalog_id, collection_id, QueryRequest(limit=limit), ctx=None
         )
 
         async def _generate():
             yield json.dumps(header) + "\n"
-            for feat in (features or []):
+            async for feat in query_response.items:
                 cityjson = _extract_cityjson(feat)
                 if cityjson is not None:
                     yield json.dumps(cityjson) + "\n"
@@ -481,13 +484,52 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 
 
 def _get_extras(coll: Any) -> Dict[str, Any]:
-    """Extract the extras dict from a Collection, tolerating varied shapes."""
+    """Extract the extras dict from a Collection, tolerating varied shapes.
+
+    Search-routed collections carry extras in ``model_extra`` (nested under
+    an ``extras`` key or flat namespaced keys).  Read-routed collections
+    only expose the PG-persisted ``extra_metadata`` column, so fall back to
+    it — the ingest writes the CityJSON provenance to both surfaces.
+    """
     raw_extra = getattr(coll, "model_extra", None) or {}
     extras = raw_extra.get("extras") or {}
     if not extras and isinstance(raw_extra, dict):
         # Flat extras stored directly on model_extra
         extras = {k: v for k, v in raw_extra.items() if ":" in k}
+    if not extras:
+        extra_metadata = getattr(coll, "extra_metadata", None) or {}
+        dump = getattr(extra_metadata, "model_dump", None)
+        if callable(dump):
+            extra_metadata = dump()
+        if isinstance(extra_metadata, dict):
+            # The BaseMetadata validator always stores extra_metadata
+            # language-keyed ({"en": {...}}); unwrap before scanning.
+            if extra_metadata and not any(":" in k for k in extra_metadata):
+                localized = extra_metadata.get("en")
+                if not isinstance(localized, dict):
+                    localized = next(
+                        (v for v in extra_metadata.values() if isinstance(v, dict)),
+                        None,
+                    )
+                if isinstance(localized, dict):
+                    extra_metadata = localized
+            nested = extra_metadata.get("extras")
+            if isinstance(nested, dict) and nested:
+                extras = nested
+            else:
+                extras = {k: v for k, v in extra_metadata.items() if ":" in k}
     return extras
+
+
+def _plain_text(value: Any) -> Optional[str]:
+    """Coerce a LocalizedText (or plain string) to a single string for the wire."""
+    if value is None or isinstance(value, str):
+        return value
+    resolve = getattr(value, "resolve", None)
+    if callable(resolve):
+        resolved = resolve("en")
+        return resolved if isinstance(resolved, str) else None
+    return str(value)
 
 
 def _is_3d_collection(coll: Any) -> bool:
@@ -507,6 +549,16 @@ def _collection_bbox_3d(coll: Any, extras: Dict[str, Any]) -> List[float]:
             if raw:
                 first = raw[0] if isinstance(raw[0], (list, tuple)) else raw
                 bbox_2d = list(first)
+
+    # The collection ``extent`` column only persists where the optional
+    # STAC collection sidecar is materialized; ingest therefore also
+    # stamps the dataset bbox into extras (geovolumes:bbox), which the
+    # always-present core driver persists.  Prefer a real extent, fall
+    # back to the stamped bbox.
+    if len(bbox_2d) < 4 or not any(bbox_2d[:4]):
+        stamped = extras.get("geovolumes:bbox")
+        if isinstance(stamped, (list, tuple)) and len(stamped) >= 4:
+            bbox_2d = [float(v) for v in stamped[:4]]
 
     if len(bbox_2d) >= 4:
         minx, miny, maxx, maxy = bbox_2d[0], bbox_2d[1], bbox_2d[2], bbox_2d[3]
@@ -549,7 +601,7 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
 
     return ThreeDContainer(
         id=coll.id,
-        title=getattr(coll, "title", None),
+        title=_plain_text(getattr(coll, "title", None)),
         collectionType="3dcontainer",
         contentExtent=ContentExtent(bbox=bbox_3d),
         content=content,
@@ -576,7 +628,19 @@ def _build_cityjsonseq_header(extras: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_cityjson(feat: Any) -> Optional[Dict[str, Any]]:
-    """Extract the stored CityJSONFeature dict from an item, or None."""
+    """Extract the stored CityJSONFeature dict from an item, or None.
+
+    Ingest persists the payload under ``properties.cityjson`` (the only
+    surface every item driver round-trips); older shapes carried it in
+    ``extras``/top-level, kept here as fallbacks.
+    """
+    properties = getattr(feat, "properties", None)
+    if not isinstance(properties, dict) and isinstance(feat, dict):
+        properties = feat.get("properties")
+    if isinstance(properties, dict):
+        cityjson = properties.get("cityjson")
+        if cityjson is not None:
+            return cityjson
     # Try model_extra path (extras container)
     model_extra = getattr(feat, "model_extra", None) or {}
     extras = model_extra.get("extras") or {}
