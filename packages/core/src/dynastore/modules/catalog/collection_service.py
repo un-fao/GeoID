@@ -383,7 +383,11 @@ class CollectionService:
 
         # Defense in depth: never provision storage for a collection that is
         # not alive, regardless of which caller reached this point.
-        await self.ensure_alive(catalog_id, collection_id, db_resource=conn)
+        # Catalog-scoped activation (collection_id is None, e.g. catalog-level
+        # assets) has no collection registry row to check — bypass, matching
+        # the upsert funnel gate.
+        if collection_id is not None:
+            await self.ensure_alive(catalog_id, collection_id, db_resource=conn)
 
         # Provision storage. `ensure_storage` is idempotent; concurrent
         # first-inserts will both call it safely.  Each driver self-fetches
