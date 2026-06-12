@@ -76,6 +76,20 @@ CREATE_APPLIED_PRESETS_SCOPE_IDX = DDLQuery("""
         ON iam.applied_presets (scope_key);
 """)
 
+# Forward-compatibility view: ``configs.applied_presets`` mirrors the physical
+# ``iam.applied_presets`` table.  This gives a future schema migration a clean
+# logical target in the platform schema without requiring data movement now.
+# The physical table stays in the ``iam`` schema; the view is read-only and
+# lives in the ``configs`` schema.  The schema is normally created by the
+# db_config foundational module, but the DDL is self-sufficient so module
+# load order can never abort the IAM bootstrap transaction.
+# ``OR REPLACE`` makes this idempotent on repeated boots.
+CREATE_CONFIGS_APPLIED_PRESETS_VIEW = DDLQuery("""
+    CREATE SCHEMA IF NOT EXISTS configs;
+    CREATE OR REPLACE VIEW configs.applied_presets AS
+        SELECT * FROM iam.applied_presets;
+""")
+
 # ---------------------------------------------------------------------------
 # DML — state transitions
 # ---------------------------------------------------------------------------

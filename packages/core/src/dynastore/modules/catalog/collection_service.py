@@ -921,9 +921,32 @@ class CollectionService:
             conn, phys_schema, catalog_id, collection_id
         )
         if phys_table:
-            await shared_queries.delete_table_query.execute(
-                conn, schema=phys_schema, table=phys_table
-            )
+            pg_driver = await self._get_pg_driver()
+            if pg_driver is not None:
+                # Driver-owned teardown (hub + every sidecar), inside this
+                # transaction so a failed drop rolls back with the registry row.
+                await pg_driver.drop_storage(
+                    catalog_id,
+                    collection_id,
+                    db_resource=conn,
+                    physical_table=phys_table,
+                    physical_schema=phys_schema,
+                )
+            else:
+                # Degrade-safe for environments without StorageModule. The
+                # literal core suffixes are deliberate: this branch only runs
+                # when no PG driver is registered, and without the storage
+                # module no extension sidecar can have provisioned tables
+                # either — so the core set is exhaustive here. (Importing the
+                # sidecar registry from a driver package is also forbidden in
+                # service code; see test_services_have_no_driver_imports.)
+                for suffix in ("attributes", "geometries", "item_metadata", "stac_metadata"):
+                    await shared_queries.delete_table_query.execute(
+                        conn, schema=phys_schema, table=f"{phys_table}_{suffix}"
+                    )
+                await shared_queries.delete_table_query.execute(
+                    conn, schema=phys_schema, table=phys_table
+                )
         await DDLQuery(
             f'DELETE FROM "{phys_schema}".collections WHERE id = :id;'
         ).execute(conn, id=collection_id)
@@ -1069,6 +1092,8 @@ class CollectionService:
                 )
 
         _invalidate_collection_model_cache(catalog_id, collection_id)
+        if force:
+            _unmark_confirmed_active(catalog_id, collection_id)
 
         if force and phys_schema:
             lifecycle_registry.destroy_async_collection(

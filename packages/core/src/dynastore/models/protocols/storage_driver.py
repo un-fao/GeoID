@@ -302,13 +302,29 @@ class CollectionItemsStore(Protocol):
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
         """Remove backing storage for a catalog or collection.
 
+        Contract: this is the exact inverse of ``ensure_storage`` — it tears
+        down every physical artifact this driver provisioned (tables and
+        sidecar tables, indexes, files, namespaces). It MUST be idempotent
+        (calling it twice, or when nothing was provisioned, is a no-op) and
+        MUST NOT call back into catalog services: registry rows, driver
+        configs and metadata fan-out are owned by ``CollectionService``.
+
+        Drivers may accept driver-specific keyword arguments, mirroring
+        ``ensure_storage`` (e.g. ``db_resource``, ``physical_table``,
+        ``physical_schema`` for PostgreSQL so teardown can join the caller's
+        transaction).
+
         Args:
+            catalog_id: The catalog that owns the collection.
+            collection_id: Optional collection within the catalog.
             soft: If True, mark as deleted but retain data for recovery.
                 Raises ``SoftDeleteNotSupportedError`` if the driver
                 lacks ``Capability.SOFT_DELETE``.
+            **kwargs: Driver-specific options.
         """
         ...
 

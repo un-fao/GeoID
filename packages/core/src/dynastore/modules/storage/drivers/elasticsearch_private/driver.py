@@ -423,6 +423,7 @@ class ItemsElasticsearchPrivateDriver(
         collection_id: Optional[str] = None,
         *,
         soft: bool = False,
+        **kwargs: Any,
     ) -> None:
         if soft:
             raise SoftDeleteNotSupportedError(

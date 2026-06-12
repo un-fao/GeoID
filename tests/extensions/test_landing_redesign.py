@@ -44,10 +44,9 @@ GEOID_PY = REPO_ROOT / "packages/extensions/geoid/src/dynastore/extensions/geoid
 REQUIRED_FILES = [
     GEOID_STATIC / "conformance-snapshot.json",
     GEOID_STATIC / "conformance-matrix.js",
-    GEOID_STATIC / "index_en.html",
-    GEOID_STATIC / "index_es.html",
-    GEOID_STATIC / "index_fr.html",
-    GEOID_STATIC / "index.html",
+    # The localized standalone landing pages (index*.html) were removed with
+    # the redundant "Geoid Service" nav page (#1915); the conformance matrix
+    # now renders only inside the home embed.
     GEOID_PY,
     REPO_ROOT / "docs/getting-started.md",
     REPO_ROOT / "README.md",

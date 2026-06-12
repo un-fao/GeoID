@@ -126,11 +126,20 @@ class AppliedPresetsService:
     # ------------------------------------------------------------------
 
     async def ensure_table(self, conn: Optional[Any] = None) -> None:
-        """Create the ``iam.applied_presets`` table and indexes if absent."""
+        """Create the ``iam.applied_presets`` table, indexes, and compatibility view.
+
+        The physical table stays in the ``iam`` schema.  A read-only view
+        ``configs.applied_presets`` is created alongside it so that future
+        schema migrations have a clean logical target in the platform schema
+        without requiring data movement now.  The view DDL creates the
+        ``configs`` schema if absent, so this is safe regardless of module
+        load order.
+        """
         resource = self._resource(conn)
         await _q.CREATE_APPLIED_PRESETS_TABLE.execute(resource)
         await _q.CREATE_APPLIED_PRESETS_STATE_IDX.execute(resource)
         await _q.CREATE_APPLIED_PRESETS_SCOPE_IDX.execute(resource)
+        await _q.CREATE_CONFIGS_APPLIED_PRESETS_VIEW.execute(resource)
 
     # ------------------------------------------------------------------
     # Read
