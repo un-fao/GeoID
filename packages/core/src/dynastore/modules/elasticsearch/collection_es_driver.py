@@ -605,6 +605,20 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
         context: Optional[Dict[str, Any]] = None,
         db_resource: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
+        # Listing visibility: translate the request's collection constraint
+        # (RequestVisibility → resolve_collection_listing_ids) into this
+        # driver's own predicate — a terms filter on the collection id —
+        # so hits and totals reflect only what the caller may see. No
+        # constraint (background work, or no authorization layer) ⟹
+        # unfiltered.
+        from dynastore.models.protocols.visibility import (
+            resolve_collection_listing_ids,
+        )
+
+        visible_ids = await resolve_collection_listing_ids(catalog_id)
+        if visible_ids is not None and not visible_ids:
+            return [], 0
+
         client = self._get_client()
         if not client:
             return [], 0
@@ -616,6 +630,8 @@ class CollectionElasticsearchDriver(TypedDriver[CollectionElasticsearchDriverCon
             {"term": {"catalog_id": catalog_id}},
             {"bool": {"must_not": [{"term": {"_deleted": True}}]}},
         ]
+        if visible_ids is not None:
+            filter_clauses.append({"terms": {"id": sorted(visible_ids)}})
 
         # Fulltext search
         if q:

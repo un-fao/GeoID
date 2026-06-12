@@ -1490,7 +1490,30 @@ class CatalogService(CatalogsProtocol):
         ``ids`` — restrict results to these catalog ids; applied before
         pagination so LIMIT/OFFSET reflect the filtered set.  ``None``
         means no restriction.
+
+        Listing visibility: when the request published a caller snapshot
+        (``RequestVisibility``), the listing is transparently narrowed to
+        the catalogs that caller may see — intersected with any explicit
+        ``ids`` restriction, and applied before pagination like ``ids``.
+        Background/CLI work (no snapshot) lists unfiltered. This is the PG
+        driver's translation of the neutral listing constraint (``id =
+        ANY`` ahead of LIMIT/OFFSET); other drivers translate it to their
+        own predicate language.
         """
+        from dynastore.models.protocols.visibility import (
+            resolve_catalog_listing_ids,
+        )
+
+        visible_ids = await resolve_catalog_listing_ids()
+        if visible_ids is not None:
+            ids = (
+                set(visible_ids)
+                if ids is None
+                else {i for i in ids if i in visible_ids}
+            )
+            if not ids:
+                return []
+
         db_resource = ctx.db_resource if ctx else None
         async with managed_transaction(get_catalog_engine(db_resource)) as conn:
             if not q:

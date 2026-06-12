@@ -1456,8 +1456,21 @@ async def search_items(
 async def search_collections(
     db_resource: DbResource, search_request: CollectionSearchRequest
 ) -> Tuple[List[Collection], int]:
-    # Determine which schemas to search
-    target_schemas = []
+    # Listing visibility: this search builds its own SQL (it does not go
+    # through the routed collection drivers), so it translates the
+    # request's constraints itself — the catalog-level constraint narrows
+    # which schemas are UNIONed at all, and each schema's subquery carries
+    # that catalog's visible-collection predicate. No constraint published
+    # (background work, or no authorization layer) ⟹ unfiltered.
+    from dynastore.models.protocols.visibility import (
+        resolve_catalog_listing_ids,
+        resolve_collection_listing_ids,
+    )
+
+    visible_catalogs = await resolve_catalog_listing_ids()
+
+    # Determine which (catalog_id, schema) pairs to search
+    target_pairs: List[Tuple[str, str]] = []
 
     # Resolve effective catalog filter (catalog_ids list takes precedence when set)
     effective_catalog_ids = []
@@ -1467,6 +1480,10 @@ async def search_collections(
         effective_catalog_ids = search_request.catalog_ids
 
     if effective_catalog_ids:
+        if visible_catalogs is not None:
+            effective_catalog_ids = [
+                c for c in effective_catalog_ids if c in visible_catalogs
+            ]
         from dynastore.models.protocols import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
@@ -1474,24 +1491,30 @@ async def search_collections(
         for cid in effective_catalog_ids:
             schema = await catalogs.resolve_physical_schema(cid, ctx=DriverContext(db_resource=db_resource))
             if schema:
-                target_schemas.append(schema)
+                target_pairs.append((cid, schema))
         # If none of the catalog_ids resolved, implies no results
     else:
-        # Search all catalogs
-        # Retrieve all physical schemas from catalog.catalogs
+        # Search all catalogs the caller may see.
         # We query the catalog registry directly to find all active physical schemas
         catalog_query = (
-            "SELECT physical_schema FROM catalog.catalogs WHERE deleted_at IS NULL"
+            "SELECT id, physical_schema FROM catalog.catalogs WHERE deleted_at IS NULL"
         )
         try:
-            target_schemas = await DQLQuery(
-                catalog_query, result_handler=ResultHandler.ALL_SCALARS
+            rows = await DQLQuery(
+                catalog_query, result_handler=ResultHandler.ALL_DICTS
             ).execute(db_resource)
         except Exception as e:
             logger.warning(f"Failed to retrieve catalog schemas for global search: {e}")
             return [], 0
+        for row in rows or []:
+            cid, schema = row.get("id"), row.get("physical_schema")
+            if not cid or not schema:
+                continue
+            if visible_catalogs is not None and cid not in visible_catalogs:
+                continue
+            target_pairs.append((cid, schema))
 
-    if not target_schemas:
+    if not target_pairs:
         return [], 0
 
     where_clauses = ["deleted_at IS NULL"]
@@ -1550,14 +1573,26 @@ async def search_collections(
         "ms.item_assets, mc.extra_metadata"
     )
     union_queries = []
-    for schema in target_schemas:
+    for idx, (cid, schema) in enumerate(target_pairs):
+        # Per-catalog visible-collection predicate (listing visibility).
+        per_where = where_sql
+        visible_collections = await resolve_collection_listing_ids(cid)
+        if visible_collections is not None:
+            if not visible_collections:
+                continue
+            vis_param = f"_vis_cols_{idx}"
+            params[vis_param] = list(visible_collections)
+            per_where = f"{where_sql} AND c.id = ANY(:{vis_param})"
         union_queries.append(
             f'SELECT {_meta_cols} '
             f'FROM "{schema}".collections c '
             f'LEFT JOIN "{schema}".collection_core mc ON mc.collection_id = c.id '
             f'LEFT JOIN "{schema}".collection_stac ms ON ms.collection_id = c.id '
-            f'WHERE {where_sql}'
+            f'WHERE {per_where}'
         )
+
+    if not union_queries:
+        return [], 0
 
     full_union_query = " UNION ALL ".join(union_queries)
 

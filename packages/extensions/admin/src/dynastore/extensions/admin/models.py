@@ -18,7 +18,6 @@
 
 from datetime import datetime
 from typing import Any, Dict, Optional, List
-from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -66,40 +65,6 @@ class UsageResetResponse(BaseModel):
     policy_id: str
     principal_key: str
     reset_count: int
-
-
-# --- Catalog provisioning view models ---
-
-class ProvisioningTaskView(BaseModel):
-    task_id: UUID
-    status: str
-    error_message: Optional[str] = None
-    retry_count: int = 0
-    max_retries: int = 3
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-class CatalogProvisioningView(BaseModel):
-    catalog_id: str
-    physical_schema: Optional[str] = None
-    provisioning_status: str
-    task: Optional[ProvisioningTaskView] = None
-
-
-# --- Per-binding live counter view (#1342 / #1346) ---
-#
-# Returned by ``GET /admin/iam/usage/grants``. Each entry maps one
-# ``grants`` row (the binding) to its live counter state read from the
-# Valkey/PG layered counter — keyed by ``quota_namespace(grant.id)``
-# = ``f"grant:{grant.id}"`` (see :func:`dynastore.modules.iam.scale_config`).
-# Counter rows are scoped to the principal that actually triggers the
-# quota (``scope=principal`` — the binding's ``subject_ref``); ``limit``
-# / ``window_seconds`` are echoed from the grant's ``quota`` JSONB so the
-# UI doesn't have to re-parse the spec. ``remaining`` is derived
-# (``max(0, limit - count)``); ``window_start`` is computed from the
-# current bucket alignment so the operator can see when the live counter
-# resets (omitted for lifetime quotas).
 
 
 class GrantRateLimitCounter(BaseModel):

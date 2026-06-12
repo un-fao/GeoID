@@ -111,8 +111,8 @@ async def require_catalog_ready(
             status_code=409,
             detail=(
                 f"Catalog '{catalog_id}' is still provisioning — typically takes 2-5 minutes. "
-                f"Poll GET /admin/catalogs/{catalog_id} for provisioning_status and task progress "
-                f"(sysadmin) or check the admin panel 'Provisioning' view."
+                f"Retry shortly; operators can follow progress in the service logs "
+                f"(gcp_provision_catalog task)."
             ),
         )
     if status_value == FAILED:

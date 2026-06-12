@@ -54,7 +54,6 @@ from dynastore.models.auth_models import RoleHierarchyEdge
 from .models import (
     PrincipalCreate, PrincipalUpdate,
     UsagePage, UsageResetResponse, UsageRow,
-    CatalogProvisioningView, ProvisioningTaskView,
     GrantUsageView, GrantUsageEntry, GrantUsageCounters,
     GrantRateLimitCounter, GrantMaxCountCounter,
     AdminTaskRequest, AdminTaskResponse, AdminTaskTarget,
@@ -200,66 +199,6 @@ async def _is_catalog_only_admin(request: Request) -> bool:
         return False
     return True
 
-
-async def _catalog_admin_filter_ids(request: Request) -> Optional[set]:
-    """Return the set of catalog ids a non-platform-admin caller may see in
-    the admin catalog picker (#723), or ``None`` if no filter applies.
-
-    ``None`` means "return everything" — the caller is sysadmin, holds the
-    platform admin role, or has an explicit platform-scope grant. Returning
-    a set (possibly empty) means the response should be restricted to
-    catalogs in which the caller holds the catalog-tier admin role.
-
-    Anonymous calls (no principal) also return ``None``; the policy layer
-    has already gated the route, so anyone who reaches this code without a
-    principal carries an authoritative ALLOW (e.g. operator overrides).
-
-    Load-bearing invariant: same as ``_is_catalog_only_admin`` — the
-    role-name check on ``principal.roles`` assumes the IAM layer
-    publishes *platform-tier* roles only on the principal object
-    (catalog-tier admin is exposed as a sentinel on
-    ``request.state.principal_role``; see ``IamMiddleware``'s
-    ``_augment_with_catalog_sentinels`` and the contract comment in
-    ``packages/extensions/iam/.../middleware.py:287``). If a future
-    change lets catalog-scope role names appear in this flat list, this
-    helper silently regresses to "no filter" and catalog admins see the
-    full picker again.
-    """
-    from dynastore.models.protocols.authorization import IamRolesConfig
-    from dynastore.models.protocols.membership_cache import MembershipCacheProtocol
-
-    principal = getattr(request.state, "principal", None)
-    if principal is None:
-        return None
-
-    cfg = IamRolesConfig()
-    principal_roles = set(getattr(principal, "roles", None) or [])
-    if cfg.sysadmin_role_name in principal_roles or cfg.admin_role_name in principal_roles:
-        return None
-
-    provider = getattr(principal, "provider", None)
-    subject_id = getattr(principal, "subject_id", None)
-    if not provider or not subject_id:
-        return set()
-
-    cache = get_protocol(MembershipCacheProtocol)
-    if cache is None:
-        # MembershipCacheProtocol unregistered (no IAM extension loaded) —
-        # cannot derive a catalog filter; fail closed to an empty set so
-        # the picker shows nothing rather than the full directory.
-        return set()
-
-    membership = await cache.get_membership(provider, subject_id)
-    if membership.get("platform"):
-        return None
-
-    admin_role = cfg.admin_role_name
-    catalog_roles = membership.get("catalog_roles") or {}
-    return {
-        cat_id
-        for cat_id, roles in catalog_roles.items()
-        if admin_role in (roles or [])
-    }
 
 
 async def _assert_catalog_exists(catalog_id: str) -> None:
@@ -643,7 +582,6 @@ class AdminService(ExtensionProtocol):
         summary="List catalogs (admin picker for catalog-scope role grants)",
     )
     async def list_catalogs_for_admin(
-        request: Request,  # type: ignore[reportGeneralTypeIssues]
         limit: int = Query(200, ge=1, le=1000),  # type: ignore[reportGeneralTypeIssues]
         offset: int = Query(0, ge=0),
         lang: str = Query("en"),
@@ -653,11 +591,12 @@ class AdminService(ExtensionProtocol):
         if catalogs_svc is None:
             raise HTTPException(status_code=503, detail="Catalogs service not available.")
 
-        admin_only_ids = await _catalog_admin_filter_ids(request)
-        if admin_only_ids is not None and len(admin_only_ids) == 0:
-            return []
+        # Listing visibility is transparent: the storage layer narrows the
+        # result to the catalogs this caller may see (RequestVisibility →
+        # ListingVisibilityProtocol), so this route is a plain protocol
+        # call like every other {protocol}/catalogs listing.
         items = await catalogs_svc.list_catalogs(
-            limit=limit, offset=offset, lang=lang, q=q, ids=admin_only_ids
+            limit=limit, offset=offset, lang=lang, q=q
         )
         out = []
         for c in items:
@@ -668,70 +607,6 @@ class AdminService(ExtensionProtocol):
                 title = title_raw
             out.append({"id": c.id, "title": title or c.id})
         return out
-
-    @router.get(
-        "/catalogs/{catalog_id}",
-        response_model=CatalogProvisioningView,
-        summary="Sysadmin view of catalog provisioning status and most-recent provision task",
-    )
-    async def get_catalog_provisioning_view(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
-        from dynastore.modules.tasks import tasks_module
-
-        catalogs = get_protocol(CatalogsProtocol)
-        if catalogs is None:
-            raise HTTPException(status_code=503, detail="Catalogs service not available.")
-        catalog = await catalogs.get_catalog_model(catalog_id)
-        if catalog is None:
-            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
-
-        provisioning_status = getattr(catalog, "provisioning_status", "ready") or "ready"
-
-        try:
-            physical_schema = await catalogs.resolve_physical_schema(catalog_id, allow_missing=True)
-        except Exception:
-            physical_schema = None
-
-        task_view: Optional[ProvisioningTaskView] = None
-        if physical_schema:
-            from dynastore.models.protocols import DatabaseProtocol
-            from dynastore.modules.db_config.query_executor import managed_transaction
-
-            db = get_protocol(DatabaseProtocol)
-            if db is not None:
-                try:
-                    async with managed_transaction(db.engine) as conn:
-                        tasks = await tasks_module.list_tasks(
-                            conn, schema=physical_schema, limit=20, offset=0,
-                        )
-                    provision_tasks = [t for t in tasks if t.task_type == "gcp_provision_catalog"]
-                    if provision_tasks:
-                        t = sorted(
-                            provision_tasks,
-                            key=lambda x: x.finished_at or x.timestamp,
-                            reverse=True,
-                        )[0]
-                        task_view = ProvisioningTaskView(
-                            task_id=t.jobID,
-                            status=t.status.value if hasattr(t.status, "value") else str(t.status),
-                            error_message=t.error_message,
-                            retry_count=t.retry_count,
-                            max_retries=t.max_retries,
-                            created_at=t.timestamp,
-                            updated_at=t.finished_at,
-                        )
-                except Exception:
-                    logger.warning(
-                        "Failed to query provision tasks for catalog %s schema %s",
-                        catalog_id, physical_schema,
-                        exc_info=True,
-                    )
-
-        return CatalogProvisioningView(
-            catalog_id=catalog_id,
-            physical_schema=physical_schema,
-            provisioning_status=provisioning_status,
-            task=task_view,
-        )
 
     @router.post(
         "/catalogs/{catalog_id}/reprovision",

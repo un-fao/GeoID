@@ -266,26 +266,46 @@ class StacVirtualMixin(_Host):
             # at least one non-deleted row.  One-off query — no equivalent
             # method on AssetsProtocol (search_assets is partition-scoped
             # and requires a target collection_id).
-            sql = (
-                f'SELECT DISTINCT collection_id '
-                f'FROM "{phys_schema}".assets '
-                f'WHERE catalog_id = :catalog_id '
-                f'  AND asset_id = :asset_id '
-                f'  AND deleted_at IS NULL '
-                f'  AND collection_id IS NOT NULL '
-                f'ORDER BY collection_id '
-                f'LIMIT :limit OFFSET :offset'
+            # Listing visibility: this one-off query bypasses the routed
+            # collection drivers, so it applies the request's per-catalog
+            # collection constraint itself — before LIMIT/OFFSET, like
+            # every other translation.
+            from dynastore.models.protocols.visibility import (
+                resolve_collection_listing_ids,
             )
-            rows = await cast(AsyncConnection, conn).execute(
-                text(sql),
-                {
+
+            visible_collections = await resolve_collection_listing_ids(catalog_id)
+            if visible_collections is not None and not visible_collections:
+                collection_ids: list = []
+            else:
+                vis_clause = (
+                    "  AND collection_id = ANY(:visible_ids) "
+                    if visible_collections is not None
+                    else ""
+                )
+                sql = (
+                    f'SELECT DISTINCT collection_id '
+                    f'FROM "{phys_schema}".assets '
+                    f'WHERE catalog_id = :catalog_id '
+                    f'  AND asset_id = :asset_id '
+                    f'  AND deleted_at IS NULL '
+                    f'  AND collection_id IS NOT NULL '
+                    f'{vis_clause}'
+                    f'ORDER BY collection_id '
+                    f'LIMIT :limit OFFSET :offset'
+                )
+                query_params = {
                     "catalog_id": catalog_id,
                     "asset_id": asset_id,
                     "limit": limit,
                     "offset": offset,
-                },
-            )
-            collection_ids = [r[0] for r in rows.fetchall()]
+                }
+                if visible_collections is not None:
+                    query_params["visible_ids"] = list(visible_collections)
+                rows = await cast(AsyncConnection, conn).execute(
+                    text(sql), query_params
+                )
+                collection_ids = [r[0] for r in rows.fetchall()]
 
         base_url = get_url(request, remove_qp=True)
         assets_root = f"{get_root_url(request)}/stac/virtual/assets"

@@ -264,7 +264,7 @@ class ProvisioningTask(TaskProtocol):
             # (or any other eventing failure) after the bucket is healthy does
             # not fail the catalog; it marks the gcp_eventing checklist step
             # 'degraded' so the catalog still reaches 'ready' and operators can
-            # inspect the status via GET /admin/catalogs/{id}.
+            # inspect the checklist outcome in the task logs.
             #
             # CRITICAL: the gcp_eventing step MUST reach a terminal state on
             # every path, or the catalog is wedged in 'provisioning' forever

@@ -16,13 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Default (public, unfiltered) catalog-list provider for UI pickers.
+"""Default catalog-list provider for UI pickers.
 
-Registered by the Web extension at priority 100 — the fallback that wins
-only when no higher-priority, auth-aware provider (e.g. IAM) is mounted.
-On an IAM-less deployment there is no tenant-scope enforcement, so listing
-every catalog is correct; when IAM is present its provider outranks this
-one and is authoritative (see ``CatalogListProvider``).
+Registered by the Web extension at priority 100. The provider itself is a
+plain ``CatalogsProtocol`` consumer: caller visibility is enforced
+transparently beneath that protocol (``RequestVisibility`` →
+``ListingVisibilityProtocol``), so with an authorization layer mounted the
+"full list" is already the caller's visible list, and without one the
+unfiltered list is correct. Higher-priority providers can still outrank
+this one for alternative sourcing (see ``CatalogListProvider``).
 """
 
 from __future__ import annotations

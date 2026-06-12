@@ -463,9 +463,6 @@ export const fetchCatalogOptions = async () => {
   }
 };
 
-export const getCatalogProvisioning = (catalogId) =>
-  getJSON(`/admin/catalogs/${encodeURIComponent(catalogId)}`);
-
 // ----- Role hierarchy edges (/admin/hierarchies) -----
 //
 // GET /admin/hierarchies returns [{parent, child}, ...].

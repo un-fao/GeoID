@@ -28,7 +28,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, FastAPI, Response, HTTPException, Request, Query, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from fastapi.middleware.gzip import GZipMiddleware
 from dynastore.extensions.web.cors_middleware import DynamicCORSMiddleware
@@ -49,7 +48,6 @@ logger = logging.getLogger(__name__)
 # Module-level scheme — ``scheme_name`` must match the key declared by
 # IAM's ``build_iam_openapi_schema`` so Swagger UI ties dashboard routes
 # to the same security scheme entry as the rest of the platform.
-bearer_scheme = HTTPBearer(auto_error=False, scheme_name="HTTPBearer")
 
 def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
     """Pure declaration of the web extension's authorization policies.
@@ -1698,83 +1696,24 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         @self.router.get("/dashboard/catalogs", response_class=JSONResponse)
         async def get_dashboard_catalogs(
-            request: Request,
             q: Optional[str] = Query(None, description="Search query"),
             limit: int = Query(100, ge=1, le=1000),
             offset: int = Query(0, ge=0),
-            bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
         ):
-            """
-            List catalogs visible to the caller.
+            """List catalogs visible to the caller.
 
-            - sysadmin  → all catalogs
-            - authenticated non-sysadmin → only catalogs where the principal
-              holds an admin role (principal_id filter forwarded to the
-              CatalogsProtocol when supported)
-            - anonymous → empty list
+            Visibility is transparent: the storage layer narrows the listing
+            to what the request's caller may see (``RequestVisibility`` →
+            ``ListingVisibilityProtocol``), so this route is a plain protocol
+            call. With no authorization layer mounted the full list returns.
             """
             from dynastore.models.protocols import CatalogsProtocol
-
-            # Resolve caller identity. IamMiddleware has already authenticated
-            # the request and attached the resolved Principal + role list to
-            # ``request.state`` — that is the canonical, signature-validated
-            # source. Reading the Authorization header and re-decoding the
-            # JWT here would only succeed when an OIDC IdentityProvider
-            # recognises the token, which is not the case for locally-minted
-            # JWTs (e.g. test harnesses) even when the request is correctly
-            # authenticated as sysadmin.
-            user_roles: List[str] = []
-            principal_id: Optional[str] = None
-
-            state_roles = getattr(request.state, "principal_role", None)
-            if state_roles:
-                user_roles = list(state_roles) if isinstance(state_roles, list) else [state_roles]
-            state_principal = getattr(request.state, "principal", None)
-            if state_principal is not None:
-                principal_id = (
-                    str(getattr(state_principal, "id", "") or "")
-                    or getattr(state_principal, "subject_id", None)
-                ) or None
-
-            # Legacy fallback: route was originally written before the
-            # middleware populated request.state. Keep the manual path so
-            # the route works even when the middleware is bypassed.
-            if not user_roles and not principal_id and bearer is not None:
-                token = bearer.credentials
-                try:
-                    from dynastore.modules.iam.interfaces import IdentityProviderProtocol
-                    for idp in get_protocols(IdentityProviderProtocol):
-                        try:
-                            info = await idp.get_user_info(token)
-                            if info:
-                                user_roles = info.get("roles") or info.get("realm_access", {}).get("roles", [])
-                                principal_id = info.get("subject_id") or info.get("principal_id")
-                                break
-                        except Exception:
-                            continue
-                except Exception as e:
-                    logger.debug(f"Dashboard catalogs: could not resolve identity: {e}")
 
             catalogs_provider: Optional[CatalogsProtocol] = get_protocol(CatalogsProtocol)
             if not catalogs_provider:
                 return []
 
-            if IamRolesConfig().sysadmin_role_name in user_roles:
-                # Sysadmin sees every catalog
-                cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
-            elif principal_id:
-                # Authenticated non-sysadmin: forward principal filter so the
-                # protocol can restrict to catalogs the caller administers.
-                try:
-                    cats = await cast(Any, catalogs_provider).list_catalogs(
-                        limit=limit, offset=offset, q=q, principal_id=principal_id
-                    )
-                except TypeError:
-                    # Protocol implementation does not support principal_id filter yet
-                    cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
-            else:
-                return []
-
+            cats = await catalogs_provider.list_catalogs(limit=limit, offset=offset, q=q)
             return [c.model_dump() for c in cats]
 
         @self.router.get("/catalogs", response_class=JSONResponse)
@@ -1785,13 +1724,13 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             """Catalog options for UI pickers — pluggable, server-resolved.
 
             Returns ``{"catalogs": [{"id", "title"}]}`` from the
-            highest-priority *available* ``CatalogListProvider``: IAM when
-            mounted (grant-filtered for the principal), otherwise the public
-            full list. The winner is authoritative — an empty result from an
-            auth-aware provider is NOT overridden by a lower-priority full
-            list, so a tenant-scoped deployment never leaks catalogs the
-            caller cannot see. New protocols become selectable by registering
-            a provider; no front-end change is needed.
+            highest-priority *available* ``CatalogListProvider``. Caller
+            visibility is enforced transparently beneath the provider's
+            ``CatalogsProtocol`` call (``RequestVisibility`` →
+            ``ListingVisibilityProtocol``), so the default full-list
+            provider already returns only what the caller may see. New
+            providers become selectable by registering a higher priority;
+            no front-end change is needed.
             """
             from dynastore.models.protocols.catalog_source import (
                 CatalogListProvider,

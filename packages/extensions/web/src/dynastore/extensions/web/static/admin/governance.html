@@ -32,7 +32,6 @@
       <button class="tab-btn" data-tab="policies">Policies</button>
       <button class="tab-btn" data-tab="principals">Principals</button>
       <button class="tab-btn" data-tab="hierarchy">Hierarchy</button>
-      <button class="tab-btn" data-tab="provisioning">Provisioning</button>
     </div>
 
     <!-- Roles --------------------------------------------------------- -->
@@ -306,74 +305,6 @@
         </div>
         <hr class="rule">
         <div id="hierarchy-descendants" class="muted">Pick a role and press Expand.</div>
-      </div>
-    </section>
-
-    <!-- Provisioning ------------------------------------------------------ -->
-    <section id="tab-provisioning" class="tab-panel">
-      <div class="plate">
-        <div class="plate-header">
-          <h3>Catalog provisioning status</h3>
-          <div class="plate-meta">GET /admin/catalogs/{catalog_id}</div>
-        </div>
-        <div class="row">
-          <!-- Changed from free-text input to a <select> for consistency with
-               other catalog pickers on this page. governance.js reads this as
-               #prov-catalog-id and calls .value.trim() — the select emits the
-               same string, so no JS change is needed for the read path.
-               Population: governance.js must populate this select with catalog
-               options (same list used by the context-bar / ownedCatalogs) after
-               page load — owned by the governance.js agent.
-               The keydown "Enter" listener on #prov-catalog-id still wires up
-               correctly because <select> also fires keydown. -->
-          <select id="prov-catalog-id" class="input-large">
-            <option value="">— select a catalog —</option>
-          </select>
-          <button class="btn btn-secondary btn-xs" id="prov-check-btn" type="button">Check</button>
-          <span id="prov-status" class="status"></span>
-        </div>
-        <hr class="rule">
-        <div id="prov-result" style="display:none">
-          <table class="kv-table">
-            <tbody>
-              <tr>
-                <td class="kv-label">Status</td>
-                <td class="kv-value"><span id="prov-badge" class="chip"></span></td>
-              </tr>
-              <tr>
-                <td class="kv-label">Physical schema</td>
-                <td class="kv-value"><code id="prov-schema" class="muted"></code></td>
-              </tr>
-            </tbody>
-          </table>
-          <div id="prov-task-block" style="display:none">
-            <h4 class="ci-subhead">Most recent provision task</h4>
-            <table class="kv-table">
-              <tbody>
-                <tr>
-                  <td class="kv-label">Task ID</td>
-                  <td class="kv-value"><code id="prov-task-id" class="muted"></code></td>
-                </tr>
-                <tr>
-                  <td class="kv-label">Task status</td>
-                  <td class="kv-value"><span id="prov-task-badge" class="chip"></span></td>
-                </tr>
-                <tr>
-                  <td class="kv-label">Retries</td>
-                  <td class="kv-value muted" id="prov-task-retries"></td>
-                </tr>
-                <tr>
-                  <td class="kv-label">Last updated</td>
-                  <td class="kv-value muted" id="prov-task-updated"></td>
-                </tr>
-                <tr id="prov-task-error-row" class="kv-error" style="display:none">
-                  <td class="kv-label">Error</td>
-                  <td class="kv-value"><code id="prov-task-error"></code></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
       </div>
     </section>
 

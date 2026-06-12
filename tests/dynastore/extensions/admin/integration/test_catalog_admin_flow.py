@@ -231,15 +231,18 @@ async def enable_catalog_admin_delegation(
 class TestCatalogAdminFlow:
     """End-to-end pin of the catalog-admin user flow on the permissions tab."""
 
-    async def test_alice_sees_only_her_admin_catalogs(
+    async def test_alice_sees_only_her_granted_catalogs(
         self,
         in_process_client: AsyncClient,
         setup_catalogs,
         alice_admin_of_cat_a: _Actor,
     ):
-        """GET /admin/catalogs → 200, returns only cat_a (Alice's catalog).
+        """GET /admin/catalogs → 200, returns cat_a (Alice's granted catalog).
 
-        Sysadmin would see both; the filter narrows the picker.
+        Transparent visibility: /admin/catalogs now returns what the caller
+        may SEE (granted + public), not only the catalogs they admin. Alice
+        holds a grant on cat_a so she sees it; she has no grant on cat_b
+        (a private catalog she was never granted) so cat_b is invisible.
         """
         cat_a, cat_b = setup_catalogs
         resp = await in_process_client.get(
@@ -248,11 +251,11 @@ class TestCatalogAdminFlow:
         )
         assert resp.status_code == 200, resp.text
         ids = {c["id"] for c in resp.json()}
-        assert cat_a in ids, f"Alice should see her admin catalog {cat_a}; got {ids}"
+        assert cat_a in ids, f"Alice should see her granted catalog {cat_a}; got {ids}"
         assert cat_b not in ids, (
-            f"Alice MUST NOT see {cat_b} (not her admin catalog); got {ids}. "
-            "Filter regressed — check IamMiddleware.principal_role contract "
-            "(catalog-tier roles must NOT bleed into principal.roles)."
+            f"Alice MUST NOT see {cat_b} (no grant in that catalog); got {ids}. "
+            "Transparent visibility regressed — IamListingVisibility should "
+            "deny cat_b when Alice holds no grant there."
         )
 
     async def test_alice_must_supply_q_on_principal_lookup(
