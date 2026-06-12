@@ -780,8 +780,9 @@ class EventsModule(ModuleProtocol):
 
     async def wait_for_events(self, timeout: float = 10.0) -> None:
         """Wait until an event signal arrives or *timeout* seconds elapse."""
+        from dynastore.durable.notify import EVENTS_CHANNEL
         from dynastore.tools.async_utils import signal_bus
-        await signal_bus.wait_for("dynastore_events_channel", timeout=timeout)
+        await signal_bus.wait_for(EVENTS_CHANNEL, timeout=timeout)
 
     # ------------------------------------------------------------------
     # EventsModule — create_event (top-level API)

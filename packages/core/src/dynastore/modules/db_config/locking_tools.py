@@ -16,7 +16,6 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-import hashlib
 import logging
 import asyncio
 import functools
@@ -25,6 +24,7 @@ from contextvars import ContextVar
 from typing import Optional, Callable, Awaitable, ClassVar, TypeVar, Dict, AsyncGenerator, Iterator, Set, Union, cast
 from sqlalchemy import text, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from dynastore.durable.locks import stable_lock_key_signed64
 from dynastore.tools.async_utils import LoopLocalLock
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -149,10 +149,10 @@ class _StartupCoordinator:
             raise
 
 
-def _get_stable_lock_id(key: str) -> int:
-    """Generates a stable 64-bit integer from a string key for Postgres advisory locks."""
-    hashed = hashlib.sha256(key.encode("utf-8")).digest()
-    return int.from_bytes(hashed[:8], byteorder="big", signed=True)
+# Canonical derivation lives in the shared durable library. The historical
+# name is kept: lock identity IS the derived bigint, so every importer must
+# keep computing the same values — see dynastore.durable.locks.
+_get_stable_lock_id = stable_lock_key_signed64
 
 
 @asynccontextmanager

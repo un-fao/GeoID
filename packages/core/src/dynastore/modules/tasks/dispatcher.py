@@ -43,30 +43,19 @@ Both are stateless: any worker instance can resume any task after a crash.
 """
 
 import asyncio
-import hashlib
 import logging
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 
-def _stable_advisory_lock_key(*parts: str) -> int:
-    """Process-stable signed bigint for ``pg_try_advisory_xact_lock``.
-
-    Python's builtin ``hash()`` is salted per-process (PEP 456) unless
-    ``PYTHONHASHSEED`` is fixed — two pods hashing the same string will
-    pick different lock keys, so any "single-leader across the deployment"
-    guarantee that depends on it is silently broken. ``hashlib.blake2b``
-    is deterministic across pods, processes, and Python versions.
-
-    Returns a non-negative 63-bit int that fits PostgreSQL's signed
-    bigint ``pg_try_advisory_xact_lock(bigint)`` signature.
-    """
-    h = hashlib.blake2b(
-        b"\x00".join(p.encode("utf-8") for p in parts), digest_size=8,
-    )
-    return int.from_bytes(h.digest(), "big") & 0x7FFFFFFFFFFFFFFF
-
+# Canonical derivation lives in the shared durable library. The historical
+# name is kept (and re-imported by tasks_module): lock identity IS the
+# derived bigint, so the algorithm behind an existing key string must never
+# change — see dynastore.durable.locks.
+from dynastore.durable.locks import (
+    stable_lock_key_uint63 as _stable_advisory_lock_key,
+)
 
 from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
 from dynastore.modules.db_config.query_executor import DbResource

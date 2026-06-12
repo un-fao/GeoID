@@ -24,6 +24,8 @@ from uuid import UUID, uuid4
 from datetime import datetime
 from enum import Enum
 
+from dynastore.durable.notify import EVENTS_CHANNEL
+
 # --- Constants ---
 API_KEY_NAME = "X-DynaStore-Event-Key"
 
@@ -38,7 +40,7 @@ class EventStatusEnum(str, Enum):
 
 class EventChannel(str, Enum):
     """Defines the notification channels."""
-    EVENTS = "dynastore_events_channel"
+    EVENTS = EVENTS_CHANNEL
 
 class EventBase(BaseModel):
     """Base model for an event, containing the core data."""

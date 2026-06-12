@@ -49,13 +49,14 @@ from dynastore.models.protocols.indexing import (
     OutboxRecord,
     OutboxRow,
 )
+from dynastore.durable.backoff import DEFAULT_BACKOFF_SECONDS
+from dynastore.durable.notify import outbox_channel
 from dynastore.tools.db import validate_sql_identifier
 
-
-# Per-attempt retry backoff in seconds. Index by ``attempts`` (0-based);
-# the last entry is reused for any attempt at or beyond its position so
-# the backoff caps at ~30min instead of growing unbounded.
-_BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
+# Retry curve shared with the other durable drains; the historical module
+# name is kept for existing importers. Applied SQL-side in mark_retry so
+# concurrent retries can't de-sync on a stale Python-side ``attempts``.
+_BACKOFF_SECONDS: List[int] = DEFAULT_BACKOFF_SECONDS
 
 
 class PgOutboxStore:
@@ -324,9 +325,9 @@ class PgOutboxStore:
             import asyncio
 
             conn = await self._conn()
-            validate_sql_identifier(catalog_id)
-            validate_sql_identifier(driver_id)
-            channel = f"outbox_{driver_id}_{catalog_id}"
+            # Validates both identifiers and mirrors the plpgsql trigger's
+            # channel expression — see dynastore.durable.notify.
+            channel = outbox_channel(driver_id, catalog_id)
             queue: asyncio.Queue[Notification] = asyncio.Queue()
 
             async def _on_notify(

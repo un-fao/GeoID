@@ -36,12 +36,15 @@ from typing import Optional, Tuple
 from dynastore.tools.async_utils import signal_bus, PgListenBridge
 from dynastore.modules.db_config.query_executor import DbResource
 
-logger = logging.getLogger(__name__)
+# Channel names live in the shared durable library; re-exported here because
+# dispatcher and other modules historically import them from this module.
+from dynastore.durable.notify import (  # noqa: F401 — re-exported
+    EVENTS_CHANNEL,
+    NEW_TASK_QUEUED,
+    TASK_STATUS_CHANGED,
+)
 
-# Public channel names — used by dispatcher and other modules.
-NEW_TASK_QUEUED = "new_task_queued"
-TASK_STATUS_CHANGED = "task_status_changed"
-EVENTS_CHANNEL = "dynastore_events_channel"
+logger = logging.getLogger(__name__)
 
 
 def _notification_transform(

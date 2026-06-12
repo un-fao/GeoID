@@ -690,10 +690,11 @@ class EventService(EventBusProtocol):
                 yield is_leader
 
         async def _on_leader():
+            from dynastore.durable.notify import EVENTS_CHANNEL
             await self._run_consume_loop(
                 shutdown_event,
                 scope=scope,
-                channels=channels or ["dynastore_events_channel"],
+                channels=channels or [EVENTS_CHANNEL],
             )
 
         async def _leader_loop():
