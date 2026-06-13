@@ -310,6 +310,13 @@ def test_catalog_status_read_policy_shape():
     assert "GET" in read_pol.actions
     # Must cover both catalog and collection status paths
     assert any("/catalog/catalogs/" in r for r in read_pol.resources)
+    # The read surface exposes operational detail (schema name, task error
+    # messages), so it is membership-gated: catalog_membership_required fails
+    # closed for anonymous callers. A bare ALLOW here would leak status of
+    # public catalogs to the open internet.
+    assert any(
+        c.type == "catalog_membership_required" for c in (read_pol.conditions or [])
+    ), "read policy must be gated by catalog_membership_required (deny anonymous)"
 
 
 def test_catalog_status_admin_policy_has_catalog_admin_required_condition():
@@ -323,16 +330,25 @@ def test_catalog_status_admin_policy_has_catalog_admin_required_condition():
     assert any("reprovision" in r or "dead-letter" in r for r in admin_pol.resources)
 
 
-def test_catalog_status_role_bindings_anonymous_reads():
+def test_catalog_status_read_bound_to_universal_base_role():
+    """Read policy is bound to the configured base role (``unauthenticated`` by
+    default), not a literal ``"anonymous"`` string that no seed provides. The
+    binding only makes the policy reachable for every member; the
+    catalog_membership_required condition is the actual access control and
+    denies anonymous callers.
+    """
     from dynastore.extensions.catalog_status.policies import catalog_status_role_bindings
+    from dynastore.models.protocols.authorization import IamRolesConfig
 
-    anon_policies: set = set()
+    cfg = IamRolesConfig()
+    base_policies: set = set()
     for rb in catalog_status_role_bindings():
-        if rb.name == "anonymous":
-            anon_policies.update(rb.policies or [])
-    assert "catalog_status_read" in anon_policies, (
-        "anonymous role must carry catalog_status_read so public platforms "
-        "can reach the read surface; 404-on-hidden is the actual gate"
+        if rb.name == cfg.anonymous_role_name:
+            base_policies.update(rb.policies or [])
+    assert "catalog_status_read" in base_policies, (
+        "catalog_status_read must be bound to IamRolesConfig().anonymous_role_name "
+        f"(== {cfg.anonymous_role_name!r}), the universal base role every member "
+        "carries; binding to a non-existent role name would reach no one"
     )
 
 
