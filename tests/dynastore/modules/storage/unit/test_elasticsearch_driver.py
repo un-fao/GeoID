@@ -752,7 +752,10 @@ class TestWriteEntitiesTenantIndex:
             assert doc["_valid_from"] == "2026-04-27T00:00:00Z"
             # _valid_to is None in context → key skipped
             assert "_valid_to" not in doc
-        assert es.bulk_calls[0]["params"] == {"refresh": "false"}
+        # ES-primary sync write path uses refresh=wait_for so the doc is
+        # immediately visible to _search (read-after-write); refresh=false plus
+        # ES search-idle would otherwise leave it id-retrievable but unsearchable.
+        assert es.bulk_calls[0]["params"] == {"refresh": "wait_for"}
 
     @pytest.mark.asyncio
     async def test_refuse_policy_skips_existing_external_id(self):

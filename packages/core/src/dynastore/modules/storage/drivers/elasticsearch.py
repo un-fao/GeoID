@@ -1382,7 +1382,17 @@ class ItemsElasticsearchDriver(
                 maybe_raise_bulk_mapping_mismatch,
                 raise_on_bulk_errors,
             )
-            resp = await es.bulk(body=body, params={"refresh": "false"})
+            # ``write_entities`` is the synchronous ES-*primary* write path
+            # (ES-only / ES-primary collections): there is no PG row and no
+            # async indexer behind it, so this write IS the source of truth and
+            # callers expect read-after-write. ``refresh="wait_for"`` blocks
+            # until the doc is visible to ``_search`` — without it, ``refresh=
+            # false`` plus ES *search-idle* (auto-refresh pauses after 30s with
+            # no searches) leaves freshly-written items retrievable by id but
+            # invisible to ``_search``/list. The async secondary indexer paths
+            # (``index``/``index_bulk``) stay ``refresh="false"`` — they are
+            # eventual by design and drained from the outbox.
+            resp = await es.bulk(body=body, params={"refresh": "wait_for"})
             maybe_raise_bulk_mapping_mismatch(resp, index_name)
             raise_on_bulk_errors(resp, index_name, submitted_ids)
 
