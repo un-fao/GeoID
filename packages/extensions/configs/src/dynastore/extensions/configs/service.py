@@ -38,7 +38,10 @@ from dynastore.extensions.configs._composed_query_params import (
 )
 
 from dynastore.extensions.protocols import ExtensionProtocol
-from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
+from dynastore.extensions.tools.catalog_readiness import (
+    require_catalog_ready,
+    require_collection_ready,
+)
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from dynastore.tools.db import InvalidIdentifierError
 from dynastore.modules import get_protocol
@@ -465,6 +468,7 @@ class ConfigsService(ExtensionProtocol):
         """
         from pydantic import ValidationError
         self._gate_engine_writes_in_patch_body(body.root, scope="collection")
+        await require_collection_ready(catalog_id, collection_id)
         try:
             result = await self._config_api.patch_config(
                 catalog_id=catalog_id,
@@ -938,6 +942,11 @@ class ConfigsService(ExtensionProtocol):
         """
         await require_catalog_ready(catalog_id)
         if not create_if_missing:
+            # Liveness gate only on the configure-existing path; the
+            # create_if_missing flow is an explicit upfront-configure that
+            # JIT-creates the registry row, so a "missing" collection there is
+            # expected rather than a write to a collection that is already gone.
+            await require_collection_ready(catalog_id, collection_id)
             collections = get_protocol(CollectionsProtocol)
             assert collections is not None, "CollectionsProtocol not registered"
             existing = await collections.get_collection(catalog_id, collection_id)
@@ -997,6 +1006,7 @@ class ConfigsService(ExtensionProtocol):
         Deletes the configuration override for a plugin at the Collection level.
         The effective configuration will revert to Catalog, Platform, or Code defaults.
         """
+        await require_collection_ready(catalog_id, collection_id)
         cls = require_config_class(plugin_id)
         self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
         await self.configs.delete_config(
