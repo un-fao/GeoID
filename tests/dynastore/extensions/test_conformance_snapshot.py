@@ -191,6 +191,33 @@ def test_volumes_declares_pass5_conformance_set():
     assert not missing, f"Volumes missing Pass 5 URIs: {sorted(missing)}"
 
 
+def test_geovolumes_uris_classify_into_their_own_family():
+    """The conformance summary must bucket GeoVolumes URIs under GeoVolumes.
+
+    Declaring the URIs (test above) is not enough — without a pattern in
+    ``_STANDARD_PATTERNS`` the summary classifier drops them into the
+    catch-all "Other / OGC Common" bucket and reports "OGC API 3D
+    GeoVolumes" as not-implemented on the home page, even though Pass 5
+    (#715) shipped it. This guards the classification, not just the
+    declaration.
+    """
+    import re
+
+    from dynastore.extensions.tools.conformance import _STANDARD_PATTERNS
+
+    def classify(uri: str) -> str | None:
+        for name, pattern in _STANDARD_PATTERNS.items():
+            if re.search(pattern, uri):
+                return name
+        return None
+
+    for uri in EXPECTED_PASS5_VOLUMES_URIS:
+        assert classify(uri) == "OGC API 3D GeoVolumes", (
+            f"{uri} must classify as 'OGC API 3D GeoVolumes', "
+            f"got {classify(uri)!r} — add an ogcapi-3d-geovolumes pattern"
+        )
+
+
 EXPECTED_PASS4_JOINS_URIS = {
     "http://www.opengis.net/spec/ogcapi-joins-1/0.0/conf/core",
 }
