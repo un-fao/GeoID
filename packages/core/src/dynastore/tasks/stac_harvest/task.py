@@ -31,6 +31,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from dynastore.models.ogc import Feature
 from dynastore.modules.processes.models import ExecuteRequest, Process
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
@@ -268,20 +269,39 @@ async def _upsert_items_batch(
     Returns ``(written, error)`` — ``error`` is a short ``Type: message`` string
     on failure (``None`` on success) so the caller can surface it in the job
     result, since BackgroundTask log output is not reliably captured at runtime.
+
+    Items are parsed into ``Feature`` models before the write.  The ES-primary
+    write path (``item_service.upsert`` → ``ItemsElasticsearchDriver``) returns
+    the input entities and the service then reads ``result.id``; a raw ``dict``
+    has no ``.id`` and crashes the whole batch.  Parsing here mirrors the HTTP
+    ingestion path, which validates dicts into ``Feature`` before writing.
     """
-    payload: Dict[str, Any] = {
-        "type": "FeatureCollection",
-        "stac_version": "1.1.0",
-        "features": batch,
-    }
+    features: List[Feature] = []
+    invalid = 0
+    for raw in batch:
+        try:
+            features.append(Feature.model_validate(raw))
+        except Exception as exc:  # malformed source item — drop, keep the batch
+            invalid += 1
+            logger.warning(
+                "stac_harvest: item %s in %s/%s failed Feature validation: %s(%s)",
+                raw.get("id"), catalog_id, collection_id, type(exc).__name__, exc,
+            )
+
+    if not features:
+        return 0, f"all {len(batch)} items failed Feature validation"
+
     try:
-        await catalogs.upsert(catalog_id, collection_id, payload)
-        return len(batch), None
+        await catalogs.upsert(catalog_id, collection_id, features)
+        # items_failed for this batch == invalid (dropped) items; surface as a
+        # soft error when non-zero but the write itself succeeded.
+        err = f"{invalid} item(s) failed Feature validation" if invalid else None
+        return len(features), err
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
         logger.warning(
             "stac_harvest: bulk write %d items into %s/%s failed: %s",
-            len(batch), catalog_id, collection_id, err,
+            len(features), catalog_id, collection_id, err,
         )
         return 0, err
 

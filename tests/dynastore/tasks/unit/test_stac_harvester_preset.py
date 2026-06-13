@@ -605,3 +605,49 @@ def test_iter_items_gives_up_after_min_limit() -> None:
         items = list(harvest_task.iter_items("https://src/v1", "col"))
 
     assert items == []
+
+
+# ---------------------------------------------------------------------------
+# _upsert_items_batch — Feature parsing + error surfacing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_items_batch_passes_feature_objects_not_dicts() -> None:
+    """The batch is parsed into Feature objects (with .id) before upsert.
+
+    The ES-primary write path returns the input entities and the service reads
+    result.id, so raw dicts crash. Guards against regressing to dict payloads.
+    """
+    from dynastore.models.ogc import Feature
+    from dynastore.tasks.stac_harvest.task import _upsert_items_batch
+
+    catalogs = MagicMock()
+    catalogs.upsert = AsyncMock(return_value=[])
+
+    batch = [
+        {"type": "Feature", "id": "i1", "geometry": None, "properties": {}},
+        {"type": "Feature", "id": "i2", "geometry": None, "properties": {}},
+    ]
+    written, err = await _upsert_items_batch(catalogs, "cat", "col", batch)
+
+    assert written == 2
+    assert err is None
+    sent = catalogs.upsert.await_args.args[2]
+    assert all(isinstance(f, Feature) for f in sent)
+    assert all(hasattr(f, "id") for f in sent)
+
+
+@pytest.mark.asyncio
+async def test_upsert_items_batch_surfaces_write_error() -> None:
+    """A write exception is returned as a short error string, written=0."""
+    from dynastore.tasks.stac_harvest.task import _upsert_items_batch
+
+    catalogs = MagicMock()
+    catalogs.upsert = AsyncMock(side_effect=RuntimeError("ES down"))
+
+    batch = [{"type": "Feature", "id": "i1", "geometry": None, "properties": {}}]
+    written, err = await _upsert_items_batch(catalogs, "cat", "col", batch)
+
+    assert written == 0
+    assert err is not None and "RuntimeError" in err and "ES down" in err
