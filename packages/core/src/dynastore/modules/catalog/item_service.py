@@ -2373,8 +2373,28 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                             idempotency_key=item_id_str or str(generate_uuidv7()),
                         ))
                 if records:
-                    await outbox.enqueue_bulk(
-                        conn, catalog_id=catalog_id, rows=records,
+                    # Dual-write dispatch: the legacy {schema}.storage_outbox
+                    # row and/or the new global tasks.work_index row, gated by
+                    # WorkClassConfig.emit_target_index. Default config writes
+                    # only the legacy table (today's path); both writes ride
+                    # this conn so either failing rolls back the primary write.
+                    # ConfigsProtocol is re-imported (aliased) here because the
+                    # routing-resolver branch above does a function-local
+                    # ``import ConfigsProtocol`` that shadows the module-level
+                    # name for this whole function — unbound when the routing
+                    # test-seam skips that branch.
+                    from dynastore.models.protocols import (
+                        ConfigsProtocol as _ConfigsProtocol,
+                    )
+                    from dynastore.modules.storage.work_index_dual_write import (
+                        dispatch_index_dual_write,
+                    )
+                    await dispatch_index_dual_write(
+                        conn,
+                        outbox=outbox,
+                        catalog_id=catalog_id,
+                        rows=records,
+                        configs=get_protocol(_ConfigsProtocol),
                     )
 
         return deduped
