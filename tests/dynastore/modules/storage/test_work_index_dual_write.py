@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS "{schema}".work_index (
     idempotency_key TEXT,
     claim_version   INTEGER         NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
-    PRIMARY KEY (op_id)
+    -- Match production's composite PK (workclass_ddl.WORK_INDEX_TABLE_DDL):
+    -- a partitioned table requires its partition key (day) in the PK. This
+    -- test table is un-partitioned, but the PK is kept faithful so the INSERT
+    -- path faces the same uniqueness constraint as production.
+    PRIMARY KEY (day, op_id)
 );
 """
 
