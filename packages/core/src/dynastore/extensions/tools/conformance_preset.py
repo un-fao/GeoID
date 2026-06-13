@@ -28,9 +28,15 @@ GET-only policy that covers:
 * ``/conformance`` — a platform-level conformance aggregator if one is
   ever registered.
 
-The resource patterns use non-capturing regex so the policy is
-self-maintaining: new OGC services coming online inherit the anonymous
-conformance grant without any manual edit.
+The landing/conformance grants are scoped to an explicit allowlist of OGC
+service prefixes (``_OGC_SERVICE_PREFIXES``) — the prefixes of the
+``OGCServiceMixin`` subclasses.  An earlier revision used a blanket
+``^/[^/]+/?$`` which matched *any* single path segment and so silently
+granted anonymous read to non-OGC roots (``/admin``, ``/iam``, ``/auth``,
+``/configs``, ``/dwh``, …).  Those surfaces are protected by deny-by-default
+(narrow role-scoped ALLOWs, no explicit DENY), so a blanket anonymous ALLOW
+overrode their protection — a privilege/metadata leak.  The allowlist below
+makes the grant reach OGC services only; non-OGC roots stay deny-by-default.
 
 The policy is GET-only.  Data surfaces (items, collections, coverage data,
 …) are untouched.
@@ -52,6 +58,38 @@ from dynastore.modules.storage.presets.registry import register_preset
 # delete exactly what apply wrote.
 _POLICY_ID = "ogc_conformance_public_access"
 
+# OGC service prefixes = the path prefixes of the ``OGCServiceMixin``
+# subclasses (the only extensions that expose a spec landing page +
+# ``/conformance``).  Keep in sync with the ``OGCServiceMixin`` subclasses;
+# the unit test ``test_ogc_conformance_preset`` locks the security-critical
+# property that NON-OGC roots (/admin, /iam, /auth, /configs, /dwh, /tasks,
+# /events, /gcp, /logs, /me, /notebooks, /proxy, /search, /stats, /template)
+# are never matched.  A new OGC service merely omitted here loses anonymous
+# conformance (a functional follow-up) — it can never widen the grant.
+_OGC_SERVICE_PREFIXES = (
+    "features",
+    "stac",
+    "records",
+    "coverages",
+    "edr",
+    "tiles",
+    "maps",
+    "styles",
+    "dggs",
+    "processes",
+    "volumes",
+    "movingfeatures",
+    "consys",
+    "join",
+    "dimensions",
+    "wfs",
+    "assets",
+    "web",
+)
+
+# Anchored alternation of the OGC prefixes, e.g. ``(features|stac|…)``.
+_OGC_ALT = "|".join(_OGC_SERVICE_PREFIXES)
+
 
 def _conformance_policies() -> list:
     """Pure data: the anonymous-read policy for conformance + landing routes.
@@ -59,28 +97,31 @@ def _conformance_policies() -> list:
     Resource patterns (all anchored at start by ``re.match``):
 
     * ``/conformance$`` — platform-level aggregator (safe no-op if absent).
-    * ``^/[^/]+/conformance$`` — any ``/{svc}/conformance``.
-    * ``^/[^/]+/?$`` — any ``/{svc}/`` or ``/{svc}`` landing page.
+    * ``^/({alt})/conformance$`` — ``/{svc}/conformance`` for OGC services only.
+    * ``^/({alt})/?$`` — ``/{svc}/`` or ``/{svc}`` landing for OGC services only.
 
-    The third pattern is intentionally narrow: a single path segment with an
-    optional trailing slash only.  It does NOT match ``/{svc}/collections/…``
-    or any data path.
+    The ``{alt}`` is the explicit OGC-prefix allowlist (``_OGC_SERVICE_PREFIXES``):
+    a single OGC service segment with an optional trailing slash.  It does NOT
+    match ``/{svc}/collections/…`` (data paths) nor any non-OGC root.  The
+    platform root ``/`` stays with ``web_public_access`` (login-page
+    reachability), not this preset.
     """
     return [
         Policy(
             id=_POLICY_ID,
             description=(
                 "Allows anonymous GET access to OGC API conformance declarations "
-                "(/{svc}/conformance) and service landing pages (/{svc}/, /{svc}). "
+                "(/{svc}/conformance) and service landing pages (/{svc}/, /{svc}) "
+                "for OGC services only, plus the platform root landing page. "
                 "OGC API Common Part 1 requires these to be publicly readable so "
                 "automated conformance suites (ETS/TEAM Engine) can run without "
-                "credentials. Data surfaces are unaffected."
+                "credentials. Data surfaces and non-OGC roots are unaffected."
             ),
             actions=["GET", "OPTIONS"],
             resources=[
                 "/conformance$",
-                "^/[^/]+/conformance$",
-                "^/[^/]+/?$",
+                f"^/({_OGC_ALT})/conformance$",
+                f"^/({_OGC_ALT})/?$",
             ],
             effect="ALLOW",
         ),

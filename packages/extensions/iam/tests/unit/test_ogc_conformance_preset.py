@@ -178,9 +178,32 @@ def test_root_slash_not_covered_by_conformance_preset():
 
 
 def test_root_landing_with_slash_allowed():
-    # /{svc}/ landing pages (one path segment) are covered by "^/[^/]+/?$".
+    # /{svc}/ landing pages are covered by "^/(features|stac|…)/?$".
     assert _policy_allows("/features/"), "/{svc}/ landing page must be allowed"
     assert _policy_allows("/stac/"), "/stac/ landing page must be allowed"
+
+
+# ---------------------------------------------------------------------------
+# (security) the landing/conformance grant reaches OGC services ONLY — never
+# a non-OGC root.  Those roots are protected by deny-by-default (narrow
+# role-scoped ALLOWs, no explicit DENY), so a blanket anonymous ALLOW would
+# OVERRIDE their protection.  This test locks the scoping.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("root", [
+    "/admin", "/admin/", "/iam", "/iam/", "/auth", "/auth/",
+    "/configs", "/configs/", "/dwh", "/dwh/", "/tasks", "/tasks/",
+    "/events", "/gcp", "/gdal", "/logs", "/me", "/me/", "/notebooks",
+    "/proxy", "/search", "/stats", "/template",
+])
+def test_non_ogc_roots_never_allowed(root: str):
+    assert not _policy_allows(root), (
+        f"{root} is a non-OGC root protected by deny-by-default and MUST NOT "
+        "be granted anonymous access by the conformance preset"
+    )
+    assert not _policy_allows(f"{root}/conformance"), (
+        f"{root}/conformance must not be anonymously granted either"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +221,13 @@ def test_root_landing_with_slash_allowed():
     "dggs",
     "processes",
     "styles",
-    "connected_systems",
-    "moving_features",
+    "consys",
+    "movingfeatures",
+    "volumes",
+    "wfs",
+    "assets",
+    "dimensions",
+    "join",
 ])
 def test_per_service_conformance_allowed(svc: str):
     assert _policy_allows(f"/{svc}/conformance"), (
