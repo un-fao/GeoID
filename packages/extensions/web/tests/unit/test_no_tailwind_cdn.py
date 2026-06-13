@@ -77,13 +77,34 @@ def test_no_html_page_references_tailwind_cdn():
 
 
 def test_compiled_tailwind_css_contains_dyna_theme():
-    """The dyna color palette must survive the build (custom @theme tokens)."""
+    """The dyna color palette tokens actually used as Tailwind utilities must survive the build.
+
+    Tailwind v4 tree-shakes @theme values: only tokens referenced by a utility
+    class in a scanned source file are emitted into the compiled output.  The 4
+    tokens below are used as ``bg-dyna-*`` / ``text-dyna-*`` / ``border-dyna-*``
+    classes across the extension browser pages.  Tokens declared in @theme but
+    never consumed by a utility class (secondary, success, warning, purple,
+    danger) are intentionally absent — that is correct v4 behaviour, not a bug.
+    """
     css = _TAILWIND_CSS.read_text(encoding="utf-8")
-    for token in ("dyna-darker", "dyna-primary", "dyna-accent"):
+    for token in ("dyna-dark", "dyna-darker", "dyna-primary", "dyna-accent"):
         assert token in css, (
             f"Custom theme token {token!r} not found in compiled tailwind.css. "
             "The @theme block in input.css may be missing or malformed."
         )
+
+
+def test_compiled_tailwind_css_contains_font_tokens():
+    """Inter and Fira Code must resolve via --font-sans / --font-mono (v4 key names)."""
+    css = _TAILWIND_CSS.read_text(encoding="utf-8")
+    assert "Inter" in css, (
+        "Custom font 'Inter' not found in compiled tailwind.css. "
+        "Check that --font-sans (not --font-family-sans) is used in the @theme block."
+    )
+    assert "Fira Code" in css, (
+        "Custom font 'Fira Code' not found in compiled tailwind.css. "
+        "Check that --font-mono (not --font-family-mono) is used in the @theme block."
+    )
 
 
 def test_compiled_tailwind_css_contains_utility_classes():

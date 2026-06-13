@@ -27,8 +27,8 @@
   --color-dyna-purple: #8b5cf6;
   --color-dyna-danger: #ef4444;
 
-  --font-family-sans: 'Inter', sans-serif;
-  --font-family-mono: 'Fira Code', monospace;
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'Fira Code', monospace;
 
   --background-image-grid-pattern: linear-gradient(to right, #1e293b 1px, transparent 1px), linear-gradient(to bottom, #1e293b 1px, transparent 1px);
 }
