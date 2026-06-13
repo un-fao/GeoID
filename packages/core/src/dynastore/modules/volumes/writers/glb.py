@@ -46,23 +46,29 @@ _CHUNK_BIN  = 0x004E4942   # 'BIN\0'
 # glTF component types
 _FLOAT  = 5126
 _UINT32 = 5125
+_UBYTE  = 5121
 
 
-def _building_material() -> Dict[str, Any]:
+def _building_material(*, tinted: bool = False) -> Dict[str, Any]:
     """A simple double-sided PBR material for extruded building volumes.
 
-    A neutral warm-grey base colour, fully dielectric (metallic 0) and mostly
-    rough, so directional scene lighting shades roofs and walls differently and
-    adjacent buildings read as distinct solids. ``doubleSided`` guards against
-    any inward-facing triangles from the centroid-fan caps so no surface drops
-    out. Without a material the renderer falls back to its default unlit look,
-    which makes the whole tile appear as one flat mass.
+    Fully dielectric (metallic 0) and mostly rough, so directional scene
+    lighting shades roofs and walls differently and adjacent buildings read as
+    distinct solids. ``doubleSided`` guards against any inward-facing triangles
+    from the centroid-fan caps so no surface drops out. Without a material the
+    renderer falls back to its default unlit look, which makes the whole tile
+    appear as one flat mass.
+
+    The PBR base colour is ``baseColorFactor * COLOR_0``. When the mesh carries
+    per-vertex colours (*tinted*), the factor is white so the vertex ramp shows
+    true; otherwise it is a neutral warm-grey applied uniformly.
     """
+    base = [1.0, 1.0, 1.0, 1.0] if tinted else [0.82, 0.80, 0.76, 1.0]
     return {
         "name": "building",
         "doubleSided": True,
         "pbrMetallicRoughness": {
-            "baseColorFactor": [0.82, 0.80, 0.76, 1.0],
+            "baseColorFactor": base,
             "metallicFactor": 0.0,
             "roughnessFactor": 0.85,
         },
@@ -92,20 +98,15 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
 
     positions = mesh.positions   # float32 * 3 per vertex
     normals   = mesh.normals     # float32 * 3 per vertex (may be empty)
+    colors    = mesh.colors      # uint8 RGBA * 4 per vertex (may be empty)
     indices   = mesh.indices     # uint32 per index
 
     has_normals = bool(normals)
+    has_colors  = bool(colors)
 
-    pos_byte_length = len(positions)
-    nrm_byte_length = len(normals)
-    idx_byte_length = len(indices)
-
-    # Buffer layout: [positions][normals?][indices]
-    parts = [positions, normals, indices] if has_normals else [positions, indices]
-    bin_data = _pad4(b"".join(parts), pad_byte=0x00)
-
-    # Accessor indices and bufferViews depend on whether normals are present so
-    # the index accessor always points at the index bufferView.
+    # Buffer layout: [positions][normals?][colors?][indices]. Vertex attributes
+    # share one ARRAY_BUFFER region; accessor/bufferView indices are assigned in
+    # the same order the parts are concatenated so offsets line up exactly.
     accessors: list = [
         {
             "bufferView": 0,
@@ -121,16 +122,18 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
         {
             "buffer": 0,
             "byteOffset": 0,
-            "byteLength": pos_byte_length,
+            "byteLength": len(positions),
             "target": 34962,  # ARRAY_BUFFER
         },
     ]
     attributes: Dict[str, int] = {"POSITION": 0}
+    parts: list = [positions]
+    offset = len(positions)
 
     if has_normals:
-        attributes["NORMAL"] = 1
+        attributes["NORMAL"] = len(accessors)
         accessors.append({
-            "bufferView": 1,
+            "bufferView": len(buffer_views),
             "byteOffset": 0,
             "componentType": _FLOAT,
             "count": mesh.vertex_count,
@@ -138,20 +141,35 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
         })
         buffer_views.append({
             "buffer": 0,
-            "byteOffset": pos_byte_length,
-            "byteLength": nrm_byte_length,
+            "byteOffset": offset,
+            "byteLength": len(normals),
             "target": 34962,  # ARRAY_BUFFER
         })
-        idx_accessor = 2
-        idx_bufferview = 2
-        idx_offset = pos_byte_length + nrm_byte_length
-    else:
-        idx_accessor = 1
-        idx_bufferview = 1
-        idx_offset = pos_byte_length
+        parts.append(normals)
+        offset += len(normals)
 
+    if has_colors:
+        attributes["COLOR_0"] = len(accessors)
+        accessors.append({
+            "bufferView": len(buffer_views),
+            "byteOffset": 0,
+            "componentType": _UBYTE,
+            "normalized": True,
+            "count": mesh.vertex_count,
+            "type": "VEC4",
+        })
+        buffer_views.append({
+            "buffer": 0,
+            "byteOffset": offset,
+            "byteLength": len(colors),
+            "target": 34962,  # ARRAY_BUFFER
+        })
+        parts.append(colors)
+        offset += len(colors)
+
+    idx_accessor = len(accessors)
     accessors.append({
-        "bufferView": idx_bufferview,
+        "bufferView": len(buffer_views),
         "byteOffset": 0,
         "componentType": _UINT32,
         "count": mesh.index_count,
@@ -159,10 +177,13 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
     })
     buffer_views.append({
         "buffer": 0,
-        "byteOffset": idx_offset,
-        "byteLength": idx_byte_length,
+        "byteOffset": offset,
+        "byteLength": len(indices),
         "target": 34963,  # ELEMENT_ARRAY_BUFFER
     })
+    parts.append(indices)
+
+    bin_data = _pad4(b"".join(parts), pad_byte=0x00)
 
     primitive: Dict[str, Any] = {
         "attributes": attributes,
@@ -183,7 +204,7 @@ def pack_glb(mesh: MeshBuffers, *, title: str = "tile") -> bytes:
             "name": title,
             "primitives": [primitive],
         }],
-        "materials": [_building_material()],
+        "materials": [_building_material(tinted=has_colors)],
         "accessors": accessors,
         "bufferViews": buffer_views,
         "buffers": [{"byteLength": sum(bv["byteLength"] for bv in buffer_views)}],
