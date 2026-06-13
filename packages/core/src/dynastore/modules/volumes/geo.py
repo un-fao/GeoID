@@ -64,6 +64,34 @@ def geodetic_to_ecef(lon_deg: float, lat_deg: float, height_m: float = 0.0) -> V
     return (x, y, z)
 
 
+def ecef_to_geodetic(x: float, y: float, z: float) -> Vec3:
+    """Inverse of :func:`geodetic_to_ecef` — ECEF metres → (lon, lat, height).
+
+    Uses Bowring's closed-form method (accurate to well under a millimetre for
+    terrestrial points). Returns (lon_deg, lat_deg, height_m). Used to recover
+    the dataset origin from a tileset root transform's translation column.
+    """
+    b = _WGS84_A * (1.0 - _WGS84_F)         # semi-minor axis
+    ep2 = (_WGS84_A * _WGS84_A - b * b) / (b * b)  # second eccentricity squared
+    p = math.sqrt(x * x + y * y)
+    lon = math.atan2(y, x)
+    if p == 0.0:
+        # On the polar axis.
+        lat = math.copysign(math.pi / 2.0, z)
+        height = abs(z) - b
+        return (math.degrees(lon), math.degrees(lat), height)
+    theta = math.atan2(z * _WGS84_A, p * b)
+    sin_t, cos_t = math.sin(theta), math.cos(theta)
+    lat = math.atan2(
+        z + ep2 * b * sin_t * sin_t * sin_t,
+        p - _WGS84_E2 * _WGS84_A * cos_t * cos_t * cos_t,
+    )
+    sin_lat = math.sin(lat)
+    n = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * sin_lat * sin_lat)
+    height = p / math.cos(lat) - n
+    return (math.degrees(lon), math.degrees(lat), height)
+
+
 def _enu_basis(lon_deg: float, lat_deg: float) -> Tuple[Vec3, Vec3, Vec3]:
     """Return the (east, north, up) unit vectors of the ENU frame at lon/lat.
 

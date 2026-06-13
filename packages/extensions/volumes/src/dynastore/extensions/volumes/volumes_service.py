@@ -78,6 +78,7 @@ from dynastore.modules.volumes.mesh_builder import (
     build_mesh_from_geometries,
     empty_mesh,
 )
+from dynastore.modules.volumes.geo import ecef_to_geodetic
 from dynastore.modules.volumes.tileset_builder import build_tileset, find_leaf
 from dynastore.modules.volumes.writers.b3dm import pack_b3dm
 from dynastore.modules.volumes.writers.glb import pack_glb
@@ -487,7 +488,13 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         if leaf is None:
             raise HTTPException(status_code=404, detail=f"Tile {tile_id!r} not found")
         feature_ids: List[str] = leaf.get("_feature_ids", [])
-        glb_bytes = await self._geometry_to_glb(catalog_id, collection_id, feature_ids, cfg)
+        # The tile mesh must be built in the SAME local ENU frame as the
+        # tileset boxes. Recover the dataset origin from the root transform's
+        # translation column (= ECEF of the origin) so the two stay aligned.
+        origin = _origin_from_tileset(tileset)
+        glb_bytes = await self._geometry_to_glb(
+            catalog_id, collection_id, feature_ids, cfg, origin,
+        )
         return feature_ids, glb_bytes
 
     async def _geometry_to_glb(
@@ -496,6 +503,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         collection_id: str,
         feature_ids: List[str],
         cfg: VolumesConfig,
+        origin: Tuple[float, float, float],
     ) -> bytes:
         if not feature_ids:
             return pack_glb(empty_mesh())
@@ -518,6 +526,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             return pack_glb(empty_mesh())
         mesh = build_mesh_from_geometries(
             geometries,
+            origin=origin,
             default_extrusion_height=cfg.default_extrusion_height,
         )
         return pack_glb(mesh)
@@ -526,6 +535,20 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
 # ---------------------------------------------------------------------------
 # Collection classification and decoration helpers
 # ---------------------------------------------------------------------------
+
+
+def _origin_from_tileset(tileset: Dict[str, Any]) -> Tuple[float, float, float]:
+    """Recover the ENU origin (lon, lat, height) from the root transform.
+
+    ``build_tileset`` stamps ``root.transform`` with the ENU→ECEF matrix whose
+    translation column (indices 12..14) is the ECEF of the origin. An empty
+    tileset (no bounds) has no transform → origin (0, 0, 0), which is harmless
+    because there is no geometry to place.
+    """
+    transform = tileset.get("root", {}).get("transform")
+    if not transform or len(transform) < 15:
+        return (0.0, 0.0, 0.0)
+    return ecef_to_geodetic(transform[12], transform[13], transform[14])
 
 
 def _get_extras(coll: Any) -> Dict[str, Any]:

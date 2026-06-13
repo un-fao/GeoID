@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 
 from dynastore.modules.volumes.geo import (
+    ecef_to_geodetic,
     enu_to_ecef_matrix,
     geodetic_to_ecef,
     lonlat_to_enu,
@@ -101,6 +102,25 @@ def test_transform_inverts_enu_to_ecef():
     truth = geodetic_to_ecef(lon, lat, h)
     for a, b in zip(rebuilt, truth):
         assert math.isclose(a, b, rel_tol=1e-7, abs_tol=1e-3)
+
+
+def test_ecef_to_geodetic_round_trips():
+    for lon, lat, h in [(DH_LON, DH_LAT, 12.0), (0.0, 0.0, 0.0),
+                        (-122.4, 37.8, 100.0), (139.7, 35.7, -5.0)]:
+        x, y, z = geodetic_to_ecef(lon, lat, h)
+        rlon, rlat, rh = ecef_to_geodetic(x, y, z)
+        assert math.isclose(rlon, lon, abs_tol=1e-9)
+        assert math.isclose(rlat, lat, abs_tol=1e-9)
+        assert math.isclose(rh, h, abs_tol=1e-4)
+
+
+def test_origin_recovered_from_transform_translation():
+    # The mesh pipeline recovers the dataset origin from the root transform.
+    m = enu_to_ecef_matrix(DH_LON, DH_LAT, 8.0)
+    lon, lat, h = ecef_to_geodetic(m[12], m[13], m[14])
+    assert math.isclose(lon, DH_LON, abs_tol=1e-9)
+    assert math.isclose(lat, DH_LAT, abs_tol=1e-9)
+    assert math.isclose(h, 8.0, abs_tol=1e-4)
 
 
 def test_transform_translation_column_is_origin_ecef():
