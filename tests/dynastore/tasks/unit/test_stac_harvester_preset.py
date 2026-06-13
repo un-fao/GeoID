@@ -493,3 +493,78 @@ def test_virtual_assets_for_gcs_owned_by() -> None:
     }
     results = list(virtual_assets_for(feature))
     assert results[0]["owned_by"] == "gcs"
+
+
+# ---------------------------------------------------------------------------
+# _ensure_collection — write-language + resilience
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_creates_with_concrete_write_lang() -> None:
+    """New collections are created with a concrete lang, never the '*' wildcard."""
+    from dynastore.tasks.stac_harvest.task import _WRITE_LANG, _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(return_value=None)  # does not exist yet
+    catalogs.create_collection = AsyncMock(return_value=object())
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    assert _WRITE_LANG != "*"
+    catalogs.create_collection.assert_awaited_once()
+    assert catalogs.create_collection.await_args.kwargs["lang"] == _WRITE_LANG
+    catalogs.update_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_updates_existing_with_concrete_write_lang() -> None:
+    """Existing collections are updated with a concrete lang, never '*'."""
+    from dynastore.tasks.stac_harvest.task import _WRITE_LANG, _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(return_value=object())  # already exists
+    catalogs.create_collection = AsyncMock()
+    catalogs.update_collection = AsyncMock(return_value=object())
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    catalogs.update_collection.assert_awaited_once()
+    assert catalogs.update_collection.await_args.kwargs["lang"] == _WRITE_LANG
+    catalogs.create_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_resilient_when_write_raises_but_row_lands() -> None:
+    """A post-write hook raise must not abort item ingestion if the row exists."""
+    from dynastore.tasks.stac_harvest.task import _ensure_collection
+
+    catalogs = MagicMock()
+    # First existence check: absent → take create path. Create raises (e.g. a
+    # best-effort async indexer). Re-check then finds the row present.
+    catalogs.get_collection = AsyncMock(side_effect=[None, object()])
+    catalogs.create_collection = AsyncMock(side_effect=RuntimeError("indexer boom"))
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    assert catalogs.get_collection.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_returns_false_when_row_absent_after_raise() -> None:
+    """A genuine write failure (row never lands) returns False."""
+    from dynastore.tasks.stac_harvest.task import _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(side_effect=[None, None])  # absent, still absent
+    catalogs.create_collection = AsyncMock(side_effect=RuntimeError("write rejected"))
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is False

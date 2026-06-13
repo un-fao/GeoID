@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 1000
 _PAGE_LIMIT = 500
 _STRIP_LINKS = frozenset({"links"})
+# Concrete write language for collection create/update.  Source STAC
+# collections carry no language, and ``"*"`` is a *read-time* wildcard
+# (all translations) — passing it to a write throws, which previously
+# aborted the whole harvest before any item was written.
+_WRITE_LANG = "en"
 
 
 # ---------------------------------------------------------------------------
@@ -189,17 +194,40 @@ async def _ensure_collection(
     catalog_id: str,
     coll: Dict[str, Any],
 ) -> bool:
-    """Upsert the collection; return True on success."""
+    """Upsert the collection; return True when the collection is present afterwards.
+
+    Writes use a concrete language (``_WRITE_LANG``) — never the ``"*"`` read
+    wildcard.  On a write exception we re-check existence: a post-write hook
+    failure (e.g. a best-effort async indexer) must not abort item ingestion
+    when the collection row itself landed.
+    """
     cid = coll["id"]
     try:
-        existing = await catalogs.get_collection(catalog_id, cid, lang="*")
+        existing = await catalogs.get_collection(catalog_id, cid, lang=_WRITE_LANG)
         if existing is None:
-            await catalogs.create_collection(catalog_id, coll, lang="*")
+            await catalogs.create_collection(catalog_id, coll, lang=_WRITE_LANG)
         else:
-            await catalogs.update_collection(catalog_id, cid, coll, lang="*")
+            await catalogs.update_collection(catalog_id, cid, coll, lang=_WRITE_LANG)
         return True
     except Exception as exc:
-        logger.warning("stac_harvest: upsert collection %s/%s failed: %s", catalog_id, cid, exc)
+        logger.warning(
+            "stac_harvest: upsert collection %s/%s raised %s(%s) — re-checking existence",
+            catalog_id, cid, type(exc).__name__, exc,
+        )
+        # Resilience: if the collection is present despite the raise, proceed
+        # to items rather than discarding the whole collection's harvest.
+        try:
+            if await catalogs.get_collection(catalog_id, cid, lang=_WRITE_LANG) is not None:
+                logger.warning(
+                    "stac_harvest: collection %s/%s exists post-write — continuing to items",
+                    catalog_id, cid,
+                )
+                return True
+        except Exception as recheck_exc:
+            logger.warning(
+                "stac_harvest: existence re-check for %s/%s failed: %s(%s)",
+                catalog_id, cid, type(recheck_exc).__name__, recheck_exc,
+            )
         return False
 
 
