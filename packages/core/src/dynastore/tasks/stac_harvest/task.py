@@ -31,7 +31,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
-from dynastore.modules.processes.models import ExecuteRequest, Process, StatusInfo
+from dynastore.modules.processes.models import ExecuteRequest, Process
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
 from dynastore.modules.tasks.models import TaskPayload
 from dynastore.tools.protocol_helpers import get_engine
@@ -41,7 +41,7 @@ from .models import StacHarvestRequest
 
 logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = 200
+_BATCH_SIZE = 1000
 _PAGE_LIMIT = 500
 _STRIP_LINKS = frozenset({"links"})
 
@@ -220,8 +220,8 @@ async def _upsert_items_batch(
         return len(batch)
     except Exception as exc:
         logger.warning(
-            "stac_harvest: bulk async write %d items into %s/%s failed: %s",
-            len(batch), catalog_id, collection_id, exc,
+            "stac_harvest: bulk async write %d items into %s/%s failed: %s(%s)",
+            len(batch), catalog_id, collection_id, type(exc).__name__, exc,
         )
         return 0
 
@@ -262,38 +262,99 @@ async def _register_virtual_assets(
 
 
 async def _apply_stac_presets(
-    ctx_config: Any,
+    ctx: Any,
     scope: str,
     catalog_id: str,
-    es_only: bool,
+    backend: str,
 ) -> None:
-    """Apply stac_routing + stac_storage presets to pin catalog to ES-only storage.
+    """Pin item storage routing for the harvested catalog.
 
-    Uses the preset registry + lifecycle directly — no HTTP self-call.
-    Failures are logged but non-fatal: a deployment whose platform default
-    already matches will behave correctly without these config writes.
+    ``backend`` is the resolved storage backend: ``"es"``, ``"es_pg"``, or
+    ``"pg"``.  Strategy:
+
+    - Always apply the ``stac_storage`` preset (the SSOT signal) scoped to
+      the ITEMS tier.  This validates on all backends.
+    - For ``"es"``: write the ES-only ``ItemsRoutingConfig`` directly via
+      ``ConfigsProtocol.set_config`` at catalog scope — the cumulative
+      ``stac_routing`` preset would also touch the collection tier where the
+      ``collection_elasticsearch_driver`` is not registered on this deployment.
+    - For ``"es_pg"`` or ``"pg"``: apply the ``stac_routing`` preset normally
+      (these backends validate on all tiers).
+
+    All operations are best-effort: failures are logged at WARNING (with the
+    exception) and never abort the harvest.
     """
-    if not es_only:
-        return
     try:
         from dynastore.modules.storage.presets.registry import find_preset
-        from dynastore.modules.storage.presets.stac import StacPresetParams
+        from dynastore.modules.storage.presets.stac import (
+            StacPresetParams,
+            _items_routing_es,
+        )
         from dynastore.modules.stac.stac_storage_config import (
             StacLevel,
             StacStorageBackend,
         )
+        from dynastore.modules.storage.routing_config import ItemsRoutingConfig
 
-        params = StacPresetParams(
+        backend_map: Dict[str, StacStorageBackend] = {
+            "es": StacStorageBackend.ES,
+            "es_pg": StacStorageBackend.ES_PG,
+            "pg": StacStorageBackend.PG,
+        }
+        stac_backend = backend_map.get(backend, StacStorageBackend.ES)
+
+        # 1. Apply stac_storage (SSOT flip) — always safe on all backends.
+        storage_params = StacPresetParams(
             stac_level=StacLevel.ITEMS,
-            stac_storage=StacStorageBackend.ES,
+            stac_storage=stac_backend,
         )
-        for preset_name in ("stac_routing", "stac_storage"):
-            preset = find_preset(preset_name)
-            await preset.apply(params, scope, ctx_config)
-            logger.info("stac_harvest: applied preset %s on scope %s", preset_name, scope)
+        storage_preset = find_preset("stac_storage")
+        await storage_preset.apply(storage_params, scope, ctx)
+        logger.info(
+            "stac_harvest: pinned items storage backend=%s on %s",
+            backend, catalog_id,
+        )
+
+        # 2. Write routing config for the items tier.
+        if backend == "es":
+            # Write ES-only ItemsRoutingConfig directly — skip the cumulative
+            # stac_routing preset which would also attempt collection-tier ES
+            # routing (unregistered driver on this deployment).
+            configs = ctx.config
+            if configs is not None:
+                items_routing = _items_routing_es()
+                await configs.set_config(
+                    ItemsRoutingConfig,
+                    items_routing,
+                    catalog_id=catalog_id,
+                )
+                logger.info(
+                    "stac_harvest: wrote ES-only ItemsRoutingConfig for catalog=%s",
+                    catalog_id,
+                )
+            else:
+                logger.warning(
+                    "stac_harvest: ctx.config is None — cannot write "
+                    "ItemsRoutingConfig for catalog=%s (ES-only preset incomplete)",
+                    catalog_id,
+                )
+        else:
+            # es_pg / pg: the cumulative stac_routing preset validates fine.
+            routing_params = StacPresetParams(
+                stac_level=StacLevel.ITEMS,
+                stac_storage=stac_backend,
+            )
+            routing_preset = find_preset("stac_routing")
+            await routing_preset.apply(routing_params, scope, ctx)
+            logger.info(
+                "stac_harvest: applied stac_routing preset (backend=%s) on %s",
+                backend, catalog_id,
+            )
+
     except Exception as exc:
         logger.warning(
-            "stac_harvest: STAC preset apply failed (non-fatal) on %s: %s", catalog_id, exc
+            "stac_harvest: STAC preset apply failed (non-fatal) on %s: %s(%s)",
+            catalog_id, type(exc).__name__, exc,
         )
 
 
@@ -331,10 +392,12 @@ async def run_harvest(
             continue
         stats.collections_written += 1
 
-        # Apply ES-only STAC presets once the first collection is created
+        # Pin item storage routing once the first collection is created
         # (catalog provisioning is complete at that point).
         if not stac_presets_applied and preset_ctx is not None:
-            await _apply_stac_presets(preset_ctx, scope, request.target_catalog, request.es_only)
+            await _apply_stac_presets(
+                preset_ctx, scope, request.target_catalog, request.storage_backend
+            )
             stac_presets_applied = True
 
         batch: List[Dict[str, Any]] = []
@@ -376,7 +439,7 @@ async def run_harvest(
 
 
 class StacHarvestTask(
-    ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[StatusInfo]]
+    ProcessTaskProtocol[Process, TaskPayload[ExecuteRequest], Optional[Dict[str, Any]]]
 ):
     """OGC Process task: walk a remote STAC catalog and async-write into a local one.
 
@@ -397,7 +460,7 @@ class StacHarvestTask(
 
     async def run(
         self, payload: TaskPayload[ExecuteRequest]
-    ) -> Optional[StatusInfo]:
+    ) -> Optional[Dict[str, Any]]:
         """Entry point called by the task runner.
 
         The OGC Processes dispatcher wraps user inputs in an ``ExecuteRequest``
@@ -405,6 +468,7 @@ class StacHarvestTask(
         ``payload.inputs.inputs``.
         """
         from dynastore.models.protocols import CatalogsProtocol
+        from dynastore.models.protocols.configs import ConfigsProtocol
         from dynastore.tools.discovery import get_protocol
 
         raw_inputs = payload.inputs
@@ -425,19 +489,20 @@ class StacHarvestTask(
 
         scope = f"catalog:{request.target_catalog}"
 
-        # Build a minimal PresetContext so the STAC preset application can
-        # access config write services.  Full PresetContext is unavailable in
-        # the task runner (no HTTP request context), so the preset apply is
-        # best-effort: it will no-op gracefully on any import/attribute error.
+        # Build a PresetContext so _apply_stac_presets can write routing/storage
+        # configs via ConfigsProtocol.  The config writer is obtained from the
+        # protocol registry and injected into the context.  The preset apply is
+        # best-effort: a failure logs at WARNING and does not abort the harvest.
         preset_ctx = None
         try:
             from dynastore.modules.storage.presets.preset import PresetContext
 
+            config_writer = get_protocol(ConfigsProtocol)
             preset_ctx = PresetContext(
                 db=self.engine,
                 iam=None,
                 policy=None,
-                config=None,
+                config=config_writer,
                 tasks=None,
                 cron=None,
                 libs=None,
@@ -446,16 +511,17 @@ class StacHarvestTask(
                 catalogs=catalogs,
             )
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "stac_harvest: could not build PresetContext (STAC presets will be "
-                "skipped): %s", exc
+                "skipped): %s(%s)", type(exc).__name__, exc,
             )
 
         stats = await run_harvest(request, catalogs, preset_ctx, scope)
 
         logger.info(
-            "stac_harvest: finished — collections=%d/%d items_written=%d "
-            "items_failed=%d virtual_assets=%d errors=%d",
+            "stac_harvest: finished — backend=%s collections=%d/%d "
+            "items_written=%d items_failed=%d virtual_assets=%d errors=%d",
+            request.storage_backend,
             stats.collections_written,
             stats.collections_seen,
             stats.items_written,
@@ -467,4 +533,19 @@ class StacHarvestTask(
         if stats.errors:
             logger.warning("stac_harvest: errors: %s", stats.errors[:20])
 
-        return None
+        summary = (
+            f"collections={stats.collections_written}/{stats.collections_seen} "
+            f"items_written={stats.items_written} items_failed={stats.items_failed} "
+            f"virtual_assets={stats.virtual_assets_written} "
+            f"backend={request.storage_backend}"
+        )
+        return {
+            "message": summary,
+            "collections_written": stats.collections_written,
+            "collections_seen": stats.collections_seen,
+            "items_written": stats.items_written,
+            "items_failed": stats.items_failed,
+            "virtual_assets_written": stats.virtual_assets_written,
+            "storage_backend": request.storage_backend,
+            "errors": stats.errors[:20],
+        }
