@@ -752,7 +752,44 @@ class TestWriteEntitiesTenantIndex:
             assert doc["_valid_from"] == "2026-04-27T00:00:00Z"
             # _valid_to is None in context → key skipped
             assert "_valid_to" not in doc
-        assert es.bulk_calls[0]["params"] == {"refresh": "false"}
+        # ES-primary sync write path uses refresh=wait_for so the doc is
+        # immediately visible to _search (read-after-write); refresh=false plus
+        # ES search-idle would otherwise leave it id-retrievable but unsearchable.
+        assert es.bulk_calls[0]["params"] == {"refresh": "wait_for"}
+
+    @pytest.mark.asyncio
+    async def test_write_entities_ensures_index_once_per_catalog(self):
+        """ES-primary write ensures the index (correct mapping + alias) before
+        writing, bounded to once per (catalog, process)."""
+        from dynastore.modules.storage.drivers import elasticsearch as es_mod
+        from dynastore.modules.storage.driver_config import (
+            ItemsWritePolicy, WriteConflictPolicy,
+        )
+
+        es_mod._ITEMS_INDEX_ENSURED_CATALOGS.discard("catX")
+        es = _StubEs(exists=True)
+        policy = ItemsWritePolicy(on_conflict=WriteConflictPolicy.UPDATE)
+        with patch(
+            "dynastore.modules.elasticsearch.client.get_client", return_value=es,
+        ), patch(
+            "dynastore.modules.elasticsearch.client.get_index_prefix",
+            return_value="dynastore",
+        ), patch.object(
+            ItemsElasticsearchDriver, "_resolve_write_policy",
+            AsyncMock(return_value=policy),
+        ), patch.object(
+            ItemsElasticsearchDriver, "_enforce_field_constraints",
+            AsyncMock(return_value=None),
+        ), patch.object(
+            ItemsElasticsearchDriver, "ensure_storage", AsyncMock(),
+        ) as ensure_mock:
+            driver = ItemsElasticsearchDriver()
+            await driver.write_entities("catX", "col1", [self._feature("f1")])
+            await driver.write_entities("catX", "col1", [self._feature("f2")])
+
+        # ensure_storage runs on the first write, cached for the second.
+        ensure_mock.assert_awaited_once_with("catX", "col1")
+        assert "catX" in es_mod._ITEMS_INDEX_ENSURED_CATALOGS
 
     @pytest.mark.asyncio
     async def test_refuse_policy_skips_existing_external_id(self):

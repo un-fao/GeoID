@@ -18,7 +18,9 @@
 
 """Input model for the stac_harvest OGC Process."""
 
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StacHarvestRequest(BaseModel):
@@ -57,12 +59,25 @@ class StacHarvestRequest(BaseModel):
             "(dynastore stores only the href, never the bytes)."
         ),
     )
-    es_only: bool = Field(
-        default=True,
+    storage_backend: Literal["es", "es_pg", "pg"] = Field(
+        default="es",
         description=(
-            "When True, configure the target catalog with ES-only item routing "
-            "via the stac_routing + stac_storage presets before the first "
-            "collection write."
+            "Item storage backend for this harvest.  "
+            "``es`` routes item WRITE and READ directly to Elasticsearch so "
+            "harvested items are immediately searchable without waiting for the "
+            "async ES-index drain.  ``es_pg`` writes to PG primary with an async "
+            "ES secondary index (default platform routing).  ``pg`` uses PG only.  "
+            "This field takes precedence over the legacy ``es_only`` flag when both "
+            "are supplied."
+        ),
+    )
+    es_only: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Legacy flag — prefer ``storage_backend``.  When set and "
+            "``storage_backend`` is not explicitly provided: ``True`` maps to "
+            "``storage_backend='es'``; ``False`` maps to ``storage_backend='es_pg'``.  "
+            "Ignored when ``storage_backend`` is given explicitly."
         ),
     )
 
@@ -72,3 +87,14 @@ class StacHarvestRequest(BaseModel):
         if not v.startswith("https://") and not v.startswith("http://"):
             raise ValueError("catalog_url must start with http:// or https://")
         return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _resolve_backend(self) -> "StacHarvestRequest":
+        """Map legacy ``es_only`` → ``storage_backend`` when the caller did not
+        supply ``storage_backend`` explicitly.  ``storage_backend`` always wins
+        when both are given."""
+        if self.es_only is not None and self.storage_backend == "es":
+            # ``storage_backend`` is still at its default value; apply the
+            # es_only mapping so the caller's intent is preserved.
+            self.storage_backend = "es" if self.es_only else "es_pg"
+        return self

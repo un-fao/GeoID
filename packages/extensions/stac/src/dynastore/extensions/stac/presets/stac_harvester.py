@@ -32,9 +32,9 @@ Re-applying re-syncs idempotently.
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar, Optional, Tuple, Type
+from typing import Any, ClassVar, Literal, Optional, Tuple, Type
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dynastore.modules.storage.presets.preset import (
     AppliedDescriptor,
@@ -87,11 +87,24 @@ class StacHarvesterParams(BaseModel):
             "(dynastore stores only the href, never the bytes)."
         ),
     )
-    es_only: bool = Field(
-        default=True,
+    storage_backend: Literal["es", "es_pg", "pg"] = Field(
+        default="es",
         description=(
-            "When True, apply stac_routing + stac_storage presets on the target "
-            "catalog before the first collection write so items land in ES only."
+            "Item storage backend for this harvest.  "
+            "``es`` routes item WRITE and READ directly to Elasticsearch so "
+            "harvested items are immediately searchable without waiting for the "
+            "async ES-index drain.  ``es_pg`` writes to PG primary with async "
+            "ES secondary index.  ``pg`` uses PG only.  Takes precedence over "
+            "the legacy ``es_only`` flag when both are supplied."
+        ),
+    )
+    es_only: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Legacy flag — prefer ``storage_backend``.  When set and "
+            "``storage_backend`` is not explicitly provided: ``True`` maps to "
+            "``storage_backend='es'``; ``False`` maps to ``storage_backend='es_pg'``.  "
+            "Ignored when ``storage_backend`` is given explicitly."
         ),
     )
 
@@ -101,6 +114,15 @@ class StacHarvesterParams(BaseModel):
         if not v.startswith("https://") and not v.startswith("http://"):
             raise ValueError("url must start with http:// or https://")
         return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _resolve_backend(self) -> "StacHarvesterParams":
+        """Map legacy ``es_only`` → ``storage_backend`` when the caller did not
+        supply ``storage_backend`` explicitly.  ``storage_backend`` always wins
+        when both are given."""
+        if self.es_only is not None and self.storage_backend == "es":
+            self.storage_backend = "es" if self.es_only else "es_pg"
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +198,7 @@ class _StacHarvesterPreset:
                             "max_collections": p.max_collections,
                             "max_items": p.max_items,
                             "with_assets": p.with_assets,
-                            "es_only": p.es_only,
+                            "storage_backend": p.storage_backend,
                         },
                     },
                 ),
@@ -215,7 +237,7 @@ class _StacHarvesterPreset:
             "max_collections": p.max_collections,
             "max_items": p.max_items,
             "with_assets": p.with_assets,
-            "es_only": p.es_only,
+            "storage_backend": p.storage_backend,
         }
 
         exec_request = _proc_models.ExecuteRequest(inputs=inputs)
