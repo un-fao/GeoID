@@ -512,6 +512,37 @@ class EventService(EventBusProtocol):
         """Returns True if any async event listeners are registered."""
         return bool(self._async_listeners)
 
+    async def dispatch_to_listeners(
+        self, event_type: str, payload: Dict[str, Any]
+    ) -> None:
+        """Await every registered async listener for *event_type*.
+
+        The in-process async-listener registry (``_async_listeners``) is the
+        process-independent handler surface a durable consumer dispatches
+        through.  Each handler is awaited with the event payload's positional
+        and keyword args (``payload["args"]`` / ``payload["kwargs"]``); the
+        first handler exception propagates so the caller can nack / retry the
+        event.
+
+        Two consumers share this method:
+
+        * the legacy in-process shard loop (:meth:`_consume_shard`), and
+        * ``WorkEventDrainTask`` — the control-plane drain of
+          ``tasks.work_events`` — which resolves this ``EventService`` via
+          ``get_protocol(EventBusProtocol)`` and invokes it per claimed row.
+
+        An ``event_type`` with no registered listeners is a successful no-op
+        (there is nothing to deliver), matching the legacy behaviour where the
+        empty-listener loop falls straight through to ACK.
+        """
+        async_listeners = self._async_listeners.get(event_type, [])
+        if not async_listeners:
+            return
+        args = payload.get("args", []) if isinstance(payload, dict) else []
+        kwargs = payload.get("kwargs", {}) if isinstance(payload, dict) else {}
+        for listener in async_listeners:
+            await listener(*args, **kwargs)
+
     async def _consume_shard(
         self,
         shard_id: int,
@@ -563,14 +594,9 @@ class EventService(EventBusProtocol):
 
                         event_id = str(event.get("event_id") or event.get("id"))
                         try:
-                            async_listeners = self._async_listeners.get(
-                                event_type_str, []
+                            await self.dispatch_to_listeners(
+                                event_type_str, payload
                             )
-                            for listener in async_listeners:
-                                args = payload.get("args", [])
-                                kwargs = payload.get("kwargs", {})
-                                await listener(*args, **kwargs)
-
                             await driver.ack(event_ids=[event_id])
                         except Exception as e:
                             logger.error(

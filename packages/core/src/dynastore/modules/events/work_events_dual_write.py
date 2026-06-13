@@ -85,6 +85,7 @@ INSERT INTO {task_schema}.work_events (
     shard,
     schema_name,
     scope,
+    event_type,
     payload
 ) VALUES (
     CAST(:event_id AS uuid),
@@ -92,6 +93,7 @@ INSERT INTO {task_schema}.work_events (
     :shard,
     :schema_name,
     :scope,
+    :event_type,
     CAST(:payload AS jsonb)
 )
 """
@@ -122,6 +124,78 @@ def _work_events_insert_query(task_schema: str) -> "DQLQuery":
         query = DQLQuery(sql, result_handler=ResultHandler.NONE)
         _WORK_EVENTS_INSERT_QUERY_CACHE[task_schema] = query
     return query
+
+
+async def _enqueue_event_drain_trigger(conn: Any) -> None:
+    """Insert one global dedup'd ``work_event_drain`` PENDING task on ``conn``.
+
+    Co-transactional twin of the index plane's
+    ``work_index_dual_write._enqueue_drain_trigger``: the drain row commits if
+    and only if the caller's event row commits.  A single global dedup key
+    coalesces high event volume to one pending drain.  The ``on_task_insert``
+    DB trigger fires ``NOTIFY new_task_queued`` on this INSERT, waking the
+    dispatcher without a dedicated LISTEN connection.
+
+    Degrades gracefully when the tasks table is absent (e.g. test environments
+    that only provision ``work_events``): the INSERT is SAVEPOINT-isolated via
+    ``conn.begin_nested()`` so a missing table cannot abort the outer PG
+    transaction carrying the event row, and any failure is logged at DEBUG and
+    swallowed.  The event row still commits; the drain runs on its next
+    scheduled tick even without this NOTIFY.
+    """
+    from dynastore.modules.db_config.query_executor import (  # noqa: PLC0415
+        DQLQuery,
+        ResultHandler,
+    )
+    from dynastore.modules.tasks.tasks_module import get_task_schema  # noqa: PLC0415
+    from dynastore.tools.db import validate_sql_identifier  # noqa: PLC0415
+    from dynastore.tools.identifiers import generate_uuidv7  # noqa: PLC0415
+
+    task_schema = get_task_schema()
+    validate_sql_identifier(task_schema)
+
+    insert_sql = (
+        f"INSERT INTO {task_schema}.tasks"
+        f" (task_id, schema_name, scope, task_type, type, execution_mode,"
+        f"  inputs, timestamp, status, dedup_key)"
+        f" SELECT :task_id, 'platform', 'platform', 'work_event_drain',"
+        f"        'task', 'ASYNCHRONOUS', '{{}}'::jsonb, now(), 'PENDING',"
+        f"        'work_event_drain'"
+        f" WHERE NOT EXISTS ("
+        f"     SELECT 1 FROM {task_schema}.tasks"
+        f"     WHERE dedup_key = 'work_event_drain'"
+        f"       AND schema_name = 'platform'"
+        # Terminal set matches the dispatcher's claim query: a terminal-state
+        # drain task (incl. DISMISSED) must NOT block a fresh enqueue, or the
+        # co-transactional NOTIFY stays silenced until manual cleanup.
+        f"       AND status NOT IN ('COMPLETED', 'FAILED', 'DISMISSED', 'DEAD_LETTER')"
+        f" )"
+    )
+    try:
+        begin_nested = getattr(conn, "begin_nested", None)
+        if begin_nested is not None:
+            try:
+                async with begin_nested():
+                    await DQLQuery(insert_sql, result_handler=ResultHandler.NONE).execute(
+                        conn, task_id=generate_uuidv7()
+                    )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "work_event_drain: drain trigger skipped — tasks table not "
+                    "available in schema %r (normal during staged rollout).",
+                    task_schema,
+                    exc_info=True,
+                )
+        else:
+            await DQLQuery(insert_sql, result_handler=ResultHandler.NONE).execute(
+                conn, task_id=generate_uuidv7()
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "work_event_drain: drain trigger failed for schema %r.",
+            task_schema,
+            exc_info=True,
+        )
 
 
 async def dispatch_event_dual_write(
@@ -234,8 +308,16 @@ async def dispatch_event_dual_write(
             shard=shard,
             schema_name=schema_name,
             scope=scope_lower,
+            event_type=event_type,
             payload=payload_str,
         )
+
+        # Co-transactional drain trigger (Option A): enqueue one global dedup'd
+        # ``work_event_drain`` PENDING task on the caller's own connection so
+        # the drain is woken via the existing ``on_task_insert`` -> NOTIFY path
+        # without holding a permanent LISTEN connection per tenant. Mirrors the
+        # index plane (``work_index_dual_write._enqueue_drain_trigger``).
+        await _enqueue_event_drain_trigger(conn)
 
     # Return the canonical event_id: legacy if present, otherwise new.
     if legacy_event_id is not None:
