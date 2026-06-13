@@ -145,3 +145,46 @@ async def require_catalog_ready(
             f"operation."
         ),
     )
+
+
+async def require_collection_ready(
+    catalog_id: str,
+    collection_id: str,
+    *,
+    catalogs_svc: Optional[CatalogsProtocol] = None,
+) -> None:
+    """Collection lifecycle gate — propagates :class:`CollectionNotAliveError` untouched.
+
+    Mutating collection-scoped endpoints (asset writes, config PUTs/DELETEs,
+    upload initiations) MUST call this after :func:`require_catalog_ready` and
+    before any write to a collection-scoped resource.  The guard lets the
+    globally-registered :class:`CollectionNotAliveExceptionHandler` (see
+    ``extensions/tools/exception_handlers.py``) map the error to the correct
+    HTTP status:
+
+    * ``reason='missing'``    → 404  (no registry row)
+    * ``reason='tombstoned'`` → 410  (soft-deleted)
+    * anything else           → 503  (fail-closed; state unknown)
+
+    This is intentionally distinct from :func:`require_catalog_ready`, which
+    gates on catalog *provisioning* status and raises ``HTTPException(409)``.
+    The collection gate is purely a liveness / tombstone check (issues #2065
+    and #1995).
+
+    Raises:
+        ``HTTPException(503)`` — :class:`CatalogsProtocol` is not registered
+            in the current process.  Loud refusal rather than silent allow.
+        :class:`CollectionNotAliveError` — propagated unchanged so the
+            registered exception handler converts it to the right HTTP status.
+    """
+    svc = catalogs_svc if catalogs_svc is not None else get_protocol(CatalogsProtocol)
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "CatalogsProtocol not available — cannot verify collection "
+                f"'{catalog_id}/{collection_id}' liveness."
+            ),
+        )
+
+    await svc.ensure_alive(catalog_id, collection_id)
