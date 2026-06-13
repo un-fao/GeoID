@@ -48,10 +48,14 @@ only needs to clear the current backlog.
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar, Dict, List, Optional, Sequence
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, cast
 from uuid import UUID, uuid4
 
-from dynastore.models.protocols.indexing import BulkIndexResult, IndexableOp
+from dynastore.models.protocols.indexing import (
+    BulkIndexer,
+    BulkIndexResult,
+    IndexableOp,
+)
 from dynastore.models.tasks import TaskPayload
 from dynastore.tasks.protocols import TaskProtocol
 from dynastore.tools.db import validate_sql_identifier
@@ -69,6 +73,14 @@ _DEFAULT_LEASE_SECONDS: int = 300
 
 # Default claim batch size — mirrors OutboxDrainTask.
 _DEFAULT_BATCH_SIZE: int = 1500
+
+# driver_id of the only asynchronous index-outbox producer today — the
+# Elasticsearch items driver. The legacy storage_outbox drain is likewise
+# ES-specific (composed in tasks/outbox_drain/es_entrypoint.py). A general
+# driver_id -> BulkIndexer registry is a tracked follow-up; until it exists,
+# any other driver_id resolves to no indexer and its rows are funnelled to
+# retry (never dropped).
+_ES_ITEMS_DRIVER_ID: str = "items_elasticsearch_driver"
 
 
 def _backoff(attempts: int) -> int:
@@ -103,6 +115,8 @@ class WorkIndexDrainTask(TaskProtocol):
         self.app_state = app_state
         self.batch_size = batch_size
         self.lease_seconds = lease_seconds
+        # driver_id -> resolved BulkIndexer, memoised for this run.
+        self._indexer_cache: Dict[str, BulkIndexer] = {}
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
         """Drain ``tasks.work_index`` to empty, then return.
@@ -274,17 +288,53 @@ class WorkIndexDrainTask(TaskProtocol):
     # Indexer resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_indexer(self, driver_id: str) -> Any:
-        """Look up a BulkIndexer by driver_id from the process registry.
+    async def _resolve_indexer(self, driver_id: str) -> Optional[BulkIndexer]:
+        """Resolve a :class:`BulkIndexer` for ``driver_id``; cached per run.
 
-        Uses the same ``_make_default_indexer_registry`` convention as
-        ``IndexDispatcher``: resolves by ``_to_snake(type(impl).__name__)``.
+        The drain MUST use the ``BulkIndexer`` protocol
+        (``index_bulk(ops) -> BulkIndexResult``), NOT the distinct ``Indexer``
+        protocol (``index_bulk(ctx, ops) -> BulkResult``) — they are different
+        types with different signatures. ``OutboxDrainTask`` (the legacy
+        counterpart) is composed with an ``ESBulkIndexer`` by
+        ``build_es_drain_task``; this method reproduces that composition,
+        resolving the ES items driver_id to an ``ESBulkIndexer`` over a fresh
+        ``ItemsElasticsearchDriver``.
+
+        The stamped ``driver_id`` is the *driver's* identity
+        (``"items_elasticsearch_driver"``), not the indexer adapter's class
+        name, so a name-based registry lookup would not match — the mapping is
+        explicit here. Any unknown driver_id (or an ES driver whose extras are
+        missing) returns ``None``; the caller funnels those rows to retry so
+        they are never dropped.
         """
-        from dynastore.modules.storage.index_dispatcher import (
-            _make_default_indexer_registry,
-        )
-        registry = _make_default_indexer_registry()
-        return await registry(driver_id)
+        cached = self._indexer_cache.get(driver_id)
+        if cached is not None:
+            return cached
+
+        if driver_id == _ES_ITEMS_DRIVER_ID:
+            from dynastore.modules.storage.drivers.elasticsearch import (
+                ItemsElasticsearchDriver,
+            )
+            from dynastore.tasks.outbox_drain.es_indexer_adapter import (
+                ESBulkIndexer,
+            )
+
+            # cast(Any, ...) mirrors build_es_drain_task: pyright sees the
+            # Protocol-mixin as abstract, but runtime instantiation is valid.
+            driver = cast(Any, ItemsElasticsearchDriver)()
+            if not driver.is_available():
+                logger.warning(
+                    "WorkIndexDrainTask: ES driver unavailable (opensearch-py "
+                    "missing from worker extras) — rows for driver_id=%r will "
+                    "retry until a capable pod drains them.",
+                    driver_id,
+                )
+                return None
+            indexer = cast(BulkIndexer, ESBulkIndexer(driver))
+            self._indexer_cache[driver_id] = indexer
+            return indexer
+
+        return None
 
     # ------------------------------------------------------------------
     # Row-to-op conversion
@@ -370,6 +420,24 @@ class WorkIndexDrainTask(TaskProtocol):
                         row=row,
                         owner_id=owner_id,
                     )
+
+        # Defence-in-depth: any claimed op_id the indexer omitted from all
+        # three result lists would otherwise sit 'in_flight' until its lease
+        # expires (up to ``lease_seconds``). Funnel those to retry so a
+        # partial/buggy BulkIndexResult can never strand rows. A well-behaved
+        # indexer reports every op, so this is normally a no-op.
+        categorized: set[UUID] = set(result.passed)
+        categorized.update(op_id for op_id, _ in result.transient)
+        categorized.update(op_id for op_id, _ in result.poison)
+        for op_id, row in rows_by_id.items():
+            if op_id not in categorized:
+                await self._mark_retry(
+                    engine=engine,
+                    task_schema=task_schema,
+                    row=row,
+                    owner_id=owner_id,
+                    error="indexer omitted op_id from BulkIndexResult",
+                )
 
     async def _apply_retry_all(
         self,

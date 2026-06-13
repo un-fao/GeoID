@@ -165,7 +165,12 @@ async def _enqueue_drain_trigger(conn: Any) -> None:
         f"     SELECT 1 FROM {task_schema}.tasks"
         f"     WHERE dedup_key = 'work_index_drain'"
         f"       AND schema_name = 'platform'"
-        f"       AND status NOT IN ('COMPLETED', 'FAILED', 'DEAD_LETTER')"
+        # Full terminal set (matches the claim query in tasks_module). A
+        # DISMISSED (terminal) drain task must NOT block a fresh enqueue —
+        # otherwise the co-transactional NOTIFY trigger stays silenced until
+        # manual cleanup. CREATED/PENDING/ACTIVE are non-terminal and DO block
+        # (one live drain suffices).
+        f"       AND status NOT IN ('COMPLETED', 'FAILED', 'DISMISSED', 'DEAD_LETTER')"
         f" )"
     )
     try:

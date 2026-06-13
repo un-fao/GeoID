@@ -671,3 +671,135 @@ def _config(target: Optional[str] = None) -> Any:
     if target is None:
         return WorkClassConfig()
     return WorkClassConfig(emit_target_index=EmitTarget(target))
+
+
+# ---------------------------------------------------------------------------
+# 7. Indexer dispatch path (claim -> index_bulk(ops) -> mark_*)
+#
+# The existing tests above never reach a resolvable indexer (driver_id
+# "es_driver" resolves to None -> retry). These exercise the dispatch path
+# with an injected BulkIndexer, which is where the BulkIndexer-vs-Indexer
+# protocol contract and the _apply_outcomes partitioning actually run.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBulkIndexer:
+    """Minimal ``BulkIndexer``: records the ops it was handed (one positional
+    arg — the ``BulkIndexer`` contract) and returns a preset result."""
+
+    def __init__(self, result_builder: Any) -> None:
+        self.calls: List[Any] = []
+        self._build = result_builder
+
+    async def index_bulk(self, ops: Any) -> Any:  # one positional arg
+        ops_list = list(ops)
+        self.calls.append(ops_list)
+        return self._build(ops_list)
+
+
+@pytest.mark.asyncio
+async def test_drain_once_dispatches_via_bulk_indexer_and_marks_done(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    """Full claim -> index_bulk(ops) -> mark_done path.
+
+    Guards the ``BulkIndexer`` contract: the drain calls ``index_bulk(ops)``
+    with a single positional arg and reads ``BulkIndexResult.passed`` — which
+    is distinct from the ``Indexer`` protocol's ``index_bulk(ctx, ops)``.
+    """
+    from dynastore.models.protocols.indexing import BulkIndexResult
+
+    task_schema, engine = drain_env
+    await _seed_rows(engine, task_schema, n=3)
+
+    task = _make_task(engine, task_schema)
+    fake = _FakeBulkIndexer(
+        lambda ops: BulkIndexResult(
+            passed=[op.op_id for op in ops], transient=[], poison=[],
+        )
+    )
+
+    async def _resolve(driver_id: str) -> Any:
+        return fake
+
+    monkeypatch.setattr(task, "_resolve_indexer", _resolve)
+
+    owner_id = f"owner:{uuid4()}"
+    count = await task.drain_once(engine=engine, owner_id=owner_id)
+    assert count == 3
+
+    # index_bulk called once with all 3 ops, passed positionally as IndexableOp.
+    assert len(fake.calls) == 1
+    assert len(fake.calls[0]) == 3
+    assert all(hasattr(op, "op_id") for op in fake.calls[0])
+
+    rows = await _fetch_rows(engine, task_schema)
+    assert {r["status"] for r in rows} == {"done"}
+    assert all(r["finished_at"] is not None for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_drain_once_retries_op_omitted_from_result(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    """An op_id the indexer omits from ``BulkIndexResult`` is retried, not
+    stranded in_flight until lease expiry (the _apply_outcomes guard)."""
+    from dynastore.models.protocols.indexing import BulkIndexResult
+
+    task_schema, engine = drain_env
+    await _seed_rows(engine, task_schema, n=3)
+
+    task = _make_task(engine, task_schema)
+
+    def _build(ops: Any) -> Any:  # pass all but the FIRST op
+        return BulkIndexResult(
+            passed=[op.op_id for op in ops][1:], transient=[], poison=[],
+        )
+
+    fake = _FakeBulkIndexer(_build)
+
+    async def _resolve(driver_id: str) -> Any:
+        return fake
+
+    monkeypatch.setattr(task, "_resolve_indexer", _resolve)
+
+    owner_id = f"owner:{uuid4()}"
+    await task.drain_once(engine=engine, owner_id=owner_id)
+
+    rows = await _fetch_rows(engine, task_schema)
+    done = [r for r in rows if r["status"] == "done"]
+    retried = [r for r in rows if r["status"] == "ready"]
+    assert len(done) == 2, f"two ops should be done; got {[r['status'] for r in rows]}"
+    assert len(retried) == 1, "the omitted op must be retried (ready), not stranded"
+    assert retried[0]["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_indexer_unknown_driver_returns_none(drain_env):
+    """Any unknown driver_id resolves to no indexer (caller retries it)."""
+    task_schema, engine = drain_env
+    task = _make_task(engine, task_schema)
+    assert await task._resolve_indexer("totally_unknown_driver_xyz") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_indexer_es_driver_is_bulk_indexer(drain_env):
+    """The ES driver_id resolves to an ``ESBulkIndexer`` (the ``BulkIndexer``
+    protocol), and its ``index_bulk`` takes exactly one positional arg ``ops``
+    — NOT the ``Indexer`` protocol's ``index_bulk(ctx, ops)``. Skips when
+    opensearch-py is absent from the test extras."""
+    import inspect
+
+    task_schema, engine = drain_env
+    task = _make_task(engine, task_schema)
+    indexer = await task._resolve_indexer("items_elasticsearch_driver")
+    if indexer is None:
+        pytest.skip("ES driver unavailable (opensearch-py not installed)")
+
+    from dynastore.tasks.outbox_drain.es_indexer_adapter import ESBulkIndexer
+
+    assert isinstance(indexer, ESBulkIndexer)
+    params = list(inspect.signature(indexer.index_bulk).parameters)
+    assert params == ["ops"], (
+        f"index_bulk must be the BulkIndexer one-arg contract; got {params}"
+    )
