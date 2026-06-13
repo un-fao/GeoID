@@ -667,7 +667,6 @@ class EventsModule(ModuleProtocol):
         from dynastore.modules.events.work_events_dual_write import (  # noqa: PLC0415
             dispatch_event_dual_write,
         )
-        from dynastore.modules.db_config.query_executor import managed_transaction  # noqa: PLC0415
 
         async def _run(conn: Any) -> str:
             payload_str = orjson.dumps(payload).decode()

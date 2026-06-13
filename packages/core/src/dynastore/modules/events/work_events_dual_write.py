@@ -62,16 +62,20 @@ remove this module and revert ``EventsModule.publish`` to call
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dynastore.models.protocols.configs import ConfigsProtocol
+    from dynastore.modules.db_config.query_executor import DQLQuery
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# work_events INSERT query — built lazily to avoid module-level import of
-# tasks schema name (which is itself env-driven and read at call time).
+# work_events INSERT query. The {task_schema} qualifier is substituted once
+# per process (the schema name is a process-constant env value) and the built
+# DQLQuery is cached, mirroring the module-level ``_publish_query`` singleton
+# on the legacy path — rebuilding per publish would add allocation + a
+# TemplateQueryBuilder scan on the event hot path during cutover.
 # ---------------------------------------------------------------------------
 
 _WORK_EVENTS_INSERT_SQL = """
@@ -91,6 +95,33 @@ INSERT INTO {task_schema}.work_events (
     CAST(:payload AS jsonb)
 )
 """
+
+# Cache of built INSERT queries keyed by task schema (one entry in practice).
+_WORK_EVENTS_INSERT_QUERY_CACHE: Dict[str, "DQLQuery"] = {}
+
+
+def _work_events_insert_query(task_schema: str) -> "DQLQuery":
+    """Return a cached ``DQLQuery`` for the work_events INSERT in ``task_schema``.
+
+    Built once per schema and reused, like the legacy ``_publish_query``
+    singleton. ``task_schema`` lands in identifier position via ``.format``,
+    so it is validated as an identifier for defence-in-depth (it comes from a
+    trusted env default, but every other schema qualifier in the codebase is
+    validated the same way).
+    """
+    query = _WORK_EVENTS_INSERT_QUERY_CACHE.get(task_schema)
+    if query is None:
+        from dynastore.modules.db_config.query_executor import (  # noqa: PLC0415
+            DQLQuery,
+            ResultHandler,
+        )
+        from dynastore.tools.db import validate_sql_identifier  # noqa: PLC0415
+
+        validate_sql_identifier(task_schema)
+        sql = _WORK_EVENTS_INSERT_SQL.format(task_schema=task_schema)
+        query = DQLQuery(sql, result_handler=ResultHandler.NONE)
+        _WORK_EVENTS_INSERT_QUERY_CACHE[task_schema] = query
+    return query
 
 
 async def dispatch_event_dual_write(
@@ -192,17 +223,12 @@ async def dispatch_event_dual_write(
     if write_new:
         from dynastore.modules.tasks.tasks_module import get_task_schema  # noqa: PLC0415
         from dynastore.tools.identifiers import generate_uuidv7  # noqa: PLC0415
-        from dynastore.modules.db_config.query_executor import (  # noqa: PLC0415
-            DQLQuery,
-            ResultHandler,
-        )
 
         task_schema = get_task_schema()
         new_event_id = str(generate_uuidv7())
         scope_lower = (scope or "platform").lower()
 
-        sql = _WORK_EVENTS_INSERT_SQL.format(task_schema=task_schema)
-        await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+        await _work_events_insert_query(task_schema).execute(
             conn,
             event_id=new_event_id,
             shard=shard,
