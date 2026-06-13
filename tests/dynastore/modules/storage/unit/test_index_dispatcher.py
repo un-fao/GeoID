@@ -248,6 +248,128 @@ async def test_fan_out_skips_when_indexer_not_registered():
 
 
 # ---------------------------------------------------------------------------
+# #2064 — per-document rejections from a successful bulk are surfaced
+# (per-item index_failure event + partial_failure_drop dispatch counter)
+# instead of being silently absorbed into a count.
+# ---------------------------------------------------------------------------
+
+
+class _PartialFailIndexer:
+    """``index_bulk`` returns a 200-bulk that rejected individual docs."""
+
+    def __init__(self, indexer_id: str, failures: List[dict]) -> None:
+        self.indexer_id = indexer_id
+        self._failures = failures
+        self.bulk_calls: List = []
+
+    async def ensure_indexer(self, ctx: IndexContext) -> None:
+        pass
+
+    async def index_bulk(self, ctx, ops):
+        self.bulk_calls.append(list(ops))
+        n = len(ops)
+        return BulkResult(
+            total=n,
+            succeeded=n - len(self._failures),
+            failed=len(self._failures),
+            failures=list(self._failures),
+        )
+
+
+def _capture_log_events(monkeypatch) -> List[dict]:
+    import dynastore.modules.catalog.log_manager as log_manager
+
+    events: List[dict] = []
+
+    async def _capture(**kwargs):
+        events.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(log_manager, "log_event", _capture)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_partial_bulk_failures_emit_index_failure_events(monkeypatch, caplog):
+    import logging
+
+    events = _capture_log_events(monkeypatch)
+    fail = {"id": "item-9", "reason": "400 invalid_shape_exception: duplicate coords"}
+    idx = _PartialFailIndexer("a", [fail])
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": idx},
+    )
+
+    with caplog.at_level(logging.INFO, logger="dynastore.modules.storage.index_dispatcher"):
+        results = await dispatcher.fan_out_bulk(
+            _ctx(), [_op(entity_id="item-9"), _op(entity_id="item-ok")],
+        )
+
+    # One per-item index_failure_persistent event for the rejected doc.
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["event_type"] == "index_failure_persistent"
+    assert ev["level"] == "ERROR"
+    assert ev["details"]["item_id"] == "item-9"
+    assert ev["details"]["source"] == "inline_dispatch_partial_bulk"
+    assert ev["details"]["status"] == "dropped"
+    assert "invalid_shape_exception" in ev["details"]["reason"]
+    # The #504 dispatch-path counter records the drop.
+    assert "mode=partial_failure_drop" in caplog.text
+    # The failure is still reported back to the caller (207-style).
+    assert results["a"].failed == 1
+
+
+@pytest.mark.asyncio
+async def test_clean_bulk_emits_no_index_failure_event(monkeypatch):
+    events = _capture_log_events(monkeypatch)
+    a = _StubIndexer("a")  # all-succeeded
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    await dispatcher.fan_out_bulk(_ctx(), [_op()])
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_raised_bulk_does_not_emit_partial_failure_event(monkeypatch):
+    """A bulk that RAISES is routed through the on_failure policy; the
+    synthetic failures from the except branch are not per-doc rejections and
+    must NOT also fire a partial-failure index_failure event (no double-signal)."""
+    events = _capture_log_events(monkeypatch)
+    a = _StubIndexer("a", raise_on="upsert")  # index_bulk raises
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": a},
+    )
+    results = await dispatcher.fan_out_bulk(_ctx(), [_op(op_type="upsert")])
+    assert events == []
+    assert results["a"].failed == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_surface_is_fail_open(monkeypatch):
+    """If the observability emit raises, the committed write is unaffected."""
+    import dynastore.modules.catalog.log_manager as log_manager
+
+    async def _boom(**kwargs):
+        raise RuntimeError("log service down")
+
+    monkeypatch.setattr(log_manager, "log_event", _boom)
+
+    idx = _PartialFailIndexer("a", [{"id": "item-9", "reason": "invalid_shape_exception"}])
+    dispatcher = _make_dispatcher(
+        entries=[_entry("a", on_failure=FailurePolicy.WARN)],
+        indexers={"a": idx},
+    )
+    # Must not raise despite the failing log_event.
+    results = await dispatcher.fan_out_bulk(_ctx(), [_op(entity_id="item-9")])
+    assert results["a"].failed == 1
+
+
+# ---------------------------------------------------------------------------
 # Failure policies
 # ---------------------------------------------------------------------------
 

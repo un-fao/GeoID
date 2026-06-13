@@ -181,7 +181,7 @@ async def _provision_eventing_soft(
             "GcpProvisionCatalogTask: eventing setup failed for catalog '%s' "
             "(%s: %s). Bucket is healthy; catalog will be marked ready with "
             "eventing in 'degraded' state. Grant 'pubsub.topics.attachSubscription' "
-            "on the Pub/Sub project and call POST /admin/catalogs/%s/reprovision "
+            "on the Pub/Sub project and call POST /catalog/catalogs/%s/reprovision "
             "to repair.",
             catalog_id,
             type(eventing_err).__name__,
@@ -196,7 +196,7 @@ async def _provision_eventing_soft(
                     f"Eventing setup failed ({type(eventing_err).__name__}): "
                     f"{eventing_err}. "
                     f"{'IAM permission denied — grant pubsub.topics.attachSubscription. ' if is_permission else ''}"
-                    f"Use POST /admin/catalogs/{catalog_id}/reprovision after fixing."
+                    f"Use POST /catalog/catalogs/{catalog_id}/reprovision after fixing."
                 ),
             )
         except Exception as log_err:  # pragma: no cover — diagnostic best-effort
@@ -222,7 +222,7 @@ class ProvisioningTask(TaskProtocol):
     Failure contract:
       - Bucket failure  → catalog stays failed (HARD requirement).
       - Eventing failure → catalog reaches ready; eventing step marked
-        'degraded' (best-effort). Use POST /admin/catalogs/{id}/reprovision
+        'degraded' (best-effort). Use POST /catalog/catalogs/{id}/reprovision
         after fixing the IAM grant to repair the eventing layer.
     """
     task_type = "gcp_provision_catalog"

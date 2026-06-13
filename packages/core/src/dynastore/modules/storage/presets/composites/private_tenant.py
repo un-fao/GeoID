@@ -45,6 +45,7 @@ _COMPOSE: Tuple[str, ...] = (
     "stac_enable",
     "web_enable",
     "admin_enable",
+    "catalog_status_enable",
 )
 
 

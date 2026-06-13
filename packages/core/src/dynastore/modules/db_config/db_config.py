@@ -35,33 +35,40 @@ logger = logging.getLogger(__name__)
 # default is the last resort. See ``instance.load_db_config``.
 _FILE_VALUES: Mapping[str, Any] = load_db_config()
 
-# Smallest pool floor we consider safe under concurrent load. The review-env
-# outage (dynastore #320) ran with ``DB_POOL_MIN_SIZE=2``: with only two base
-# connections and an overflow exhausted by 3+ concurrent requests, surplus
-# requests queued and timed out ("QueuePool limit of size 2 overflow 3
-# reached, connection timed out, timeout 60.00"), cascading into engine-snapshot
-# retry exhaustion and sustained 100% memory. A handful of base connections is
-# the minimum that lets a few concurrent requests proceed without convoying.
-SAFE_POOL_MIN_FLOOR: int = 5
+# Smallest persistent base (``pool_size``) a pool may hold. The review-env
+# outage (dynastore #320) ran with ``DB_POOL_MIN_SIZE=2`` and timed out under
+# concurrent load ("QueuePool limit of size 2 overflow 3 reached, connection
+# timed out, timeout 60.00"). That failure was a *total-capacity* starvation —
+# size 2 + overflow 3 = 5 connections could not serve the concurrency — NOT a
+# shortage of persistent base connections. Concurrency is served by the total
+# (``pool_size + max_overflow``), enforced by ``SAFE_POOL_TOTAL_FLOOR`` below;
+# ``pool_size`` only controls how many connections stay warm between bursts.
+#
+# Because the base is held for the lifetime of every worker, ``pool_size ×
+# GUNICORN_WORKERS × MIN_SCALE`` is the persistent connection footprint a
+# deployment pins on the shared Postgres even at idle (dynastore #392). Forcing
+# a large base onto light services (auth/tools) multiplied that idle footprint
+# for no concurrency benefit. So we trust the operator's small ``pool_min_size``
+# and floor it only at 1 — a pool needs at least one connection; everything
+# above that is a deployment choice. Burst safety is the total floor's job.
+SAFE_POOL_MIN_FLOOR: int = 1
 
-# Smallest total pool capacity (base size + overflow) we consider safe. Even
-# with a healthy ``pool_min_size`` a tiny ``DB_POOL_MAX_SIZE`` caps the total
-# connections, so the floor is enforced on the effective total as well.
-SAFE_POOL_TOTAL_FLOOR: int = 5
+# Smallest total pool capacity (``pool_size + max_overflow``) we consider safe
+# under concurrent load. This is the real #320 invariant: regardless of how
+# small the base is, an engine must be able to open this many connections at
+# once or concurrent checkouts queue until they hit the QueuePool timeout. The
+# dev auth/tools probe-timeout outage was the floor-collapse corner of this —
+# base clamped to 5 against ``DB_POOL_MAX_SIZE=3`` left total 5 / overflow 0, a
+# rigid pool that deadlocked startup consumers (engine-snapshot PG engine +
+# event shards) needing more than the base at once. A total floor of 10 gives
+# every pool real burst headroom; overflow connections are transient (opened on
+# demand, returned to the pool), so the steady-state footprint stays the base.
+SAFE_POOL_TOTAL_FLOOR: int = 10
 
-# Smallest burst headroom (``max_overflow`` = max - base) we consider safe.
-# Clamping the base UP to ``SAFE_POOL_MIN_FLOOR`` while leaving a small
-# ``DB_POOL_MAX_SIZE`` at or just above that floor collapses the overflow to
-# 0 — a rigid pool that cannot grow past its base. A 1/3 override (the dev
-# auth/tools right-sizing) clamps to base 5 / max 5 → ``max_overflow == 0``,
-# so concurrent startup consumers (engine-snapshot PG engine + event shards)
-# that together need more than the base at once deadlock on QueuePool
-# ("QueuePool limit of size 5 overflow 0 reached"), the engine snapshot never
-# loads, the ASGI lifespan never completes, and the startup probe times out.
-# A zero overflow is the very starvation the floors above exist to prevent, so
-# guarantee a minimum burst on top of the base. Overflow connections are
-# transient (opened on demand, returned to the pool), so this raises the
-# ceiling without changing the steady-state connection footprint.
+# Smallest burst headroom (``max_overflow`` = max - base) we consider safe, so a
+# pool whose base happens to sit near its max still keeps room to grow. Belt to
+# the total floor's braces: ``SAFE_POOL_TOTAL_FLOOR`` guarantees the absolute
+# ceiling, this guarantees the *gap* above whatever base the operator chose.
 SAFE_POOL_MIN_OVERFLOW: int = 5
 
 
@@ -278,50 +285,57 @@ class DBConfig:
     def validate_pool_sizing(self) -> None:
         """Make a dangerously-small pool LOUD and SAFE at startup.
 
-        The review-env outage (dynastore #320) was triggered by an env override
-        ``DB_POOL_MIN_SIZE=2`` — well below the code default of 5. With only two
-        base connections, 3+ concurrent requests exhausted the overflow and
-        queued until they timed out ("QueuePool limit of size 2 overflow 3
-        reached, connection timed out, timeout 60.00"), cascading into engine
-        snapshot retry exhaustion and 100% memory / container restarts.
+        The review-env outage (dynastore #320) timed out under concurrent load
+        ("QueuePool limit of size 2 overflow 3 reached, connection timed out,
+        timeout 60.00"), cascading into engine-snapshot retry exhaustion and
+        100% memory / container restarts. The fix protects what actually
+        starved: the *total capacity* a pool can open at once (``pool_size +
+        max_overflow``), floored at ``SAFE_POOL_TOTAL_FLOOR``. The persistent
+        base (``pool_size``) is left to the operator down to a floor of 1 —
+        forcing a large base only inflates the idle connection footprint a
+        deployment pins on the shared Postgres (``base × workers × MIN_SCALE``,
+        dynastore #392) without adding burst capacity.
 
         This guard emits a clear WARNING naming the offending env var and the
-        risk, then clamps ``pool_min_size`` / ``pool_max_size`` up to a safe
-        floor so a misconfigured tiny value can never silently strangle the
-        service. Called once from the module lifespan after the config is built.
+        risk, then clamps up to the safe floors so a misconfigured tiny value
+        can never silently strangle the service. Called once from the module
+        lifespan after the config is built.
         """
+        # A pool needs at least one connection; a 0/negative base is a misconfig
+        # (not an intentional "small" value). Everything above 1 is a deployment
+        # choice — burst safety is the total floor's job, not the base's.
         if self.pool_min_size < SAFE_POOL_MIN_FLOOR:
             logger.warning(
-                "DB_POOL_MIN_SIZE (%d) is below the safe floor of %d; under "
-                "concurrent load a pool this small queues surplus requests "
-                "until they hit QueuePool timeouts (dynastore #320). Clamping "
-                "pool_min_size up to %d — raise DB_POOL_MIN_SIZE in the "
-                "environment to silence this.",
+                "DB_POOL_MIN_SIZE (%d) is below the minimum of %d; a pool must "
+                "hold at least one connection. Clamping pool_min_size up to %d "
+                "— set a positive DB_POOL_MIN_SIZE in the environment.",
                 self.pool_min_size,
                 SAFE_POOL_MIN_FLOOR,
                 SAFE_POOL_MIN_FLOOR,
             )
             self.pool_min_size = SAFE_POOL_MIN_FLOOR
 
-        # Effective total capacity an engine may open = pool_size + overflow.
-        # Even with a healthy min, a tiny DB_POOL_MAX_SIZE caps the total.
+        # The real #320 invariant: total connections an engine may open =
+        # pool_size + overflow. Whatever the base, the pool must be able to
+        # burst to this many at once or concurrent checkouts queue until they
+        # hit the QueuePool timeout. A small DB_POOL_MAX_SIZE (the dev auth/tools
+        # right-sizing) is lifted here so light services still get burst room.
         if self.pool_max_size < SAFE_POOL_TOTAL_FLOOR:
             logger.warning(
-                "DB_POOL_MAX_SIZE (%d) is below the safe floor of %d; the total "
-                "connections an engine can open is capped this low, which risks "
-                "QueuePool timeouts under concurrent load (dynastore #320). "
-                "Clamping pool_max_size up to %d — raise DB_POOL_MAX_SIZE in "
-                "the environment to silence this.",
+                "DB_POOL_MAX_SIZE (%d) is below the safe total-capacity floor of "
+                "%d; the connections an engine can open at once are capped this "
+                "low, which queues concurrent checkouts until they hit QueuePool "
+                "timeouts (dynastore #320). Clamping pool_max_size up to %d — "
+                "raise DB_POOL_MAX_SIZE in the environment to silence this.",
                 self.pool_max_size,
                 SAFE_POOL_TOTAL_FLOOR,
                 SAFE_POOL_TOTAL_FLOOR,
             )
             self.pool_max_size = SAFE_POOL_TOTAL_FLOOR
 
-        # Guard the *overflow*, not just the totals above. Clamping the base up
-        # to the min floor while ``pool_max_size`` sits at or just above it
-        # leaves ``max_overflow = pool_max_size - pool_min_size`` at (near) 0 —
-        # a pool that cannot grow past its base and deadlocks when concurrent
+        # Guard the *gap* above the base too: if the operator's ``pool_min_size``
+        # sits close to ``pool_max_size`` the overflow collapses toward 0 — a
+        # pool that cannot grow past its base and deadlocks when concurrent
         # startup consumers need more than the base at once (the size-5
         # overflow-0 starvation behind the dev auth/tools probe-timeout outage).
         # Lift ``pool_max_size`` so a minimum burst headroom always remains.

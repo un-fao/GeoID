@@ -58,7 +58,10 @@ from dynastore.models.protocols import (
 from dynastore.models.shared_models import Link
 from dynastore.models.protocols.asset_download import AssetDownloadProtocol
 from dynastore.tools.protocol_helpers import get_engine
-from dynastore.extensions.tools.catalog_readiness import require_catalog_ready
+from dynastore.extensions.tools.catalog_readiness import (
+    require_catalog_ready,
+    require_collection_ready,
+)
 from dynastore.extensions.tools.exception_handlers import handle_exception
 from dynastore.models.query_builder import AssetFilter
 from dynastore.modules.catalog.asset_service import (
@@ -1051,6 +1054,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     ):
         """Creates a new physical asset associated with a specific collection."""
         await require_catalog_ready(catalog_id)
+        await require_collection_ready(catalog_id, collection_id)
         # The body carries asset identity (asset_id, filename); collection
         # scope comes from the path. AssetCreate has no collection_id field
         # so there is no conflict to reconcile.
@@ -1074,6 +1078,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     ):
         """Registers a virtual (external-href) asset under a specific collection."""
         await require_catalog_ready(catalog_id)
+        await require_collection_ready(catalog_id, collection_id)
         try:
             return await self.assets.create_asset(
                 catalog_id=catalog_id, asset=asset_in, collection_id=collection_id
@@ -1099,6 +1104,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         ),
     ):
         """Removes all assets belonging to the specified collection."""
+        await require_collection_ready(catalog_id, collection_id)
         await self.assets.delete_assets(
             catalog_id=catalog_id,
             collection_id=collection_id,
@@ -1139,6 +1145,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     ):
         """Updates the metadata of an existing collection asset. All other fields are immutable."""
         await require_catalog_ready(catalog_id)
+        await require_collection_ready(catalog_id, collection_id)
         try:
             return await self.assets.update_asset(
                 catalog_id=catalog_id,
@@ -1158,6 +1165,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
     ):
         """RFC 7396 JSON Merge Patch over a collection asset's ``metadata``."""
         await require_catalog_ready(catalog_id)
+        await require_collection_ready(catalog_id, collection_id)
         try:
             return await self.assets.patch_asset(
                 catalog_id=catalog_id,
@@ -1182,6 +1190,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         ),
     ):
         """Deletes a specific asset by ID."""
+        await require_collection_ready(catalog_id, collection_id)
         try:
             success = await self.assets.delete_assets(
                 catalog_id=catalog_id,
@@ -1245,6 +1254,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         ),
     ):
         """Bulk-create collection-scoped assets through the AssetsWritePolicy chain."""
+        await require_collection_ready(catalog_id, collection_id)
         return await self._bulk_create_assets(
             request=request,
             catalog_id=catalog_id,
@@ -1710,6 +1720,7 @@ class AssetService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         :class:`AssetsWritePolicy` is resolved at the collection scope so
         per-collection overrides take precedence over catalog/platform tiers.
         """
+        await require_collection_ready(catalog_id, collection_id)
         return await self._initiate_upload_with_policy(
             catalog_id=catalog_id,
             collection_id=collection_id,

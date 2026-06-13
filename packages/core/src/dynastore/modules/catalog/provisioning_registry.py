@@ -81,7 +81,7 @@ STEP_SKIPPED = "skipped"
 # ``degraded``: the step's work completed partially (e.g. eventing setup failed
 # due to missing IAM permissions after the bucket was healthy). The catalog
 # still reaches ``ready`` — the feature is unavailable but storage/STAC works.
-# Operators can repair via POST /admin/catalogs/{id}/reprovision.
+# Operators can repair via POST /catalog/catalogs/{id}/reprovision.
 STEP_DEGRADED = "degraded"
 
 # Catalog-level ``provisioning_status`` values this module drives.
