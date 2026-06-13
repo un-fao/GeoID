@@ -524,12 +524,28 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
                 catalog_id, collection_id, exc,
             )
             return pack_glb(empty_mesh())
+        color_ramp = None
+        if cfg.color_by_height and cfg.height_color_ramp:
+            from dynastore.modules.volumes.color_ramp import parse_ramp
+            color_ramp = parse_ramp(cfg.height_color_ramp)
+
+        # Procedural facade texture (our own Apache-2.0 content) — windows/floors
+        # on the otherwise geometry-only buildings. Baked once per process and
+        # cached; UVs are emitted only when it is active so untextured tiles stay
+        # lean. Composes with the height tint (texture × COLOR_0).
+        texture_png = None
+        if cfg.facade_texture:
+            from dynastore.modules.volumes.facade_texture import build_default_facade_png
+            texture_png = build_default_facade_png()
+
         mesh = build_mesh_from_geometries(
             geometries,
             origin=origin,
             default_extrusion_height=cfg.default_extrusion_height,
+            color_ramp=color_ramp,
+            with_uv=texture_png is not None,
         )
-        return pack_glb(mesh)
+        return pack_glb(mesh, texture_png=texture_png)
 
 
 # ---------------------------------------------------------------------------

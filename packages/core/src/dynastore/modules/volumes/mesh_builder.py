@@ -42,10 +42,12 @@ Dependencies: shapely >= 2.0 (via geopandas).
 from __future__ import annotations
 
 import logging
+import math
 import struct
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Sequence, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
+from dynastore.modules.volumes.color_ramp import Stop, interpolate_ramp
 from dynastore.modules.volumes.geo import lonlat_to_enu
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,14 @@ logger = logging.getLogger(__name__)
 # Default ENU origin (lon, lat, height) — overridable per call. (0,0,0) keeps
 # legacy callers working as a degenerate equatorial frame.
 _DEFAULT_ORIGIN: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+# Real-world size, in metres, that one facade-texture tile spans. The default
+# facade PNG is a 4×4 window grid, so one window ≈ span/4 m. With REPEAT
+# wrapping these spans make the windows tile up and along every wall at a
+# realistic ~3 m pitch. Wall UVs are ``distance_in_metres / span`` (see
+# ``_extrude_ring``); roof/floor caps map to (0, 0) — wall colour.
+_TEX_SPAN_U: float = 12.0  # horizontal: ~3 m per window across a facade
+_TEX_SPAN_V: float = 12.0  # vertical:   ~3 m per floor up a facade
 
 # Static-typing-only imports: pyright follows this branch for type narrowing
 # even when the runtime ``try/except`` below cannot resolve shapely
@@ -91,6 +101,9 @@ class MeshBuffers:
     index_count: int
     min_pos: Tuple[float, float, float]
     max_pos: Tuple[float, float, float]
+    normals: bytes = b""   # float32 * 3 per vertex (smooth per-vertex normals)
+    colors: bytes = b""    # uint8 RGBA * 4 per vertex (COLOR_0, normalized)
+    uvs: bytes = b""       # float32 * 2 per vertex (TEXCOORD_0, facade texture)
 
     @property
     def triangle_count(self) -> int:
@@ -101,10 +114,28 @@ class MeshBuffers:
 class _MeshAccumulator:
     verts: List[Tuple[float, float, float]] = field(default_factory=list)
     tris: List[Tuple[int, int, int]] = field(default_factory=list)
+    # Per-vertex RGB stamped with whatever ``current_color`` was set before the
+    # vertex was added. Stays all-``None`` when no ramp is active, in which case
+    # ``to_buffers`` emits no COLOR_0 attribute.
+    cols: List[Optional[Tuple[int, int, int]]] = field(default_factory=list)
+    current_color: Optional[Tuple[int, int, int]] = None
+    # Per-vertex UV (TEXCOORD_0). Populated only when ``emit_uv`` is set; stays
+    # all-``None`` otherwise, in which case ``to_buffers`` emits no UV attribute.
+    uvs: List[Optional[Tuple[float, float]]] = field(default_factory=list)
+    emit_uv: bool = False
 
-    def add_vertex(self, x: float, y: float, z: float) -> int:
+    def set_color(self, rgb: Optional[Tuple[int, int, int]]) -> None:
+        """Set the colour stamped on every subsequently-added vertex."""
+        self.current_color = rgb
+
+    def add_vertex(
+        self, x: float, y: float, z: float,
+        uv: Optional[Tuple[float, float]] = None,
+    ) -> int:
         idx = len(self.verts)
         self.verts.append((x, y, z))
+        self.cols.append(self.current_color)
+        self.uvs.append(uv)
         return idx
 
     def add_triangle(self, a: int, b: int, c: int) -> None:
@@ -131,6 +162,10 @@ class _MeshAccumulator:
         for i, (a, b, c) in enumerate(self.tris):
             struct.pack_into("<3I", idx_buf, i * 12, a, b, c)
 
+        nrm_buf = self._compute_normals(n)
+        col_buf = self._pack_colors(n)
+        uv_buf = self._pack_uvs(n)
+
         return MeshBuffers(
             positions=bytes(pos_buf),
             indices=bytes(idx_buf),
@@ -138,7 +173,83 @@ class _MeshAccumulator:
             index_count=len(self.tris) * 3,
             min_pos=(min_x, min_y, min_z),
             max_pos=(max_x, max_y, max_z),
+            normals=bytes(nrm_buf),
+            colors=bytes(col_buf),
+            uvs=uv_buf,
         )
+
+    def _pack_uvs(self, n: int) -> bytes:
+        """Pack per-vertex UV (float32 ×2) for TEXCOORD_0, or empty if unused.
+
+        Returns ``b""`` when no vertex carried a UV (no facade texture was
+        requested), so the GLB writer omits the attribute. Any vertex left
+        without a UV while others have one defaults to (0, 0) — the wall-colour
+        texel — which is also what caps deliberately use.
+        """
+        if not any(uv is not None for uv in self.uvs):
+            return b""
+        uv_buf = bytearray(n * 8)
+        for i, uv in enumerate(self.uvs):
+            u, v = uv if uv is not None else (0.0, 0.0)
+            struct.pack_into("<2f", uv_buf, i * 8, u, v)
+        return bytes(uv_buf)
+
+    def _pack_colors(self, n: int) -> bytes:
+        """Pack per-vertex RGBA (uint8) for COLOR_0, or empty if no ramp ran.
+
+        Returns ``b""`` when no vertex carried a colour, so the GLB writer omits
+        the attribute entirely. Any vertex left uncoloured while others were
+        coloured (shouldn't happen — colours are set per feature before its
+        vertices are added) defaults to opaque white, the PBR no-tint identity.
+        """
+        if not any(c is not None for c in self.cols):
+            return b""
+        col_buf = bytearray(n * 4)
+        for i, c in enumerate(self.cols):
+            r, g, b = c if c is not None else (255, 255, 255)
+            struct.pack_into("<4B", col_buf, i * 4, r, g, b, 255)
+        return bytes(col_buf)
+
+    def _compute_normals(self, n: int) -> bytearray:
+        """Smooth per-vertex normals: accumulate area-weighted face normals.
+
+        Each triangle's geometric normal (the cross product of two edges, whose
+        magnitude is twice the triangle area) is added to all three of its
+        vertices, then every accumulated vector is normalised. Sharing a vertex
+        across faces with the same orientation (e.g. a flat roof cap) keeps that
+        normal axis-aligned; vertical wall edges blend their two faces, which
+        reads as a softly shaded corner. Without normals the renderer cannot
+        light the mesh and the whole tile collapses into one flat silhouette.
+        """
+        nx = [0.0] * n
+        ny = [0.0] * n
+        nz = [0.0] * n
+        for a, b, c in self.tris:
+            ax, ay, az = self.verts[a]
+            bx, by, bz = self.verts[b]
+            cx, cy, cz = self.verts[c]
+            e1x, e1y, e1z = bx - ax, by - ay, bz - az
+            e2x, e2y, e2z = cx - ax, cy - ay, cz - az
+            fnx = e1y * e2z - e1z * e2y
+            fny = e1z * e2x - e1x * e2z
+            fnz = e1x * e2y - e1y * e2x
+            for idx in (a, b, c):
+                nx[idx] += fnx
+                ny[idx] += fny
+                nz[idx] += fnz
+
+        nrm_buf = bytearray(n * 12)
+        for i in range(n):
+            x, y, z = nx[i], ny[i], nz[i]
+            mag = math.sqrt(x * x + y * y + z * z)
+            if mag > 1e-12:
+                x, y, z = x / mag, y / mag, z / mag
+            else:
+                # Degenerate (zero-area) accumulation — default to up so the
+                # vertex is still validly normalised.
+                x, y, z = 0.0, 0.0, 1.0
+            struct.pack_into("<3f", nrm_buf, i * 12, x, y, z)
+        return nrm_buf
 
 
 def empty_mesh() -> MeshBuffers:
@@ -176,11 +287,17 @@ def _fan_triangulate(ring_xy: Sequence[Tuple[float, float]],
     if n < 3:
         return
 
+    # Caps (roofs/floors) sample the wall-colour texel at UV (0, 0) so they read
+    # as flat surfaces rather than glass when a facade texture is applied.
+    cap_uv: Optional[Tuple[float, float]] = (0.0, 0.0) if acc.emit_uv else None
+
     cx = sum(c[0] for c in coords) / n
     cy = sum(c[1] for c in coords) / n
-    center_idx = acc.add_vertex(*_enu(cx, cy, z, origin))
+    center_idx = acc.add_vertex(*_enu(cx, cy, z, origin), uv=cap_uv)
 
-    ring_indices = [acc.add_vertex(*_enu(c[0], c[1], z, origin)) for c in coords]
+    ring_indices = [
+        acc.add_vertex(*_enu(c[0], c[1], z, origin), uv=cap_uv) for c in coords
+    ]
     for i in range(n):
         a = ring_indices[i]
         b = ring_indices[(i + 1) % n]
@@ -195,7 +312,13 @@ def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
                   z_top: float,
                   acc: _MeshAccumulator,
                   origin: Tuple[float, float, float]) -> None:
-    """Extrude a lon/lat ring into side-wall quads (two triangles each)."""
+    """Extrude a lon/lat ring into side-wall quads (two triangles each).
+
+    Each quad owns four independent vertices rather than sharing them around the
+    ring. That keeps wall corners crisp (faceted, not smooth-shaded) and lets
+    every quad carry its own facade UVs without a wrap-around seam on the closing
+    edge: U runs 0→edge_length/span across the quad, V runs 0→height/span up it.
+    """
     coords = list(ring_xy)
     if coords and coords[-1] == coords[0]:
         coords = coords[:-1]
@@ -203,14 +326,34 @@ def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
     if n < 2:
         return
 
-    bot = [acc.add_vertex(*_enu(c[0], c[1], z_bottom, origin)) for c in coords]
-    top = [acc.add_vertex(*_enu(c[0], c[1], z_top, origin)) for c in coords]
+    v_top = (z_top - z_bottom) / _TEX_SPAN_V if acc.emit_uv else 0.0
 
     for i in range(n):
         j = (i + 1) % n
-        # Two CCW triangles forming the outward-facing quad.
-        acc.add_triangle(bot[i], bot[j], top[i])
-        acc.add_triangle(top[i], bot[j], top[j])
+        ax, ay = coords[i]
+        bx, by = coords[j]
+        a_bot = _enu(ax, ay, z_bottom, origin)
+        b_bot = _enu(bx, by, z_bottom, origin)
+        a_top = _enu(ax, ay, z_top, origin)
+        b_top = _enu(bx, by, z_top, origin)
+
+        if acc.emit_uv:
+            seg = math.hypot(b_bot[0] - a_bot[0], b_bot[1] - a_bot[1])
+            u1 = seg / _TEX_SPAN_U
+            uv_ab: Optional[Tuple[float, float]] = (0.0, 0.0)
+            uv_bb: Optional[Tuple[float, float]] = (u1, 0.0)
+            uv_at: Optional[Tuple[float, float]] = (0.0, v_top)
+            uv_bt: Optional[Tuple[float, float]] = (u1, v_top)
+        else:
+            uv_ab = uv_bb = uv_at = uv_bt = None
+
+        i_ab = acc.add_vertex(*a_bot, uv=uv_ab)
+        i_bb = acc.add_vertex(*b_bot, uv=uv_bb)
+        i_at = acc.add_vertex(*a_top, uv=uv_at)
+        i_bt = acc.add_vertex(*b_top, uv=uv_bt)
+        # Two CCW triangles forming the outward-facing quad (winding preserved).
+        acc.add_triangle(i_ab, i_bb, i_at)
+        acc.add_triangle(i_at, i_bb, i_bt)
 
 
 def _extrude_polygon(polygon: Polygon,
@@ -234,6 +377,8 @@ def build_mesh_from_geometries(
     *,
     origin: Tuple[float, float, float] = _DEFAULT_ORIGIN,
     default_extrusion_height: float = 10.0,
+    color_ramp: Optional[Sequence[Stop]] = None,
+    with_uv: bool = False,
 ) -> MeshBuffers:
     """Build a combined triangle mesh from a sequence of ``FeatureGeometry``.
 
@@ -247,6 +392,16 @@ def build_mesh_from_geometries(
     (the sidecar ``zmin``), else the WKB Z coordinate if the geometry is 3-D,
     otherwise 0.0. The extrusion height is ``feature.height`` if > 0, else
     ``default_extrusion_height``.
+
+    When *color_ramp* is supplied (sorted ``(stop, rgb)`` pairs), each feature's
+    vertices are stamped with an RGB looked up from its extrusion height, so the
+    resulting GLB carries a per-building COLOR_0 attribute. Without a ramp the
+    mesh is untinted and the writer emits no colour attribute.
+
+    When *with_uv* is set, every vertex carries a TEXCOORD_0 UV: walls map to
+    metres against the facade-texture span (windows tile up and along), caps map
+    to (0, 0). Combined with a facade texture in the GLB writer this gives
+    windowed buildings; the per-building COLOR_0 tint still multiplies through.
     """
     if not _SHAPELY_AVAILABLE:
         raise RuntimeError(
@@ -254,7 +409,7 @@ def build_mesh_from_geometries(
             "install dynastore[extension_volumes]"
         )
 
-    acc = _MeshAccumulator()
+    acc = _MeshAccumulator(emit_uv=with_uv)
 
     for fg in features:
         try:
@@ -276,6 +431,9 @@ def build_mesh_from_geometries(
             continue
 
         extrusion = fg.height if fg.height > 0 else default_extrusion_height
+        # Stamp this feature's vertices with a height-derived colour when a ramp
+        # is active; cleared to None otherwise so uncoloured runs emit no COLOR_0.
+        acc.set_color(interpolate_ramp(extrusion, color_ramp) if color_ramp else None)
         # Prefer the sidecar zmin (z_base) when present (#2089); otherwise fall
         # back to the geometry's Z, then to ground (0.0).
         sidecar_z_base = getattr(fg, "z_base", None)

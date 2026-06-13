@@ -232,6 +232,11 @@ def set_hard_retry_cap(value: int) -> None:
 # These are called by the MaintenanceSupervisor; pg_cron is NOT used.
 # ---------------------------------------------------------------------------
 
+# NOTE: {schema} survives until DDLQuery substitutes it via
+# str.replace("{schema}", value) — NOT str.format — so a doubled brace
+# (\d{{4}}) is NOT collapsed and PostgreSQL would receive the literal
+# "\d{{4}}", which matches no partition and silently disables retention.
+# The regexes below therefore use the single-brace form \d{4}_\d{2}.
 GLOBAL_TASKS_RETENTION_FUNC_DDL = """
 CREATE OR REPLACE FUNCTION "{schema}"."maintain_partitions_{schema}_tasks"() RETURNS void AS $$
 DECLARE
@@ -244,12 +249,12 @@ BEGIN
     SET LOCAL lock_timeout = '10s';
     -- 'daily' is not a valid PostgreSQL date_trunc unit; the correct unit is 'day'.
     cutoff_date := date_trunc('day', NOW()) - INTERVAL '1 month';
-    FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^tasks_\\d{{4}}_\\d{{2}}$' LOOP
+    FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^tasks_\\d{4}_\\d{2}$' LOOP
         DECLARE
             date_str TEXT;
             part_date DATE;
         BEGIN
-            date_str := substring(row.relname from '\\d{{4}}_\\d{{2}}$');
+            date_str := substring(row.relname from '\\d{4}_\\d{2}$');
             part_date := to_date(date_str, 'YYYY_MM');
             IF part_date < cutoff_date THEN
                 RAISE NOTICE 'Pruning old partition: {schema}.%', row.relname;

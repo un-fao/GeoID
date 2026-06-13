@@ -110,6 +110,7 @@ def _make_triangle_mesh() -> MeshBuffers:
     import struct as s
     verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
     pos = s.pack("<9f", *[v for xyz in verts for v in xyz])
+    nrm = s.pack("<9f", *([0.0, 0.0, 1.0] * 3))  # all facing +Z
     idx = s.pack("<3I", 0, 1, 2)
     return MeshBuffers(
         positions=pos,
@@ -118,7 +119,14 @@ def _make_triangle_mesh() -> MeshBuffers:
         index_count=3,
         min_pos=(0.0, 0.0, 0.0),
         max_pos=(1.0, 1.0, 0.0),
+        normals=nrm,
     )
+
+
+def _glb_json(data: bytes) -> dict:
+    json_chunk_len, _ = struct.unpack_from("<II", data, 12)
+    json_bytes = data[20:20 + json_chunk_len]
+    return json.loads(json_bytes.decode("utf-8").strip())
 
 
 def test_pack_glb_triangle_header_length_matches():
@@ -168,6 +176,44 @@ def test_pack_glb_bufferviews_non_overlapping():
     assert bvs[1]["byteOffset"] == bvs[0]["byteLength"]
 
 
+def test_pack_glb_triangle_has_normal_attribute():
+    """The primitive must expose a NORMAL accessor so the renderer can light
+    the mesh — otherwise the whole tile renders as one flat silhouette."""
+    mesh = _make_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "NORMAL" in prim["attributes"]
+    normal_acc = doc["accessors"][prim["attributes"]["NORMAL"]]
+    assert normal_acc["type"] == "VEC3"
+    assert normal_acc["count"] == 3
+
+
+def test_pack_glb_triangle_has_lit_material():
+    """A double-sided PBR material must be attached so the buildings render as
+    solid, shaded volumes rather than the default unlit gltf appearance."""
+    mesh = _make_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert prim.get("material") == 0
+    mats = doc.get("materials")
+    assert mats and len(mats) == 1
+    mat = mats[0]
+    assert mat.get("doubleSided") is True
+    assert "pbrMetallicRoughness" in mat
+    assert len(mat["pbrMetallicRoughness"]["baseColorFactor"]) == 4
+
+
+def test_pack_glb_three_bufferviews_non_overlapping():
+    """positions, normals, indices each get their own contiguous bufferView."""
+    mesh = _make_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    bvs = doc["bufferViews"]
+    assert len(bvs) == 3
+    assert bvs[0]["byteOffset"] == 0
+    assert bvs[1]["byteOffset"] == bvs[0]["byteLength"]
+    assert bvs[2]["byteOffset"] == bvs[1]["byteOffset"] + bvs[1]["byteLength"]
+
+
 def test_pack_glb_buffer_byte_length_is_logical_not_padded():
     """buffers[0].byteLength must be the logical size (pos+idx), not the
     padded BIN chunk length — per glTF 2.0 spec §5.1.2."""
@@ -177,5 +223,181 @@ def test_pack_glb_buffer_byte_length_is_logical_not_padded():
     json_bytes = data[20:20 + json_chunk_len]
     doc = json.loads(json_bytes.decode("utf-8").strip())
     bvs = doc["bufferViews"]
-    expected_logical = bvs[0]["byteLength"] + bvs[1]["byteLength"]
+    expected_logical = sum(bv["byteLength"] for bv in bvs)
     assert doc["buffers"][0]["byteLength"] == expected_logical
+
+
+def test_pack_glb_untinted_material_is_grey_no_color_attr():
+    """Without vertex colours the primitive has no COLOR_0 and the material base
+    colour stays the neutral warm-grey applied uniformly."""
+    mesh = _make_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "COLOR_0" not in prim["attributes"]
+    base = doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"]
+    assert base == [0.82, 0.80, 0.76, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# pack_glb with per-vertex colours (COLOR_0)
+# ---------------------------------------------------------------------------
+
+
+def _make_colored_triangle_mesh() -> MeshBuffers:
+    import struct as s
+    verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    pos = s.pack("<9f", *[v for xyz in verts for v in xyz])
+    nrm = s.pack("<9f", *([0.0, 0.0, 1.0] * 3))
+    col = s.pack("<12B", *([200, 50, 10, 255] * 3))  # RGBA uint8 per vertex
+    idx = s.pack("<3I", 0, 1, 2)
+    return MeshBuffers(
+        positions=pos,
+        indices=idx,
+        vertex_count=3,
+        index_count=3,
+        min_pos=(0.0, 0.0, 0.0),
+        max_pos=(1.0, 1.0, 0.0),
+        normals=nrm,
+        colors=col,
+    )
+
+
+def test_pack_glb_color0_accessor_is_normalized_ubyte_vec4():
+    mesh = _make_colored_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "COLOR_0" in prim["attributes"]
+    acc = doc["accessors"][prim["attributes"]["COLOR_0"]]
+    assert acc["type"] == "VEC4"
+    assert acc["componentType"] == 5121  # UNSIGNED_BYTE
+    assert acc["normalized"] is True
+    assert acc["count"] == 3
+
+
+def test_pack_glb_tinted_material_base_color_is_white():
+    """With vertex colours the base colour factor must be white so the COLOR_0
+    ramp (base * vertex) shows true rather than being darkened by the grey."""
+    mesh = _make_colored_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    base = doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"]
+    assert base == [1.0, 1.0, 1.0, 1.0]
+
+
+def test_pack_glb_four_bufferviews_when_colored_non_overlapping():
+    """positions, normals, colors, indices each get a contiguous bufferView."""
+    mesh = _make_colored_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    bvs = doc["bufferViews"]
+    assert len(bvs) == 4
+    offset = 0
+    for bv in bvs:
+        assert bv["byteOffset"] == offset
+        offset += bv["byteLength"]
+    # buffer total still equals the logical sum of all four views.
+    assert doc["buffers"][0]["byteLength"] == offset
+
+
+def test_pack_glb_color_indices_accessor_points_at_index_view():
+    """The index accessor must follow the colour accessor, not collide with it."""
+    mesh = _make_colored_triangle_mesh()
+    doc = _glb_json(pack_glb(mesh))
+    prim = doc["meshes"][0]["primitives"][0]
+    idx_acc = doc["accessors"][prim["indices"]]
+    assert idx_acc["componentType"] == 5125  # UNSIGNED_INT
+    assert idx_acc["type"] == "SCALAR"
+    assert idx_acc["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# pack_glb with facade UVs (TEXCOORD_0) and an embedded baseColorTexture
+# ---------------------------------------------------------------------------
+
+# Length 11 (not a multiple of 4) so the logical-vs-padded buffer length is
+# exercised. Content is opaque to the writer — it embeds the bytes verbatim.
+_FAKE_PNG = b"\x89PNG\r\n\x1a\nFAK"
+
+
+def _make_uv_mesh(with_color: bool = False) -> MeshBuffers:
+    import struct as s
+    verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    pos = s.pack("<9f", *[v for xyz in verts for v in xyz])
+    nrm = s.pack("<9f", *([0.0, 0.0, 1.0] * 3))
+    uv = s.pack("<6f", 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    idx = s.pack("<3I", 0, 1, 2)
+    col = s.pack("<12B", *([200, 50, 10, 255] * 3)) if with_color else b""
+    return MeshBuffers(
+        positions=pos,
+        indices=idx,
+        vertex_count=3,
+        index_count=3,
+        min_pos=(0.0, 0.0, 0.0),
+        max_pos=(1.0, 1.0, 0.0),
+        normals=nrm,
+        colors=col,
+        uvs=uv,
+    )
+
+
+def test_pack_glb_texcoord0_accessor_is_vec2_float():
+    doc = _glb_json(pack_glb(_make_uv_mesh()))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "TEXCOORD_0" in prim["attributes"]
+    acc = doc["accessors"][prim["attributes"]["TEXCOORD_0"]]
+    assert acc["type"] == "VEC2"
+    assert acc["componentType"] == 5126  # FLOAT
+    assert acc["count"] == 3
+
+
+def test_pack_glb_uvs_without_texture_have_no_image():
+    """UVs alone (no texture supplied) must not fabricate an image/texture."""
+    doc = _glb_json(pack_glb(_make_uv_mesh()))
+    assert "images" not in doc
+    assert "textures" not in doc
+    assert "baseColorTexture" not in doc["materials"][0]["pbrMetallicRoughness"]
+
+
+def test_pack_glb_texture_embeds_image_sampler_texture():
+    doc = _glb_json(pack_glb(_make_uv_mesh(), texture_png=_FAKE_PNG))
+    img = doc["images"][0]
+    assert img["mimeType"] == "image/png"
+    bv = doc["bufferViews"][img["bufferView"]]
+    assert bv["byteLength"] == len(_FAKE_PNG)
+    assert "target" not in bv  # image data is not an ARRAY/ELEMENT buffer
+    assert doc["textures"][0] == {"source": 0, "sampler": 0}
+    assert doc["samplers"][0]["wrapS"] == 10497  # REPEAT
+    pbr = doc["materials"][0]["pbrMetallicRoughness"]
+    assert pbr["baseColorTexture"] == {"index": 0, "texCoord": 0}
+    assert pbr["baseColorFactor"] == [1.0, 1.0, 1.0, 1.0]
+
+
+def test_pack_glb_texture_ignored_without_uvs():
+    """A mesh with no UVs cannot map a texture → the texture is dropped."""
+    doc = _glb_json(pack_glb(_make_triangle_mesh(), texture_png=_FAKE_PNG))
+    assert "images" not in doc
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "TEXCOORD_0" not in prim["attributes"]
+    assert "baseColorTexture" not in doc["materials"][0]["pbrMetallicRoughness"]
+
+
+def test_pack_glb_textured_bufferviews_contiguous_incl_image():
+    """pos, nrm, uv, idx, image → 5 contiguous bufferViews; buffer = logical sum."""
+    doc = _glb_json(pack_glb(_make_uv_mesh(), texture_png=_FAKE_PNG))
+    bvs = doc["bufferViews"]
+    assert len(bvs) == 5
+    offset = 0
+    for bv in bvs:
+        assert bv["byteOffset"] == offset
+        offset += bv["byteLength"]
+    assert doc["buffers"][0]["byteLength"] == offset
+
+
+def test_pack_glb_texture_and_color_compose():
+    """Texture + COLOR_0 together: both attributes present, base stays white so
+    the facade keeps its windows while taking the per-building height tint."""
+    doc = _glb_json(pack_glb(_make_uv_mesh(with_color=True), texture_png=_FAKE_PNG))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "COLOR_0" in prim["attributes"]
+    assert "TEXCOORD_0" in prim["attributes"]
+    pbr = doc["materials"][0]["pbrMetallicRoughness"]
+    assert pbr["baseColorFactor"] == [1.0, 1.0, 1.0, 1.0]
+    assert "baseColorTexture" in pbr

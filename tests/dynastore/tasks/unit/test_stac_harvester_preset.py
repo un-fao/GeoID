@@ -100,7 +100,7 @@ async def test_preset_apply_submits_stac_harvest_process() -> None:
     assert call["inputs"]["max_collections"] == 0
     assert call["inputs"]["max_items"] == 0
     assert call["inputs"]["with_assets"] is True
-    assert call["inputs"]["es_only"] is True
+    assert call["inputs"]["storage_backend"] == "es"
 
     # Descriptor should record the job id and parameters.
     assert descriptor.payload["job_id"] == "job-abc-123"
@@ -171,7 +171,7 @@ async def test_preset_apply_maps_all_params() -> None:
     assert inp["max_collections"] == 5
     assert inp["max_items"] == 100
     assert inp["with_assets"] is False
-    assert inp["es_only"] is False
+    assert inp["storage_backend"] == "es_pg"
 
 
 @pytest.mark.asyncio
@@ -256,6 +256,123 @@ def test_preset_dry_run_returns_trigger_task_entry() -> None:
     assert entry.target == "stac_harvest"
     assert entry.detail["inputs"]["catalog_url"] == "https://example.test/stac"
     assert entry.detail["inputs"]["target_catalog"] == "test-cat"
+
+
+# ---------------------------------------------------------------------------
+# 3. storage_backend field — defaults, mapping, and priority
+# ---------------------------------------------------------------------------
+
+
+def test_harvest_request_default_backend_is_es() -> None:
+    """StacHarvestRequest defaults storage_backend to 'es'."""
+    from dynastore.tasks.stac_harvest.models import StacHarvestRequest
+
+    req = StacHarvestRequest(
+        catalog_url="https://example.test/stac",
+        target_catalog="my-cat",
+    )
+    assert req.storage_backend == "es"
+
+
+def test_harvest_request_es_only_true_maps_to_es() -> None:
+    """Legacy es_only=True maps to storage_backend='es'."""
+    from dynastore.tasks.stac_harvest.models import StacHarvestRequest
+
+    req = StacHarvestRequest(
+        catalog_url="https://example.test/stac",
+        target_catalog="my-cat",
+        es_only=True,
+    )
+    assert req.storage_backend == "es"
+
+
+def test_harvest_request_es_only_false_maps_to_es_pg() -> None:
+    """Legacy es_only=False maps to storage_backend='es_pg'."""
+    from dynastore.tasks.stac_harvest.models import StacHarvestRequest
+
+    req = StacHarvestRequest(
+        catalog_url="https://example.test/stac",
+        target_catalog="my-cat",
+        es_only=False,
+    )
+    assert req.storage_backend == "es_pg"
+
+
+def test_harvest_request_storage_backend_wins_over_es_only() -> None:
+    """Explicit storage_backend wins when both storage_backend and es_only are set."""
+    from dynastore.tasks.stac_harvest.models import StacHarvestRequest
+
+    req = StacHarvestRequest(
+        catalog_url="https://example.test/stac",
+        target_catalog="my-cat",
+        storage_backend="pg",
+        es_only=True,  # should be ignored since storage_backend is explicit
+    )
+    assert req.storage_backend == "pg"
+
+
+def test_preset_params_default_backend_is_es() -> None:
+    """StacHarvesterParams defaults storage_backend to 'es'."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+
+    p = StacHarvesterParams(url="https://example.test/stac")
+    assert p.storage_backend == "es"
+
+
+def test_preset_params_es_only_true_maps_to_es() -> None:
+    """StacHarvesterParams: legacy es_only=True maps to storage_backend='es'."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+
+    p = StacHarvesterParams(url="https://example.test/stac", es_only=True)
+    assert p.storage_backend == "es"
+
+
+def test_preset_params_es_only_false_maps_to_es_pg() -> None:
+    """StacHarvesterParams: legacy es_only=False maps to storage_backend='es_pg'."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+
+    p = StacHarvesterParams(url="https://example.test/stac", es_only=False)
+    assert p.storage_backend == "es_pg"
+
+
+def test_preset_params_storage_backend_wins_over_es_only() -> None:
+    """StacHarvesterParams: explicit storage_backend wins over es_only."""
+    from dynastore.extensions.stac.presets.stac_harvester import StacHarvesterParams
+
+    p = StacHarvesterParams(
+        url="https://example.test/stac",
+        storage_backend="pg",
+        es_only=True,
+    )
+    assert p.storage_backend == "pg"
+
+
+@pytest.mark.asyncio
+async def test_preset_apply_forwards_storage_backend() -> None:
+    """apply() forwards resolved storage_backend (not es_only) to stac_harvest inputs."""
+    from dynastore.extensions.stac.presets.stac_harvester import (
+        STAC_HARVESTER_PRESET,
+        StacHarvesterParams,
+    )
+
+    captured: list[dict] = []
+
+    async def _fake_execute(process_id: str, exec_request: Any, **_kw: Any) -> MagicMock:
+        captured.append({"inputs": dict(exec_request.inputs)})
+        return MagicMock(jobID="job-be")
+
+    ctx = _make_ctx()
+    params = StacHarvesterParams(url="https://example.test/stac", storage_backend="es_pg")
+
+    with patch(
+        "dynastore.modules.processes.processes_module.execute_process",
+        _fake_execute,
+    ):
+        await STAC_HARVESTER_PRESET.apply(params, "catalog:test-cat", ctx)
+
+    inp = captured[0]["inputs"]
+    assert inp["storage_backend"] == "es_pg"
+    assert "es_only" not in inp
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +493,161 @@ def test_virtual_assets_for_gcs_owned_by() -> None:
     }
     results = list(virtual_assets_for(feature))
     assert results[0]["owned_by"] == "gcs"
+
+
+# ---------------------------------------------------------------------------
+# _ensure_collection — write-language + resilience
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_creates_with_concrete_write_lang() -> None:
+    """New collections are created with a concrete lang, never the '*' wildcard."""
+    from dynastore.tasks.stac_harvest.task import _WRITE_LANG, _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(return_value=None)  # does not exist yet
+    catalogs.create_collection = AsyncMock(return_value=object())
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    assert _WRITE_LANG != "*"
+    catalogs.create_collection.assert_awaited_once()
+    assert catalogs.create_collection.await_args.kwargs["lang"] == _WRITE_LANG
+    catalogs.update_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_updates_existing_with_concrete_write_lang() -> None:
+    """Existing collections are updated with a concrete lang, never '*'."""
+    from dynastore.tasks.stac_harvest.task import _WRITE_LANG, _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(return_value=object())  # already exists
+    catalogs.create_collection = AsyncMock()
+    catalogs.update_collection = AsyncMock(return_value=object())
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    catalogs.update_collection.assert_awaited_once()
+    assert catalogs.update_collection.await_args.kwargs["lang"] == _WRITE_LANG
+    catalogs.create_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_resilient_when_write_raises_but_row_lands() -> None:
+    """A post-write hook raise must not abort item ingestion if the row exists."""
+    from dynastore.tasks.stac_harvest.task import _ensure_collection
+
+    catalogs = MagicMock()
+    # First existence check: absent → take create path. Create raises (e.g. a
+    # best-effort async indexer). Re-check then finds the row present.
+    catalogs.get_collection = AsyncMock(side_effect=[None, object()])
+    catalogs.create_collection = AsyncMock(side_effect=RuntimeError("indexer boom"))
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is True
+    assert catalogs.get_collection.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_collection_returns_false_when_row_absent_after_raise() -> None:
+    """A genuine write failure (row never lands) returns False."""
+    from dynastore.tasks.stac_harvest.task import _ensure_collection
+
+    catalogs = MagicMock()
+    catalogs.get_collection = AsyncMock(side_effect=[None, None])  # absent, still absent
+    catalogs.create_collection = AsyncMock(side_effect=RuntimeError("write rejected"))
+    catalogs.update_collection = AsyncMock()
+
+    ok = await _ensure_collection(catalogs, "cat", {"id": "col"})
+
+    assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# iter_items — adaptive page-size retry
+# ---------------------------------------------------------------------------
+
+
+def test_iter_items_retries_first_page_with_smaller_limit() -> None:
+    """A first-page fetch failure (e.g. limit too large) retries with a halved limit."""
+    from dynastore.tasks.stac_harvest import task as harvest_task
+
+    calls: list[str] = []
+
+    def fake_get(url: str, *a: Any, **k: Any) -> dict:
+        calls.append(url)
+        if "limit=100" in url:  # over-large page rejected by source
+            raise RuntimeError("HTTP Error 502: Bad Gateway")
+        return {"features": [{"id": "i1"}, {"id": "i2"}], "links": []}
+
+    with patch.object(harvest_task, "_http_get_json", side_effect=fake_get):
+        items = list(harvest_task.iter_items("https://src/v1", "col"))
+
+    assert [i["id"] for i in items] == ["i1", "i2"]
+    assert any("limit=100" in u for u in calls)  # tried large first
+    assert any("limit=50" in u for u in calls)   # then halved and succeeded
+
+
+def test_iter_items_gives_up_after_min_limit() -> None:
+    """If even the minimum page size fails, iter_items yields nothing (no crash)."""
+    from dynastore.tasks.stac_harvest import task as harvest_task
+
+    with patch.object(
+        harvest_task, "_http_get_json", side_effect=RuntimeError("boom")
+    ):
+        items = list(harvest_task.iter_items("https://src/v1", "col"))
+
+    assert items == []
+
+
+# ---------------------------------------------------------------------------
+# _upsert_items_batch — Feature parsing + error surfacing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_items_batch_passes_feature_objects_not_dicts() -> None:
+    """The batch is parsed into Feature objects (with .id) before upsert.
+
+    The ES-primary write path returns the input entities and the service reads
+    result.id, so raw dicts crash. Guards against regressing to dict payloads.
+    """
+    from dynastore.models.ogc import Feature
+    from dynastore.tasks.stac_harvest.task import _upsert_items_batch
+
+    catalogs = MagicMock()
+    catalogs.upsert = AsyncMock(return_value=[])
+
+    batch = [
+        {"type": "Feature", "id": "i1", "geometry": None, "properties": {}},
+        {"type": "Feature", "id": "i2", "geometry": None, "properties": {}},
+    ]
+    written, err = await _upsert_items_batch(catalogs, "cat", "col", batch)
+
+    assert written == 2
+    assert err is None
+    sent = catalogs.upsert.await_args.args[2]
+    assert all(isinstance(f, Feature) for f in sent)
+    assert all(hasattr(f, "id") for f in sent)
+
+
+@pytest.mark.asyncio
+async def test_upsert_items_batch_surfaces_write_error() -> None:
+    """A write exception is returned as a short error string, written=0."""
+    from dynastore.tasks.stac_harvest.task import _upsert_items_batch
+
+    catalogs = MagicMock()
+    catalogs.upsert = AsyncMock(side_effect=RuntimeError("ES down"))
+
+    batch = [{"type": "Feature", "id": "i1", "geometry": None, "properties": {}}]
+    written, err = await _upsert_items_batch(catalogs, "cat", "col", batch)
+
+    assert written == 0
+    assert err is not None and "RuntimeError" in err and "ES down" in err

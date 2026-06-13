@@ -59,6 +59,16 @@ let _overlay        = null;
 let _catalogId      = null;
 let _containers     = [];
 let _activeContainerId = null;
+// deck.gl scene lighting (sun + ambient) shared across every overlay update so
+// the textured buildings read as sunlit solids. Empty when the CDN deck build
+// lacks the lighting classes — layers then fall back to deck's default light.
+let _effects        = [];
+// requestAnimationFrame id for the gentle hero auto-rotate.
+let _spinFrame      = null;
+
+// Required attribution for the building geometry (3DBAG / 3D Tiles Nederland,
+// CC BY 4.0). Shown whenever buildings are on screen.
+const DATA_ATTRIBUTION = "© 3DBAG by tudelft3d and 3DGI (CC BY 4.0)";
 
 // ---------------------------------------------------------------------------
 // DOM refs (populated after DOMContentLoaded)
@@ -81,6 +91,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const globe = createMapLibreGlobe("geovolumes-map");
   _map     = globe.map;
   _overlay = globe.overlay;
+
+  _effects = buildLightingEffect();
+  applyHeroSky();
+  // Stop the auto-rotate as soon as the user takes control of the camera.
+  for (const ev of ["mousedown", "touchstart", "wheel", "dragstart"]) {
+    _map.on(ev, stopSpin);
+  }
 
   infoClose.addEventListener("click", () => { infoPanel.style.display = "none"; });
 
@@ -146,6 +163,7 @@ function resetTree(msg) {
   containerTree.replaceChildren(spinner);
   _containers = [];
   _activeContainerId = null;
+  stopSpin();
   clearOverlayLayers();
 }
 
@@ -250,10 +268,15 @@ function selectContainer(container) {
   if (bbox && bbox.length >= 5) {
     const lng = (bbox[0] + bbox[3]) / 2;
     const lat = (bbox[1] + bbox[4]) / 2;
-    _map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50, duration: 1500 });
+    // Cinematic framing: low sun-lit angle, close enough to read the facade
+    // windows. Start the gentle auto-rotate once the camera settles.
+    stopSpin();
+    _map.flyTo({ center: [lng, lat], zoom: 16, pitch: 62, duration: 1800 });
+    _map.once("moveend", startSpin);
   }
 
-  // Show or hide the attribution line for this container.
+  // Building-data credit (always shown when buildings are on screen, per the
+  // 3DBAG CC BY 4.0 terms), plus any per-container attribution from the API.
   let attrEl = document.getElementById("container-attribution");
   if (!attrEl) {
     attrEl = document.createElement("div");
@@ -265,8 +288,10 @@ function selectContainer(container) {
     const tree = document.getElementById("container-tree");
     if (tree) tree.parentElement.appendChild(attrEl);
   }
-  attrEl.textContent = container.attribution || "";
-  attrEl.style.display = container.attribution ? "block" : "none";
+  attrEl.textContent = container.attribution
+    ? `${container.attribution} · ${DATA_ATTRIBUTION}`
+    : DATA_ATTRIBUTION;
+  attrEl.style.display = "block";
 
   setOverlayLayers(buildContainerLayers(container));
 }
@@ -314,6 +339,12 @@ function buildContainerLayers(container) {
       id:       `3dtiles-${container.id}`,
       data:     tilesHref,
       pickable: true,
+      // Our tile content is authored Z-up in the ENU frame (the tileset asset
+      // declares gltfUpAxis=Z for spec-compliant clients). loaders.gl does not
+      // read that from the tileset.json — it defaults glTF content to Y-up and
+      // rotates it 90°, tipping every building onto its side. Pass the up-axis
+      // explicitly so it maps straight through the ENU->ECEF root transform.
+      loadOptions: { "3d-tiles": { assetGltfUpAxis: "Z" } },
       onTilesetLoad: () => {},
     }));
   }
@@ -397,11 +428,78 @@ function showBuildingPopup(feature) {
 // ---------------------------------------------------------------------------
 
 function setOverlayLayers(layers) {
-  _overlay.setProps({ layers });
+  _overlay.setProps({ layers, effects: _effects });
 }
 
 function clearOverlayLayers() {
-  _overlay.setProps({ layers: [] });
+  _overlay.setProps({ layers: [], effects: _effects });
+}
+
+// ---------------------------------------------------------------------------
+// Hero scene: sun lighting, sky/atmosphere, cinematic auto-rotate
+// ---------------------------------------------------------------------------
+
+// Build a deck.gl LightingEffect (warm sun + cool fill + ambient) so the
+// textured buildings shade as sunlit solids — roofs bright, shaded walls
+// darker, depth between blocks. Feature-detected + guarded: if the CDN deck
+// build lacks the lighting classes we return [] and layers keep deck's default
+// light (still lit, just flatter). Shadows are intentionally omitted — cast
+// shadows are unreliable with an interleaved MapboxOverlay.
+function buildLightingEffect() {
+  /* global deck */
+  try {
+    const { AmbientLight, DirectionalLight, LightingEffect } = deck;
+    if (!AmbientLight || !DirectionalLight || !LightingEffect) return [];
+    const ambient = new AmbientLight({ color: [255, 255, 255], intensity: 1.2 });
+    const sun = new DirectionalLight({
+      color: [255, 246, 224], intensity: 2.4, direction: [-1, -2.4, -1.6],
+    });
+    const fill = new DirectionalLight({
+      color: [206, 224, 255], intensity: 0.7, direction: [1.6, 1.0, -0.6],
+    });
+    return [new LightingEffect({ ambient, sun, fill })];
+  } catch (_e) {
+    return [];
+  }
+}
+
+// Apply a daytime sky + atmosphere once the style is ready. Guarded because
+// setSky is only on MapLibre GL v5+.
+function applyHeroSky() {
+  const sky = () => {
+    try {
+      if (typeof _map.setSky !== "function") return;
+      _map.setSky({
+        "sky-color": "#5aa0e6",
+        "sky-horizon-blend": 0.5,
+        "horizon-color": "#e6f2ff",
+        "horizon-fog-blend": 0.5,
+        "fog-color": "#fdfdfd",
+        "fog-ground-blend": 0.4,
+        "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 12, 0],
+      });
+    } catch (_e) { /* sky is cosmetic — never block the page */ }
+  };
+  if (_map.isStyleLoaded()) sky();
+  else _map.once("style.load", sky);
+}
+
+// Gentle hero rotation for screen-grabs/clips; stops on any user camera input.
+function startSpin() {
+  stopSpin();
+  const step = () => {
+    if (!_map) return;
+    _map.setBearing(_map.getBearing() + 0.06);
+    _spinFrame = requestAnimationFrame(step);
+  };
+  _spinFrame = requestAnimationFrame(step);
+}
+
+function stopSpin() {
+  if (_spinFrame) {
+    cancelAnimationFrame(_spinFrame);
+    _spinFrame = null;
+  }
 }
 
 // ---------------------------------------------------------------------------

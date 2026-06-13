@@ -141,6 +141,16 @@ def _tenant_items_index(catalog_id: str) -> str:
 # new tenant indices unaliased and invisible to alias-scoped search.
 _ALIAS_REGISTERED_CATALOGS: set = set()
 
+# Per-process cache: catalogs whose tenant items index has already been
+# ensured (created with the correct mapping + alias) on this worker from the
+# synchronous ES-primary write path. ES-primary (ES-only) collections have no
+# collection-creation hook that runs ``ensure_storage``; without it the first
+# ``write_entities`` lets ES auto-create the index with DYNAMIC mappings —
+# ``collection`` becomes an analyzed ``text`` field, so the ``term`` filter in
+# list/search never matches and items are retrievable by id but invisible to
+# ``_search``. Bounded to one ensure per (catalog, process) lifetime.
+_ITEMS_INDEX_ENSURED_CATALOGS: set = set()
+
 
 async def _ensure_in_public_alias_once(catalog_id: str, index_name: str) -> None:
     """Add ``index_name`` to the platform public alias, at most once per
@@ -1158,6 +1168,14 @@ class ItemsElasticsearchDriver(
             return []
         es = _es_client_required()
         index_name = self._items_index_name(catalog_id)
+        # ES-primary (ES-only) write: ensure the tenant items index exists with
+        # the correct mapping (``collection`` as keyword) and alias enrolment
+        # BEFORE writing. Otherwise ES auto-creates it with dynamic mappings on
+        # first write and the list/search ``term`` filter never matches. Bounded
+        # to once per (catalog, process); ``ensure_storage`` is itself idempotent.
+        if catalog_id not in _ITEMS_INDEX_ENSURED_CATALOGS:
+            await self.ensure_storage(catalog_id, collection_id)
+            _ITEMS_INDEX_ENSURED_CATALOGS.add(catalog_id)
         known_fields = await resolve_catalog_known_fields(catalog_id)
 
         # Issue #1248: exact geometry by default. Simplification is opt-in via
@@ -1391,7 +1409,17 @@ class ItemsElasticsearchDriver(
                 maybe_raise_bulk_mapping_mismatch,
                 raise_on_bulk_errors,
             )
-            resp = await es.bulk(body=body, params={"refresh": "false"})
+            # ``write_entities`` is the synchronous ES-*primary* write path
+            # (ES-only / ES-primary collections): there is no PG row and no
+            # async indexer behind it, so this write IS the source of truth and
+            # callers expect read-after-write. ``refresh="wait_for"`` blocks
+            # until the doc is visible to ``_search`` — without it, ``refresh=
+            # false`` plus ES *search-idle* (auto-refresh pauses after 30s with
+            # no searches) leaves freshly-written items retrievable by id but
+            # invisible to ``_search``/list. The async secondary indexer paths
+            # (``index``/``index_bulk``) stay ``refresh="false"`` — they are
+            # eventual by design and drained from the outbox.
+            resp = await es.bulk(body=body, params={"refresh": "wait_for"})
             maybe_raise_bulk_mapping_mismatch(resp, index_name)
             raise_on_bulk_errors(resp, index_name, submitted_ids)
 
