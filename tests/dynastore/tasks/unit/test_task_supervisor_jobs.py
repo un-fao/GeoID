@@ -435,3 +435,24 @@ def test_retention_ddl_drains_tasks_default():
     assert "DELETE FROM" in GLOBAL_TASKS_RETENTION_FUNC_DDL, (
         "Retention DDL must DELETE stale rows from tasks_default"
     )
+
+
+def test_retention_ddl_partition_regex_is_single_brace():
+    r"""The monthly-partition regex must use single braces (\d{4}_\d{2}).
+
+    DDLQuery substitutes {schema} via str.replace, NOT str.format, so a
+    doubled brace (\d{{4}}) is NOT collapsed — PostgreSQL would receive the
+    literal "\d{{4}}", which matches no partition name and silently disables
+    monthly retention. Regression guard for #2106 (mirrors the work_events /
+    work_index guard in test_workclass_ddl.py).
+    """
+    from dynastore.modules.tasks.tasks_module import GLOBAL_TASKS_RETENTION_FUNC_DDL
+
+    assert r"tasks_\d{4}_\d{2}" in GLOBAL_TASKS_RETENTION_FUNC_DDL, (
+        "Retention DDL must match monthly partitions with the single-brace "
+        r"regex ^tasks_\d{4}_\d{2}$"
+    )
+    assert r"\d{{4}}" not in GLOBAL_TASKS_RETENTION_FUNC_DDL, (
+        r"Retention DDL must not contain doubled braces \d{{4}} — DDLQuery uses "
+        "str.replace, so they survive into the SQL and break the regex"
+    )
