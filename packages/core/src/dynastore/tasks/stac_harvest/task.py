@@ -29,7 +29,7 @@ import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from dynastore.modules.processes.models import ExecuteRequest, Process
 from dynastore.modules.processes.protocols import ProcessTaskProtocol
@@ -47,6 +47,8 @@ _BATCH_SIZE = 1000
 # so default conservatively and shrink adaptively on a fetch error.
 _PAGE_LIMIT = 100
 _MIN_PAGE_LIMIT = 20
+# Cap how many per-batch errors are recorded into the job result.
+_MAX_RECORDED_ERRORS = 5
 _STRIP_LINKS = frozenset({"links"})
 # Concrete write language for collection create/update.  Source STAC
 # collections carry no language, and ``"*"`` is a *read-time* wildcard
@@ -260,8 +262,13 @@ async def _upsert_items_batch(
     catalog_id: str,
     collection_id: str,
     batch: List[Dict[str, Any]],
-) -> int:
-    """Bulk-upsert a batch of STAC items via the CatalogsProtocol."""
+) -> Tuple[int, Optional[str]]:
+    """Bulk-upsert a batch of STAC items via the CatalogsProtocol.
+
+    Returns ``(written, error)`` — ``error`` is a short ``Type: message`` string
+    on failure (``None`` on success) so the caller can surface it in the job
+    result, since BackgroundTask log output is not reliably captured at runtime.
+    """
     payload: Dict[str, Any] = {
         "type": "FeatureCollection",
         "stac_version": "1.1.0",
@@ -269,13 +276,14 @@ async def _upsert_items_batch(
     }
     try:
         await catalogs.upsert(catalog_id, collection_id, payload)
-        return len(batch)
+        return len(batch), None
     except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
         logger.warning(
-            "stac_harvest: bulk async write %d items into %s/%s failed: %s(%s)",
-            len(batch), catalog_id, collection_id, type(exc).__name__, exc,
+            "stac_harvest: bulk write %d items into %s/%s failed: %s",
+            len(batch), catalog_id, collection_id, err,
         )
-        return 0
+        return 0, err
 
 
 async def _register_virtual_assets(
@@ -460,11 +468,13 @@ async def run_harvest(
             batch.append(map_item(feat_raw, cid))
             n_items += 1
             if len(batch) >= _BATCH_SIZE:
-                written = await _upsert_items_batch(
+                written, err = await _upsert_items_batch(
                     catalogs, request.target_catalog, cid, batch
                 )
                 stats.items_written += written
                 stats.items_failed += len(batch) - written
+                if err and len(stats.errors) < _MAX_RECORDED_ERRORS:
+                    stats.errors.append(f"items:{cid}:{err}")
                 if request.with_assets:
                     stats.virtual_assets_written += await _register_virtual_assets(
                         catalogs, request.target_catalog, cid, batch
@@ -472,11 +482,13 @@ async def run_harvest(
                 batch = []
 
         if batch:
-            written = await _upsert_items_batch(
+            written, err = await _upsert_items_batch(
                 catalogs, request.target_catalog, cid, batch
             )
             stats.items_written += written
             stats.items_failed += len(batch) - written
+            if err and len(stats.errors) < _MAX_RECORDED_ERRORS:
+                stats.errors.append(f"items:{cid}:{err}")
             if request.with_assets:
                 stats.virtual_assets_written += await _register_virtual_assets(
                     catalogs, request.target_catalog, cid, batch
