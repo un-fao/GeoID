@@ -136,7 +136,7 @@ def _iam_service_policies() -> List[Policy]:
         Policy(
             id="self_service_authorization_api",
             description=(
-                "Allows authenticated users to view their own roles and catalog access"
+                "Allows authenticated users to view their own roles"
             ),
             actions=["GET"],
             # Fully anchored: matches_resource uses start-anchored re.match,
@@ -149,7 +149,6 @@ def _iam_service_policies() -> List[Policy]:
             resources=[
                 r"^/iam/me$",
                 r"^/iam/me/roles(/.*)?$",
-                r"^/iam/me/catalogs(/.*)?$",
                 r"^/auth/userinfo$",
             ],
             effect="ALLOW",

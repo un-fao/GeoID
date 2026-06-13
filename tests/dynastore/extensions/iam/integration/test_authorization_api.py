@@ -76,16 +76,14 @@ class TestSelfServiceAPI:
         # User might have no roles initially
         assert isinstance(response.json(), list)
 
-    async def test_get_my_catalogs(
+    async def test_get_my_catalogs_removed(
         self, in_process_client: AsyncClient, user_token: str
     ):
-        """Test getting my accessible catalogs."""
+        """GET /iam/me/catalogs was retired; catalog listing is served by /web/catalogs."""
         response = await in_process_client.get(
             "/iam/me/catalogs", headers={"Authorization": f"Bearer {user_token}"}
         )
-
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        assert response.status_code == 404
 
     async def test_get_my_catalog_roles(
         self, in_process_client: AsyncClient, user_token: str, setup_catalogs
