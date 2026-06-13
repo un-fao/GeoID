@@ -429,10 +429,6 @@ export async function postFeatures(catalogId, collectionId, payload) {
   return { status: r.status, body: data };
 }
 
-// /iam/me/catalogs: returns list of {catalog_id, roles, ...} for the
-// signed-in principal. Used to discover "catalog admin" scope.
-export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");
-
 // Normalize a catalog payload (bare list, {catalogs:[...]}, or {items:[...]},
 // of strings or objects) to {id, catalog_id, title} so every dropdown reads a
 // stable id regardless of which provider produced the list.
