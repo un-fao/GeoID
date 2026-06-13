@@ -710,3 +710,36 @@ async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
 
     assert await _count_tasks(engine, task_schema) == 0
     assert len(await _fetch_rows(engine, task_schema)) == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Payload coercion (no DB) — valid shapes pass through; malformed shapes
+#     degrade to {} but emit a WARNING so corruption is visible.
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_payload_valid_shapes_pass_through():
+    from dynastore.tasks.workclass_drain.work_event_drain_task import (
+        WorkEventDrainTask,
+    )
+    coerce = WorkEventDrainTask._coerce_payload
+    assert coerce({"args": [1], "kwargs": {"k": 2}}) == {"args": [1], "kwargs": {"k": 2}}
+    assert coerce(None) == {}  # absent payload is a legitimate no-args delivery
+    assert coerce('{"args": [3]}') == {"args": [3]}  # JSON string (asyncpg codec)
+
+
+def test_coerce_payload_malformed_degrades_with_warning(caplog):
+    import logging
+
+    from dynastore.tasks.workclass_drain.work_event_drain_task import (
+        WorkEventDrainTask,
+    )
+    coerce = WorkEventDrainTask._coerce_payload
+    with caplog.at_level(logging.WARNING):
+        assert coerce("[1, 2, 3]") == {}      # decodes to a non-object
+        assert coerce("not valid json") == {}  # undecodable
+        assert coerce(12345) == {}             # unexpected column type
+    warnings = [r for r in caplog.records if "payload" in r.getMessage()]
+    assert len(warnings) == 3, (
+        f"each malformed payload must warn; got {[r.getMessage() for r in warnings]}"
+    )

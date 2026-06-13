@@ -274,17 +274,45 @@ class WorkEventDrainTask(TaskProtocol):
 
         asyncpg may surface a JSONB column as either a decoded ``dict`` or a
         raw JSON ``str`` depending on the connection's codec; the legacy
-        consumer handles both the same way.  A non-object payload (or a parse
-        failure) degrades to ``{}`` so dispatch still runs with empty args.
+        consumer handles both the same way.  An absent payload (``None``) is a
+        legitimate no-args delivery and degrades silently to ``{}``.
+
+        A *malformed* payload — a value that parses to a non-object, an
+        un-decodable string, or an unexpected column type — cannot arise from
+        the dual-write producer (which always stores ``{"args", "kwargs"}``),
+        so it signals storage corruption or an out-of-band writer.  Those cases
+        still degrade to ``{}`` to preserve liveness (delivering with empty
+        args rather than poison-looping a row that will never decode), but emit
+        a WARNING so the corrupt row is visible to operators instead of being
+        silently marked COMPLETED.
         """
         if isinstance(raw, dict):
             return raw
+        if raw is None:
+            return {}
         if isinstance(raw, (str, bytes, bytearray)):
             try:
                 parsed = json.loads(raw)
-                return parsed if isinstance(parsed, dict) else {}
             except (ValueError, TypeError):
+                logger.warning(
+                    "WorkEventDrainTask: work_events payload is not valid JSON "
+                    "(%r…); delivering with empty args.",
+                    str(raw)[:80],
+                )
                 return {}
+            if isinstance(parsed, dict):
+                return parsed
+            logger.warning(
+                "WorkEventDrainTask: work_events payload decoded to a non-object "
+                "(%s); delivering with empty args.",
+                type(parsed).__name__,
+            )
+            return {}
+        logger.warning(
+            "WorkEventDrainTask: work_events payload has unexpected type %s; "
+            "delivering with empty args.",
+            type(raw).__name__,
+        )
         return {}
 
     # ------------------------------------------------------------------
