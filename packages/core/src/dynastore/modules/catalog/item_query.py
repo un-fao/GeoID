@@ -1264,8 +1264,19 @@ class ItemQueryMixin:
                     idempotency_key=gid,
                 ))
         if records:
-            await outbox.enqueue_bulk(
-                conn, catalog_id=catalog_id, rows=records,
+            # Dual-write dispatch (delete twin of ItemService.upsert_bulk):
+            # legacy {schema}.storage_outbox and/or new tasks.work_index per
+            # WorkClassConfig.emit_target_index. Default writes only legacy;
+            # both writes ride this conn for co-transactional rollback.
+            from dynastore.modules.storage.work_index_dual_write import (
+                dispatch_index_dual_write,
+            )
+            await dispatch_index_dual_write(
+                conn,
+                outbox=outbox,
+                catalog_id=catalog_id,
+                rows=records,
+                configs=get_protocol(ConfigsProtocol),
             )
 
     async def stream_items(

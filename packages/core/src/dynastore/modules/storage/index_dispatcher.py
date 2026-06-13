@@ -396,7 +396,8 @@ def _log_dispatch_path(
     # Observability (#504): structured log line for GCP log-based metrics
     # `index_dispatch_path_total{mode}` (counter on mode label) and
     # `index_chunk_size_bucket` (distribution on the chunk_size field).
-    # `mode` is one of: post_commit_inline | outbox_handoff.
+    # `mode` is one of: post_commit_inline | outbox_handoff |
+    # partial_failure_drop (per-doc rejections from an otherwise-OK bulk; #2064).
     logger.info(
         "index_dispatch_path mode=%s indexer=%s catalog=%s collection=%s "
         "chunk_size=%d",
@@ -1199,6 +1200,16 @@ class IndexDispatcher:
             )
             if self._breaker is not None:
                 self._breaker.record_success(entry.driver_ref)
+            # The bulk CALL succeeded, but ES can still reject individual
+            # documents (HTTP 200 with per-item errors, e.g.
+            # ``invalid_shape_exception``).  Those rejections are absorbed
+            # into ``result.failures`` and returned as a count — without this
+            # call they leave no per-item signal and no dispatch-path counter
+            # (#2064).  Surfaced here, on the success path ONLY: the breaker /
+            # ensure / raised branches return their synthetic failures AFTER
+            # ``_handle_failure_bulk`` has already applied the on_failure
+            # policy, so emitting for those too would double-signal.
+            await self._surface_partial_failures(entry, ctx, result)
             return result
         except Exception as exc:
             if self._breaker is not None:
@@ -1240,6 +1251,77 @@ class IndexDispatcher:
             "IndexDispatcher: indexer '%s' failed (policy=ignore): %s",
             entry.driver_ref, exc,
         )
+
+    async def _surface_partial_failures(
+        self,
+        entry: OperationDriverEntry,
+        ctx: IndexContext,
+        result: BulkResult,
+    ) -> None:
+        """Make per-document rejections from a *successful* bulk call
+        observable and attributable (#2064).
+
+        When ``index_bulk`` returns ``BulkResult.failures`` (the bulk HTTP
+        call passed but ES rejected individual docs — e.g.
+        ``invalid_shape_exception`` on duplicate consecutive coordinates),
+        those ops are not retried (poison classification is correct: a retry
+        can never succeed) and the primary row stays committed in PG, so the
+        item is permanently invisible to this index.  Without a signal the
+        writer gets a success and only a PG-vs-index count diff reveals the
+        loss.
+
+        Emits, per failed doc, an ``index_failure_persistent`` log event on
+        the existing event surface (the same type the outbox drain emits),
+        plus one ``index_dispatch_path`` line with ``mode=partial_failure_drop``
+        so the #504 ``index_dispatch_path_total`` metric counts the drops.
+
+        Fail-open: the write has already committed; an observability emit must
+        never raise into the dispatch path.
+        """
+        if not result.failures:
+            return
+        try:
+            from dynastore.modules.catalog.log_manager import log_event
+
+            for failure in result.failures:
+                item_id = (
+                    failure.get("id")
+                    or failure.get("_id")
+                    or failure.get("entity_id")
+                )
+                reason = failure.get("reason", "unknown")
+                await log_event(
+                    catalog_id=ctx.catalog,
+                    collection_id=ctx.collection,
+                    event_type="index_failure_persistent",
+                    level="ERROR",
+                    message=(
+                        f"Indexer '{entry.driver_ref}' dropped item {item_id}: "
+                        f"rejected by the index and not retried"
+                    ),
+                    details={
+                        "driver_id": entry.driver_ref,
+                        "item_id": item_id,
+                        "reason": reason,
+                        "source": "inline_dispatch_partial_bulk",
+                        "status": "dropped",
+                    },
+                    is_system=True,
+                )
+            _log_dispatch_path(
+                mode="partial_failure_drop",
+                indexer_id=entry.driver_ref,
+                catalog=ctx.catalog,
+                collection=ctx.collection,
+                chunk_size=len(result.failures),
+            )
+        except Exception as exc:  # noqa: BLE001 — observability is best-effort
+            logger.debug(
+                "IndexDispatcher: failed to surface %d partial bulk "
+                "failure(s) for indexer '%s' (catalog=%s collection=%s): %s",
+                len(result.failures), entry.driver_ref,
+                ctx.catalog, ctx.collection, exc,
+            )
 
     async def _handle_failure_bulk(
         self,
