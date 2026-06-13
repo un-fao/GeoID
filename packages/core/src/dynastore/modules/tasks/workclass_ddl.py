@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS {schema}.work_events (
     schema_name     TEXT,
     scope           TEXT            NOT NULL DEFAULT 'platform'
                         CHECK (scope = lower(scope)),
+    event_type      TEXT            NOT NULL,
     status          TEXT            NOT NULL DEFAULT 'PENDING',
     payload         JSONB           NOT NULL DEFAULT '{}'::jsonb,
     claim_version   INTEGER         NOT NULL DEFAULT 0,
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS {schema}.work_events (
     locked_until    TIMESTAMPTZ,
     retry_count     INTEGER         NOT NULL DEFAULT 0,
     max_retries     INTEGER,
+    error_message   TEXT,
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     processed_at    TIMESTAMPTZ,
     PRIMARY KEY (day, event_id)

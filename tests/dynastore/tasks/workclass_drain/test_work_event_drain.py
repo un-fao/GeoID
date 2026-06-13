@@ -1,0 +1,712 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+"""Live-PG tests for WorkEventDrainTask (#1807 PR-5b / #2120).
+
+Each test runs against a per-test throwaway schema; ``DYNASTORE_TASK_SCHEMA``
+is patched so every ``get_task_schema()`` call resolves to it.
+
+Scenarios covered:
+1. Claim + fence: PENDING rows become PROCESSING with claim_version += 1 and
+   owner_id stamped.
+2. Disjoint concurrent claims (FOR UPDATE SKIP LOCKED).
+3. Stale-claim fence (#1945): ownerA (cv=1) reclaimed as ownerB (cv=2);
+   ownerA's mark_done CAS hits 0 rows; ownerB's hits 1.
+4. Stale-PROCESSING reclaim: an expired lease (locked_until in the past) is
+   reclaimable; a fresh lease is not.
+5. Delivery success -> COMPLETED (rows are NOT deleted; retention drops them).
+6. Delivery failure -> PENDING with backoff; attempts exhausted -> DEAD_LETTER.
+7. No EventBus in the process -> every claimed row retried, never dropped.
+8. No listeners for the event_type -> COMPLETED (successful no-op delivery).
+9. Drain trigger: dispatch_event_dual_write with emit_target_events='new'
+   inserts exactly ONE pending work_event_drain task row (dedup) and rolls
+   back with the outer transaction.
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from uuid import uuid4
+
+import pytest
+import pytest_asyncio
+
+from dynastore.tools.identifiers import generate_id_hex
+
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+
+def _sa_db_url() -> str:
+    url = os.getenv(
+        "DATABASE_URL",
+        "postgresql://testuser:testpassword@localhost:54320/gis_dev",
+    )
+    if not url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+# Flat (un-partitioned) work_events for tests — mirrors the production column
+# set including the PR-5b additions (event_type NOT NULL, error_message).
+_WORK_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS "{schema}".work_events (
+    event_id        UUID            NOT NULL,
+    day             DATE            NOT NULL DEFAULT CURRENT_DATE,
+    shard           SMALLINT        NOT NULL DEFAULT 0,
+    schema_name     TEXT,
+    scope           TEXT            NOT NULL DEFAULT 'platform'
+                        CHECK (scope = lower(scope)),
+    event_type      TEXT            NOT NULL,
+    status          TEXT            NOT NULL DEFAULT 'PENDING',
+    payload         JSONB           NOT NULL DEFAULT '{{}}'::jsonb,
+    claim_version   INTEGER         NOT NULL DEFAULT 0,
+    owner_id        TEXT,
+    locked_until    TIMESTAMPTZ,
+    retry_count     INTEGER         NOT NULL DEFAULT 0,
+    max_retries     INTEGER,
+    error_message   TEXT,
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
+    processed_at    TIMESTAMPTZ,
+    PRIMARY KEY (day, event_id)
+);
+"""
+
+# Minimal flat tasks table for the trigger test — only the columns written by
+# _enqueue_event_drain_trigger (verified against GLOBAL_TASKS_TABLE_DDL).
+_TASKS_DDL = """
+CREATE TABLE IF NOT EXISTS "{schema}".tasks (
+    task_id         UUID            NOT NULL,
+    schema_name     VARCHAR(255)    NOT NULL,
+    scope           VARCHAR(50)     NOT NULL DEFAULT 'CATALOG',
+    caller_id       VARCHAR(255),
+    task_type       VARCHAR         NOT NULL,
+    type            VARCHAR         NOT NULL DEFAULT 'task',
+    execution_mode  VARCHAR         NOT NULL DEFAULT 'ASYNCHRONOUS',
+    status          VARCHAR         NOT NULL DEFAULT 'PENDING',
+    inputs          JSONB,
+    dedup_key       VARCHAR(512),
+    timestamp       TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    collection_id   VARCHAR(255),
+    PRIMARY KEY (timestamp, task_id)
+);
+"""
+
+
+@pytest_asyncio.fixture
+async def sa_engine():
+    sqlalchemy_async = pytest.importorskip(
+        "sqlalchemy.ext.asyncio", reason="sqlalchemy[asyncio] not installed",
+    )
+    create_async_engine = sqlalchemy_async.create_async_engine
+    pytest.importorskip("asyncpg", reason="asyncpg not installed")
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(_sa_db_url(), poolclass=NullPool)
+    try:
+        async with engine.connect() as probe:
+            await probe.close()
+    except Exception as exc:  # noqa: BLE001
+        await engine.dispose()
+        pytest.skip(f"Live PG unavailable ({exc!s}); skipping drain tests.")
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def drain_env(
+    sa_engine, monkeypatch  # noqa: ANN001
+) -> AsyncIterator[Tuple[str, Any]]:
+    """Provision a throwaway schema with work_events + tasks tables.
+
+    Patches ``DYNASTORE_TASK_SCHEMA`` so ``get_task_schema()`` resolves to the
+    throwaway schema. Yields ``(task_schema, engine)``.
+    """
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+
+    token = generate_id_hex()[:10]
+    task_schema = f"pr5b_tasks_{token}"
+    monkeypatch.setenv("DYNASTORE_TASK_SCHEMA", task_schema)
+
+    async with managed_transaction(sa_engine) as conn:
+        await DQLQuery(
+            f'CREATE SCHEMA IF NOT EXISTS "{task_schema}"',
+            result_handler=ResultHandler.NONE,
+        ).execute(conn)
+        await DQLQuery(
+            _WORK_EVENTS_DDL.format(schema=task_schema),
+            result_handler=ResultHandler.NONE,
+        ).execute(conn)
+        await DQLQuery(
+            _TASKS_DDL.format(schema=task_schema),
+            result_handler=ResultHandler.NONE,
+        ).execute(conn)
+
+    try:
+        yield task_schema, sa_engine
+    finally:
+        async with managed_transaction(sa_engine) as conn:
+            try:
+                await DQLQuery(
+                    f'DROP SCHEMA IF EXISTS "{task_schema}" CASCADE',
+                    result_handler=ResultHandler.NONE,
+                ).execute(conn)
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _seed_events(
+    engine: Any,
+    task_schema: str,
+    *,
+    n: int = 3,
+    event_type: str = "catalog_creation",
+    scope: str = "platform",
+    schema_name: str = "tenant_a",
+    status: str = "PENDING",
+    payload: Optional[Dict[str, Any]] = None,
+    owner_id: Optional[str] = None,
+    locked_until_offset: Optional[str] = None,  # e.g. "- INTERVAL '10 minutes'"
+    claim_version: int = 0,
+    retry_count: int = 0,
+    max_retries: Optional[int] = None,
+) -> List[str]:
+    """Insert N rows into work_events; return list of event_id strings."""
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+
+    payload_json = json.dumps(
+        payload if payload is not None else {"args": [], "kwargs": {}}
+    )
+    event_ids = [str(uuid4()) for _ in range(n)]
+    for event_id in event_ids:
+        locked_expr = "NULL"
+        if locked_until_offset is not None:
+            locked_expr = f"now() {locked_until_offset}"
+
+        sql = (
+            f"INSERT INTO {task_schema}.work_events"
+            f" (event_id, day, shard, schema_name, scope, event_type, status,"
+            f"  payload, claim_version, owner_id, locked_until, retry_count,"
+            f"  max_retries)"
+            f" VALUES (:event_id, CURRENT_DATE, 0, :schema_name, :scope,"
+            f"         :event_type, :status, CAST(:payload AS jsonb),"
+            f"         :claim_version, :owner_id, {locked_expr}, :retry_count,"
+            f"         :max_retries)"
+        )
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn,
+                event_id=event_id,
+                schema_name=schema_name,
+                scope=scope,
+                event_type=event_type,
+                status=status,
+                payload=payload_json,
+                claim_version=claim_version,
+                owner_id=owner_id,
+                retry_count=retry_count,
+                max_retries=max_retries,
+            )
+    return event_ids
+
+
+async def _fetch_rows(engine: Any, task_schema: str) -> List[Dict[str, Any]]:
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    async with managed_transaction(engine) as conn:
+        return await DQLQuery(
+            f"SELECT event_id, status, claim_version, owner_id, retry_count,"
+            f"       locked_until, processed_at, error_message"
+            f" FROM {task_schema}.work_events",
+            result_handler=ResultHandler.ALL_DICTS,
+        ).execute(conn) or []
+
+
+async def _fetch_row(
+    engine: Any, task_schema: str, event_id: str
+) -> Optional[Dict[str, Any]]:
+    for r in await _fetch_rows(engine, task_schema):
+        if str(r["event_id"]) == event_id:
+            return r
+    return None
+
+
+async def _count_tasks(
+    engine: Any, task_schema: str, task_type: str = "work_event_drain"
+) -> int:
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    async with managed_transaction(engine) as conn:
+        return await DQLQuery(
+            f"SELECT count(*) FROM {task_schema}.tasks WHERE task_type = :task_type",
+            result_handler=ResultHandler.SCALAR,
+        ).execute(conn, task_type=task_type) or 0
+
+
+def _make_task(engine: Any, task_schema: str) -> Any:
+    """Construct a WorkEventDrainTask with a small batch size for test control."""
+    from dynastore.tasks.workclass_drain.work_event_drain_task import (
+        WorkEventDrainTask,
+    )
+    return WorkEventDrainTask(batch_size=10, lease_seconds=300)
+
+
+class _FakeEventBus:
+    """Minimal ``EventBusProtocol`` surface for the drain dispatch path.
+
+    Records each ``dispatch_to_listeners`` call; optionally raises to simulate
+    a failing handler.
+    """
+
+    def __init__(self, *, fail: bool = False, exc: Optional[Exception] = None) -> None:
+        self.calls: List[Tuple[str, Any]] = []
+        self._fail = fail
+        self._exc = exc or RuntimeError("handler boom")
+
+    async def dispatch_to_listeners(self, event_type: str, payload: Any) -> None:
+        self.calls.append((event_type, payload))
+        if self._fail:
+            raise self._exc
+
+
+# ---------------------------------------------------------------------------
+# 1. Claim + fence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_sets_processing_and_bumps_claim_version(drain_env):
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=2)
+
+    task = _make_task(engine, task_schema)
+    owner_id = f"owner:{uuid4()}"
+
+    claimed = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_id,
+    )
+    assert len(claimed) == 2
+    for r in claimed:
+        assert r["owner_id"] == owner_id
+        assert r["claim_version"] == 1  # started at 0, bumped to 1
+        assert r["event_type"] == "catalog_creation"
+
+    # The persisted rows are PROCESSING after claim.
+    rows = await _fetch_rows(engine, task_schema)
+    assert {r["status"] for r in rows} == {"PROCESSING"}
+
+
+# ---------------------------------------------------------------------------
+# 2. Disjoint concurrent claims
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_disjoint_concurrent_claims(drain_env):
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=4)
+
+    task = _make_task(engine, task_schema)
+    owner_a = f"ownerA:{uuid4()}"
+    owner_b = f"ownerB:{uuid4()}"
+
+    batch_a = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_a,
+    )
+    batch_b = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_b,
+    )
+
+    ids_a = {str(r["event_id"]) for r in batch_a}
+    ids_b = {str(r["event_id"]) for r in batch_b}
+    assert ids_a.isdisjoint(ids_b), f"overlap: {ids_a & ids_b}"
+    assert len(ids_a | ids_b) == 4
+
+
+# ---------------------------------------------------------------------------
+# 3. Stale-claim fence (#1945)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_fence_cas_prevents_double_finalization(drain_env):
+    """ownerA claims (cv=1); the row is reclaimed by ownerB (cv=2); ownerA's
+    mark_done CAS (cv=1) must be a no-op, ownerB's (cv=2) must win."""
+    task_schema, engine = drain_env
+    event_ids = await _seed_events(engine, task_schema, n=1)
+    event_id = event_ids[0]
+
+    task = _make_task(engine, task_schema)
+    owner_a = f"ownerA:{uuid4()}"
+    owner_b = f"ownerB:{uuid4()}"
+
+    batch_a = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_a,
+    )
+    assert len(batch_a) == 1
+    row_a = batch_a[0]
+    assert row_a["claim_version"] == 1
+
+    # Simulate lease expiry so ownerB can reclaim the PROCESSING row.
+    from dynastore.modules.db_config.query_executor import (
+        DQLQuery, ResultHandler, managed_transaction,
+    )
+    async with managed_transaction(engine) as conn:
+        await DQLQuery(
+            f"UPDATE {task_schema}.work_events"
+            f" SET locked_until = now() - INTERVAL '1 hour'"
+            f" WHERE event_id = :event_id",
+            result_handler=ResultHandler.NONE,
+        ).execute(conn, event_id=event_id)
+
+    batch_b = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_b,
+    )
+    assert len(batch_b) == 1
+    row_b = batch_b[0]
+    assert row_b["claim_version"] == 2
+
+    # ownerA's stale mark_done (cv=1) must match 0 rows.
+    await task._mark_done(
+        engine=engine, task_schema=task_schema, row=row_a, owner_id=owner_a,
+    )
+    after_a = await _fetch_row(engine, task_schema, event_id)
+    assert after_a is not None
+    assert after_a["status"] == "PROCESSING", (
+        f"ownerA's stale mark_done should be a no-op; got {after_a['status']}"
+    )
+
+    # ownerB's mark_done (cv=2) must succeed.
+    await task._mark_done(
+        engine=engine, task_schema=task_schema, row=row_b, owner_id=owner_b,
+    )
+    after_b = await _fetch_row(engine, task_schema, event_id)
+    assert after_b is not None
+    assert after_b["status"] == "COMPLETED", (
+        f"ownerB's mark_done should have won; got {after_b['status']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Stale-PROCESSING reclaim
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_processing_is_reclaimable(drain_env):
+    """A PROCESSING row whose lease expired is reclaimable; a fresh one is not."""
+    task_schema, engine = drain_env
+
+    stale_id = (await _seed_events(
+        engine, task_schema, n=1,
+        status="PROCESSING", owner_id="old_owner",
+        locked_until_offset="- INTERVAL '1 hour'", claim_version=1,
+    ))[0]
+    fresh_id = (await _seed_events(
+        engine, task_schema, n=1,
+        status="PROCESSING", owner_id="fresh_owner",
+        locked_until_offset="+ INTERVAL '5 minutes'", claim_version=1,
+    ))[0]
+
+    task = _make_task(engine, task_schema)
+    owner_id = f"reaper:{uuid4()}"
+    batch = await task._claim_batch(
+        engine=engine, task_schema=task_schema, owner_id=owner_id,
+    )
+    claimed_ids = {str(r["event_id"]) for r in batch}
+
+    assert stale_id in claimed_ids, "stale PROCESSING row must be reclaimable"
+    assert fresh_id not in claimed_ids, "fresh PROCESSING row must NOT be reclaimable"
+
+
+# ---------------------------------------------------------------------------
+# 5. Delivery success -> COMPLETED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delivery_success_marks_completed(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    task_schema, engine = drain_env
+    await _seed_events(
+        engine, task_schema, n=3,
+        payload={"args": [1, 2], "kwargs": {"k": "v"}},
+    )
+
+    task = _make_task(engine, task_schema)
+    bus = _FakeEventBus()
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: bus)
+
+    owner_id = f"owner:{uuid4()}"
+    count = await task.drain_once(engine=engine, owner_id=owner_id)
+    assert count == 3
+
+    # Each event delivered exactly once, with the decoded payload dict.
+    assert len(bus.calls) == 3
+    for event_type, payload in bus.calls:
+        assert event_type == "catalog_creation"
+        assert payload == {"args": [1, 2], "kwargs": {"k": "v"}}
+
+    rows = await _fetch_rows(engine, task_schema)
+    assert {r["status"] for r in rows} == {"COMPLETED"}
+    assert all(r["processed_at"] is not None for r in rows)
+    assert all(r["owner_id"] is None for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# 6. Delivery failure -> retry; exhaustion -> DEAD_LETTER
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_retries_with_backoff(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=1, retry_count=0, max_retries=3)
+
+    task = _make_task(engine, task_schema)
+    bus = _FakeEventBus(fail=True, exc=RuntimeError("listener failed"))
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: bus)
+
+    owner_id = f"owner:{uuid4()}"
+    await task.drain_once(engine=engine, owner_id=owner_id)
+
+    rows = await _fetch_rows(engine, task_schema)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["status"] == "PENDING"
+    assert r["retry_count"] == 1
+    assert r["owner_id"] is None
+    assert r["error_message"] == "listener failed"
+    # locked_until pushed into the future by the backoff curve.
+    now = datetime.now(timezone.utc)
+    locked = r["locked_until"]
+    assert locked is not None
+    if locked.tzinfo is None:
+        locked = locked.replace(tzinfo=timezone.utc)
+    assert locked > now, f"locked_until ({locked}) should be in the future"
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_exhausted_goes_dead_letter(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    task_schema, engine = drain_env
+    # retry_count already at 2 with max_retries 3 -> next failure is terminal.
+    await _seed_events(engine, task_schema, n=1, retry_count=2, max_retries=3)
+
+    task = _make_task(engine, task_schema)
+    bus = _FakeEventBus(fail=True)
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: bus)
+
+    owner_id = f"owner:{uuid4()}"
+    await task.drain_once(engine=engine, owner_id=owner_id)
+
+    rows = await _fetch_rows(engine, task_schema)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["status"] == "DEAD_LETTER"
+    assert r["retry_count"] == 3
+    assert r["locked_until"] is None, "dead-lettered rows carry no retry delay"
+
+
+@pytest.mark.asyncio
+async def test_default_max_retries_applies_when_row_has_none(
+    drain_env, monkeypatch  # noqa: ANN001
+):
+    """A row with NULL max_retries uses the task default (3): retry_count 2 ->
+    3 dead-letters."""
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=1, retry_count=2, max_retries=None)
+
+    task = _make_task(engine, task_schema)
+    bus = _FakeEventBus(fail=True)
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: bus)
+
+    owner_id = f"owner:{uuid4()}"
+    await task.drain_once(engine=engine, owner_id=owner_id)
+
+    r = (await _fetch_rows(engine, task_schema))[0]
+    assert r["status"] == "DEAD_LETTER"
+
+
+# ---------------------------------------------------------------------------
+# 7. No EventBus -> retry all (never drop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_event_bus_retries_all(drain_env, monkeypatch):  # noqa: ANN001
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=3)
+
+    task = _make_task(engine, task_schema)
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: None)
+
+    owner_id = f"owner:{uuid4()}"
+    count = await task.drain_once(engine=engine, owner_id=owner_id)
+    assert count == 3
+
+    rows = await _fetch_rows(engine, task_schema)
+    # Nothing delivered, nothing dropped — all back to PENDING for a capable pod.
+    assert {r["status"] for r in rows} == {"PENDING"}
+    assert all(r["retry_count"] == 1 for r in rows)
+    assert all(
+        r["error_message"] == "EventBusProtocol unavailable in drain process"
+        for r in rows
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. No listeners for the event_type -> COMPLETED (no-op success)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_listeners_marks_completed(drain_env, monkeypatch):  # noqa: ANN001
+    """An event with no registered listeners is a successful no-op delivery —
+    the real EventService.dispatch_to_listeners returns without raising, so the
+    row is COMPLETED (matching the legacy empty-listener ACK)."""
+    task_schema, engine = drain_env
+    await _seed_events(engine, task_schema, n=2, event_type="unhandled_type")
+
+    task = _make_task(engine, task_schema)
+    # _FakeEventBus with fail=False models "no listeners" — returns w/o raising.
+    bus = _FakeEventBus(fail=False)
+    monkeypatch.setattr(task, "_resolve_event_bus", lambda: bus)
+
+    owner_id = f"owner:{uuid4()}"
+    await task.drain_once(engine=engine, owner_id=owner_id)
+
+    rows = await _fetch_rows(engine, task_schema)
+    assert {r["status"] for r in rows} == {"COMPLETED"}
+
+
+# ---------------------------------------------------------------------------
+# 9. Drain trigger (co-transactional dedup'd INSERT into tasks)
+# ---------------------------------------------------------------------------
+
+
+class _StubConfigs:
+    def __init__(self, cfg: Any) -> None:
+        self._cfg = cfg
+
+    async def get_config(self, config_cls: Any, **_kw: Any) -> Any:
+        return self._cfg
+
+
+def _config_events(target: str) -> Any:
+    from dynastore.modules.tasks.workclass_config import EmitTarget, WorkClassConfig
+
+    return WorkClassConfig(emit_target_events=EmitTarget(target))
+
+
+async def _publish(engine: Any, task_schema: str, configs: Any, *, item: str) -> None:
+    from dynastore.modules.db_config.query_executor import managed_transaction
+    from dynastore.modules.events.work_events_dual_write import (
+        dispatch_event_dual_write,
+    )
+
+    async with managed_transaction(engine) as conn:
+        await dispatch_event_dual_write(
+            conn,
+            event_type="catalog_creation",
+            scope="PLATFORM",
+            schema_name=task_schema,
+            catalog_id=task_schema,
+            collection_id=None,
+            identity_id=None,
+            payload_str=json.dumps({"args": [item], "kwargs": {}}),
+            shard=0,
+            configs=configs,
+        )
+
+
+@pytest.mark.asyncio
+async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
+    """emit_target_events='new' inserts exactly one work_event_drain task row
+    via the co-transactional drain trigger."""
+    task_schema, engine = drain_env
+    await _publish(engine, task_schema, _StubConfigs(_config_events("new")), item="a")
+
+    assert await _count_tasks(engine, task_schema) == 1
+    # And the event landed in work_events with its event_type.
+    rows = await _fetch_rows(engine, task_schema)
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
+    """Multiple writes coalesce to ONE pending drain task (dedup guard)."""
+    task_schema, engine = drain_env
+    configs = _StubConfigs(_config_events("new"))
+    for i in range(3):
+        await _publish(engine, task_schema, configs, item=f"item_{i}")
+
+    assert await _count_tasks(engine, task_schema) == 1
+    assert len(await _fetch_rows(engine, task_schema)) == 3
+
+
+@pytest.mark.asyncio
+async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
+    """An aborted outer transaction leaves no task row and no event row."""
+    from dynastore.modules.db_config.query_executor import managed_transaction
+    from dynastore.modules.events.work_events_dual_write import (
+        dispatch_event_dual_write,
+    )
+
+    task_schema, engine = drain_env
+    configs = _StubConfigs(_config_events("new"))
+
+    with pytest.raises(RuntimeError, match="simulated abort"):
+        async with managed_transaction(engine) as conn:
+            await dispatch_event_dual_write(
+                conn,
+                event_type="catalog_creation",
+                scope="PLATFORM",
+                schema_name=task_schema,
+                catalog_id=task_schema,
+                collection_id=None,
+                identity_id=None,
+                payload_str=json.dumps({"args": [], "kwargs": {}}),
+                shard=0,
+                configs=configs,
+            )
+            raise RuntimeError("simulated abort")
+
+    assert await _count_tasks(engine, task_schema) == 0
+    assert len(await _fetch_rows(engine, task_schema)) == 0

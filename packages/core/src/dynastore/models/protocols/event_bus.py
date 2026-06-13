@@ -125,6 +125,21 @@ class EventBusProtocol(EventsProtocol, Protocol):
         """
         ...
 
+    async def dispatch_to_listeners(
+        self, event_type: str, payload: Dict[str, Any]
+    ) -> None:
+        """
+        Await every registered async listener for *event_type*.
+
+        The process-independent handler surface: a durable consumer (the
+        in-process shard loop or the control-plane WorkEventDrainTask) resolves
+        the event bus and dispatches each claimed event through this method.
+        Awaits each handler with the payload's positional/keyword args; the
+        first handler exception propagates so the caller can nack / retry.
+        An event_type with no registered listeners is a successful no-op.
+        """
+        ...
+
     async def start_consumer(self, shutdown_event: Any) -> None:
         """
         Start the background event consumer loop.
