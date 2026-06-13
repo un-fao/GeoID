@@ -1,0 +1,486 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
+# dynastore/tasks/workclass_drain/work_event_drain_task.py
+
+"""``WorkEventDrainTask`` — control-plane-native drain for ``tasks.work_events``.
+
+The event-plane counterpart of :class:`WorkIndexDrainTask`.  Drains the GLOBAL
+``tasks.work_events`` table for ALL tenants (tenancy is the ``schema_name``
+column, not the physical table) and delivers each event to the in-process
+async listeners registered on the resolved :class:`EventBusProtocol`.
+
+Why a control-plane task and not the in-process shard loop
+----------------------------------------------------------
+The legacy event plane is drained in-process by ``EventService``'s 16
+leader-elected shard loops (``events.events``).  The WorkClass end-state moves
+delivery onto the generic task control plane so it shares routing, the
+capability registry, heartbeat leasing, and the co-transactional NOTIFY wakeup
+with every other durable task — and can be offloaded to a dedicated worker the
+same way the index drain and gdal are.  Event *handlers* stay where they are:
+this task resolves the process-local listener registry via
+``get_protocol(EventBusProtocol)`` and calls
+:meth:`EventBusProtocol.dispatch_to_listeners`, so no handler is rewritten or
+relocated — the task simply runs in a worker scope that loads them.
+
+Claim_version fencing (#1945)
+-----------------------------
+Every claim bumps ``claim_version = claim_version + 1`` on the row.  Terminal
+writes (``mark_done`` / ``mark_retry``) are guarded by::
+
+    AND owner_id = :owner_id AND claim_version = :claim_version
+
+If a stalled drain worker reclaimed by another pod (bumping ``claim_version``
+again) later tries to finalize the row, the CAS predicate matches 0 rows — the
+stale write is a no-op and the live owner retains exclusive control.  This is
+the same fence the index plane uses, expressed against the ``work_events``
+column vocabulary (``owner_id`` / ``locked_until`` rather than ``claimed_by`` /
+``claimed_at`` / ``ready_at``).
+
+Lifecycle
+---------
+``work_events`` carries the legacy event lifecycle vocabulary
+(``PENDING`` / ``PROCESSING`` / ``DEAD_LETTER``) plus a terminal ``COMPLETED``
+state — unlike the legacy ``events.events`` table, drained rows are NOT deleted
+on ack; whole-leaf ``DROP PARTITION`` retention reclaims them (the failure
+forensics window the #1807 red-team note requires).  ``locked_until`` serves
+double duty: the claim lease while ``PROCESSING`` and the retry-not-before
+delay while ``PENDING``.
+
+Drain loop
+----------
+``run(payload)`` loops ``drain_once()`` until it returns 0, then exits
+(one-shot drain-to-empty, matching ``WorkIndexDrainTask`` / ``OutboxDrainTask``).
+The dispatcher re-enters via NOTIFY / periodic catch-up.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, ClassVar, Dict, List, Optional
+from uuid import uuid4
+
+from dynastore.models.tasks import TaskPayload
+from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tools.db import validate_sql_identifier
+
+logger = logging.getLogger(__name__)
+
+
+# Per-attempt retry backoff in seconds (mirrors WorkIndexDrainTask /
+# pg_outbox._BACKOFF_SECONDS). Indexed by ``retry_count`` (0-based); the last
+# entry caps the backoff at ~30 min.
+_BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
+
+# Seconds before a PROCESSING row is considered stale (lease expired) and
+# eligible for reclaim by any drain worker.
+_DEFAULT_LEASE_SECONDS: int = 300
+
+# Default claim batch size — mirrors the legacy event consumer's batch_size.
+_DEFAULT_BATCH_SIZE: int = 100
+
+# Default max delivery attempts when the row carries no per-row ``max_retries``
+# override. Mirrors the legacy events consumer's ``_MAX_RETRIES``.
+_DEFAULT_MAX_RETRIES: int = 3
+
+
+def _backoff(retry_count: int) -> int:
+    """Return the backoff in seconds for the given zero-based retry count."""
+    idx = min(retry_count, len(_BACKOFF_SECONDS) - 1)
+    return _BACKOFF_SECONDS[idx]
+
+
+class WorkEventDrainTask(TaskProtocol):
+    """One-shot drain for the global ``tasks.work_events`` event outbox.
+
+    Claims ready rows (and stale PROCESSING rows whose lease expired),
+    delivers each to the in-process async listeners via the resolved
+    ``EventBusProtocol``, and applies fenced terminal writes (done / retry /
+    dead).  Drains to empty then exits; the dispatcher re-enters via NOTIFY.
+
+    Routing: ``affinity_tier = "worker"`` — the worker service claims this
+    task type under all deployment presets.
+    """
+
+    task_type: ClassVar[str] = "work_event_drain"
+    priority: int = 100
+    affinity_tier: ClassVar[Optional[str]] = "worker"
+
+    def __init__(
+        self,
+        app_state: object | None = None,
+        *,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+        lease_seconds: int = _DEFAULT_LEASE_SECONDS,
+    ) -> None:
+        self.app_state = app_state
+        self.batch_size = batch_size
+        self.lease_seconds = lease_seconds
+
+    async def run(self, payload: TaskPayload) -> Dict[str, Any]:
+        """Drain ``tasks.work_events`` to empty, then return.
+
+        Loops ``drain_once()`` until it reports zero claimed rows.  The
+        dispatcher re-enters via NOTIFY when new rows appear.
+        """
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from dynastore.modules.db_config.db_config import DBConfig
+
+        db_url = DBConfig.database_url
+        if not db_url.startswith("postgresql+asyncpg://"):
+            db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+        # One engine for the lifetime of this run — shared across all claim and
+        # terminal-write statements so connection overhead is paid once.
+        engine = create_async_engine(db_url, poolclass=NullPool)
+        # Stable owner_id for the lifetime of this run — the claim stamp and the
+        # CAS guard on terminal writes.
+        owner_id = f"work_event_drain:{uuid4()}"
+        total = 0
+        try:
+            while True:
+                n = await self.drain_once(engine=engine, owner_id=owner_id)
+                total += n
+                if n == 0:
+                    break
+        finally:
+            await engine.dispose()
+
+        return {"drained": total}
+
+    async def drain_once(self, *, engine: Any, owner_id: str) -> int:
+        """Claim one batch, deliver, apply fenced outcomes; return rows handled.
+
+        A successful delivery (all async listeners for the event awaited
+        without raising, OR no listeners registered for the event_type) marks
+        the row ``COMPLETED``.  A delivery exception funnels the row to retry
+        (``PENDING`` with backoff, or ``DEAD_LETTER`` once attempts are
+        exhausted).
+
+        If no ``EventBusProtocol`` is resolvable in this process (the drain is
+        running in a scope that did not load the event listeners), every
+        claimed row is funnelled to retry — never dropped — so a capable pod
+        can deliver it later.
+        """
+        from dynastore.modules.tasks.tasks_module import get_task_schema
+
+        task_schema = get_task_schema()
+        validate_sql_identifier(task_schema)
+
+        rows = await self._claim_batch(
+            engine=engine,
+            task_schema=task_schema,
+            owner_id=owner_id,
+        )
+        if not rows:
+            return 0
+
+        bus = self._resolve_event_bus()
+        if bus is None:
+            logger.warning(
+                "WorkEventDrainTask: no EventBusProtocol in this process — "
+                "%d claimed event(s) queued for retry (wrong worker scope?).",
+                len(rows),
+            )
+            for row in rows:
+                await self._mark_retry(
+                    engine=engine,
+                    task_schema=task_schema,
+                    row=row,
+                    owner_id=owner_id,
+                    error="EventBusProtocol unavailable in drain process",
+                )
+            return len(rows)
+
+        for row in rows:
+            event_type = row.get("event_type") or ""
+            payload = self._coerce_payload(row.get("payload"))
+            try:
+                await bus.dispatch_to_listeners(event_type, payload)
+            except Exception as exc:  # noqa: BLE001 — surface every handler failure
+                logger.error(
+                    "WorkEventDrainTask: delivery failed for event_id=%s "
+                    "type=%s: %s",
+                    row.get("event_id"),
+                    event_type,
+                    exc,
+                    exc_info=True,
+                )
+                await self._mark_retry(
+                    engine=engine,
+                    task_schema=task_schema,
+                    row=row,
+                    owner_id=owner_id,
+                    error=str(exc),
+                )
+                continue
+
+            await self._mark_done(
+                engine=engine,
+                task_schema=task_schema,
+                row=row,
+                owner_id=owner_id,
+            )
+
+        return len(rows)
+
+    # ------------------------------------------------------------------
+    # Event-bus resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_event_bus() -> Optional[Any]:
+        """Resolve the process-local ``EventBusProtocol`` (listener registry).
+
+        Returns ``None`` when no event bus is registered in this process — the
+        caller funnels claimed rows to retry rather than dropping them.  Not
+        cached on the instance: the protocol registry is a process singleton
+        and the lookup is cheap, while caching would pin a stale reference
+        across a leader hand-off in long-lived runners.
+        """
+        try:
+            from dynastore.models.protocols.event_bus import EventBusProtocol
+            from dynastore.tools.discovery import get_protocol
+
+            return get_protocol(EventBusProtocol)
+        except Exception:  # noqa: BLE001 — absence is a valid, handled state
+            logger.debug(
+                "WorkEventDrainTask: EventBusProtocol resolution raised; "
+                "treating as unavailable.",
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _coerce_payload(raw: Any) -> Dict[str, Any]:
+        """Normalise a work_events ``payload`` cell to a dict.
+
+        asyncpg may surface a JSONB column as either a decoded ``dict`` or a
+        raw JSON ``str`` depending on the connection's codec; the legacy
+        consumer handles both the same way.  An absent payload (``None``) is a
+        legitimate no-args delivery and degrades silently to ``{}``.
+
+        A *malformed* payload — a value that parses to a non-object, an
+        un-decodable string, or an unexpected column type — cannot arise from
+        the dual-write producer (which always stores ``{"args", "kwargs"}``),
+        so it signals storage corruption or an out-of-band writer.  Those cases
+        still degrade to ``{}`` to preserve liveness (delivering with empty
+        args rather than poison-looping a row that will never decode), but emit
+        a WARNING so the corrupt row is visible to operators instead of being
+        silently marked COMPLETED.
+        """
+        if isinstance(raw, dict):
+            return raw
+        if raw is None:
+            return {}
+        if isinstance(raw, (str, bytes, bytearray)):
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "WorkEventDrainTask: work_events payload is not valid JSON "
+                    "(%r…); delivering with empty args.",
+                    str(raw)[:80],
+                )
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+            logger.warning(
+                "WorkEventDrainTask: work_events payload decoded to a non-object "
+                "(%s); delivering with empty args.",
+                type(parsed).__name__,
+            )
+            return {}
+        logger.warning(
+            "WorkEventDrainTask: work_events payload has unexpected type %s; "
+            "delivering with empty args.",
+            type(raw).__name__,
+        )
+        return {}
+
+    # ------------------------------------------------------------------
+    # Claim
+    # ------------------------------------------------------------------
+
+    async def _claim_batch(
+        self,
+        *,
+        engine: Any,
+        task_schema: str,
+        owner_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Claim a batch of ready / stale rows; return them as raw dicts.
+
+        Eligible rows: ``PENDING`` whose ``locked_until`` has elapsed (fresh
+        rows have ``locked_until IS NULL``; retried rows have a future delay),
+        and stale ``PROCESSING`` rows whose lease (``locked_until``) expired.
+        ``FOR UPDATE SKIP LOCKED`` lets multiple worker pods claim disjoint
+        batches concurrently.  Bumps ``claim_version = claim_version + 1`` on
+        every (re)claim — the fence preventing a stalled drain from finalising
+        a row reclaimed by another worker.
+        """
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery,
+            ResultHandler,
+            managed_transaction,
+        )
+
+        claim_sql = (
+            f"WITH claimed AS ("
+            f"    SELECT day, event_id"
+            f"    FROM {task_schema}.work_events"
+            f"    WHERE status IN ('PENDING', 'PROCESSING')"
+            f"      AND (locked_until IS NULL OR locked_until <= now())"
+            f"    ORDER BY created_at, event_id"
+            f"    LIMIT :batch_size"
+            f"    FOR UPDATE SKIP LOCKED"
+            f")"
+            f" UPDATE {task_schema}.work_events w"
+            f" SET status = 'PROCESSING', owner_id = :owner_id,"
+            f"     locked_until = now() + make_interval(secs => :lease_seconds),"
+            f"     claim_version = w.claim_version + 1"
+            f" FROM claimed"
+            f" WHERE w.day = claimed.day AND w.event_id = claimed.event_id"
+            f" RETURNING w.day, w.event_id, w.event_type, w.scope, w.schema_name,"
+            f"           w.payload, w.retry_count, w.max_retries, w.claim_version,"
+            f"           w.owner_id"
+        )
+
+        async with managed_transaction(engine) as conn:
+            rows = await DQLQuery(
+                claim_sql,
+                result_handler=ResultHandler.ALL_DICTS,
+            ).execute(
+                conn,
+                lease_seconds=self.lease_seconds,
+                batch_size=self.batch_size,
+                owner_id=owner_id,
+            )
+
+        return rows or []
+
+    # ------------------------------------------------------------------
+    # Fenced terminal writes (CAS on owner_id + claim_version)
+    # ------------------------------------------------------------------
+
+    async def _mark_done(
+        self,
+        *,
+        engine: Any,
+        task_schema: str,
+        row: Dict[str, Any],
+        owner_id: str,
+    ) -> None:
+        """Mark a row COMPLETED; CAS on (owner_id, claim_version).
+
+        If another worker reclaimed the row (bumping claim_version), this
+        UPDATE matches 0 rows — the stale drain's finalization is a no-op.
+        Rows are not deleted (unlike the legacy ``events.events`` ACK);
+        ``DROP PARTITION`` retention reclaims COMPLETED rows.
+        """
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery,
+            ResultHandler,
+            managed_transaction,
+        )
+
+        sql = (
+            f"UPDATE {task_schema}.work_events"
+            f" SET status='COMPLETED', owner_id=NULL, locked_until=NULL,"
+            f"     processed_at=now()"
+            f" WHERE day=:day AND event_id=:event_id"
+            f"   AND owner_id=:owner_id AND claim_version=:claim_version"
+        )
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn,
+                day=row["day"],
+                event_id=str(row["event_id"]),
+                owner_id=owner_id,
+                claim_version=row["claim_version"],
+            )
+
+    async def _mark_retry(
+        self,
+        *,
+        engine: Any,
+        task_schema: str,
+        row: Dict[str, Any],
+        owner_id: str,
+        error: str,
+    ) -> None:
+        """Retry with backoff, or DEAD_LETTER once attempts are exhausted.
+
+        One fenced UPDATE handles both outcomes (mirrors the legacy events
+        ``nack``): ``retry_count + 1 >= max_retries`` terminates the row as
+        ``DEAD_LETTER`` (no further delay); otherwise it returns to ``PENDING``
+        with ``locked_until`` pushed into the future by the backoff curve.  CAS
+        on (owner_id, claim_version) — a stale claim misses and is a safe
+        no-op.  ``max_retries`` falls back to the task default when the row
+        carries no per-row override.
+        """
+        from dynastore.modules.db_config.query_executor import (
+            DQLQuery,
+            ResultHandler,
+            managed_transaction,
+        )
+
+        retry_count = int(row.get("retry_count") or 0)
+        max_retries = row.get("max_retries")
+        if max_retries is None:
+            max_retries = _DEFAULT_MAX_RETRIES
+        backoff = _backoff(retry_count)
+
+        sql = (
+            f"UPDATE {task_schema}.work_events"
+            f" SET status = CASE WHEN retry_count + 1 >= :max_retries"
+            f"                    THEN 'DEAD_LETTER' ELSE 'PENDING' END,"
+            f"     retry_count = retry_count + 1,"
+            f"     error_message = :error,"
+            f"     owner_id = NULL,"
+            f"     locked_until = CASE WHEN retry_count + 1 >= :max_retries"
+            f"                         THEN NULL"
+            f"                         ELSE now() + make_interval(secs => :backoff_seconds)"
+            f"                    END,"
+            f"     processed_at = now()"
+            f" WHERE day=:day AND event_id=:event_id"
+            f"   AND owner_id=:owner_id AND claim_version=:claim_version"
+        )
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(sql, result_handler=ResultHandler.NONE).execute(
+                conn,
+                day=row["day"],
+                event_id=str(row["event_id"]),
+                owner_id=owner_id,
+                claim_version=row["claim_version"],
+                max_retries=int(max_retries),
+                backoff_seconds=backoff,
+                error=error,
+            )
+
+        logger.debug(
+            "WorkEventDrainTask: retry event_id=%s retry_count+1=%d backoff=%ds "
+            "max_retries=%d error=%r",
+            row.get("event_id"),
+            retry_count + 1,
+            backoff,
+            int(max_retries),
+            error,
+        )
