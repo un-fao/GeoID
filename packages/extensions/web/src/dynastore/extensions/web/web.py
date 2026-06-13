@@ -1143,8 +1143,8 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         priority=15,
     )
     async def governance_page(self, request: Request):
-        """Roles, policies, principals. Client-side gates catalog scope by
-        ``/me/catalogs``; server-side ``/admin/*`` endpoints enforce the
+        """Roles, policies, principals. Client-side gates catalog scope via
+        ``/web/catalogs``; server-side ``/admin/*`` endpoints enforce the
         actual authorization on every mutation."""
         static_dir = os.path.join(os.path.dirname(__file__), "static", "admin")
         html_path = os.path.join(static_dir, "governance.html")

@@ -20,9 +20,10 @@
 Self-service authorization endpoints (`/iam/me/*`).
 
 Lets an authenticated principal introspect their own platform- and
-catalog-scoped roles and catalog access. Admin-side role management is
-served exclusively by the `/admin/*` surface (admin extension); there is
-no email-keyed `/iam/admin/*` mirror.
+catalog-scoped roles. Admin-side role management is served exclusively by
+the `/admin/*` surface (admin extension); there is no email-keyed
+`/iam/admin/*` mirror. Catalog listing is served by `/web/catalogs`
+(visibility-filtered by the CatalogListProvider chain).
 
 All role reads go through the unified grants model: platform grants live
 in `iam.grants`, catalog grants live in `{catalog_schema}.grants`.
@@ -31,9 +32,7 @@ in `iam.grants`, catalog grants live in `{catalog_schema}.grants`.
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, cast
-from datetime import datetime
 
 from dynastore.modules import get_protocol
 from dynastore.models.protocols import CatalogsProtocol
@@ -44,29 +43,6 @@ logger = logging.getLogger(__name__)
 
 
 me_router = APIRouter(prefix="/me", tags=["Authentication & Authorization"])
-
-# --- DTOs ---
-
-
-class EffectiveAuthorizationResponse(BaseModel):
-    """Response showing effective authorization for a user in a catalog."""
-
-    email: str
-    provider: str
-    subject_id: str
-    global_roles: List[str]
-    catalog_roles: List[str]
-    effective_roles: List[str]
-    is_active: bool
-    valid_until: Optional[datetime] = None
-
-
-class CatalogAccessResponse(BaseModel):
-    """Response showing catalog access for a user."""
-
-    catalog_id: str
-    roles: List[str]
-
 
 # --- Helper Functions ---
 
@@ -235,95 +211,3 @@ async def get_my_catalog_roles(request: Request, catalog_id: str):
         principal_id=principal.id, catalog_schema=catalog_schema
     )
 
-
-@me_router.get("/catalogs", response_model=List[CatalogAccessResponse])
-async def get_my_catalogs(request: Request):
-    """Get all catalogs I have access to."""
-    storage = await get_storage()
-    identity = await get_current_identity(request)
-    provider = identity.get("provider")
-    subject_id = identity.get("sub")
-
-    result: List[CatalogAccessResponse] = []
-
-    # Platform-scope grants surface as the "*" entry.
-    platform_roles = await storage.get_identity_roles(provider, subject_id)
-    if platform_roles:
-        result.append(
-            CatalogAccessResponse(catalog_id="*", roles=platform_roles)
-        )
-
-    principal = await storage.get_principal_by_identity(
-        provider=provider, subject_id=subject_id
-    )
-    if principal is None:
-        return result
-
-    catalog_module = await get_catalogs_protocol()
-    catalog_ids = await storage.get_catalogs_for_identity(provider, subject_id)
-
-    for cat_id in catalog_ids:
-        try:
-            catalog_schema = await catalog_module.resolve_physical_schema(
-                cat_id, ctx=DriverContext(db_resource=cast(Any, catalog_module).engine)
-            )
-            catalog_roles = await storage.list_catalog_roles(
-                principal_id=principal.id, catalog_schema=catalog_schema
-            )
-            if catalog_roles:
-                result.append(
-                    CatalogAccessResponse(catalog_id=cat_id, roles=catalog_roles)
-                )
-        except Exception:
-            # One bad catalog must not nuke "list my catalogs", but log so
-            # a systemic problem (DB outage, missing schema) doesn't appear
-            # as "user has access to nothing" with no breadcrumb.
-            logger.warning(
-                "get_my_catalogs: failed for catalog=%s identity=%s:%s; skipping",
-                cat_id, provider, subject_id,
-                exc_info=True,
-            )
-            continue
-
-    return result
-
-
-@me_router.get("/catalogs/{catalog_id}", response_model=EffectiveAuthorizationResponse)
-async def get_my_effective_authorization(request: Request, catalog_id: str):
-    """Get my effective authorization in a specific catalog."""
-    storage = await get_storage()
-    identity = await get_current_identity(request)
-    provider = identity.get("provider")
-    subject_id = identity.get("sub")
-    email = identity.get("email", "unknown@example.com")
-
-    if not provider or not subject_id:
-        raise HTTPException(status_code=401, detail="Identity missing provider/subject")
-
-    catalog_schema = await resolve_catalog_schema(catalog_id)
-
-    principal = await storage.get_principal_by_identity(
-        provider=provider, subject_id=subject_id
-    )
-
-    global_roles: List[str] = []
-    catalog_roles: List[str] = []
-    if principal is not None:
-        global_roles = await storage.list_platform_roles(principal_id=principal.id)
-        catalog_roles = await storage.list_catalog_roles(
-            principal_id=principal.id, catalog_schema=catalog_schema
-        )
-
-    # Authorization metadata lives on the platform principal row (D12).
-    auth = await storage.get_identity_authorization(provider, subject_id)
-
-    return EffectiveAuthorizationResponse(
-        email=email,
-        provider=provider,
-        subject_id=subject_id,
-        global_roles=global_roles,
-        catalog_roles=catalog_roles,
-        effective_roles=list({*global_roles, *catalog_roles}),
-        is_active=auth.get("is_active", True) if auth else True,
-        valid_until=auth.get("valid_until") if auth else None,
-    )

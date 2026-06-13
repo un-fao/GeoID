@@ -274,8 +274,7 @@ async function boot() {
   const roles = me.roles || [];
   state.isSysadmin = roles.includes("sysadmin");
 
-  // Gate: the user needs sysadmin or at least one catalog grant to author resources.
-  // fetchCatalogOptions() handles the /iam/me/catalogs → /stac/catalogs fallback.
+  // Gate: the user needs sysadmin or at least one accessible catalog to author resources.
   if (!state.isSysadmin) {
     let accessible = [];
     try {

@@ -3,7 +3,7 @@
 
 import {
   fetchMe,
-  fetchMyCatalogs,
+  fetchCatalogOptions,
   listRoles, createRole, updateRole, deleteRole,
   listPolicies, createPolicy, updatePolicy, deletePolicy,
   searchPrincipals,
@@ -20,7 +20,7 @@ const $ = (s, root = document) => root.querySelector(s);
 const state = {
   scope: { kind: "platform" },
   isSysadmin: false,
-  ownedCatalogs: [],   // list of {catalog_id, roles}
+  ownedCatalogs: [],   // list of {catalog_id, title} — visibility-filtered by /web/catalogs provider
   roles: [],
   policies: [],
   principals: [],
@@ -1397,11 +1397,7 @@ async function boot() {
   const roles = me.roles || [];
   state.isSysadmin = roles.includes("sysadmin");
 
-  try {
-    state.ownedCatalogs = await fetchMyCatalogs();
-  } catch (_) {
-    state.ownedCatalogs = [];
-  }
+  state.ownedCatalogs = await fetchCatalogOptions();
   const hasCatalogScope = state.ownedCatalogs.length > 0;
 
   if (!state.isSysadmin && !hasCatalogScope) {

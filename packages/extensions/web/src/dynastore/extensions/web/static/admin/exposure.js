@@ -13,9 +13,8 @@ import { getJSON, patchJSON, fetchCatalogOptions } from "../common/api.js";
     registryDesc: {},
   };
 
-  // Populate #catalog-select using the grant-filtered catalog list from api.js.
-  // fetchCatalogOptions() handles the /iam/me/catalogs → /stac/catalogs fallback
-  // for sysadmin wildcard grants, so no local auth plumbing is needed here.
+  // Populate #catalog-select using the visibility-filtered catalog list from /web/catalogs.
+  // Provider precedence and tenant-scope safety live on the server; no local auth plumbing needed.
   async function loadCatalogs() {
     try {
       const catalogs = await fetchCatalogOptions();
