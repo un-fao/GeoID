@@ -27,10 +27,11 @@ service layer (Phase 5c) will rewrite with real tile URLs.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.modules.volumes.bounds import FeatureBounds, merge_bounds
+from dynastore.modules.volumes.geo import enu_to_ecef_matrix, lonlat_to_enu
 
 
 def build_tileset(
@@ -56,6 +57,11 @@ def build_tileset(
         }
 
     root_bbox = merge_bounds(bounds)
+    # Anchor a local East-North-Up metric frame at the collection centre. All
+    # node boxes are emitted in that frame (metres); the root ``transform``
+    # places it on the globe. Stored coords are EPSG:4326, so x=lon, y=lat,
+    # z=height(m).
+    origin = root_bbox.center()  # (lon0, lat0, h0)
     root = _build_subtree(
         list(bounds),
         bbox=root_bbox,
@@ -63,7 +69,9 @@ def build_tileset(
         config=config,
         path=[0],
         content_uri_template=content_uri_template,
+        origin=origin,
     )
+    root["transform"] = enu_to_ecef_matrix(origin[0], origin[1], origin[2])
     return {
         "asset": {"version": "1.0"},
         "geometricError": config.root_geometric_error,
@@ -79,6 +87,7 @@ def _build_subtree(
     config: VolumesConfig,
     path: List[int],
     content_uri_template: str,
+    origin: Tuple[float, float, float],
 ) -> Dict[str, Any]:
     tile_id = "_".join(str(p) for p in path)
     geom_error = config.root_geometric_error / (config.refinement_ratio ** depth)
@@ -89,7 +98,7 @@ def _build_subtree(
     )
 
     node: Dict[str, Any] = {
-        "boundingVolume": {"box": _bbox_to_box(bbox)},
+        "boundingVolume": {"box": _bbox_to_box(bbox, origin)},
         "geometricError": geom_error,
         "refine": "REPLACE",
     }
@@ -116,6 +125,7 @@ def _build_subtree(
             config=config,
             path=path + [0],
             content_uri_template=content_uri_template,
+            origin=origin,
         ),
         _build_subtree(
             right,
@@ -124,6 +134,7 @@ def _build_subtree(
             config=config,
             path=path + [1],
             content_uri_template=content_uri_template,
+            origin=origin,
         ),
     ]
     return node
@@ -151,16 +162,34 @@ def _partition(items: List[FeatureBounds], *, axis: int, pivot: float):
     return left, right
 
 
-def _bbox_to_box(b: FeatureBounds) -> List[float]:
-    """Cesium 3D Tiles ``box`` format: [cx, cy, cz, hx, 0, 0, 0, hy, 0, 0, 0, hz].
+def _bbox_to_box(
+    b: FeatureBounds, origin: Tuple[float, float, float]
+) -> List[float]:
+    """Cesium 3D Tiles ``box`` in the local ENU frame anchored at *origin*.
 
-    (center + three half-axis vectors). Only axis-aligned boxes emitted at
-    Phase 5a — oriented boxes are a future optimization.
+    Format: ``[cx, cy, cz, hx, 0, 0, 0, hy, 0, 0, 0, hz]`` (centre + three
+    half-axis vectors). The bbox is stored in EPSG:4326 (x=lon, y=lat, z=h in
+    metres); we convert all eight corners to ENU metres and emit the enclosing
+    axis-aligned box. ENU axes ≈ lon/lat axes at city scale, so the AABB is
+    tight. Oriented boxes are a future optimization.
     """
-    cx, cy, cz = b.center()
-    hx = (b.max_x - b.min_x) / 2.0
-    hy = (b.max_y - b.min_y) / 2.0
-    hz = (b.max_z - b.min_z) / 2.0
+    lon0, lat0, h0 = origin
+    xs: List[float] = []
+    ys: List[float] = []
+    zs: List[float] = []
+    for lon in (b.min_x, b.max_x):
+        for lat in (b.min_y, b.max_y):
+            for h in (b.min_z, b.max_z):
+                e, n, u = lonlat_to_enu(lon, lat, h, lon0, lat0, h0)
+                xs.append(e)
+                ys.append(n)
+                zs.append(u)
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    cz = (min(zs) + max(zs)) / 2.0
+    hx = (max(xs) - min(xs)) / 2.0
+    hy = (max(ys) - min(ys)) / 2.0
+    hz = (max(zs) - min(zs)) / 2.0
     return [cx, cy, cz, hx, 0.0, 0.0, 0.0, hy, 0.0, 0.0, 0.0, hz]
 
 

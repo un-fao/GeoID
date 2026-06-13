@@ -175,3 +175,61 @@ async def test_sidecar_geometry_fetcher_queries_db():
     # Named-parameter style (DQLQuery-compatible); positional $1 is gone.
     assert ":feature_ids" in src or "feature_ids=" in src
     assert "$1::text[]" not in src
+
+
+# ---------------------------------------------------------------------------
+# Attributes-sidecar join (#2089): true height + z_base
+# ---------------------------------------------------------------------------
+
+
+def test_build_geometry_query_with_attributes_join_columnar():
+    spec = GeometryQuerySpec(
+        schema="tenant",
+        hub_table="buildings",
+        geometries_table="buildings_geometries",
+        feature_ids=["f1"],
+        attributes_table="buildings_attributes",
+        zmin_expr='a."zmin"',
+        zmax_expr='a."zmax"',
+        height_expr='a."height"',
+    )
+    sql = build_geometry_query(spec)
+    assert 'LEFT JOIN "tenant"."buildings_attributes" a' in sql
+    assert "z_base" in sql
+    # height prefers the sidecar height attr, falling back to zmax - zmin.
+    assert 'a."height"' in sql
+    assert 'a."zmax" - a."zmin"' in sql
+    assert 'COALESCE(a."zmin"' in sql  # z_base from zmin, geom fallback
+
+
+def test_build_geometry_query_attributes_height_from_zrange_when_no_height_expr():
+    spec = GeometryQuerySpec(
+        schema="t",
+        hub_table="h",
+        geometries_table="h_geom",
+        feature_ids=["f1"],
+        attributes_table="h_attrs",
+        zmin_expr="(a.\"attributes\"->>'zmin')::float",
+        zmax_expr="(a.\"attributes\"->>'zmax')::float",
+        height_expr=None,
+    )
+    sql = build_geometry_query(spec)
+    assert "LEFT JOIN" in sql
+    assert "->>'zmax')::float - (a.\"attributes\"->>'zmin')::float" in sql
+
+
+def test_row_to_feature_geometry_reads_z_base():
+    wkb = b"\x01" * 8
+    row = {"feature_id": "z", "geom_wkb": wkb, "height": 12.0, "z_base": 30.0}
+    fg = row_to_feature_geometry(row)
+    assert fg is not None
+    assert fg.height == 12.0
+    assert fg.z_base == 30.0
+
+
+def test_row_to_feature_geometry_null_z_base_is_none():
+    wkb = b"\x01" * 8
+    row = {"feature_id": "z", "geom_wkb": wkb, "height": 0.0, "z_base": None}
+    fg = row_to_feature_geometry(row)
+    assert fg is not None
+    assert fg.z_base is None

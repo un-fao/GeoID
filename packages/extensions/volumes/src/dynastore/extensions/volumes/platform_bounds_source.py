@@ -51,6 +51,7 @@ from typing import Optional
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.models.protocols import CatalogsProtocol, DatabaseProtocol
 from dynastore.modules.storage.drivers.pg_sidecars import (
+    FeatureAttributeSidecarConfig,
     GeometriesSidecarConfig,
     driver_sidecars,
     sidecar_table_name,
@@ -63,6 +64,49 @@ from dynastore.modules.volumes.sidecar_bounds import (
 from dynastore.tools.discovery import get_protocol, register_plugin
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_attr_z_exprs(
+    attrs_sidecar: FeatureAttributeSidecarConfig,
+) -> Optional[tuple[str, Optional[str], str, str]]:
+    """Render SQL exprs for the attributes sidecar z-range, over join alias ``a``.
+
+    Returns ``(zmin_expr, height_expr_or_None, zmax_expr, mode)`` or ``None``
+    when the sidecar cannot supply zmin/zmax. The expressions match the
+    physical storage layout (#2089):
+
+    - **Columnar** (explicit COLUMNAR, or AUTOMATIC with a schema that declares
+      ``zmin``/``zmax``) → typed columns ``a."zmin"`` / ``a."zmax"`` /
+      ``a."height"``.
+    - **JSONB** → ``(a."<jsonb_col>"->>'zmin')::float`` etc.
+    """
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeStorageMode,
+    )
+
+    mode = getattr(attrs_sidecar, "storage_mode", AttributeStorageMode.AUTOMATIC)
+    schema = getattr(attrs_sidecar, "attribute_schema", None) or []
+    schema_names = {getattr(e, "name", None) for e in schema}
+    columnar = mode == AttributeStorageMode.COLUMNAR or (
+        mode == AttributeStorageMode.AUTOMATIC and bool(schema)
+    )
+
+    if columnar:
+        # Only trust columnar columns that are actually declared; otherwise the
+        # query would reference a non-existent column and raise.
+        if "zmin" not in schema_names or "zmax" not in schema_names:
+            return None
+        zmin = 'a."zmin"'
+        zmax = 'a."zmax"'
+        height = 'a."height"' if "height" in schema_names else None
+        return zmin, height, zmax, "columnar"
+
+    # JSONB blob.
+    col = getattr(attrs_sidecar, "jsonb_column_name", "attributes")
+    zmin = f"(a.\"{col}\"->>'zmin')::float"
+    zmax = f"(a.\"{col}\"->>'zmax')::float"
+    height = f"(a.\"{col}\"->>'height')::float"
+    return zmin, height, zmax, "jsonb"
 
 
 def register_sidecar_bounds_source(
@@ -109,7 +153,7 @@ def register_sidecar_bounds_source(
 
     async def _resolve_hub_and_geom(
         catalog_id: str, collection_id: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Resolve (physical hub table, geom column) from the PG store.
 
         The geometries sidecar is a PostgreSQL-store concept, so the layout
@@ -132,6 +176,10 @@ def register_sidecar_bounds_source(
 
         hub = collection_id
         geom_column = cfg.geometry_column_fallback
+        attrs_table: Optional[str] = None
+        zmin_expr: Optional[str] = None
+        zmax_expr: Optional[str] = None
+        height_expr: Optional[str] = None
 
         for op in (Operation.WRITE, Operation.READ):
             try:
@@ -184,15 +232,49 @@ def register_sidecar_bounds_source(
                         "%s/%s (%s); using collection_id",
                         catalog_id, collection_id, exc,
                     )
+
+            # Resolve the attributes sidecar for true per-feature z-range
+            # (#2089). Same driver_cfg, so we already have it. Degrade-safe: a
+            # miss leaves attrs_table None → z-range falls back to geometry.
+            attrs_sidecar = next(
+                (
+                    sc
+                    for sc in driver_sidecars(driver_cfg)
+                    if isinstance(sc, FeatureAttributeSidecarConfig)
+                ),
+                None,
+            )
+            if attrs_sidecar is not None:
+                try:
+                    rendered = _resolve_attr_z_exprs(attrs_sidecar)
+                except Exception as exc:  # noqa: BLE001 — degrade-safe
+                    logger.debug(
+                        "volumes layout: attr z-expr resolve failed for %s/%s "
+                        "(%s); z-range from geometry",
+                        catalog_id, collection_id, exc,
+                    )
+                    rendered = None
+                if rendered is not None:
+                    zmin_expr, height_expr, zmax_expr, _mode = rendered
+                    attrs_table = sidecar_table_name(
+                        hub, attrs_sidecar.sidecar_id,
+                    )
             break
 
-        return hub, geom_column
+        return hub, geom_column, attrs_table, zmin_expr, zmax_expr, height_expr
 
     async def _resolve_layout(
         catalog_id: str, collection_id: str,
     ) -> CollectionPhysicalLayout:
         schema = await _resolve_schema(catalog_id)
-        hub, geom_column = await _resolve_hub_and_geom(catalog_id, collection_id)
+        (
+            hub,
+            geom_column,
+            attrs_table,
+            zmin_expr,
+            zmax_expr,
+            height_expr,
+        ) = await _resolve_hub_and_geom(catalog_id, collection_id)
         geoms = sidecar_table_name(hub, cfg.geometries_sidecar_id)
         return CollectionPhysicalLayout(
             schema=schema,
@@ -200,18 +282,18 @@ def register_sidecar_bounds_source(
             geometries_table=geoms,
             geom_column=geom_column,
             feature_id_column=cfg.feature_id_column,
+            attributes_table=attrs_table,
+            zmin_expr=zmin_expr,
+            zmax_expr=zmax_expr,
+            height_expr=height_expr,
         )
 
-    # height_column is intentionally NOT wired here. The bounds/geometry
-    # queries join only the hub + geometries sidecar, but the height (and
-    # zmin/zmax) of a CityJSON feature are filterable attributes that the PG
-    # driver materializes in the SEPARATE feature_attributes sidecar, not on
-    # the hub. Passing a hub height column that does not exist made the whole
-    # bounds query raise ("column h.height does not exist"), degrading every
-    # tileset to empty. Leaving it None makes the z-range come from the
-    # geometry itself; per-feature 3D height sourced from the attributes
-    # sidecar (zmin/zmax) is tracked as a follow-up so buildings extrude
-    # to their true height.
+    # height_column is intentionally NOT wired (it would reference a hub column
+    # that does not exist). The true per-feature z-range (zmin/zmax) and height
+    # of a CityJSON feature are filterable attributes the PG driver materializes
+    # in the SEPARATE feature_attributes sidecar; the layout resolver above
+    # discovers that table and renders the column expressions (#2089), and the
+    # bounds/geometry queries LEFT JOIN it with the flat geometry z as fallback.
     source = SidecarBoundsSource(
         connection_factory=_connection_factory,
         layout_resolver=_resolve_layout,

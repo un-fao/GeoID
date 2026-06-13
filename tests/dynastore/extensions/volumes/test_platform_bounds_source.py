@@ -172,3 +172,94 @@ async def test_layout_resolver_degrades_to_defaults_when_driver_unavailable():
     assert layout.geometries_table == "denhaag_geometries"
     assert layout.geom_column == "geom"
     assert layout.feature_id_column == "geoid"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_attr_z_exprs (#2089) — columnar vs JSONB column expressions
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_attr_z_exprs_columnar():
+    from dynastore.extensions.volumes.platform_bounds_source import (
+        _resolve_attr_z_exprs,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeSchemaEntry,
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+        PostgresType,
+    )
+
+    sc = FeatureAttributeSidecarConfig(
+        storage_mode=AttributeStorageMode.COLUMNAR,
+        attribute_schema=[
+            AttributeSchemaEntry(name="zmin", type=PostgresType.FLOAT),
+            AttributeSchemaEntry(name="zmax", type=PostgresType.FLOAT),
+            AttributeSchemaEntry(name="height", type=PostgresType.FLOAT),
+        ],
+    )
+    zmin, height, zmax, mode = _resolve_attr_z_exprs(sc)
+    assert mode == "columnar"
+    assert zmin == 'a."zmin"'
+    assert zmax == 'a."zmax"'
+    assert height == 'a."height"'
+
+
+def test_resolve_attr_z_exprs_columnar_without_height_returns_none_height():
+    from dynastore.extensions.volumes.platform_bounds_source import (
+        _resolve_attr_z_exprs,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeSchemaEntry,
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+        PostgresType,
+    )
+
+    sc = FeatureAttributeSidecarConfig(
+        storage_mode=AttributeStorageMode.AUTOMATIC,
+        attribute_schema=[
+            AttributeSchemaEntry(name="zmin", type=PostgresType.FLOAT),
+            AttributeSchemaEntry(name="zmax", type=PostgresType.FLOAT),
+        ],
+    )
+    zmin, height, zmax, mode = _resolve_attr_z_exprs(sc)
+    assert mode == "columnar"
+    assert height is None
+
+
+def test_resolve_attr_z_exprs_columnar_missing_zrange_returns_none():
+    from dynastore.extensions.volumes.platform_bounds_source import (
+        _resolve_attr_z_exprs,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeSchemaEntry,
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+        PostgresType,
+    )
+
+    sc = FeatureAttributeSidecarConfig(
+        storage_mode=AttributeStorageMode.COLUMNAR,
+        attribute_schema=[
+            AttributeSchemaEntry(name="name", type=PostgresType.TEXT),
+        ],
+    )
+    assert _resolve_attr_z_exprs(sc) is None
+
+
+def test_resolve_attr_z_exprs_jsonb():
+    from dynastore.extensions.volumes.platform_bounds_source import (
+        _resolve_attr_z_exprs,
+    )
+    from dynastore.modules.storage.drivers.pg_sidecars.attributes_config import (
+        AttributeStorageMode,
+        FeatureAttributeSidecarConfig,
+    )
+
+    sc = FeatureAttributeSidecarConfig(storage_mode=AttributeStorageMode.JSONB)
+    zmin, height, zmax, mode = _resolve_attr_z_exprs(sc)
+    assert mode == "jsonb"
+    assert zmin == "(a.\"attributes\"->>'zmin')::float"
+    assert zmax == "(a.\"attributes\"->>'zmax')::float"
+    assert height == "(a.\"attributes\"->>'height')::float"

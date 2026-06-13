@@ -74,6 +74,15 @@ class CollectionPhysicalLayout:
     geometries_table: str
     geom_column: str = "geom"
     feature_id_column: str = "geoid"
+    # Attributes sidecar (#2089): when set, the tiler LEFT JOINs this table to
+    # take per-feature z-range from the sidecar instead of the flat geometry.
+    # ``*_expr`` are pre-rendered SQL expressions over the join alias ``a``
+    # (e.g. ``a."zmin"`` for columnar or ``(a."attributes"->>'zmin')::float``
+    # for JSONB), resolved by the driver-aware layout resolver.
+    attributes_table: Optional[str] = None
+    zmin_expr: Optional[str] = None
+    zmax_expr: Optional[str] = None
+    height_expr: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,10 @@ class BoundsQuerySpec:
     feature_id_column: str = "geoid"
     geom_column: str = "geom"
     height_column: Optional[str] = None  # COALESCE fallback for flat features
+    # Attributes sidecar z-range (#2089). See CollectionPhysicalLayout.
+    attributes_table: Optional[str] = None
+    zmin_expr: Optional[str] = None
+    zmax_expr: Optional[str] = None
     limit: Optional[int] = None
 
 
@@ -102,16 +115,31 @@ def build_bounds_query(spec: BoundsQuerySpec) -> str:
     hub = f'"{spec.schema}"."{spec.hub_table}"'
     geoms = f'"{spec.schema}"."{spec.geometries_table}"'
 
-    zmin_expr = f'ST_ZMin(ST_Force3D(g."{spec.geom_column}"))'
-    zmax_expr = f'ST_ZMax(ST_Force3D(g."{spec.geom_column}"))'
-    if spec.height_column:
-        # 2D feature → ST_ZMin/ST_ZMax on ST_Force3D return 0. Widen the
-        # z range to [0, height_col] when the hub carries a height column.
-        zmin_expr = f"LEAST({zmin_expr}, 0)"
-        zmax_expr = (
-            f"GREATEST({zmax_expr}, "
-            f'COALESCE(h."{spec.height_column}", 0))'
+    geom_zmin = f'ST_ZMin(ST_Force3D(g."{spec.geom_column}"))'
+    geom_zmax = f'ST_ZMax(ST_Force3D(g."{spec.geom_column}"))'
+
+    attrs_join = ""
+    if spec.attributes_table and spec.zmin_expr and spec.zmax_expr:
+        # Per-feature true z-range from the attributes sidecar (#2089), with the
+        # flat geometry z as a COALESCE fallback when the sidecar value is NULL.
+        attrs = f'"{spec.schema}"."{spec.attributes_table}"'
+        attrs_join = (
+            f"LEFT JOIN {attrs} a "
+            f'ON h."{spec.feature_id_column}" = a."{spec.feature_id_column}" '
         )
+        zmin_expr = f"COALESCE({spec.zmin_expr}, {geom_zmin})"
+        zmax_expr = f"COALESCE({spec.zmax_expr}, {geom_zmax})"
+    else:
+        zmin_expr = geom_zmin
+        zmax_expr = geom_zmax
+        if spec.height_column:
+            # 2D feature → ST_ZMin/ST_ZMax on ST_Force3D return 0. Widen the
+            # z range to [0, height_col] when the hub carries a height column.
+            zmin_expr = f"LEAST({zmin_expr}, 0)"
+            zmax_expr = (
+                f"GREATEST({zmax_expr}, "
+                f'COALESCE(h."{spec.height_column}", 0))'
+            )
 
     sql = (
         "SELECT "
@@ -125,6 +153,7 @@ def build_bounds_query(spec: BoundsQuerySpec) -> str:
         f"FROM {hub} h "
         f"JOIN {geoms} g "
         f'ON h."{spec.feature_id_column}" = g."{spec.feature_id_column}" '
+        f"{attrs_join}"
         f'WHERE g."{spec.geom_column}" IS NOT NULL'
     )
     if spec.limit is not None:
@@ -258,6 +287,8 @@ class SidecarBoundsSource:
             layout.feature_id_column,
         ):
             validate_sql_identifier(t)
+        if layout.attributes_table:
+            validate_sql_identifier(layout.attributes_table)
 
         spec = BoundsQuerySpec(
             schema=layout.schema,
@@ -266,6 +297,9 @@ class SidecarBoundsSource:
             feature_id_column=layout.feature_id_column,
             geom_column=layout.geom_column,
             height_column=self._height_column,
+            attributes_table=layout.attributes_table,
+            zmin_expr=layout.zmin_expr,
+            zmax_expr=layout.zmax_expr,
             limit=limit,
         )
         sql = build_bounds_query(spec)
