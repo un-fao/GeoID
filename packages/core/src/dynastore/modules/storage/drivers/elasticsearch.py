@@ -933,8 +933,8 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
 
         return source or None
 
-    @staticmethod
     def _build_read_search_body(
+        self,
         collection_id: str,
         request: Optional[QueryRequest],
         limit: int,
@@ -951,6 +951,15 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         single-collection routing. ``fields`` selects the index's envelope
         field names (see :meth:`_query_request_to_es`).
 
+        Instance method (not ``@staticmethod``) so the query translation goes
+        through ``self._query_request_to_es`` and honours subclass overrides.
+        The envelope driver overrides ``_query_request_to_es`` to AND the
+        row-level ``request.access_filter`` into the body and fail closed when
+        none was established (#2048); a static dispatch to the base would skip
+        that override and query the access-controlled envelope index with no
+        row-level filter. The plain driver inherits the base translation, so
+        this path is unchanged for it.
+
         Projection push-down (#1385): if the request carries
         ``skip_geometry=True`` or an explicit ``select``, the ES body adds a
         ``_source`` clause so ES omits the heavy ``geometry`` bytes / narrows
@@ -958,7 +967,7 @@ class _ItemsElasticsearchBase(_ElasticsearchBase):
         post-fetch projection remains the universal safety net.
         """
         base = (
-            _ItemsElasticsearchBase._query_request_to_es(request, fields)
+            self._query_request_to_es(request, fields)
             if request
             else {"query": {"match_all": {}}}
         )

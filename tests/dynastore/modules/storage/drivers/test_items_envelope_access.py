@@ -572,6 +572,51 @@ def test_query_access_clause_ands_with_es_filter():
 
 
 # ---------------------------------------------------------------------------
+# Regression (#2048): the streaming-search body builder must route the query
+# translation through the access-aware ``_query_request_to_es`` override, not
+# the static base. ``_build_read_search_body`` used to be a ``@staticmethod``
+# that hard-coded the base dispatch, so the envelope driver's ``read_entities``
+# SEARCH branch queried the access-controlled index with NO row-level filter
+# (the override was never invoked). These exercise the method that had the bug.
+# ---------------------------------------------------------------------------
+
+
+def test_build_read_search_body_fails_closed_without_access_filter():
+    # No ``access_filter`` on the request → the access-aware override returns
+    # ``match_none``, so the built body must admit nothing. The old static
+    # dispatch skipped the override and produced an unfiltered query.
+    drv = _drv()
+    req = QueryRequest()
+    body, _params = drv._build_read_search_body(
+        "col-a", req, 10, 0, drv._envelope_fields,
+    )
+    assert _es_clause_admits(
+        body["query"],
+        {"geoid": "1", "collection_id": "col-a", "visibility": "public"},
+    ) is False
+
+
+def test_build_read_search_body_ands_access_clause():
+    # A request scoped to public docs → the built body rejects a private doc
+    # and admits a public one in the routed collection. Proves the access
+    # clause reaches the streaming-search body, not just a direct override call.
+    drv = _drv()
+    allow = AccessClause(predicates=(FieldPredicate("visibility", ("public",)),))
+    req = QueryRequest(access_filter=AccessFilter(allow=(allow,)))
+    body, _params = drv._build_read_search_body(
+        "col-a", req, 10, 0, drv._envelope_fields,
+    )
+    assert _es_clause_admits(
+        body["query"],
+        {"geoid": "1", "collection_id": "col-a", "visibility": "public"},
+    ) is True
+    assert _es_clause_admits(
+        body["query"],
+        {"geoid": "2", "collection_id": "col-a", "visibility": "private"},
+    ) is False
+
+
+# ---------------------------------------------------------------------------
 # CanonicalIndexInput fast path (#1828)
 # ---------------------------------------------------------------------------
 
