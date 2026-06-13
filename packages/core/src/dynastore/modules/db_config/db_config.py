@@ -49,6 +49,21 @@ SAFE_POOL_MIN_FLOOR: int = 5
 # connections, so the floor is enforced on the effective total as well.
 SAFE_POOL_TOTAL_FLOOR: int = 5
 
+# Smallest burst headroom (``max_overflow`` = max - base) we consider safe.
+# Clamping the base UP to ``SAFE_POOL_MIN_FLOOR`` while leaving a small
+# ``DB_POOL_MAX_SIZE`` at or just above that floor collapses the overflow to
+# 0 — a rigid pool that cannot grow past its base. A 1/3 override (the dev
+# auth/tools right-sizing) clamps to base 5 / max 5 → ``max_overflow == 0``,
+# so concurrent startup consumers (engine-snapshot PG engine + event shards)
+# that together need more than the base at once deadlock on QueuePool
+# ("QueuePool limit of size 5 overflow 0 reached"), the engine snapshot never
+# loads, the ASGI lifespan never completes, and the startup probe times out.
+# A zero overflow is the very starvation the floors above exist to prevent, so
+# guarantee a minimum burst on top of the base. Overflow connections are
+# transient (opened on demand, returned to the pool), so this raises the
+# ceiling without changing the steady-state connection footprint.
+SAFE_POOL_MIN_OVERFLOW: int = 5
+
 
 def _looks_unsubstituted(value: str) -> bool:
     """A value still carrying a ``${...}`` fragment is an unsubstituted deploy
@@ -302,6 +317,30 @@ class DBConfig:
                 SAFE_POOL_TOTAL_FLOOR,
             )
             self.pool_max_size = SAFE_POOL_TOTAL_FLOOR
+
+        # Guard the *overflow*, not just the totals above. Clamping the base up
+        # to the min floor while ``pool_max_size`` sits at or just above it
+        # leaves ``max_overflow = pool_max_size - pool_min_size`` at (near) 0 —
+        # a pool that cannot grow past its base and deadlocks when concurrent
+        # startup consumers need more than the base at once (the size-5
+        # overflow-0 starvation behind the dev auth/tools probe-timeout outage).
+        # Lift ``pool_max_size`` so a minimum burst headroom always remains.
+        min_max_for_overflow = self.pool_min_size + SAFE_POOL_MIN_OVERFLOW
+        if self.pool_max_size < min_max_for_overflow:
+            logger.warning(
+                "DB_POOL_MAX_SIZE (%d) leaves the pool with max_overflow=%d on "
+                "top of pool_size=%d; a zero/near-zero overflow cannot absorb "
+                "concurrent checkouts and deadlocks startup under load "
+                "(QueuePool limit reached). Clamping pool_max_size up to %d so "
+                "at least %d overflow connections remain — raise "
+                "DB_POOL_MAX_SIZE in the environment to silence this.",
+                self.pool_max_size,
+                max(self.pool_max_size - self.pool_min_size, 0),
+                self.pool_min_size,
+                min_max_for_overflow,
+                SAFE_POOL_MIN_OVERFLOW,
+            )
+            self.pool_max_size = min_max_for_overflow
 
         if self.pool_acquire_timeout <= 0:
             logger.warning(
