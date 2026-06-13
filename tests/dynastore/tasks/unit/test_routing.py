@@ -23,6 +23,8 @@ Run with: uv run pytest --noconftest tests/dynastore/tasks/unit/test_routing.py 
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from dynastore.modules.tasks.routing.exec_hints import ExecHint
@@ -104,8 +106,8 @@ def test_exec_hint_unknown_string_rejected() -> None:
 
 
 def _make_inventory(
-    tasks: list[tuple[str, str | None]] = (),
-    processes: list[tuple[str, str | None]] = (),
+    tasks: Sequence[tuple[str, str | None]] = (),
+    processes: Sequence[tuple[str, str | None]] = (),
 ) -> list[InventoryItem]:
     items = []
     for key, tier in tasks:
