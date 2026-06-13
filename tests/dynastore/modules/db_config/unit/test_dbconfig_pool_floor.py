@@ -18,17 +18,20 @@
 
 """Regression test: ``DBConfig.validate_pool_sizing`` guards a too-small pool.
 
-Background (dynastore #320): the review environment overrode
-``DB_POOL_MIN_SIZE=2`` (code default is 5). With only two base connections,
-3+ concurrent requests exhausted the overflow and queued until they hit the
-60s QueuePool timeout ("QueuePool limit of size 2 overflow 3 reached,
-connection timed out, timeout 60.00"), cascading into engine-snapshot retry
-exhaustion and sustained 100% memory / container restarts.
+Background (dynastore #320): the review environment timed out under concurrent
+load ("QueuePool limit of size 2 overflow 3 reached, connection timed out,
+timeout 60.00"), cascading into engine-snapshot retry exhaustion and sustained
+100% memory / container restarts. The failure was a *total-capacity* starvation
+— size 2 + overflow 3 = 5 connections could not serve the concurrency — not a
+shortage of persistent base connections.
 
-Fix: a startup ``validate_pool_sizing`` that WARNs (naming the offending env
-var and the QueuePool-timeout risk) and clamps ``pool_min_size`` /
-``pool_max_size`` up to a safe floor, so a misconfigured tiny value can never
-silently strangle the service. A healthy config must be left untouched.
+Fix (dynastore #392 refinement): ``validate_pool_sizing`` floors the *total
+capacity* a pool can open at once (``pool_size + max_overflow``, the thing #320
+starved) and leaves the persistent base to the operator down to a floor of 1.
+Forcing a large base only inflates the idle footprint a deployment pins on the
+shared Postgres (``base × workers × MIN_SCALE``) without adding burst room. The
+guard WARNs (naming the offending env var and the QueuePool risk) and clamps up
+to the safe floors; a healthy config is left untouched.
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ import logging
 from dynastore.modules.db_config.db_config import (
     SAFE_POOL_MIN_FLOOR,
     SAFE_POOL_MIN_OVERFLOW,
+    SAFE_POOL_TOTAL_FLOOR,
     DBConfig,
 )
 
@@ -58,38 +62,43 @@ def test_healthy_config_is_left_unchanged(caplog):
     assert caplog.records == []
 
 
-def test_too_low_min_size_is_clamped_to_floor():
-    # The incident's exact override: DB_POOL_MIN_SIZE=2.
-    cfg = _cfg(min_size=2, max_size=100)
-    cfg.validate_pool_sizing()
-    assert cfg.pool_min_size == SAFE_POOL_MIN_FLOOR
-    assert cfg.pool_max_size == 100
-
-
-def test_too_low_min_size_warns_and_names_env_var(caplog):
+def test_small_base_is_respected_not_inflated(caplog):
+    # The #320 override DB_POOL_MIN_SIZE=2 is now a legitimate deployment choice:
+    # the base is no longer forced up to a large floor (which only inflated the
+    # idle footprint, #392). With a healthy max the small base is left intact
+    # and emits no warning — burst safety comes from the total, not the base.
     cfg = _cfg(min_size=2, max_size=100)
     with caplog.at_level(logging.WARNING):
         cfg.validate_pool_sizing()
-    assert any(
-        "DB_POOL_MIN_SIZE" in rec.message and "QueuePool" in rec.message
-        for rec in caplog.records
-    ), "expected a WARNING naming DB_POOL_MIN_SIZE and the QueuePool risk"
+    assert cfg.pool_min_size == 2
+    assert cfg.pool_max_size == 100
+    assert caplog.records == []
 
 
-def test_too_low_max_size_is_clamped_to_leave_overflow():
-    # A tiny max no longer clamps to *exactly* the base floor — that produced
-    # max_overflow == 0 (size-5 overflow-0), a rigid pool that deadlocks under
-    # concurrent startup load. The base is floored to SAFE_POOL_MIN_FLOOR and
-    # the max is lifted to leave at least SAFE_POOL_MIN_OVERFLOW of burst.
-    cfg = _cfg(min_size=1, max_size=2)
-    cfg.validate_pool_sizing()
+def test_zero_base_is_clamped_to_minimum(caplog):
+    # A 0/negative base is a misconfig, not an intentional small value — a pool
+    # must hold at least one connection.
+    cfg = _cfg(min_size=0, max_size=100)
+    with caplog.at_level(logging.WARNING):
+        cfg.validate_pool_sizing()
     assert cfg.pool_min_size == SAFE_POOL_MIN_FLOOR
-    assert cfg.pool_max_size == SAFE_POOL_MIN_FLOOR + SAFE_POOL_MIN_OVERFLOW
-    assert cfg.pool_max_overflow == SAFE_POOL_MIN_OVERFLOW
+    assert any(
+        "DB_POOL_MIN_SIZE" in rec.message for rec in caplog.records
+    ), "expected a WARNING naming DB_POOL_MIN_SIZE"
+
+
+def test_too_low_max_size_is_clamped_to_total_floor():
+    # The dev auth/tools right-sizing (1/3). The small base stays, but the max
+    # is lifted to the total-capacity floor so the pool can burst — the size-5
+    # overflow-0 rigid pool that deadlocked startup can no longer form.
+    cfg = _cfg(min_size=1, max_size=3)
+    cfg.validate_pool_sizing()
+    assert cfg.pool_min_size == 1
+    assert cfg.pool_max_size == SAFE_POOL_TOTAL_FLOOR
+    assert cfg.pool_max_overflow == SAFE_POOL_TOTAL_FLOOR - 1
 
 
 def test_too_low_max_size_warns_and_names_env_var(caplog):
-    # Healthy min, but the total is capped tiny by a small max.
     cfg = _cfg(min_size=5, max_size=3)
     with caplog.at_level(logging.WARNING):
         cfg.validate_pool_sizing()
@@ -97,18 +106,26 @@ def test_too_low_max_size_warns_and_names_env_var(caplog):
         "DB_POOL_MAX_SIZE" in rec.message and "QueuePool" in rec.message
         for rec in caplog.records
     ), "expected a WARNING naming DB_POOL_MAX_SIZE and the QueuePool risk"
-    assert cfg.pool_max_size == SAFE_POOL_MIN_FLOOR + SAFE_POOL_MIN_OVERFLOW
+    assert cfg.pool_max_size == SAFE_POOL_TOTAL_FLOOR
 
 
 def test_floor_collapse_never_yields_zero_overflow():
-    # The exact dev incident: auth/tools right-sized to DB_POOL_MIN_SIZE=1 /
-    # DB_POOL_MAX_SIZE=3. Both clamp up to the base floor (5), which without an
-    # overflow guard would leave max_overflow == 0 and deadlock startup. The
-    # pool must retain real burst headroom.
+    # The exact dev incident: auth/tools right-sized to 1/3. The total floor
+    # alone already guarantees burst, so overflow must be strictly positive.
     cfg = _cfg(min_size=1, max_size=3)
     cfg.validate_pool_sizing()
-    assert cfg.pool_max_overflow == SAFE_POOL_MIN_OVERFLOW
+    assert cfg.pool_max_overflow >= SAFE_POOL_MIN_OVERFLOW
     assert cfg.pool_max_overflow > 0
+
+
+def test_overflow_gap_guard_lifts_max_above_total_floor():
+    # When the base sits near the (already floored) max, the gap guard lifts the
+    # max further so a minimum burst headroom remains above the base. base 8 +
+    # SAFE_POOL_MIN_OVERFLOW exceeds the total floor of 10, so max -> 13.
+    cfg = _cfg(min_size=8, max_size=8)
+    cfg.validate_pool_sizing()
+    assert cfg.pool_max_size == 8 + SAFE_POOL_MIN_OVERFLOW
+    assert cfg.pool_max_overflow == SAFE_POOL_MIN_OVERFLOW
 
 
 def test_clamped_pool_yields_safe_overflow():
