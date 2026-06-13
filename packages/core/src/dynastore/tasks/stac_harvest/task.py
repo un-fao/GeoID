@@ -42,7 +42,11 @@ from .models import StacHarvestRequest
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 1000
-_PAGE_LIMIT = 500
+# Source page size for /items.  Kept broadly compatible: some public STAC
+# APIs reject large pages (e.g. earth-search returns HTTP 502 for limit=500),
+# so default conservatively and shrink adaptively on a fetch error.
+_PAGE_LIMIT = 100
+_MIN_PAGE_LIMIT = 20
 _STRIP_LINKS = frozenset({"links"})
 # Concrete write language for collection create/update.  Source STAC
 # collections carry no language, and ``"*"`` is a *read-time* wildcard
@@ -91,18 +95,38 @@ def iter_collections(catalog_url: str) -> Iterator[Dict[str, Any]]:
 
 
 def iter_items(catalog_url: str, collection_id: str) -> Iterator[Dict[str, Any]]:
-    """Walk source /collections/{id}/items with rel=next cursor pagination."""
+    """Walk source /collections/{id}/items with rel=next cursor pagination.
+
+    If the very first page fetch fails (a source may reject the requested page
+    size with e.g. HTTP 502), retry the first page with a halved limit down to
+    ``_MIN_PAGE_LIMIT`` before giving up — otherwise an over-large default would
+    silently harvest zero items.
+    """
+    limit = _PAGE_LIMIT
     url: Optional[str] = (
-        f"{catalog_url}/collections/{collection_id}/items?limit={_PAGE_LIMIT}"
+        f"{catalog_url}/collections/{collection_id}/items?limit={limit}"
     )
+    first_page = True
     while url:
         try:
             page = _http_get_json(url)
         except Exception as exc:
+            if first_page and limit > _MIN_PAGE_LIMIT:
+                limit = max(_MIN_PAGE_LIMIT, limit // 2)
+                logger.warning(
+                    "stac_harvest: GET items for %s failed (%s) — "
+                    "retrying first page with limit=%d",
+                    collection_id, exc, limit,
+                )
+                url = (
+                    f"{catalog_url}/collections/{collection_id}/items?limit={limit}"
+                )
+                continue
             logger.warning(
                 "stac_harvest: GET items for %s failed: %s", collection_id, exc
             )
             return
+        first_page = False
         for feat in page.get("features") or []:
             yield feat
         url = _next_href(page)
