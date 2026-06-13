@@ -664,13 +664,23 @@ class EventsModule(ModuleProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> str:
         """Insert an event into the global outbox. Returns event_id."""
+        from dynastore.modules.events.work_events_dual_write import (  # noqa: PLC0415
+            dispatch_event_dual_write,
+        )
+        from dynastore.modules.db_config.query_executor import managed_transaction  # noqa: PLC0415
 
         async def _run(conn: Any) -> str:
             payload_str = orjson.dumps(payload).decode()
             # Compute shard value in Python to avoid asyncpg type inference conflicts
             shard_key = catalog_id or "PLATFORM"
             shard = abs(hash(shard_key)) % 16
-            return await _publish_query.execute(
+            try:
+                from dynastore.modules import get_protocol  # noqa: PLC0415
+                from dynastore.models.protocols import ConfigsProtocol  # noqa: PLC0415
+                configs = get_protocol(ConfigsProtocol)
+            except Exception:
+                configs = None
+            return await dispatch_event_dual_write(
                 conn,
                 event_type=event_type,
                 scope=scope,
@@ -678,8 +688,9 @@ class EventsModule(ModuleProtocol):
                 catalog_id=catalog_id,
                 collection_id=collection_id,
                 identity_id=identity_id,
-                payload=payload_str,
+                payload_str=payload_str,
                 shard=shard,
+                configs=configs,
             )
 
         if db_resource is not None:
