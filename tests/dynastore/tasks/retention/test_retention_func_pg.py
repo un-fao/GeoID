@@ -52,8 +52,12 @@ async def _provision_retention_func(conn, schema: str) -> None:
     """CREATE OR REPLACE the retention function in *schema*."""
     from dynastore.modules.tasks.tasks_module import GLOBAL_TASKS_RETENTION_FUNC_DDL
 
-    # The DDL template uses Python {schema} placeholders — expand before sending.
-    sql = GLOBAL_TASKS_RETENTION_FUNC_DDL.format(schema=schema)
+    # Render exactly as production does: DDLQuery substitutes {schema} via
+    # str.replace, NOT str.format. Using .format here would (a) collapse the
+    # regex's single braces \d{4} into positional fields and raise, and (b)
+    # mask the doubled-brace bug fixed in the DDL — the literal "\d{{4}}" that
+    # str.replace leaves intact silently disabled monthly retention.
+    sql = GLOBAL_TASKS_RETENTION_FUNC_DDL.replace("{schema}", schema)
     await conn.execute(sql)  # type: ignore[attr-defined]
 
 
