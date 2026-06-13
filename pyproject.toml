@@ -71,6 +71,7 @@ dynastore-ext-admin = { workspace = true }
 dynastore-ext-logs = { workspace = true }
 dynastore-ext-configs = { workspace = true }
 dynastore-ext-assets = { workspace = true }
+dynastore-ext-catalog-status = { workspace = true }
 
 [project.optional-dependencies]
 # ==========================================================================

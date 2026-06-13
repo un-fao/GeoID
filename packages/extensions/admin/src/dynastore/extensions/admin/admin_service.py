@@ -266,48 +266,6 @@ async def list_task_registry() -> list[dict]:
     return await _registry_list_all(engine)
 
 
-from dynastore.modules.tasks.maintenance import (  # noqa: E402
-    list_dead_letter_tasks as _dlq_list,
-    requeue_dead_letter_task as _dlq_requeue,
-)
-
-# Same indirection style as ``_registry_list_all``: aliases the maintenance
-# primitives so the catalog DLQ views are unit-testable without a DB/app.
-
-
-async def _catalog_task_schema(catalog_id: str, engine) -> str:
-    """Resolve the catalog's task-row ``schema_name`` (the tenant tag DLQ queries
-    filter on). Reuses the tasks module's catalog->schema resolver."""
-    from dynastore.modules.tasks.tasks_module import _resolve_catalog_schema
-    return await _resolve_catalog_schema(catalog_id, engine)
-
-
-async def list_catalog_dead_letter(catalog_id: str) -> list[dict]:
-    """Dead-lettered tasks for one catalog (catalog-admin recovery view)."""
-    engine = _platform_engine()
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    schema = await _catalog_task_schema(catalog_id, engine)
-    return await _dlq_list(engine, schema_name=schema)
-
-
-async def requeue_catalog_dead_letter(catalog_id: str, task_id: str) -> dict:
-    """One-shot recall of a dead-lettered task (catalog-admin).
-
-    Tenant-scoped: resolves the catalog's task ``schema_name`` and passes it to
-    ``requeue_dead_letter_task``, whose UPDATE then only matches a task carrying
-    that tag. A catalog admin therefore cannot requeue another catalog's task
-    even by guessing its id — the UPDATE matches nothing and returns
-    ``requeued: false``.
-    """
-    engine = _platform_engine()
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    schema = await _catalog_task_schema(catalog_id, engine)
-    ok = await _dlq_requeue(engine, task_id, reset_retries=True, schema_name=schema)
-    return {"task_id": task_id, "requeued": bool(ok)}
-
-
 class AdminService(ExtensionProtocol):
     always_on = True
     priority: int = 200
@@ -607,76 +565,6 @@ class AdminService(ExtensionProtocol):
                 title = title_raw
             out.append({"id": c.id, "title": title or c.id})
         return out
-
-    @router.post(
-        "/catalogs/{catalog_id}/reprovision",
-        status_code=202,
-        summary="Re-enqueue the gcp_provision_catalog task for a catalog (sysadmin/admin only).",
-    )
-    async def reprovision_catalog(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
-        """Re-trigger GCP provisioning for a catalog.
-
-        Idempotent: the underlying task is already idempotent (bucket ensure +
-        eventing attach). Useful when eventing was degraded due to a missing
-        IAM grant — fix the grant, then call this endpoint to repair without
-        recreating the catalog.
-
-        Gated by the same ``admin_access`` policy as the broader
-        ``/admin/catalogs/{id}`` surface (sysadmin + admin).
-        """
-        from dynastore.modules.tasks import tasks_module
-        from dynastore.modules.tasks.models import TaskCreate
-        from dynastore.models.protocols import DatabaseProtocol
-
-        catalogs = get_protocol(CatalogsProtocol)
-        if catalogs is None:
-            raise HTTPException(status_code=503, detail="Catalogs service not available.")
-        catalog = await catalogs.get_catalog_model(catalog_id)
-        if catalog is None:
-            raise HTTPException(status_code=404, detail=f"Catalog '{catalog_id}' not found.")
-
-        db = get_protocol(DatabaseProtocol)
-        if db is None:
-            raise HTTPException(status_code=503, detail="Database unavailable.")
-
-        provisioning_status = getattr(catalog, "provisioning_status", "ready") or "ready"
-
-        task = await tasks_module.create_task_for_catalog(
-            engine=db.engine,
-            task_data=TaskCreate(
-                caller_id="system:admin",
-                task_type="gcp_provision_catalog",
-                inputs={"catalog_id": catalog_id},
-            ),
-            catalog_id=catalog_id,
-        )
-        if task is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Task enqueue returned None (possible dedup collision).",
-            )
-        return {
-            "task_id": str(task.task_id),
-            "catalog_id": catalog_id,
-            "provisioning_status": provisioning_status,
-            "status": "queued",
-        }
-
-    @router.get(
-        "/catalogs/{catalog_id}/dead-letter",
-        summary="List dead-lettered tasks for this catalog (catalog-admin).",
-    )
-    async def list_catalog_dead_letter_view(catalog_id: str):  # type: ignore[reportGeneralTypeIssues]
-        await _assert_catalog_exists(catalog_id)
-        return await list_catalog_dead_letter(catalog_id)
-
-    @router.post(
-        "/catalogs/{catalog_id}/dead-letter/{task_id}/requeue",
-        summary="One-shot recall of a dead-lettered task (catalog-admin).",
-    )
-    async def requeue_catalog_dead_letter_view(catalog_id: str, task_id: str):  # type: ignore[reportGeneralTypeIssues]
-        await _assert_catalog_exists(catalog_id)
-        return await requeue_catalog_dead_letter(catalog_id, task_id)
 
     # -------------------------------------------------------------------------
     # Admin task-dispatch (/admin/catalogs/{cat}/tasks and
