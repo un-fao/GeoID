@@ -32,6 +32,7 @@ from pydantic import Field
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.mutability import Mutable
 from dynastore.models.plugin_config import PluginConfig
+from dynastore.modules.volumes.color_ramp import DEFAULT_HEIGHT_RAMP_HEX
 
 
 class VolumesConfig(ExposableConfigMixin, PluginConfig):
@@ -77,13 +78,8 @@ class VolumesConfig(ExposableConfigMixin, PluginConfig):
     # Sequential height colour ramp as ``[stop_metres, "#rrggbb"]`` stops. The
     # hex vocabulary matches Mapbox GL / SLD colour maps so the same ramp can
     # later be sourced from an OGC API - Styles resource. Default is ColorBrewer
-    # RdYlBu reversed (low=blue → tall=red).
+    # RdYlBu reversed (low=blue → tall=red), shared with the ramp module so the
+    # baked tiles and any config-surfaced default stay in sync.
     height_color_ramp: Mutable[List[Tuple[float, str]]] = Field(
-        default=[
-            (0.0, "#2c7bb6"),
-            (10.0, "#abd9e9"),
-            (20.0, "#ffffbf"),
-            (40.0, "#fdae61"),
-            (80.0, "#d7191c"),
-        ]
+        default_factory=lambda: list(DEFAULT_HEIGHT_RAMP_HEX)
     )
