@@ -25,16 +25,22 @@ and height attributes for a specific set of feature IDs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Optional, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True)
 class FeatureGeometry:
-    """Raw geometry + height attribute for one feature."""
+    """Raw geometry + height attributes for one feature.
+
+    ``height`` is the extrusion height in metres. ``z_base`` is the absolute
+    ground elevation (the attributes-sidecar ``zmin`` when available); when
+    ``None`` the mesh builder falls back to the geometry's Z, then 0.
+    """
 
     feature_id: str
     geom_wkb: bytes
     height: float = 0.0
+    z_base: Optional[float] = None
 
 
 @runtime_checkable

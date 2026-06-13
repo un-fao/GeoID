@@ -53,6 +53,11 @@ class GeometryQuerySpec:
     feature_id_column: str = "geoid"
     geom_column: str = "geom"
     height_column: Optional[str] = None
+    # Attributes sidecar (#2089): pre-rendered SQL exprs over join alias ``a``.
+    attributes_table: Optional[str] = None
+    zmin_expr: Optional[str] = None
+    zmax_expr: Optional[str] = None
+    height_expr: Optional[str] = None
 
 
 def build_geometry_query(spec: GeometryQuerySpec) -> str:
@@ -73,22 +78,46 @@ def build_geometry_query(spec: GeometryQuerySpec) -> str:
     if not spec.feature_ids:
         return (
             "SELECT NULL::text AS feature_id, NULL::bytea AS geom_wkb, "
-            "0.0::float AS height WHERE false"
+            "0.0::float AS height, NULL::float AS z_base WHERE false"
         )
 
-    if spec.height_column:
-        height_expr = f'COALESCE(h."{spec.height_column}"::float, 0.0)'
+    geom_zbase = f'ST_ZMin(ST_Force3D(g."{spec.geom_column}"))'
+    attrs_join = ""
+    if spec.attributes_table and spec.zmin_expr and spec.zmax_expr:
+        # True per-feature height + ground from the attributes sidecar (#2089):
+        # height = sidecar height attr, else (zmax - zmin); z_base = zmin.
+        # Geometry z is the COALESCE fallback when the sidecar value is NULL.
+        attrs = f'"{spec.schema}"."{spec.attributes_table}"'
+        attrs_join = (
+            f"LEFT JOIN {attrs} a "
+            f'ON h."{spec.feature_id_column}" = a."{spec.feature_id_column}" '
+        )
+        if spec.height_expr:
+            height_src = (
+                f"COALESCE({spec.height_expr}, "
+                f"({spec.zmax_expr} - {spec.zmin_expr}))"
+            )
+        else:
+            height_src = f"({spec.zmax_expr} - {spec.zmin_expr})"
+        height_expr = f"COALESCE({height_src}, 0.0)::float"
+        z_base_expr = f"COALESCE({spec.zmin_expr}, {geom_zbase})::float"
     else:
-        height_expr = "0.0"
+        if spec.height_column:
+            height_expr = f'COALESCE(h."{spec.height_column}"::float, 0.0)'
+        else:
+            height_expr = "0.0"
+        z_base_expr = f"{geom_zbase}::float"
 
     return (
         "SELECT "
         f'h."{spec.feature_id_column}" AS feature_id, '
         f'ST_AsBinary(ST_Force3D(g."{spec.geom_column}")) AS geom_wkb, '
-        f"{height_expr} AS height "
+        f"{height_expr} AS height, "
+        f"{z_base_expr} AS z_base "
         f"FROM {hub} h "
         f"JOIN {geoms} g "
         f'ON h."{spec.feature_id_column}" = g."{spec.feature_id_column}" '
+        f"{attrs_join}"
         f'WHERE g."{spec.geom_column}" IS NOT NULL '
         f'  AND h."{spec.feature_id_column}" = ANY(:feature_ids)'
     )
@@ -104,10 +133,12 @@ def row_to_feature_geometry(row: Dict[str, Any]) -> Optional[FeatureGeometry]:
         return None
     if isinstance(wkb, memoryview):
         wkb = bytes(wkb)
+    raw_z_base = row.get("z_base")
     return FeatureGeometry(
         feature_id=str(row["feature_id"]),
         geom_wkb=wkb,
         height=float(row.get("height") or 0.0),
+        z_base=float(raw_z_base) if raw_z_base is not None else None,
     )
 
 
@@ -190,6 +221,8 @@ class SidecarGeometryFetcher:
             layout.feature_id_column,
         ):
             validate_sql_identifier(t)
+        if layout.attributes_table:
+            validate_sql_identifier(layout.attributes_table)
 
         spec = GeometryQuerySpec(
             schema=layout.schema,
@@ -199,6 +232,10 @@ class SidecarGeometryFetcher:
             feature_id_column=layout.feature_id_column,
             geom_column=layout.geom_column,
             height_column=self._height_column,
+            attributes_table=layout.attributes_table,
+            zmin_expr=layout.zmin_expr,
+            zmax_expr=layout.zmax_expr,
+            height_expr=layout.height_expr,
         )
         sql = build_geometry_query(spec)
 

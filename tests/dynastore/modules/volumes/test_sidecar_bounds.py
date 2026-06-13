@@ -380,3 +380,33 @@ async def test_get_bounds_failed_validation_is_not_cached():
     assert [b.feature_id for b in out] == ["y"]
     assert len(executed_sql) == 1
 
+
+
+# ---------------------------------------------------------------------------
+# Attributes-sidecar z-range join (#2089)
+# ---------------------------------------------------------------------------
+
+
+def test_build_bounds_query_attributes_join_coalesces_zrange():
+    spec = BoundsQuerySpec(
+        schema="tenant",
+        hub_table="buildings",
+        geometries_table="buildings_geometries",
+        attributes_table="buildings_attributes",
+        zmin_expr='a."zmin"',
+        zmax_expr='a."zmax"',
+    )
+    sql = build_bounds_query(spec)
+    assert 'LEFT JOIN "tenant"."buildings_attributes" a' in sql
+    # z-range prefers the sidecar value, geometry z is the fallback.
+    assert 'COALESCE(a."zmin", ST_ZMin(ST_Force3D(g."geom")))' in sql
+    assert 'COALESCE(a."zmax", ST_ZMax(ST_Force3D(g."geom")))' in sql
+
+
+def test_build_bounds_query_without_attributes_uses_geometry_z():
+    spec = BoundsQuerySpec(
+        schema="t", hub_table="h", geometries_table="h_geom",
+    )
+    sql = build_bounds_query(spec)
+    assert "LEFT JOIN" not in sql
+    assert "ST_ZMin(ST_Force3D(g.\"geom\")) AS min_z" in sql

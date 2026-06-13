@@ -172,13 +172,8 @@ def test_build_mesh_sidecar_z_base_offsets_bottom():
     # When z_base is provided (sidecar zmin), the prism bottom sits at z_base
     # and the top at z_base + height, so the up extent still equals height but
     # the absolute up coordinate is lifted.
-    class _FG:
-        feature_id = "z"
-        geom_wkb = _square_wkb()
-        height = 4.0
-        z_base = 30.0
-
-    buf = build_mesh_from_geometries([_FG()], origin=ORIGIN)
+    fg = FeatureGeometry("z", _square_wkb(), height=4.0, z_base=30.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN)
     assert buf.max_pos[2] - buf.min_pos[2] == pytest.approx(4.0, abs=0.01)
     # Bottom lifted to ~30 m (curvature over a 22 m footprint is sub-mm).
     assert buf.min_pos[2] == pytest.approx(30.0, abs=0.05)
