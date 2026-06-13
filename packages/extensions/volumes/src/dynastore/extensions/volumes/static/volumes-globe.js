@@ -326,10 +326,16 @@ function buildContainerLayers(container) {
       id:        "geovolumes-extents",
       data:      polygonData,
       extruded:  true,
+      // Wireframe-only (no solid faces). Context containers can geographically
+      // overlap the selection (e.g. two clips of the same city), so a *filled*
+      // extruded box would write depth across the selection and occlude its
+      // per-building volumes — the same interleaved depth-buffer trap that hid
+      // the selected container's own box. Drawing just the box edges writes
+      // depth only along thin lines, so the 3D-Tiles buildings show through.
       wireframe: true,
+      filled:    false,
       getPolygon:   (d) => d.contour,
       getElevation: (d) => d.extrudedHeight - d.elevation,
-      getFillColor:    [99, 102, 241, 40],
       getLineColor:    [99, 102, 241, 180],
       lineWidthMinPixels: 1,
       pickable:  true,
