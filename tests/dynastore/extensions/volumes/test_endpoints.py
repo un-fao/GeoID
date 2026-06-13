@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from starlette.datastructures import URL
 
 
 def _build_service():
@@ -43,7 +44,7 @@ async def test_tileset_json_returns_valid_skeleton():
 
     svc = _build_service()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json")
 
     resp = await svc.get_tileset_json("c", "l", request)
     body = b""
@@ -92,7 +93,7 @@ async def test_tileset_json_uses_registered_bounds_source(monkeypatch):
 
     svc = VolumesService()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json")
 
     resp = await svc.get_tileset_json("c", "l", request)
     body = b""
@@ -118,7 +119,7 @@ async def test_tileset_json_falls_back_to_empty_source(monkeypatch):
 
     svc = VolumesService()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json")
 
     resp = await svc.get_tileset_json("c", "l", request)
     body = b""
@@ -151,7 +152,7 @@ async def test_tileset_json_degrades_when_bounds_source_raises(monkeypatch):
 
     svc = VolumesService()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/tileset.json")
 
     resp = await svc.get_tileset_json("c", "l", request)
     body = b""
@@ -237,7 +238,7 @@ async def test_tileset_cached_after_first_build(monkeypatch):
 
     svc = VolumesService()
     req = MagicMock(spec=Request)
-    req.url = "http://ex/volumes/catalogs/cc/collections/ll/3dtiles/tileset.json"
+    req.url = URL("http://ex/volumes/catalogs/cc/collections/ll/3dtiles/tileset.json")
 
     await svc.get_tileset_json("cc", "ll", req)
     await svc.get_tileset_json("cc", "ll", req)
@@ -291,7 +292,7 @@ async def test_get_tile_b3dm_returns_bytes_response(monkeypatch):
 
     svc = mod.VolumesService()
     req = MagicMock(spec=Request)
-    req.url = "http://ex/volumes/catalogs/c/collections/col/3dtiles/tileset.json"
+    req.url = URL("http://ex/volumes/catalogs/c/collections/col/3dtiles/tileset.json")
 
     # Build tileset so the cache is populated with correct tile_ids.
     await svc.get_tileset_json("c", "col", req)
@@ -302,7 +303,7 @@ async def test_get_tile_b3dm_returns_bytes_response(monkeypatch):
     tile_id = content_uri.rsplit("/", 1)[-1].split(".")[0]
 
     req2 = MagicMock(spec=Request)
-    req2.url = f"http://ex/volumes/catalogs/c/collections/col/3dtiles/tiles/{tile_id}.b3dm"
+    req2.url = URL(f"http://ex/volumes/catalogs/c/collections/col/3dtiles/tiles/{tile_id}.b3dm")
 
     response = await svc.get_tile_b3dm("c", "col", tile_id, req2)
     assert response.media_type == "application/octet-stream"
@@ -356,7 +357,7 @@ async def test_get_tile_glb_returns_gltf_binary(monkeypatch):
 
     svc = mod.VolumesService()
     req = MagicMock(spec=Request)
-    req.url = "http://ex/volumes/catalogs/c/collections/col2/3dtiles/tileset.json"
+    req.url = URL("http://ex/volumes/catalogs/c/collections/col2/3dtiles/tileset.json")
     await svc.get_tileset_json("c", "col2", req)
 
     root = mod._TILESET_CACHE[("c", "col2")][1]["root"]
@@ -364,7 +365,7 @@ async def test_get_tile_glb_returns_gltf_binary(monkeypatch):
     tile_id = content_uri.rsplit("/", 1)[-1].split(".")[0]
 
     req2 = MagicMock(spec=Request)
-    req2.url = f"http://ex/volumes/catalogs/c/collections/col2/3dtiles/tiles/{tile_id}.glb"
+    req2.url = URL(f"http://ex/volumes/catalogs/c/collections/col2/3dtiles/tiles/{tile_id}.glb")
 
     response = await svc.get_tile_glb("c", "col2", tile_id, req2)
     assert response.media_type == "model/gltf-binary"
@@ -390,11 +391,11 @@ async def test_b3dm_returns_404_for_unknown_tile(monkeypatch):
 
     svc = mod.VolumesService()
     req = MagicMock(spec=Request)
-    req.url = "http://ex/volumes/catalogs/c/collections/empty/3dtiles/tileset.json"
+    req.url = URL("http://ex/volumes/catalogs/c/collections/empty/3dtiles/tileset.json")
     await svc.get_tileset_json("c", "empty", req)
 
     req2 = MagicMock(spec=Request)
-    req2.url = "http://ex/volumes/catalogs/c/collections/empty/3dtiles/tiles/999.b3dm"
+    req2.url = URL("http://ex/volumes/catalogs/c/collections/empty/3dtiles/tiles/999.b3dm")
 
     with pytest.raises(HTTPException) as exc:
         await svc.get_tile_b3dm("c", "empty", "999", req2)
@@ -415,7 +416,7 @@ async def test_metadata_emits_self_and_data_links():
 
     svc = _build_service()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata")
 
     payload = await svc.get_volumes_metadata("c", "l", request)
     assert payload["title"].startswith("3D GeoVolumes")
@@ -432,7 +433,7 @@ async def test_metadata_exposes_new_config_fields():
 
     svc = _build_service()
     request = MagicMock(spec=Request)
-    request.url = "http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata"
+    request.url = URL("http://ex/volumes/catalogs/c/collections/l/3dtiles/metadata")
 
     payload = await svc.get_volumes_metadata("c", "l", request)
     cfg = payload["config"]

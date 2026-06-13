@@ -83,6 +83,7 @@ from dynastore.modules.volumes.writers.b3dm import pack_b3dm
 from dynastore.modules.volumes.writers.glb import pack_glb
 from dynastore.modules.volumes.writers.tileset_json import write_tileset_json
 from dynastore.tools.discovery import get_protocol
+from dynastore.extensions.tools.url import get_url
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +238,10 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         self, catalog_id: str, collection_id: str, request: Request,
     ):
         cfg = await self._get_volumes_config(catalog_id, collection_id)
-        base = str(request.url).rstrip("/").rsplit("/", 1)[0]
+        # get_url honors FORCE_HTTPS: behind the review/dev load balancer the
+        # inner request scheme is http, which would emit mixed-content links on
+        # the https page. get_url also strips query params + trailing slash.
+        base = get_url(request).rsplit("/", 1)[0]
         return {
             "title": f"3D GeoVolumes for {catalog_id}/{collection_id}",
             "description": "OGC API - 3D GeoVolumes (Cesium 3D Tiles encoding)",
@@ -455,7 +459,10 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
             )
             bounds = []
 
-        base = str(request.url).rstrip("/").rsplit("/", 1)[0]
+        # get_url honors FORCE_HTTPS so the b3dm content.uri matches the page
+        # scheme (https) behind the inner load balancer; otherwise the browser
+        # blocks the tile as mixed content and only the bounding box renders.
+        base = get_url(request).rsplit("/", 1)[0]
         primary_fmt = cfg.supported_formats[0] if cfg.supported_formats else "b3dm"
         template = f"{base}/tiles/{{tile_id}}.{primary_fmt}"
 
