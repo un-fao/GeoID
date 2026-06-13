@@ -1,6 +1,20 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ["./website/*.html", "./dashboard/*.html"],
+  content: [
+    // Web extension pages
+    "./website/*.html",
+    "./dashboard/*.html",
+    "./docs.html",
+    // Extension browser pages
+    "../../../../../../../edr/src/dynastore/extensions/edr/static/*.html",
+    "../../../../../../../stac/src/dynastore/extensions/stac/static/*.html",
+    "../../../../../../../features/src/dynastore/extensions/features/static/*.html",
+    "../../../../../../../coverages/src/dynastore/extensions/coverages/static/*.html",
+    "../../../../../../../moving_features/src/dynastore/extensions/moving_features/static/*.html",
+    "../../../../../../../assets/src/dynastore/extensions/assets/static/*.html",
+    "../../../../../../../volumes/src/dynastore/extensions/volumes/static/*.html",
+    "../../../../../../../tiles/src/dynastore/extensions/tiles/static/*.html",
+  ],
   theme: {
     extend: {
       colors: {
