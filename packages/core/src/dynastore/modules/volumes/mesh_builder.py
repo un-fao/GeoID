@@ -29,9 +29,12 @@ Pipeline:
   6. Return a flat list of float32 vertex positions + normal vectors and
      a packed binary buffer ready for a glTF bufferView.
 
-Coordinate convention: XY = easting/northing (or lon/lat), Z = elevation.
-Consumers are responsible for passing a tileset with a matching CRS; this
-module does not reproject.
+Coordinate convention: input footprints are EPSG:4326 (lon, lat in degrees)
+with heights in metres. Vertices are emitted in a **local East-North-Up
+metric frame** anchored at *origin* (the collection centre), matching the
+tileset root ``transform`` produced by ``tileset_builder``. The conversion is
+exact (see ``geo.lonlat_to_enu``); the tile content is therefore in metres and
+extrusion heights add cleanly on the up axis.
 
 Dependencies: shapely >= 2.0 (via geopandas).
 """
@@ -43,7 +46,13 @@ import struct
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Sequence, Tuple
 
+from dynastore.modules.volumes.geo import lonlat_to_enu
+
 logger = logging.getLogger(__name__)
+
+# Default ENU origin (lon, lat, height) — overridable per call. (0,0,0) keeps
+# legacy callers working as a degenerate equatorial frame.
+_DEFAULT_ORIGIN: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 # Static-typing-only imports: pyright follows this branch for type narrowing
 # even when the runtime ``try/except`` below cannot resolve shapely
@@ -143,13 +152,21 @@ def empty_mesh() -> MeshBuffers:
     )
 
 
+def _enu(lon: float, lat: float, h: float,
+         origin: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert a lon/lat/height vertex to local ENU metres about *origin*."""
+    return lonlat_to_enu(lon, lat, h, origin[0], origin[1], origin[2])
+
+
 def _fan_triangulate(ring_xy: Sequence[Tuple[float, float]],
                      z: float,
                      acc: _MeshAccumulator,
+                     origin: Tuple[float, float, float],
                      flip_winding: bool = False) -> None:
-    """Centroid-fan triangulation of a closed 2-D ring at elevation *z*.
+    """Centroid-fan triangulation of a closed lon/lat ring at height *z* (m).
 
-    The last coordinate of a shapely ring equals the first (closed); we
+    Each (lon, lat, z) vertex is converted to local ENU metres before it is
+    added. The last coordinate of a shapely ring equals the first (closed); we
     skip it to avoid degenerate triangles.
     """
     coords = list(ring_xy)
@@ -161,9 +178,9 @@ def _fan_triangulate(ring_xy: Sequence[Tuple[float, float]],
 
     cx = sum(c[0] for c in coords) / n
     cy = sum(c[1] for c in coords) / n
-    center_idx = acc.add_vertex(cx, cy, z)
+    center_idx = acc.add_vertex(*_enu(cx, cy, z, origin))
 
-    ring_indices = [acc.add_vertex(c[0], c[1], z) for c in coords]
+    ring_indices = [acc.add_vertex(*_enu(c[0], c[1], z, origin)) for c in coords]
     for i in range(n):
         a = ring_indices[i]
         b = ring_indices[(i + 1) % n]
@@ -176,8 +193,9 @@ def _fan_triangulate(ring_xy: Sequence[Tuple[float, float]],
 def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
                   z_bottom: float,
                   z_top: float,
-                  acc: _MeshAccumulator) -> None:
-    """Extrude a 2-D ring into side-wall quads (two triangles each)."""
+                  acc: _MeshAccumulator,
+                  origin: Tuple[float, float, float]) -> None:
+    """Extrude a lon/lat ring into side-wall quads (two triangles each)."""
     coords = list(ring_xy)
     if coords and coords[-1] == coords[0]:
         coords = coords[:-1]
@@ -185,8 +203,8 @@ def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
     if n < 2:
         return
 
-    bot = [acc.add_vertex(c[0], c[1], z_bottom) for c in coords]
-    top = [acc.add_vertex(c[0], c[1], z_top) for c in coords]
+    bot = [acc.add_vertex(*_enu(c[0], c[1], z_bottom, origin)) for c in coords]
+    top = [acc.add_vertex(*_enu(c[0], c[1], z_top, origin)) for c in coords]
 
     for i in range(n):
         j = (i + 1) % n
@@ -198,21 +216,23 @@ def _extrude_ring(ring_xy: Sequence[Tuple[float, float]],
 def _extrude_polygon(polygon: Polygon,
                      z_base: float,
                      extrusion_height: float,
-                     acc: _MeshAccumulator) -> None:
+                     acc: _MeshAccumulator,
+                     origin: Tuple[float, float, float]) -> None:
     z_top = z_base + extrusion_height
     ring = list(polygon.exterior.coords)
 
     # Top cap (normal pointing up → CCW when viewed from above).
-    _fan_triangulate([(c[0], c[1]) for c in ring], z_top, acc, flip_winding=False)
+    _fan_triangulate([(c[0], c[1]) for c in ring], z_top, acc, origin, flip_winding=False)
     # Bottom cap (normal pointing down → CW when viewed from above).
-    _fan_triangulate([(c[0], c[1]) for c in ring], z_base, acc, flip_winding=True)
+    _fan_triangulate([(c[0], c[1]) for c in ring], z_base, acc, origin, flip_winding=True)
     # Side walls.
-    _extrude_ring([(c[0], c[1]) for c in ring], z_base, z_top, acc)
+    _extrude_ring([(c[0], c[1]) for c in ring], z_base, z_top, acc, origin)
 
 
 def build_mesh_from_geometries(
     features: Sequence[FeatureGeometry],
     *,
+    origin: Tuple[float, float, float] = _DEFAULT_ORIGIN,
     default_extrusion_height: float = 10.0,
 ) -> MeshBuffers:
     """Build a combined triangle mesh from a sequence of ``FeatureGeometry``.
@@ -220,9 +240,13 @@ def build_mesh_from_geometries(
     All features are merged into one mesh (single glTF primitive / draw
     call). Features whose WKB cannot be parsed are skipped with a warning.
 
-    *z_base* for each feature is taken from the WKB Z coordinate if the
-    geometry is 3-D, otherwise 0.0. The extrusion height is
-    ``feature.height`` if > 0, else ``default_extrusion_height``.
+    Vertices are emitted in the local ENU metric frame anchored at *origin*
+    ``(lon0, lat0, h0)`` — the same origin the tileset root transform uses.
+
+    *z_base* for each feature is taken from ``feature.z_base`` when provided
+    (the sidecar ``zmin``), else the WKB Z coordinate if the geometry is 3-D,
+    otherwise 0.0. The extrusion height is ``feature.height`` if > 0, else
+    ``default_extrusion_height``.
     """
     if not _SHAPELY_AVAILABLE:
         raise RuntimeError(
@@ -252,14 +276,20 @@ def build_mesh_from_geometries(
             continue
 
         extrusion = fg.height if fg.height > 0 else default_extrusion_height
+        # Prefer the sidecar zmin (z_base) when present (#2089); otherwise fall
+        # back to the geometry's Z, then to ground (0.0).
+        sidecar_z_base = getattr(fg, "z_base", None)
 
         for poly in polys:
             if poly.is_empty:
                 continue
-            # Use Z from first exterior coordinate if present.
-            first = poly.exterior.coords[0]
-            z_base = float(first[2]) if len(first) > 2 else 0.0
+            if sidecar_z_base is not None:
+                z_base = float(sidecar_z_base)
+            else:
+                # Use Z from first exterior coordinate if present.
+                first = poly.exterior.coords[0]
+                z_base = float(first[2]) if len(first) > 2 else 0.0
             _extrude_polygon(poly, z_base=z_base,
-                             extrusion_height=extrusion, acc=acc)
+                             extrusion_height=extrusion, acc=acc, origin=origin)
 
     return acc.to_buffers()

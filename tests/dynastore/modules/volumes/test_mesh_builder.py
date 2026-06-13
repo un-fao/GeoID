@@ -16,11 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Tests for modules/volumes/mesh_builder.py."""
+"""Tests for modules/volumes/mesh_builder.py.
+
+Vertices are emitted in a local ENU metric frame anchored at *origin*, so the
+tests use a realistic Den Haag origin with small (metres-scale) footprints and
+assert the metric z-*extent* (top − bottom) equals the extrusion height, rather
+than absolute coordinates.
+"""
 
 from __future__ import annotations
-
-import struct
 
 import pytest
 
@@ -31,21 +35,27 @@ import shapely.wkb
 
 from dynastore.models.protocols.geometry_fetcher import FeatureGeometry
 from dynastore.modules.volumes.mesh_builder import (
-    MeshBuffers,
     _MeshAccumulator,
-    empty_mesh,
     _fan_triangulate,
     _extrude_ring,
     _extrude_polygon,
     build_mesh_from_geometries,
 )
 
+# Den Haag-ish origin (lon, lat, height) and a ~22 m footprint step in degrees.
+ORIGIN = (4.3007, 52.0705, 0.0)
+_D = 0.0002  # ~13-22 m at this latitude
 
-def _square_wkb(x0=0.0, y0=0.0, size=1.0) -> bytes:
-    poly = Polygon([
-        (x0, y0), (x0 + size, y0), (x0 + size, y0 + size), (x0, y0 + size),
-    ])
-    return shapely.wkb.dumps(poly)
+
+def _square_lonlat(lon0=4.3007, lat0=52.0705, size=_D):
+    return [
+        (lon0, lat0), (lon0 + size, lat0),
+        (lon0 + size, lat0 + size), (lon0, lat0 + size), (lon0, lat0),
+    ]
+
+
+def _square_wkb(lon0=4.3007, lat0=52.0705, size=_D) -> bytes:
+    return shapely.wkb.dumps(Polygon(_square_lonlat(lon0, lat0, size)))
 
 
 # ---------------------------------------------------------------------------
@@ -82,24 +92,23 @@ def test_accumulator_single_triangle():
 
 def test_fan_triangulate_square_produces_four_triangles():
     acc = _MeshAccumulator()
-    square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
-    _fan_triangulate(square, z=0.0, acc=acc)
+    _fan_triangulate(_square_lonlat(), z=0.0, acc=acc, origin=ORIGIN)
     # 4-vertex ring → 4 fan triangles (centroid + each edge)
     assert acc.to_buffers().triangle_count == 4
 
 
 def test_fan_triangulate_degenerate_ring_skipped():
     acc = _MeshAccumulator()
-    _fan_triangulate([(0.0, 0.0), (1.0, 0.0)], z=0.0, acc=acc)
+    _fan_triangulate([(4.3, 52.07), (4.301, 52.07)], z=0.0, acc=acc, origin=ORIGIN)
     assert acc.to_buffers().triangle_count == 0
 
 
 def test_fan_triangulate_flip_winding():
     acc_normal = _MeshAccumulator()
     acc_flipped = _MeshAccumulator()
-    ring = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
-    _fan_triangulate(ring, z=0.0, acc=acc_normal, flip_winding=False)
-    _fan_triangulate(ring, z=0.0, acc=acc_flipped, flip_winding=True)
+    ring = _square_lonlat()
+    _fan_triangulate(ring, z=0.0, acc=acc_normal, origin=ORIGIN, flip_winding=False)
+    _fan_triangulate(ring, z=0.0, acc=acc_flipped, origin=ORIGIN, flip_winding=True)
     # Triangle vertex order must differ.
     assert acc_normal.tris[0] != acc_flipped.tris[0]
 
@@ -111,8 +120,7 @@ def test_fan_triangulate_flip_winding():
 
 def test_extrude_ring_square_produces_eight_triangles():
     acc = _MeshAccumulator()
-    square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
-    _extrude_ring(square, z_bottom=0.0, z_top=5.0, acc=acc)
+    _extrude_ring(_square_lonlat(), z_bottom=0.0, z_top=5.0, acc=acc, origin=ORIGIN)
     # 4 edges × 2 triangles each = 8
     assert acc.to_buffers().triangle_count == 8
 
@@ -124,14 +132,15 @@ def test_extrude_ring_square_produces_eight_triangles():
 
 def test_extrude_polygon_unit_square():
     acc = _MeshAccumulator()
-    poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    _extrude_polygon(poly, z_base=0.0, extrusion_height=3.0, acc=acc)
+    poly = Polygon(_square_lonlat())
+    _extrude_polygon(poly, z_base=0.0, extrusion_height=3.0, acc=acc, origin=ORIGIN)
     buf = acc.to_buffers()
     # top cap: 4 tris, bottom cap: 4 tris, sides: 8 tris = 16
     assert buf.triangle_count == 16
-    # Z range: 0 → 3
-    assert buf.min_pos[2] == pytest.approx(0.0)
-    assert buf.max_pos[2] == pytest.approx(3.0)
+    # Z-extent (up axis) equals the extrusion height; coords are metres.
+    assert buf.max_pos[2] - buf.min_pos[2] == pytest.approx(3.0, abs=0.01)
+    # Footprint is metric (~22 m), not raw degrees.
+    assert 5.0 < (buf.max_pos[0] - buf.min_pos[0]) < 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -140,55 +149,73 @@ def test_extrude_polygon_unit_square():
 
 
 def test_build_mesh_empty_input():
-    buf = build_mesh_from_geometries([])
+    buf = build_mesh_from_geometries([], origin=ORIGIN)
     assert buf.vertex_count == 0
 
 
 def test_build_mesh_single_feature():
-    wkb = _square_wkb(0, 0, 1)
-    fg = FeatureGeometry(feature_id="f1", geom_wkb=wkb, height=5.0)
-    buf = build_mesh_from_geometries([fg], default_extrusion_height=10.0)
+    fg = FeatureGeometry(feature_id="f1", geom_wkb=_square_wkb(), height=5.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN, default_extrusion_height=10.0)
     assert buf.vertex_count > 0
     assert buf.triangle_count > 0
-    # height=5 used as extrusion
-    assert buf.max_pos[2] == pytest.approx(5.0)
+    # height=5 used as extrusion → z-extent ≈ 5 m
+    assert buf.max_pos[2] - buf.min_pos[2] == pytest.approx(5.0, abs=0.01)
 
 
 def test_build_mesh_uses_default_extrusion_when_height_zero():
-    wkb = _square_wkb(0, 0, 1)
-    fg = FeatureGeometry(feature_id="f1", geom_wkb=wkb, height=0.0)
-    buf = build_mesh_from_geometries([fg], default_extrusion_height=7.0)
-    assert buf.max_pos[2] == pytest.approx(7.0)
+    fg = FeatureGeometry(feature_id="f1", geom_wkb=_square_wkb(), height=0.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN, default_extrusion_height=7.0)
+    assert buf.max_pos[2] - buf.min_pos[2] == pytest.approx(7.0, abs=0.01)
+
+
+def test_build_mesh_sidecar_z_base_offsets_bottom():
+    # When z_base is provided (sidecar zmin), the prism bottom sits at z_base
+    # and the top at z_base + height, so the up extent still equals height but
+    # the absolute up coordinate is lifted.
+    class _FG:
+        feature_id = "z"
+        geom_wkb = _square_wkb()
+        height = 4.0
+        z_base = 30.0
+
+    buf = build_mesh_from_geometries([_FG()], origin=ORIGIN)
+    assert buf.max_pos[2] - buf.min_pos[2] == pytest.approx(4.0, abs=0.01)
+    # Bottom lifted to ~30 m (curvature over a 22 m footprint is sub-mm).
+    assert buf.min_pos[2] == pytest.approx(30.0, abs=0.05)
 
 
 def test_build_mesh_multiple_features():
-    wkb1 = _square_wkb(0, 0, 1)
-    wkb2 = _square_wkb(2, 0, 1)
     feats = [
-        FeatureGeometry("a", wkb1, height=3.0),
-        FeatureGeometry("b", wkb2, height=3.0),
+        FeatureGeometry("a", _square_wkb(4.3007, 52.0705), height=3.0),
+        FeatureGeometry("b", _square_wkb(4.3017, 52.0705), height=3.0),
     ]
-    buf = build_mesh_from_geometries(feats)
+    buf = build_mesh_from_geometries(feats, origin=ORIGIN)
     assert buf.vertex_count > 0
-    # Should contain vertices from both features.
-    assert buf.max_pos[0] >= 3.0  # rightmost X of second square
+    # Two footprints ~0.001 deg apart in lon → tens of metres of east extent.
+    assert (buf.max_pos[0] - buf.min_pos[0]) > 50.0
 
 
 def test_build_mesh_skips_bad_wkb():
     bad = FeatureGeometry("bad", b"\x00" * 5, height=1.0)
-    good_wkb = _square_wkb(0, 0, 1)
-    good = FeatureGeometry("good", good_wkb, height=1.0)
-    buf = build_mesh_from_geometries([bad, good])
+    good = FeatureGeometry("good", _square_wkb(), height=1.0)
+    buf = build_mesh_from_geometries([bad, good], origin=ORIGIN)
     assert buf.vertex_count > 0
 
 
 def test_build_mesh_multipolygon():
     mp = MultiPolygon([
-        Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
-        Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]),
+        Polygon(_square_lonlat(4.3007, 52.0705)),
+        Polygon(_square_lonlat(4.3017, 52.0705)),
     ])
     wkb = shapely.wkb.dumps(mp)
     fg = FeatureGeometry("mp", wkb, height=2.0)
-    buf = build_mesh_from_geometries([fg])
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN)
     assert buf.triangle_count > 0
-    assert buf.max_pos[0] >= 3.0
+    assert (buf.max_pos[0] - buf.min_pos[0]) > 50.0
+
+
+def test_build_mesh_default_origin_still_runs():
+    # Legacy call without origin must not crash (degenerate equatorial frame).
+    fg = FeatureGeometry("f", _square_wkb(0.0, 0.0), height=3.0)
+    buf = build_mesh_from_geometries([fg])
+    assert buf.vertex_count > 0
