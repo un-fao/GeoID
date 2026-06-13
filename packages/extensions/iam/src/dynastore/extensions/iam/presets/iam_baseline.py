@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """IAM baseline preset — platform policies + role bindings.
 
@@ -111,7 +115,16 @@ def _iam_service_policies() -> List[Policy]:
             id="admin_authorization_api",
             description="Allows admin users to manage user roles and permissions",
             actions=["GET", "POST", "PUT", "DELETE", "PATCH"],
-            resources=["/admin/principals/.*", "/admin/roles/.*", "/admin/policies/.*"],
+            # Anchored with an optional trailing segment so the BARE collection
+            # path (e.g. /admin/principals) matches too, not only item paths
+            # (/admin/principals/{id}). Policy.matches_resource uses start-anchored
+            # re.match, so "/admin/principals/.*" alone never matches the bare
+            # collection the admin UI calls -> deny-by-default 403 (#1736).
+            resources=[
+                r"^/admin/principals(/.*)?$",
+                r"^/admin/roles(/.*)?$",
+                r"^/admin/policies(/.*)?$",
+            ],
             effect="ALLOW",
             partition_key="global",
         ),

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, field_validator
 from dynastore.models.localization import LocalizedText
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 
 
 class WebPageConfig(BaseModel):

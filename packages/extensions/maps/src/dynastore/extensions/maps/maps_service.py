@@ -1,17 +1,17 @@
-#    Copyright 2025 FAO
-# 
+#    Copyright 2026 FAO
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
@@ -20,9 +20,9 @@
 
 import logging
 import asyncio
-from typing import Any, Optional
+from typing import Any, FrozenSet, Optional
 from concurrent.futures import ProcessPoolExecutor
-from fastapi import FastAPI, APIRouter, HTTPException, Response, Query, Request, Path
+from fastapi import Depends, FastAPI, APIRouter, HTTPException, Response, Query, Request, Path
 from sqlalchemy.ext.asyncio import AsyncConnection
 from contextlib import asynccontextmanager
 
@@ -48,6 +48,7 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.web.decorators import expose_web_page
+from dynastore.extensions.tools.query import parse_hints_param
 import os
 
 # Imports for Tiling Support
@@ -241,7 +242,13 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
              return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
 
     @router.get("/{dataset}", response_model=DatasetMaps)
-    async def get_dataset_maps(dataset: str, request: Request):  # type: ignore[reportGeneralTypeIssues]
+    async def get_dataset_maps(  # type: ignore[reportGeneralTypeIssues]
+        dataset: str,
+        request: Request,
+        request_hints: FrozenSet = Depends(parse_hints_param),
+    ):
+        # Accepted for uniform cross-protocol routing-hints support; this route
+        # returns dataset-maps metadata (links) and performs no vector-geometry read.
         catalogs_svc = get_protocol(CatalogsProtocol)
         if not catalogs_svc or not await catalogs_svc.get_catalog_model(dataset):
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found.")

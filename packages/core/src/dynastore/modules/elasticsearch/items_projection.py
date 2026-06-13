@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """
 Per-catalog known-fields catalog for the public items index mapping.
 
@@ -8,26 +26,36 @@ Three-tier model:
   Tier 1 across all alias members gives the platform-wide alias
   ``{prefix}-items`` a stable cross-catalog contract (term/range queries
   against Tier 1 paths resolve uniformly on every member).
+* **Tier SSOT** (optional, #1285) — per-collection queryable fields derived
+  from ``QueryOptimizer.get_all_queryable_fields()``. When available, each
+  :class:`~dynastore.models.protocols.field_definition.FieldDefinition`
+  object is placed directly into the known-fields map; :func:`build_item_mapping`
+  already converts FieldDefinition to an ES type fragment. A new queryable field
+  declared in the collection schema automatically appears in the ES mapping
+  without a separate Tier-1 hand-edit. SSOT-derived entries win over Tier-1 on
+  key overlap so schema-declared types are authoritative.
 * **Tier 2** — per-catalog operator overlay via
   ``ItemsElasticsearchDriverConfig.mapping.additional_known_fields``
   (introduced in the follow-up commit). Additive only: collisions with
   Tier 1 are rejected at config-validate time. Snapshot at index-create;
   live edits take effect on next index rebuild.
 * **Tier 3** — ``properties.extras`` long-tail lane. Anything not in
-  Tier 1 ∪ Tier 2 lands here. Mapped as a single ``flattened`` field —
-  the whole bucket is one mapping entry regardless of how many distinct
-  leaf keys arrive across the collections sharing the per-catalog
-  index (#1295). ``flattened`` leaves are keyword-exact (good for
-  per-key term/exists filters, no analysis); a sibling root field
-  ``_search_text`` populated at write time from the same extras values
-  carries the analyzed full-text view of the tail. Two mapping entries
-  total for the unknown long tail; nothing per-leaf.
+  Tier 1 ∪ Tier SSOT ∪ Tier 2 lands here. Mapped as a single ``flattened``
+  field — the whole bucket is one mapping entry regardless of how many
+  distinct leaf keys arrive across the collections sharing the per-catalog
+  index (#1295). ``flattened`` leaves are keyword-exact (good for per-key
+  term/exists filters, no analysis); a sibling root field ``_search_text``
+  populated at write time from the same extras values carries the analyzed
+  full-text view of the tail. Two mapping entries total for the unknown long
+  tail; nothing per-leaf.
 
 The module exposes a small, pure-Python API consumed by the items
 driver write path and the search service sort path:
 
 * :func:`build_known_fields` — resolve the effective known-fields map for
   a catalog (Tier 1 ∪ that catalog's Tier 2). v1 just returns Tier 1.
+* :func:`build_known_fields_from_queryables` — derive the known-fields map
+  from the queryables SSOT (Tier 1 < SSOT FieldDefinitions < Tier 2).
 * :func:`project_item_for_es` — reshape an item doc so unknown properties
   move under ``properties.extras``. Called at every write entry point
   before the bulk-action append.
@@ -43,7 +71,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+
+if TYPE_CHECKING:
+    from dynastore.models.protocols.field_definition import FieldDefinition
 
 from dynastore.tools.language_utils import resolve_localized_field
 
@@ -107,7 +138,16 @@ _STAC_CORE_FIELDS: Dict[str, Dict[str, Any]] = {
     # STAC Common Metadata
     "title":          _localized_text_field(ignore_above=512),
     "description":    _localized_text_field(ignore_above=1024),
-    "license":        {"type": "keyword"},
+    # license: LicenseInfo object {license_id, is_osi_compliant, localized_content?}.
+    # dynamic:false keeps localized_content in _source unindexed (refs #1828).
+    "license": {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            "license_id":      {"type": "keyword"},
+            "is_osi_compliant": {"type": "boolean"},
+        },
+    },
     "platform":       {"type": "keyword"},
     "instruments":    {"type": "keyword"},
     "constellation":  {"type": "keyword"},
@@ -289,6 +329,47 @@ def build_known_fields(catalog_config: Optional[Any] = None) -> Dict[str, Dict[s
     return out
 
 
+def build_known_fields_from_queryables(
+    queryable_fields: Dict[str, "FieldDefinition"],
+    catalog_config: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Derive the known-fields map from the queryables SSOT.
+
+    Produces a ``Dict[str, Any]`` suitable for :func:`build_item_mapping`
+    by merging three layers in priority order (highest wins):
+
+    1. **Tier-1** static platform baseline (:data:`TIER_1_FIELDS`) — covers
+       STAC core fields and well-known extensions that need hand-crafted
+       complex ES types (localised text blocks, disabled object containers,
+       etc.). Fills any field the SSOT does not cover.
+    2. **SSOT-derived** FieldDefinition objects from
+       ``QueryOptimizer.get_all_queryable_fields()`` — each queryable field
+       declared in the collection schema automatically appears in the derived
+       mapping without a manual Tier-1 edit. When the same key exists in both
+       Tier-1 and the SSOT, the SSOT-derived entry wins so schema-declared
+       types are authoritative.
+    3. **Tier-2** operator overlay from
+       ``ItemsElasticsearchDriverConfig.mapping`` (via ``catalog_config``) —
+       explicit raw ES type dicts; wins over all other layers.
+
+    Pure function: no DB access, no protocol calls, no web-framework imports.
+    """
+    # Start from Tier-1 as the base.
+    out: Dict[str, Any] = dict(TIER_1_FIELDS)
+
+    # Overlay SSOT-derived FieldDefinition objects (wins over Tier-1 on overlap).
+    for name, field_def in queryable_fields.items():
+        out[name] = field_def
+
+    # Overlay Tier-2 raw ES type dicts (wins over everything).
+    if catalog_config is not None:
+        overlay = getattr(catalog_config, "mapping", None)
+        if isinstance(overlay, dict) and overlay:
+            out.update(overlay)
+
+    return out
+
+
 def validate_tier_2(
     tier_2: Dict[str, Any],
     tier_1: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -336,9 +417,19 @@ def validate_tier_2(
                 )
 
 
-async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, Dict[str, Any]]:
+async def resolve_catalog_known_fields(
+    catalog_id: Optional[str],
+    queryable_fields: Optional[Dict[str, "FieldDefinition"]] = None,
+) -> Dict[str, Any]:
     """Async helper: fetch the per-catalog ``ItemsElasticsearchDriverConfig``
-    and return the merged Tier-1 ∪ Tier-2 known-fields map.
+    and return the merged known-fields map.
+
+    When ``queryable_fields`` is provided (the SSOT from
+    ``QueryOptimizer.get_all_queryable_fields()``), the result is produced
+    via :func:`build_known_fields_from_queryables` which merges three layers:
+    Tier-1 (base) < SSOT FieldDefinition objects < Tier-2 raw ES overlay.
+    Without ``queryable_fields`` the result is the legacy Tier-1 ∪ Tier-2
+    dict — byte-identical to the pre-#1285 behaviour.
 
     Falls back to Tier 1 only when:
 
@@ -347,11 +438,13 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
     * the config fetch raises any exception (degrade-safe, never blocks
       writes).
 
-    Used by write entry points so the projection helper writes Tier-2
-    fields at their explicit ``properties.<key>`` path instead of routing
-    them through ``extras``.
+    Used by write entry points so the projection helper writes Tier-2 and
+    SSOT-declared fields at their explicit ``properties.<key>`` path instead
+    of routing them through ``extras``.
     """
     if not catalog_id:
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
     try:
         from dynastore.models.protocols.configs import ConfigsProtocol
@@ -368,10 +461,14 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             "falling back to Tier-1 only: %s",
             catalog_id, exc,
         )
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
 
     configs = get_protocol(ConfigsProtocol)
     if configs is None:
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
     try:
         cfg = await configs.get_config(
@@ -387,7 +484,11 @@ async def resolve_catalog_known_fields(catalog_id: Optional[str]) -> Dict[str, D
             "falling back to Tier-1 only: %s",
             catalog_id, exc,
         )
+        if queryable_fields:
+            return build_known_fields_from_queryables(queryable_fields)
         return dict(TIER_1_FIELDS)
+    if queryable_fields:
+        return build_known_fields_from_queryables(queryable_fields, catalog_config=cfg)
     return build_known_fields(cfg)
 
 

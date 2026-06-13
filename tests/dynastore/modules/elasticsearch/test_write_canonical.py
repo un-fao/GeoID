@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """TDD tests for Task 5 / Pass-C convergence — canonical doc built at ES
 write boundary (#1800).
@@ -70,6 +74,12 @@ class _FakeStatsSidecar:
         if name in vals:
             return True, vals[name]
         return False, None
+
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, name):
+        return (False, None)
 
 
 def _make_canonical_input(geoid: str = _GEOID, external_id: str = _EXTERNAL_ID):

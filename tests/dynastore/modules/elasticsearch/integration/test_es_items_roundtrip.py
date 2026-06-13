@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Integration tests — public Elasticsearch: item write → index → search.
 
 Verifies the end-to-end flow:
@@ -63,7 +81,7 @@ async def _yield_to_async_writer(catalog_id: str) -> None:
     Items POSTed via STAC are written PG-first; a sibling row is
     atomically enqueued into ``storage_outbox`` for the ES driver. The
     in-process test harness does not run the Cloud Run Job that owns
-    ``outbox_drain``, so we step into the drain pathway directly here
+    ``index_drain``, so we step into the drain pathway directly here
     before flushing the index (#614).
     """
     # No need for an explicit ``asyncio.sleep(0)`` — ``drain_es_items_outbox``
@@ -357,3 +375,143 @@ async def test_sort_by_datetime_returns_item(
     assert "es-rt-sort" in ids, (
         f"Item not found in sorted results; returned ids: {ids}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Aggregation grade of the typed-core containers (refs #1828)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_aggregations_on_stats_and_system_fields(
+    sysadmin_in_process_client: AsyncClient,
+):
+    """Typed ``stats`` / ``system`` containers must be aggregation-grade on a
+    live index.
+
+    The canonical envelope splits the doc into a typed, statically-mapped core
+    (``stats`` and ``system`` are ``dynamic:false`` objects with pinned ES
+    types) and open ``flattened`` namespaces (``properties``/``extras``/...).
+    Filter and sort over those containers are already covered above; this test
+    closes the remaining acceptance bar — that the real per-index mapping makes
+    ``stats`` (sum of areas, grid-cell terms) and ``system`` (terms by hash /
+    external id) genuinely aggregatable end to end.
+
+    Builds the mapping through the production ``build_item_mapping`` with
+    stats- and system-tagged ``FieldDefinition``s, indexes a handful of
+    canonical docs into a throwaway index on the live ES/OpenSearch, and
+    asserts the bucketed/summed results.
+    """
+    from dynastore.models.protocols.field_definition import FieldDefinition
+    from dynastore.modules.elasticsearch.client import get_client, get_index_prefix
+    from dynastore.modules.elasticsearch.mappings import (
+        build_item_mapping,
+        get_tenant_items_index,
+    )
+
+    # The in-process app fixture boots ElasticsearchModule.lifespan, which is
+    # what wires up the shared client returned by get_client() below.
+    assert sysadmin_in_process_client is not None
+
+    es = get_client()
+    assert es is not None, "ES client not initialised — ElasticsearchModule not loaded"
+
+    # Production known-fields shape: a numeric stats field (area), a grid-cell
+    # stats keyword (s2_7), a system keyword (geometry_hash) and the identity
+    # external_id (root ``_external_id`` keyword in the canonical mapping).
+    known_fields = {
+        "datetime": FieldDefinition(name="datetime", data_type="timestamp"),
+        "area": FieldDefinition(name="area", data_type="double", container="stats"),
+        "s2_7": FieldDefinition(name="s2_7", data_type="string", container="stats"),
+        "geometry_hash": FieldDefinition(
+            name="geometry_hash", data_type="string", container="system",
+        ),
+        "external_id": FieldDefinition(
+            name="external_id", data_type="string", container="identity",
+        ),
+    }
+    mapping = build_item_mapping(known_fields)
+
+    # ES emits the open-namespace lanes as ``flattened``; OpenSearch spells the
+    # equivalent type ``flat_object``. Production resolves this flavor split per
+    # deployment; mirror it here so the index creates on whichever server backs
+    # the test. The typed core under test (stats/system/identity) is unaffected.
+    info = await es.info()
+    distribution = (info.get("version", {}) or {}).get("distribution", "")
+    if distribution == "opensearch":
+        def _flattened_to_flat_object(node):
+            if isinstance(node, dict):
+                if node.get("type") == "flattened":
+                    node["type"] = "flat_object"
+                for v in node.values():
+                    _flattened_to_flat_object(v)
+            elif isinstance(node, list):
+                for v in node:
+                    _flattened_to_flat_object(v)
+        _flattened_to_flat_object(mapping)
+
+    index = get_tenant_items_index(get_index_prefix(), "aggtest1828")
+
+    # Fresh-start: drop any leftover index from a prior run, then create it
+    # with the canonical mapping. ``ignore=[404]`` is the opensearch-py idiom
+    # for "absent is fine" — a missing index returns 404 without raising.
+    try:
+        await es.indices.delete(index=index, ignore=[404])
+    except Exception:
+        pass
+    await es.indices.create(index=index, body={"mappings": mapping})
+    try:
+        # (id, area, s2 cell, geometry_hash, external_id)
+        rows = [
+            ("agg-a", 10.0, "cellA", "hashX", "extA"),
+            ("agg-b", 20.0, "cellA", "hashX", "extB"),
+            ("agg-c", 30.0, "cellB", "hashY", "extA"),
+        ]
+        for doc_id, area, cell, ghash, ext in rows:
+            await es.index(
+                index=index,
+                id=doc_id,
+                body={
+                    "id": doc_id,
+                    "collection": "agg-col",
+                    "properties": {"datetime": "2024-01-15T00:00:00Z"},
+                    "stats": {"area": area, "s2_7": cell},
+                    "system": {"geometry_hash": ghash},
+                    "_external_id": ext,
+                },
+            )
+        await es.indices.refresh(index=index)
+
+        resp = await es.search(
+            index=index,
+            body={
+                "size": 0,
+                "aggs": {
+                    "by_cell": {"terms": {"field": "stats.s2_7"}},
+                    "total_area": {"sum": {"field": "stats.area"}},
+                    "by_hash": {"terms": {"field": "system.geometry_hash"}},
+                    "by_ext": {"terms": {"field": "_external_id"}},
+                },
+            },
+        )
+        aggs = resp["aggregations"]
+
+        # stats grid-cell terms — proves keyword stats fields bucket correctly.
+        cells = {b["key"]: b["doc_count"] for b in aggs["by_cell"]["buckets"]}
+        assert cells == {"cellA": 2, "cellB": 1}, f"stats.s2_7 terms wrong: {cells}"
+
+        # stats numeric sum — proves the area is a real numeric, not a string.
+        assert aggs["total_area"]["value"] == pytest.approx(60.0), aggs["total_area"]
+
+        # system terms — proves system.* keywords are aggregatable.
+        hashes = {b["key"]: b["doc_count"] for b in aggs["by_hash"]["buckets"]}
+        assert hashes == {"hashX": 2, "hashY": 1}, f"system.geometry_hash terms wrong: {hashes}"
+
+        # identity external_id terms (root _external_id keyword).
+        exts = {b["key"]: b["doc_count"] for b in aggs["by_ext"]["buckets"]}
+        assert exts == {"extA": 2, "extB": 1}, f"_external_id terms wrong: {exts}"
+    finally:
+        try:
+            await es.indices.delete(index=index, ignore=[404])
+        except Exception:
+            pass

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ both APIs return the same row.
 from typing import Protocol, Optional, Any, Dict, Type, TypeVar, runtime_checkable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
     from dynastore.models.driver_context import DriverContext
 
 _T_Config = TypeVar("_T_Config", bound="PluginConfig")

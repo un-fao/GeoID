@@ -1,10 +1,21 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Core feature-exporter pipeline: stream → format → upload.
 
 Single source of truth used by:
@@ -20,6 +31,7 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 from dynastore.extensions.tools.formatters import format_map
 from dynastore.modules.concurrency import get_concurrency_backend
 from dynastore.modules.gcp.tools.bucket import upload_stream_to_gcs
+from dynastore.modules.storage.hints import EXACT_READ_HINTS
 from dynastore.modules.tools.features import FeatureStreamConfig, stream_features
 from dynastore.tools.async_utils import SyncQueueIterator
 from dynastore.tools.file_io import get_features_as_byte_stream
@@ -85,7 +97,8 @@ async def export_features(
                 include_geometry=True,
                 target_srid=request.target_srid,
             )
-            async for feature in stream_features(stream_config, engine):
+            async for feature in stream_features(stream_config, engine,
+                                                  hints=EXACT_READ_HINTS):
                 await queue.put(feature)
         except Exception:
             logger.exception("Feature export producer failed")

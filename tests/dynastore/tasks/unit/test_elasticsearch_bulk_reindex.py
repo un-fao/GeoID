@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Unit tests for the routing-driven bulk reindex tasks.
 
 The bulk reindex implementation was redesigned to resolve both the reader and
@@ -804,3 +822,86 @@ async def test_is_es_active_for_returns_true_when_public_and_private_both_pinned
 # no separate bypass to pin against. Any regression in write_entities
 # body shape would surface in the item_service / dispatcher tests, not here.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tests: explicit reader_ref override (file-backed collections, #376)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reindex_reader_ref_override_resolves_from_registry():
+    """A file-backed collection names its file driver via reader_ref; the reindex
+    resolves it straight from the DriverRegistry instead of the GEOMETRY_EXACT hint,
+    then streams it into the ES writer."""
+    reader = _FakeReader({"col1": [_make_feature("f1"), _make_feature("f2")]})
+    writer = _FakeWriter()
+
+    async def _get_config(model, *, catalog_id, collection_id=None):
+        return _make_routing_config()
+
+    fake_configs = type("C", (), {"get_config": staticmethod(_get_config)})()
+
+    def _get_protocol(proto):
+        name = getattr(proto, "__name__", str(proto))
+        if "ConfigsProtocol" in name:
+            return fake_configs
+        return None
+
+    search_driver_calls: list = []
+
+    async def _fake_search_driver(catalog_id, collection_id, *, hints=frozenset()):
+        search_driver_calls.append((catalog_id, collection_id))
+        raise AssertionError("get_items_search_driver must NOT be called when reader_ref is set")
+
+    async def _fake_get_write_drivers(catalog_id, collection_id, *, hints=frozenset()):
+        return [_FakeResolvedDriver(writer, "items_elasticsearch_driver")]
+
+    with patch("dynastore.tools.discovery.get_protocol", side_effect=_get_protocol), patch(
+        "dynastore.modules.storage.driver_registry.DriverRegistry.get_collection",
+        return_value=reader,
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.get_items_search_driver",
+        side_effect=_fake_search_driver,
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.get_write_drivers",
+        side_effect=_fake_get_write_drivers,
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.add_index_to_public_alias",
+        return_value=None,
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.get_tenant_items_index",
+        return_value="dynastore-cat1-items",
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.get_index_prefix",
+        return_value="dynastore",
+    ):
+        from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+        total = await reindex_collection_into_index(
+            "cat1", "col1", reader_ref="items_duckdb_driver",
+        )
+
+    assert total == 2
+    assert reader._calls, "file-driver read_entities was never called"
+    assert not search_driver_calls, "hint resolution should be bypassed by reader_ref"
+
+
+@pytest.mark.asyncio
+async def test_reindex_reader_ref_unknown_raises():
+    """An unregistered reader_ref is a hard error, not a silent skip."""
+    writer = _FakeWriter()
+
+    async def _fake_get_write_drivers(catalog_id, collection_id, *, hints=frozenset()):
+        return [_FakeResolvedDriver(writer, "items_elasticsearch_driver")]
+
+    with patch(
+        "dynastore.modules.storage.driver_registry.DriverRegistry.get_collection",
+        return_value=None,
+    ), patch(
+        "dynastore.modules.elasticsearch.bulk_reindex.get_write_drivers",
+        side_effect=_fake_get_write_drivers,
+    ):
+        from dynastore.modules.elasticsearch.bulk_reindex import reindex_collection_into_index
+        with pytest.raises(ValueError):
+            await reindex_collection_into_index(
+                "cat1", "col1", reader_ref="nonexistent_driver",
+            )

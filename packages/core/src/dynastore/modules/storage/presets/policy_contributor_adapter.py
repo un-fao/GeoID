@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Generic adapter that wraps any policy-contributing object as a ``Preset``.
 
@@ -18,7 +22,7 @@ Extensions that ship route-level policies implement the structural duck-typing
 interface ``get_policies() -> Iterable[Policy]`` and
 ``get_role_bindings() -> Iterable[Role]``.  This adapter wraps such an object
 in the generalised ``Preset`` lifecycle so operators can apply or revoke the
-extension's policies via ``POST /admin/presets/{ext}_enable``.
+extension's policies via ``POST /configs/presets/{ext}_enable``.
 
 The ``contributor_factory`` callable is invoked at ``apply`` / ``revoke``
 / ``dry_run`` time, not at registration time, so the contributor is

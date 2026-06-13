@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Tests for the reshaped composed-config composer.
 
 After the reshape:
@@ -22,7 +40,7 @@ from dynastore.extensions.configs.config_api_service import ConfigApiService
 
 def _default_config_side_effect(config_cls, catalog_id=None, collection_id=None, **_):
     if isinstance(config_cls, str):
-        from dynastore.modules.db_config.plugin_config import resolve_config_class
+        from dynastore.models.plugin_config import resolve_config_class
         config_cls = resolve_config_class(config_cls)
     return config_cls() if config_cls else None
 
@@ -117,7 +135,7 @@ async def test_get_effective_configs_catalog_source(mock_config_service):
 
     async def get_side_effect(config_cls, catalog_id=None, collection_id=None, **_):
         if isinstance(config_cls, str):
-            from dynastore.modules.db_config.plugin_config import resolve_config_class
+            from dynastore.models.plugin_config import resolve_config_class
             config_cls = resolve_config_class(config_cls)
         if config_cls is ItemsRoutingConfig and catalog_id and not collection_id:
             return ItemsRoutingConfig()
@@ -1876,7 +1894,7 @@ def test_concrete_subclass_without_address_raises():
     """``PluginConfig.__init_subclass__`` enforces ``_address`` on concrete subclasses."""
     from typing import ClassVar
 
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     with pytest.raises(TypeError, match=r"does not declare ``_address``"):
         class _BadConcreteConfig(PluginConfig):  # noqa: F841 — deliberate
@@ -1886,7 +1904,7 @@ def test_concrete_subclass_without_address_raises():
 def test_concrete_subclass_with_address_ok():
     from typing import ClassVar, Optional, Tuple
 
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _GoodConcreteConfig(PluginConfig):
         _address: ClassVar[Tuple[str, str, Optional[str]]] = ("platform", "misc", None)
@@ -1898,7 +1916,7 @@ def test_abstract_subclass_without_address_ok():
     """Abstract bases (``is_abstract_base = True``) opt out of the check."""
     from typing import ClassVar
 
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _AbstractIntermediate(PluginConfig):
         is_abstract_base: ClassVar[bool] = True
@@ -1932,3 +1950,39 @@ def test_abstract_subclass_without_address_ok():
 #   - test_build_meta_entry_full_waterfall
 #   - test_build_meta_entry_no_tier_data_returns_source_only
 #   - test_compose_tree_meta_includes_layers_when_tier_data_provided
+
+
+# ---------------------------------------------------------------------------
+# list_refs_map — raw {ref_key: class_key} discovery (#1940)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_refs_map_returns_raw_map():
+    """``list_refs_map`` returns the service's ``list_refs_at_scope`` result
+    verbatim (raw ``{ref_key: class_key}``), passing the scope through and
+    doing no payload read."""
+    svc = MagicMock()
+    ref_map = {"GcpBucketConfig": "GcpBucketConfig", "my-bucket": "GcpBucketConfig"}
+    svc.list_refs_at_scope = AsyncMock(return_value=ref_map)
+    api = ConfigApiService(config_service=svc)
+
+    out = await api.list_refs_map(catalog_id="cat-x", collection_id=None)
+
+    assert out == ref_map
+    svc.list_refs_at_scope.assert_awaited_once_with(
+        catalog_id="cat-x", collection_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_refs_map_degrades_when_method_absent():
+    """A backend/mock without ``list_refs_at_scope`` degrades to ``{}``
+    rather than raising (older deployments)."""
+
+    class _NoRefs:
+        async def list_configs(self, *a, **k):
+            return {"results": [], "total": 0}
+
+    api = ConfigApiService(config_service=_NoRefs())
+
+    assert await api.list_refs_map() == {}

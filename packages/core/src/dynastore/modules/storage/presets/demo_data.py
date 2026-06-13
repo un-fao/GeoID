@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Demo-data preset — canonical data-contributor example (dynastore#307).
 
@@ -29,7 +33,7 @@ is empty.
 
 The seed content mirrors the legacy ``POST /admin/demo/populate`` web endpoint
 so that retiring those ``/admin/demo/*`` routes in favour of applying this
-preset (``POST/DELETE /admin/presets/demo_data``) causes no visible change to
+preset (``POST/DELETE /configs/presets/demo_data``) causes no visible change to
 the demo data — that route removal is tracked as a follow-up.
 """
 from __future__ import annotations

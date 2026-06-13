@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -71,7 +71,7 @@ from dynastore.tools.db import validate_sql_identifier
 from dynastore.tools.json import CustomJSONEncoder
 
 # Class-as-identity config API.
-from dynastore.modules.db_config.plugin_config import PluginConfig, require_config_class, resolve_config_class
+from dynastore.models.plugin_config import PluginConfig, require_config_class, resolve_config_class
 from dynastore.modules.db_config.platform_config_service import (
     _register_schema,
     enforce_config_immutability,

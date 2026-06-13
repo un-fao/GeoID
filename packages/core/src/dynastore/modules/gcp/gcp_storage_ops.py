@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -157,6 +157,7 @@ class GcpStorageOpsMixin:
         filename: str,
         content_type: Optional[str] = None,
         collection_id: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> "UploadTicket":
         """
         Prepares a GCS resumable upload session and returns a backend-agnostic
@@ -171,8 +172,12 @@ class GcpStorageOpsMixin:
         later check whether the asset was registered.
         """
         from datetime import datetime, timezone, timedelta
-        from fastapi import HTTPException, status as http_status
         import google.api_core.exceptions
+        from dynastore.modules.gcp.errors import (
+            GcpFailedDependencyError,
+            GcpInternalError,
+            GcpServiceUnavailableError,
+        )
         from dynastore.modules.gcp.tools import bucket as bucket_tool
         from dynastore.modules.gcp.gcp_config import (
             GcpCollectionBucketConfig,
@@ -182,10 +187,7 @@ class GcpStorageOpsMixin:
         catalogs_provider = get_protocol(CatalogsProtocol)
         config_provider = get_protocol(ConfigsProtocol)
         if not catalogs_provider:
-            raise HTTPException(
-                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Catalogs service unavailable.",
-            )
+            raise GcpServiceUnavailableError("Catalogs service unavailable.")
 
         # Ensure the target catalog/collection exist (JIT provisioning gate)
         await self.prepare_upload_target(
@@ -196,21 +198,18 @@ class GcpStorageOpsMixin:
         catalog = await catalogs_provider.get_catalog(catalog_id)
         if catalog.provisioning_status != "ready":
             if catalog.provisioning_status == "failed":
-                raise HTTPException(
-                    status_code=http_status.HTTP_424_FAILED_DEPENDENCY,
-                    detail=f"Catalog '{catalog_id}' provisioning failed; storage not available.",
+                raise GcpFailedDependencyError(
+                    f"Catalog '{catalog_id}' provisioning failed; storage not available."
                 )
-            raise HTTPException(
-                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Catalog '{catalog_id}' storage is still being provisioned. Retry shortly.",
-                headers={"Retry-After": "30"},
+            raise GcpServiceUnavailableError(
+                f"Catalog '{catalog_id}' storage is still being provisioned. Retry shortly.",
+                retry_after=30,
             )
 
         bucket_name = await self.get_storage_identifier(catalog_id)
         if not bucket_name:
-            raise HTTPException(
-                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Bucket for catalog '{catalog_id}' was not found despite 'ready' status.",
+            raise GcpInternalError(
+                f"Bucket for catalog '{catalog_id}' was not found despite 'ready' status."
             )
 
         storage_client = self.get_storage_client()
@@ -243,19 +242,22 @@ class GcpStorageOpsMixin:
         blob.metadata = {k: str(v) if not isinstance(v, str) else v for k, v in final_metadata.items()}
 
         try:
+            # The Origin supplied here CORS-stamps the resumable session:
+            # GCS only adds Access-Control-Allow-Origin to responses on the
+            # session URI when the initiating POST carried a matching Origin
+            # header (bucket CORS config does not apply to session URIs).
             session_uri = blob.create_resumable_upload_session(
-                content_type=content_type or "application/octet-stream"
+                content_type=content_type or "application/octet-stream",
+                origin=origin,
             )
         except google.api_core.exceptions.GoogleAPICallError as e:
-            raise HTTPException(
-                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"GCS upload session creation failed: {e}",
+            raise GcpServiceUnavailableError(
+                f"GCS upload session creation failed: {e}"
             ) from e
 
         if not session_uri:
-            raise HTTPException(
-                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="GCS did not return a session URI for resumable upload.",
+            raise GcpInternalError(
+                "GCS did not return a session URI for resumable upload."
             )
 
         ticket_id = str(generate_uuidv7())
@@ -297,24 +299,17 @@ class GcpStorageOpsMixin:
         confirmed complete or the session has expired.
         """
         from datetime import datetime, timezone
-        from fastapi import HTTPException, status as http_status
         from dynastore.modules import get_protocol
         from dynastore.models.protocols import AssetsProtocol
 
         ticket = self._upload_tickets.get(ticket_id)
         if not ticket:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=f"Upload ticket '{ticket_id}' not found or expired.",
-            )
+            raise ValueError(f"Upload ticket '{ticket_id}' not found or expired.")
 
         # Expire stale tickets
         if datetime.now(timezone.utc) > ticket["expires_at"]:
             del self._upload_tickets[ticket_id]
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=f"Upload ticket '{ticket_id}' has expired.",
-            )
+            raise ValueError(f"Upload ticket '{ticket_id}' has expired.")
 
         asset_id = ticket["asset_id"]
         ticket_catalog_id = ticket["catalog_id"]
@@ -322,9 +317,8 @@ class GcpStorageOpsMixin:
 
         # Verify the caller is querying the right catalog
         if ticket_catalog_id != catalog_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=f"Upload ticket '{ticket_id}' not found in catalog '{catalog_id}'.",
+            raise ValueError(
+                f"Upload ticket '{ticket_id}' not found in catalog '{catalog_id}'."
             )
 
         assets = get_protocol(AssetsProtocol)

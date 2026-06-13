@@ -1,0 +1,394 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Unit tests for the task supervisor job registrations (#1911 Option A).
+
+Pure-mock style — no live DB.  Verifies:
+- The 3 new task jobs are registered with correct names and intervals.
+- register_supervisor_jobs upserts all 9 jobs (6 existing + 3 task).
+- ensure_task_storage_exists no longer emits any cron.schedule call.
+- The task reaper/partition-create/retention job implementations are
+  dispatched correctly by _dispatch_job.
+- _SUPERSEDED_CRON_JOBS contains the task-specific pg_cron job names.
+- unschedule_superseded_cron_jobs passes task_reaper_prefix to the query.
+
+Run with:
+    PYTHONPATH=packages/core/src \\
+      /Users/ccancellieri/work/code/geoid/.venv/bin/python \\
+      -m pytest tests/dynastore/tasks/unit/test_task_supervisor_jobs.py \\
+      --noconftest -p no:cacheprovider -q
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from dynastore.modules.catalog.maintenance_supervisor import (
+    JOB_TASK_PARTITION_CREATE,
+    JOB_TASK_REAPER,
+    JOB_TASK_RETENTION,
+    _CADENCE_TASK_PARTITION_CREATE,
+    _CADENCE_TASK_REAPER,
+    _CADENCE_TASK_RETENTION,
+    _SUPERSEDED_CRON_JOBS,
+    _SUPERSEDED_TASK_REAPER_PREFIX,
+    _dispatch_job,
+    build_supervisor_config,
+    register_supervisor_jobs,
+)
+from dynastore.modules.catalog.db_init.maintenance_schedule import (
+    MaintenanceScheduleRepository,
+)
+
+
+# ---------------------------------------------------------------------------
+# Job name / cadence constants
+# ---------------------------------------------------------------------------
+
+
+def test_task_reaper_cadence_is_60s():
+    """task_reaper must fire every 60 seconds (mirrors old '* * * * *' pg_cron)."""
+    assert _CADENCE_TASK_REAPER == 60
+
+
+def test_task_partition_create_cadence_is_daily():
+    """task_partition_create must run daily (86400 s)."""
+    assert _CADENCE_TASK_PARTITION_CREATE == 86400
+
+
+def test_task_retention_cadence_is_daily():
+    """task_retention must run daily (86400 s)."""
+    assert _CADENCE_TASK_RETENTION == 86400
+
+
+# ---------------------------------------------------------------------------
+# _SUPERSEDED_CRON_JOBS contains task pg_cron names
+# ---------------------------------------------------------------------------
+
+
+def test_superseded_includes_task_partition_names():
+    """prune_tasks_tasks and partcreate_tasks_tasks must be in _SUPERSEDED_CRON_JOBS."""
+    assert "prune_tasks_tasks" in _SUPERSEDED_CRON_JOBS
+    assert "partcreate_tasks_tasks" in _SUPERSEDED_CRON_JOBS
+
+
+def test_superseded_task_reaper_prefix():
+    """_SUPERSEDED_TASK_REAPER_PREFIX must match the dynastore-task-reaper- format."""
+    assert _SUPERSEDED_TASK_REAPER_PREFIX == "dynastore-task-reaper-"
+
+
+# ---------------------------------------------------------------------------
+# register_supervisor_jobs upserts all 9 jobs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_register_supervisor_jobs_includes_task_jobs():
+    """register_supervisor_jobs must upsert all 3 task jobs with correct intervals."""
+    engine = MagicMock(name="engine")
+    upserted: list[tuple[str, int]] = []
+
+    repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
+
+    async def _capture_upsert(conn, job_name, *, interval_seconds):
+        upserted.append((job_name, interval_seconds))
+
+    repo_mock.upsert_job = _capture_upsert
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.MaintenanceScheduleRepository",
+            return_value=repo_mock,
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+    ):
+        fake_conn = AsyncMock()
+        mock_mtx.return_value.__aenter__ = AsyncMock(return_value=fake_conn)
+        mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+        await register_supervisor_jobs(engine)
+
+    cadence_map = dict(upserted)
+    job_names = list(cadence_map.keys())
+
+    # Total: 6 original + 3 task = 9
+    assert len(job_names) == 9
+
+    assert JOB_TASK_REAPER in cadence_map
+    assert JOB_TASK_PARTITION_CREATE in cadence_map
+    assert JOB_TASK_RETENTION in cadence_map
+
+    assert cadence_map[JOB_TASK_REAPER] == _CADENCE_TASK_REAPER
+    assert cadence_map[JOB_TASK_PARTITION_CREATE] == _CADENCE_TASK_PARTITION_CREATE
+    assert cadence_map[JOB_TASK_RETENTION] == _CADENCE_TASK_RETENTION
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_job routes task jobs correctly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_task_reaper_calls_reap_stuck_tasks():
+    """_dispatch_job(task_reaper) must issue SELECT {schema}.reap_stuck_tasks(3, hard_cap)."""
+    conn = AsyncMock()
+    executed_sqls: list[str] = []
+
+    async def _fake_execute(c, **kw):
+        return 2
+
+    with patch(
+        "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
+    ) as MockDQL:
+        instance = MagicMock()
+        instance.execute = AsyncMock(side_effect=_fake_execute)
+        MockDQL.side_effect = lambda sql, **kw: (executed_sqls.append(sql), instance)[1]
+
+        result = await _dispatch_job(
+            JOB_TASK_REAPER, conn, {"hard_cap": 7, "dead_letter_days": 30,
+                                    "timeout_minutes": 15, "max_retries": 3}
+        )
+
+    assert result == 2
+    assert any("reap_stuck_tasks" in sql for sql in executed_sqls)
+    # Must pass hard_cap as a named bind parameter
+    call_kwargs = instance.execute.call_args[1]
+    assert call_kwargs.get("hard_cap") == 7
+
+
+@pytest.mark.asyncio
+async def test_dispatch_task_partition_create_calls_create_func():
+    """_dispatch_job(task_partition_create) must invoke create_partitions_{schema}_tasks."""
+    conn = AsyncMock()
+    executed_sqls: list[str] = []
+
+    async def _fake_execute(c, **kw):
+        return None
+
+    with patch(
+        "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
+    ) as MockDQL:
+        instance = MagicMock()
+        instance.execute = AsyncMock(side_effect=_fake_execute)
+        MockDQL.side_effect = lambda sql, **kw: (executed_sqls.append(sql), instance)[1]
+
+        result = await _dispatch_job(
+            JOB_TASK_PARTITION_CREATE, conn,
+            {"hard_cap": 5, "dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        )
+
+    assert result == 0
+    assert any("create_partitions" in sql for sql in executed_sqls)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_task_retention_calls_maintain_func():
+    """_dispatch_job(task_retention) must invoke maintain_partitions_{schema}_tasks."""
+    conn = AsyncMock()
+    executed_sqls: list[str] = []
+
+    async def _fake_execute(c, **kw):
+        return None
+
+    with patch(
+        "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
+    ) as MockDQL:
+        instance = MagicMock()
+        instance.execute = AsyncMock(side_effect=_fake_execute)
+        MockDQL.side_effect = lambda sql, **kw: (executed_sqls.append(sql), instance)[1]
+
+        result = await _dispatch_job(
+            JOB_TASK_RETENTION, conn,
+            {"hard_cap": 5, "dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        )
+
+    assert result == 0
+    assert any("maintain_partitions" in sql for sql in executed_sqls)
+
+
+# ---------------------------------------------------------------------------
+# build_supervisor_config includes hard_cap
+# ---------------------------------------------------------------------------
+
+
+def test_build_supervisor_config_includes_hard_cap():
+    """build_supervisor_config must return a 'hard_cap' key."""
+    cfg = build_supervisor_config()
+    assert "hard_cap" in cfg
+    assert isinstance(cfg["hard_cap"], int)
+    assert cfg["hard_cap"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# ensure_task_storage_exists emits NO cron.schedule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_task_storage_no_cron_schedule():
+    """ensure_task_storage_exists must not call register_cron_job or cron.schedule."""
+    from dynastore.modules.tasks.tasks_module import ensure_task_storage_exists, get_task_schema
+
+    conn = AsyncMock()
+    schema = get_task_schema()
+
+    cron_calls: list[str] = []
+
+    async def _fake_ddl_execute(c, **kw):
+        return None
+
+    async def _fake_ensure_future_partitions(*a, **kw):
+        return None
+
+    with (
+        patch(
+            "dynastore.modules.tasks.tasks_module.ensure_schema_exists",
+            new=AsyncMock(),
+        ),
+        patch(
+            "dynastore.modules.tasks.tasks_module._build_tasks_ddl_batch",
+        ) as mock_batch,
+        patch(
+            "dynastore.modules.db_config.maintenance_tools.ensure_future_partitions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "dynastore.modules.tasks.tasks_module.DDLQuery",
+        ) as MockDDL,
+    ):
+        # Fake DDLBatch
+        fake_batch = MagicMock()
+        fake_batch.execute = AsyncMock()
+        mock_batch.return_value = fake_batch
+
+        # Track all DDLQuery usages; flag if any contain cron.schedule
+        def _dql_factory(sql, **kw):
+            if "cron.schedule" in sql:
+                cron_calls.append(sql)
+            inst = MagicMock()
+            inst.execute = AsyncMock()
+            return inst
+
+        MockDDL.side_effect = _dql_factory
+
+        await ensure_task_storage_exists(conn, schema)
+
+    assert cron_calls == [], (
+        f"ensure_task_storage_exists should not emit cron.schedule; got: {cron_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ensure_task_storage_exists provisions the 3 maintenance helper functions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_task_storage_provisions_maintenance_functions():
+    """ensure_task_storage_exists must execute DDLQuery for each of the 3 helper functions."""
+    from dynastore.modules.tasks.tasks_module import ensure_task_storage_exists, get_task_schema
+
+    conn = AsyncMock()
+    schema = get_task_schema()
+
+    ddl_sqls_executed: list[str] = []
+
+    with (
+        patch(
+            "dynastore.modules.tasks.tasks_module.ensure_schema_exists",
+            new=AsyncMock(),
+        ),
+        patch(
+            "dynastore.modules.tasks.tasks_module._build_tasks_ddl_batch",
+        ) as mock_batch,
+        patch(
+            "dynastore.modules.db_config.maintenance_tools.ensure_future_partitions",
+            new=AsyncMock(),
+        ),
+        patch(
+            "dynastore.modules.tasks.tasks_module.DDLQuery",
+        ) as MockDDL,
+    ):
+        fake_batch = MagicMock()
+        fake_batch.execute = AsyncMock()
+        mock_batch.return_value = fake_batch
+
+        def _dql_factory(sql, **kw):
+            ddl_sqls_executed.append(sql)
+            inst = MagicMock()
+            inst.execute = AsyncMock()
+            return inst
+
+        MockDDL.side_effect = _dql_factory
+
+        await ensure_task_storage_exists(conn, schema)
+
+    combined = " ".join(ddl_sqls_executed)
+    assert "reap_stuck_tasks" in combined, "Reaper DDL must be provisioned"
+    assert "maintain_partitions" in combined, "Retention function DDL must be provisioned"
+    assert "create_partitions" in combined, "Partition-create function DDL must be provisioned"
+
+
+# ---------------------------------------------------------------------------
+# unschedule_superseded_cron_jobs passes task_reaper_prefix
+# ---------------------------------------------------------------------------
+
+
+def _patch_mtx(mock_mtx, conn):
+    """Wire a managed_transaction mock to yield *conn*."""
+    mock_mtx.return_value.__aenter__ = AsyncMock(return_value=conn)
+    mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+
+@pytest.mark.asyncio
+async def test_unschedule_superseded_passes_task_reaper_prefix():
+    """unschedule_superseded_cron_jobs must include task_reaper_prefix in its query params."""
+    from dynastore.modules.catalog.maintenance_supervisor import (
+        unschedule_superseded_cron_jobs,
+    )
+
+    conn = AsyncMock()
+    exec_calls: list[dict] = []
+
+    async def _fake_execute(c, **kw):
+        exec_calls.append(kw)
+        return 5
+
+    with (
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.managed_transaction",
+        ) as mock_mtx,
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.check_extension_exists",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "dynastore.modules.catalog.maintenance_supervisor.DQLQuery",
+        ) as MockDQL,
+    ):
+        _patch_mtx(mock_mtx, conn)
+        instance = MagicMock()
+        instance.execute = AsyncMock(side_effect=_fake_execute)
+        MockDQL.return_value = instance
+
+        result = await unschedule_superseded_cron_jobs(MagicMock(name="engine"))
+
+    assert result == 5
+    assert len(exec_calls) == 1
+    assert exec_calls[0]["task_reaper_prefix"] == "dynastore-task-reaper-%"
+    # Names list must include the task partition/retention jobs
+    assert "prune_tasks_tasks" in exec_calls[0]["names"]
+    assert "partcreate_tasks_tasks" in exec_calls[0]["names"]

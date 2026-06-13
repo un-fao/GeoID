@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Verify that IamExtension.lifespan skips contributors covered by a preset.
 
 After the per-extension preset refactor, each extension registers its policy
@@ -117,11 +135,16 @@ def test_uncovered_contributor_not_skipped():
 
 def test_stac_contributor_covered_after_extension_import():
     """Importing the STAC preset module registers ``stac_enable``; the wrapper
-    contributor class it carries lands in the lifespan covered set."""
+    contributor class it carries lands in the lifespan covered set.
+
+    Post-#1972 the private ``_STACPolicyContributor`` class moved inside
+    ``OGCServiceMixin.register_ogc_preset`` (local class, not re-exported).
+    We verify the preset is correctly registered as a PolicyContributorPreset
+    and its contributor_class appears in the covered set — the identity check
+    against a module-level private class is dropped.
+    """
     try:
-        presets_module = importlib.import_module(
-            "dynastore.extensions.stac.presets"
-        )
+        importlib.import_module("dynastore.extensions.stac.presets")
     except ImportError:
         pytest.skip("STAC extension not installed in this environment")
 
@@ -134,10 +157,11 @@ def test_stac_contributor_covered_after_extension_import():
     assert isinstance(preset, PolicyContributorPreset), (
         "stac_enable must be registered as a PolicyContributorPreset"
     )
-    assert preset.contributor_class is presets_module._STACPolicyContributor
+    contributor_cls = preset.contributor_class
+    assert contributor_cls is not None, "stac_enable must have a contributor class"
 
     covered = _covered_contributor_classes()
-    assert preset.contributor_class in covered, (
+    assert contributor_cls in covered, (
         "stac_enable contributor class should be in the covered set after import"
     )
 

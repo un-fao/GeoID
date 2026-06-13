@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Schema-id-gated catalog defaults snapshot (#1079 option c).
 
 On catalog creation we capture the resolved platform/code defaults for the
@@ -24,7 +42,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from dynastore.tools.typed_store.registry import TypedModelRegistry
 
 logger = logging.getLogger(__name__)

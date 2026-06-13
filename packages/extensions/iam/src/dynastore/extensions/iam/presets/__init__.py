@@ -11,13 +11,17 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """IAM extension presets — auto-register on import.
 
 Importing this module registers ``iam_baseline`` into the global preset
 registry. The IAM extension's ``__init__`` ensures this module is imported
 at extension load time so the preset is discoverable via
-``GET /admin/presets`` as soon as the extension is installed.
+``GET /configs/presets`` as soon as the extension is installed.
 
 Only registration side-effects happen here — no DB I/O, no state.
 """

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -207,7 +207,13 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                     normalize_db_url(db_config.database_url, is_async=True),
                     pool_size=db_config.pool_min_size,
                     max_overflow=db_config.pool_max_overflow,
-                    pool_timeout=db_config.pool_command_timeout,
+                    # pool_timeout = max seconds to wait for a free slot from
+                    # QueuePool before raising sqlalchemy.exc.TimeoutError
+                    # (fail-fast; not the statement/command execution budget).
+                    # Previously this was fed pool_command_timeout (60s) which
+                    # is the wrong semantic — see DBConfig.pool_acquire_timeout
+                    # and #1894.
+                    pool_timeout=db_config.pool_acquire_timeout,
                     pool_pre_ping=True,
                     pool_recycle=db_config.pool_recycle,
                     connect_args={
@@ -251,6 +257,34 @@ class DBService(ModuleProtocol, DatabaseProtocol):
                 logger.info(
                     "DBService: ASYNC Database connection pool established successfully."
                 )
+
+            # Self-heal the base Postgres extensions (postgis et al.) on the
+            # async engine before serving traffic. #1748 gated the sync-engine
+            # DatastoreModule — the historical owner of this bootstrap — off the
+            # API/catalog SCOPE, so on a freshly-provisioned database the catalog
+            # service would otherwise have NO path to ``CREATE EXTENSION postgis``
+            # and every geometry-typed write fails with "type geometry does not
+            # exist". Runs on the asyncpg engine, so it does NOT re-introduce the
+            # sync psycopg2 engine #1748 removed from API services. The call is
+            # guarded (DB-backed presence check, Valkey-cached positive keyed by
+            # database identity), so across the multi-Cloud-Run fleet the steady
+            # state is a single cache read, not repeated DDL on every pod boot.
+            # Best-effort: a failure here must never abort foundational startup.
+            _async_engine = getattr(app_state, "engine", None)
+            if _async_engine is not None:
+                try:
+                    from dynastore.modules.db_config.tools import (
+                        ensure_base_extensions,
+                    )
+
+                    await ensure_base_extensions(_async_engine)
+                except Exception:
+                    logger.warning(
+                        "DBService: base-extension ensure failed (best-effort) — "
+                        "continuing startup; geometry-typed writes may fail until "
+                        "the extensions exist.",
+                        exc_info=True,
+                    )
 
             yield
 

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -91,6 +91,10 @@ from dynastore.models.protocols.asset_contrib import (
     ResourceRef,
 )
 from dynastore.models.protocols.conformance import ConformanceContributor
+from dynastore.models.protocols.catalog_source import (
+    CatalogListProvider,
+    CatalogOption,
+)
 from dynastore.models.protocols.web_ui import (
     WebPageContributor,
     StaticAssetProvider,
@@ -197,6 +201,8 @@ __all__ = [
     "CollectionPipelineProtocol",
     "CatalogPipelineProtocol",
     "ConformanceContributor",
+    "CatalogListProvider",
+    "CatalogOption",
     "WebPageContributor",
     "StaticAssetProvider",
     "WebPageSpec",

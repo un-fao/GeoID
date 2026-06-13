@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Extension lifespan and post-discovery application configuration.
 
@@ -44,7 +48,7 @@ from dynastore.extensions.tools.exposure_mixin import (
 )
 from dynastore.extensions.tools.exposure_openapi import install_filtered_openapi
 from dynastore.extensions.tools.exposure_route import make_exposure_dependency
-from dynastore.modules.db_config.plugin_config import list_registered_configs
+from dynastore.models.plugin_config import list_registered_configs
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.tools.discovery import get_protocol
 

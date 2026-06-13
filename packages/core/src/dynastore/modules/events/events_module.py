@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -35,8 +35,8 @@ from dynastore.modules.db_config.query_executor import (
     ResultHandler,
 )
 from dynastore.modules.db_config.locking_tools import (
-    _get_stable_lock_id,
     check_trigger_exists,
+    pg_advisory_leadership,
 )
 from dynastore.models.protocols import (
     PropertiesProtocol,
@@ -243,79 +243,6 @@ _ack_query = DQLQuery(
     result_handler=ResultHandler.NONE,
 )
 
-# ---------------------------------------------------------------------------
-# pg_cron job helpers (retention + reaper)
-# ---------------------------------------------------------------------------
-
-_RETENTION_JOB_NAME = f"events_{_EVENTS_SCHEMA}_retention"
-_PENDING_ALERT_JOB_NAME = f"events_{_EVENTS_SCHEMA}_pending_alert"
-_REAPER_JOB_NAME = f"events_{_EVENTS_SCHEMA}_reaper"
-
-
-def _cron_block(job_name: str, schedule: str, command: str) -> str:
-    """Idempotent pg_cron re-registration snippet.
-
-    pg_cron's `cron.schedule` treats the command as opaque text; we embed it
-    inside a dollar-quoted literal so inner single-quotes pass through safely.
-    """
-    return f"""
-    DO $SAFE$
-    BEGIN
-        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = '{job_name}') THEN
-            PERFORM cron.unschedule('{job_name}');
-        END IF;
-    END $SAFE$;
-    SELECT cron.schedule('{job_name}', '{schedule}', $CMD$ {command} $CMD$);
-    """
-
-
-async def _register_events_retention(conn: Any, dead_letter_days: int) -> None:
-    """Register DLQ pruning and PENDING-age alert cron jobs."""
-    prune_cmd = (
-        f"DELETE FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'DEAD_LETTER' "
-        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days'"
-    )
-    alert_cmd = (
-        "DO $ALERT$ DECLARE r RECORD; BEGIN "
-        f"FOR r IN SELECT shard, count(*) AS n, "
-        f"EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec "
-        f"FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'PENDING' "
-        f"AND created_at < NOW() - INTERVAL '{dead_letter_days} days' "
-        f"GROUP BY shard LOOP "
-        f"RAISE WARNING 'events.pending_stale shard=% count=% oldest_age_sec=%', "
-        f"r.shard, r.n, r.oldest_age_sec; "
-        "END LOOP; END $ALERT$"
-    )
-    await DDLQuery(
-        _cron_block(_RETENTION_JOB_NAME, "0 3 * * *", prune_cmd)
-        + _cron_block(_PENDING_ALERT_JOB_NAME, "15 3 * * *", alert_cmd)
-    ).execute(conn)
-
-
-async def _register_events_reaper(
-    conn: Any, timeout_minutes: int, max_retries: int
-) -> None:
-    """Register stuck-PROCESSING reaper (every 5 minutes)."""
-    reaper_cmd = (
-        f"WITH expired AS ("
-        f"SELECT shard, event_id, retry_count FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE status = 'PROCESSING' "
-        f"AND processed_at < NOW() - INTERVAL '{timeout_minutes} minutes' "
-        f"FOR UPDATE SKIP LOCKED"
-        f") "
-        f"UPDATE {_EVENTS_SCHEMA}.events e "
-        f"SET status = CASE WHEN expired.retry_count + 1 >= {max_retries} "
-        f"THEN 'DEAD_LETTER' ELSE 'PENDING' END, "
-        f"retry_count = expired.retry_count + 1, "
-        f"error_message = 'reaped stale PROCESSING' "
-        f"FROM expired "
-        f"WHERE e.shard = expired.shard AND e.event_id = expired.event_id"
-    )
-    await DDLQuery(
-        _cron_block(_REAPER_JOB_NAME, "*/5 * * * *", reaper_cmd)
-    ).execute(conn)
 
 
 _backlog_query = DQLQuery(
@@ -499,6 +426,7 @@ class EventsModule(ModuleProtocol):
             max_retries=_MAX_RETRIES,
         )
 
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -547,14 +475,6 @@ class EventsModule(ModuleProtocol):
             await DDLQuery(
                 shard_partitions_ddl, check_query=_check_last_shard
             ).execute(conn)
-
-            policy = self.accumulation_policy
-            await _register_events_retention(conn, policy.dead_letter_days)
-            await _register_events_reaper(
-                conn,
-                timeout_minutes=int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15")),
-                max_retries=policy.max_retries,
-            )
 
         logger.info("EventsModule: Global events shard partitions configured.")
 
@@ -660,6 +580,10 @@ class EventsModule(ModuleProtocol):
 
         The lock is held for the lifetime of the context. On connection drop
         (pod/worker death) it is released automatically — no heartbeat needed.
+
+        Thin protocol adapter over :func:`pg_advisory_leadership` (the shared
+        leadership primitive); kept so non-PG drivers can implement the same
+        ``EventDriverProtocol`` surface differently.
         """
         engine = self._engine
         if not isinstance(engine, AsyncEngine):
@@ -672,40 +596,10 @@ class EventsModule(ModuleProtocol):
                 self._sync_engine_warned = True
             yield False
             return
-        lock_id = _get_stable_lock_id(key)
-        conn_ctx = engine.connect()
-        try:
-            conn = await conn_ctx.__aenter__()
-        except Exception as exc:
-            logger.debug(
-                "EventsModule: acquire_consumer_lock connect failed (%s); yielding non-leader.", exc
-            )
-            yield False
-            return
-        try:
-            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            acquired = await DQLQuery(
-                "SELECT pg_try_advisory_lock(:id)",
-                result_handler=ResultHandler.SCALAR,
-            ).execute(conn, id=lock_id)
-            if not acquired:
-                yield False
-                return
-            logger.info("EventsModule: consumer lock acquired (key=%s).", key)
-            try:
-                yield True
-            finally:
-                try:
-                    await DQLQuery(
-                        "SELECT pg_advisory_unlock(:id)", result_handler=ResultHandler.NONE
-                    ).execute(conn, id=lock_id)
-                except Exception:
-                    pass  # connection drop releases lock automatically
-        finally:
-            try:
-                await conn_ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
+        async with pg_advisory_leadership(
+            engine, key, name=f"EventsModule[{key}]"
+        ) as is_leader:
+            yield is_leader
 
     # ------------------------------------------------------------------
     # Backlog monitor (leader-elected)

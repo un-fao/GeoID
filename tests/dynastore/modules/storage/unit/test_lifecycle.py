@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Preset lifecycle layer tests.
 
 Tests apply happy-path, idempotent re-POST, params_snapshot mismatch 409,
@@ -10,15 +28,18 @@ from __future__ import annotations
 import json
 from typing import ClassVar, Tuple, Type
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 from pydantic import BaseModel
 
+from dynastore.modules.storage.presets.errors import (
+    PresetConflictError,
+    PresetNotFoundError,
+    PresetOperationError,
+    ServiceUnavailableError,
+)
 from dynastore.modules.storage.presets.preset import (
     AppliedDescriptor,
-    CompositePreset,
     NoParams,
     PresetContext,
     PresetPlan,
@@ -197,13 +218,14 @@ async def test_apply_params_mismatch_raises_409():
         mock_tx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_tx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(PresetConflictError) as exc_info:
             await apply_preset(
                 "test-sync-preset", "platform", ParamsWithMode(mode="new"), _ctx(),
                 engine=engine, audit=audit,
             )
 
-    assert exc_info.value.status_code == 409
+    assert isinstance(exc_info.value.detail, dict)
+    assert "already applied" in exc_info.value.detail["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -266,14 +288,36 @@ async def test_apply_failure_marks_failed():
         mock_tx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_tx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(PresetOperationError) as exc_info:
             await apply_preset(
                 "failing-preset", "platform", NoParams(), _ctx(),
                 engine=engine, audit=audit,
             )
 
-    assert exc_info.value.status_code == 500
+    assert "apply failed" in exc_info.value.detail["message"]
     audit.mark_failed.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# engine=None raises ServiceUnavailableError (503 after handler mapping)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_apply_engine_none_raises_service_unavailable():
+    """When engine is None, apply_preset raises ServiceUnavailableError — not
+    HTTPException — so the core layer stays framework-free.  The extension
+    handler maps it to 503."""
+    from dynastore.modules.storage.presets.lifecycle import apply_preset
+
+    audit = _audit()
+
+    with pytest.raises(ServiceUnavailableError) as exc_info:
+        await apply_preset(
+            "test-sync-preset", "platform", NoParams(), _ctx(),
+            engine=None, audit=audit,
+        )
+
+    assert exc_info.value.detail == "Database engine not available."
 
 
 # ---------------------------------------------------------------------------
@@ -320,13 +364,13 @@ async def test_revoke_404_when_no_row():
     with patch(
         "dynastore.modules.storage.presets.lifecycle.find_preset",
         return_value=preset,
-    ), pytest.raises(HTTPException) as exc_info:
+    ), pytest.raises(PresetNotFoundError) as exc_info:
         await revoke_preset(
             "test-sync-preset", "platform", _ctx(),
             engine=engine, audit=audit,
         )
 
-    assert exc_info.value.status_code == 404
+    assert "No applied preset" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -365,13 +409,13 @@ async def test_self_lockout_raises_409_when_only_admin_role_removed():
     with patch(
         "dynastore.modules.storage.presets.lifecycle.find_preset",
         return_value=preset,
-    ), pytest.raises(HTTPException) as exc_info:
+    ), pytest.raises(PresetConflictError) as exc_info:
         await revoke_preset(
             "iam-preset", "platform", ctx,
             engine=engine, audit=audit,
         )
 
-    assert exc_info.value.status_code == 409
+    assert "admin access" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio
@@ -407,7 +451,7 @@ async def test_self_lockout_overridden_with_force():
         "dynastore.modules.storage.presets.lifecycle.find_preset",
         return_value=preset,
     ):
-        result = await revoke_preset(
+        await revoke_preset(
             "iam-preset", "platform", ctx,
             engine=engine, audit=audit,
             force_self_revoke=True,

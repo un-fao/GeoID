@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
 Unit tests for LocalUploadModule.
@@ -311,33 +315,27 @@ class TestGetUploadStatus:
         assert resp.error == "disk full"
 
     @pytest.mark.asyncio
-    async def test_unknown_ticket_raises_404(self, tmp_path):
-        from fastapi import HTTPException
+    async def test_unknown_ticket_raises_value_error(self, tmp_path):
         m = _make_module(tmp_path, FakeTicketStore())
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValueError, match="not found or expired"):
             await m.get_upload_status(ticket_id="nonexistent", catalog_id="cat1")
-        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_expired_ticket_raises_404_and_removes(self, tmp_path):
-        from fastapi import HTTPException
+    async def test_expired_ticket_raises_value_error_and_removes(self, tmp_path):
         store = FakeTicketStore()
         m = _make_module(tmp_path, store)
         tid = await self._seed_ticket(store, expired=True)
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValueError, match="not found or expired"):
             await m.get_upload_status(ticket_id=tid, catalog_id="cat1")
-        assert exc_info.value.status_code == 404
         assert await store.get(tid) is None
 
     @pytest.mark.asyncio
-    async def test_catalog_mismatch_raises_404(self, tmp_path):
-        from fastapi import HTTPException
+    async def test_catalog_mismatch_raises_value_error(self, tmp_path):
         store = FakeTicketStore()
         m = _make_module(tmp_path, store)
         await self._seed_ticket(store, catalog_id="cat1")
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ValueError, match="not found in catalog"):
             await m.get_upload_status(ticket_id="t1", catalog_id="cat_wrong")
-        assert exc_info.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -721,3 +719,147 @@ class TestEngineGuard:
         ):
             with pytest.raises(RuntimeError, match="database engine unavailable"):
                 _ = m._tickets
+
+
+# ---------------------------------------------------------------------------
+# Architectural: module must not import fastapi or starlette
+# ---------------------------------------------------------------------------
+
+
+class TestNoFastAPIImport:
+    """The local module is framework-free core — it must never import fastapi
+    or starlette at the source level."""
+
+    def test_local_upload_has_no_fastapi_import(self):
+        import ast
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("dynastore.modules.local.local_upload")
+        assert spec is not None and spec.origin is not None
+        source = Path(spec.origin).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        bad_imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in ("fastapi", "starlette"):
+                        bad_imports.append((node.lineno, alias.name))
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".")[0] in ("fastapi", "starlette"):
+                    bad_imports.append((node.lineno, node.module))
+        assert not bad_imports, (
+            "local_upload.py must not import fastapi/starlette: "
+            + str(bad_imports)
+        )
+
+    def test_asset_downloads_has_no_fastapi_import(self):
+        import ast
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("dynastore.modules.local.asset_downloads")
+        assert spec is not None and spec.origin is not None
+        source = Path(spec.origin).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        bad_imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in ("fastapi", "starlette"):
+                        bad_imports.append((node.lineno, alias.name))
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.split(".")[0] in ("fastapi", "starlette"):
+                    bad_imports.append((node.lineno, node.module))
+        assert not bad_imports, (
+            "asset_downloads.py must not import fastapi/starlette: "
+            + str(bad_imports)
+        )
+
+
+# ---------------------------------------------------------------------------
+# receive_upload: framework-free byte-stream method
+# ---------------------------------------------------------------------------
+
+
+class TestReceiveUpload:
+    """Tests for the framework-free ``receive_upload`` method.
+
+    Uses a plain async generator as the byte stream — no FastAPI / UploadFile.
+    """
+
+    async def _seed_pending_ticket(
+        self, store: FakeTicketStore, module: LocalUploadModule, ticket_id: str = "ru-t1"
+    ) -> str:
+        from datetime import timedelta, timezone
+        await store.put(
+            ticket_id,
+            {
+                "asset_id": "ru_asset",
+                "catalog_id": "cat1",
+                "collection_id": None,
+                "filename": "data.bin",
+                "content_type": "application/octet-stream",
+                "asset_def": _make_asset_def("ru_asset"),
+                "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+                "status": UploadStatus.PENDING,
+            },
+        )
+        return ticket_id
+
+    async def _byte_stream(self, data: bytes):
+        """Plain async generator yielding data in 4-byte chunks."""
+        for i in range(0, len(data), 4):
+            yield data[i : i + 4]
+
+    @pytest.mark.asyncio
+    async def test_receive_upload_returns_completed_status(self, tmp_path):
+        store = FakeTicketStore()
+        m = _make_module(tmp_path, store)
+        tid = await self._seed_pending_ticket(store, m)
+
+        mock_asset = MagicMock()
+        mock_asset.asset_id = "ru_asset"
+        mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
+        mock_assets.create_asset = AsyncMock(return_value=mock_asset)
+
+        with patch("dynastore.tools.discovery.get_protocol", return_value=mock_assets):
+            response = await m.receive_upload(tid, self._byte_stream(b"BINARY_DATA"))
+
+        assert response.status == UploadStatus.COMPLETED
+        assert response.asset_id == "ru_asset"
+        assert response.ticket_id == tid
+
+    @pytest.mark.asyncio
+    async def test_receive_upload_unknown_ticket_raises_value_error(self, tmp_path):
+        m = _make_module(tmp_path, FakeTicketStore())
+
+        async def _empty():
+            return
+            yield  # make it an async generator
+
+        with pytest.raises(ValueError, match="not found or expired"):
+            await m.receive_upload("no-such-ticket", _empty())
+
+    @pytest.mark.asyncio
+    async def test_receive_upload_writes_file_to_staging(self, tmp_path):
+        store = FakeTicketStore()
+        m = _make_module(tmp_path, store)
+        tid = await self._seed_pending_ticket(store, m)
+
+        content = b"FILE_CONTENT_BYTES"
+
+        mock_asset = MagicMock()
+        mock_asset.asset_id = "ru_asset"
+        mock_assets = MagicMock()
+        mock_assets.finalize_pending_upload = AsyncMock(return_value=None)
+        mock_assets.create_asset = AsyncMock(return_value=mock_asset)
+
+        with patch("dynastore.tools.discovery.get_protocol", return_value=mock_assets):
+            await m.receive_upload(tid, self._byte_stream(content))
+
+        # File should end up at the permanent path after _complete_upload.
+        permanent = m._asset_root / "cat1" / "_catalog_tier" / "data.bin"
+        assert permanent.exists()
+        assert permanent.read_bytes() == content

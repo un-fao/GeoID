@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Unit tests for the ``IdpConfig`` PluginConfig (geoid#1500).
 
@@ -51,7 +55,7 @@ def test_class_key_is_idp_config() -> None:
 
 
 def test_registered_as_plugin_config() -> None:
-    from dynastore.modules.db_config.plugin_config import list_registered_configs
+    from dynastore.models.plugin_config import list_registered_configs
 
     reg = list_registered_configs()
     assert reg.get("idp_config") is IdpConfig

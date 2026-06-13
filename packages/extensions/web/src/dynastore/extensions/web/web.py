@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -41,6 +41,7 @@ from dynastore.models.auth import Condition
 from dynastore.models.protocols.authorization import IamRolesConfig
 from dynastore.models.protocols.policies import Policy, Role, Principal
 from dynastore.tools.discovery import get_protocol, get_protocols, register_plugin
+from dynastore.extensions.tools.language_utils import get_language
 
 # Register public access policy for web extension
 logger = logging.getLogger(__name__)
@@ -59,6 +60,99 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
     and runtime bypass checks share a single source of truth.
     """
     sysadmin_role_name = sysadmin_role_name or IamRolesConfig().sysadmin_role_name
+
+    # Per-extension static prefixes registered via @expose_static are served
+    # at /web/{prefix}/. Anonymous browser pages load their JS/CSS from these
+    # paths, so each prefix must appear in the anonymous ALLOW list.
+    # Patterns are anchored to /web/{prefix}/ — an unanchored /web/stac
+    # pattern would also match /web/stac-authoring/… accidentally.
+    _literal_extension_prefixes: List[str] = [
+        "/web/stac/.*",
+        "/web/records/.*",
+        "/web/features/.*",
+        "/web/assets/.*",
+        "/web/edr/.*",
+        "/web/movingfeatures/.*",
+        "/web/tiles/.*",
+        "/web/auth/.*",
+        "/web/coverages/.*",
+    ]
+
+    # The complete set of /web/... resource patterns that are already
+    # authoritative in the policy (both the extension-prefix list above
+    # and the hardcoded entries in web_public_access.resources).  The
+    # dynamic block must not emit a wildcard pattern for any prefix that
+    # is already referenced here in any form — even a narrow entry like
+    # /web/dashboard/?$ must prevent the dynamic block from widening it
+    # to /web/dashboard/.*, which would open the gated data endpoints.
+    _all_literal_web_resources: List[str] = _literal_extension_prefixes + [
+        "/web/?$",
+        "/web/pages/.*",
+        "/web/extension-static/.*",
+        "/web/static/.*",
+        "/web/website/.*",
+        "/web/docs-content/.*",
+        "/web/docs-manifest$",
+        "/web/config/.*",
+        "/web/dashboard/?$",
+        "/web/lite/.*",
+    ]
+
+    # Best-effort dynamic derivation: if WebModule is already registered,
+    # collect every prefix whose metadata marks it public=True and append
+    # any that are not already covered by the literal list. Extensions
+    # added in the future are thereby covered without a manual edit here.
+    # The whole block is wrapped in try/except so a missing WebModule
+    # (startup ordering, test isolation) never prevents the literal floor
+    # from being returned.
+    #
+    # Prefix-aware skip: if ANY literal resource already references a
+    # prefix (anchored, bare, or regex-prefixed forms), the literal list
+    # is authoritative for that prefix and the dynamic block must not emit
+    # a pattern for it.  This prevents the dynamic block from widening a
+    # deliberately narrow literal entry — e.g. /web/dashboard/?$ allows
+    # only the shell page while the gated data endpoints stay protected.
+    def _literal_covers_prefix(pfx: str) -> bool:
+        bare = f"/web/{pfx}/"
+        anchored = f"^/web/{pfx}/"
+        bare_no_slash = f"/web/{pfx}"
+        for r in _all_literal_web_resources:
+            if (
+                r.startswith(bare)
+                or r.startswith(anchored)
+                or r == bare_no_slash
+                or r.startswith(bare_no_slash + "?")
+                or r.startswith(bare_no_slash + "$")
+            ):
+                return True
+        return False
+
+    _dynamic_extension_prefixes: List[str] = []
+    try:
+        _web_mod = get_protocol(WebModuleProtocol)
+        if _web_mod is not None and hasattr(_web_mod, "get_static_prefix_meta"):
+            for _pfx, _meta in _web_mod.get_static_prefix_meta().items():
+                if not _meta.get("public", True):
+                    continue
+                if _literal_covers_prefix(_pfx):
+                    continue
+                _pattern = f"/web/{re.escape(_pfx)}/.*"
+                _dynamic_extension_prefixes.append(_pattern)
+    except Exception:
+        logger.debug(
+            "_web_policies: could not derive dynamic extension prefixes from "
+            "WebModule; literal list remains the guaranteed floor.",
+            exc_info=True,
+        )
+
+    # Deduplicate preserving order (literals first, then novel dynamic ones).
+    _seen_pfx: set = set()
+    _all_extension_prefixes: List[str] = []
+    for _p in _literal_extension_prefixes + _dynamic_extension_prefixes:
+        if _p not in _seen_pfx:
+            _seen_pfx.add(_p)
+            _all_extension_prefixes.append(_p)
+
     return [
         # Anonymous-allowed web paths. Resource patterns are anchored where
         # ambiguity matters because PolicyService uses ``re.match`` (matches
@@ -93,6 +187,7 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/configs/registry$",
                 "/configs/registry/.*",
                 f"/configs/plugins/{WebConfig.class_key()}$",
+                *_all_extension_prefixes,
             ],
             effect="ALLOW",
         ),
@@ -109,6 +204,7 @@ def _web_policies(sysadmin_role_name: Optional[str] = None) -> List[Policy]:
                 "/web/pages/governance",
                 "/web/pages/stac-authoring",
                 "/web/pages/ingest",
+                r"^/web/admin/pages/[^/]+/providers$",
             ],
             effect="ALLOW",
         ),
@@ -279,7 +375,7 @@ WEB_CONFORMANCE_URIS = [
 from pydantic import Field
 from dynastore.models.protocols.web import WebModuleProtocol, StaticFilesProtocol
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.routing import Match, Router
@@ -443,6 +539,14 @@ class Web(ExtensionProtocol, OGCServiceMixin):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
         _register_anonymous_principal()
+
+        # Public, unfiltered catalog-list provider (priority 100) backing the
+        # /web/catalogs picker endpoint. An auth-aware provider (e.g. IAM)
+        # registers at a lower priority and outranks this one when mounted.
+        from dynastore.extensions.web.catalog_source import (
+            DefaultCatalogListProvider,
+        )
+        register_plugin(DefaultCatalogListProvider())
 
         # Register push-based CORS config handler
         from dynastore.modules.iam.security_config import SecurityPluginConfig
@@ -1134,9 +1238,9 @@ class Web(ExtensionProtocol, OGCServiceMixin):
     async def presets_page(self, request: Request):
         """Preset registry browser and lifecycle operator (#1412).
 
-        Discovers all registered presets dynamically via GET /admin/presets and
+        Discovers all registered presets dynamically via GET /configs/presets and
         exposes apply / dry-run / rollback at platform, catalog, and collection
-        scope. Authorization is enforced server-side on every /admin/presets
+        scope. Authorization is enforced server-side on every /configs/presets
         mutation; the page is gated by web_sysadmin_access because preset apply
         is a destructive configuration operation.
         """
@@ -1239,13 +1343,26 @@ class Web(ExtensionProtocol, OGCServiceMixin):
         else:
             logger.error("WebService: Cannot register web page, WebModule not available")
 
-    def register_static_provider(self, prefix: str, provider: Callable[[], List[str]]):
+    def register_static_provider(
+        self,
+        prefix: str,
+        provider: Callable[[], List[str]],
+        owner: str = "",
+        description: str = "",
+        public: bool = True,
+    ) -> None:
         if self.web_module:
-            self.web_module.register_static_provider(prefix, provider)
+            self.web_module.register_static_provider(
+                prefix, provider, owner=owner, description=description, public=public
+            )
         else:
             logger.error("WebService: Cannot register static provider, WebModule not available")
 
-    @expose_static("static")
+    @expose_static(
+        "static",
+        owner="web",
+        description="Core platform CSS, JS, images, and fonts.",
+    )
     def _provide_default_static(self) -> List[str]:
         if not self.static_dir:
             return []
@@ -1255,7 +1372,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("website")
+    @expose_static(
+        "website",
+        owner="web",
+        description="Web shell entry-point (index.html) and its assets.",
+    )
     def _provide_website_static(self) -> List[str]:
         website_dir = os.path.join(os.path.dirname(__file__), "static", "website")
         files = []
@@ -1264,7 +1385,12 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("dashboard")
+    @expose_static(
+        "dashboard",
+        owner="web",
+        description="Per-catalog dashboard HTML shell and its assets.",
+        public=False,
+    )
     def _provide_dashboard_static(self) -> List[str]:
         dashboard_dir = os.path.join(os.path.dirname(__file__), "static", "dashboard")
         files = []
@@ -1273,7 +1399,11 @@ class Web(ExtensionProtocol, OGCServiceMixin):
                 files.append(os.path.join(root, filename))
         return files
 
-    @expose_static("extension-static")
+    @expose_static(
+        "extension-static",
+        owner="web",
+        description="Alias for the 'static' prefix; kept for backward compatibility.",
+    )
     def _provide_extension_static(self) -> List[str]:
         return self._provide_default_static()
 
@@ -1441,6 +1571,61 @@ class Web(ExtensionProtocol, OGCServiceMixin):
             return results
 
 
+        @self.router.get("/config/static-prefixes", response_class=JSONResponse)
+        async def list_static_prefixes():
+            """List every registered static-file prefix with its owner and description.
+
+            Anonymous-accessible (covered by the ``web_public_access`` policy via
+            the ``/web/config/.*`` resource pattern).  Returns a JSON array where
+            each entry has ``prefix``, ``owner``, and ``description`` fields.
+
+            Page authors can call this endpoint instead of hardcoding URL paths such
+            as ``/web/geoid/...`` — the prefix registry tells them which namespaces
+            are available and which extension owns them.
+            """
+            if not self.web_module:
+                return []
+            if hasattr(self.web_module, "list_static_prefix_info"):
+                return self.web_module.list_static_prefix_info()
+            # Fallback for older WebModule without the method
+            return [{"prefix": p, "owner": "", "description": ""} for p in sorted(self.web_module.static_providers)]
+
+        @self.router.get("/admin/pages/{page_id}/providers", response_class=JSONResponse)
+        async def get_page_providers(page_id: str):
+            """Sysadmin endpoint: list every handler registered for a page id.
+
+            Gated by the ``web_sysadmin_access`` policy.  Returns a JSON array
+            where each entry describes one handler:
+
+            - ``priority`` — lower values render first
+            - ``is_embed`` — ``true`` for fragment contributors, ``false`` for
+              the primary page handler
+            - ``handler`` — fully-qualified Python callable name (module.qualname)
+
+            Useful when debugging why an embed did not appear: compare
+            ``is_embed`` + ``priority`` values for all registered providers.
+            """
+            if not self.web_module:
+                raise HTTPException(status_code=500, detail="Web module not available")
+            if hasattr(self.web_module, "list_page_providers"):
+                providers = self.web_module.list_page_providers(page_id)
+            else:
+                entry = self.web_module.web_pages.get(page_id)
+                if not entry:
+                    providers = []
+                else:
+                    providers = [
+                        {
+                            "priority": p,
+                            "is_embed": e,
+                            "handler": getattr(h, "__qualname__", repr(h)),
+                        }
+                        for p, h, e in entry.get("providers", [])
+                    ]
+            if not providers and page_id not in (self.web_module.web_pages or {}):
+                raise HTTPException(status_code=404, detail=f"Page '{page_id}' not registered")
+            return providers
+
         @self.router.get("/pages/{page_id}", response_class=HTMLResponse)
         async def get_web_page_content(
             page_id: str, request: Request, language: str = Query("en")
@@ -1456,8 +1641,8 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         # Demo-data provisioning is no longer a bespoke /admin/demo/* route.
         # Apply the standard `demo_data` preset instead:
-        #   POST   /admin/presets/demo_data   (provision)
-        #   DELETE /admin/presets/demo_data   (clean up)
+        #   POST   /configs/presets/demo_data   (provision)
+        #   DELETE /configs/presets/demo_data   (clean up)
 
         @self.router.get("/docs-manifest", response_class=JSONResponse)
         async def get_docs_manifest():
@@ -1610,6 +1795,35 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
             return [c.model_dump() for c in cats]
 
+        @self.router.get("/catalogs", response_class=JSONResponse)
+        async def get_catalog_options(
+            request: Request,
+            language: str = Depends(get_language),
+        ):
+            """Catalog options for UI pickers — pluggable, server-resolved.
+
+            Returns ``{"catalogs": [{"id", "title"}]}`` from the
+            highest-priority *available* ``CatalogListProvider``: IAM when
+            mounted (grant-filtered for the principal), otherwise the public
+            full list. The winner is authoritative — an empty result from an
+            auth-aware provider is NOT overridden by a lower-priority full
+            list, so a tenant-scoped deployment never leaks catalogs the
+            caller cannot see. New protocols become selectable by registering
+            a provider; no front-end change is needed.
+            """
+            from dynastore.models.protocols.catalog_source import (
+                CatalogListProvider,
+            )
+
+            providers = get_protocols(CatalogListProvider)
+            if not providers:
+                return {"catalogs": []}
+            winner = providers[0]  # priority-sorted, is_available()-gated
+            options = await winner.list_catalog_options(request, language)
+            return {
+                "catalogs": [{"id": o.id, "title": o.title} for o in options]
+            }
+
         @self.router.get(
             "/dashboard/catalogs/{catalog_id}/collections", response_class=JSONResponse
         )
@@ -1722,10 +1936,25 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         @self.router.get("/dashboard/tasks", response_class=JSONResponse)
         async def get_dashboard_platform_tasks():
-            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
-            if tasks_ext:
-                return await tasks_ext.get_tasks()
-            return []
+            from dynastore.models.protocols.tasks import TasksProtocol
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.db_config.query_executor import managed_transaction
+            from dynastore.modules.tasks.tasks_module import get_task_schema
+
+            tasks_svc = get_protocol(TasksProtocol)
+            if tasks_svc is None:
+                return []
+            db = get_protocol(DatabaseProtocol)
+            engine = db.get_any_engine() if db else None
+            if engine is None:
+                return []
+            try:
+                schema = get_task_schema()
+                async with managed_transaction(engine) as conn:
+                    tasks = await tasks_svc.list_tasks(conn, schema)
+                return [t.model_dump() if hasattr(t, "model_dump") else t for t in tasks]
+            except Exception:
+                return []
 
         @self.router.get(
             "/dashboard/ogc-compliance",
@@ -1766,15 +1995,23 @@ class Web(ExtensionProtocol, OGCServiceMixin):
 
         @self.router.get("/dashboard/catalogs/{catalog_id}/tasks", response_class=JSONResponse)
         async def get_dashboard_tasks(catalog_id: str):
-            tasks_ext = getattr(self.app.state, "tasks", None) if self.app else None
-            if tasks_ext:
-                # The TasksProtocol's get_tasks returns the global view today;
-                # filtering by catalog_id is a follow-up that requires the
-                # protocol contract to grow a parameter. The middleware
-                # already enforced that the caller is allowed for catalog_id.
-                tasks = await tasks_ext.get_tasks()
-                return tasks
-            return []
+            from dynastore.models.protocols.tasks import TasksProtocol
+            from dynastore.models.protocols import DatabaseProtocol
+            from dynastore.modules.db_config.query_executor import managed_transaction
+
+            tasks_svc = get_protocol(TasksProtocol)
+            if tasks_svc is None:
+                return []
+            db = get_protocol(DatabaseProtocol)
+            engine = db.get_any_engine() if db else None
+            if engine is None:
+                return []
+            try:
+                async with managed_transaction(engine) as conn:
+                    tasks = await tasks_svc.list_tasks_for_catalog(conn, catalog_id)
+                return [t.model_dump() if hasattr(t, "model_dump") else t for t in tasks]
+            except Exception:
+                return []
 
         # /dashboard/catalogs/{cat}[/collections/{col}]/{logs,events} deleted:
         # callers fetch canonical /logs/catalogs/{cat}... and /events/catalogs/{cat}...

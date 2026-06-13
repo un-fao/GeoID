@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """``assets_local_only`` preset — local-disk upload backend, on-prem only.
 
@@ -18,10 +22,10 @@ An ``ASSETS``-tier preset (#972) with ``catalog_scopable=True``, so it
 reaches both admin URL families:
 
 * **assets @ catalog** —
-  ``POST /admin/catalogs/{cat}/presets/assets_local_only``
+  ``POST /configs/catalogs/{cat}/presets/assets_local_only``
   sets the catalog-tier asset routing that future collections inherit.
 * **assets @ collection** —
-  ``POST /admin/catalogs/{cat}/collections/{col}/presets/assets_local_only``
+  ``POST /configs/catalogs/{cat}/collections/{col}/presets/assets_local_only``
   pins the same asset routing on one collection, overriding the catalog
   template for that collection only.
 
@@ -46,11 +50,12 @@ either scope.
 from __future__ import annotations
 
 import importlib.util
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Tuple
 
 from dynastore.modules.storage.routing_config import AssetRoutingConfig
 
 from .bundle_preset import BundlePreset
+from .examples import PresetExample
 from .protocol import PresetBundle, PresetBundleEntry, PresetTier
 
 
@@ -117,6 +122,9 @@ class AssetsLocalOnlyPreset(BundlePreset):
     name = "assets_local_only"
     tier: ClassVar[PresetTier] = PresetTier.ASSETS
     catalog_scopable: ClassVar[bool] = True
+    keywords: ClassVar[Tuple[str, ...]] = (
+        "routing", "assets", "upload", "local", "on-prem", "docker-compose",
+    )
     description = (
         "Assets-tier local-disk upload preset (on-prem / docker-compose "
         "only). Pins local_upload_module as the UPLOAD driver "
@@ -126,6 +134,22 @@ class AssetsLocalOnlyPreset(BundlePreset):
         "catalog scope it sets the upload template future collections "
         "inherit (inherit-only, no retro-apply); applied at collection "
         "scope it overrides upload routing for one collection."
+    )
+
+    examples: ClassVar[Tuple[PresetExample, ...]] = (
+        PresetExample(
+            name="on-prem-local-uploads",
+            summary=(
+                "Route asset uploads to the local-disk backend for an on-prem / "
+                "docker-compose deployment: the client POSTs the file to the server "
+                "endpoint, which writes it to disk and registers the asset in one "
+                "synchronous transaction. WRITE/READ stay PG-only. Apply at catalog "
+                "scope via POST /admin/catalogs/{catalog_id}/presets/assets_local_only "
+                "(or at collection scope to override one collection). Takes no "
+                "parameters. Only registered when google.cloud.storage is absent."
+            ),
+            params={},
+        ),
     )
 
     def build(self, **_scope: str) -> PresetBundle:

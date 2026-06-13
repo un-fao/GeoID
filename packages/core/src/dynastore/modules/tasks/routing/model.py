@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Task routing model — value objects and the platform-tier PluginConfig.
 
 ``RunnerTarget`` is the per-entry value object (mirrors
@@ -22,7 +40,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 from pydantic import BaseModel, Field, model_validator
 
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from dynastore.modules.tasks.routing.exec_hints import ExecHint
 
 
@@ -116,6 +134,21 @@ class RunnerTarget(BaseModel):
     )
 
 
+# One-release backward-compat aliases: routing config rows written before the
+# Phase 0 rename used the old key "outbox_drain".  resolved_targets() tries
+# all aliases so that:
+#   - old callers passing "outbox_drain" find stored "index_drain" entries, and
+#   - new callers passing "index_drain" find stored "outbox_drain" entries.
+# Remove once all stored configs have been re-applied with the new keys.
+_LEGACY_TASK_KEY_MAP: Dict[str, str] = {
+    "outbox_drain": "index_drain",
+}
+# Reverse: new key → old stored key (for reading old configs with new callers).
+_LEGACY_TASK_KEY_REVERSE_MAP: Dict[str, str] = {
+    v: k for k, v in _LEGACY_TASK_KEY_MAP.items()
+}
+
+
 class TaskRoutingConfig(PluginConfig):
     """Platform-tier, sysadmin-mutable task/process routing.
 
@@ -154,11 +187,26 @@ class TaskRoutingConfig(PluginConfig):
         Checks the ``tasks`` bucket first (consistent with ``task_kind()``
         semantics), falls back to ``processes``, returns ``[]`` when the
         key is unknown in both.
+
+        Legacy shim: tries all known aliases for ``task_key`` so that:
+        - Old callers passing the pre-rename key find entries stored under
+          the new key, and
+        - New callers passing the post-rename key find entries stored under
+          the old key (old config not yet migrated).
+        Remove the alias maps once all stored configs use the new keys.
         """
-        if task_key in self.tasks:
-            return list(self.tasks[task_key])
-        if task_key in self.processes:
-            return list(self.processes[task_key])
+        candidates = [
+            task_key,
+            _LEGACY_TASK_KEY_MAP.get(task_key),
+            _LEGACY_TASK_KEY_REVERSE_MAP.get(task_key),
+        ]
+        for key in candidates:
+            if key is None:
+                continue
+            if key in self.tasks:
+                return list(self.tasks[key])
+            if key in self.processes:
+                return list(self.processes[key])
         return []
 
     @model_validator(mode="after")

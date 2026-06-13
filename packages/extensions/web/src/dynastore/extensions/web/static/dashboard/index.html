@@ -8,8 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="../static/common/admin.css">
   <link rel="stylesheet" href="styles.css">
-  <script src="../website/context-selector.js?v={{VERSION}}"></script>
-  <script src="app.js" defer></script>
+  <script type="module" src="app.js"></script>
 </head>
 <body>
   <main>
@@ -61,24 +60,24 @@
         </div>
         <div class="stats-grid">
           <div class="stat-card">
-            <h3>System health</h3>
-            <div class="value status-ok" id="stat-health">HEALTHY</div>
-            <div class="subtext">All services operational</div>
+            <h3>Total requests</h3>
+            <div class="value" id="stat-requests">&mdash;</div>
+            <div class="subtext">Requests recorded</div>
           </div>
           <div class="stat-card">
-            <h3>Total catalogs</h3>
-            <div class="value" id="stat-catalogs">&mdash;</div>
-            <div class="subtext">Active tenants</div>
+            <h3>Avg latency</h3>
+            <div class="value" id="stat-latency">&mdash;</div>
+            <div class="subtext">Average response time</div>
           </div>
           <div class="stat-card">
-            <h3>Total assets</h3>
-            <div class="value" id="stat-assets">&mdash;</div>
-            <div class="subtext">Indexed items</div>
+            <h3>Unique principals</h3>
+            <div class="value" id="stat-principals">&mdash;</div>
+            <div class="subtext">Distinct callers</div>
           </div>
           <div class="stat-card">
-            <h3>Throughput</h3>
-            <div class="value" id="stat-req">&mdash;</div>
-            <div class="subtext">Req / sec — 1 min average</div>
+            <h3>Success rate</h3>
+            <div class="value" id="stat-success-rate">&mdash;</div>
+            <div class="subtext">2xx + 3xx responses</div>
           </div>
         </div>
       </div>
@@ -145,9 +144,10 @@
 
     <div class="footnote">
       <strong>Per-catalog dashboard.</strong> Stats, logs and tasks are
-      scoped to the catalog in the page URL
-      (<code>/web/dashboard/catalogs/{catalog_id}/</code>). The picker
-      above narrows further to a single collection when one is selected.
+      scoped to the catalog selected in the picker above; pick a
+      collection to narrow further. The shell is served at
+      <code>/web/dashboard/</code> and resolves scope from the picker,
+      not from the page URL.
     </div>
   </main>
 

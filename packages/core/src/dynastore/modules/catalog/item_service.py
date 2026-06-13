@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -237,11 +237,18 @@ class _IndexStampContext:
     (:meth:`ItemService._dispatch_index_upsert`) and the atomic OUTBOX bulk
     path (:meth:`ItemService.upsert_bulk`). ``access_envelope`` is ``None``
     unless the collection routes WRITE to an access-aware driver.
+
+    ``external_id`` carries the pre-resolved value from the inbound item (set
+    on ``processing_context["external_id"]`` by the sidecar or write-boundary).
+    When present it takes precedence over path-based extraction so the stamped
+    ``_external_id`` always reflects the original inbound identity, not the
+    post-read-back geoid-bearing result.
     """
 
     external_id_path: Optional[str]
     asset_id: Optional[Any]
     access_envelope: Optional[Dict[str, Any]]
+    external_id: Optional[str] = None
 
 
 class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
@@ -1008,11 +1015,30 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             # Phase 2f: pass the engine so the dispatcher can open its own
             # wrapping TX for atomic OUTBOX enqueue.
             if results:
-                await self._dispatch_index_upsert(
+                _index_results = await self._dispatch_index_upsert(
                     catalog_id, collection_id, results,
                     db_resource=db_resource or self.engine,
                     processing_context=processing_context,
                 )
+                # Propagate per-indexer results via ctx.extensions so callers
+                # (e.g. the ingestion task) can inspect secondary-index health
+                # without additional round-trips.
+                if ctx is not None and _index_results:
+                    existing = ctx.extensions.get("_index_results") or {}
+                    # Merge per-batch results: accumulate succeeded/failed totals.
+                    for indexer_id, bulk_res in _index_results.items():
+                        if indexer_id in existing:
+                            prev = existing[indexer_id]
+                            from dynastore.models.protocols.indexer import BulkResult
+                            existing[indexer_id] = BulkResult(
+                                total=prev.total + bulk_res.total,
+                                succeeded=prev.succeeded + bulk_res.succeeded,
+                                failed=prev.failed + bulk_res.failed,
+                                failures=prev.failures + bulk_res.failures,
+                            )
+                        else:
+                            existing[indexer_id] = bulk_res
+                    ctx.extensions["_index_results"] = existing
 
             # Write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b):
             # mark stale the tiles the new feature bboxes touch, and also the
@@ -1309,6 +1335,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     **({"_access_envelope": _batch_access_envelope}
                        if _batch_access_envelope is not None else {}),
                 }
+                # Pre-resolve external_id from the inbound feature before any
+                # sidecar runs so PG sidecars and the index-stamp path share
+                # one consistent value derived from the INBOUND item (not the
+                # post-read-back geoid-bearing result).
+                if items_write_policy is not None:
+                    _ext = items_write_policy.resolve_external_id(raw_item)
+                    if _ext is not None:
+                        item_context["external_id"] = _ext
                 hub_payload: Dict[str, Any] = {
                     "geoid": geoid,
                     "transaction_time": datetime.now(timezone.utc),
@@ -1519,10 +1553,24 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         # event listeners.  Phase 2f: pass the engine so the dispatcher
         # can open its own wrapping TX for atomic OUTBOX enqueue.
         if results:
+            # Per-item external_id resolved from the INBOUND items (built 1:1
+            # with results in ``generated_stats``, keyed by the persisted geoid
+            # so an identity-match update maps correctly). Passing it makes the
+            # index stamp use the same value PG stored — one external_id for
+            # every driver, independent of path-vs-default and the geoid swap.
+            _ext_by_geoid = {
+                str(gs["geoid"]): str(gs["external_id"])
+                for gs in generated_stats
+                if gs.get("geoid") is not None and gs.get("external_id") is not None
+            }
+            # Return value is logged by the dispatcher — callers of upsert_bulk
+            # that need per-indexer health must call _dispatch_index_upsert
+            # directly and inspect the returned dict.
             await self._dispatch_index_upsert(
                 catalog_id, collection_id, results,
                 db_resource=engine,
                 processing_context=processing_context,
+                external_id_by_id=_ext_by_geoid or None,
             )
 
         # ── Post-commit: write-reactive tile-cache invalidation (#1292 / #1297 Phase 2b) ──
@@ -1784,6 +1832,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             access_envelope=await self._resolve_access_envelope(
                 catalog_id, collection_id, processing_context,
             ),
+            external_id=(processing_context or {}).get("external_id"),
         )
 
     def _apply_index_stamp(
@@ -1804,7 +1853,9 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         :class:`~dynastore.modules.iam.stamping_config.AttributeStampingPolicy`
         with a non-empty ``attribute_paths`` map.
         """
-        if ctx.external_id_path:
+        if ctx.external_id is not None:
+            payload["_external_id"] = str(ctx.external_id)
+        elif ctx.external_id_path:
             ext = self._extract_by_path(payload, ctx.external_id_path)
             if ext is not None:
                 payload["_external_id"] = str(ext)
@@ -1831,7 +1882,8 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         *,
         db_resource: Optional[DbResource] = None,
         processing_context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+        external_id_by_id: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """Fan items out to every configured Indexer for the collection.
 
         Single dispatcher call site for items, replacing the per-driver
@@ -1861,9 +1913,18 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         the tenant-private doc builder both read ``_external_id`` / ``_asset_id``)
         carries the canonical envelope identity. The ES read path strips these
         internal ``_*`` fields, so they never surface to clients.
+
+        ``external_id_by_id`` maps a persisted geoid → the external_id resolved
+        from the *inbound* item (``ItemsWritePolicy.resolve_external_id``). It is
+        the authoritative per-item override because ``results`` are the
+        post-write read-back whose ``id`` is the geoid — re-deriving external_id
+        from the result here would lose the inbound identity (and the no-path
+        default ``id`` would resolve to the geoid, not the tenant's id). The PG
+        distributed-upsert path builds this map (it has the inbound contexts);
+        when absent, the stamp falls back to ``stamp_ctx`` (path extraction).
         """
         if not results:
-            return
+            return {}
 
         from dynastore.models.protocols.indexer import IndexOp
         from dynastore.modules.storage.index_dispatcher import (
@@ -1890,35 +1951,43 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 "or updated.",
                 len(id_less), catalog_id, collection_id,
             )
-        ops = [
-            IndexOp(
+        ops = []
+        for r in results:
+            if r.id is None:
+                continue
+            payload = self._apply_index_stamp(
+                r.model_dump(by_alias=True, exclude_none=True), stamp_ctx,
+            )
+            # Per-item external_id override: the resolved inbound value wins over
+            # any stamp_ctx-derived one, because ``results`` carry the geoid as
+            # ``id`` and cannot recover the inbound identity (esp. the no-path
+            # default, which would otherwise resolve to the geoid).
+            if external_id_by_id:
+                _eid = external_id_by_id.get(str(r.id))
+                if _eid is not None:
+                    payload["_external_id"] = str(_eid)
+            ops.append(IndexOp(
                 op_type="upsert",
                 entity_type="item",
-                entity_id=str(r.id) if r.id else "",
-                payload=self._apply_index_stamp(
-                    r.model_dump(by_alias=True, exclude_none=True), stamp_ctx,
-                ),
-            )
-            for r in results
-            if r.id is not None
-        ]
+                entity_id=str(r.id),
+                payload=payload,
+            ))
         if not ops:
-            return
+            return {}
 
         engine = db_resource or self.engine
         if engine is None:
             # No engine available — degrade to non-atomic enqueue (matches
             # pre-Phase-2f behaviour).  Outbox writer logs its own warning
             # when ctx.pg_conn is None.
-            await self._do_dispatch(
+            return await self._do_dispatch(
                 dispatcher, catalog_id, collection_id, ops, pg_conn=None,
             )
-            return
 
         # Phase 2f: open a wrapping TX so the outbox INSERT (if any) is
         # atomic with the indexer attempt.
         async with managed_transaction(engine) as conn:
-            await self._do_dispatch(
+            return await self._do_dispatch(
                 dispatcher, catalog_id, collection_id, ops, pg_conn=conn,
             )
 
@@ -1930,9 +1999,14 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
         ops: List[Any],
         *,
         pg_conn: Optional[DbResource],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """Inner dispatch helper — split out so the wrapping TX in
-        :meth:`_dispatch_index_upsert` is a single ``async with`` block."""
+        :meth:`_dispatch_index_upsert` is a single ``async with`` block.
+
+        Returns the per-indexer :class:`BulkResult` dict from
+        :meth:`~IndexDispatcher.fan_out_bulk` so callers can inspect
+        secondary-index health without additional round-trips.
+        """
         from dynastore.models.protocols.indexer import IndexContext
         from dynastore.modules.storage.index_dispatcher import IndexerFatal
         from dynastore.tools.correlation import get_correlation_id
@@ -1945,7 +2019,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
             entity_type="item",
         )
         try:
-            await dispatcher.fan_out_bulk(ctx, ops)
+            return await dispatcher.fan_out_bulk(ctx, ops)
         except IndexerFatal:
             # FATAL contract: a routing entry with on_failure=FATAL
             # MUST propagate so the caller's TX rolls back.  Don't
@@ -1956,6 +2030,7 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 "Index dispatcher fan-out failed for %s/%s (%d items): %s",
                 catalog_id, collection_id, len(ops), e,
             )
+            return {}
 
     async def _dispatch_tile_cache_invalidation(
         self,
@@ -2233,6 +2308,22 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                 stamp_ctx = await self._resolve_index_stamp_context(
                     catalog_id, collection_id, processing_context,
                 )
+                # Resolve the write policy once for per-item external_id
+                # resolution. When no policy is configured, this is None and
+                # per-item resolution below is skipped. Failure is intentionally
+                # swallowed — missing write-policy means no external_id stamp,
+                # not a crash.
+                _write_policy = None
+                try:
+                    _bulk_configs = get_protocol(ConfigsProtocol)
+                    if _bulk_configs is not None:
+                        _write_policy = await _bulk_configs.get_config(
+                            ItemsWritePolicy,
+                            catalog_id=catalog_id,
+                            collection_id=collection_id,
+                        )
+                except Exception:
+                    _write_policy = None
                 records: List[OutboxRecord] = []
                 for entry in async_outbox_entries:
                     inst = compute_driver_instance_id(
@@ -2241,13 +2332,27 @@ class ItemService(ItemQueryMixin, ItemDistributedMixin, ItemsProtocol):
                     for it in deduped:
                         item_id = it.get("id") if isinstance(it, dict) else None
                         item_id_str = str(item_id) if item_id is not None else None
+                        payload_copy = dict(it)
+                        # Per-item external_id resolution: inject _external_id
+                        # from the inbound item so every OUTBOX record carries
+                        # the correct identity even when stamp_ctx.external_id
+                        # is None (batch-level context has no per-item value)
+                        # and stamp_ctx.external_id_path is None (no path
+                        # configured). When stamp_ctx already resolved a value
+                        # via ctx.external_id or path extraction, _apply_index_stamp
+                        # will overwrite this — the per-item pre-set only fills
+                        # the gap for the no-path case.
+                        if _write_policy is not None:
+                            _item_ext = _write_policy.resolve_external_id(payload_copy)
+                            if _item_ext is not None and "_external_id" not in payload_copy:
+                                payload_copy["_external_id"] = _item_ext
                         records.append(OutboxRecord(
                             op_id=generate_uuidv7(),
                             driver_id=entry.driver_ref,
                             driver_instance_id=inst,
                             collection_id=collection_id,
                             op="upsert",
-                            payload=self._apply_index_stamp(dict(it), stamp_ctx),
+                            payload=self._apply_index_stamp(payload_copy, stamp_ctx),
                             item_id=item_id_str,
                             idempotency_key=item_id_str or str(generate_uuidv7()),
                         ))

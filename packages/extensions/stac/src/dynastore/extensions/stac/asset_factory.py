@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ from dynastore.models.protocols.asset_contrib import (
     ResourceRef,
 )
 from dynastore.models.protocols.link_contrib import AnchoredLink, LinkContributor
+from dynastore.extensions.stac.stac_contributor import StacContributor
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,27 @@ def add_dynamic_assets(item: StacTarget, context: AssetContext) -> None:
                     e,
                 )
         _add_source_file_asset(item, context)
+
+
+def apply_stac_contributions(target, ref: ResourceRef) -> None:
+    """Run all registered ``StacContributor`` producers against ``target``
+    (a pystac Catalog/Collection/Item), merging declared extension URIs and
+    top-level STAC fields. Idempotent; a failing producer is logged and
+    skipped so one bad producer never fails generation."""
+    for contributor in sorted(
+        get_protocols(StacContributor), key=lambda c: getattr(c, "priority", 100)
+    ):
+        try:
+            for contribution in contributor.contribute_stac(ref):
+                for uri in contribution.stac_extensions:
+                    if uri not in target.stac_extensions:
+                        target.stac_extensions.append(uri)
+                if contribution.extra_fields:
+                    target.extra_fields.update(contribution.extra_fields)
+        except Exception as e:  # noqa: BLE001 — isolate a bad producer
+            logger.error(
+                "StacContributor %s failed: %s", type(contributor).__name__, e
+            )
 
 
 async def add_dynamic_assets_and_links(item: StacTarget, context: AssetContext) -> None:

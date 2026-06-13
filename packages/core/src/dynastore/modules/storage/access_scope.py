@@ -11,6 +11,11 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Shared read-scope compilation for access-controlled storage drivers.
 
 Every read entry point that dispatches to an access-aware driver (the STAC
@@ -33,11 +38,9 @@ driver in a deployment with no authz engine) the result is
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
-    from starlette.requests import Request
-
     from dynastore.models.auth import Principal
     from dynastore.models.protocols.access_filter import AccessFilter
 
@@ -49,7 +52,7 @@ __all__ = [
 
 
 def principals_from_request_state(
-    request: "Request",
+    request: Any,  # framework-free: a Starlette Request at runtime (#1969); only request.state is read
 ) -> "Tuple[List[str], Optional[Principal]]":
     """Derive ``(principals, principal)`` from IAM-middleware request state.
 

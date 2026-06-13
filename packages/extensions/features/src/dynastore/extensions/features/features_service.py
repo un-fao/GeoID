@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -18,9 +18,10 @@
 
 # dynastore/extensions/features/features_service.py
 
-from typing import Optional, List, Any, Union, cast
+from typing import Optional, List, Any, FrozenSet, Union, cast
 
 import logging
+import os
 
 from dynastore.extensions.tools.ondemand_cache import ondemand_cache_lookup
 
@@ -62,15 +63,16 @@ from dynastore.models.shared_models import (
 from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
-from dynastore.extensions.tools.localization_utils import detect_use_lang
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
+from dynastore.extensions.web.decorators import expose_web_page, expose_static
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
 from dynastore.modules.db_config.query_executor import DbResource, managed_transaction
 import re
 from dynastore.extensions.tools.formatters import OutputFormatEnum
-from dynastore.extensions.tools.query import (
+from dynastore.extensions.tools.query import (  # noqa: E402
     parse_ogc_query_request,
+    parse_hints_param,
     stream_ogc_features,
     resolve_items_read_policy,
     validate_filter_lang,
@@ -78,6 +80,7 @@ from dynastore.extensions.tools.query import (
     dispatch_or_stream_items,
 )
 from dynastore.modules.storage.drivers.pg_sidecars.base import ConsumerType
+from dynastore.modules.storage.hints import EXACT_READ_HINTS
 
 logger = logging.getLogger(__name__)
 
@@ -826,6 +829,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             alias="f",
             description="The output format for the features.",
         ),
+        request_hints: FrozenSet = Depends(parse_hints_param),
     ) -> Response:
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
@@ -920,46 +924,13 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 if key not in OGC_RESERVED_QUERY_PARAMS and value != ""
             }
 
-            # ── Routing-aware items SEARCH-driver dispatch (#1047) ────────
-            # Mirror STAC ``/search``: for structural-only listings (no CQL2
-            # ``filter`` / shorthand attribute filter, no non-4326 CRS
-            # reprojection) resolve the items SEARCH driver via routing and
-            # dispatch through its streaming ``read_entities`` +
-            # ``count_entities`` contract — public ES, the tenant-private ES
-            # index, or any future ES items driver. The helper returns ``None``
-            # (→ the PG ``stream_items`` path below) for CQL/attribute filters,
-            # a read-primary (PG ``QUERY_FALLBACK_SOURCE``) driver, or a non-ES
-            # items driver. CRS reprojection is a
-            # PG-only capability, so a non-4326 output/bbox CRS also defers.
-            from dynastore.extensions.tools.query import (
-                maybe_dispatch_items_to_search_driver,
-            )
-
-            has_complex_filter = bool(filter) or bool(extra_filters)
-            wants_crs_reproject = (
-                target_crs_srid not in (None, 4326)
-                or bbox_crs_srid not in (None, 4326)
-            )
+            # OGC Features /items always returns exact, full-precision geometry.
+            # The simplified-geometry ES fast-path is not applicable here; the
+            # routing hint EXACT_READ_HINTS passed to dispatch_or_stream_items
+            # below selects the exact driver via the routing layer directly.
+            # Setting search_dispatch=None unconditionally skips the ES path and
+            # goes straight to stream_items with the exact hint.
             search_dispatch: Optional[Any] = None
-            if not has_complex_filter and not wants_crs_reproject:
-                parsed_bbox: Optional[List[float]] = None
-                if bbox:
-                    try:
-                        _b = [float(v) for v in bbox.split(",")]
-                        if len(_b) == 4:
-                            parsed_bbox = _b
-                    except ValueError:
-                        parsed_bbox = None
-                search_dispatch = await maybe_dispatch_items_to_search_driver(
-                    catalog_id=catalog_id,
-                    collection_id=collection_id,
-                    bbox=parsed_bbox,
-                    datetime=datetime_param,
-                    limit=limit,
-                    offset=offset,
-                    has_complex_filter=False,
-                    request=request,
-                )
 
             # Resolve skipGeometry/returnGeometry from the two accepted forms.
             skip_geom_bool = resolve_geometry_flag_from_query(skip_geometry, return_geometry)
@@ -982,6 +953,12 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
 
             # Execute search via protocol (streaming). ctx=None decouples from
             # the request connection to allow background streaming.
+            # OGC Features /items always requests exact geometry: pass
+            # EXACT_READ_HINTS so the router selects the exact-geometry driver
+            # (today PG) regardless of which driver is registered first for READ.
+            # When exact is requested the ES fast-path (search_dispatch) is None
+            # because is_es_items_driver is False for the exact driver, so
+            # dispatch_or_stream_items falls straight through to stream_items.
             items_protocol = cast(ItemsProtocol, catalogs_svc)
             query_response = await dispatch_or_stream_items(
                 items_protocol,
@@ -992,6 +969,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 search_dispatch=search_dispatch,
                 ctx=None,
                 request=request,
+                hints=EXACT_READ_HINTS,
             )
 
             count = query_response.total_count or 0
@@ -1242,3 +1220,46 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 catalog_id, collection_id, item_id, conn,
                 caller_id=self._principal_caller_id(request),
             )
+
+    # ------------------------------------------------------------------
+    # Web page contribution (WebPageContributor / StaticAssetProvider)
+    # ------------------------------------------------------------------
+
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("features")
+    def provide_static_files(self) -> list:
+        """Exposes the internal static directory for the Features browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="features_browser",
+        title={"en": "Features", "fr": "Entités", "es": "Entidades"},
+        icon="fa-draw-polygon",
+        description={
+            "en": "Browse and create vector features on a map.",
+            "fr": "Explorer et créer des entités vectorielles sur une carte.",
+            "es": "Explorar y crear entidades vectoriales en un mapa.",
+        },
+    )
+    async def provide_features_browser(self, request: Request):
+        return await self._serve_page_template("features_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")

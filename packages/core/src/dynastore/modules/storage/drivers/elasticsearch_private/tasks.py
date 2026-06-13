@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
 Per-item incremental private indexing tasks.
@@ -175,8 +179,13 @@ class PrivateIndexTask(TaskProtocol):
                 getattr(private_config, "simplify_geometry", False)
             )
         doc, factor, mode = maybe_simplify_for_es(doc, simplify=simplify_geometry)
-        doc["simplification_factor"] = factor
-        doc["simplification_mode"] = mode
+        # Write simplification provenance under the canonical system container
+        # (#1828 Phase 2 — flat root keys are no longer written on new docs).
+        if mode != "none":
+            doc.setdefault("system", {})["geometry_simplification"] = {
+                "factor": factor,
+                "mode": mode,
+            }
         doc = project_private_doc(doc, known_fields)
 
         await es.index(index=index_name, id=inputs.geoid, body=doc)

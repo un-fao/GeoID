@@ -146,9 +146,37 @@ async function switchTab(tabId) {
         const html = await res.text();
 
         // 4. Detect full-page document vs fragment.
-        // Full-page docs (stac_browser, map_viewer, etc.) must be rendered in an
-        // iframe so their <style> rules don't leak into the shell's body layout.
-        isFullPage = /^\s*<!DOCTYPE/i.test(html) || /^\s*<html/i.test(html);
+        //
+        // Two distinct rendering modes:
+        //
+        // (a) IFRAME mode — the response is a standalone HTML document that
+        //     manages its own <style> tags and JS.  Triggered by either:
+        //       • The response starting with <!DOCTYPE or <html (legacy heuristic,
+        //         kept for backward compatibility with existing admin pages that
+        //         return full documents), OR
+        //       • The fragment's root element carrying data-full-page="true"
+        //         (explicit opt-in — use this for new full-document pages).
+        //
+        // (b) FRAGMENT mode — the response is an HTML snippet injected directly
+        //     into the shell.  A fragment whose root element carries
+        //     data-fills-viewport will expand to fill the available height
+        //     without the iframe isolation overhead (e.g. map viewer widget).
+        //
+        // Extension authors: prefer the explicit attributes over relying on
+        // DOCTYPE detection.  Return a fragment with data-full-page on the root
+        // element when you need iframe isolation; return a fragment with
+        // data-fills-viewport on the root when you only need full-height layout.
+
+        // Quick probe: inject the raw html into a temporary container to check
+        // root-element attributes before committing to a rendering path.
+        const _probe = document.createElement('div');
+        _probe.innerHTML = html;
+        const _rootEl = _probe.firstElementChild;
+        const _hasFullPageAttr = _rootEl && _rootEl.hasAttribute('data-full-page');
+
+        isFullPage = _hasFullPageAttr
+            || /^\s*<!DOCTYPE/i.test(html)
+            || /^\s*<html/i.test(html);
 
         if (isFullPage) {
             // Full-page app: render in iframe, expand wrapper to fill height
@@ -161,7 +189,9 @@ async function switchTab(tabId) {
             contentArea.style.cssText = 'height:100%;display:flex;flex-direction:column;';
             contentArea.innerHTML = `<iframe src="pages/${tabId}?language=${currentLocale}" style="width:100%;flex:1;border:none;display:block;" allowfullscreen></iframe>`;
         } else {
-            // Fragment: inject HTML then check if it requests full-height treatment
+            // Fragment: inject HTML then check if it requests full-height treatment.
+            // Check both the root element (explicit opt-in) and any descendant
+            // (legacy pattern used by some existing map-viewer fragments).
             contentArea.classList.add('max-w-7xl', 'mx-auto');
             contentArea.style.cssText = '';
             contentArea.innerHTML = html;
@@ -467,17 +497,40 @@ async function fetchDashboardStats() {
         const res = await fetch('dashboard/stats');
         if (!res.ok) return;
         const stats = await res.json();
-        if(document.getElementById('stat-total-requests')) document.getElementById('stat-total-requests').innerText = stats.total_requests.toLocaleString() || '0';
-        if(document.getElementById('stat-avg-latency')) document.getElementById('stat-avg-latency').innerText = `${Math.round(stats.average_latency_ms || 0)}ms`;
-        const rate = stats.total_requests > 0 ? 100 : 0;
-        if(document.getElementById('stat-success-rate')) document.getElementById('stat-success-rate').innerText = `${rate}%`;
+        if (document.getElementById('stat-total-requests')) {
+            document.getElementById('stat-total-requests').innerText =
+                (stats.total_requests || 0).toLocaleString();
+        }
+        if (document.getElementById('stat-avg-latency')) {
+            document.getElementById('stat-avg-latency').innerText =
+                `${Math.round(stats.average_latency_ms || 0)}ms`;
+        }
+        // Compute success rate from status_code_distribution (defect D fix).
+        // Only display when the distribution has data; avoid a fake 100%.
+        const rateEl = document.getElementById('stat-success-rate');
+        if (rateEl) {
+            const dist = stats.status_code_distribution || {};
+            const total = Object.values(dist).reduce((s, n) => s + n, 0);
+            if (total > 0) {
+                const success = Object.entries(dist)
+                    .filter(([code]) => code.startsWith('2') || code.startsWith('3'))
+                    .reduce((s, [, n]) => s + n, 0);
+                rateEl.innerText = `${Math.round((success / total) * 100)}%`;
+            } else {
+                rateEl.innerText = '—';
+            }
+        }
     } catch(e) {}
 }
 
 async function fetchDashboardLogs() {
     try {
         const level = document.getElementById('log-filter-level')?.value || 'INFO';
-        const res = await fetch(`/logs/system?limit=50&level=${level}`);
+        // Must carry the proxy prefix: a bare /logs/system resolves against the
+        // proxy root (e.g. https://host/logs/system) and 404s behind a base path
+        // like /geospatial/dev/api/catalog. apiRoot() supplies the prefix, as it
+        // does for every other absolute API call in this file.
+        const res = await fetch(`${apiRoot()}/logs/system?limit=50&level=${level}`);
         if (!res.ok) return;
         const data = await res.json();
         const logs = data.logs || [];
@@ -514,7 +567,7 @@ async function fetchDashboardLogs() {
             row.appendChild(msgEl);
             container.appendChild(row);
         }
-    } catch(e) {}
+    } catch(e) { console.error('Failed to load dashboard logs', e); }
 }
 
 async function fetchDashboardTasks() {

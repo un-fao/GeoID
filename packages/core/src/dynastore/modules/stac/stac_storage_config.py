@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """STAC storage scope config — the single SSOT for STAC materialization.
 
@@ -40,7 +44,7 @@ from typing import ClassVar, Optional, Tuple
 from pydantic import Field
 
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 
 
 class StacStorageBackend(str, Enum):

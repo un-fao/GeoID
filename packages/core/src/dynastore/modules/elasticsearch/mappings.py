@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """
 Elasticsearch index mappings for DynaStore STAC entities.
 
@@ -31,6 +49,31 @@ from dynastore.modules.elasticsearch.items_projection import (
     _localized_text_field,
     build_known_fields,
 )
+
+
+def _localized_keyword_field(ignore_above: int = 256) -> Dict[str, Any]:
+    """Localized keyword-array field — one ``keyword`` sub-property per locale.
+
+    Each locale value is an array of exact tokens (ES treats multi-values on
+    a keyword field as an array natively).  A ``.text`` analyzed sub-field on
+    each locale gives full-text search on the same data.  ``dynamic: false``
+    on the parent blocks unknown locales, matching the same guard in
+    :func:`~dynastore.modules.elasticsearch.items_projection._localized_text_field`.
+
+    Used by the canonical ``metadata.keywords`` mapping (refs #1828).
+    """
+    return {
+        "type": "object",
+        "dynamic": False,
+        "properties": {
+            lang: {
+                "type": "keyword",
+                "ignore_above": ignore_above,
+                "fields": {"text": {"type": "text", "analyzer": analyzer}},
+            }
+            for lang, analyzer in LANGUAGE_ANALYZERS.items()
+        },
+    }
 
 
 def _localized_text_templates(field: str, ignore_above: int) -> List[Dict[str, Any]]:
@@ -143,11 +186,12 @@ def _build_metadata_container() -> Dict[str, Any]:
         "properties": {
             "title":       _localized_text_field(ignore_above=512),
             "description": _localized_text_field(ignore_above=1024),
-            # keywords: array of exact tokens; .text sub-field for full-text.
-            "keywords": {
-                "type": "keyword",
-                "fields": {"text": {"type": "text", "analyzer": "standard"}},
-            },
+            # keywords: per-language array of exact tokens (i18n write path).
+            # The i18n layer wraps keywords as {"en": ["a", "b"], ...} before
+            # indexing, so each locale sub-property must be keyword (not a
+            # flat keyword at the parent level), otherwise ES rejects the
+            # object value with mapper_parsing_exception (refs #1828).
+            "keywords":    _localized_keyword_field(ignore_above=256),
         },
     }
 
@@ -155,11 +199,12 @@ def _build_metadata_container() -> Dict[str, Any]:
 _METADATA_CONTAINER: Dict[str, Any] = _build_metadata_container()
 
 # geometry_simplification typed nested object inside the ``system`` container
-# (refs #1828).  Drivers currently write the flat ``_simplification_factor`` /
-# ``_simplification_mode`` root-level trackers (see COMMON_PROPERTIES below).
-# Those flat fields are KEPT for backward compatibility until drivers migrate in
-# Phase 2.  The typed nested version is added here so new writes can begin
-# populating ``system.geometry_simplification`` without breaking old reads.
+# (refs #1828 Phase 2).  All write paths (public write_entities/index/index_bulk,
+# private write_entities/index/index_bulk/PrivateIndexTask, envelope driver) now
+# use the canonical ``system.geometry_simplification`` container.  The old flat
+# ``_simplification_factor`` / ``_simplification_mode`` root entries in
+# COMMON_PROPERTIES are retained solely so old docs (written before the #1828
+# Phase 2 cutover) remain parseable; new writes never emit them.
 _SYSTEM_GEOMETRY_SIMPLIFICATION: Dict[str, Any] = {
     "dynamic": False,
     "properties": {
@@ -388,11 +433,10 @@ def build_item_mapping(known_fields: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     # Emit the ``system`` container only when there are tagged system fields.
-    # Always inject geometry_simplification into the system container when
-    # system is emitted, so the nested structure is available for new writes
-    # without a mapping update (refs #1828). The flat ``_simplification_factor``
-    # / ``_simplification_mode`` root entries in COMMON_PROPERTIES are kept for
-    # backward compatibility until Phase 2 drivers migrate.
+    # Always inject geometry_simplification into the system container so the
+    # nested structure is available for writes (refs #1828). The flat
+    # ``_simplification_factor`` / ``_simplification_mode`` root entries in
+    # COMMON_PROPERTIES are kept only for old-doc read-back compatibility.
     if system_fields:
         root_properties["system"] = {
             "dynamic": False,

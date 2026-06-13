@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Named routing presets for one-call provisioning (#847, #972).
 
@@ -19,9 +23,9 @@ routing configs + opt-in audience configs. Each preset declares a
 ``tier`` (``PresetTier``) selecting the admin URL family it is reachable
 from; the URL encodes the apply scope:
 
-* ``PLATFORM``   — ``/admin/presets/{name}`` (no scope)
-* ``CATALOG``    — ``/admin/catalogs/{cat}/presets/{name}``
-* ``COLLECTION`` — ``/admin/catalogs/{cat}/collections/{col}/presets/{name}``
+* ``PLATFORM``   — ``/configs/presets/{name}`` (no scope)
+* ``CATALOG``    — ``/configs/catalogs/{cat}/presets/{name}``
+* ``COLLECTION`` — ``/configs/catalogs/{cat}/collections/{col}/presets/{name}``
 * ``ITEMS`` / ``ASSETS`` — collection family always; catalog family when
   ``catalog_scopable=True``.
 
@@ -54,11 +58,13 @@ from .assets_gcs_uploads import AssetsGcsUploadsPreset  # noqa: E402
 from .assets_local_only import AssetsLocalOnlyPreset, _local_backend_available  # noqa: E402
 from .defaults_postgres import DefaultsPostgresPreset  # noqa: E402
 from .demo_data import DEMO_DATA_PRESET  # noqa: E402
+from .file_backed import FileBackedPreset  # noqa: E402
 from .items_es_private import ItemsEsPrivatePreset  # noqa: E402
 from .private_catalog import PrivateCatalogPreset  # noqa: E402
 from .private_collection import PrivateCollectionPreset  # noqa: E402
 from .public_catalog import PublicCatalogPreset  # noqa: E402
-from .stac import StacPreset  # noqa: E402
+from .stac import StacPreset, StacRoutingPreset, StacStoragePreset  # noqa: E402
+from .pg_only_catalog import PgOnlyCatalogPreset  # noqa: E402
 
 register_preset(PublicCatalogPreset())
 register_preset(PrivateCatalogPreset())
@@ -66,7 +72,14 @@ register_preset(DefaultsPostgresPreset())
 register_preset(PrivateCollectionPreset())
 register_preset(ItemsEsPrivatePreset())
 register_preset(DEMO_DATA_PRESET)
+# The two single-responsibility STAC children must register before the
+# ``stac`` composite — the registry validates ``compose`` references at
+# registration time, so the children must already be present.
+register_preset(StacRoutingPreset())
+register_preset(StacStoragePreset())
 register_preset(StacPreset())
+register_preset(PgOnlyCatalogPreset())
+register_preset(FileBackedPreset())
 register_preset(AssetsGcsUploadsPreset())
 # ``assets_local_only`` is on-prem only: only register when GCS is absent.
 if _local_backend_available():
@@ -94,6 +107,7 @@ __all__ = [
     "DefaultsPostgresPreset",
     "ItemsEsPrivatePreset",
     "NoParams",
+    "PgOnlyCatalogPreset",
     "Preset",
     "PresetBundle",
     "PresetBundleEntry",
@@ -105,6 +119,8 @@ __all__ = [
     "PrivateCollectionPreset",
     "PublicCatalogPreset",
     "StacPreset",
+    "StacRoutingPreset",
+    "StacStoragePreset",
     "find_preset",
     "get_preset",
     "list_presets",

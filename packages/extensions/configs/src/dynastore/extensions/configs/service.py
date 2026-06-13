@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ from dynastore.modules import get_protocol
 from dynastore.models.protocols import ConfigsProtocol
 from dynastore.models.protocols.collections import CollectionsProtocol
 from dynastore.modules.db_config.engine_config import EngineConfig
-from dynastore.modules.db_config.plugin_config import list_registered_configs, require_config_class, resolve_config_class
+from dynastore.models.plugin_config import list_registered_configs, require_config_class, resolve_config_class
 
 from .config_api_dto import PatchConfigBody
 from .config_api_service import ConfigApiService
@@ -171,6 +171,29 @@ class ConfigsService(ExtensionProtocol):
             methods=["GET"],
             summary="Collection config — all effective collection configs composed",
         )
+        # ---- Multi-instance ref discovery (read-only; #1940 / Refs #948) ----
+        # The ``{ref_key: class_key}`` map of rows stored at the scope. Lets
+        # the Configuration Hub surface instance rows authored under a
+        # non-canonical ``ref_key`` (``set_config_by_ref``), which the
+        # class-keyed registry list does not show. Tier-local (no waterfall).
+        self.router.add_api_route(
+            "/refs",
+            self.list_config_refs_platform,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at platform scope",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/refs",
+            self.list_config_refs_catalog,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at catalog scope",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections/{collection_id}/refs",
+            self.list_config_refs_collection,
+            methods=["GET"],
+            summary="Multi-instance refs — {ref_key: class_key} stored at collection scope",
+        )
         # ---- Multi-plugin partial write (RFC 7396 merge-patch) ----
         # Body: ``{plugin_id: payload | null}``.  ``null`` deletes the override.
         # Atomic at the scope level.  Replaces the legacy ``/bulk`` endpoint.
@@ -259,6 +282,19 @@ class ConfigsService(ExtensionProtocol):
             methods=["POST"],
             summary="Derive a proposed items_schema for a collection from a vector asset's gdalinfo",
         )
+        # ---- Preset lifecycle (#847/#972) — platform/catalog/collection ----
+        # Presets are a configuration concern: applying one walks a bundle of
+        # validated configs through the standard ``set_config`` lifecycle. The
+        # sub-router inherits the ``/configs`` prefix + ``Configuration API``
+        # tag, yielding ``/configs/presets``,
+        # ``/configs/catalogs/{cat}/presets/{name}``, and the collection-scoped
+        # variant. Catalog-scoped routes are reachable by a catalog admin via
+        # the central catalog-scoped grant (ALLOW {protocol}/catalogs/{cat}/*);
+        # permissions are not a per-service concern, so no policy is declared
+        # here.
+        from .presets_api import router as _presets_router
+
+        self.router.include_router(_presets_router)
 
     @property
     def configs(self) -> ConfigsProtocol:
@@ -377,15 +413,15 @@ class ConfigsService(ExtensionProtocol):
     def _strip_response_envelopes(body: Dict[str, Any]) -> Dict[str, Any]:
         """Drop ``_meta`` / ``_links`` from a per-plugin PUT body (#946).
 
+        Delegates to :func:`dynastore.models.model_docs.strip_meta_envelopes`.
         Composed GETs may emit ``_meta`` and routing refs may emit ``_links``
         depending on the query knobs.  ``PersistentModel`` has
         ``extra="forbid"`` (#918), so a payload pulled from GET and PUT
         verbatim would 422 on the envelope keys.  Defensive strip preserves
         the round-trip semantic operators reasonably expect.
         """
-        if not isinstance(body, dict):
-            return body
-        return {k: v for k, v in body.items() if k not in ("_meta", "_links")}
+        from dynastore.models.model_docs import strip_meta_envelopes
+        return strip_meta_envelopes(body)
 
     @staticmethod
     def _gate_engine_writes_in_patch_body(
@@ -545,6 +581,28 @@ class ConfigsService(ExtensionProtocol):
             view=view,
         )
         return JSONResponse(content=response.model_dump())
+
+    # --- Multi-instance ref discovery (#1940 / Refs #948) ---
+
+    async def list_config_refs_platform(self) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at platform scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=None, collection_id=None,
+        )
+
+    async def list_config_refs_catalog(self, catalog_id: str) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at a catalog scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=catalog_id, collection_id=None,
+        )
+
+    async def list_config_refs_collection(
+        self, catalog_id: str, collection_id: str,
+    ) -> Dict[str, str]:
+        """Return ``{ref_key: class_key}`` for rows stored at a collection scope."""
+        return await self._config_api.list_refs_map(
+            catalog_id=catalog_id, collection_id=collection_id,
+        )
 
     # --- Discovery Endpoint ---
 
@@ -825,7 +883,26 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="collection")
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id, collection_id
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id
@@ -1025,7 +1102,26 @@ class ConfigsService(ExtensionProtocol):
         try:
             cls = require_config_class(plugin_id)
             self._reject_engine_write_at_tenant_scope(cls, plugin_id, scope="catalog")
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id, collection_id=None
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id, collection_id=None
@@ -1089,7 +1185,26 @@ class ConfigsService(ExtensionProtocol):
             raise problem_details.plugin_not_registered(plugin_id)
 
         try:
-            config_model = cls.model_validate(self._strip_response_envelopes(body))
+            # External operator write: flag the deserialisation so routing
+            # configs stamp the operator-sent driver lists as source='operator'
+            # before self-registration re-appends a removed driver (#792/#889).
+            # Compute per-operation diff so only changed lists are locked (#1865).
+            # No-op for every config type that does not read this context.
+            stripped = self._strip_response_envelopes(body)
+            stored_raw = await self.configs.get_persisted_config(
+                cls, catalog_id=None, collection_id=None
+            )
+            from dynastore.modules.storage.routing_config import _compute_changed_op_keys
+            changed_op_keys = _compute_changed_op_keys(
+                stripped.get("operations", {}), stored_raw
+            )
+            config_model = cls.model_validate(
+                stripped,
+                context={
+                    "dynastore_external_write": True,
+                    "dynastore_changed_operation_keys": changed_op_keys,
+                },
+            )
 
             validated_config = await self.configs.set_config(
                 cls, config_model, catalog_id=None, collection_id=None

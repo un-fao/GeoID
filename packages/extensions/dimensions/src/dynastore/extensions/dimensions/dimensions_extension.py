@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """OGC Dimensions extension — exposes dimension providers as REST API
 and materializes dimension members as OGC API - Records.
@@ -209,23 +213,38 @@ def _build_provider(generator: Any) -> Dict[str, Any]:
     return provider
 
 
+# Datacube `type` in the cube:dimensions delta is restricted to the standard
+# STAC Datacube enum (spatial | temporal | bands | other). A dimension's
+# measurement scale moves to the separate `variableType` property, aligned with
+# the OGC API - Common Part 2 "Uniform Additional Dimensions" (UAD) vocabulary.
+# This mirrors the reshaped ogc-dimensions datacube delta: the bespoke
+# `nominal`/`ordinal` `type` values and the slim `provider` object are withdrawn
+# in favour of `variableType` + an optional UAD `definition` URI link-out. The
+# member-level `dimension:type` record property keeps the finer-grained label.
+_DATACUBE_TYPE = {"temporal": "temporal", "spatial": "spatial", "bands": "bands"}
+_VARIABLE_TYPE = {"nominal": "categoricalNominal", "ordinal": "numericalOrdinal"}
+
+
 def _build_cube_dimensions(
     dim_name: str,
     dim_type: str,
     generator: Any,
 ) -> Dict[str, Any]:
-    """Build the slim ``cube:dimensions`` entry for STAC clients.
+    """Build the slim ``cube:dimensions`` entry for STAC / datacube clients.
 
-    Only carries ``type`` and a slim ``provider: {type}`` reference.
-    Full provider details live at the collection level under ``provider``.
+    Emits the reshaped datacube delta: the standard STAC Datacube ``type`` plus,
+    for coded dimensions, a ``variableType`` carrying the measurement scale from
+    the OGC API - Common Part 2 UAD vocabulary. Full provider details live at the
+    collection level under ``provider``; a datacube consumer reaches them by
+    dereferencing the dimension collection endpoint (the optional UAD
+    ``definition`` link-out, which requires a request-time base URL and is
+    therefore not embedded here at materialize time).
     """
-    provider_type = getattr(generator, "provider_type", type(generator).__name__)
-    return {
-        dim_name: {
-            "type": dim_type,
-            "provider": {"type": provider_type},
-        }
-    }
+    entry: Dict[str, Any] = {"type": _DATACUBE_TYPE.get(dim_type, "other")}
+    variable_type = _VARIABLE_TYPE.get(dim_type)
+    if variable_type is not None:
+        entry["variableType"] = variable_type
+    return {dim_name: entry}
 
 
 # ---------------------------------------------------------------------------

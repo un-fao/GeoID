@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Preset lifecycle orchestration — apply, revoke, dry-run.
 
@@ -33,12 +37,12 @@ import json
 import logging
 from typing import Any, Literal, Mapping, Optional
 
-from fastapi import HTTPException
 from pydantic import BaseModel
 
 from dynastore.modules.db_config.query_executor import managed_transaction, DbResource, DQLQuery, ResultHandler
 from dynastore.modules.iam.applied_presets_service import AppliedPresetsService, AppliedRow
 
+from .errors import PresetConflictError, PresetNotFoundError, PresetOperationError, ServiceUnavailableError
 from .preset import AppliedDescriptor, PresetContext, PresetPlan
 from .registry import find_preset
 
@@ -93,14 +97,15 @@ async def apply_preset(
 ) -> AppliedRow:
     """Apply a preset at the given scope.
 
-    Returns the final audit row. Raises ``HTTPException`` on:
-    * 404 — preset not registered.
-    * 400 — URL tier mismatch.
-    * 409 — concurrent in-progress apply, or params snapshot mismatch
-      without ``?force=true``.
+    Returns the final audit row. Raises domain exceptions (mapped to HTTP by
+    the extension boundary):
+    * ``ServiceUnavailableError`` (503) — engine is None.
+    * ``PresetConflictError`` (409) — concurrent in-progress apply, or params
+      snapshot mismatch without ``?force=true``.
+    * ``PresetOperationError`` (500) — the preset's own ``apply`` raised.
     """
     if engine is None:
-        raise HTTPException(status_code=503, detail="Database engine not available.")
+        raise ServiceUnavailableError("Database engine not available.")
 
     preset = find_preset(name)
     params_json = json.loads(params.model_dump_json())
@@ -111,9 +116,8 @@ async def apply_preset(
         if existing is not None:
             state = existing.get("state")
             if state in ("in_progress", "revoke_in_progress", "revoke_pending"):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Preset {name!r} at {scope_key!r} is currently {state!r}. Retry later.",
+                raise PresetConflictError(
+                    f"Preset {name!r} at {scope_key!r} is currently {state!r}. Retry later."
                 )
             if state in ("applied", "partial"):
                 stored_snap = existing.get("params_snapshot") or {}
@@ -123,16 +127,15 @@ async def apply_preset(
                     # Idempotent re-POST with same params — return existing row.
                     return existing
                 if stored_snap != params_json and not force:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
+                    raise PresetConflictError(
+                        {
                             "message": (
                                 f"Preset {name!r} already applied at {scope_key!r} "
                                 f"with different params. Pass ?force=true to replace."
                             ),
                             "stored": stored_snap,
                             "requested": params_json,
-                        },
+                        }
                     )
 
         # Insert / reset the audit row to pending inside the same transaction.
@@ -160,9 +163,8 @@ async def apply_preset(
         err_msg = str(exc)[:2000]
         logger.error("preset=%s scope=%s apply failed: %s", name, scope_key, err_msg, exc_info=True)
         await audit.mark_failed(name, scope_key, last_error=err_msg)
-        raise HTTPException(
-            status_code=500,
-            detail={"message": f"Preset {name!r} apply failed.", "error": err_msg},
+        raise PresetOperationError(
+            {"message": f"Preset {name!r} apply failed.", "error": err_msg}
         ) from exc
 
     final = await audit.mark_applied(
@@ -182,18 +184,19 @@ async def revoke_preset(
 ) -> AppliedRow:
     """Revoke a preset at the given scope.
 
-    Returns the final audit row. Raises ``HTTPException`` on:
-    * 404 — no applied audit row.
-    * 409 — self-lockout guard fires without ``?force_self_revoke=true``.
-    * 409 — concurrent revoke in progress.
+    Returns the final audit row. Raises domain exceptions (mapped to HTTP by
+    the extension boundary):
+    * ``PresetNotFoundError`` (404) — no applied audit row.
+    * ``PresetConflictError`` (409) — self-lockout guard fires without
+      ``?force_self_revoke=true``, or concurrent revoke in progress.
+    * ``PresetOperationError`` (500) — the preset's own ``revoke`` raised.
     """
     preset = find_preset(name)
 
     existing = await audit.get(name, scope_key)
     if existing is None or existing.get("state") not in ("applied", "partial", "revoke_failed", "failed"):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No applied preset {name!r} at scope {scope_key!r} to revoke.",
+        raise PresetNotFoundError(
+            f"No applied preset {name!r} at scope {scope_key!r} to revoke."
         )
 
     # Self-lockout guard for IAM presets.
@@ -203,9 +206,8 @@ async def revoke_preset(
 
     state = existing.get("state")
     if state in ("revoke_in_progress", "revoke_pending"):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Preset {name!r} at {scope_key!r} is currently {state!r}. Retry later.",
+        raise PresetConflictError(
+            f"Preset {name!r} at {scope_key!r} is currently {state!r}. Retry later."
         )
 
     descriptor_data = existing.get("revoke_descriptor")
@@ -223,9 +225,8 @@ async def revoke_preset(
         err_msg = str(exc)[:2000]
         logger.error("preset=%s scope=%s revoke failed: %s", name, scope_key, err_msg, exc_info=True)
         await audit.mark_revoke_failed(name, scope_key, last_error=err_msg)
-        raise HTTPException(
-            status_code=500,
-            detail={"message": f"Preset {name!r} revoke failed.", "error": err_msg},
+        raise PresetOperationError(
+            {"message": f"Preset {name!r} revoke failed.", "error": err_msg}
         ) from exc
 
     final = await audit.mark_revoked(name, scope_key)
@@ -474,14 +475,13 @@ def _check_self_lockout(
 
     overlap = principal_roles & removed_roles
     if overlap and len(principal_roles) <= len(overlap):
-        raise HTTPException(
-            status_code=409,
-            detail={
+        raise PresetConflictError(
+            {
                 "message": (
                     f"Revoking preset {name!r} at {scope_key!r} would remove "
                     f"the caller's effective admin access. "
                     f"Pass ?force_self_revoke=true to override."
                 ),
                 "affected_roles": sorted(overlap),
-            },
+            }
         )

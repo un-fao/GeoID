@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -864,6 +864,10 @@ class ItemsIcebergDriver(TypedDriver[ItemsIcebergDriverConfig], ModuleProtocol):
         offset: int = 0,
         ctx: Optional["DriverContext"] = None,
     ) -> AsyncIterator[Feature]:
+        # Read-side (output) transform chains are not applied here by design
+        # (geoid#1643). The restore_transform_chain is wired only on
+        # Elasticsearch read paths; the routing-config validator emits a WARN
+        # if output_transformers are declared against a non-ES driver.
         loc = await self._get_location_async(catalog_id, collection_id)
         if not loc:
             return

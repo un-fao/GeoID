@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """``assets_gcs_uploads`` preset — GCS upload backend, cloud default.
 
@@ -18,10 +22,10 @@ An ``ASSETS``-tier preset (#972) with ``catalog_scopable=True``, so it
 reaches both admin URL families:
 
 * **assets @ catalog** —
-  ``POST /admin/catalogs/{cat}/presets/assets_gcs_uploads``
+  ``POST /configs/catalogs/{cat}/presets/assets_gcs_uploads``
   sets the catalog-tier asset routing that future collections inherit.
 * **assets @ collection** —
-  ``POST /admin/catalogs/{cat}/collections/{col}/presets/assets_gcs_uploads``
+  ``POST /configs/catalogs/{cat}/collections/{col}/presets/assets_gcs_uploads``
   pins the same asset routing on one collection, overriding the catalog
   template for that collection only.
 
@@ -38,11 +42,12 @@ either scope.
 """
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Tuple
 
 from dynastore.modules.storage.routing_config import AssetRoutingConfig
 
 from .bundle_preset import BundlePreset
+from .examples import PresetExample
 from .protocol import PresetBundle, PresetBundleEntry, PresetTier
 
 
@@ -92,6 +97,9 @@ class AssetsGcsUploadsPreset(BundlePreset):
     name = "assets_gcs_uploads"
     tier: ClassVar[PresetTier] = PresetTier.ASSETS
     catalog_scopable: ClassVar[bool] = True
+    keywords: ClassVar[Tuple[str, ...]] = (
+        "routing", "assets", "upload", "gcs", "cloud", "eventing",
+    )
     description = (
         "Assets-tier GCS upload preset (cloud default). Pins gcp_module "
         "as the UPLOAD driver (operator-managed, no auto-augment). GCS "
@@ -100,6 +108,22 @@ class AssetsGcsUploadsPreset(BundlePreset):
         "template future collections inherit (inherit-only, no retro-apply); "
         "applied at collection scope it overrides upload routing for one "
         "collection."
+    )
+
+    examples: ClassVar[Tuple[PresetExample, ...]] = (
+        PresetExample(
+            name="cloud-gcs-uploads",
+            summary=(
+                "Route asset uploads to Google Cloud Storage for a cloud deployment: "
+                "gcp_module is pinned as the UPLOAD backend (operator-managed) and GCS "
+                "eventing (OBJECT_FINALIZE → finalize activator) fires automatically "
+                "once the GCP module is configured for the catalog. WRITE/READ stay "
+                "PG-only. Apply at catalog scope via "
+                "POST /admin/catalogs/{catalog_id}/presets/assets_gcs_uploads (or at "
+                "collection scope to override one collection). Takes no parameters."
+            ),
+            params={},
+        ),
     )
 
     def build(self, **_scope: str) -> PresetBundle:

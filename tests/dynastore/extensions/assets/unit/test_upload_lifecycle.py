@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Unit tests for the Stage 4.1 born-claimed PENDING-INSERT upload flow.
 
@@ -601,3 +605,98 @@ class TestExtractExistingTicket:
         # Missing required key → silent None (caller falls through to mint).
         row = {"metadata": {"_upload": {"ticket_id": "abc"}}}
         assert AssetService._extract_existing_ticket(row) is None
+
+
+# ---------------------------------------------------------------------------
+# Origin threading: CORS-stamping GCS resumable sessions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_origin_threads_through_to_driver_mint(
+    patched_env: Dict[str, Any],
+) -> None:
+    """The resolved browser origin must reach the upload driver so GCS can
+    CORS-stamp the resumable session at creation time."""
+    svc = _make_service()
+    ticket = _make_ticket()
+    driver = AsyncMock()
+    driver.initiate_upload = AsyncMock(return_value=ticket)
+    svc.resolve_upload_driver = AsyncMock(return_value=driver)  # type: ignore[method-assign]
+
+    await svc._initiate_upload_with_policy(
+        catalog_id="cat",
+        collection_id="col",
+        body=_make_upload_request(),
+        origin="https://app.example",
+    )
+
+    drv_kwargs = driver.initiate_upload.await_args.kwargs
+    assert drv_kwargs["origin"] == "https://app.example"
+
+
+@pytest.mark.asyncio
+async def test_origin_defaults_to_none_for_non_browser_clients(
+    patched_env: Dict[str, Any],
+) -> None:
+    svc = _make_service()
+    ticket = _make_ticket()
+    driver = AsyncMock()
+    driver.initiate_upload = AsyncMock(return_value=ticket)
+    svc.resolve_upload_driver = AsyncMock(return_value=driver)  # type: ignore[method-assign]
+
+    await svc._initiate_upload_with_policy(
+        catalog_id="cat",
+        collection_id="col",
+        body=_make_upload_request(),
+    )
+
+    assert driver.initiate_upload.await_args.kwargs["origin"] is None
+
+
+class TestResolveUploadOrigin:
+    """The declared payload schema is unchanged (backward compatible):
+    ``upload_options`` rides in via ``extra="allow"`` and the ``Origin``
+    request header is the browser-supplied fallback."""
+
+    @staticmethod
+    def _request_with_headers(headers: Dict[str, str]) -> MagicMock:
+        request = MagicMock()
+        request.headers = headers
+        return request
+
+    def test_body_upload_options_origin_wins(self) -> None:
+        body = UploadRequest(
+            **_make_upload_request().model_dump(),
+            upload_options={"origin": "https://from-body.example"},
+        )
+        request = self._request_with_headers({"origin": "https://from-header.example"})
+        assert (
+            AssetService._resolve_upload_origin(body, request)
+            == "https://from-body.example"
+        )
+
+    def test_falls_back_to_origin_header(self) -> None:
+        body = _make_upload_request()
+        request = self._request_with_headers({"origin": "https://from-header.example"})
+        assert (
+            AssetService._resolve_upload_origin(body, request)
+            == "https://from-header.example"
+        )
+
+    def test_none_when_no_origin_anywhere(self) -> None:
+        body = _make_upload_request()
+        request = self._request_with_headers({})
+        assert AssetService._resolve_upload_origin(body, request) is None
+
+    def test_malformed_upload_options_tolerated(self) -> None:
+        # Garbage extra payloads must not 500 the route — header fallback.
+        body = UploadRequest(
+            **_make_upload_request().model_dump(),
+            upload_options="not-a-dict",
+        )
+        request = self._request_with_headers({"origin": "https://h.example"})
+        assert (
+            AssetService._resolve_upload_origin(body, request)
+            == "https://h.example"
+        )

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ import logging
 import os
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from pydantic import (
     BaseModel,
@@ -54,7 +54,7 @@ from dynastore.tools.ui_hints import ui
 
 from dynastore.models.protocols.typed_driver import _PluginDriverConfig
 from dynastore.models.mutability import Computed, Immutable, Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from dynastore.modules.storage.computed_fields import (
     _STATISTIC_STORAGE_KINDS,
     ComputedField,
@@ -717,6 +717,57 @@ class ItemsWritePolicy(PluginConfig):
         # collapse — that's resolved at extraction time).
         return cf.name or None
 
+    def resolve_external_id(self, feature: Mapping[str, Any]) -> Optional[str]:
+        """Resolve the external_id from an inbound feature using the configured
+        path (if any), otherwise fall back to the feature's top-level ``id``.
+
+        Resolution order mirrors ``_walk_external_id_path``:
+          1. When a path is configured: walk the path through the feature dict.
+          2. When no path is configured: return ``feature.get("id")``.
+
+        Returns a ``str`` or ``None``; never raises.
+        """
+        path = self.external_id_path()
+        if path is not None:
+            val = _walk_external_id_path(feature, path)
+        else:
+            val = feature.get("id")
+        if val is None:
+            return None
+        return str(val)
+
+
+def _walk_external_id_path(
+    feature: Mapping[str, Any], path: str
+) -> Optional[Any]:
+    """Walk ``path`` through ``feature`` using the standard three-step rule.
+
+    1. Top-level lookup: ``feature[path]``.
+    2. Dot-walk (e.g. ``a.b.c``): traverse nested dicts.
+    3. Properties fallback: when ``path`` has no dot AND top-level is ``None``,
+       try ``feature["properties"][path]``.
+
+    Returns the value or ``None``; never raises.
+    """
+    try:
+        if "." in path:
+            current: Any = feature
+            for part in path.split("."):
+                if not isinstance(current, Mapping):
+                    return None
+                current = current.get(part)
+                if current is None:
+                    return None
+            return current
+        val = feature.get(path)
+        if val is None:
+            props = feature.get("properties")
+            if isinstance(props, Mapping):
+                val = props.get(path)
+        return val
+    except Exception:
+        return None
+
 
 async def _warn_unstored_unreferenced_stats(
     config: PluginConfig,
@@ -1234,11 +1285,82 @@ class ItemsDuckdbDriverConfig(CollectionDriverConfig):
         {DriverCapability.ASYNC, DriverCapability.BATCH}
     )
     path: Mutable[Optional[str]] = Field(default=None, description="Read path (file or glob)")
-    format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, etc.")
+    format: Mutable[str] = Field(default="parquet", description="File format: parquet, csv, json, geojson, gpkg, shp, etc.")
     write_path: Mutable[Optional[str]] = Field(default=None, description="Separate write path (e.g., SQLite file)"
     )
     write_format: Mutable[Optional[str]] = Field(default=None, description="Write format if different from read"
     )
+    # File-backed collections (#374/#377): bind the driver to a catalog asset
+    # instead of a hand-written path. When set, the driver resolves the asset's
+    # storage URI via AssetsProtocol at dispatch and reads from it. Preferred
+    # over ``path`` when both are present.
+    asset_id: Mutable[Optional[str]] = Field(
+        default=None,
+        description="Catalog asset id to read from. Resolved to the asset's "
+                    "storage URI at dispatch; preferred over `path` when set.",
+    )
+    # Declared id column whose value becomes the deterministic geoid source (fid).
+    # When unset, the driver falls back to a content hash of the feature.
+    id_column: Mutable[Optional[str]] = Field(
+        default=None,
+        description="Source column holding the native feature id (fid) used to "
+                    "derive a stable geoid. Falls back to a content hash if unset.",
+    )
+    # GeoParquet geometry column. Only used when format is ``geoparquet`` or ``gpq``.
+    # The column contains raw WKB bytes that the driver decodes to a DuckDB GEOMETRY
+    # via ST_GeomFromWKB before any spatial operation. Default follows the GeoParquet
+    # convention ("geometry"). Set this only when the file uses a non-standard column
+    # name such as "geom" or "wkb_geometry".
+    geometry_column: Mutable[Optional[str]] = Field(
+        default=None,
+        description=(
+            "Name of the WKB geometry column in GeoParquet files. Defaults to "
+            "\"geometry\" (the GeoParquet 1.x convention). Set only when the "
+            "file uses a non-standard name such as \"geom\". Ignored for all "
+            "other formats."
+        ),
+    )
+
+    @field_validator("geometry_column")
+    @classmethod
+    def _validate_geometry_column_identifier(cls, v: Optional[str]) -> Optional[str]:
+        """Reject geometry_column values that are not plain SQL identifiers.
+
+        The column name is interpolated into a DuckDB quoted-identifier expression
+        (``"<geometry_column>"``), so any value that does not satisfy the plain
+        identifier grammar is an injection vector.  ``None`` (the default, which
+        causes the driver to fall back to ``"geometry"``) is always accepted.
+        """
+        if v is None:
+            return v
+        from dynastore.tools.db import validate_column_identifier, InvalidIdentifierError
+        try:
+            return validate_column_identifier(v)
+        except InvalidIdentifierError as exc:
+            raise ValueError(
+                f"geometry_column {v!r} is not a valid SQL identifier: {exc}. "
+                "The value is interpolated into a DuckDB query; use only letters, "
+                "digits, and underscores, starting with a letter or underscore."
+            ) from exc
+
+    @field_validator("path", "write_path")
+    @classmethod
+    def _reject_sql_breakout_chars(cls, v: Optional[str]) -> Optional[str]:
+        """Reject paths containing characters that could break out of the
+        single-quoted string literal the DuckDB driver interpolates them into.
+
+        ``path``/``write_path`` are operator-set (admin configs / preset apply),
+        but they reach the SQL string via ``read_parquet('{path}')`` /
+        ``ST_Read('{path}')`` etc., so a single quote, newline, or null byte
+        would be an injection vector. Legitimate local paths, cloud URIs
+        (``s3://``/``gs://``/``https://``), and glob patterns never contain them.
+        """
+        if v is not None and any(ch in v for ch in ("'", "\n", "\r", "\x00")):
+            raise ValueError(
+                "path must not contain single-quotes, newlines, or null bytes "
+                "(they are interpolated into a DuckDB query)."
+            )
+        return v
 
 
 _ICEBERG_CONNECTION_FIELDS: frozenset[str] = frozenset({
@@ -1898,15 +2020,19 @@ ItemsElasticsearchDriverConfig.register_validate_handler(_validate_items_es_driv
 # driver layering inversion).
 _PRIVATE_RESERVED_ROOT_FIELDS: Tuple[str, ...] = (
     "geoid",
+    "id",
     "catalog_id",
     "collection_id",
+    "collection",
     "external_id",
     "asset_id",
     "geometry",
     "bbox",
-    "simplification_factor",
-    "simplification_mode",
     "properties",
+    "system",
+    "stats",
+    "metadata",
+    "access",
     "extras",
 )
 

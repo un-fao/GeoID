@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Preset bundle dataclass (#847, #972).
 
@@ -46,7 +50,7 @@ from typing import (
     cast,
 )
 
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from dynastore.modules.storage.routing_config import (
     AssetRoutingConfig,
     CatalogRoutingConfig,
@@ -61,12 +65,12 @@ class PresetTier(str, Enum):
     """The URL/scope tier a preset targets.
 
     URL dispatch in the admin router keys off this value to pick which
-    ``/admin/.../presets/{name}`` family the preset is reachable from:
+    ``/configs/.../presets/{name}`` family the preset is reachable from:
 
-    * ``PLATFORM``   — ``/admin/presets/{name}`` (no scope params; ``build()``)
-    * ``CATALOG``    — ``/admin/catalogs/{cat}/presets/{name}``
+    * ``PLATFORM``   — ``/configs/presets/{name}`` (no scope params; ``build()``)
+    * ``CATALOG``    — ``/configs/catalogs/{cat}/presets/{name}``
       (``build(catalog_id)``)
-    * ``COLLECTION`` — ``/admin/catalogs/{cat}/collections/{col}/presets/{name}``
+    * ``COLLECTION`` — ``/configs/catalogs/{cat}/collections/{col}/presets/{name}``
       (``build(catalog_id, collection_id)``)
     * ``ITEMS`` / ``ASSETS`` — attachable at the catalog **or** collection
       URL family. Which families are reachable is governed by

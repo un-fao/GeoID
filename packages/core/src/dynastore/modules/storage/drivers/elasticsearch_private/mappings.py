@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
 Elasticsearch index mapping + naming for the private items driver.
@@ -121,8 +125,11 @@ def _tenant_root_fields() -> Dict[str, Any]:
         "_asset_id":             {"type": "keyword"},
         "_valid_from":           {"type": "date"},
         "_valid_to":             {"type": "date"},
-        "_simplification_factor":{"type": "float"},
-        "_simplification_mode":  {"type": "keyword"},
+        # ``_simplification_factor`` / ``_simplification_mode`` removed in #1828
+        # Phase 2 — simplification metadata is now stored under
+        # ``system.geometry_simplification`` (see _PRIVATE_SYSTEM_FIELDS).
+        # The back-compat read path in ``_private_source_to_feature`` still
+        # accepts old docs that carry these flat root keys.
         "_search_text":          {"type": "text", "analyzer": "standard"},
     }
 

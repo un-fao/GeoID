@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -87,7 +87,11 @@ from dynastore.modules.catalog.log_manager import LogService, initialize_system_
 logger = logging.getLogger(__name__)
 
 
-EVENT_TASK_KEY = "outbox_drain"
+EVENT_TASK_KEY = "event_drain"
+# One-release backward-compat alias: routing config rows written before
+# the Phase 0 rename used "outbox_drain" as the event-consumer routing
+# key.  Remove once all deployments have applied the new routing config.
+_LEGACY_EVENT_TASK_KEY = "outbox_drain"
 
 
 async def _routed_consumers(task_key: str) -> Optional[List[str]]:
@@ -129,8 +133,16 @@ async def is_event_consumer() -> bool:
     want to restrict draining to a dedicated worker tier (e.g. on-prem
     ``worker`` job).  It must never be the only line of defence against
     connection storms — that role belongs to the lock.
+
+    Legacy shim: also checks the pre-rename key ``"outbox_drain"`` so that
+    deployments with a stored routing config written before the Phase 0
+    rename continue to honour their consumer pin.  Remove the legacy fallback
+    once all stored configs have been migrated to ``"event_drain"``.
     """
     consumers = await _routed_consumers(EVENT_TASK_KEY)
+    if consumers is None:
+        # New key had no opinion; try the legacy key.
+        consumers = await _routed_consumers(_LEGACY_EVENT_TASK_KEY)
     if consumers is None:
         # No routing opinion: every CatalogModule-bearing process is eligible.
         # The advisory lock ensures only one drains.
@@ -399,6 +411,14 @@ class CatalogModule(ModuleProtocol):
                     "dynastore.extensions.proxy.cascade_owner",
                     "proxy short URLs",
                 ),
+                (
+                    "dynastore.modules.stats.cascade_owner",
+                    "stats telemetry ES index",
+                ),
+                (
+                    "dynastore.modules.catalog.maintenance_cascade_owner",
+                    "pending tasks/events for deleted element",
+                ),
             ]
             _register_cascade_owners(cascade_cleanup_registry, _owner_modules)
             # Freeze the registry immediately after all owners have been
@@ -429,9 +449,6 @@ class CatalogModule(ModuleProtocol):
 
                 # Centralized system-level maintenance initialization
                 await initialize_system_logs(conn)
-
-                from dynastore.modules.db_config.maintenance_tools import ensure_global_cron_cleanup
-                await ensure_global_cron_cleanup(conn)
 
                 await DDLQuery(CATALOGS_TABLE_DDL + SHARED_PROPERTIES_SCHEMA).execute(conn)
 
@@ -545,13 +562,43 @@ class CatalogModule(ModuleProtocol):
                     exc,
                 )
 
+            # 8. Register maintenance-supervisor job cadences and start the
+            # leader-elected supervisor loop (jobs 4–9: events, logs, IAM).
+            from dynastore.modules.catalog.maintenance_supervisor import (
+                MaintenanceSupervisor,
+                build_supervisor_config,
+                register_supervisor_jobs,
+                unschedule_superseded_cron_jobs,
+            )
+            _supervisor_shutdown = asyncio.Event()
+            _supervisor: Optional[MaintenanceSupervisor] = None
+            try:
+                supervisor_cfg = build_supervisor_config()
+                # Clean-cut safety: drop any pre-existing events/logs/IAM pg_cron
+                # jobs this supervisor now owns so they cannot double-run on a
+                # non-fresh deploy (no-op when pg_cron is absent).
+                await unschedule_superseded_cron_jobs(engine)
+                await register_supervisor_jobs(engine)
+                _supervisor = MaintenanceSupervisor(supervisor_cfg)
+                _supervisor.start(_supervisor_shutdown)
+                logger.info("CatalogModule: maintenance supervisor started.")
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "CatalogModule: maintenance supervisor failed to start: %s — "
+                    "events/logs/IAM pruning will not run automatically.",
+                    exc,
+                )
+
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
                 _reaper_shutdown.set()
+                _supervisor_shutdown.set()
                 if _reaper is not None:
                     await _reaper.stop()
+                if _supervisor is not None:
+                    await _supervisor.stop()
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
                 # Remove the services from the discovery registry so a future

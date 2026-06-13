@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -80,7 +80,7 @@ from dynastore.modules.db_config.exceptions import (
 from dynastore.tools.json import CustomJSONEncoder
 
 from dynastore.models.mutability import is_immutable_field, is_write_once_field
-from dynastore.modules.db_config.plugin_config import (
+from dynastore.models.plugin_config import (
     PluginConfig,
     _collect_required_fields,
     require_config_class,

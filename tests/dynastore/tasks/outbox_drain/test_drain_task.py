@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """OutboxDrainTask tests — claim, dispatch to BulkIndexer.index_bulk,
 apply BulkIndexResult per-row outcomes, and emit failure log events
 through the canonical ``log_event`` channel.
@@ -288,3 +306,32 @@ async def test_outbox_drain_unconfigured_drain_raises():
     task = OutboxDrainTask()
     with pytest.raises(RuntimeError, match="not configured: missing"):
         await task.drain_once()
+
+
+def test_outbox_drain_task_type_is_index_drain():
+    """task_type must be 'index_drain' after the Phase 0 rename.
+
+    'outbox_drain' collided with the event-consumer routing key.  The new
+    name 'index_drain' unambiguously describes this task's role (draining
+    the storage_outbox into the ES index).
+    """
+    assert OutboxDrainTask.task_type == "index_drain", (
+        "OutboxDrainTask.task_type must be 'index_drain'; 'outbox_drain' was "
+        "the overloaded pre-rename value that collided with EVENT_TASK_KEY."
+    )
+
+
+def test_outbox_drain_task_legacy_alias_present():
+    """legacy_task_types must include 'outbox_drain' for the one-release shim.
+
+    The dispatcher's get_task_config() resolves legacy aliases so that rows
+    written with task_type='outbox_drain' before the rename are still
+    dispatched to OutboxDrainTask.  Remove once all old rows are drained.
+    """
+    assert hasattr(OutboxDrainTask, "legacy_task_types"), (
+        "OutboxDrainTask must declare legacy_task_types for the shim."
+    )
+    assert "outbox_drain" in OutboxDrainTask.legacy_task_types, (
+        "'outbox_drain' must appear in legacy_task_types so that old DB rows "
+        "continue to be claimed by OutboxDrainTask."
+    )

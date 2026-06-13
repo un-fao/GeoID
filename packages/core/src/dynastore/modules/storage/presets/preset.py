@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Generalised Preset protocol and supporting types.
 
@@ -44,6 +48,7 @@ from typing import (
 
 from pydantic import BaseModel
 
+from .examples import PresetExample
 from .protocol import PresetTier
 
 
@@ -290,6 +295,7 @@ class CompositePreset:
     tier: ClassVar[PresetTier]
     catalog_scopable: ClassVar[bool] = False
     params_model: ClassVar[Type[BaseModel]] = NoParams
+    examples: ClassVar[Tuple[PresetExample, ...]] = ()
     compose: ClassVar[Tuple[str, ...]]
 
     async def dry_run(

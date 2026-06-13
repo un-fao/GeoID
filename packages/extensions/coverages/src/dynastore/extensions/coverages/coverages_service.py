@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """OGC API - Coverages extension for DynaStore.
 
@@ -20,19 +24,22 @@ and protocol-specific response models. Zero core changes needed.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import FrozenSet, Optional
 
 import rasterio as _rasterio_scope_gate  # noqa: F401  # SCOPE gate: extension_coverages requires rasterio
 _ = _rasterio_scope_gate  # silence pyright "unused" — load-bearing for SCOPE filtering
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
+from dynastore.extensions.web.decorators import expose_static, expose_web_page
 
 from dynastore.extensions.coverages.config import CoveragesConfig
 from dynastore.extensions.coverages.links import build_coverage_links
 from dynastore.extensions.ogc_base import OGCServiceMixin, ogc_asset_href
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.tools.query import parse_hints_param  # noqa: E402
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.modules.coverages.domainset import build_domainset
 from dynastore.modules.coverages.rangetype import build_rangetype
@@ -267,6 +274,41 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             return []
         return build_contributions()
 
+    def get_web_pages(self):
+        from dynastore.extensions.tools.web_collect import collect_web_pages
+        return collect_web_pages(self)
+
+    def get_static_assets(self):
+        from dynastore.extensions.tools.web_collect import collect_static_assets
+        return collect_static_assets(self)
+
+    @expose_static("coverages")
+    def provide_static_files(self) -> list[str]:
+        """Exposes the internal static directory for the Coverages browser."""
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        files = []
+        for root, _, filenames in os.walk(static_dir):
+            for filename in filenames:
+                files.append(os.path.join(root, filename))
+        return files
+
+    @expose_web_page(
+        page_id="coverages_browser",
+        title="Coverages Browser",
+        icon="fa-layer-group",
+        description="Inspect coverage axes and range types.",
+    )
+    async def provide_coverages_browser(self, request: Request):
+        return await self._serve_page_template("coverages_browser.html")
+
+    async def _serve_page_template(self, filename: str):
+        from dynastore._version import VERSION
+        file_path = os.path.join(os.path.dirname(__file__), "static", filename)
+        if not os.path.exists(file_path):
+            return Response(content=f"Template {filename} not found", status_code=404)
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read().replace("{{VERSION}}", VERSION), media_type="text/html")
+
     # ------------------------------------------------------------------
     # Route registration
     # ------------------------------------------------------------------
@@ -283,6 +325,19 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             self.get_conformance,
             methods=["GET"],
             response_model=cm.Conformance,
+        )
+        # Catalog / collection listing (drives the web browser's navigation)
+        self.router.add_api_route(
+            "/catalogs",
+            self.list_catalogs,
+            methods=["GET"],
+            summary="List catalogs available to the Coverages service",
+        )
+        self.router.add_api_route(
+            "/catalogs/{catalog_id}/collections",
+            self.list_collections,
+            methods=["GET"],
+            summary="List collections in a catalog",
         )
         self.router.add_api_route(
             "/catalogs/{catalog_id}/collections/{collection_id}/coverage",
@@ -306,6 +361,43 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         )
 
     # ------------------------------------------------------------------
+    # Catalog / collection listing (web-browser navigation)
+    # ------------------------------------------------------------------
+
+    async def list_catalogs(
+        self,
+        limit: int = Query(100, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """List catalogs available to the Coverages service."""
+        catalogs_svc = await self._get_catalogs_service()
+        catalogs = await catalogs_svc.list_catalogs(limit=limit, offset=offset)
+        return {
+            "catalogs": [
+                {"id": c.id, "title": getattr(c, "title", None)}
+                for c in (catalogs or [])
+            ]
+        }
+
+    async def list_collections(
+        self,
+        catalog_id: str,
+        limit: int = Query(100, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """List collections in a catalog (web-browser navigation)."""
+        catalogs_svc = await self._get_catalogs_service()
+        collections = await catalogs_svc.list_collections(
+            catalog_id, limit=limit, offset=offset
+        )
+        return {
+            "collections": [
+                {"id": c.id, "title": getattr(c, "title", None)}
+                for c in (collections or [])
+            ]
+        }
+
+    # ------------------------------------------------------------------
     # Landing page & conformance (delegated to OGCServiceMixin)
     # ------------------------------------------------------------------
 
@@ -325,8 +417,15 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         collection_id: str,
         subset: Optional[str] = Query(None),
         f: Optional[str] = Query("geotiff"),
+        request_hints: FrozenSet = Depends(parse_hints_param),
     ):
-        """Stream a coverage by content-negotiated format with optional subset."""
+        """Stream a coverage by content-negotiated format with optional subset.
+
+        ``?hints=`` is accepted uniformly (e.g. ``hints=geometry_exact``) but
+        reserved for forward-compatible routing — coverage data is read from a
+        raster asset directly and does not flow through a hints-capable vector
+        read seam, so the value has no effect on this route today.
+        """
         fmt = _resolve_format(f)
         item = await self._get_first_item(catalog_id, collection_id)
         if item is None:

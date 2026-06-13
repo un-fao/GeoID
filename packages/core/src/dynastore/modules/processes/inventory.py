@@ -1,10 +1,21 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Scope-agnostic process inventory.
 
 Shared helpers used by the OGC ``/processes`` (and scoped siblings) list
@@ -16,8 +27,6 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, Iterable, List, Literal, Optional, Set
-
-from fastapi import Request
 
 from dynastore.models.tasks import TaskExecutionMode
 from dynastore.modules.processes import models
@@ -178,7 +187,6 @@ def parse_runner_filter(raw: Optional[str]) -> Optional[Set[str]]:
 
 
 async def build_process_inventory_entries(
-    request: Request,
     *,
     catalog_id: Optional[str] = None,
     collection_id: Optional[str] = None,

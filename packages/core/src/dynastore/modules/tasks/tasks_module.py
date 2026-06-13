@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -183,7 +183,7 @@ CREATE TRIGGER on_task_status_update
 """
 
 # ---------------------------------------------------------------------------
-# pg_cron-driven stuck-task reaper
+# stuck-task reaper (driven by the MaintenanceSupervisor)
 # ---------------------------------------------------------------------------
 #
 # Replaces the in-process dispatcher janitor (``_run_janitor``) — a
@@ -226,6 +226,81 @@ def set_hard_retry_cap(value: int) -> None:
         raise ValueError(f"hard_retry_cap must be >= 1 (got {value})")
     _HARD_RETRY_CAP = int(value)
 
+
+# ---------------------------------------------------------------------------
+# Maintenance helper functions provisioned into the DB at startup.
+# These are called by the MaintenanceSupervisor; pg_cron is NOT used.
+# ---------------------------------------------------------------------------
+
+GLOBAL_TASKS_RETENTION_FUNC_DDL = """
+CREATE OR REPLACE FUNCTION "{schema}"."maintain_partitions_{schema}_tasks"() RETURNS void AS $$
+DECLARE
+    row RECORD;
+    cutoff_date DATE;
+BEGIN
+    -- Bound AccessExclusiveLock wait: if a partition is being scanned
+    -- fail this DROP fast and let the next supervisor tick retry.
+    SET LOCAL lock_timeout = '10s';
+    cutoff_date := date_trunc('daily', NOW()) - INTERVAL '1 month';
+    FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^tasks_\\d{{4}}_\\d{{2}}$' LOOP
+        DECLARE
+            date_str TEXT;
+            part_date DATE;
+        BEGIN
+            date_str := substring(row.relname from '\\d{{4}}_\\d{{2}}$');
+            part_date := to_date(date_str, 'YYYY_MM');
+            IF part_date < cutoff_date THEN
+                RAISE NOTICE 'Pruning old partition: {schema}.%', row.relname;
+                EXECUTE format('DROP TABLE "{schema}".%I', row.relname);
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE WARNING 'Failed to process partition {schema}.%: %', row.relname, SQLERRM;
+        END;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+"""
+
+GLOBAL_TASKS_PARTCREATE_FUNC_DDL = """
+CREATE OR REPLACE FUNCTION "{schema}"."create_partitions_{schema}_tasks"() RETURNS void AS $$
+DECLARE
+    i INT;
+    target_date DATE;
+    start_date TIMESTAMPTZ;
+    end_date TIMESTAMPTZ;
+    part_name TEXT;
+BEGIN
+    FOR i IN 0..3 LOOP
+        target_date := date_trunc('month', NOW()) + (i || ' months')::INTERVAL;
+        start_date := target_date;
+        end_date := target_date + INTERVAL '1 month';
+        part_name := 'tasks_' || to_char(target_date, 'YYYY_MM');
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = '{schema}' AND c.relname = part_name
+        ) THEN
+            EXECUTE format(
+                'CREATE TABLE IF NOT EXISTS "{schema}".%I PARTITION OF "{schema}"."tasks" FOR VALUES FROM (%L) TO (%L)',
+                part_name, start_date::TEXT, end_date::TEXT
+            );
+            RAISE NOTICE 'Created partition: {schema}.%', part_name;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+"""
+
+# DEFAULT partition DDL: absorbs any timestamp outside the monthly partition range
+# so inserts never fail with "no partition of relation found for row".
+# Using CREATE TABLE IF NOT EXISTS makes this idempotent on all deploys.
+# Adding a DEFAULT partition to an existing partitioned table does NOT require a
+# full-table scan — PostgreSQL only checks for a conflicting DEFAULT.  Existing
+# deploys also benefit: if a task arrives with an out-of-range timestamp it will
+# land here rather than erroring.
+GLOBAL_TASKS_DEFAULT_PARTITION_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.tasks_default PARTITION OF {schema}.tasks DEFAULT;
+"""
 
 GLOBAL_TASKS_REAPER_DDL = """
 CREATE OR REPLACE FUNCTION {schema}.reap_stuck_tasks(
@@ -298,8 +373,15 @@ def _build_tasks_ddl_batch(schema: str) -> DDLBatch:
 
     On warm starts, the sentinel (status-update trigger — the last object
     created) short-circuits the batch in one round-trip. Cold starts execute
-    the full sequence (table, indexes + functions, both triggers) under a
-    single shared connection with nested savepoints.
+    the full sequence (table, default partition, indexes + functions, triggers,
+    and maintenance helper functions) under a single shared connection with
+    nested savepoints.
+
+    The DEFAULT partition is included only on fresh creates (guarded by the
+    table existence check).  Attaching it to an already-populated table
+    requires a full-table scan + AccessExclusiveLock, which violates the
+    never-migrate-DB invariant; existing deploys rely on
+    ensure_future_partitions(periods_ahead=12) to stay ahead instead.
     """
 
     def _check_insert(conn):
@@ -319,6 +401,12 @@ def _build_tasks_ddl_batch(schema: str) -> DDLBatch:
         ),
         steps=[
             DDLQuery(GLOBAL_TASKS_TABLE_DDL, check_query=_check_tasks_table),
+            # DEFAULT partition: absorbs out-of-range timestamps on any schema.
+            # Uses CREATE TABLE IF NOT EXISTS (idempotent). Adding a DEFAULT
+            # partition to an existing partitioned table does NOT require a
+            # full table scan — PostgreSQL only needs to verify no conflicting
+            # DEFAULT already exists. Safe on both fresh and existing deploys.
+            DDLQuery(GLOBAL_TASKS_DEFAULT_PARTITION_DDL),
             DDLQuery(GLOBAL_TASKS_INDEXES_DDL),
             DDLQuery(GLOBAL_TASKS_INSERT_TRIGGER_DDL, check_query=_check_insert),
             DDLQuery(GLOBAL_TASKS_STATUS_TRIGGER_DDL, check_query=_check_status),
@@ -781,6 +869,72 @@ class TasksModule(TaskQueueProtocol, ProcessRegistryProtocol, ModuleProtocol):
 # that hosts the global table (default: "tasks").
 
 
+async def _redispatch_stuck_rows(
+    engine: DbResource,
+    rows: List[Dict[str, Any]],
+) -> None:
+    """Re-signal the dispatcher for stuck-PENDING rows that are potentially
+    claimable (not confirmed dead-capability).
+
+    Dead-capability rows (``cap_live is False``) are already handled by the
+    proactive capability sweep and will be DLQ'd on its next pass — skipping
+    them here avoids a redundant wakeup that accomplishes nothing.
+
+    Two signals are emitted so the self-heal works regardless of topology:
+
+    * ``signal_bus.emit`` — wakes the in-process dispatcher immediately on
+      the same event loop (most common case: single-pod dev/test env where
+      pg_notify was simply not received at enqueue time).
+    * ``SELECT pg_notify(...)`` — wakes all other pods' QueueListeners so
+      a capable dispatcher on a different pod can also claim the row.
+
+    Cross-pod dedup: ``claim_batch`` uses ``FOR UPDATE SKIP LOCKED`` —
+    only one pod claims each row even when many dispatchers wake
+    simultaneously. No double-execution is possible.
+
+    Idempotent and fail-open: errors are logged and swallowed; the caller
+    continues normally.
+    """
+    from dynastore.tools.async_utils import signal_bus
+    from dynastore.modules.tasks.queue import NEW_TASK_QUEUED
+
+    # Resolve capability liveness for all distinct caps in this batch so we
+    # can skip confirmed-dead rows (capability sweep owns those).
+    task_instance_cache: Dict[str, Any] = {}
+    live_per_cap: Dict[Optional[str], Optional[bool]] = {}
+    claimable: List[Dict[str, Any]] = []
+    for row in rows:
+        cap_id = _resolve_row_capability(row, task_instance_cache)
+        if cap_id not in live_per_cap:
+            live_per_cap[cap_id] = await _safe_is_live(cap_id) if cap_id else None
+        if live_per_cap.get(cap_id) is not False:
+            claimable.append(row)
+
+    if not claimable:
+        return
+
+    # In-process wakeup — zero latency on the same event loop.
+    try:
+        await signal_bus.emit(NEW_TASK_QUEUED)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stuck-pending redispatch: signal_bus emit failed: %s", exc)
+
+    # Cross-pod wakeup via pg_notify so capable dispatchers on other pods
+    # also wake and attempt to claim.
+    try:
+        async with managed_transaction(engine) as conn:
+            await DQLQuery(
+                "SELECT pg_notify('new_task_queued', 'stuck_pending_sweep')",
+                result_handler=ResultHandler.SCALAR,
+            ).execute(conn)
+        logger.info(
+            "stuck-pending redispatch: emitted new_task_queued for %d claimable row(s)",
+            len(claimable),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stuck-pending redispatch: pg_notify failed: %s", exc)
+
+
 async def _warn_stuck_pending_tasks(
     engine: DbResource,
     schema: str,
@@ -789,19 +943,27 @@ async def _warn_stuck_pending_tasks(
     min_age_s: float = 600.0,
     sample_limit: int = 50,
 ) -> None:
-    """Periodic read-only scan that logs WARNINGs for tasks that have been
-    PENDING with ``retry_count = 0`` for more than ``min_age_s`` seconds.
+    """Periodic scan that logs WARNINGs for PENDING/retry_count=0 tasks older
+    than ``min_age_s`` seconds, then re-signals the dispatcher so claimable
+    rows are recovered without relying on pg_notify delivery or pg_cron.
 
-    The most common cause is operator misconfiguration of
-    :class:`TaskRoutingConfig` — a typo in a service name or a target that
-    no deployed service maps to — which leaves tasks sitting unclaimable
-    forever. Today the dispatcher's CapabilityMap silently excludes them;
-    this coroutine surfaces the silence.
+    The most common cause is a missed ``pg_notify`` at enqueue time (no
+    listener active at that instant) combined with pg_cron being absent or
+    misconfigured (as on dev). In that case the task sits PENDING forever
+    with no actor to claim it.
 
-    Read-only by design: we never mutate the row. The pg_cron-driven
-    ``reap_stuck_tasks`` SQL function continues to handle stuck *ACTIVE*
-    tasks (lock expired); this coroutine handles stuck *PENDING* tasks
-    (never claimed). Two orthogonal failure modes, two independent signals.
+    Recovery: after logging, :func:`_redispatch_stuck_rows` emits the
+    in-process signal_bus (immediate same-pod wakeup) and ``pg_notify``
+    (cross-pod wakeup). ``claim_batch`` uses ``FOR UPDATE SKIP LOCKED`` so
+    only one pod claims each row — no double-execution across pods.
+
+    Rows whose required capability is confirmed dead (``cap_live is False``)
+    are skipped here — the proactive capability sweep owns their DLQ path.
+
+    The MaintenanceSupervisor-driven ``reap_stuck_tasks`` SQL function continues
+    to handle stuck *ACTIVE* tasks (heartbeat expired); this coroutine handles stuck
+    *PENDING* tasks (never claimed). Two orthogonal failure modes, two
+    independent recovery paths.
 
     Idempotent and crash-safe: any error is logged and swallowed; the loop
     sleeps and retries. Stops cleanly when ``shutdown_event`` is set.
@@ -829,9 +991,106 @@ async def _warn_stuck_pending_tasks(
                 rows = await query.execute(
                     conn, min_age_s=min_age_s, sample_limit=sample_limit,
                 )
-            await _emit_stuck_pending_logs(rows or [])
+            rows = rows or []
+            await _emit_stuck_pending_logs(rows)
+            if rows:
+                await _redispatch_stuck_rows(engine, rows)
         except Exception as exc:  # noqa: BLE001 — never crash on diagnostic
             logger.warning("stuck-pending warner: scan failed: %s", exc)
+
+
+async def sweep_wedged_provisioning_catalogs(
+    engine: DbResource,
+    min_age_s: float = 600.0,
+    sample_limit: int = 50,
+) -> int:
+    """Drain still-pending checklist steps for catalogs stuck in ``provisioning``
+    with no live or queued provisioning task (#1902).
+
+    The normal path is: provisioner task runs → marks each step terminal →
+    ``evaluate_checklist`` flips the catalog to ``ready``/``failed``.  When a
+    task dies before marking its own steps (crash, SIGKILL, DB unavailable at
+    mark time) the catalog is left ``provisioning`` indefinitely.
+
+    This sweep detects that condition — ``provisioning_status = 'provisioning'``
+    AND no ``PENDING``/``ACTIVE`` ``gcp_provision_catalog`` task pointing at the
+    same ``catalog_id`` in its ``inputs`` — and calls
+    ``drain_pending_checklist_steps`` on each such catalog.  The drain marks
+    still-``pending`` steps ``"degraded"`` so the catalog becomes ``ready``
+    rather than staying wedged.
+
+    Returns the number of catalogs drained this pass (0 = nothing to do).
+
+    Idempotent and fail-open: errors per catalog are logged and skipped.
+    The SQL is a read-only scan; the actual state mutation goes through the
+    catalog service's JSONB update path (SELECT … FOR UPDATE + evaluate).
+    """
+    task_schema = get_task_schema()
+    sql = f"""
+        SELECT c.id AS catalog_id
+        FROM catalog.catalogs c
+        WHERE c.provisioning_status = 'provisioning'
+          AND c.deleted_at IS NULL
+          AND c.provisioning_checklist IS NOT NULL
+          AND c.provisioning_checklist::text != '{{}}'
+          AND c.updated_at < NOW() - make_interval(secs => :min_age_s)
+          AND NOT EXISTS (
+              SELECT 1
+              FROM "{task_schema}".tasks t
+              WHERE t.status IN ('PENDING', 'ACTIVE')
+                AND t.task_type = 'gcp_provision_catalog'
+                AND t.inputs->>'catalog_id' = c.id
+          )
+        LIMIT :sample_limit;
+    """
+    try:
+        async with managed_transaction(engine) as conn:
+            if not await check_table_exists(conn, "catalogs", "catalog"):
+                return 0
+            rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
+                conn, min_age_s=min_age_s, sample_limit=sample_limit,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sweep_wedged_provisioning_catalogs: scan query failed: %s", exc)
+        return 0
+
+    rows = rows or []
+    if not rows:
+        return 0
+
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols.catalogs import CatalogsProtocol
+
+    catalogs = get_protocol(CatalogsProtocol)
+    if catalogs is None:
+        logger.warning(
+            "sweep_wedged_provisioning_catalogs: CatalogsProtocol not available; "
+            "skipping drain of %d wedged catalog(s).",
+            len(rows),
+        )
+        return 0
+
+    drained = 0
+    for row in rows:
+        catalog_id = row.get("catalog_id")
+        if not catalog_id:
+            continue
+        try:
+            updated = await catalogs.drain_pending_checklist_steps(
+                catalog_id, terminal_status="degraded",
+            )
+            if updated:
+                drained += 1
+                logger.warning(
+                    "sweep_wedged_provisioning_catalogs: drained wedged catalog '%s'.",
+                    catalog_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — one bad catalog must not stop the rest
+            logger.warning(
+                "sweep_wedged_provisioning_catalogs: drain failed for catalog '%s': %s",
+                catalog_id, exc,
+            )
+    return drained
 
 
 async def _run_mandatory_backstop_pass(
@@ -956,6 +1215,23 @@ async def _run_proactive_capability_sweep(
             await _run_mandatory_backstop_pass(
                 engine, schema, ttl_grace_seconds=capability_ttl_s, min_age_s=min_age_s,
             )
+            # Wedged-provisioning reconciler: drain still-pending checklist
+            # steps for catalogs stuck in 'provisioning' with no live task.
+            # Runs on every pod independently — drain_pending_checklist_steps
+            # uses SELECT … FOR UPDATE, so concurrent pods are serialised.
+            try:
+                drained = await sweep_wedged_provisioning_catalogs(
+                    engine, min_age_s=min_age_s,
+                )
+                if drained:
+                    logger.info(
+                        "proactive_sweep: drained %d wedged provisioning catalog(s).",
+                        drained,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "proactive_sweep: wedged-provisioning sweep failed: %s", exc,
+                )
         except Exception as exc:  # noqa: BLE001 — never crash the loop
             logger.warning("proactive_sweep: pass failed: %s", exc)
 
@@ -1128,29 +1404,33 @@ async def _assert_current_partition_ready(conn: DbResource, schema: str) -> None
 async def ensure_task_storage_exists(conn: DbResource, schema: str):
     """
     Provision the global ``tasks.tasks`` partitioned table + its indexes,
-    triggers, pg_notify functions, monthly partitions, retention / partition-
-    creation / reaper pg_cron jobs.
+    triggers, pg_notify functions, monthly partitions, and maintenance
+    helper functions called by the MaintenanceSupervisor.
 
     There is exactly ONE legitimate caller: ``TasksModule.lifespan`` at app
     startup, with ``schema == get_task_schema()`` (default ``"tasks"``).
     Multi-tenancy is column-based — ``schema_name`` on each task row carries
     the catalog physical schema; the table itself is never duplicated per
     tenant. Callers that pass a catalog/tenant schema are a bug: they would
-    create an unread shadow table plus six redundant pg_cron registrations
-    per tenant (the reaper alone runs every minute → guaranteed wasted load).
+    create an unread shadow table per tenant.
 
     All steps are idempotent and must run every time on the global schema:
-    table/index DDL use IF NOT EXISTS, partition + retention/cron helpers all
-    check-then-create. The table-existence check is NOT used to short-circuit
-    the rest of this function — otherwise a restart after a month rollover
-    would never create the current-month partition and the dispatcher would
-    hit "relation does not exist" on claim_batch.
+    table/index DDL use IF NOT EXISTS, partition helpers all check-then-create.
+    The table-existence check is NOT used to short-circuit the rest of this
+    function — otherwise a restart after a month rollover would never create
+    the current-month partition and the dispatcher would hit "relation does
+    not exist" on claim_batch.
+
+    pg_cron is NOT used.  The three periodic jobs (reaper, partition-create,
+    retention) are driven by the MaintenanceSupervisor leader-elected loop
+    via ``platform.maintenance_schedule`` — registered at CatalogModule startup
+    by ``register_supervisor_jobs``.
 
     Raises ``RuntimeError`` if ``schema`` is anything other than
     ``get_task_schema()``. This is a hard guard against the pattern that
     polluted catalog schemas with empty ``{tenant}.tasks`` tables prior to
     this fix — every read/write path pins the global schema, so a tenant
-    copy is dead weight that only the reaper would ever touch.
+    copy is dead weight.
 
     Note: events table is now owned by EventsModule (priority=11).
     """
@@ -1171,12 +1451,11 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
 
     # Single module-level batch: on warm starts the sentinel
     # (status-update trigger) short-circuits everything in one round-trip.
-    # Cold starts create the table, indexes, notify functions, and both
-    # triggers in order under nested savepoints. Advisory locks are
-    # auto-derived from each statement's hash.
+    # Cold starts create the table (+ DEFAULT partition), indexes, notify
+    # functions, and both triggers in order under nested savepoints.
     await _build_tasks_ddl_batch(schema).execute(conn, schema=schema)
 
-    # Step 3: Ensure current + future partitions exist.
+    # Ensure current + future partitions exist.
     # Critical path — must succeed for the dispatcher to start.
     await maintenance_tools.ensure_future_partitions(
         conn,
@@ -1187,71 +1466,17 @@ async def ensure_task_storage_exists(conn: DbResource, schema: str):
         column="timestamp",
     )
 
-    # Steps 4+: pg_cron registration — operational, not structural.
-    # If pg_cron is not installed or misconfigured these steps warn rather than
-    # rolling back the table and partition creation above.
-    try:
-        await maintenance_tools.register_retention_policy(
-            conn,
-            schema=schema,
-            table="tasks",
-            policy="prune",
-            interval="daily",
-            retention_period="1 month",
-            column="timestamp",
-        )
-    except Exception as e:
-        logger.warning(
-            f"TasksModule: register_retention_policy failed for {schema}.tasks "
-            f"(pg_cron unavailable?): {e}"
-        )
-
-    try:
-        await maintenance_tools.register_partition_creation_policy(
-            conn,
-            schema=schema,
-            table="tasks",
-            interval="monthly",
-            periods_ahead=3,
-        )
-    except Exception as e:
-        logger.warning(
-            f"TasksModule: register_partition_creation_policy failed for {schema}.tasks "
-            f"(pg_cron unavailable?): {e}"
-        )
-
-    # Reaper function — DB-side replacement for the in-process janitor.
-    # Idempotent (CREATE OR REPLACE).
+    # Provision maintenance helper functions called by the supervisor.
+    # These are CREATE OR REPLACE — idempotent and always up-to-date.
     await DDLQuery(GLOBAL_TASKS_REAPER_DDL).execute(conn, schema=schema)
+    await DDLQuery(GLOBAL_TASKS_RETENTION_FUNC_DDL).execute(conn, schema=schema)
+    await DDLQuery(GLOBAL_TASKS_PARTCREATE_FUNC_DDL).execute(conn, schema=schema)
 
-    # Schedule the reaper via pg_cron.  Every minute — short enough to
-    # recover a pod failure within SLA, long enough that live heartbeats
-    # (default 30s interval extending locked_until to +5min) always win
-    # the race against the reap scan.
-    try:
-        # Pass the live hard cap (loaded from TasksPluginConfig in the
-        # caller's lifespan) as the second arg. Falls back to the function's
-        # DEFAULT (5) if the config hasn't been touched.
-        hard_cap = get_hard_retry_cap()
-        reaper_command = (
-            f'SELECT "{schema}".reap_stuck_tasks(3, {int(hard_cap)});'
-        )
-        await maintenance_tools.register_cron_job(
-            conn,
-            job_name=f"dynastore-task-reaper-{schema}",
-            schedule="* * * * *",
-            command=reaper_command,
-        )
-        logger.info(
-            f"TasksModule: registered pg_cron reaper 'dynastore-task-reaper-{schema}' "
-            f"(every minute → {schema}.reap_stuck_tasks(3, {hard_cap}))."
-        )
-    except Exception as e:
-        logger.warning(
-            f"TasksModule: register_cron_job failed for {schema}.reap_stuck_tasks "
-            f"(pg_cron unavailable?): {e} — stuck tasks will accumulate until a "
-            f"manual SELECT {schema}.reap_stuck_tasks() or next successful boot."
-        )
+    logger.info(
+        "TasksModule: provisioned tasks storage + maintenance helper functions "
+        "for schema %r (reaper/partition-create/retention driven by supervisor).",
+        schema,
+    )
 
 
 _DISCOVER_LEGACY_TENANT_TASKS_SQL = """
@@ -1284,8 +1509,6 @@ async def _drop_legacy_tenant_tasks_tables(
 
     Returns the number of tenant ``tasks`` tables dropped.
     """
-    from dynastore.modules.db_config import maintenance_tools
-
     skipped = {global_schema, "pg_catalog", "information_schema"}
 
     # Discover tenant schemas that currently host a ``tasks`` table.
@@ -1308,23 +1531,9 @@ async def _drop_legacy_tenant_tasks_tables(
 
     dropped = 0
     for tenant_schema in tenant_schemas:
-        # Unregister the per-schema pg_cron jobs first so they stop firing
-        # against the about-to-be-dropped table. Job names follow the
-        # convention set by ``ensure_task_storage_exists`` / the
-        # ``maintenance_tools`` helpers: a reaper plus retention /
-        # partition-creation entries scoped by schema + table.
-        for job_name in (
-            f"dynastore-task-reaper-{tenant_schema}",
-            f"prune-{tenant_schema}-tasks",
-            f"partman-{tenant_schema}-tasks",
-        ):
-            try:
-                await maintenance_tools.unregister_cron_job(conn, job_name)
-            except Exception as exc:  # noqa: BLE001 — best-effort, job may not exist
-                logger.debug(
-                    "TasksModule: pg_cron.unschedule(%r) skipped: %s",
-                    job_name, exc,
-                )
+        # pg_cron jobs for legacy per-tenant tasks tables are swept globally by
+        # ``unschedule_superseded_cron_jobs`` at CatalogModule startup — no
+        # per-schema unschedule needed here.
 
         # Drop the partitioned tasks table itself. ``CASCADE`` removes the
         # monthly child partitions + dependent indexes/triggers in one shot.

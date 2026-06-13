@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """#1216 P4 — the items_schema derive-proposal endpoint.
 
 `POST /configs/catalogs/{cat}/collections/{col}/items-schema/derive` turns a
@@ -152,13 +170,12 @@ async def test_proposes_attribute_schema_for_constrained_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_plain_fields_stay_jsonb_are_surfaced() -> None:
-    # #330 B4 — when no field carries a constraint / FAST / queryable
-    # capability, the AUTOMATIC sidecar resolves to JSONB, the blob is
-    # DDL'd at materialisation, and every non-geometry field lands there
-    # safely. The proposal surfaces that split: an empty ``attribute_schema``
-    # and every field under ``summary['jsonb']``. (Force-promotion only
-    # kicks in once at least one field would create a column — see the
-    # constrained-field test for that case.)
+    # #330 B4 (updated for #1855 strict-binary layout) — under AUTOMATIC mode
+    # a non-empty derived schema triggers COLUMNAR storage: every non-geometry
+    # field gets its own PG column so no field is silently lost at ingest.
+    # All three derived fields land in ``attribute_schema`` / ``summary.columnar``;
+    # ``summary.jsonb`` is empty.  The old per-field heuristic that kept plain
+    # fields in the JSONB blob was removed by the strict-binary refactor (#1855).
     svc, ctx = _service(
         current_schema=ItemsSchema(),
         collection=object(),
@@ -166,9 +183,11 @@ async def test_plain_fields_stay_jsonb_are_surfaced() -> None:
     )
     out = await _run(svc, ctx)
 
-    assert out["attribute_schema"] == []
-    assert out["summary"]["columnar"] == []
-    assert out["summary"]["jsonb"] == ["is_paved", "name", "osm_id"]
+    assert len(out["attribute_schema"]) == 3
+    attr_names = {e["name"] for e in out["attribute_schema"]}
+    assert attr_names == {"name", "osm_id", "is_paved"}
+    assert out["summary"]["columnar"] == ["is_paved", "name", "osm_id"]
+    assert out["summary"]["jsonb"] == []
 
 
 @pytest.mark.asyncio

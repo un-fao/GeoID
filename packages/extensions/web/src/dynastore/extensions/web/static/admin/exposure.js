@@ -1,4 +1,4 @@
-import { apiUrl } from "../common/url.js";
+import { getJSON, patchJSON, fetchCatalogOptions } from "../common/api.js";
 
 (async () => {
   const $ = (sel) => document.querySelector(sel);
@@ -7,39 +7,18 @@ import { apiUrl } from "../common/url.js";
     catalog: null,
     resolved: {},
     explicit: {},
-    dirty: {}
+    dirty: {},
+    // PascalCase class name → human-readable description from /configs/registry.
+    // Loaded once at init; used to annotate the Extension column.
+    registryDesc: {},
   };
 
-  // Utility: fetch JSON with error handling. Routes absolute paths through
-  // apiUrl() so the proxy prefix (e.g. /geospatial/v2/api/catalog) is applied.
-  async function getJSON(url) {
-    const target = apiUrl(url);
-    const r = await fetch(target);
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`${target} -> ${r.status}: ${text}`);
-    }
-    return r.json();
-  }
-
-  async function patchJSON(url, body) {
-    const target = apiUrl(url);
-    const r = await fetch(target, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    if (!r.ok) {
-      const text = await r.text();
-      throw new Error(`${target} -> ${r.status}: ${text}`);
-    }
-    return r.json();
-  }
-
-  // Load list of catalogs
+  // Populate #catalog-select using the grant-filtered catalog list from api.js.
+  // fetchCatalogOptions() handles the /iam/me/catalogs → /stac/catalogs fallback
+  // for sysadmin wildcard grants, so no local auth plumbing is needed here.
   async function loadCatalogs() {
     try {
-      const res = await getJSON("/stac/catalogs");
+      const catalogs = await fetchCatalogOptions();
       const sel = $("#catalog-select");
       while (sel.firstChild) sel.removeChild(sel.firstChild);
 
@@ -48,24 +27,38 @@ import { apiUrl } from "../common/url.js";
       opt0.textContent = "-- select catalog --";
       sel.appendChild(opt0);
 
-      const items = res.items || res || [];
-      if (!Array.isArray(items)) return;
-
-      for (const c of items) {
+      for (const c of catalogs) {
         const opt = document.createElement("option");
-        const id = c.id || c.catalog_id || (typeof c === "string" ? c : null);
-        if (!id) continue;
-        opt.value = id;
-        opt.textContent = id;
+        opt.value = c.id;
+        opt.textContent = c.id;
         sel.appendChild(opt);
       }
-      if (items.length > 0) {
-        const firstId = items[0].id || items[0].catalog_id || items[0];
-        if (firstId) state.catalog = firstId;
-      }
     } catch (e) {
-      // Catalogs may not exist; safe to ignore
       console.debug("loadCatalogs:", e.message);
+    }
+  }
+
+  // Load the config registry once and return a PascalCase-key → description map.
+  // Keys in the registry are snake_case; we convert them to PascalCase to match
+  // the class names returned by /configs. Falls back to {} on error so the grid
+  // still renders (the key itself serves as fallback label).
+  async function loadRegistryDescriptions() {
+    try {
+      const reg = await getJSON("/configs/registry");
+      if (!reg || typeof reg !== "object") return {};
+      // Convert snake_case registry key → PascalCase class name.
+      function toPascal(s) {
+        return s.replace(/(^|_)([a-z])/g, (_, _sep, ch) => ch.toUpperCase());
+      }
+      const out = {};
+      for (const [pluginId, meta] of Object.entries(reg)) {
+        if (meta && meta.description) {
+          out[toPascal(pluginId)] = meta.description;
+        }
+      }
+      return out;
+    } catch (_) {
+      return {};
     }
   }
 

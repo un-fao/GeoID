@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 import logging
 import asyncio
 from contextlib import AbstractAsyncContextManager
@@ -528,6 +546,14 @@ async def run_leader_loop(
     ``on_leader`` may run its own inner periodic loop, but MUST let exceptions
     propagate. Swallowing exceptions inside ``on_leader`` keeps the lock held
     and is the anti-pattern this helper exists to prevent.
+
+    ``acquire_leadership`` MUST yield exactly once on every code path. Do not
+    hand-roll it for Postgres advisory locks — use
+    ``dynastore.modules.db_config.locking_tools.pg_advisory_leadership``,
+    which holds the lock on a dedicated AUTOCOMMIT connection (no transaction
+    pinned across the tenure, no lock leaking into the pool) and never yields
+    from an ``except`` handler (the historical double-yield bug surfaced as
+    ``RuntimeError: generator didn't stop`` and resigned every cycle).
     """
     is_shutdown = is_shutdown or (lambda: False)
     while not is_shutdown():

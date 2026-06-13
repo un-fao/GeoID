@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ from dynastore.models.protocols.typed_driver import (
     _PluginDriverConfig,
 )
 from dynastore.models.mutability import Immutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from pydantic import Field
 
 logger = logging.getLogger(__name__)

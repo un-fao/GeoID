@@ -33,7 +33,7 @@ carry no STAC pollution.
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import ClassVar, Dict, Any, List, Optional, Set, Tuple
 
 from geojson_pydantic import Feature
 
@@ -358,11 +358,7 @@ class ItemMetadataSidecar(SidecarProtocol):
         else:
             data = dict(feature)
 
-        from dynastore.tools.discovery import get_protocols
         try:
-            from dynastore.extensions.stac.stac_extension_protocol import (
-                StacExtensionProtocol,
-            )
             from dynastore.extensions.stac.metadata_helpers import (
                 prune_managed_content_sync,
                 prune_stac_managed_properties,
@@ -388,16 +384,14 @@ class ItemMetadataSidecar(SidecarProtocol):
                 ),
             ) from exc
 
-        providers = get_protocols(StacExtensionProtocol)
-
-        pruned = prune_managed_content_sync(data, providers)
+        pruned = prune_managed_content_sync(data)
 
         if isinstance(feature, dict) and "properties" in feature:
-            prune_stac_managed_properties(feature["properties"], providers)
+            prune_stac_managed_properties(feature["properties"])
         else:
             props = getattr(feature, "properties", None)
             if isinstance(props, dict):
-                prune_stac_managed_properties(props, providers)
+                prune_stac_managed_properties(props)
 
         payload = {
             "geoid": geoid,
@@ -462,6 +456,40 @@ class ItemMetadataSidecar(SidecarProtocol):
     def get_internal_columns(self) -> set:
         """Columns owned by this sidecar that are never part of Feature properties."""
         return ITEM_METADATA_RAW_COLUMNS
+
+    # ── Canonical ES metadata container (refs #1828 Phase 2 / #1838) ─────────
+
+    _METADATA_COLUMN_MAP: ClassVar[Dict[str, str]] = {
+        "title": "item_title",
+        "description": "item_description",
+        "keywords": "item_keywords",
+    }
+
+    def producible_metadata_names(self) -> set:
+        """Metadata container field names this sidecar produces.
+
+        Returns the three canonical names (``title``, ``description``,
+        ``keywords``) that ``build_canonical_index_doc`` routes into the typed
+        ``metadata{}`` ES container. The storage columns are the ``item_*``
+        aliases produced by ``get_select_fields``; the canonical names are the
+        un-prefixed forms the ES mapping expects (refs #1828 / #1838).
+        """
+        return set(self._METADATA_COLUMN_MAP)
+
+    def resolve_metadata_value(self, row: dict, resolved_name: str):
+        """Locate one metadata value from a PG read row.
+
+        Maps canonical names (``title`` / ``description`` / ``keywords``) to
+        their ``item_*`` storage aliases. Returns ``(True, value)`` when the
+        row carries a non-None value; ``(False, None)`` otherwise.
+        """
+        col = self._METADATA_COLUMN_MAP.get(resolved_name)
+        if col is None:
+            return (False, None)
+        val = row.get(col)
+        if val is None:
+            return (False, None)
+        return (True, val)
 
     def map_row_to_feature(
         self,

@@ -4,19 +4,18 @@
 // been chosen.
 
 import {
-  fetchMe, fetchMyCatalogs, fetchCatalogs, postFeatures, getJSON,
+  fetchMe, postFeatures, createStacCollection,
 } from "../common/api.js";
+import { mountContextBar } from "../common/context-bar.js";
 
 const $ = (s) => document.querySelector(s);
 
 const state = {
-  isSysadmin: false,
-  myCatalogs: [],
-  allCatalogs: [],
   files: [],                 // [{name, size, features}]
   totalFeatures: 0,
   selectedCatalog: null,
   selectedCollection: null,
+  cs: null,                  // mounted context picker handle
 };
 
 function clearNode(node) {
@@ -209,80 +208,73 @@ async function onSubmit() {
   }
 }
 
-// --- Target selectors -------------------------------------------------
+// --- New collection ---------------------------------------------------
+// Inline "create a collection under the selected catalog" affordance so a
+// user can ingest into a brand-new collection without leaving the page.
 
-async function populateCatalogs() {
-  const sel = $("#ing-catalog");
-  clearNode(sel);
-  const opt0 = document.createElement("option");
-  opt0.value = "";
-  opt0.textContent = "Choose catalog…";
-  sel.appendChild(opt0);
+function setupNewCollection() {
+  const toggle = $("#ing-newcol-toggle");
+  const form = $("#ing-newcol-form");
+  const createBtn = $("#ing-newcol-create");
+  const idEl = $("#ing-newcol-id");
+  const titleEl = $("#ing-newcol-title");
+  const statusEl = $("#ing-newcol-status");
+  if (!toggle || !form || !createBtn) return;
 
-  try {
-    state.allCatalogs = await fetchCatalogs();
-  } catch (_) {
-    state.allCatalogs = [];
-  }
-  const items = Array.isArray(state.allCatalogs)
-    ? state.allCatalogs
-    : (state.allCatalogs.catalogs || state.allCatalogs.items || []);
+  const setColStatus = (msg, cls = "") => {
+    statusEl.textContent = msg || "";
+    statusEl.className = "status " + cls;
+  };
 
-  const allowed = state.isSysadmin
-    ? items.map((c) => c.id).filter(Boolean)
-    : state.myCatalogs.map((c) => c.catalog_id);
-  const allowedSet = new Set(allowed);
-  for (const c of items) {
-    if (!c.id || !allowedSet.has(c.id)) continue;
-    const o = document.createElement("option");
-    o.value = c.id;
-    o.textContent = c.id;
-    sel.appendChild(o);
-  }
-}
+  toggle.addEventListener("click", () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) idEl.focus();
+  });
 
-async function populateCollections(catalogId) {
-  const sel = $("#ing-collection");
-  clearNode(sel);
-  const opt0 = document.createElement("option");
-  opt0.value = "";
-  opt0.textContent = "Choose collection…";
-  sel.appendChild(opt0);
-  if (!catalogId) {
-    sel.disabled = true;
-    return;
-  }
-  sel.disabled = false;
+  createBtn.addEventListener("click", async () => {
+    const catalogId = state.cs && state.cs.getCatalogId();
+    if (!catalogId) { setColStatus("Pick a catalog first.", "err"); return; }
+    const id = (idEl.value || "").trim();
+    if (!id) { setColStatus("Collection id is required.", "err"); idEl.focus(); return; }
+    const title = (titleEl.value || "").trim();
 
-  try {
-    const payload = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-    const items = Array.isArray(payload)
-      ? payload
-      : (payload.collections || payload.items || []);
-    for (const c of items) {
-      if (!c.id) continue;
-      const o = document.createElement("option");
-      o.value = c.id;
-      o.textContent = c.id;
-      sel.appendChild(o);
+    createBtn.disabled = true;
+    setColStatus("Creating…");
+    try {
+      await createStacCollection(catalogId, {
+        type: "Collection",
+        id,
+        stac_version: "1.1.0",
+        description: title || id,
+        license: "proprietary",
+        extent: {
+          spatial: { bbox: [[-180, -90, 180, 90]] },
+          temporal: { interval: [[null, null]] },
+        },
+        links: [],
+        ...(title ? { title } : {}),
+      });
+      // Refresh the picker's collection list and select the new one, so the
+      // user can drop a file and Transmit immediately.
+      if (state.cs && state.cs.refreshCollections) {
+        await state.cs.refreshCollections(id);
+      }
+      setColStatus(`Created "${id}".`, "ok");
+      idEl.value = "";
+      titleEl.value = "";
+      form.hidden = true;
+    } catch (e) {
+      setColStatus(`Failed: ${e.message || e}`, "err");
+    } finally {
+      createBtn.disabled = false;
     }
-  } catch (e) {
-    setStatus(`Collections load failed: ${e.message}`, "err");
-  }
+  });
 }
 
 // --- Boot -------------------------------------------------------------
 
 async function boot() {
   const me = await fetchMe();
-  const roles = me.roles || [];
-  state.isSysadmin = roles.includes("sysadmin");
-
-  try {
-    state.myCatalogs = await fetchMyCatalogs();
-  } catch (_) {
-    state.myCatalogs = [];
-  }
 
   if (!me.principal) {
     const main = document.querySelector("main");
@@ -294,19 +286,19 @@ async function boot() {
     return;
   }
 
-  await populateCatalogs();
-  await populateCollections("");
-
-  $("#ing-catalog").addEventListener("change", async (e) => {
-    state.selectedCatalog = e.target.value || null;
-    state.selectedCollection = null;
-    await populateCollections(state.selectedCatalog);
-    updateButtons();
-  });
-  $("#ing-collection").addEventListener("change", (e) => {
-    state.selectedCollection = e.target.value || null;
-    updateButtons();
-  });
+  // Mount the canonical context picker into the target plate.
+  const pickerEl = document.getElementById("ing-target-picker");
+  if (pickerEl) {
+    state.cs = mountContextBar(pickerEl, {
+      mode: "select",
+      onChange: ({ catalogId, collectionId }) => {
+        state.selectedCatalog = catalogId;
+        state.selectedCollection = collectionId;
+        updateButtons();
+      },
+    });
+    setupNewCollection();
+  }
 
   // Dropzone + file picker
   const zone = $("#dropzone");

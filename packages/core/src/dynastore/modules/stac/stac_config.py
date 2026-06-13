@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 from dynastore.extensions.tools.exposure_mixin import ExposableConfigMixin
 from dynastore.models.localization import LocalizedText, Language
 
@@ -277,12 +277,13 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
     # auto-generate at item-render time*.
     enabled_extensions: Mutable[List[str]] = Field(default_factory=list)
 
-    # Item-render gate.  Controls which auto-generators contribute content
-    # at render time (proj/raster/vector blocks from ``StacExtensionProtocol``
-    # providers, plus the collection-level ``proj:epsg``/``proj:wkt2``
-    # injection driven by ``storage_config.target_srid``).
+    # Render gate.  Today the ``proj`` entry gates the collection-level
+    # ``proj:epsg`` / ``proj:wkt2`` injection driven by
+    # ``storage_config.target_srid``.  The proj/raster/vector item-render
+    # auto-generators this once also gated were retired together with the
+    # zero-implementer ``StacExtensionProtocol``; ``raster`` / ``vector``
+    # are still accepted for backward compatibility but are currently inert.
     #
-    # Default keeps current behavior — all three auto-renderers run.
     # Empty list = passthrough mode: stored content (``external_extensions``
     # / ``external_assets`` / ``extra_fields`` from the ``stac_metadata``
     # sidecar) flows verbatim, no auto-generation; navigation / hierarchy
@@ -339,3 +340,23 @@ class StacPluginConfig(ExposableConfigMixin, PluginConfig):
 
     # Geometry Simplification (Query time)
     simplification: Mutable[SimplificationConfig] = Field(default_factory=SimplificationConfig)
+
+    # Write-time STAC schema validation gate.
+    #
+    # When False (default) the pystac/stac-pydantic schema validation step is
+    # skipped on the write path entirely.  The validators fetch remote JSON
+    # schemas from stac-extensions.github.io, which is a synchronous network
+    # call that blocks the async event loop and starves the DB connection pool
+    # under batch ingest.  Validation is already lenient (warnings only), so
+    # the only observable effect of the default is that extension-schema
+    # warnings are suppressed.  Enable this flag only in low-traffic or
+    # offline-capable deployments that have local schema mirrors configured.
+    validate_on_write: Mutable[bool] = Field(
+        default=False,
+        description=(
+            "Gate write-time pystac/stac-pydantic schema validation.  "
+            "Defaults to False to prevent blocking network I/O on the async "
+            "event loop during ingest.  Set to True only when a local schema "
+            "cache is in place and the deployment can afford the latency."
+        ),
+    )

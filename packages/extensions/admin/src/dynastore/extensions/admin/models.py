@@ -1,5 +1,20 @@
 #    Copyright 2026 FAO
-#    Licensed under the Apache License, Version 2.0 (the "License").
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from datetime import datetime
 from typing import Any, Dict, Optional, List
@@ -169,46 +184,6 @@ class GrantUsageView(BaseModel):
         ),
     )
     fetched_at: str = Field(description="ISO 8601 timestamp the response was assembled.")
-
-
-# --- Applied-presets bulk list (#1425) ------------------------------------
-
-
-class AppliedRowResponse(BaseModel):
-    """One row from ``iam.applied_presets`` for a given scope."""
-
-    preset_name: str
-    scope_key: str
-    state: str
-    applied_at: Optional[str] = Field(
-        default=None,
-        description="ISO 8601 timestamp when the preset reached 'applied' state.",
-    )
-    applied_by: Optional[str] = Field(
-        default=None, description="UUID of the principal that triggered the apply."
-    )
-    params_snapshot: Optional[Dict[str, Any]] = Field(
-        default=None, description="Parameter snapshot captured at apply time."
-    )
-    last_error: Optional[str] = Field(
-        default=None, description="Last error message when state is 'failed' or 'revoke_failed'."
-    )
-    updated_at: Optional[str] = Field(
-        default=None, description="ISO 8601 timestamp of the last state-machine transition."
-    )
-
-
-class AppliedPresetsPage(BaseModel):
-    """Paginated response for ``GET /admin/presets/applied``."""
-
-    rows: List[AppliedRowResponse]
-    next_cursor: Optional[str] = Field(
-        default=None,
-        description=(
-            "Opaque keyset cursor. Pass as ``cursor`` on the next request "
-            "to retrieve the following page. ``null`` when this is the last page."
-        ),
-    )
 
 
 # --- Admin task-dispatch request / response DTOs ---

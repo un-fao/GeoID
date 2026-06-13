@@ -11,11 +11,15 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """``private_collection`` preset — collection-tier private items routing.
 
 A ``COLLECTION``-tier preset (#972): applied at one collection via
-``POST /admin/catalogs/{cat}/collections/{col}/presets/private_collection``,
+``POST /configs/catalogs/{cat}/collections/{col}/presets/private_collection``,
 it pins the per-tenant private items indexer (``items_elasticsearch_private_driver``)
 on a single collection without touching catalog-tier templates. Use to
 make one collection inside an otherwise-public catalog private, or to

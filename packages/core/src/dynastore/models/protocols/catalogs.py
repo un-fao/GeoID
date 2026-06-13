@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -211,6 +211,26 @@ class CatalogsProtocol(ItemCrudProtocol, ItemQueryProtocol, ItemIntrospectionPro
         (``failed``). When the whole checklist is terminal the catalog flips to
         ``ready`` (all complete/skipped) or ``failed`` (any failed). A catalog
         with no checklist is a no-op returning ``False``.
+        """
+        ...
+
+    async def drain_pending_checklist_steps(
+        self,
+        catalog_id: str,
+        terminal_status: str = "degraded",
+        ctx: Optional["DriverContext"] = None,
+    ) -> bool:
+        """Mark all still-pending checklist steps terminal and re-evaluate (#1902).
+
+        Structural backstop: called when a provisioning task exits (any path)
+        without having marked every step, and by the reconciler for catalogs
+        stuck in ``provisioning`` with no live task.
+
+        Steps already in a terminal state are not touched.  ``terminal_status``
+        defaults to ``"degraded"`` so the catalog becomes ready; pass
+        ``"failed"`` on a hard-failure path.
+
+        Returns ``True`` when at least one step was updated.
         """
         ...
 

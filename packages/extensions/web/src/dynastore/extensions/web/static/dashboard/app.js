@@ -5,28 +5,32 @@
 // strings are rendered via textContent / createElement — never innerHTML —
 // since logs and task names carry untrusted text.
 
+import { mountContextBar } from "../static/common/context-bar.js";
+
 const app = {
     state: {
         activeTab: 'overview',
         catalogId: null,
         collectionId: null,
+        // Cached full task list for client-side pill filtering (defect C).
+        _allTasks: [],
+        _activePillFilter: 'active',
     },
 
     // --- Initialization ---
     init() {
-        this.contextSelector = new ContextSelector({
-            containerId: 'context-selector-container',
-            enableCollection: true,
-            enableVirtualCollections: false,
-            enableAssets: false,
-            enableSearch: true,
-            defaultCatalog: '_system_',
-            onChange: (context) => {
-                this.state.catalogId = context.catalogId;
-                this.state.collectionId = context.collectionId;
-                this.refreshAll();
-            }
-        });
+        const container = document.getElementById('context-selector-container');
+        if (container) {
+            this.contextHandle = mountContextBar(container, {
+                mode: 'select',
+                enableVirtualCollections: false,
+                onChange: ({ catalogId, collectionId }) => {
+                    this.state.catalogId = catalogId;
+                    this.state.collectionId = collectionId;
+                    this.refreshAll();
+                },
+            });
+        }
 
         this.bindEvents();
         this.refreshAll();
@@ -56,13 +60,16 @@ const app = {
             logsFilterBtn.addEventListener('click', () => this.loadLogs());
         }
 
-        // Task-filter pill toolbar (cosmetic — backend doesn't filter yet).
+        // Task-filter pill toolbar — client-side filter against cached tasks.
         document.querySelectorAll('.tasks-toolbar .pill').forEach((el) => {
             el.addEventListener('click', (e) => {
                 document.querySelectorAll('.tasks-toolbar .pill').forEach(
                     (p) => p.classList.remove('active')
                 );
                 e.currentTarget.classList.add('active');
+                const filter = e.currentTarget.dataset.filter || 'active';
+                this.state._activePillFilter = filter;
+                this._renderTasks(this.state._allTasks);
             });
         });
     },
@@ -113,12 +120,11 @@ const app = {
 
     async loadOverview() {
         try {
-            const collectionId = this.state.collectionId;
-            // catalog_id sits in the page URL: /web/dashboard/catalogs/{cat}/.
-            // Relative URLs resolve against it automatically.
-            const url = collectionId
-                ? `collections/${encodeURIComponent(collectionId)}/stats`
-                : 'stats';
+            const { catalogId, collectionId } = this.state;
+            // Scope comes from the context-bar picker, not the page URL. Build an
+            // absolute, proxy-prefix-aware URL to the picked catalog's stats so the
+            // result does not depend on where the shell HTML is served from.
+            const url = this._statsUrl(catalogId, collectionId);
 
             const res = await fetch(url);
             const data = await res.json();
@@ -128,34 +134,99 @@ const app = {
                 if (el) { el.textContent = value; }
             };
 
-            setText('stat-catalogs', data.total_catalogs ?? 0);
-
-            const assets = (data.total_assets ?? data.asset_count);
-            setText('stat-assets', assets == null ? '—' : assets);
-
+            // StatsSummary fields: total_requests, average_latency_ms,
+            // unique_principals, status_code_distribution.
             setText(
-                'stat-req',
-                data.average_latency_ms
-                    ? (1000 / data.average_latency_ms).toFixed(1)
+                'stat-requests',
+                data.total_requests != null
+                    ? data.total_requests.toLocaleString()
                     : '—'
             );
+
+            setText(
+                'stat-latency',
+                data.average_latency_ms != null
+                    ? `${Math.round(data.average_latency_ms)} ms`
+                    : '—'
+            );
+
+            setText(
+                'stat-principals',
+                data.unique_principals != null
+                    ? data.unique_principals.toLocaleString()
+                    : '—'
+            );
+
+            // Success rate from status_code_distribution: sum of 2xx+3xx / total.
+            const dist = data.status_code_distribution || {};
+            const total = Object.values(dist).reduce((s, n) => s + n, 0);
+            const successEl = document.getElementById('stat-success-rate');
+            if (successEl) {
+                if (total > 0) {
+                    const success = Object.entries(dist)
+                        .filter(([code]) => code.startsWith('2') || code.startsWith('3'))
+                        .reduce((s, [, n]) => s + n, 0);
+                    successEl.textContent = `${Math.round((success / total) * 100)}%`;
+                } else {
+                    successEl.textContent = '—';
+                }
+            }
         } catch (e) {
             console.error('Failed to load stats', e);
         }
     },
 
+    // Proxy prefix for absolute API URLs: everything before '/web/' in this
+    // page's path (e.g. '/geospatial/dev/api/catalog'). Empty at the bare root.
+    _apiPrefix() {
+        const p = window.location.pathname;
+        const webIdx = p.indexOf('/web/');
+        return webIdx >= 0 ? p.substring(0, webIdx) : '';
+    },
+
+    // Stats endpoint scoped to the picked catalog (and collection, if any).
+    // With no catalog selected, fall back to the platform-tier summary.
+    _statsUrl(catalogId, collectionId) {
+        const prefix = this._apiPrefix();
+        if (!catalogId) { return `${prefix}/web/dashboard/stats`; }
+        const base = `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}`;
+        return collectionId
+            ? `${base}/collections/${encodeURIComponent(collectionId)}/stats`
+            : `${base}/stats`;
+    },
+
+    // Tasks endpoint scoped to the picked catalog; platform-tier when unset.
+    _tasksUrl(catalogId) {
+        const prefix = this._apiPrefix();
+        return catalogId
+            ? `${prefix}/web/dashboard/catalogs/${encodeURIComponent(catalogId)}/tasks`
+            : `${prefix}/web/dashboard/tasks`;
+    },
+
+    // Proxy-prefix-aware absolute URL to the canonical logs API, scoped to the
+    // picked catalog/collection.
+    _logsUrl(catalogId, collectionId) {
+        const prefix = this._apiPrefix();
+        if (collectionId) {
+            return `${prefix}/logs/catalogs/${encodeURIComponent(catalogId)}/collections/${encodeURIComponent(collectionId)}/logs?limit=20`;
+        }
+        return `${prefix}/logs/catalogs/${encodeURIComponent(catalogId)}/logs?limit=20`;
+    },
+
     async loadLogs() {
         try {
-            const collectionId = this.state.collectionId;
-            // Path-based scope: catalog_id from /web/dashboard/catalogs/{cat}/;
-            // collection_id (when set) goes in the path too.
-            const base = collectionId
-                ? `collections/${encodeURIComponent(collectionId)}/logs`
-                : 'logs';
-            const url = `${base}?limit=20`;
+            const { catalogId, collectionId } = this.state;
+            // /web/dashboard/catalogs/{cat}/logs was deleted; fetch from the
+            // canonical logs extension surface instead (defect A fix).
+            const url = catalogId
+                ? this._logsUrl(catalogId, collectionId)
+                : null;
+
+            if (!url) { return; }
 
             const res = await fetch(url);
-            const logs = await res.json();
+            // Response is LogsListResponse: {logs: [...], kibana_dashboard_url?, total?}
+            const logs = (await res.json()).logs || [];
 
             const tbody = document.querySelector('#logs-table tbody');
             if (!tbody) { return; }
@@ -234,72 +305,90 @@ const app = {
 
     async loadTasks() {
         try {
-            const res = await fetch('tasks');
+            const res = await fetch(this._tasksUrl(this.state.catalogId));
             const tasks = await res.json();
-
-            const grid = document.getElementById('tasks-grid');
-            if (!grid) { return; }
-
-            while (grid.firstChild) { grid.removeChild(grid.firstChild); }
-
-            if (!Array.isArray(tasks) || tasks.length === 0) {
-                const empty = document.createElement('p');
-                empty.className = 'empty-cell';
-                empty.textContent = 'No active background tasks.';
-                grid.appendChild(empty);
-                return;
-            }
-
-            tasks.forEach((task) => {
-                const card = document.createElement('div');
-                card.className = 'task-card';
-
-                const header = document.createElement('div');
-                header.className = 'task-header';
-
-                const title = document.createElement('div');
-                title.className = 'task-title';
-                title.textContent = task.name || 'task';
-                header.appendChild(title);
-
-                const status = document.createElement('span');
-                const statusLabel = (task.status || 'unknown').toUpperCase();
-                const statusKind = (() => {
-                    const s = (task.status || '').toLowerCase();
-                    if (s === 'failed' || s === 'error') { return 'effect-DENY'; }
-                    if (s === 'completed' || s === 'success') { return 'effect-ALLOW'; }
-                    return '';
-                })();
-                status.className = `chip ${statusKind}`;
-                status.textContent = statusLabel;
-                header.appendChild(status);
-
-                card.appendChild(header);
-
-                const idLine = document.createElement('div');
-                idLine.className = 'task-id';
-                idLine.textContent = `ID ${task.id || '—'}`;
-                card.appendChild(idLine);
-
-                const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
-                const bar = document.createElement('div');
-                bar.className = 'progress-bar';
-                const fill = document.createElement('div');
-                fill.className = 'progress-fill';
-                fill.style.width = `${progress}%`;
-                bar.appendChild(fill);
-                card.appendChild(bar);
-
-                const pct = document.createElement('div');
-                pct.className = 'task-progress-pct';
-                pct.textContent = `${progress}%`;
-                card.appendChild(pct);
-
-                grid.appendChild(card);
-            });
+            this.state._allTasks = Array.isArray(tasks) ? tasks : [];
+            this._renderTasks(this.state._allTasks);
         } catch (e) {
             console.error('Failed to load tasks', e);
         }
+    },
+
+    // Render task cards filtered by the active pill (defect C fix).
+    // filter values match task.status lowercased; 'active' matches
+    // 'active', 'running', 'in_progress' as synonyms.
+    _renderTasks(allTasks) {
+        const grid = document.getElementById('tasks-grid');
+        if (!grid) { return; }
+
+        while (grid.firstChild) { grid.removeChild(grid.firstChild); }
+
+        const filter = this.state._activePillFilter || 'active';
+        const filtered = allTasks.filter((task) => {
+            const s = (task.status || '').toLowerCase();
+            if (filter === 'active') {
+                return s === 'active' || s === 'running' || s === 'in_progress';
+            }
+            return s === filter;
+        });
+
+        if (filtered.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'empty-cell';
+            empty.textContent = allTasks.length === 0
+                ? 'No background tasks.'
+                : `No ${filter} tasks.`;
+            grid.appendChild(empty);
+            return;
+        }
+
+        filtered.forEach((task) => {
+            const card = document.createElement('div');
+            card.className = 'task-card';
+
+            const header = document.createElement('div');
+            header.className = 'task-header';
+
+            const title = document.createElement('div');
+            title.className = 'task-title';
+            title.textContent = task.name || 'task';
+            header.appendChild(title);
+
+            const status = document.createElement('span');
+            const statusLabel = (task.status || 'unknown').toUpperCase();
+            const statusKind = (() => {
+                const s = (task.status || '').toLowerCase();
+                if (s === 'failed' || s === 'error') { return 'effect-DENY'; }
+                if (s === 'completed' || s === 'success') { return 'effect-ALLOW'; }
+                return '';
+            })();
+            status.className = `chip ${statusKind}`;
+            status.textContent = statusLabel;
+            header.appendChild(status);
+
+            card.appendChild(header);
+
+            const idLine = document.createElement('div');
+            idLine.className = 'task-id';
+            idLine.textContent = `ID ${task.id || '—'}`;
+            card.appendChild(idLine);
+
+            const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
+            const bar = document.createElement('div');
+            bar.className = 'progress-bar';
+            const fill = document.createElement('div');
+            fill.className = 'progress-fill';
+            fill.style.width = `${progress}%`;
+            bar.appendChild(fill);
+            card.appendChild(bar);
+
+            const pct = document.createElement('div');
+            pct.className = 'task-progress-pct';
+            pct.textContent = `${progress}%`;
+            card.appendChild(pct);
+
+            grid.appendChild(card);
+        });
     },
 };
 

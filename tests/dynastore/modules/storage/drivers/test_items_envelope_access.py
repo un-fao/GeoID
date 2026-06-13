@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Unit tests for the standardized-envelope ES items driver.
 
@@ -578,6 +582,12 @@ class _FakeStatsSidecar:
 
     def resolve_computed_value(self, row, name):
         return (True, 99.5) if name == "area" else (False, None)
+
+    def producible_metadata_names(self):
+        return set()
+
+    def resolve_metadata_value(self, row, resolved_name):
+        return (False, None)
 
 
 def _make_canonical_input():

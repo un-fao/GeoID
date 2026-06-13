@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Architectural invariants for PluginConfig subclasses.
 
 Identity is the Pydantic class itself (via ``class_key()`` == ``__qualname__``).
@@ -18,7 +36,7 @@ def test_no_plugin_id_classvar():
     """No PluginConfig subclass may declare _plugin_id."""
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     offenders = [
         cls.__qualname__
@@ -43,7 +61,7 @@ def test_no_legacy_class_keys():
     """
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     bad = [
         cls.class_key()
@@ -57,7 +75,7 @@ def test_no_class_key_classvar_override():
     """No PluginConfig subclass may override _class_key — the class IS the identity."""
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     offenders = [
         cls.__qualname__
@@ -76,7 +94,7 @@ def test_no_records_in_class_key():
     """No class_key may contain 'Records' — drivers serve features/items, not OGC Records specifically."""
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     # Extension exposure configs are legitimately named after the extension they toggle.
     _EXEMPT = {"RecordsPluginConfig"}
@@ -106,7 +124,7 @@ def test_no_plugin_infix_in_config_class_key():
     """
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     # Base classes and modules not yet renamed — excluded from this guard.
     _ALLOWED = {
@@ -169,7 +187,7 @@ def test_driver_config_naming_convention():
     """
     _load_all_modules()
     from dynastore.tools.typed_store.registry import TypedModelRegistry
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
     from dynastore.modules.storage.driver_config import (
         DriverPluginConfig,
         CollectionDriverConfig,

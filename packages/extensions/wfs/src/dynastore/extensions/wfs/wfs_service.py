@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -54,6 +54,7 @@ from dynastore.extensions.tools.language_utils import get_language
 from dynastore.models.shared_models import Link
 from dynastore.models.localization import LocalizedText
 from dynastore.extensions.tools.query import parse_ogc_query_request, stream_ogc_features
+from dynastore.modules.storage.hints import EXACT_READ_HINTS
 
 logger = logging.getLogger(__name__)
 
@@ -648,6 +649,10 @@ class WFSService(ExtensionProtocol, OGCServiceMixin):
                 # Decouple from request connection to allow background streaming
                 # without premature closure errors.
                 ctx=None,
+                # WFS GetFeature must return exact, full-precision geometry.
+                # EXACT_READ_HINTS routes past any simplified-geometry ES driver
+                # to whichever driver declares Hint.GEOMETRY_EXACT.
+                hints=EXACT_READ_HINTS,
             )
         except ValueError as e:
             xml = wfs_generator.create_exception_report("InvalidParameterValue", None, str(e))

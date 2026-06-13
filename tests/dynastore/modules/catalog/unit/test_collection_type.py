@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Pin the Phase 1.6 ``CollectionInfo`` PluginConfig hoist.
 
 Before Phase 1.6, ``collection_type`` was a field on
@@ -33,7 +51,7 @@ from dynastore.modules.storage.drivers.pg_sidecars import _effective_sidecars
 
 
 def test_collection_type_is_a_plugin_config():
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     assert issubclass(CollectionInfo, PluginConfig)
 
@@ -61,7 +79,7 @@ def test_collection_type_in_registry():
     """The hoisted class must appear in ``list_registered_configs`` so
     the ``/configs/registry`` endpoint surfaces it.
     """
-    from dynastore.modules.db_config.plugin_config import list_registered_configs
+    from dynastore.models.plugin_config import list_registered_configs
 
     configs = list_registered_configs()
     assert "collection_info" in configs

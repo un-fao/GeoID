@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -212,7 +230,7 @@ class TestItemsElasticsearchPrivateDriverMeta:
         """The wire identity is exposed in ``list_registered_configs()`` so
         the ``/configs/registry`` and tree-view endpoints surface the driver.
         """
-        from dynastore.modules.db_config.plugin_config import list_registered_configs
+        from dynastore.models.plugin_config import list_registered_configs
         from dynastore.modules.storage.driver_config import (
             ItemsElasticsearchPrivateDriverConfig,
         )
@@ -941,28 +959,47 @@ class TestWriteEntitiesGeometryPolicy:
         # it busts the 10 MB ES limit (simplify_to_fit was NOT called).
         assert len(geom["coordinates"][0]) == 300_001
         # No simplification metadata stamped when simplify disabled.
-        assert "_simplification_mode" not in doc
-        assert "_simplification_factor" not in doc
+        # Since #1828 the canonical location is system.geometry_simplification;
+        # the legacy flat keys are no longer written.
+        system = doc.get("system", {})
+        assert "geometry_simplification" not in system
 
     @pytest.mark.asyncio
     async def test_simplification_runs_only_when_flag_enabled(self):
-        """simplify_geometry=True restores the lossy shrink path."""
+        """simplify_geometry=True routes through _apply_geometry_simplification,
+        which writes the canonical system.geometry_simplification container
+        (#1828 Phase 2 — flat _simplification_mode root key no longer written).
+
+        ``maybe_simplify_for_es`` is patched to return a deterministic result so
+        the test does not require shapely to be installed in this environment.
+        """
         from dynastore.modules.storage.driver_config import (
             ItemsElasticsearchDriverConfig,
         )
 
         feature = self._big_polygon_feature()
-        es = await self._run_write(
-            ItemsElasticsearchDriverConfig(simplify_geometry=True), feature,
-        )
+        simplified_geom = {"type": "Point", "coordinates": [0.0, 0.0]}  # stub shrunk
+        with patch(
+            "dynastore.modules.storage.drivers.elasticsearch.maybe_simplify_for_es",
+            side_effect=lambda doc, *, simplify: (
+                {**doc, "geometry": simplified_geom} if simplify else doc,
+                0.001 if simplify else 1.0,
+                "tolerance" if simplify else "none",
+            ),
+        ):
+            es = await self._run_write(
+                ItemsElasticsearchDriverConfig(simplify_geometry=True), feature,
+            )
 
         body = es.bulk_calls[0]["body"]
         doc = body[1]
-        # Lossy path stamped the metadata and shrank the geometry.
-        assert doc.get("_simplification_mode") in ("tolerance", "bbox")
-        geom = doc.get("geometry")
-        assert geom
-        assert len(geom["coordinates"][0]) < 300_001
+        # Canonical system container carries the simplification metadata.
+        gs = doc.get("system", {}).get("geometry_simplification", {})
+        assert gs.get("mode") == "tolerance"
+        assert gs.get("factor") == pytest.approx(0.001)
+        # Old flat keys must NOT be present on new writes.
+        assert "_simplification_mode" not in doc
+        assert "_simplification_factor" not in doc
 
 
 class TestLocationReportsTenantIndex:
@@ -1015,7 +1052,7 @@ def _make_ctx():
     return IndexContext(catalog="cat1", collection="col1", entity_type="item")
 
 
-def _fake_canonical_inputs(catalog_id, collection_id, geoids):
+def _fake_canonical_inputs(catalog_id, collection_id, geoids, db_resource=None):
     """Stand in for the raw-PG read (#1800): one minimal canonical input per
     geoid so ``build_canonical_index_doc`` runs for real with ``id``/
     ``catalog_id``/``collection_id`` populated, exercising the same body

@@ -12,6 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 #
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from typing import Optional, Protocol, Tuple, runtime_checkable
 
@@ -131,7 +134,7 @@ class UsageCounterProtocol(Protocol):
         ``window_seconds=None`` targets the lifetime bucket (``count``
         for the policy is wiped). Any other value targets the bucket
         containing ``now()`` for that window size — earlier buckets
-        (already rolled over or expired) are left to the reap cron.
+        (already rolled over or expired) are left to the maintenance reaper.
 
         At most one row is removed; the SQL keys on the full primary
         key. Use case is administrative reset, not bulk cleanup.
@@ -141,24 +144,22 @@ class UsageCounterProtocol(Protocol):
     async def reap_expired(self) -> int:
         """Remove rows past ``expires_at``; return rows deleted.
 
-        **The canonical reaper in production is the pg_cron job**
-        ``prune_expired_${schema}`` (registered by
-        :class:`PostgresIamStorage`). It fires nightly inside Postgres
-        and runs whether or not any Python pod is alive — survives
-        Cloud Run scale-to-zero.
+        **The canonical reaper in production is the leader-elected
+        MaintenanceSupervisor IAM prune job** (running in the always-on
+        catalog pod; it replaced the former plpgsql + pg_cron job, deleted
+        in #1911 / #1927).
 
         This method exists for two cases:
 
-        * local-dev / test environments without the pg_cron extension
-          installed, where the protocol's
+        * local-dev / test environments, where the protocol's
           ``test_reap_expired_…`` conformance tests need to call
           something;
         * one-off operator triggers via a controller.
 
         Drivers with native TTL (Valkey) return ``0`` — Redis-family
         backends handle expiry server-side. The Postgres driver shares
-        its SQL WHERE clause with the pg_cron function body via
-        ``iam_queries.REAP_EXPIRED_USAGE_COUNTERS_SQL`` so the two
+        its SQL WHERE clause with the supervisor's prune job via
+        ``iam_queries.REAP_EXPIRED_USAGE_COUNTERS_WHERE`` so the two
         cannot drift if e.g. a grace period is introduced.
         """
         ...

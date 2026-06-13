@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Tests for the ``?meta=`` query mode on the composed-config endpoints.
 
 Post #517 (2026-05-11): per-class field documentation is injected INLINE
@@ -266,7 +284,7 @@ def test_compose_tree_meta_mutability_map_rendered_on_leaf():
     from typing import ClassVar, Optional, Tuple
     from pydantic import Field
     from dynastore.models.mutability import Immutable, Mutable, WriteOnce
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _MutabilityFixture(PluginConfig):
         _address: ClassVar[Tuple[str, ...]] = ("platform", "_fixture")
@@ -306,7 +324,7 @@ def test_compose_tree_meta_schema_carries_x_mutability_on_properties():
     from typing import ClassVar, Optional, Tuple
     from pydantic import Field
     from dynastore.models.mutability import Immutable, Mutable, WriteOnce
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _SchemaMutabilityFixture(PluginConfig):
         _address: ClassVar[Tuple[str, ...]] = ("platform", "_schema_fixture")
@@ -337,7 +355,7 @@ def test_write_once_setter_guard_rejects_post_construction_assignment():
     import pytest
     from pydantic import Field
     from dynastore.models.mutability import Mutable, WriteOnce
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _WriteOnceFixture(PluginConfig):
         _address: ClassVar[Tuple[str, ...]] = ("platform", "_writeonce_fixture")
@@ -376,7 +394,7 @@ def test_write_once_setter_guard_absent_when_no_write_once_fields():
     from typing import ClassVar, Tuple
     from pydantic import Field
     from dynastore.models.mutability import Mutable
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
 
     class _AllMutableFixture(PluginConfig):
         _address: ClassVar[Tuple[str, ...]] = ("platform", "_all_mutable_fixture")

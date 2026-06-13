@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 import asyncio
 import logging
 import argparse
@@ -48,7 +49,7 @@ async def _heartbeat_loop(engine, task_id: uuid.UUID, interval_seconds: float) -
     """Extend locked_until every interval_seconds while the task runs.
 
     On Cloud Run job preempt (SIGTERM) the asyncio task tree is cancelled,
-    this coroutine stops, locked_until lapses, and the pg_cron reaper resets
+    this coroutine stops, locked_until lapses, and the maintenance reaper resets
     the row to PENDING (retry_count + 1) for another worker to pick up.
     """
     from dynastore.modules.tasks.tasks_module import heartbeat_tasks
@@ -121,7 +122,7 @@ async def main(task_name: str, payload: dict, schema: str):
          reaper / dispatcher can re-claim it.
       6. ``finally``: cancel the heartbeat coroutine.
 
-    Without these writes the row stays ACTIVE; the pg_cron reaper would flip it
+    Without these writes the row stays ACTIVE; the maintenance reaper would flip it
     back to PENDING after locked_until lapses, causing an infinite re-enqueue
     loop (one Cloud Run Job execution per reap cycle).
     """

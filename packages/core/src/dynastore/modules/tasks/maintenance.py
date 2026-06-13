@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ parameter refers to the column value (tenant schema or 'system'), not a
 PostgreSQL schema qualifier.
 
 These tools are wired into the existing retention-policy infrastructure and
-can be called from admin endpoints or scheduled pg_cron jobs.
+can be called from admin endpoints or the MaintenanceSupervisor's periodic jobs.
 """
 
 import logging

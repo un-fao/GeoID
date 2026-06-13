@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Index dispatcher — generic fan-out across configured Indexer drivers.
 
@@ -836,6 +840,54 @@ class IndexDispatcher:
                 )
                 continue
             result = await self._dispatch_bulk(entry, indexer, ctx, entry_ops)
+            # #914 — silent no-op trap: an indexer that returns
+            # ``BulkResult(total=N, succeeded=0, failed=0)`` (e.g. ES bulk
+            # response shape the driver doesn't parse) was previously
+            # indistinguishable from a real success in logs, leaving the
+            # target index empty with no warning.  Pure upsert no-ops are
+            # converted to retryable failures so the batch routes through the
+            # durable outbox path (``_enqueue_or_warn``) and
+            # ``IndexPropagationTask`` replays it post-commit.  Delete ops are
+            # unaffected — they have their own pass-through.
+            if result.total > 0 and result.succeeded == 0 and result.failed == 0:
+                logger.warning(
+                    "IndexDispatcher: indexer '%s' returned a silent no-op "
+                    "(total=%d, succeeded=0, failed=0) for catalog=%s "
+                    "collection=%s — index will be empty despite a "
+                    "'successful' dispatch. Check the driver's bulk-response "
+                    "parser. Routing upsert ops to outbox for durable retry.",
+                    entry.driver_ref, result.total,
+                    ctx.catalog, ctx.collection,
+                )
+                noop_upserts: List[DispatchableOp] = [
+                    o for o in entry_ops
+                    if (
+                        o.op == "upsert"
+                        if isinstance(o, IndexableOp)
+                        else o.op_type == "upsert"
+                    )
+                ]
+                if noop_upserts:
+                    await self._enqueue_or_warn(entry, ctx, noop_upserts)
+                    result = BulkResult(
+                        total=result.total,
+                        succeeded=result.succeeded,
+                        failed=result.failed + len(noop_upserts),
+                        failures=[
+                            *result.failures,
+                            *[
+                                {
+                                    "reason": "silent_noop",
+                                    "indexer": entry.driver_ref,
+                                    "entity_id": _op_entity_id(o),
+                                }
+                                for o in noop_upserts
+                            ],
+                        ],
+                    )
+            # Only log clean success when the batch genuinely has no failures
+            # (placed after no-op conversion so a converted no-op — now
+            # failed > 0 — does not appear in the success log).
             if result.failed == 0:
                 _log_dispatch_path(
                     mode="post_commit_inline",
@@ -843,22 +895,6 @@ class IndexDispatcher:
                     catalog=ctx.catalog,
                     collection=ctx.collection,
                     chunk_size=len(entry_ops),
-                )
-            # #914 — silent no-op trap: an indexer that returns
-            # ``BulkResult(total=N, succeeded=0, failed=0)`` (e.g. ES bulk
-            # response shape the driver doesn't parse) was previously
-            # indistinguishable from a real success in logs, leaving the
-            # target index empty with no warning.  Surface it loudly so
-            # ops sees the divergence on the next write.
-            if result.total > 0 and result.succeeded == 0 and result.failed == 0:
-                logger.warning(
-                    "IndexDispatcher: indexer '%s' returned a silent no-op "
-                    "(total=%d, succeeded=0, failed=0) for catalog=%s "
-                    "collection=%s — index will be empty despite a "
-                    "'successful' dispatch. Check the driver's bulk-response "
-                    "parser.",
-                    entry.driver_ref, result.total,
-                    ctx.catalog, ctx.collection,
                 )
             if rejected:
                 result = BulkResult(

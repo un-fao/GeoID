@@ -394,10 +394,10 @@ await ensure_db_extension(conn, "postgis")
 from dynastore.extensions.stac.metadata_helpers import merge_stac_metadata, prune_managed_content
 
 # Split external STAC content from platform-managed fields on write
-external = prune_managed_content(stac_item)
+external = await prune_managed_content(stac_item)
 
-# Merge them back on read
-full_item = merge_stac_metadata(managed, external)
+# Merge external content back onto the base item on read (lang = active locale)
+full_item = await merge_stac_metadata(base_item, external, lang="en")
 ```
 
 ### Multi-Catalog IAM Helpers (`modules.iam.multi_catalog_helpers`)

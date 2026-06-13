@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Driver-level bulk reindex helpers for Elasticsearch.
 
 These functions implement the actual bulk-index orchestration against the
@@ -175,6 +193,7 @@ async def reindex_collection_into_index(
     collection_id: str,
     *,
     driver_hint: Optional[str] = None,
+    reader_ref: Optional[str] = None,
     page_size: int = 500,
 ) -> int:
     """Stream every item of a collection from the routing-resolved source-of-truth
@@ -182,9 +201,15 @@ async def reindex_collection_into_index(
 
     Resolution strategy:
 
-    - **Reader**: resolved via :func:`~dynastore.modules.storage.router.get_items_search_driver`
-      with ``hints={Hint.GEOMETRY_EXACT}`` to force the authoritative PG primary
-      (bypassing any ES read path — we must not read from the index we are rebuilding).
+    - **Reader**: when ``reader_ref`` is given it is resolved directly from the
+      driver registry (used by file-backed collections to name the file driver
+      explicitly). Otherwise it is resolved via
+      :func:`~dynastore.modules.storage.router.get_items_search_driver` with
+      ``hints={Hint.GEOMETRY_EXACT}`` — the source-of-truth store for this
+      collection, which is PostgreSQL for a PG-primary collection and the file
+      driver (DuckDB) for a file-backed one, since that driver also advertises
+      ``GEOMETRY_EXACT``. Either way the ES read path is bypassed — we must not
+      read from the index we are rebuilding.
     - **Writer**: resolved via :func:`~dynastore.modules.storage.router.get_write_drivers`,
       then filtered to the first secondary-index entry (``is_item_indexer=True``) that
       differs from the reader.  When ``driver_hint`` is supplied, that ``driver_ref``
@@ -211,6 +236,9 @@ async def reindex_collection_into_index(
         driver_hint: Optional ``driver_ref`` override that selects the WRITE target
             directly (e.g. ``"items_elasticsearch_driver"``). Takes precedence over
             the secondary-index auto-select.
+        reader_ref: Optional ``driver_ref`` override that selects the READ source
+            directly (e.g. ``"items_duckdb_driver"`` for a file-backed collection).
+            Takes precedence over the GEOMETRY_EXACT hint resolution.
         page_size: Items per read page (and write chunk, unless the writer declares
             a larger ``preferred_chunk_size``).
 
@@ -223,16 +251,27 @@ async def reindex_collection_into_index(
         :class:`~dynastore.modules.storage.errors.EsBulkWriteError`: On ES bulk-write
             rejection (propagated from the writer driver).
     """
-    # --- Resolve reader: source-of-truth READ driver (PG primary via GEOMETRY_EXACT). ---
-    # The GEOMETRY_EXACT hint forces PG rather than ES, ensuring we read from the
-    # authoritative store and not from a potentially stale or empty index.
-    reader_resolved = await get_items_search_driver(
-        catalog_id,
-        collection_id,
-        hints=frozenset({Hint.GEOMETRY_EXACT}),
-    )
-    reader = reader_resolved.driver
-    reader_ref = reader_resolved.driver_ref
+    # --- Resolve reader: source-of-truth READ driver. ---
+    # An explicit reader_ref (file-backed collections) takes precedence; otherwise
+    # the GEOMETRY_EXACT hint resolves the authoritative store (PG for PG-primary
+    # collections, the file driver for file-backed ones), never the ES index we
+    # are rebuilding.
+    if reader_ref:
+        from dynastore.modules.storage.driver_registry import DriverRegistry
+        reader = DriverRegistry.get_collection(reader_ref)
+        if reader is None:
+            raise ValueError(
+                f"reindex_collection_into_index: reader_ref '{reader_ref}' is not "
+                f"a registered items driver for {catalog_id}/{collection_id}.",
+            )
+    else:
+        reader_resolved = await get_items_search_driver(
+            catalog_id,
+            collection_id,
+            hints=frozenset({Hint.GEOMETRY_EXACT}),
+        )
+        reader = reader_resolved.driver
+        reader_ref = reader_resolved.driver_ref
 
     # --- Resolve writers: WRITE fan-out list (all configured WRITE drivers). ---
     write_drivers = await get_write_drivers(catalog_id, collection_id)

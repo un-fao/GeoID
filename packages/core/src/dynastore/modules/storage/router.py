@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Dict, FrozenSet, Generic, List, Optional, Type
 if TYPE_CHECKING:
     from dynastore.models.protocols.storage_driver import CollectionItemsStore
     from dynastore.models.protocols.asset_driver import AssetStore
-    from dynastore.modules.db_config.plugin_config import PluginConfig
+    from dynastore.models.plugin_config import PluginConfig
     AnyDriver = Union["CollectionItemsStore", "AssetStore"]
 
 _D = TypeVar("_D")

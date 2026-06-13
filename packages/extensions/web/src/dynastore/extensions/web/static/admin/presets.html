@@ -11,7 +11,7 @@
 <body>
   <main>
     <header class="masthead">
-      <div class="folio">IV.</div>
+      <div class="folio">V.</div>
       <div>
         <div class="kicker">DynaStore — Atlas of governance</div>
         <h1>Presets</h1>
@@ -27,33 +27,13 @@
     </p>
 
     <!-- Scope picker ---------------------------------------------------- -->
-    <section class="plate" aria-label="Scope">
-      <div class="plate-header">
-        <h3>Scope</h3>
-        <div class="plate-meta" id="scope-route">GET /admin/catalogs · /catalogs/{cat}/collections</div>
-      </div>
-      <div class="form-row">
-        <div>
-          <label for="scope-catalog">Catalog</label>
-          <select id="scope-catalog" aria-label="Catalog selector">
-            <option value="">— platform scope —</option>
-          </select>
-        </div>
-        <div>
-          <label for="scope-collection">Collection</label>
-          <select id="scope-collection" disabled aria-label="Collection selector">
-            <option value="">— pick a collection —</option>
-          </select>
-        </div>
-      </div>
-      <div id="scope-status" class="hint" role="status" aria-live="polite"></div>
-    </section>
+    <div id="scope-picker" class="context-bar"></div>
 
     <!-- Filters --------------------------------------------------------- -->
     <section class="plate" aria-label="Filters">
       <div class="plate-header">
         <h3>Filters</h3>
-        <div class="plate-meta">GET /admin/presets?q=&hellip;</div>
+        <div class="plate-meta">GET /configs/presets?q=&hellip;</div>
       </div>
       <div class="form-row">
         <div>
@@ -92,7 +72,7 @@
     <section class="plate" aria-label="Preset list">
       <div class="plate-header">
         <h3>Registered presets</h3>
-        <div class="plate-meta" id="list-meta">GET /admin/presets</div>
+        <div class="plate-meta" id="list-meta">GET /configs/presets</div>
       </div>
       <div id="presets-list" role="list" aria-label="Preset list"></div>
       <div id="presets-pagination" class="form-actions" style="display:none">
@@ -109,7 +89,7 @@
              aria-label="Preset detail">
       <div class="plate-header">
         <h3 id="detail-title">Preset detail</h3>
-        <div class="plate-meta" id="detail-route">GET /admin/presets/{name}</div>
+        <div class="plate-meta" id="detail-route">GET /configs/presets/{name}</div>
       </div>
       <p id="detail-description" class="hint"></p>
       <div class="form-row" id="detail-meta-row">
@@ -187,6 +167,13 @@
           </thead>
           <tbody id="dry-run-tbody"></tbody>
         </table>
+      </div>
+
+      <!-- How-to / Docs panel ------------------------------------------- -->
+      <div id="preset-docs-panel" style="display:none">
+        <hr class="rule">
+        <h4 class="ci-subhead">How-to / Docs</h4>
+        <div id="preset-docs-body"></div>
       </div>
     </section>
 

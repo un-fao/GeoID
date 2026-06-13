@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Policy-free raw-row reader for the canonical ES index builder (#1800).
 
@@ -35,6 +39,27 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _get_db_engine() -> Optional[Any]:
+    """Resolve a DB engine via the registered DatabaseProtocol.
+
+    Used as the last-resort fallback in :func:`_fetch_raw_rows` when
+    ``db_resource`` is None — covers the Cloud Run JOB/worker context
+    where a bare ``ItemService()`` carries no engine but the process-wide
+    ``DatabaseProtocol`` does.  Returns ``None`` when no protocol is
+    registered (e.g. test or import-only context).
+    """
+    try:
+        from dynastore.models.protocols import DatabaseProtocol
+        from dynastore.tools.discovery import get_protocol
+
+        db = get_protocol(DatabaseProtocol)
+        if db is None:
+            return None
+        return db.engine
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public data type
 # ---------------------------------------------------------------------------
@@ -49,20 +74,34 @@ class CanonicalIndexInput:
     policy-free and intended for the ES write boundary only.
 
     Attributes:
-        row:               Raw PG row dict including all sidecar columnar
-                           columns (area, centroid, hashes, validity, …).
-        resolved_sidecars: Sidecar instances that can answer
-                           ``producible_computed_names`` /
-                           ``resolve_computed_value`` for this collection.
-        geometry:          GeoJSON geometry as a plain ``dict``, or ``None``
-                           when the collection has no geometry column.
-        bbox:              Bounding-box list ``[minx, miny, maxx, maxy]``, or
-                           ``None``.
-        user_properties:   User-facing attribute dict — only schema-declared /
-                           JSONB user fields.  No SYSTEM_FIELD_KEYS, no stats.
-        access:            Access-envelope dict for the access-aware ES driver
-                           variant.  Always ``None`` in this implementation;
-                           wired in a follow-up pass.
+        row:                   Raw PG row dict including all sidecar columnar
+                               columns (area, centroid, hashes, validity, …).
+        resolved_sidecars:     Sidecar instances that can answer
+                               ``producible_computed_names`` /
+                               ``resolve_computed_value`` for this collection.
+        geometry:              GeoJSON geometry as a plain ``dict``, or ``None``
+                               when the collection has no geometry column.
+        bbox:                  Bounding-box list ``[minx, miny, maxx, maxy]``,
+                               or ``None``.
+        user_properties:       User-facing attribute dict — only schema-declared
+                               / JSONB user fields.  No SYSTEM_FIELD_KEYS, no
+                               stats.  GeoJSON/STAC reserved members (``assets``,
+                               ``stac_extensions``) are excluded from here and
+                               surfaced via ``stac_reserved_members`` instead so
+                               the canonical doc builder can place them at the ES
+                               document top level where
+                               ``unproject_item_from_es`` can restore them on
+                               read.
+        access:                Access-envelope dict for the access-aware ES
+                               driver variant.  Always ``None`` in this
+                               implementation; wired in a follow-up pass.
+        stac_reserved_members: Per-item STAC members that must live at the ES
+                               doc top level (``assets``, ``stac_extensions``).
+                               Populated when these keys are found in the
+                               attributes JSONB blob — the case for default
+                               (no-schema/JSONB) catalogs whose ``stac_metadata``
+                               sidecar is not active.  ``None`` when the
+                               ``stac_metadata`` sidecar owns them instead.
     """
 
     row: Dict[str, Any]
@@ -71,6 +110,7 @@ class CanonicalIndexInput:
     bbox: Optional[List[float]] = None
     user_properties: Optional[Dict[str, Any]] = None
     access: Optional[Dict[str, Any]] = None
+    stac_reserved_members: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +210,23 @@ async def _fetch_raw_rows(
         validate_sql_identifier(collection_id)
 
         item_svc = ItemService()
-        async with managed_transaction(db_resource or item_svc.engine) as conn:
+        # Resolve the engine to use: prefer the explicitly-passed db_resource,
+        # then the engine on the locally-constructed ItemService (available in
+        # the API process where ItemService is registered with a live pool),
+        # then fall back to the process-wide DatabaseProtocol engine (available
+        # in Cloud Run JOB/worker processes where no ItemService engine is wired).
+        # If none of these yield an engine, managed_transaction raises ValueError
+        # which is caught by the outer except block and returns {} safely.
+        effective_resource = db_resource or item_svc.engine or _get_db_engine()
+        if effective_resource is None:
+            logger.warning(
+                "canonical_index_read._fetch_raw_rows: no DB engine available "
+                "for %s/%s — returning empty result. Ensure DatabaseProtocol is "
+                "registered in this process.",
+                catalog_id, collection_id,
+            )
+            return {}
+        async with managed_transaction(effective_resource) as conn:
             phys_schema = await item_svc._resolve_physical_schema(
                 catalog_id, db_resource=conn,
             )
@@ -268,7 +324,7 @@ async def read_canonical_index_inputs(
 
     result: Dict[str, CanonicalIndexInput] = {}
     for geoid, row in raw_rows.items():
-        geometry, bbox, user_properties = _extract_feature_parts(
+        geometry, bbox, user_properties, stac_reserved_members = _extract_feature_parts(
             row, col_config, resolved_sidecars, catalog_id, collection_id,
         )
         result[geoid] = CanonicalIndexInput(
@@ -278,6 +334,7 @@ async def read_canonical_index_inputs(
             bbox=bbox,
             user_properties=user_properties,
             access=None,
+            stac_reserved_members=stac_reserved_members,
         )
 
     return result
@@ -294,8 +351,8 @@ def _extract_feature_parts(
     resolved_sidecars: List[Any],
     catalog_id: str,
     collection_id: str,
-) -> tuple[Optional[Dict[str, Any]], Optional[List[float]], Optional[Dict[str, Any]]]:
-    """Extract geometry, bbox, and user-only properties from a raw PG row.
+) -> tuple[Optional[Dict[str, Any]], Optional[List[float]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Extract geometry, bbox, user-only properties, and STAC reserved members from a raw PG row.
 
     Does NOT apply any read policy:
     - ``id`` stays as the geoid.
@@ -369,17 +426,126 @@ def _extract_feature_parts(
         except Exception:
             bbox = None
 
-    # User properties: scrub stats, system, and internal-column keys that
-    # the JSONB fallback loop may have mixed in.
+    # GeoJSON/STAC reserved members that must sit at the ES document top
+    # level (not inside ``properties``) so ``unproject_item_from_es`` can
+    # restore them verbatim on read.  For default (no-schema/JSONB) catalogs
+    # without a ``stac_metadata`` sidecar, ``assets`` and ``stac_extensions``
+    # are stored inside the attributes JSONB blob and therefore appear in
+    # ``feature.properties`` after the JSONB is unpacked.
+    # ``project_item_for_es`` would silently drop them (they are in
+    # ``_RESERVED_MEMBER_KEYS``), so we extract them here and route them
+    # through the ``stac_reserved_members`` path instead.
+    _STAC_TOP_LEVEL_KEYS: frozenset = frozenset({"assets", "stac_extensions"})
+
+    # User properties: scrub stats, system, internal-column keys, and
+    # GeoJSON/STAC reserved members that the JSONB fallback loop may have
+    # mixed in.
     user_properties: Optional[Dict[str, Any]] = None
+    stac_reserved_members: Optional[Dict[str, Any]] = None
     if feature.properties is not None:
         exclude = all_computed | all_internal
+        raw_props = feature.properties
+        stac_rsv: Dict[str, Any] = {}
+        for _k in _STAC_TOP_LEVEL_KEYS:
+            if _k in raw_props:
+                stac_rsv[_k] = raw_props[_k]
+        if stac_rsv:
+            stac_reserved_members = stac_rsv
         user_properties = {
-            k: v for k, v in feature.properties.items()
-            if k not in exclude
+            k: v for k, v in raw_props.items()
+            if k not in exclude and k not in _STAC_TOP_LEVEL_KEYS
         }
 
-    return geometry, bbox, user_properties
+    return geometry, bbox, user_properties, stac_reserved_members
 
 
-__all__ = ["CanonicalIndexInput", "read_canonical_index_inputs"]
+# ---------------------------------------------------------------------------
+# No-PG canonical input (file-backed collections, #375)
+# ---------------------------------------------------------------------------
+
+# GeoJSON/STAC reserved members that must sit at the ES document top level
+# (not inside ``properties``) so ``unproject_item_from_es`` restores them
+# verbatim on read.  Mirrors the set handled by ``_extract_feature_parts``.
+_STAC_TOP_LEVEL_KEYS: frozenset = frozenset({"assets", "stac_extensions"})
+
+
+def canonical_input_from_feature(
+    feature: Dict[str, Any],
+    catalog_id: str,
+    collection_id: str,
+    *,
+    geoid: str,
+    external_id: Optional[Any] = None,
+    asset_id: Optional[Any] = None,
+    sidecars: Optional[List[Any]] = None,
+) -> CanonicalIndexInput:
+    """Build a :class:`CanonicalIndexInput` from a serialized feature, no PG read.
+
+    The canonical ES document is normally assembled from a raw PostgreSQL row via
+    :func:`read_canonical_index_inputs`.  A file-backed collection has no PG rows,
+    so this elevates the feature-derived fallback (previously inline in
+    ``ItemsElasticsearchDriver.write_entities``) into a first-class, database-free
+    producer.  The result has the same canonical shape as the PG path; only the
+    ``stats``/``system`` sections that require a PG row + sidecars are absent.
+
+    Args:
+        feature:       Serialized GeoJSON/STAC feature dict (``IndexOp.payload``
+                       shape): ``geometry``, ``bbox``, ``properties``, optional
+                       ``assets`` / ``stac_extensions``.
+        catalog_id:    Catalog identifier (kept for symmetry / future per-catalog
+                       handling; not used to touch the database).
+        collection_id: Collection identifier.
+        geoid:         The geoid to stamp as ``row["geoid"]`` and, downstream, the
+                       canonical document ``id`` (``_id`` in ES).
+        external_id:   Optional external id to thread into the row.
+        asset_id:      Optional source asset id to thread into the row.
+        sidecars:      Optional resolved sidecars; defaults to ``[]`` (file path).
+
+    Returns:
+        A :class:`CanonicalIndexInput` ready for ``build_canonical_index_doc``.
+    """
+    from dynastore.modules.storage.computed_fields import SYSTEM_FIELD_KEYS
+
+    _sys_keys = frozenset(SYSTEM_FIELD_KEYS)
+
+    raw_props = feature.get("properties") or {}
+    stac_reserved: Dict[str, Any] = {}
+    for _k in _STAC_TOP_LEVEL_KEYS:
+        if _k in feature and feature[_k] is not None:
+            stac_reserved[_k] = feature[_k]
+        elif _k in raw_props and raw_props[_k] is not None:
+            stac_reserved[_k] = raw_props[_k]
+
+    user_properties = {
+        k: v
+        for k, v in raw_props.items()
+        if k not in _sys_keys and k not in _STAC_TOP_LEVEL_KEYS
+    }
+
+    geom = feature.get("geometry")
+    geometry = geom if isinstance(geom, dict) else None
+    bbox_val = feature.get("bbox")
+    bbox = list(bbox_val) if bbox_val is not None else None
+
+    row: Dict[str, Any] = {"geoid": geoid}
+    if external_id is not None:
+        row["external_id"] = str(external_id)
+    if asset_id is not None:
+        row["asset_id"] = str(asset_id)
+
+    return CanonicalIndexInput(
+        row=row,
+        resolved_sidecars=list(sidecars) if sidecars else [],
+        geometry=geometry,
+        bbox=bbox,
+        user_properties=user_properties or None,
+        access=None,
+        stac_reserved_members=stac_reserved or None,
+    )
+
+
+__all__ = [
+    "CanonicalIndexInput",
+    "read_canonical_index_inputs",
+    "canonical_input_from_feature",
+]

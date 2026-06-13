@@ -1,10 +1,11 @@
 // Presets admin page (#1412). Vanilla JS, mirrors access-bindings.js style.
-// Exposes the preset registry and lifecycle via the /admin/presets endpoints
+// Exposes the preset registry and lifecycle via the /configs/presets endpoints
 // introduced in PR-1. All preset names are discovered dynamically — no preset
 // name is hardcoded here. Authorization is enforced entirely server-side.
 
 import { getJSON, postJSON, deleteJSON } from "../common/api.js";
 import { mountSchemaForm } from "../common/schema-form.js";
+import { mountContextBar } from "../common/context-bar.js";
 
 // ---------------------------------------------------------------- state
 
@@ -25,7 +26,7 @@ const state = {
   limit: 20,
 
   // Selected preset.
-  selectedPreset: null,   // full detail object returned by GET /admin/presets/{name}
+  selectedPreset: null,   // full detail object returned by GET /configs/presets/{name}
   paramsForm: null,       // { getPatch, reset } from mountSchemaForm
   paramsSchemaSupported: false,
 
@@ -61,14 +62,14 @@ function fmtDateTime(value) {
 function scopePrefix() {
   if (state.catalogId && state.collectionId) {
     return (
-      `/admin/catalogs/${encodeURIComponent(state.catalogId)}`
+      `/configs/catalogs/${encodeURIComponent(state.catalogId)}`
       + `/collections/${encodeURIComponent(state.collectionId)}`
     );
   }
   if (state.catalogId) {
-    return `/admin/catalogs/${encodeURIComponent(state.catalogId)}`;
+    return `/configs/catalogs/${encodeURIComponent(state.catalogId)}`;
   }
-  return "/admin";
+  return "/configs";
 }
 
 /**
@@ -95,54 +96,6 @@ function tierCompatible(presetTier) {
   return false;
 }
 
-// ---------------------------------------------------------------- scope pickers
-
-async function loadCatalogs() {
-  const sel = $("#scope-catalog");
-  try {
-    const rows = await getJSON("/admin/catalogs");
-    fillSelect(sel, rows || [], "— platform scope —");
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load catalogs: ${e.message}`, "error");
-  }
-}
-
-async function loadCollections(catalogId) {
-  const sel = $("#scope-collection");
-  clear(sel);
-  if (!catalogId) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "— pick a collection —";
-    sel.appendChild(opt);
-    sel.disabled = true;
-    return;
-  }
-  try {
-    const data = await getJSON(`/stac/catalogs/${encodeURIComponent(catalogId)}/collections`);
-    const cols = (data && (data.collections || data)) || [];
-    fillSelect(sel, cols, "— all collections —");
-    sel.disabled = false;
-  } catch (e) {
-    setStatus($("#scope-status"), `Failed to load collections: ${e.message}`, "error");
-  }
-}
-
-function fillSelect(sel, rows, placeholder) {
-  clear(sel);
-  const def = document.createElement("option");
-  def.value = "";
-  def.textContent = placeholder;
-  sel.appendChild(def);
-  for (const r of rows) {
-    const id = (typeof r === "object") ? (r.id || r.catalog_id || r) : r;
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = id;
-    sel.appendChild(opt);
-  }
-}
-
 // ---------------------------------------------------------------- preset list
 
 async function loadPresets(resetPagination) {
@@ -160,7 +113,7 @@ async function loadPresets(resetPagination) {
   params.set("limit", String(state.limit));
 
   const qs = params.toString();
-  const path = `/admin/presets${qs ? "?" + qs : ""}`;
+  const path = `/configs/presets${qs ? "?" + qs : ""}`;
   setStatus($("#filter-status"), "Loading…");
 
   try {
@@ -280,10 +233,14 @@ async function selectPreset(name) {
 
   setStatus($("#detail-action-status"), "Loading…");
   try {
-    const detail = await getJSON(`/admin/presets/${encodeURIComponent(name)}`);
+    const detail = await getJSON(`/configs/presets/${encodeURIComponent(name)}`);
     state.selectedPreset = detail;
     renderDetail(detail);
-    await refreshAppliedHistory();
+    // Fetch docs in parallel with history — errors are swallowed inside.
+    await Promise.all([
+      refreshAppliedHistory(),
+      fetchAndRenderDocs(name),
+    ]);
   } catch (e) {
     setStatus($("#detail-action-status"), `Failed to load preset: ${e.message}`, "error");
   }
@@ -294,7 +251,7 @@ function renderDetail(detail) {
   plate.style.display = "";
 
   $("#detail-title").textContent = detail.name || "—";
-  $("#detail-route").textContent = `GET /admin/presets/${detail.name}`;
+  $("#detail-route").textContent = `GET /configs/presets/${detail.name}`;
   $("#detail-description").textContent = detail.description || "";
 
   const tierEl = $("#detail-tier");
@@ -351,13 +308,276 @@ function renderDetail(detail) {
   // Rollback is enabled only after we check applied history (done after init).
   $("#btn-rollback").disabled = true;
 
-  // Hide previous dry-run result
+  // Hide previous dry-run result and docs panel (refreshed async below).
   $("#dry-run-result").style.display = "none";
+  $("#preset-docs-panel").style.display = "none";
 }
 
 function renderParamsFallback(schema) {
   const pre = $("#detail-params-json");
   pre.textContent = JSON.stringify(schema, null, 2);
+}
+
+// ---------------------------------------------------------------- docs panel
+
+/**
+ * Fetch GET /configs/presets/{name} and render the
+ * How-to / Docs panel. Silently hides the panel on failure so it never
+ * breaks the primary detail view.
+ */
+async function fetchAndRenderDocs(name) {
+  const panel = $("#preset-docs-panel");
+  const body = $("#preset-docs-body");
+  clear(body);
+  panel.style.display = "none";
+
+  try {
+    const docs = await getJSON(
+      `/configs/presets/${encodeURIComponent(name)}`,
+    );
+    renderDocsPanel(docs);
+  } catch (_e) {
+    // Docs endpoint is best-effort — do not surface errors here.
+  }
+}
+
+/**
+ * Render the docs payload into #preset-docs-panel / #preset-docs-body.
+ * Uses .ci-docs definition-list style that already exists in admin.css.
+ */
+function renderDocsPanel(docs) {
+  const panel = $("#preset-docs-panel");
+  const body = $("#preset-docs-body");
+  clear(body);
+
+  // Description block.
+  if (docs.description) {
+    const descP = document.createElement("p");
+    descP.className = "hint";
+    descP.textContent = docs.description;
+    body.appendChild(descP);
+  }
+
+  // Tier + keywords summary row.
+  const metaRow = document.createElement("div");
+  metaRow.className = "form-row";
+
+  if (docs.tier) {
+    const tierDiv = document.createElement("div");
+    const tierLabel = document.createElement("span");
+    tierLabel.className = "kv-label";
+    tierLabel.textContent = "Tier";
+    const tierChip = document.createElement("span");
+    tierChip.className = "chip";
+    tierChip.textContent = docs.tier;
+    tierDiv.appendChild(tierLabel);
+    tierDiv.appendChild(tierChip);
+    metaRow.appendChild(tierDiv);
+  }
+
+  if (docs.keywords && docs.keywords.length) {
+    const kwDiv = document.createElement("div");
+    const kwLabel = document.createElement("span");
+    kwLabel.className = "kv-label";
+    kwLabel.textContent = "Keywords";
+    kwDiv.appendChild(kwLabel);
+    for (const kw of docs.keywords) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = kw;
+      kwDiv.appendChild(chip);
+    }
+    metaRow.appendChild(kwDiv);
+  }
+
+  if (metaRow.firstChild) body.appendChild(metaRow);
+
+  // Parameters section — definition list.
+  const paramDocs = buildParamDocs(docs);
+  if (paramDocs) {
+    const h5 = document.createElement("h5");
+    h5.className = "ci-subhead";
+    h5.textContent = "Parameters";
+    body.appendChild(h5);
+    body.appendChild(paramDocs);
+  }
+
+  // Examples section.
+  if (docs.examples && docs.examples.length) {
+    const h5 = document.createElement("h5");
+    h5.className = "ci-subhead";
+    h5.textContent = "Examples";
+    body.appendChild(h5);
+
+    for (const ex of docs.examples) {
+      body.appendChild(buildExampleBlock(docs, ex));
+    }
+  }
+
+  panel.style.display = "";
+}
+
+/**
+ * Build a <dl class="ci-docs"> from _meta.docs (preferred) or
+ * params_schema property descriptions (fallback).
+ * Returns null when no parameter documentation is available.
+ */
+function buildParamDocs(docs) {
+  const metaDocs = docs._meta && docs._meta.docs;
+  const schemaProps = docs.params_schema && docs.params_schema.properties;
+
+  if (!metaDocs && !schemaProps) return null;
+
+  const dl = document.createElement("dl");
+  dl.className = "ci-docs";
+
+  // Collect field names: _meta.docs keys first, then schema keys for any
+  // fields not covered by _meta.docs.
+  const fields = new Set([
+    ...Object.keys(metaDocs || {}),
+    ...Object.keys(schemaProps || {}),
+  ]);
+
+  if (!fields.size) return null;
+
+  for (const field of fields) {
+    const description = (metaDocs && metaDocs[field])
+      || (schemaProps && schemaProps[field] && schemaProps[field].description)
+      || "";
+
+    const dt = document.createElement("dt");
+    dt.textContent = field;
+    dl.appendChild(dt);
+
+    const dd = document.createElement("dd");
+    dd.textContent = description || "—";
+
+    // Mutability badge from _meta.mutability if present.
+    const mutability = docs._meta && docs._meta.mutability && docs._meta.mutability[field];
+    if (mutability) {
+      const badge = document.createElement("span");
+      badge.className = "chip";
+      badge.textContent = mutability;
+      badge.style.marginLeft = "6px";
+      dd.appendChild(badge);
+    }
+
+    dl.appendChild(dd);
+  }
+
+  return dl;
+}
+
+/**
+ * Build one example block: summary + params JSON + collapsible
+ * resulting_config JSON + "Load example" button.
+ */
+function buildExampleBlock(docs, ex) {
+  const wrap = document.createElement("div");
+  wrap.className = "plate-note";
+  wrap.style.borderLeft = "3px solid var(--rule-hair)";
+  wrap.style.paddingLeft = "10px";
+  wrap.style.marginBottom = "12px";
+
+  // Summary line.
+  if (ex.name || ex.summary) {
+    const sumP = document.createElement("p");
+    sumP.className = "hint";
+    const strong = document.createElement("strong");
+    strong.textContent = ex.name || "";
+    sumP.appendChild(strong);
+    if (ex.name && ex.summary) {
+      sumP.appendChild(document.createTextNode(" — "));
+    }
+    if (ex.summary) {
+      sumP.appendChild(document.createTextNode(ex.summary));
+    }
+    wrap.appendChild(sumP);
+  }
+
+  // Params JSON block.
+  if (ex.params && Object.keys(ex.params).length > 0) {
+    const paramsLabel = document.createElement("div");
+    paramsLabel.className = "plate-meta";
+    paramsLabel.textContent = "params (preset payload)";
+    wrap.appendChild(paramsLabel);
+
+    const paramsPre = document.createElement("pre");
+    paramsPre.className = "hint";
+    paramsPre.textContent = JSON.stringify(ex.params, null, 2);
+    wrap.appendChild(paramsPre);
+  }
+
+  // Resulting config — collapsible via <details>.
+  if (ex.resulting_config != null) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.className = "hint";
+    summary.textContent = "Resulting configuration";
+    details.appendChild(summary);
+
+    const cfgPre = document.createElement("pre");
+    cfgPre.className = "hint";
+    cfgPre.textContent = JSON.stringify(ex.resulting_config, null, 2);
+    details.appendChild(cfgPre);
+    wrap.appendChild(details);
+  } else if (ex.error) {
+    const errP = document.createElement("p");
+    errP.className = "hint";
+    errP.dataset.level = "error";
+    errP.textContent = ex.error;
+    wrap.appendChild(errP);
+  }
+
+  // "Load example" button — populates the schema form.
+  const loadBtn = document.createElement("button");
+  loadBtn.type = "button";
+  loadBtn.className = "btn btn-secondary";
+  loadBtn.textContent = "Load example";
+  loadBtn.setAttribute("aria-label", `Load example${ex.name ? ": " + ex.name : ""}`);
+  loadBtn.addEventListener("click", () => loadExample(docs, ex.params || {}));
+  wrap.appendChild(loadBtn);
+
+  return wrap;
+}
+
+/**
+ * Populate the schema form with example params.
+ *
+ * Mechanism: re-mount the schema form with the example params as both
+ * `resolved` (shown as initial values) and `explicit` (so all fields are
+ * pre-filled), then replace state.paramsForm with the new handle. If the
+ * form was never mounted (no params_schema or unsupported schema), this is
+ * a no-op — the "Load example" button remains available but inactive.
+ */
+function loadExample(docs, params) {
+  const detail = state.selectedPreset;
+  if (!detail) return;
+
+  const schema = detail.params_schema;
+  if (!schema || typeof schema !== "object") return;
+  const hasProperties = schema.properties && Object.keys(schema.properties).length > 0;
+  if (!hasProperties) return;
+
+  const paramsSection = $("#detail-params-section");
+  const paramsFallback = $("#detail-params-fallback");
+
+  try {
+    const formContainer = $("#detail-params-form");
+    clear(formContainer);
+    state.paramsForm = mountSchemaForm(formContainer, {
+      schema,
+      resolved: params,
+      explicit: params,
+      allowInherit: false,
+      onDirty: () => {},
+    });
+    state.paramsSchemaSupported = true;
+    paramsSection.style.display = "";
+    paramsFallback.style.display = "none";
+  } catch (_e) {
+    // Schema-form could not render — leave the existing form untouched.
+  }
 }
 
 // ---------------------------------------------------------------- dry-run
@@ -436,9 +656,11 @@ async function applyPreset(force) {
   if (!state.selectedPreset) return;
   const name = state.selectedPreset.name;
   const prefix = scopePrefix();
-  const path = `${prefix}/presets/${encodeURIComponent(name)}`;
+  // `force` is a query parameter on the backend (Query(False)); put it on the
+  // URL, not in the request body.
+  const qs = force ? "?force=true" : "";
+  const path = `${prefix}/presets/${encodeURIComponent(name)}${qs}`;
   const body = state.paramsForm ? state.paramsForm.getPatch() : {};
-  if (force) body._force = true;
 
   setStatus($("#detail-action-status"), "Applying…");
   try {
@@ -534,7 +756,7 @@ async function doRollback(forceSelfRevoke) {
 // ---------------------------------------------------------------- applied history
 
 /**
- * There is no bulk GET /admin/presets/applied endpoint in this revision.
+ * There is no bulk GET /configs/presets/applied endpoint in this revision.
  * We assemble the history client-side by issuing a dry-run for the selected
  * preset at the current scope and checking whether the bundle already matches.
  * A simpler heuristic is to attempt a dry-run and infer from the plan whether
@@ -645,18 +867,17 @@ function bindFilters() {
   });
 }
 
-function bindScopePickers() {
-  $("#scope-catalog").addEventListener("change", async (e) => {
-    state.catalogId = e.target.value || null;
-    state.collectionId = null;
-    await loadCollections(state.catalogId);
-    await loadPresets(true);
-    if (state.selectedPreset) await refreshAppliedHistory();
-  });
-  $("#scope-collection").addEventListener("change", async (e) => {
-    state.collectionId = e.target.value || null;
-    await loadPresets(true);
-    if (state.selectedPreset) await refreshAppliedHistory();
+function mountScopePicker() {
+  const scopeEl = document.getElementById("scope-picker");
+  if (!scopeEl) return;
+  mountContextBar(scopeEl, {
+    mode: "select",
+    onChange: async ({ catalogId, collectionId }) => {
+      state.catalogId = catalogId;
+      state.collectionId = collectionId;
+      await loadPresets(true);
+      if (state.selectedPreset) await refreshAppliedHistory();
+    },
   });
 }
 
@@ -740,7 +961,7 @@ function bindFilterInputSync() {
 
 (async function init() {
   bindFilters();
-  bindScopePickers();
+  mountScopePicker();
   bindPresetList();
   bindPagination();
   bindDetailActions();
@@ -748,6 +969,5 @@ function bindFilterInputSync() {
   bindFilterInputSync();
   syncFiltersFromState();
 
-  await loadCatalogs();
   await loadPresets(true);
 })();

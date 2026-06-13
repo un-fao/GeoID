@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -304,6 +304,92 @@ async def _read_task_status(engine: DbResource, task_id: Any) -> Optional[str]:
         return None
 
 
+# Task types that carry a ``catalog_id`` in their inputs and require the
+# provisioning checklist to be drained on terminal exit.
+_PROVISIONING_TASK_TYPES: frozenset = frozenset({"gcp_provision_catalog"})
+
+
+async def _drain_provisioning_checklist(
+    engine: DbResource,
+    *,
+    task_id: Any,
+    task_type: str,
+    inputs: Optional[Dict[str, Any]],
+    outcome: str,
+) -> None:
+    """Drain still-pending checklist steps for a provisioning task that has
+    reached a terminal state (#1909).
+
+    Fires immediately when the task completes or dead-letters so the catalog
+    exits ``provisioning`` without waiting for the next sweep cycle.  The
+    periodic sweep (``sweep_wedged_provisioning_catalogs``) remains as a
+    backstop for tasks that die without passing through a terminal action.
+
+    For ``failure`` / ``timeout`` outcomes the drain fires only when the row
+    has actually reached a terminal failed status (DEAD_LETTER or FAILED) —
+    a transient retry that resets the row to PENDING must not drain the
+    checklist, because the task may still mark its own steps on a later attempt.
+
+    Best-effort: any exception is logged at WARNING and swallowed so a drain
+    failure never poisons the task completion path.
+    """
+    if task_type not in _PROVISIONING_TASK_TYPES:
+        return
+
+    catalog_id = (inputs or {}).get("catalog_id") if isinstance(inputs, dict) else None
+    if not catalog_id:
+        logger.debug(
+            "checklist drain: task %s (%s) has no catalog_id in inputs — skip",
+            task_id, task_type,
+        )
+        return
+
+    if outcome in ("failure", "timeout"):
+        status = await _read_task_status(engine, task_id)
+        if status not in ("DEAD_LETTER", "FAILED"):
+            # Transient retry — task may still succeed and mark its own steps.
+            logger.debug(
+                "checklist drain: task %s (%s) outcome=%s status=%s — "
+                "not yet terminal, skipping drain",
+                task_id, task_type, outcome, status,
+            )
+            return
+
+    try:
+        from dynastore.tools.discovery import get_protocol
+        from dynastore.models.protocols.catalogs import CatalogsProtocol
+
+        catalogs = get_protocol(CatalogsProtocol)
+        if catalogs is None:
+            logger.warning(
+                "checklist drain: CatalogsProtocol not available for task %s "
+                "(%s, outcome=%s) — drain skipped; sweep will recover",
+                task_id, task_type, outcome,
+            )
+            return
+        updated = await catalogs.drain_pending_checklist_steps(
+            catalog_id, terminal_status="degraded",
+        )
+        if updated:
+            logger.warning(
+                "checklist drain: task %s (%s, outcome=%s) — "
+                "drained pending steps for catalog '%s'",
+                task_id, task_type, outcome, catalog_id,
+            )
+        else:
+            logger.debug(
+                "checklist drain: task %s (%s, outcome=%s) — "
+                "catalog '%s' had no pending steps to drain",
+                task_id, task_type, outcome, catalog_id,
+            )
+    except Exception:  # noqa: BLE001 — drain must not fail the completion path
+        logger.warning(
+            "checklist drain: drain failed for task %s (%s, outcome=%s, "
+            "catalog=%r) — sweep will recover",
+            task_id, task_type, outcome, catalog_id, exc_info=True,
+        )
+
+
 async def apply_terminal_action(
     engine: DbResource,
     *,
@@ -338,6 +424,27 @@ async def apply_terminal_action(
     Fail-soft: a broken continuation is logged at WARNING and swallowed — it
     must never re-fail the original row or brick the loop.
     """
+    # Zero-latency checklist drain for provisioning tasks (#1909): fires on
+    # every terminal action call so the catalog exits ``provisioning`` in the
+    # same moment the task completes or dead-letters, rather than waiting for
+    # the next sweep cycle.  Double-guarded fail-soft: _drain_provisioning_checklist
+    # already swallows its own exceptions; the outer guard ensures that even an
+    # unexpected raise never bricks the routing continuation below.
+    try:
+        await _drain_provisioning_checklist(
+            engine,
+            task_id=task_id,
+            task_type=task_type,
+            inputs=inputs,
+            outcome=outcome,
+        )
+    except Exception:  # noqa: BLE001 — drain must not block routing
+        logger.warning(
+            "checklist drain: unexpected error for task %s (%s, outcome=%s); "
+            "routing continues",
+            task_id, task_type, outcome, exc_info=True,
+        )
+
     from dynastore.modules.tasks.routing.model import ActionVerb
 
     if action is None or action.action != ActionVerb.ROUTE:
@@ -662,15 +769,12 @@ class ExecutionEngine:
             raise ValueError(f"Job '{job_id}' not found.")
 
         if job.status != TaskStatusEnum.CREATED:
-            from fastapi import HTTPException
+            from dynastore.modules.tasks.exceptions import JobLockedError
 
-            raise HTTPException(
-                status_code=423,
-                detail=(
-                    f"Job '{job_id}' is locked "
-                    f"(status={job.status.value}). "
-                    f"Only CREATED jobs can be updated."
-                ),
+            raise JobLockedError(
+                f"Job '{job_id}' is locked "
+                f"(status={job.status.value}). "
+                f"Only CREATED jobs can be updated."
             )
 
         # Update the task's inputs via a status-preserving update that
@@ -710,15 +814,12 @@ class ExecutionEngine:
             raise ValueError(f"Job '{job_id}' not found.")
 
         if job.status != TaskStatusEnum.CREATED:
-            from fastapi import HTTPException
+            from dynastore.modules.tasks.exceptions import JobStateConflictError
 
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Job '{job_id}' cannot be started "
-                    f"(status={job.status.value}). "
-                    f"Only CREATED jobs can be started."
-                ),
+            raise JobStateConflictError(
+                f"Job '{job_id}' cannot be started "
+                f"(status={job.status.value}). "
+                f"Only CREATED jobs can be started."
             )
 
         # Transition to PENDING (OGC "accepted")
@@ -768,14 +869,11 @@ class ExecutionEngine:
             raise ValueError(f"Job '{job_id}' not found.")
 
         if job.status in _TERMINAL_STATUSES:
-            from fastapi import HTTPException
+            from dynastore.modules.tasks.exceptions import JobStateConflictError
 
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Job '{job_id}' is already terminal "
-                    f"(status={job.status.value})."
-                ),
+            raise JobStateConflictError(
+                f"Job '{job_id}' is already terminal "
+                f"(status={job.status.value})."
             )
 
         await tasks_mgr.update_task(

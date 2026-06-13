@@ -1,17 +1,17 @@
-#    Copyright 2025 FAO
-# 
+#    Copyright 2026 FAO
+#
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
-# 
+#
 #        http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #    Unless required by applicable law or agreed to in writing, software
 #    distributed under the License is distributed on an "AS IS" BASIS,
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-# 
+#
 #    Author: Carlo Cancellieri (ccancellieri@gmail.com)
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from starlette.requests import Request
 
 from .models import Condition
 from .exceptions import IamError, QuotaExceededError, RateLimitExceededError
@@ -126,7 +125,10 @@ async def _log_usage_counter_denied(
 
 @dataclass
 class EvaluationContext:
-    request: Optional[Request]
+    # At runtime this is a Starlette ``Request``, but the IAM core stays
+    # framework-free (no fastapi/starlette imports — see #1969): it only
+    # duck-types ``request.client``/``headers``/``state``/``json()``.
+    request: Optional[Any]
     storage: AbstractIamStorage
     manager: Optional[Any] = None # IamService
     token_identifier: Optional[str] = None # The ID of the specific Token/Session

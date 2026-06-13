@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -49,6 +49,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
 
         # Registry for static content providers: { prefix: provider_callable }
         self.static_providers: Dict[str, Callable[[], List[str]]] = {}
+
+        # Metadata for static prefixes (owner, description, public) indexed by
+        # prefix. Populated alongside static_providers so the registry endpoint
+        # can return human-readable context without re-inspecting the callables.
+        self.static_prefix_meta: Dict[str, Dict[str, Any]] = {}
 
         # Documentation registry
         self.docs_registry: Dict[str, Dict[str, Any]] = {}
@@ -138,13 +143,31 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             section_config["is_embed"] = True # section targets are always embedded
             self.register_web_page(section_config, provider)
 
-    def register_static_provider(self, prefix: str, provider: Any):
-        """Registers a static file provider."""
+    def register_static_provider(
+        self,
+        prefix: str,
+        provider: Any,
+        owner: str = "",
+        description: str = "",
+        public: bool = True,
+    ) -> None:
+        """Registers a static file provider.
+
+        ``owner`` and ``description`` are optional human-readable metadata
+        returned by the ``GET /web/config/static-prefixes`` registry endpoint.
+        ``public`` records whether anonymous users may read this prefix; the
+        web policy builder reads it when constructing the anonymous ALLOW list.
+        """
         if prefix in self.static_providers:
             logger.warning(
                 f"WebModule: Overwriting static provider for prefix '{prefix}'"
             )
         self.static_providers[prefix] = provider
+        self.static_prefix_meta[prefix] = {
+            "owner": owner,
+            "description": description,
+            "public": public,
+        }
         logger.info(f"WebModule: Registered static provider for prefix '{prefix}'")
 
     async def is_static_file_provided(self, prefix: str, path: str) -> bool:
@@ -203,7 +226,11 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             try:
                 for asset in provider.get_static_assets():
                     self.register_static_provider(
-                        asset.prefix.strip("/"), asset.files_provider
+                        asset.prefix.strip("/"),
+                        asset.files_provider,
+                        owner=getattr(asset, "owner", "") or "",
+                        description=getattr(asset, "description", "") or "",
+                        public=getattr(asset, "public", True),
                     )
             except Exception as e:
                 logger.error(
@@ -323,14 +350,13 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
                 else:
                     content = handler
                 
-                from fastapi import Response
-                if isinstance(content, Response):
-                    # We might need to handle response objects by extracting content
-                    if hasattr(content, "body"):
-                         body = content.body
-                         content_parts.append(body.tobytes().decode() if isinstance(body, memoryview) else body.decode())
-                    else:
-                         content_parts.append(str(content))
+                if hasattr(content, "body"):
+                    # Duck-type: any response-like object with a .body attribute
+                    # (e.g. FastAPI/Starlette Response) — extract the body bytes.
+                    # getattr (not content.body) keeps this framework-free access
+                    # type-clean — content is statically ``object`` here.
+                    body = getattr(content, "body")
+                    content_parts.append(body.tobytes().decode() if isinstance(body, memoryview) else body.decode())
                 else:
                     content_parts.append(str(content))
             except Exception as e:
@@ -358,6 +384,58 @@ class WebModule(WebModuleProtocol, ModuleProtocol):
             "Vary": "Accept-Encoding",
         }
 
+
+    def list_static_prefix_info(self) -> List[Dict[str, str]]:
+        """Return a list of dicts describing each registered static prefix.
+
+        Each entry contains ``prefix``, ``owner``, and ``description``.
+        Callers may use this to discover available CSS/JS namespaces.
+        """
+        result: List[Dict[str, str]] = []
+        for prefix in sorted(self.static_providers):
+            meta = self.static_prefix_meta.get(prefix, {})
+            result.append(
+                {
+                    "prefix": prefix,
+                    "owner": meta.get("owner", ""),
+                    "description": meta.get("description", ""),
+                }
+            )
+        return result
+
+    def get_static_prefix_meta(self) -> Dict[str, Any]:
+        """Return the raw metadata dict keyed by prefix.
+
+        Each value contains at least ``owner``, ``description``, and
+        ``public`` (bool, defaults to True when absent for pre-existing
+        registrations). Used by the web policy builder to derive the
+        anonymous ALLOW list for prefixes that were registered after the
+        literal baseline was written.
+        """
+        return dict(self.static_prefix_meta)
+
+    def list_page_providers(self, page_id: str) -> List[Dict[str, Any]]:
+        """Return introspection data for every handler registered for *page_id*.
+
+        Each entry contains ``priority`` (int), ``is_embed`` (bool), and
+        ``handler`` (qualified name string).  Returns an empty list when the
+        page id is not known.
+        """
+        entry = self.web_pages.get(page_id)
+        if not entry:
+            return []
+        result: List[Dict[str, Any]] = []
+        for priority, handler, is_embed in entry.get("providers", []):
+            qname = getattr(handler, "__qualname__", None) or repr(handler)
+            mod = getattr(handler, "__module__", None) or ""
+            result.append(
+                {
+                    "priority": priority,
+                    "is_embed": is_embed,
+                    "handler": f"{mod}.{qname}" if mod else qname,
+                }
+            )
+        return result
 
     def get_style_overrides(self) -> List[str]:
         """

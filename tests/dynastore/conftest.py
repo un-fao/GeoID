@@ -1,3 +1,21 @@
+#    Copyright 2026 FAO
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 import pytest
 import pytest_asyncio
 import os
@@ -356,6 +374,13 @@ async def shared_collection_factory(shared_catalog, sysadmin_in_process_client_m
     so we don't pay client-bootstrap overhead per test. ``loop_scope="module"``
     ensures setup and teardown share the same event loop as the module-scoped
     dependencies, preventing asyncio loop conflicts on fixture finalization.
+
+    Teardown uses ``CollectionsProtocol.delete_collection()`` directly rather
+    than the HTTP client, so the delete always runs on the module event loop
+    (the same loop the protocol's DB connections are bound to). Under
+    pytest-asyncio 1.3.x the post-yield teardown of a function-scoped fixture
+    was not reliably driven on the module loop when it awaited a
+    module-scoped HTTP client, causing zero DELETE requests on CI (#1635).
     """
     created: list[tuple[str, str]] = []
 
@@ -384,18 +409,29 @@ async def shared_collection_factory(shared_catalog, sysadmin_in_process_client_m
     yield _make
 
     import logging
+    from dynastore.tools.discovery import get_protocol
+    from dynastore.models.protocols import CollectionsProtocol
+
     log = logging.getLogger(__name__)
+    collections = get_protocol(CollectionsProtocol)
+    if not collections:
+        log.warning(
+            "shared_collection_factory teardown: CollectionsProtocol not available; "
+            "%d collection(s) left for shared_catalog teardown to reap",
+            len(created),
+        )
+        return
+
     for cat_id, col_id in created:
         try:
             await asyncio.wait_for(
-                sysadmin_in_process_client_module.delete(
-                    f"/features/catalogs/{cat_id}/collections/{col_id}?force=true"
-                ),
+                collections.delete_collection(cat_id, col_id, force=True),
                 timeout=_TEARDOWN_DELETE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             log.warning(
-                "shared_collection_factory teardown: DELETE %s/%s exceeded %.1fs cap (#1009)",
+                "shared_collection_factory teardown: delete_collection(%s/%s) exceeded "
+                "%.1fs cap (#1009); parent catalog teardown will reap it",
                 cat_id, col_id, _TEARDOWN_DELETE_TIMEOUT_S,
             )
         except Exception as e:

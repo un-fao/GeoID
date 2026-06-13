@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -880,6 +880,29 @@ class SidecarProtocol(ABC):
 
         Returns ``(found, value)``; ``found`` is False when this sidecar's
         storage layout has no slot for the value. Default: not found.
+        """
+        return (False, None)
+
+    def producible_metadata_names(self) -> Set[str]:
+        """Resolved names of ``metadata`` container fields this sidecar produces.
+
+        Parallel to :meth:`producible_computed_names` but scoped to the
+        ``metadata`` ES container (multilingual title / description / keywords).
+        ``build_canonical_index_doc`` iterates sidecars via this method to fill
+        the typed ``metadata{}`` section, keeping storage-layout knowledge in
+        the sidecar that owns those columns. Default: none — only
+        ``ItemMetadataSidecar`` overrides this.
+        """
+        return set()
+
+    def resolve_metadata_value(
+        self, row: Dict[str, Any], resolved_name: str
+    ) -> Tuple[bool, Any]:
+        """Locate one ``metadata`` container value in a read row.
+
+        Returns ``(found, value)``; ``found`` is False when this sidecar owns
+        no slot for the value. Mirrors :meth:`resolve_computed_value` but for
+        the ``metadata`` namespace. Default: not found.
         """
         return (False, None)
 

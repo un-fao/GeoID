@@ -1,10 +1,20 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
 #    You may obtain a copy of the License at
 #
 #        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Helpers that let a contributing class materialise its own
 `WebPageSpec` / `StaticAsset` lists from ``@expose_web_page`` /
@@ -63,8 +73,17 @@ def collect_static_assets(instance: object) -> List[StaticAsset]:
         prefix = getattr(method, "_web_static_prefix", None)
         if prefix is None:
             continue
+        owner = getattr(method, "_web_static_owner", "") or ""
+        description = getattr(method, "_web_static_description", "") or ""
+        public = getattr(method, "_web_static_public", True)
         assets.append(
-            StaticAsset(prefix=prefix.strip("/"), files_provider=method)  # type: ignore[arg-type]
+            StaticAsset(
+                prefix=prefix.strip("/"),
+                files_provider=method,  # type: ignore[arg-type]
+                owner=owner,
+                description=description,
+                public=public,
+            )
         )
     return assets
 

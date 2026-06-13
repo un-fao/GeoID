@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
 ItemsElasticsearchEnvelopeDriver — standardized-envelope ES storage driver.
@@ -360,27 +364,7 @@ class ItemsElasticsearchEnvelopeDriver(
 
         return items if isinstance(items, list) else list(items)
 
-    @staticmethod
-    async def _ensure_index(
-        es: Any,
-        index_name: str,
-        mapping: Dict[str, Any],
-        settings_fn: Any,
-    ) -> None:
-        """Idempotently create the envelope index if absent (race-tolerant)."""
-        if await es.indices.exists(index=index_name):
-            return
-        try:
-            await es.indices.create(
-                index=index_name,
-                body={
-                    "settings": await settings_fn(),
-                    "mappings": mapping,
-                },
-            )
-        except Exception as exc:
-            if "resource_already_exists" not in str(exc):
-                raise
+    # _ensure_index is inherited from _ItemsElasticsearchBase.
 
     async def read_entities(
         self,
@@ -736,19 +720,13 @@ class ItemsElasticsearchEnvelopeDriver(
             return BulkResult(total=len(ops))
 
         resp = await es.bulk(body=body)
-        items = (resp or {}).get("items", []) if isinstance(resp, dict) else []
-        succeeded = 0
-        failures: List[Dict[str, Any]] = []
-        for it in items:
-            entry = next(iter(it.values())) if isinstance(it, dict) and it else {}
-            err = entry.get("error") if isinstance(entry, dict) else None
-            if err:
-                failures.append({
-                    "id": entry.get("_id"),
-                    "reason": str(err.get("reason", err) if isinstance(err, dict) else err),
-                })
-            else:
-                succeeded += 1
+        succeeded, failures = self._tally_bulk_response(
+            resp, len(ops),
+            driver_name="ItemsElasticsearchEnvelopeDriver",
+            catalog=ctx.catalog,
+            collection=ctx.collection,
+            index_name=index_name,
+        )
         return BulkResult(
             total=len(ops),
             succeeded=succeeded,

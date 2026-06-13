@@ -140,6 +140,14 @@ export function fetchSchemas() {
   return getJSON("/configs/registry");
 }
 
+// Multi-instance ref discovery (#1940). Returns the {ref_key: class_key}
+// map of rows stored at the given scope — including instance rows authored
+// under a non-canonical ref_key (set_config_by_ref) that the class-keyed
+// registry list does not surface. Tier-local (no waterfall).
+export function fetchRefs(scope) {
+  return getJSON(`${scopeBasePath(scope)}/refs`);
+}
+
 // Identity — used to gate admin pages. Returns { principal, roles }.
 // `/iam/me` is the canonical "who am I + roles" surface. The OIDC-spec
 // `/auth/userinfo` returns only the token's claim set (no platform roles).
@@ -424,6 +432,36 @@ export async function postFeatures(catalogId, collectionId, payload) {
 // /iam/me/catalogs: returns list of {catalog_id, roles, ...} for the
 // signed-in principal. Used to discover "catalog admin" scope.
 export const fetchMyCatalogs = () => getJSON("/iam/me/catalogs");
+
+// Normalize a catalog payload (bare list, {catalogs:[...]}, or {items:[...]},
+// of strings or objects) to {id, catalog_id, title} so every dropdown reads a
+// stable id regardless of which provider produced the list.
+const _normalizeCatalogList = (raw) => {
+  const list = Array.isArray(raw) ? raw : (raw.catalogs || raw.items || []);
+  return list
+    .map((c) => {
+      const id = (typeof c === "string")
+        ? c
+        : (c.id || c.catalog_id || c.code || "");
+      const title = (typeof c === "string") ? c : (c.title || c.name || id);
+      return { id, catalog_id: id, title };
+    })
+    .filter((c) => c.id);
+};
+
+// Catalog options for pickers — server-resolved via /web/catalogs. The
+// server picks the highest-priority available CatalogListProvider: IAM
+// (grant-filtered to the signed-in principal) when mounted, otherwise the
+// public protocol full list. Precedence and tenant-scope safety live on the
+// server (single source of truth, #1736); the picker just renders what it is
+// given. Returns [] on error so a dropdown degrades to empty, never throws.
+export const fetchCatalogOptions = async () => {
+  try {
+    return _normalizeCatalogList(await getJSON("/web/catalogs"));
+  } catch (_) {
+    return [];
+  }
+};
 
 export const getCatalogProvisioning = (catalogId) =>
   getJSON(`/admin/catalogs/${encodeURIComponent(catalogId)}`);

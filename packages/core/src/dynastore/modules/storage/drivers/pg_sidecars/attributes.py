@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -1062,13 +1062,17 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
         #      contract and preserves the pre-#940 default of treating
         #      ``"id"`` as the implicit identity path when the operator
         #      hasn't configured an ``ItemsWritePolicy.external_id_field``.
-        #   3. Policy-bound path -> ``_extract_value`` walks the path.
+        #   3. Policy-bound path -> ``resolve_external_id`` walks the path.
         if isinstance(feature, Feature):
             ext_id = feature.id
         else:
-            field_path = _resolve_external_id_field(context)
-            if field_path:
-                ext_id = self._extract_value(feature, field_path)
+            policy = context.get("_items_write_policy") if context else None
+            if policy is not None and hasattr(policy, "resolve_external_id"):
+                feature_dict: Any = (
+                    feature if isinstance(feature, dict)
+                    else (feature.model_dump(by_alias=True) if hasattr(feature, "model_dump") else dict(feature))
+                )
+                ext_id = policy.resolve_external_id(feature_dict)
             elif isinstance(feature, dict):
                 ext_id = feature.get("id")
             else:
@@ -1223,8 +1227,46 @@ FOREIGN KEY ({", ".join([f'"{c}"' for c in ref_cols])}) REFERENCES {{schema}}."{
                     if val is not None and val is not PydanticUndefined:
                         payload[attr.name] = val
         else:
-            # JSONB Mode: Clean duplicates
-            props_to_save = dict(properties or {})
+            # JSONB Mode: use the pristine pre-prune snapshot when available.
+            # A prune-first sidecar (item_metadata) strips all colon-namespaced
+            # extension keys (proj:*, cube:*, eo:*, …) from the live feature dict
+            # in place before this sidecar runs.  Reading from the live dict would
+            # silently drop those keys from the JSONB blob.  The pristine snapshot
+            # is a deep copy taken before any sidecar runs, so it carries the
+            # complete properties bag exactly as the caller supplied it.
+            # This path only applies when there is no stac_metadata sidecar to own
+            # the extension keys (i.e. no StacPreset / stac_items_pg=False).  When
+            # stac_metadata IS active it handles extra_fields itself and the two
+            # blobs do not overlap (stac_metadata owns colon-namespaced keys;
+            # attributes JSONB owns the rest), so reading from pristine here is
+            # harmless — the downstream read path merges them independently.
+            _pristine = context.get("_pristine_item") if context else None
+            if _pristine is not None:
+                if isinstance(_pristine, dict):
+                    _pristine_props = _pristine.get("properties") or {}
+                elif isinstance(_pristine, Feature):
+                    _pristine_props = _pristine.properties or {}
+                else:
+                    _pristine_props = getattr(_pristine, "properties", None) or {}
+                props_to_save = dict(_pristine_props)
+                # Also fold in top-level STAC reserved members (assets,
+                # stac_extensions) so the JSONB blob is the single persisted
+                # copy when the stac_metadata sidecar is absent.  The read path
+                # in stac_generator.create_item_from_feature already has a
+                # feature.properties fallback for both keys, so they are restored
+                # correctly on GET.
+                if isinstance(_pristine, dict):
+                    _top_assets = _pristine.get("assets")
+                    _top_exts = _pristine.get("stac_extensions")
+                else:
+                    _top_assets = getattr(_pristine, "assets", None)
+                    _top_exts = getattr(_pristine, "stac_extensions", None)
+                if _top_assets is not None and "assets" not in props_to_save:
+                    props_to_save["assets"] = _top_assets
+                if _top_exts is not None and "stac_extensions" not in props_to_save:
+                    props_to_save["stac_extensions"] = _top_exts
+            else:
+                props_to_save = dict(properties or {})
 
             # Apply defaults from schema if present (even in JSONB mode)
             if self.config.attribute_schema:

@@ -11,10 +11,14 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """Per-collection attribute-stamping policy config.
 
-:class:`AttributeStampingPolicy` is a :class:`~dynastore.modules.db_config.plugin_config.PluginConfig`
+:class:`AttributeStampingPolicy` is a :class:`~dynastore.models.plugin_config.PluginConfig`
 scoped to ``(catalog_id, collection_id)``.  When present it declares which
 Feature properties to lift onto the document's ``_attrs`` envelope at write
 time.  The ``_attrs`` envelope is then queried by the read-filter compiler to
@@ -45,7 +49,7 @@ from typing import Any, ClassVar, Dict, Mapping, Optional, Tuple
 from pydantic import Field
 
 from dynastore.models.mutability import Mutable
-from dynastore.modules.db_config.plugin_config import PluginConfig
+from dynastore.models.plugin_config import PluginConfig
 
 __all__ = ["AttributeStampingPolicy", "stamp_attrs_from_feature"]
 

@@ -1,4 +1,4 @@
-#    Copyright 2025 FAO
+#    Copyright 2026 FAO
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -48,6 +48,26 @@ from dynastore.models.protocols.database import DatabaseProtocol
 from dynastore.tools.discovery import get_protocol
 
 logger = logging.getLogger(__name__)
+
+
+def _json_for_script(obj: Any) -> str:
+    """JSON-encode ``obj`` for safe embedding inside an inline ``<script>``.
+
+    ``json.dumps`` is not sufficient on its own: a string value containing
+    ``</script>`` closes the tag and lets the browser parse the remainder as
+    HTML — a reflected-XSS vector when the value comes from user input (e.g. a
+    query-string parameter). Replacing ``<``/``>``/``&`` with their ``\\uXXXX``
+    JSON escapes neutralises ``</script>``, ``<!--`` and ``<script`` while
+    staying valid JSON that ``JSON.parse`` round-trips back to the original
+    string. (``json.dumps`` defaults to ``ensure_ascii=True``, so U+2028/U+2029
+    and other non-ASCII are already emitted as ``\\uXXXX``.)
+    """
+    return (
+        json.dumps(obj)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
 
 
 _DASHBOARD_ID = "dynastore-logs-dashboard"
@@ -405,7 +425,15 @@ class LogExtension(ExtensionProtocol, LogsProtocol):
                 "tasks": get_protocol(TasksProtocol) is not None,
             },
         }
-        html = html.replace("__CATALOG_LOGS_CTX__", json.dumps(ctx))
+        # Both values are interpolated into an inline <script> in the template.
+        # json.dumps alone is NOT XSS-safe there: a string containing the
+        # literal "</script>" closes the tag and the rest is parsed as HTML.
+        # ``catalog_id`` comes straight from the query string (attacker-
+        # controlled), so escape the closing-tag sentinel ("</" -> "<\/", a
+        # no-op for JSON consumers) on every script-embedded value.
+        html = html.replace("__CATALOG_LOGS_CTX__", _json_for_script(ctx))
+        catalog_id = request.query_params.get("catalog") or ""
+        html = html.replace("__CATALOG_ID__", _json_for_script(catalog_id))
         return HTMLResponse(html)
 
     async def _get_dashboards_health(self) -> Dict[str, bool]:

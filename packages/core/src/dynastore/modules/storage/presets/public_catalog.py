@@ -11,6 +11,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """``public_catalog`` preset — PG-first storage + public Elasticsearch
 indexers on all three tiers (catalog / collection / items).
@@ -32,9 +36,10 @@ from dynastore.modules.storage.routing_config import (
     WriteMode,
 )
 
-from typing import ClassVar
+from typing import ClassVar, Tuple
 
 from .bundle_preset import BundlePreset
+from .examples import PresetExample
 from .protocol import PresetBundle, PresetBundleEntry, PresetTier
 
 
@@ -137,11 +142,29 @@ class PublicCatalogPreset(BundlePreset):
     name = "public_catalog"
     tier: ClassVar[PresetTier] = PresetTier.CATALOG
     catalog_scopable: ClassVar[bool] = False
+    keywords: ClassVar[Tuple[str, ...]] = (
+        "routing", "catalog", "public", "open-data", "elasticsearch", "postgresql",
+    )
     description = (
         "PG-first storage + public Elasticsearch indexers across the "
         "catalog, collection, and items tiers. No IAM audience opt-ins; "
         "anonymous read/listing is governed by the platform's default "
         "public_access policy. Suitable for fully-public open-data catalogs."
+    )
+
+    examples: ClassVar[Tuple[PresetExample, ...]] = (
+        PresetExample(
+            name="public-open-data-catalog",
+            summary=(
+                "Provision a fully-public open-data catalog: PostgreSQL is the system "
+                "of record on every tier and a public Elasticsearch secondary index is "
+                "wired for SEARCH. Apply at catalog scope via "
+                "POST /admin/catalogs/{catalog_id}/presets/public_catalog. The preset "
+                "takes no parameters; anonymous access is governed by the platform "
+                "public_access policy."
+            ),
+            params={},
+        ),
     )
 
     def build(self, catalog_id: str, **_scope: str) -> PresetBundle:  # noqa: ARG002

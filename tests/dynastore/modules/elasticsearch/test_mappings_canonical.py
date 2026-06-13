@@ -11,6 +11,11 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+#
+#    Author: Carlo Cancellieri (ccancellieri@gmail.com)
+#    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
+#    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
+
 """Task 2 — Canonical stats/system containers in the item mapping (refs #1800).
 
 Asserts that ``build_item_mapping`` emits the typed nested ``stats`` and
@@ -296,12 +301,53 @@ def test_item_mapping_metadata_description_is_localized() -> None:
         assert lang in desc["properties"], f"metadata.description missing lang {lang!r}"
 
 
-def test_item_mapping_metadata_keywords_is_keyword_with_text_subfield() -> None:
-    """metadata.keywords must be keyword-exact with a .text analyzed sub-field."""
+def test_item_mapping_metadata_keywords_is_localized_object() -> None:
+    """metadata.keywords must be a localized per-language object, NOT a flat keyword.
+
+    The i18n layer serialises keywords as {"en": ["a", "b"], ...} before
+    indexing.  A flat ``keyword`` mapping rejects an object value with
+    ``mapper_parsing_exception`` → 500 on every multilingual ingest.
+    The correct shape is ``type:object, dynamic:false`` with one
+    ``keyword`` sub-property per supported locale (refs #1828).
+    """
+    from dynastore.modules.elasticsearch.items_projection import LANGUAGE_ANALYZERS
     m = _mapping()
     kw = m["properties"]["metadata"]["properties"]["keywords"]
-    assert kw["type"] == "keyword"
-    assert kw["fields"]["text"]["type"] == "text"
+    assert kw["type"] == "object", (
+        f"metadata.keywords must be type:object for i18n payloads, got {kw['type']!r}"
+    )
+    assert kw.get("dynamic") is False
+    # Every supported locale must have a keyword sub-property with a .text sub-field.
+    for lang, analyzer in LANGUAGE_ANALYZERS.items():
+        assert lang in kw["properties"], f"metadata.keywords missing locale {lang!r}"
+        locale_field = kw["properties"][lang]
+        assert locale_field["type"] == "keyword", (
+            f"metadata.keywords.{lang} must be keyword, got {locale_field['type']!r}"
+        )
+        assert locale_field["fields"]["text"]["type"] == "text"
+        assert locale_field["fields"]["text"]["analyzer"] == analyzer
+
+
+def test_metadata_keywords_accepts_i18n_payload_shape() -> None:
+    """Verify the metadata.keywords mapping structure accepts the i18n payload.
+
+    When the i18n layer sends ``{"en": ["climate", "water"]}`` the value is
+    an object.  Under the old flat ``keyword`` mapping ES would reject it.
+    Under the new ``type:object`` mapping each locale sub-property receives
+    an array of keyword values — valid ES multi-value semantics.
+
+    This is a unit-level structural check (no live ES required).
+    """
+    from dynastore.modules.elasticsearch.items_projection import LANGUAGE_ANALYZERS
+    m = _mapping()
+    kw = m["properties"]["metadata"]["properties"]["keywords"]
+    # Structural assertion: the mapping shape accepts a dict keyed by locale.
+    assert kw["type"] == "object"
+    # The i18n payload {"en": [...]} maps onto kw.properties.en — which must exist.
+    assert "en" in kw["properties"]
+    # Confirm every platform locale is present — the LANGUAGE_ANALYZERS set is
+    # the authoritative list (en/fr/es/ru/ar/it/de/zh).
+    assert set(kw["properties"].keys()) == set(LANGUAGE_ANALYZERS.keys())
 
 
 def test_item_mapping_default_tier1_still_has_metadata_container() -> None:
@@ -407,3 +453,50 @@ def test_flat_valid_from_to_still_in_common_properties() -> None:
     assert COMMON_PROPERTIES["_valid_from"]["type"] == "date"
     assert "_valid_to" in COMMON_PROPERTIES
     assert COMMON_PROPERTIES["_valid_to"]["type"] == "date"
+
+
+# ---------------------------------------------------------------------------
+# license — object mapping for LicenseInfo (refs #1828).
+#
+# STAC ``license`` surfaces as a LicenseInfo object
+# {license_id, is_osi_compliant, localized_content?} after the i18n layer
+# normalises a bare SPDX string.  A flat ``keyword`` mapping at
+# ``properties.license`` rejects the object with ``mapper_parsing_exception``.
+# The fix pins ``type:object, dynamic:false`` with the two indexed sub-fields;
+# ``localized_content`` (if present) rides in ``_source`` unindexed, covered
+# by ``dynamic:false`` on the parent (refs #1828).
+# ---------------------------------------------------------------------------
+
+def test_properties_license_is_object_not_keyword() -> None:
+    """properties.license must be type:object to accept a LicenseInfo payload."""
+    from dynastore.modules.elasticsearch.items_projection import _STAC_CORE_FIELDS
+    lic = _STAC_CORE_FIELDS["license"]
+    assert lic.get("type") == "object", (
+        f"properties.license must be type:object, got {lic.get('type')!r}; "
+        "a flat keyword rejects the LicenseInfo object with mapper_parsing_exception"
+    )
+
+
+def test_properties_license_is_dynamic_false() -> None:
+    """properties.license must be dynamic:false so localized_content is unindexed."""
+    from dynastore.modules.elasticsearch.items_projection import _STAC_CORE_FIELDS
+    lic = _STAC_CORE_FIELDS["license"]
+    assert lic.get("dynamic") is False
+
+
+def test_properties_license_has_license_id_and_osi_compliant() -> None:
+    """properties.license must index license_id (keyword) and is_osi_compliant (boolean)."""
+    from dynastore.modules.elasticsearch.items_projection import _STAC_CORE_FIELDS
+    props = _STAC_CORE_FIELDS["license"]["properties"]
+    assert props["license_id"]["type"] == "keyword"
+    assert props["is_osi_compliant"]["type"] == "boolean"
+
+
+def test_license_object_survives_in_item_mapping() -> None:
+    """The license object mapping must survive into the built item mapping."""
+    from dynastore.modules.elasticsearch.mappings import ITEM_MAPPING
+    lic = ITEM_MAPPING["properties"]["properties"]["properties"]["license"]
+    assert lic.get("type") == "object"
+    assert lic.get("dynamic") is False
+    assert lic["properties"]["license_id"]["type"] == "keyword"
+    assert lic["properties"]["is_osi_compliant"]["type"] == "boolean"
