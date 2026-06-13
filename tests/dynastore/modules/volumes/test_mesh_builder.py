@@ -317,3 +317,62 @@ def test_empty_mesh_has_empty_colors():
     from dynastore.modules.volumes.mesh_builder import empty_mesh
     buf = empty_mesh()
     assert buf.colors == b""
+
+
+# ---------------------------------------------------------------------------
+# Facade UVs (TEXCOORD_0) + per-quad walls
+# ---------------------------------------------------------------------------
+
+
+def _uvs(buf):
+    n = buf.vertex_count
+    return [struct.unpack_from("<2f", buf.uvs, i * 8) for i in range(n)]
+
+
+def test_build_mesh_without_with_uv_has_no_uvs():
+    fg = FeatureGeometry("f1", _square_wkb(), height=5.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN)
+    assert buf.uvs == b""
+
+
+def test_build_mesh_with_uv_emits_vec2_per_vertex():
+    fg = FeatureGeometry("f1", _square_wkb(), height=5.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN, with_uv=True)
+    assert len(buf.uvs) == buf.vertex_count * 8  # 2 float32 per vertex
+
+
+def test_build_mesh_with_uv_caps_at_origin_walls_spread():
+    # Caps map to (0,0); walls map to non-zero U/V across their span. Both must
+    # be present so roofs read flat and walls tile windows.
+    fg = FeatureGeometry("f1", _square_wkb(), height=30.0)
+    buf = build_mesh_from_geometries([fg], origin=ORIGIN, with_uv=True)
+    uvs = _uvs(buf)
+    assert (0.0, 0.0) in uvs                         # caps
+    assert any(u > 0.0 and v > 0.0 for u, v in uvs)  # wall corners
+
+
+def test_build_mesh_with_uv_v_scales_with_height():
+    # A taller building reaches a larger maximum V (height / span), so windows
+    # tile further up the facade.
+    short = build_mesh_from_geometries(
+        [FeatureGeometry("s", _square_wkb(), height=6.0)], origin=ORIGIN, with_uv=True
+    )
+    tall = build_mesh_from_geometries(
+        [FeatureGeometry("t", _square_wkb(), height=60.0)], origin=ORIGIN, with_uv=True
+    )
+    assert max(v for _u, v in _uvs(tall)) > max(v for _u, v in _uvs(short))
+
+
+def test_extrude_ring_per_quad_has_four_vertices_per_edge():
+    # Per-quad walls: a 4-edge ring → 4 quads × 4 vertices = 16 wall vertices
+    # (8 triangles), so each quad can carry independent UVs with no closing seam.
+    acc = _MeshAccumulator()
+    _extrude_ring(_square_lonlat(), z_bottom=0.0, z_top=5.0, acc=acc, origin=ORIGIN)
+    buf = acc.to_buffers()
+    assert buf.vertex_count == 16
+    assert buf.triangle_count == 8
+
+
+def test_empty_mesh_has_empty_uvs():
+    from dynastore.modules.volumes.mesh_builder import empty_mesh
+    assert empty_mesh().uvs == b""

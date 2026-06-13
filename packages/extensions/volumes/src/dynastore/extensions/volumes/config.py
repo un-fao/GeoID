@@ -83,3 +83,10 @@ class VolumesConfig(ExposableConfigMixin, PluginConfig):
     height_color_ramp: Mutable[List[Tuple[float, str]]] = Field(
         default_factory=lambda: list(DEFAULT_HEIGHT_RAMP_HEX)
     )
+    # Bake a procedurally-generated facade texture (window/floor grid) onto the
+    # building walls via TEXCOORD_0 + glTF baseColorTexture. The texture is our
+    # own Apache-2.0 content, so it composes with the (CC BY 4.0) 3DBAG geometry
+    # without licensing friction and turns flat blocks into windowed buildings.
+    # Caps (roofs) sample the wall colour. Composes with ``color_by_height``: a
+    # building keeps its windows while taking its height tint.
+    facade_texture: Mutable[bool] = True

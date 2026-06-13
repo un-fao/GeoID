@@ -306,3 +306,98 @@ def test_pack_glb_color_indices_accessor_points_at_index_view():
     assert idx_acc["componentType"] == 5125  # UNSIGNED_INT
     assert idx_acc["type"] == "SCALAR"
     assert idx_acc["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# pack_glb with facade UVs (TEXCOORD_0) and an embedded baseColorTexture
+# ---------------------------------------------------------------------------
+
+# Length 11 (not a multiple of 4) so the logical-vs-padded buffer length is
+# exercised. Content is opaque to the writer — it embeds the bytes verbatim.
+_FAKE_PNG = b"\x89PNG\r\n\x1a\nFAK"
+
+
+def _make_uv_mesh(with_color: bool = False) -> MeshBuffers:
+    import struct as s
+    verts = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    pos = s.pack("<9f", *[v for xyz in verts for v in xyz])
+    nrm = s.pack("<9f", *([0.0, 0.0, 1.0] * 3))
+    uv = s.pack("<6f", 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    idx = s.pack("<3I", 0, 1, 2)
+    col = s.pack("<12B", *([200, 50, 10, 255] * 3)) if with_color else b""
+    return MeshBuffers(
+        positions=pos,
+        indices=idx,
+        vertex_count=3,
+        index_count=3,
+        min_pos=(0.0, 0.0, 0.0),
+        max_pos=(1.0, 1.0, 0.0),
+        normals=nrm,
+        colors=col,
+        uvs=uv,
+    )
+
+
+def test_pack_glb_texcoord0_accessor_is_vec2_float():
+    doc = _glb_json(pack_glb(_make_uv_mesh()))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "TEXCOORD_0" in prim["attributes"]
+    acc = doc["accessors"][prim["attributes"]["TEXCOORD_0"]]
+    assert acc["type"] == "VEC2"
+    assert acc["componentType"] == 5126  # FLOAT
+    assert acc["count"] == 3
+
+
+def test_pack_glb_uvs_without_texture_have_no_image():
+    """UVs alone (no texture supplied) must not fabricate an image/texture."""
+    doc = _glb_json(pack_glb(_make_uv_mesh()))
+    assert "images" not in doc
+    assert "textures" not in doc
+    assert "baseColorTexture" not in doc["materials"][0]["pbrMetallicRoughness"]
+
+
+def test_pack_glb_texture_embeds_image_sampler_texture():
+    doc = _glb_json(pack_glb(_make_uv_mesh(), texture_png=_FAKE_PNG))
+    img = doc["images"][0]
+    assert img["mimeType"] == "image/png"
+    bv = doc["bufferViews"][img["bufferView"]]
+    assert bv["byteLength"] == len(_FAKE_PNG)
+    assert "target" not in bv  # image data is not an ARRAY/ELEMENT buffer
+    assert doc["textures"][0] == {"source": 0, "sampler": 0}
+    assert doc["samplers"][0]["wrapS"] == 10497  # REPEAT
+    pbr = doc["materials"][0]["pbrMetallicRoughness"]
+    assert pbr["baseColorTexture"] == {"index": 0, "texCoord": 0}
+    assert pbr["baseColorFactor"] == [1.0, 1.0, 1.0, 1.0]
+
+
+def test_pack_glb_texture_ignored_without_uvs():
+    """A mesh with no UVs cannot map a texture → the texture is dropped."""
+    doc = _glb_json(pack_glb(_make_triangle_mesh(), texture_png=_FAKE_PNG))
+    assert "images" not in doc
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "TEXCOORD_0" not in prim["attributes"]
+    assert "baseColorTexture" not in doc["materials"][0]["pbrMetallicRoughness"]
+
+
+def test_pack_glb_textured_bufferviews_contiguous_incl_image():
+    """pos, nrm, uv, idx, image → 5 contiguous bufferViews; buffer = logical sum."""
+    doc = _glb_json(pack_glb(_make_uv_mesh(), texture_png=_FAKE_PNG))
+    bvs = doc["bufferViews"]
+    assert len(bvs) == 5
+    offset = 0
+    for bv in bvs:
+        assert bv["byteOffset"] == offset
+        offset += bv["byteLength"]
+    assert doc["buffers"][0]["byteLength"] == offset
+
+
+def test_pack_glb_texture_and_color_compose():
+    """Texture + COLOR_0 together: both attributes present, base stays white so
+    the facade keeps its windows while taking the per-building height tint."""
+    doc = _glb_json(pack_glb(_make_uv_mesh(with_color=True), texture_png=_FAKE_PNG))
+    prim = doc["meshes"][0]["primitives"][0]
+    assert "COLOR_0" in prim["attributes"]
+    assert "TEXCOORD_0" in prim["attributes"]
+    pbr = doc["materials"][0]["pbrMetallicRoughness"]
+    assert pbr["baseColorFactor"] == [1.0, 1.0, 1.0, 1.0]
+    assert "baseColorTexture" in pbr
