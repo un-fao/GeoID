@@ -67,6 +67,15 @@ from dynastore.modules.db_config.query_executor import DbResource
 from typing import Optional, Any, AsyncGenerator, List, Tuple, cast
 from dynastore.tools.discovery import register_plugin, unregister_plugin
 
+# Import at module-load time so PluginConfig.__init_subclass__ runs its
+# TypedModelRegistry registration before any lifespan starts.  The
+# config_seeder (TasksModule priority=15) calls resolve_config_class("idp_config")
+# before IamModule lifespan (priority=100) fires; without this import the
+# registry lookup returns None and the idp-config.json overlay is silently
+# skipped on first boot.  idp_config.py only imports from dynastore.models
+# and pydantic — no circular dependency with this module.
+from .idp_config import IdpConfig  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 from dynastore.models.protocols.policies import PermissionProtocol
@@ -285,7 +294,8 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
         from dynastore.models.protocols.platform_configs import (
             PlatformConfigsProtocol,
         )
-        from .idp_config import IdpConfig
+        # IdpConfig is imported at module scope (top of this file) so
+        # PluginConfig.__init_subclass__ registers it before any lifespan runs.
 
         cfg: Optional[IdpConfig] = None
         configs = get_protocol(PlatformConfigsProtocol)
