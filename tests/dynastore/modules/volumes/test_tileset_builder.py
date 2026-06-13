@@ -16,6 +16,8 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
+import math
+
 from dynastore.extensions.volumes.config import VolumesConfig
 from dynastore.modules.volumes.bounds import FeatureBounds
 from dynastore.modules.volumes.tileset_builder import build_tileset, find_leaf
@@ -27,6 +29,33 @@ def test_empty_bounds_emits_skeleton():
     assert "root" in ts
     assert ts["root"]["geometricError"] == 0.0
     assert ts["root"]["boundingVolume"]["box"] == [0.0] * 12
+
+
+def test_root_has_enu_ecef_transform():
+    # A Den Haag-ish footprint: the root must carry a 16-float column-major
+    # transform whose translation column is the ECEF of the collection centre
+    # (millions of metres), placing the local frame on the globe.
+    b = [FeatureBounds("f", 4.30, 52.07, 0.0, 4.31, 52.08, 20.0)]
+    ts = build_tileset(b, VolumesConfig())
+    tr = ts["root"]["transform"]
+    assert isinstance(tr, list) and len(tr) == 16
+    assert tr[15] == 1.0
+    # Translation column (indices 12..14) is ECEF metres — geocentric radius
+    # of the origin is ~6.37e6 m.
+    r = math.sqrt(tr[12] ** 2 + tr[13] ** 2 + tr[14] ** 2)
+    assert 6_356_000 < r < 6_379_000
+
+
+def test_box_is_metric_not_degrees():
+    # 0.01 deg lon/lat spans ~hundreds of metres, not 0.005. The box half-axes
+    # must be in metres (local ENU), not raw degrees.
+    b = [FeatureBounds("f", 4.30, 52.07, 0.0, 4.31, 52.08, 20.0)]
+    ts = build_tileset(b, VolumesConfig())
+    box = ts["root"]["boundingVolume"]["box"]
+    hx, hy, hz = box[3], box[7], box[11]
+    assert hx > 100.0  # ~340 m half-width, definitely metric
+    assert hy > 100.0
+    assert math.isclose(hz, 10.0, abs_tol=1.0)  # 20 m z-extent → 10 m half
 
 
 def test_single_feature_is_a_leaf():
