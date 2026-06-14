@@ -561,6 +561,12 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
 
             requested_cols_list = [c.strip() for c in collections.split(",")]
 
+            # Enforce collection-visibility before any tile resolution.  Each
+            # collection in the comma-separated list is checked independently;
+            # a hidden collection is indistinguishable from a missing one.
+            for _coll_id in requested_cols_list:
+                await self._require_collection_visible(dataset, _coll_id)
+
             # 2. Storage & Cache Resolution
             cache_enabled = await self._is_cache_enabled(
                 config_manager, dataset, requested_cols_list, tiles_config
