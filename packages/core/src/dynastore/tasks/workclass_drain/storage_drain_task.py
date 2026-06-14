@@ -16,15 +16,15 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# dynastore/tasks/workclass_drain/work_index_drain_task.py
+# dynastore/tasks/workclass_drain/storage_drain_task.py
 
-"""``WorkIndexDrainTask`` — control-plane-native drain for ``tasks.work_index``.
+"""``StorageDrainTask`` — control-plane-native drain for ``tasks.storage``.
 
-Drains the GLOBAL ``tasks.work_index`` table for ALL tenants (tenancy is the
-``schema_name`` column, not the physical table). This is the index-plane
+Drains the GLOBAL ``tasks.storage`` table for ALL tenants (tenancy is the
+``schema_name`` column, not the physical table). This is the storage-plane
 counterpart of ``OutboxDrainTask``; the two tasks coexist during the WorkClass
 migration window because they use distinct ``task_type`` values
-(``"work_index_drain"`` vs ``"index_drain"``).
+(``"storage_drain"`` vs ``"index_drain"``).
 
 Claim_version fencing (#1945)
 -----------------------------
@@ -90,8 +90,8 @@ def _backoff(attempts: int) -> int:
     return _BACKOFF_SECONDS[idx]
 
 
-class WorkIndexDrainTask(TaskProtocol):
-    """One-shot drain for the global ``tasks.work_index`` index outbox.
+class StorageDrainTask(TaskProtocol):
+    """One-shot drain for the global ``tasks.storage`` index outbox.
 
     Claims ready rows (and stale in_flight rows whose lease expired), fans
     them out to the appropriate ``BulkIndexer`` by ``driver_id``, and
@@ -106,7 +106,7 @@ class WorkIndexDrainTask(TaskProtocol):
     repoint it via routing config without a code change.
     """
 
-    task_type: ClassVar[str] = "work_index_drain"
+    task_type: ClassVar[str] = "storage_drain"
     priority: int = 100
     affinity_tier: ClassVar[Optional[str]] = None
 
@@ -124,7 +124,7 @@ class WorkIndexDrainTask(TaskProtocol):
         self._indexer_cache: Dict[str, BulkIndexer] = {}
 
     async def run(self, payload: TaskPayload) -> Dict[str, Any]:
-        """Drain ``tasks.work_index`` to empty, then return.
+        """Drain ``tasks.storage`` to empty, then return.
 
         Loops ``drain_once()`` until it reports zero claimed rows.  The
         dispatcher re-enters via NOTIFY when new rows appear.
@@ -143,7 +143,7 @@ class WorkIndexDrainTask(TaskProtocol):
         engine = create_async_engine(db_url, poolclass=NullPool)
         # Stable owner_id for the lifetime of this run — used as the
         # ``claimed_by`` stamp and the CAS guard on terminal writes.
-        owner_id = f"work_index_drain:{uuid4()}"
+        owner_id = f"storage_drain:{uuid4()}"
         total = 0
         try:
             while True:
@@ -190,7 +190,7 @@ class WorkIndexDrainTask(TaskProtocol):
             indexer = await self._resolve_indexer(driver_id)
             if indexer is None:
                 logger.warning(
-                    "WorkIndexDrainTask: no BulkIndexer registered for "
+                    "StorageDrainTask: no BulkIndexer registered for "
                     "driver_id=%r — %d row(s) queued for retry.",
                     driver_id,
                     len(driver_rows),
@@ -209,7 +209,7 @@ class WorkIndexDrainTask(TaskProtocol):
                 result = await indexer.index_bulk(ops)
             except Exception as exc:  # noqa: BLE001 — surface every failure
                 logger.warning(
-                    "WorkIndexDrainTask[%s]: whole-batch error: %s",
+                    "StorageDrainTask[%s]: whole-batch error: %s",
                     driver_id,
                     exc,
                 )
@@ -259,20 +259,20 @@ class WorkIndexDrainTask(TaskProtocol):
         claim_sql = (
             f"WITH claimed AS ("
             f"    SELECT day, op_id"
-            f"    FROM {task_schema}.work_index"
+            f"    FROM {task_schema}.storage"
             f"    WHERE (status = 'ready'     AND ready_at <= now())"
             f"       OR (status = 'in_flight' AND claimed_at < now() - make_interval(secs => :lease_seconds))"
             f"    ORDER BY ready_at, op_id"
             f"    LIMIT :batch_size"
             f"    FOR UPDATE SKIP LOCKED"
             f")"
-            f" UPDATE {task_schema}.work_index w"
+            f" UPDATE {task_schema}.storage w"
             f" SET status = 'in_flight', claimed_at = now(), claimed_by = :owner_id,"
             f"     claim_version = w.claim_version + 1"
             f" FROM claimed"
             f" WHERE w.day = claimed.day AND w.op_id = claimed.op_id"
             f" RETURNING w.day, w.op_id, w.driver_id, w.catalog_id, w.collection_id,"
-            f"           w.op, w.item_id, w.op_payload, w.idempotency_key,"
+            f"           w.op, w.entity_id, w.op_payload, w.idempotency_key,"
             f"           w.attempts, w.claim_version, w.claimed_by"
         )
 
@@ -299,7 +299,7 @@ class WorkIndexDrainTask(TaskProtocol):
         Resolution is config-scoped via the storage driver registry
         (``DriverRegistry.collection_index()``), which is populated from
         per-collection routing configs at startup.  The snake_case ``driver_id``
-        stamped on each ``work_index`` row matches the registry key
+        stamped on each ``tasks.storage`` row matches the registry key
         (``_to_snake(type(driver).__name__)``), so any driver registered under
         its config-scoped id resolves automatically — the ES adapter is just
         one concrete implementation.
@@ -356,7 +356,7 @@ class WorkIndexDrainTask(TaskProtocol):
             if isinstance(driver, ItemsElasticsearchDriver):
                 if not driver.is_available():
                     logger.warning(
-                        "WorkIndexDrainTask: ES driver unavailable (opensearch-py "
+                        "StorageDrainTask: ES driver unavailable (opensearch-py "
                         "missing from worker extras) — rows for driver_id=%r will "
                         "retry until a capable pod drains them.",
                         driver_id,
@@ -370,7 +370,7 @@ class WorkIndexDrainTask(TaskProtocol):
             # new adapters here as they are developed will extend support
             # without touching the drain loop.
             logger.debug(
-                "WorkIndexDrainTask: driver_id=%r resolved from registry but "
+                "StorageDrainTask: driver_id=%r resolved from registry but "
                 "no BulkIndexer adapter is registered for type %r — rows will retry.",
                 driver_id,
                 type(driver).__name__,
@@ -387,7 +387,7 @@ class WorkIndexDrainTask(TaskProtocol):
             es_driver = cast(Any, ItemsElasticsearchDriver)()
             if not es_driver.is_available():
                 logger.warning(
-                    "WorkIndexDrainTask: ES driver unavailable (opensearch-py "
+                    "StorageDrainTask: ES driver unavailable (opensearch-py "
                     "missing from worker extras) — rows for driver_id=%r will "
                     "retry until a capable pod drains them.",
                     driver_id,
@@ -405,11 +405,14 @@ class WorkIndexDrainTask(TaskProtocol):
 
     @staticmethod
     def _row_to_op(row: Dict[str, Any]) -> IndexableOp:
-        """Convert a raw work_index row dict to an ``IndexableOp``.
+        """Convert a raw ``tasks.storage`` row dict to an ``IndexableOp``.
 
         ``driver_instance_id`` is derived deterministically from the
-        ``(driver_id, catalog_id, collection_id)`` triple — the work_index
+        ``(driver_id, catalog_id, collection_id)`` triple — the ``tasks.storage``
         table has no ``driver_instance_id`` column (unlike ``storage_outbox``).
+
+        Column mapping: ``entity_id`` (storage table) → ``IndexableOp.item_id``.
+        # TODO(#1807 P1.3): branch on entity_kind for collection/catalog/asset tiers
         """
         from dynastore.modules.storage.driver_instance_id import (
             compute_driver_instance_id,
@@ -427,7 +430,7 @@ class WorkIndexDrainTask(TaskProtocol):
             driver_instance_id=compute_driver_instance_id(
                 driver_id, catalog_id, collection_id,
             ),
-            item_id=row.get("item_id"),
+            item_id=row.get("entity_id"),  # entity_id column → IndexableOp.item_id
             payload=dict(row.get("op_payload") or {}),
             idempotency_key=row.get("idempotency_key") or "",
         )
@@ -543,7 +546,7 @@ class WorkIndexDrainTask(TaskProtocol):
         )
 
         sql = (
-            f"UPDATE {task_schema}.work_index"
+            f"UPDATE {task_schema}.storage"
             f" SET status='done', finished_at=now()"
             f" WHERE day=:day AND op_id=:op_id"
             f"   AND claimed_by=:owner_id AND claim_version=:claim_version"
@@ -580,7 +583,7 @@ class WorkIndexDrainTask(TaskProtocol):
         attempts = int(row.get("attempts") or 0)
         backoff = _backoff(attempts)
         sql = (
-            f"UPDATE {task_schema}.work_index"
+            f"UPDATE {task_schema}.storage"
             f" SET status='ready', attempts=attempts+1,"
             f"     claimed_by=NULL, claimed_at=NULL,"
             f"     ready_at = now() + make_interval(secs => :backoff_seconds)"
@@ -598,7 +601,7 @@ class WorkIndexDrainTask(TaskProtocol):
             )
 
         logger.debug(
-            "WorkIndexDrainTask: retry op_id=%s attempts+1=%d backoff=%ds error=%r",
+            "StorageDrainTask: retry op_id=%s attempts+1=%d backoff=%ds error=%r",
             row["op_id"],
             attempts + 1,
             backoff,
@@ -619,7 +622,7 @@ class WorkIndexDrainTask(TaskProtocol):
         )
 
         sql = (
-            f"UPDATE {task_schema}.work_index"
+            f"UPDATE {task_schema}.storage"
             f" SET status='dead', finished_at=now()"
             f" WHERE day=:day AND op_id=:op_id"
             f"   AND claimed_by=:owner_id AND claim_version=:claim_version"
