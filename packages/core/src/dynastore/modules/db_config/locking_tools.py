@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from typing import Optional, Callable, Awaitable, ClassVar, TypeVar, Dict, AsyncGenerator, Iterator, Set, Union, cast
 from sqlalchemy import text, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
-from dynastore.durable.locks import stable_lock_id_sha256 as _stable_lock_id_sha256
+from dynastore.modules.tasks.durable.locks import stable_lock_id_sha256 as _stable_lock_id_sha256
 from dynastore.tools.async_utils import LoopLocalLock
 from dynastore.modules.db_config.query_executor import (
     DQLQuery,
@@ -152,8 +152,8 @@ class _StartupCoordinator:
 def _get_stable_lock_id(key: str) -> int:
     """Generates a stable 64-bit integer from a string key for Postgres advisory locks.
 
-    Alias of :func:`dynastore.durable.locks.stable_lock_id_sha256`.
-    The canonical home is the durable package; the output is frozen.
+    Alias of :func:`dynastore.modules.tasks.durable.locks.stable_lock_id_sha256`.
+    The canonical home is the tasks durable submodule; the output is frozen.
     """
     return _stable_lock_id_sha256(key)
 

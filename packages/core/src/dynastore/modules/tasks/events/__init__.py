@@ -16,12 +16,21 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""``dynastore.durable`` — stable, cross-deployment primitives.
+"""``dynastore.modules.tasks.events`` — event-type primitives co-located with the tasks plane.
 
-Exports lock-id derivation functions whose outputs are frozen across
-releases and must never be silently changed.
+The domain-event primitive types (``EventScope``, ``EventRegistry``,
+``define_event``, ``SystemEventType``) live here so they are co-located
+with the tasks plane that owns the ``tasks.events`` hot plane.
+
+``modules.events`` re-exports everything from here via a thin shim to
+preserve all existing import paths.
 """
 
-from dynastore.durable.locks import stable_lock_id_sha256, stable_lock_id_blake2b
+from dynastore.modules.tasks.events.primitives import (
+    EventScope,
+    EventRegistry,
+    define_event,
+    SystemEventType,
+)
 
-__all__ = ["stable_lock_id_sha256", "stable_lock_id_blake2b"]
+__all__ = ["EventScope", "EventRegistry", "define_event", "SystemEventType"]

@@ -16,22 +16,12 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Re-export shim — event primitives have moved to ``dynastore.modules.tasks.events.primitives``.
+"""``dynastore.modules.tasks.durable`` — stable, cross-deployment primitives.
 
-All symbols are imported from the canonical location so that:
-- Object identity is preserved: ``EventRegistry._events`` is the same
-  ``ClassVar`` dict regardless of which module path the caller used to
-  import ``EventRegistry``.  Every ``define_event`` call across the
-  codebase registers into the SAME class object.
-- Existing importers of ``dynastore.modules.events.primitives`` continue
-  to work without any change.
+Exports lock-id derivation functions whose outputs are frozen across
+releases and must never be silently changed.
 """
 
-from dynastore.modules.tasks.events.primitives import (  # noqa: F401
-    EventScope,
-    EventRegistry,
-    define_event,
-    SystemEventType,
-)
+from dynastore.modules.tasks.durable.locks import stable_lock_id_sha256, stable_lock_id_blake2b
 
-__all__ = ["EventScope", "EventRegistry", "define_event", "SystemEventType"]
+__all__ = ["stable_lock_id_sha256", "stable_lock_id_blake2b"]

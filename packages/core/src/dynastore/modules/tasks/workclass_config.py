@@ -19,7 +19,7 @@
 # dynastore/modules/tasks/workclass_config.py
 """``WorkClassConfig`` — migration control for the WorkClass durable-work unification.
 
-Two net-new global hot-plane tables — ``tasks.work_events`` (replacing the
+Two net-new global hot-plane tables — ``tasks.events`` (replacing the
 legacy ``events.events`` domain-event outbox) and ``tasks.storage``
 (replacing the per-tenant ``{schema}.storage_outbox`` ES-index outbox) — are
 cut over from their legacy tables behind a per-plane three-state switch.
@@ -82,8 +82,8 @@ class WorkClassConfig(PluginConfig):
         description=(
             "Durable-write target for the domain-event plane. 'legacy' (default) "
             "writes only events.events; 'both' dual-writes events.events AND "
-            "tasks.work_events (cutover step 1); 'new' writes only "
-            "tasks.work_events (cutover step 3, after events.events drains to "
+            "tasks.events (cutover step 1); 'new' writes only "
+            "tasks.events (cutover step 3, after events.events drains to "
             "empty). Runtime-reloadable; no restart, no DDL."
         ),
     )
@@ -109,7 +109,7 @@ class WorkClassConfig(PluginConfig):
 
     @property
     def emit_events_to_new(self) -> bool:
-        """Whether the event plane should write the new ``tasks.work_events`` row."""
+        """Whether the event plane should write the new ``tasks.events`` row."""
         return self.emit_target_events in (EmitTarget.BOTH, EmitTarget.NEW)
 
     @property

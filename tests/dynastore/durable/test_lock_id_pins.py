@@ -38,7 +38,7 @@ Computed from:
 
 import pytest
 
-from dynastore.durable.locks import stable_lock_id_sha256, stable_lock_id_blake2b
+from dynastore.modules.tasks.durable.locks import stable_lock_id_sha256, stable_lock_id_blake2b
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@
 
 """DDL for the two global hot-plane workclass tables.
 
-``tasks.work_events``
+``tasks.events``
     Global events queue replacing ``events.events``.  Partitioned daily by
     ``day`` (a DATE column equal to ``created_at::date``).  Tenancy is
     column-based: ``schema_name NULL`` means platform-wide / PLATFORM scope.
@@ -45,17 +45,17 @@ Both tables:
 - Ship a DEFAULT partition so inserts never fail on an out-of-range day
   (e.g. clock skew, far-future test data).
 - Are accompanied by a daily PL/pgSQL create-ahead function
-  (``create_partitions_{schema}_work_events`` /
+  (``create_partitions_{schema}_events`` /
   ``create_partitions_{schema}_storage``) that opens a 30-day window,
   and a daily retention function
-  (``maintain_partitions_{schema}_work_events`` /
+  (``maintain_partitions_{schema}_events`` /
   ``maintain_partitions_{schema}_storage``) that drops day-leaves older
   than 30 days.  Both windows are intentionally short — these tables are
   queues, not archives.
 
-Partition naming convention: ``work_events_YYYY_MM_DD`` /
+Partition naming convention: ``events_YYYY_MM_DD`` /
 ``storage_YYYY_MM_DD``.  The retention regex
-``'^work_events_\\d{4}_\\d{2}_\\d{2}$'`` (and equivalent for
+``'^events_\\d{4}_\\d{2}_\\d{2}$'`` (and equivalent for
 storage) matches ONLY daily leaves, never the parent table or the
 DEFAULT partition.
 
@@ -91,11 +91,11 @@ _WORKCLASS_CREATE_AHEAD_DAYS: int = 30
 _WORKCLASS_RETENTION_DAYS: int = 30
 
 # ---------------------------------------------------------------------------
-# work_events table DDL
+# events table DDL
 # ---------------------------------------------------------------------------
 
-WORK_EVENTS_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.work_events (
+EVENTS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.events (
     event_id        UUID            NOT NULL,
     day             DATE            NOT NULL,
     shard           SMALLINT        NOT NULL,
@@ -117,21 +117,21 @@ CREATE TABLE IF NOT EXISTS {schema}.work_events (
 ) PARTITION BY RANGE (day);
 """
 
-WORK_EVENTS_DEFAULT_PARTITION_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.work_events_default
-    PARTITION OF {schema}.work_events DEFAULT;
+EVENTS_DEFAULT_PARTITION_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.events_default
+    PARTITION OF {schema}.events DEFAULT;
 """
 
-WORK_EVENTS_INDEXES_DDL = """
+EVENTS_INDEXES_DDL = """
 -- Fairness partial index: leads with (schema_name, created_at) so per-tenant
 -- drain queries get an index-only scan without cross-tenant interference.
 -- Partial keeps the index small — only PENDING rows are eligible for claiming.
-CREATE INDEX IF NOT EXISTS idx_work_events_fairness
-    ON {schema}.work_events (schema_name, created_at)
+CREATE INDEX IF NOT EXISTS idx_events_fairness
+    ON {schema}.events (schema_name, created_at)
     WHERE status = 'PENDING';
 -- Shard index: enables shard-affine drain workers to restrict their scan.
-CREATE INDEX IF NOT EXISTS idx_work_events_shard
-    ON {schema}.work_events (shard, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_shard
+    ON {schema}.events (shard, status, created_at);
 """
 
 # ---------------------------------------------------------------------------
@@ -188,15 +188,15 @@ CREATE INDEX IF NOT EXISTS idx_storage_driver
 # brace (\d{{4}}) is not collapsed by .replace; PostgreSQL would receive the
 # literal \d{{4}}, which matches no partition name, so the retention DROP would
 # silently never fire and leaves would accumulate forever. Verified against
-# live PG: single-brace \d{4} matches work_events_YYYY_MM_DD, doubled does not.
+# live PG: single-brace \d{4} matches events_YYYY_MM_DD, doubled does not.
 # The loop bound (0..29) and INTERVAL ('30 days') are hardcoded to match
 # _WORKCLASS_CREATE_AHEAD_DAYS=30 and _WORKCLASS_RETENTION_DAYS=30.
 # Update both the constants AND the SQL strings if the windows change.
 # ---------------------------------------------------------------------------
 
-# work_events: create-ahead (daily leaves, 30 days window — 0..29 inclusive)
-WORK_EVENTS_PARTCREATE_FUNC_DDL = """
-CREATE OR REPLACE FUNCTION "{schema}"."create_partitions_{schema}_work_events"() RETURNS void AS $$
+# events: create-ahead (daily leaves, 30 days window — 0..29 inclusive)
+EVENTS_PARTCREATE_FUNC_DDL = """
+CREATE OR REPLACE FUNCTION "{schema}"."create_partitions_{schema}_events"() RETURNS void AS $$
 DECLARE
     i INT;
     target_date DATE;
@@ -204,12 +204,12 @@ DECLARE
     part_name TEXT;
 BEGIN
     -- Create daily leaf partitions from today through 30 days ahead (0-based, inclusive).
-    -- Window is intentionally bounded: work_events rows are consumed within
+    -- Window is intentionally bounded: events rows are consumed within
     -- seconds to minutes, so a 30-day window is a generous safety margin.
     FOR i IN 0..29 LOOP
         target_date := CURRENT_DATE + (i || ' days')::INTERVAL;
         next_date   := target_date + INTERVAL '1 day';
-        part_name   := 'work_events_' || to_char(target_date, 'YYYY_MM_DD');
+        part_name   := 'events_' || to_char(target_date, 'YYYY_MM_DD');
         IF NOT EXISTS (
             SELECT 1 FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -217,7 +217,7 @@ BEGIN
         ) THEN
             EXECUTE format(
                 'CREATE TABLE IF NOT EXISTS "{schema}".%I '
-                'PARTITION OF "{schema}".work_events '
+                'PARTITION OF "{schema}".events '
                 'FOR VALUES FROM (%L) TO (%L)',
                 part_name,
                 target_date::TEXT,
@@ -230,9 +230,9 @@ END;
 $$ LANGUAGE plpgsql;
 """
 
-# work_events: retention (drop daily leaves older than 30 days)
-WORK_EVENTS_RETENTION_FUNC_DDL = """
-CREATE OR REPLACE FUNCTION "{schema}"."maintain_partitions_{schema}_work_events"() RETURNS void AS $$
+# events: retention (drop daily leaves older than 30 days)
+EVENTS_RETENTION_FUNC_DDL = """
+CREATE OR REPLACE FUNCTION "{schema}"."maintain_partitions_{schema}_events"() RETURNS void AS $$
 DECLARE
     row RECORD;
     cutoff_date DATE;
@@ -244,14 +244,14 @@ BEGIN
     -- fail fast and let the next supervisor tick retry rather than stalling.
     SET LOCAL lock_timeout = '10s';
     cutoff_date := CURRENT_DATE - INTERVAL '30 days';
-    -- Match ONLY daily leaf partitions (work_events_YYYY_MM_DD).  The regex
+    -- Match ONLY daily leaf partitions (events_YYYY_MM_DD).  The regex
     -- explicitly excludes the parent table name and the DEFAULT partition.
     FOR row IN
         SELECT relname FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = '{schema}'
           AND c.relkind = 'r'
-          AND c.relname ~ '^work_events_\\d{4}_\\d{2}_\\d{2}$'
+          AND c.relname ~ '^events_\\d{4}_\\d{2}_\\d{2}$'
     LOOP
         BEGIN
             date_str := substring(row.relname from '\\d{4}_\\d{2}_\\d{2}$');
@@ -265,11 +265,11 @@ BEGIN
         END;
     END LOOP;
     -- Drain stale rows from the DEFAULT partition (clock skew / far-future events).
-    DELETE FROM "{schema}".work_events_default
+    DELETE FROM "{schema}".events_default
     WHERE day < (CURRENT_DATE - INTERVAL '30 days');
     GET DIAGNOSTICS default_deleted = ROW_COUNT;
     IF default_deleted > 0 THEN
-        RAISE NOTICE 'Pruned % row(s) from {schema}.work_events_default', default_deleted;
+        RAISE NOTICE 'Pruned % row(s) from {schema}.events_default', default_deleted;
     END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -355,7 +355,7 @@ $$ LANGUAGE plpgsql;
 
 
 async def ensure_workclass_storage_exists(conn: DbResource, schema: str) -> None:
-    """Provision ``tasks.work_events`` and ``tasks.storage`` partitioned tables.
+    """Provision ``tasks.events`` and ``tasks.storage`` partitioned tables.
 
     Called once at ``TasksModule.lifespan`` startup under the same
     ``acquire_startup_lock`` guard as ``ensure_task_storage_exists``.
@@ -378,26 +378,26 @@ async def ensure_workclass_storage_exists(conn: DbResource, schema: str) -> None
     used by ``ensure_task_storage_exists`` throughout ``tasks_module.py``.
     """
     # 1. Parent tables
-    await DDLQuery(WORK_EVENTS_TABLE_DDL).execute(conn, schema=schema)
+    await DDLQuery(EVENTS_TABLE_DDL).execute(conn, schema=schema)
     await DDLQuery(STORAGE_TABLE_DDL).execute(conn, schema=schema)
 
     # 2. DEFAULT partitions — absorbs out-of-range days; idempotent on re-deploy.
-    await DDLQuery(WORK_EVENTS_DEFAULT_PARTITION_DDL).execute(conn, schema=schema)
+    await DDLQuery(EVENTS_DEFAULT_PARTITION_DDL).execute(conn, schema=schema)
     await DDLQuery(STORAGE_DEFAULT_PARTITION_DDL).execute(conn, schema=schema)
 
     # 3. Indexes
-    await DDLQuery(WORK_EVENTS_INDEXES_DDL).execute(conn, schema=schema)
+    await DDLQuery(EVENTS_INDEXES_DDL).execute(conn, schema=schema)
     await DDLQuery(STORAGE_INDEXES_DDL).execute(conn, schema=schema)
 
     # 4. Maintenance functions (CREATE OR REPLACE — always up to date)
-    await DDLQuery(WORK_EVENTS_PARTCREATE_FUNC_DDL).execute(conn, schema=schema)
-    await DDLQuery(WORK_EVENTS_RETENTION_FUNC_DDL).execute(conn, schema=schema)
+    await DDLQuery(EVENTS_PARTCREATE_FUNC_DDL).execute(conn, schema=schema)
+    await DDLQuery(EVENTS_RETENTION_FUNC_DDL).execute(conn, schema=schema)
     await DDLQuery(STORAGE_PARTCREATE_FUNC_DDL).execute(conn, schema=schema)
     await DDLQuery(STORAGE_RETENTION_FUNC_DDL).execute(conn, schema=schema)
 
     # 5. Materialise initial day window by calling the create-ahead functions once.
     await DQLQuery(
-        f'SELECT "{schema}"."create_partitions_{schema}_work_events"()',
+        f'SELECT "{schema}"."create_partitions_{schema}_events"()',
         result_handler=ResultHandler.NONE,
     ).execute(conn)
     await DQLQuery(
@@ -406,7 +406,7 @@ async def ensure_workclass_storage_exists(conn: DbResource, schema: str) -> None
     ).execute(conn)
 
     logger.info(
-        "TasksModule: provisioned workclass storage (work_events + storage) "
+        "TasksModule: provisioned workclass storage (events + storage) "
         "for schema %r with %d-day create-ahead window and %d-day retention.",
         schema,
         _WORKCLASS_CREATE_AHEAD_DAYS,

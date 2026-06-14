@@ -527,8 +527,8 @@ class EventService(EventBusProtocol):
         Two consumers share this method:
 
         * the legacy in-process shard loop (:meth:`_consume_shard`), and
-        * ``WorkEventDrainTask`` — the control-plane drain of
-          ``tasks.work_events`` — which resolves this ``EventService`` via
+        * ``EventDrainTask`` — the control-plane drain of
+          ``tasks.events`` — which resolves this ``EventService`` via
           ``get_protocol(EventBusProtocol)`` and invokes it per claimed row.
 
         An ``event_type`` with no registered listeners is a successful no-op

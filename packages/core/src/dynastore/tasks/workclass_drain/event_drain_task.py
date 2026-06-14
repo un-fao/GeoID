@@ -16,12 +16,12 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# dynastore/tasks/workclass_drain/work_event_drain_task.py
+# dynastore/tasks/workclass_drain/event_drain_task.py
 
-"""``WorkEventDrainTask`` — control-plane-native drain for ``tasks.work_events``.
+"""``EventDrainTask`` — control-plane-native drain for ``tasks.events``.
 
 The event-plane counterpart of :class:`StorageDrainTask`.  Drains the GLOBAL
-``tasks.work_events`` table for ALL tenants (tenancy is the ``schema_name``
+``tasks.events`` table for ALL tenants (tenancy is the ``schema_name``
 column, not the physical table) and delivers each event to the in-process
 async listeners registered on the resolved :class:`EventBusProtocol`.
 
@@ -48,13 +48,13 @@ writes (``mark_done`` / ``mark_retry``) are guarded by::
 If a stalled drain worker reclaimed by another pod (bumping ``claim_version``
 again) later tries to finalize the row, the CAS predicate matches 0 rows — the
 stale write is a no-op and the live owner retains exclusive control.  This is
-the same fence the index plane uses, expressed against the ``work_events``
+the same fence the index plane uses, expressed against the ``tasks.events``
 column vocabulary (``owner_id`` / ``locked_until`` rather than ``claimed_by`` /
 ``claimed_at`` / ``ready_at``).
 
 Lifecycle
 ---------
-``work_events`` carries the legacy event lifecycle vocabulary
+``tasks.events`` carries the legacy event lifecycle vocabulary
 (``PENDING`` / ``PROCESSING`` / ``DEAD_LETTER``) plus a terminal ``COMPLETED``
 state — unlike the legacy ``events.events`` table, drained rows are NOT deleted
 on ack; whole-leaf ``DROP PARTITION`` retention reclaims them (the failure
@@ -106,8 +106,8 @@ def _backoff(retry_count: int) -> int:
     return _BACKOFF_SECONDS[idx]
 
 
-class WorkEventDrainTask(TaskProtocol):
-    """One-shot drain for the global ``tasks.work_events`` event outbox.
+class EventDrainTask(TaskProtocol):
+    """One-shot drain for the global ``tasks.events`` event outbox.
 
     Claims ready rows (and stale PROCESSING rows whose lease expired),
     delivers each to the in-process async listeners via the resolved
@@ -122,7 +122,7 @@ class WorkEventDrainTask(TaskProtocol):
     operator can repoint it via routing config without a code change.
     """
 
-    task_type: ClassVar[str] = "work_event_drain"
+    task_type: ClassVar[str] = "event_drain"
     priority: int = 100
     affinity_tier: ClassVar[Optional[str]] = None
 
@@ -138,7 +138,7 @@ class WorkEventDrainTask(TaskProtocol):
         self.lease_seconds = lease_seconds
 
     async def run(self, payload: TaskPayload) -> TaskReport:
-        """Drain ``tasks.work_events`` to empty, then return.
+        """Drain ``tasks.events`` to empty, then return.
 
         Loops ``drain_once()`` until it reports zero claimed rows.  The
         dispatcher re-enters via NOTIFY when new rows appear.
@@ -162,7 +162,7 @@ class WorkEventDrainTask(TaskProtocol):
         engine = create_async_engine(db_url, poolclass=NullPool)
         # Stable owner_id for the lifetime of this run — the claim stamp and the
         # CAS guard on terminal writes.
-        owner_id = f"work_event_drain:{uuid4()}"
+        owner_id = f"event_drain:{uuid4()}"
         total = 0
         try:
             while True:
@@ -174,7 +174,7 @@ class WorkEventDrainTask(TaskProtocol):
             await engine.dispose()
 
         report = TaskReport.completed(
-            message=f"work event drain completed: {total} event(s) processed",
+            message=f"event drain completed: {total} event(s) processed",
             metrics={"drained": total},
             correlation={"owner_id": owner_id},
         )
@@ -182,7 +182,7 @@ class WorkEventDrainTask(TaskProtocol):
         # Best-effort structured log.  No catalog_id at this level (global
         # task), so we emit to the standard logger for observability.
         logger.info(
-            "WorkEventDrainTask finished",
+            "EventDrainTask finished",
             extra={"task_report": report.log_details()},
         )
 
@@ -218,7 +218,7 @@ class WorkEventDrainTask(TaskProtocol):
         bus = self._resolve_event_bus()
         if bus is None:
             logger.warning(
-                "WorkEventDrainTask: no EventBusProtocol in this process — "
+                "EventDrainTask: no EventBusProtocol in this process — "
                 "%d claimed event(s) queued for retry (wrong worker scope?).",
                 len(rows),
             )
@@ -239,7 +239,7 @@ class WorkEventDrainTask(TaskProtocol):
                 await bus.dispatch_to_listeners(event_type, payload)
             except Exception as exc:  # noqa: BLE001 — surface every handler failure
                 logger.error(
-                    "WorkEventDrainTask: delivery failed for event_id=%s "
+                    "EventDrainTask: delivery failed for event_id=%s "
                     "type=%s: %s",
                     row.get("event_id"),
                     event_type,
@@ -285,7 +285,7 @@ class WorkEventDrainTask(TaskProtocol):
             return get_protocol(EventBusProtocol)
         except Exception:  # noqa: BLE001 — absence is a valid, handled state
             logger.debug(
-                "WorkEventDrainTask: EventBusProtocol resolution raised; "
+                "EventDrainTask: EventBusProtocol resolution raised; "
                 "treating as unavailable.",
                 exc_info=True,
             )
@@ -293,7 +293,7 @@ class WorkEventDrainTask(TaskProtocol):
 
     @staticmethod
     def _coerce_payload(raw: Any) -> Dict[str, Any]:
-        """Normalise a work_events ``payload`` cell to a dict.
+        """Normalise a ``tasks.events`` payload cell to a dict.
 
         asyncpg may surface a JSONB column as either a decoded ``dict`` or a
         raw JSON ``str`` depending on the connection's codec; the legacy
@@ -318,7 +318,7 @@ class WorkEventDrainTask(TaskProtocol):
                 parsed = json.loads(raw)
             except (ValueError, TypeError):
                 logger.warning(
-                    "WorkEventDrainTask: work_events payload is not valid JSON "
+                    "EventDrainTask: tasks.events payload is not valid JSON "
                     "(%r…); delivering with empty args.",
                     str(raw)[:80],
                 )
@@ -326,13 +326,13 @@ class WorkEventDrainTask(TaskProtocol):
             if isinstance(parsed, dict):
                 return parsed
             logger.warning(
-                "WorkEventDrainTask: work_events payload decoded to a non-object "
+                "EventDrainTask: tasks.events payload decoded to a non-object "
                 "(%s); delivering with empty args.",
                 type(parsed).__name__,
             )
             return {}
         logger.warning(
-            "WorkEventDrainTask: work_events payload has unexpected type %s; "
+            "EventDrainTask: tasks.events payload has unexpected type %s; "
             "delivering with empty args.",
             type(raw).__name__,
         )
@@ -368,14 +368,14 @@ class WorkEventDrainTask(TaskProtocol):
         claim_sql = (
             f"WITH claimed AS ("
             f"    SELECT day, event_id"
-            f"    FROM {task_schema}.work_events"
+            f"    FROM {task_schema}.events"
             f"    WHERE status IN ('PENDING', 'PROCESSING')"
             f"      AND (locked_until IS NULL OR locked_until <= now())"
             f"    ORDER BY created_at, event_id"
             f"    LIMIT :batch_size"
             f"    FOR UPDATE SKIP LOCKED"
             f")"
-            f" UPDATE {task_schema}.work_events w"
+            f" UPDATE {task_schema}.events w"
             f" SET status = 'PROCESSING', owner_id = :owner_id,"
             f"     locked_until = now() + make_interval(secs => :lease_seconds),"
             f"     claim_version = w.claim_version + 1"
@@ -425,7 +425,7 @@ class WorkEventDrainTask(TaskProtocol):
         )
 
         sql = (
-            f"UPDATE {task_schema}.work_events"
+            f"UPDATE {task_schema}.events"
             f" SET status='COMPLETED', owner_id=NULL, locked_until=NULL,"
             f"     processed_at=now()"
             f" WHERE day=:day AND event_id=:event_id"
@@ -472,7 +472,7 @@ class WorkEventDrainTask(TaskProtocol):
         backoff = _backoff(retry_count)
 
         sql = (
-            f"UPDATE {task_schema}.work_events"
+            f"UPDATE {task_schema}.events"
             f" SET status = CASE WHEN retry_count + 1 >= :max_retries"
             f"                    THEN 'DEAD_LETTER' ELSE 'PENDING' END,"
             f"     retry_count = retry_count + 1,"
@@ -499,7 +499,7 @@ class WorkEventDrainTask(TaskProtocol):
             )
 
         logger.debug(
-            "WorkEventDrainTask: retry event_id=%s retry_count+1=%d backoff=%ds "
+            "EventDrainTask: retry event_id=%s retry_count+1=%d backoff=%ds "
             "max_retries=%d error=%r",
             row.get("event_id"),
             retry_count + 1,
