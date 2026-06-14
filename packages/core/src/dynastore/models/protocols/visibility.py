@@ -78,6 +78,37 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Process-local fail-closed counters (the infra-free "metric" — read by tests/ops).
+# Keyed by a stable reason string; monotonic for the lifetime of the process.
+_FAIL_CLOSED_COUNTS: dict[str, int] = {}
+
+
+def _signal_fail_closed(
+    reason: str, *, exc_info: bool = False, **fields: object
+) -> None:
+    """Record + log a fail-closed-to-empty listing-visibility event.
+
+    Fires ONLY for outage/misconfiguration cases (provider missing, provider
+    raised, unsupported filter shape) on an IAM-active request — NEVER for the
+    legitimate deny_all answer ("you may see nothing") or for IAM-off (None).
+    Emits a structured WARN carrying a stable ``event`` marker so operators can
+    build a log-based alert, and bumps an in-process counter.
+    """
+    _FAIL_CLOSED_COUNTS[reason] = _FAIL_CLOSED_COUNTS.get(reason, 0) + 1
+    logger.warning(
+        "listing-visibility failing closed to empty (reason=%s) — an IAM-active "
+        "request will see an empty listing; check the authorization provider.",
+        reason,
+        exc_info=exc_info,
+        extra={"event": "listing_visibility_fail_closed", "reason": reason, **fields},
+    )
+
+
+def get_fail_closed_counts() -> dict[str, int]:
+    """Snapshot of fail-closed-to-empty counts by reason (monotonic). Test/ops read."""
+    return dict(_FAIL_CLOSED_COUNTS)
+
+
 __all__ = [
     "RequestVisibility",
     "ListingVisibilityProtocol",
@@ -89,6 +120,7 @@ __all__ = [
     "resolve_catalog_listing_ids",
     "resolve_collection_listing_ids",
     "resolve_asset_listing_ids",
+    "get_fail_closed_counts",
 ]
 
 
@@ -198,10 +230,11 @@ def extract_id_constraint(
     if flt.is_unconditional:
         return None
     if flt.union or flt.deny or flt.allow_all:
-        logger.warning(
-            "extract_id_constraint: unsupported listing-filter shape "
-            "(union=%d deny=%d allow_all=%s) — failing closed to empty",
-            len(flt.union), len(flt.deny), flt.allow_all,
+        _signal_fail_closed(
+            "unsupported_filter_shape",
+            union=len(flt.union),
+            deny=len(flt.deny),
+            allow_all=flt.allow_all,
         )
         return frozenset()
 
@@ -241,11 +274,7 @@ async def _resolve_listing_ids(
 
     provider = get_protocol(ListingVisibilityProtocol)
     if provider is None:
-        logger.warning(
-            "Listing visibility requested (caller snapshot present) but no "
-            "ListingVisibilityProtocol provider is registered — failing "
-            "closed to an empty listing."
-        )
+        _signal_fail_closed("provider_missing", catalog_id=catalog_id)
         return frozenset()
 
     try:
@@ -254,12 +283,7 @@ async def _resolve_listing_ids(
         else:
             flt = await provider.collection_listing_filter(visibility, catalog_id)
     except Exception:
-        logger.warning(
-            "Listing-visibility provider failed (catalog_id=%s) — failing "
-            "closed to an empty listing.",
-            catalog_id,
-            exc_info=True,
-        )
+        _signal_fail_closed("provider_error", exc_info=True, catalog_id=catalog_id)
         return frozenset()
     return extract_id_constraint(flt)
 
@@ -292,22 +316,21 @@ async def resolve_asset_listing_ids(
 
     provider = get_protocol(ListingVisibilityProtocol)
     if provider is None:
-        logger.warning(
-            "Asset listing visibility requested (caller snapshot present) but no "
-            "ListingVisibilityProtocol provider is registered — failing "
-            "closed to an empty listing."
+        _signal_fail_closed(
+            "provider_missing",
+            catalog_id=catalog_id,
+            collection_id=collection_id,
         )
         return frozenset()
 
     try:
         flt = await provider.asset_listing_filter(visibility, catalog_id, collection_id)
     except Exception:
-        logger.warning(
-            "Listing-visibility provider failed for asset scope "
-            "(catalog_id=%s collection_id=%s) — failing closed to an empty listing.",
-            catalog_id,
-            collection_id,
+        _signal_fail_closed(
+            "provider_error",
             exc_info=True,
+            catalog_id=catalog_id,
+            collection_id=collection_id,
         )
         return frozenset()
     return extract_id_constraint(flt)
