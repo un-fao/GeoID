@@ -135,8 +135,9 @@ async def test_register_supervisor_jobs_includes_task_jobs():
     cadence_map = dict(upserted)
     job_names = list(cadence_map.keys())
 
-    # Total: 6 original + 3 task + 4 workclass = 13
-    assert len(job_names) == 13
+    # Total: 3 logs/iam + 3 task + 4 events/storage partition+retention = 10
+    # (the 3 legacy events.events accumulation jobs were retired in #1807 P4).
+    assert len(job_names) == 10
 
     assert JOB_TASK_REAPER in cadence_map
     assert JOB_TASK_PARTITION_CREATE in cadence_map

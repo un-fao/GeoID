@@ -21,10 +21,8 @@
 """``StorageDrainTask`` — control-plane-native drain for ``tasks.storage``.
 
 Drains the GLOBAL ``tasks.storage`` table for ALL tenants (tenancy is the
-``schema_name`` column, not the physical table). This is the storage-plane
-counterpart of ``OutboxDrainTask``; the two tasks coexist during the WorkClass
-migration window because they use distinct ``task_type`` values
-(``"storage_drain"`` vs ``"index_drain"``).
+``schema_name`` column, not the physical table). Uses ``task_type``
+``"storage_drain"``.
 
 Claim_version fencing (#1945)
 -----------------------------
@@ -41,7 +39,7 @@ exclusive control.
 Drain loop
 ----------
 ``run(payload)`` loops ``drain_once()`` until it returns 0, then exits
-(one-shot drain-to-empty shape, matching ``OutboxDrainTask``).  The
+(one-shot drain-to-empty shape).  The
 dispatcher restarts via LISTEN / periodic catch-up; a single ``run`` call
 only needs to clear the current backlog.
 """
@@ -64,7 +62,7 @@ from dynastore.tools.db import validate_sql_identifier
 logger = logging.getLogger(__name__)
 
 
-# Per-attempt retry backoff in seconds (mirrors pg_outbox._BACKOFF_SECONDS).
+# Per-attempt retry backoff in seconds.
 # Index by ``attempts`` (0-based); the last entry caps the backoff at ~30 min.
 _BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
 
@@ -72,7 +70,7 @@ _BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
 # reclaim by any drain worker.
 _DEFAULT_LEASE_SECONDS: int = 300
 
-# Default claim batch size — mirrors OutboxDrainTask.
+# Default claim batch size.
 _DEFAULT_BATCH_SIZE: int = 1500
 
 # The well-known driver_id for the Elasticsearch items secondary-index driver.
@@ -365,7 +363,7 @@ class StorageDrainTask(TaskProtocol):
             ItemsElasticsearchDriver,
         )
         from dynastore.modules.storage.driver_registry import DriverRegistry
-        from dynastore.tasks.outbox_drain.es_indexer_adapter import ESBulkIndexer
+        from dynastore.tasks.workclass_drain.es_indexer_adapter import ESBulkIndexer
 
         # --- Step 1: registry-driven resolution ---
         driver = (
@@ -403,8 +401,8 @@ class StorageDrainTask(TaskProtocol):
         # elasticsearch extension is installed but discovery hasn't run, or the
         # worker is in a lightweight context that skips protocol registration).
         if driver_id == _ES_ITEMS_DRIVER_ID:
-            # cast(Any, ...) mirrors build_es_drain_task: pyright sees the
-            # Protocol-mixin as abstract, but runtime instantiation is valid.
+            # cast(Any, ...): pyright sees the Protocol-mixin as abstract, but
+            # runtime instantiation is valid.
             es_driver = cast(Any, ItemsElasticsearchDriver)()
             if not es_driver.is_available():
                 logger.warning(
@@ -430,7 +428,7 @@ class StorageDrainTask(TaskProtocol):
 
         ``driver_instance_id`` is derived deterministically from the
         ``(driver_id, catalog_id, collection_id)`` triple — the ``tasks.storage``
-        table has no ``driver_instance_id`` column (unlike ``storage_outbox``).
+        table has no ``driver_instance_id`` column; it is derived here.
 
         Column mapping: ``entity_id`` (storage table) → ``IndexableOp.item_id``.
         # TODO(#1807 P1.3): branch on entity_kind for collection/catalog/asset tiers

@@ -1,20 +1,8 @@
 {
   "class_key": "task_routing_config",
+  "override": false,
   "value": {
-    "tasks": {
-      "event_drain": [
-        {
-          "runner": "background",
-          "consumers": ["catalog"]
-        }
-      ],
-      "index_drain": [
-        {
-          "runner": "background",
-          "consumers": ["worker"]
-        }
-      ]
-    },
+    "tasks": {},
     "processes": {}
   }
 }

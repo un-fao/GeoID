@@ -35,7 +35,8 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any, List
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, patch
 
 from dynastore.modules.catalog.item_service import ItemService
 from dynastore.modules.storage.routing_config import (
@@ -45,24 +46,18 @@ from dynastore.modules.storage.routing_config import (
     WriteMode,
 )
 
-
-class _FakeOutbox:
-    """Captures ``enqueue_bulk`` calls without touching a DB."""
-
-    def __init__(self) -> None:
-        self.calls: List[Any] = []
-
-    async def enqueue_bulk(self, conn: Any, *, catalog_id: str, rows: Any) -> None:
-        self.calls.append(
-            SimpleNamespace(conn=conn, catalog_id=catalog_id, rows=list(rows))
-        )
+# Where the delete path imports the storage-emit function (patched per test).
+_ENQUEUE = "dynastore.modules.storage.storage_emit.enqueue_storage_op"
 
 
-def _service_with(routing_entries: List[OperationDriverEntry], outbox: _FakeOutbox) -> ItemService:
-    """Build an ItemService with the routing/outbox test seams injected.
+def _service_with(routing_entries: List[OperationDriverEntry]) -> ItemService:
+    """Build an ItemService with the routing test seam injected.
 
-    ``__new__`` skips ``__init__`` — ``_enqueue_index_deletes`` only reads
-    the two seams plus module-level imports, so no engine/state is needed.
+    ``__new__`` skips ``__init__`` — ``_enqueue_index_deletes`` only reads the
+    routing resolver plus module-level imports, so no engine/state is needed.
+    A non-None ``_test_outbox_store`` sentinel satisfies the "outbox wired"
+    presence guard; the actual enqueue goes through ``enqueue_storage_op``
+    (#1807 P4), which the tests patch.
     """
     svc = ItemService.__new__(ItemService)
 
@@ -70,7 +65,7 @@ def _service_with(routing_entries: List[OperationDriverEntry], outbox: _FakeOutb
         return SimpleNamespace(operations={Operation.WRITE: list(routing_entries)})
 
     svc._test_routing_resolver = _resolver  # type: ignore[attr-defined]
-    svc._test_outbox_store = outbox  # type: ignore[attr-defined]
+    svc._test_outbox_store = object()  # type: ignore[attr-defined]
     return svc
 
 
@@ -87,22 +82,26 @@ def test_delete_enqueues_one_record_per_geoid_keyed_by_geoid():
     """Each soft-deleted geoid yields one delete OutboxRecord whose
     ``idempotency_key`` (the ES ``_id``) is that geoid — never the
     external/path id."""
-    outbox = _FakeOutbox()
-    svc = _service_with([_async_es_entry()], outbox)
+    svc = _service_with([_async_es_entry()])
     geoids = [
         "11111111-1111-7111-8111-111111111111",
         "22222222-2222-7222-8222-222222222222",
     ]
-
     conn = object()
-    asyncio.run(svc._enqueue_index_deletes(conn, "cat-x", "col-y", geoids))
+    captured: Dict[str, Any] = {}
 
-    assert len(outbox.calls) == 1
-    call = outbox.calls[0]
-    assert call.conn is conn, "must enqueue on the caller's TX conn (atomicity)"
-    assert call.catalog_id == "cat-x"
-    assert len(call.rows) == len(geoids)
-    for rec, gid in zip(call.rows, geoids, strict=True):
+    async def _fake_enqueue(c: Any, *, catalog_id: str, rows: Any) -> None:
+        captured["conn"] = c
+        captured["catalog_id"] = catalog_id
+        captured["rows"] = list(rows)
+
+    with patch(_ENQUEUE, _fake_enqueue):
+        asyncio.run(svc._enqueue_index_deletes(conn, "cat-x", "col-y", geoids))
+
+    assert captured["conn"] is conn, "must enqueue on the caller's TX conn (atomicity)"
+    assert captured["catalog_id"] == "cat-x"
+    assert len(captured["rows"]) == len(geoids)
+    for rec, gid in zip(captured["rows"], geoids, strict=True):
         assert rec.op == "delete"
         assert rec.idempotency_key == gid, (
             "ES _id must be the geoid the upsert indexed under, not the "
@@ -117,21 +116,23 @@ def test_delete_enqueues_one_record_per_geoid_keyed_by_geoid():
 def test_delete_is_noop_when_no_geoids_resolved():
     """No soft-deleted rows ⇒ no enqueue (a missed external id must not
     fan out a phantom delete)."""
-    outbox = _FakeOutbox()
-    svc = _service_with([_async_es_entry()], outbox)
-    asyncio.run(svc._enqueue_index_deletes(object(), "c", "k", []))
-    assert outbox.calls == []
+    svc = _service_with([_async_es_entry()])
+    enqueue = AsyncMock()
+    with patch(_ENQUEUE, enqueue):
+        asyncio.run(svc._enqueue_index_deletes(object(), "c", "k", []))
+    enqueue.assert_not_awaited()
 
 
 def test_delete_skips_non_async_outbox_index_entries():
     """Only ASYNC+OUTBOX secondary-index WRITE entries are enqueued here — a
     SYNC/FATAL primary write entry must not produce an outbox delete row."""
-    outbox = _FakeOutbox()
     sync_entry = OperationDriverEntry(
         driver_ref="items_postgresql_driver",
         on_failure=FailurePolicy.FATAL,
         write_mode=WriteMode.SYNC,
     )
-    svc = _service_with([sync_entry], outbox)
-    asyncio.run(svc._enqueue_index_deletes(object(), "c", "k", ["g1"]))
-    assert outbox.calls == []
+    svc = _service_with([sync_entry])
+    enqueue = AsyncMock()
+    with patch(_ENQUEUE, enqueue):
+        asyncio.run(svc._enqueue_index_deletes(object(), "c", "k", ["g1"]))
+    enqueue.assert_not_awaited()

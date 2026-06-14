@@ -32,8 +32,8 @@ Covered:
 - reclaim_stale_jobs: SQL shape, cutoff calculation
 - Each job builds the correct SQL / predicate text (assert template + params)
 - Bounded-batch loop terminates at 0 rows
-- build_supervisor_config reads the right env vars
-- register_supervisor_jobs upserts all 9 job names (6 original + 3 task)
+- build_supervisor_config provides the task reaper hard_cap
+- register_supervisor_jobs upserts all 10 job names (logs/iam + task + events/storage maintenance)
 """
 from __future__ import annotations
 
@@ -53,9 +53,6 @@ from dynastore.modules.catalog.db_init.maintenance_schedule import (
     _RECLAIM_STALE_JOBS,
 )
 from dynastore.modules.catalog.maintenance_supervisor import (
-    JOB_EVENTS_DLQ_PRUNE,
-    JOB_EVENTS_PENDING_ALERT,
-    JOB_EVENTS_STUCK_REAPER,
     JOB_IAM_PRUNE,
     JOB_STORAGE_PARTITION_CREATE,
     JOB_STORAGE_RETENTION,
@@ -67,10 +64,7 @@ from dynastore.modules.catalog.maintenance_supervisor import (
     JOB_EVENTS_PARTITION_CREATE,
     JOB_EVENTS_RETENTION,
     MaintenanceSupervisor,
-    _CADENCE_DLQ_PRUNE,
     _CADENCE_IAM_PRUNE,
-    _CADENCE_PENDING_ALERT,
-    _CADENCE_STUCK_REAPER,
     _CADENCE_SYSTEM_LOGS,
     _CADENCE_TASK_PARTITION_CREATE,
     _CADENCE_TASK_REAPER,
@@ -80,9 +74,6 @@ from dynastore.modules.catalog.maintenance_supervisor import (
     _STALE_AFTER_SECONDS,
     _SUPERSEDED_CRON_JOBS,
     _SUPERSEDED_TENANT_LOG_PREFIX,
-    _run_events_dlq_prune,
-    _run_events_pending_alert,
-    _run_events_stuck_reaper,
     _run_iam_prune,
     _run_system_logs_prune,
     _run_tenant_logs_prune,
@@ -171,10 +162,10 @@ async def test_run_once_dispatches_due_jobs_only():
     """run_once only calls _dispatch_job for jobs returned by get_due_jobs."""
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
-    due = [_make_job_row(JOB_EVENTS_DLQ_PRUNE)]
+    due = [_make_job_row(JOB_TASK_REAPER)]
 
     async def _fake_managed_txn(eng):
         conn = AsyncMock()
@@ -222,7 +213,7 @@ async def test_run_once_dispatches_due_jobs_only():
 
         await supervisor.run_once()
 
-    assert dispatched == [JOB_EVENTS_DLQ_PRUNE]
+    assert dispatched == [JOB_TASK_REAPER]
 
 
 @pytest.mark.asyncio
@@ -230,7 +221,7 @@ async def test_run_once_no_due_jobs_does_nothing():
     """run_once with an empty due list logs debug and does not call _dispatch_job."""
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
@@ -274,11 +265,11 @@ async def test_run_once_failing_job_marks_error_others_still_run():
     """A job that raises → mark_done(status='error'); remaining jobs still run."""
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     due = [
-        _make_job_row(JOB_EVENTS_DLQ_PRUNE),
+        _make_job_row(JOB_TASK_REAPER),
         _make_job_row(JOB_IAM_PRUNE),
     ]
 
@@ -298,7 +289,7 @@ async def test_run_once_failing_job_marks_error_others_still_run():
     async def _failing_then_ok(job_name, conn, config):
         nonlocal call_count
         call_count += 1
-        if job_name == JOB_EVENTS_DLQ_PRUNE:
+        if job_name == JOB_TASK_REAPER:
             raise RuntimeError("simulated dlq failure")
         return 7
 
@@ -330,7 +321,7 @@ async def test_run_once_failing_job_marks_error_others_still_run():
 
     assert call_count == 2
 
-    failed = next(d for d in mark_done_calls if d["job_name"] == JOB_EVENTS_DLQ_PRUNE)
+    failed = next(d for d in mark_done_calls if d["job_name"] == JOB_TASK_REAPER)
     assert failed["status"] == "error"
     assert "simulated dlq failure" in failed["error"]
 
@@ -349,7 +340,7 @@ async def test_run_job_calls_mark_running_before_dispatch():
     """_run_job must call mark_running before invoking _dispatch_job."""
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
@@ -389,7 +380,7 @@ async def test_run_job_mark_done_receives_status_ok_and_rows():
     """_run_job records status='ok' and the rowcount returned by _dispatch_job."""
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
@@ -427,86 +418,6 @@ async def test_run_job_mark_done_receives_status_ok_and_rows():
 # ---------------------------------------------------------------------------
 # Job SQL / predicate checks
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_events_dlq_prune_sql_references_dead_letter_and_schema():
-    """_run_events_dlq_prune must query status='DEAD_LETTER' with a day-based interval."""
-    conn = AsyncMock()
-    exec_calls: list[tuple] = []
-
-    async def _fake_dqlquery_execute(c, **kw):
-        exec_calls.append(kw)
-        return 0  # terminate after first batch
-
-    with patch(
-        "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
-    ) as MockDQL:
-        instance = MagicMock()
-        instance.execute = AsyncMock(side_effect=_fake_dqlquery_execute)
-        MockDQL.return_value = instance
-
-        await _run_events_dlq_prune(conn, dead_letter_days=30)
-
-    # The SQL template passed to DQLQuery must reference DEAD_LETTER and dead_letter_days
-    sql_arg = MockDQL.call_args[0][0]
-    assert "DEAD_LETTER" in sql_arg
-    assert "dead_letter_days" in sql_arg or ":dead_letter_days" in sql_arg
-    # Parameter must be forwarded
-    assert exec_calls[0]["dead_letter_days"] == 30
-    assert exec_calls[0]["batch_size"] == _PRUNE_BATCH
-
-
-@pytest.mark.asyncio
-async def test_events_stuck_reaper_sql_references_processing_and_cte():
-    """_run_events_stuck_reaper SQL must use the CTE pattern with PROCESSING status."""
-    conn = AsyncMock()
-
-    async def _fake_dqlquery_execute(c, **kw):
-        return 0
-
-    with patch(
-        "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
-    ) as MockDQL:
-        instance = MagicMock()
-        instance.execute = AsyncMock(side_effect=_fake_dqlquery_execute)
-        MockDQL.return_value = instance
-
-        await _run_events_stuck_reaper(conn, timeout_minutes=15, max_retries=3)
-
-    sql_arg = MockDQL.call_args[0][0]
-    assert "PROCESSING" in sql_arg
-    assert "FOR UPDATE SKIP LOCKED" in sql_arg
-    assert "DEAD_LETTER" in sql_arg
-    assert "PENDING" in sql_arg
-    assert "reaped stale PROCESSING" in sql_arg
-
-
-@pytest.mark.asyncio
-async def test_events_pending_alert_logs_warning_per_shard():
-    """_run_events_pending_alert emits a WARNING for each shard in the result."""
-    conn = AsyncMock()
-    rows = [
-        {"shard": 0, "n": 5, "oldest_age_sec": 9000},
-        {"shard": 1, "n": 3, "oldest_age_sec": 7200},
-    ]
-
-    with (
-        patch(
-            "dynastore.modules.catalog.maintenance_supervisor.DQLQuery"
-        ) as MockDQL,
-        patch(
-            "dynastore.modules.catalog.maintenance_supervisor.logger"
-        ) as mock_logger,
-    ):
-        instance = MagicMock()
-        instance.execute = AsyncMock(return_value=rows)
-        MockDQL.return_value = instance
-
-        total = await _run_events_pending_alert(conn, dead_letter_days=30)
-
-    assert total == 8  # 5 + 3
-    assert mock_logger.warning.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -575,21 +486,21 @@ async def test_system_logs_prune_bounded_batch_loop():
 # ---------------------------------------------------------------------------
 
 
-def test_build_supervisor_config_default_values():
-    """build_supervisor_config returns defaults when env vars are unset."""
-    cfg = build_supervisor_config()
-    assert cfg["dead_letter_days"] == 30
-    assert cfg["timeout_minutes"] == 15
-    assert cfg["max_retries"] == 3
+def test_build_supervisor_config_provides_task_reaper_hard_cap():
+    """build_supervisor_config returns the task reaper hard_cap.
 
-
-def test_build_supervisor_config_reads_env_vars(monkeypatch):
-    """build_supervisor_config picks up overridden env vars."""
-    monkeypatch.setenv("GLOBAL_EVENT_RETENTION_DAYS", "60")
-    monkeypatch.setenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "5")
+    The legacy events accumulation knobs (dead_letter_days/timeout_minutes/
+    max_retries) were removed with the events plane (#1807 P4): tasks.events
+    now owns its own retry/dead-letter and DROP-PARTITION retention.
+    """
     cfg = build_supervisor_config()
-    assert cfg["dead_letter_days"] == 60
-    assert cfg["timeout_minutes"] == 5
+    assert "hard_cap" in cfg
+    assert isinstance(cfg["hard_cap"], int)
+    assert cfg["hard_cap"] >= 1
+    # The retired events knobs must no longer be present.
+    assert "dead_letter_days" not in cfg
+    assert "timeout_minutes" not in cfg
+    assert "max_retries" not in cfg
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +510,7 @@ def test_build_supervisor_config_reads_env_vars(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_register_supervisor_jobs_upserts_all_expected_jobs():
-    """register_supervisor_jobs upserts all 13 jobs (6 original + 3 task + 4 workclass)."""
+    """register_supervisor_jobs upserts all 10 jobs (3 logs/iam + 3 task + 4 events/storage partition+retention)."""
     engine = _fake_engine()
     upserted: list[tuple[str, int]] = []
 
@@ -638,9 +549,6 @@ async def test_register_supervisor_jobs_upserts_all_expected_jobs():
 
     job_names = [name for name, _ in upserted]
     assert sorted(job_names) == sorted([
-        JOB_EVENTS_DLQ_PRUNE,
-        JOB_EVENTS_STUCK_REAPER,
-        JOB_EVENTS_PENDING_ALERT,
         JOB_TENANT_LOGS_PRUNE,
         JOB_SYSTEM_LOGS_PRUNE,
         JOB_IAM_PRUNE,
@@ -654,9 +562,6 @@ async def test_register_supervisor_jobs_upserts_all_expected_jobs():
     ])
 
     cadence_map = dict(upserted)
-    assert cadence_map[JOB_EVENTS_DLQ_PRUNE] == _CADENCE_DLQ_PRUNE
-    assert cadence_map[JOB_EVENTS_STUCK_REAPER] == _CADENCE_STUCK_REAPER
-    assert cadence_map[JOB_EVENTS_PENDING_ALERT] == _CADENCE_PENDING_ALERT
     assert cadence_map[JOB_TENANT_LOGS_PRUNE] == _CADENCE_TENANT_LOGS
     assert cadence_map[JOB_SYSTEM_LOGS_PRUNE] == _CADENCE_SYSTEM_LOGS
     assert cadence_map[JOB_IAM_PRUNE] == _CADENCE_IAM_PRUNE
@@ -829,7 +734,7 @@ async def test_run_job_skips_when_mark_running_returns_zero_rows(caplog):
 
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
@@ -857,7 +762,7 @@ async def test_run_job_skips_when_mark_running_returns_zero_rows(caplog):
         mock_mtx.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with caplog.at_level(logging.WARNING, logger="dynastore.modules.catalog.maintenance_supervisor"):
-            await supervisor._run_job(engine, repo_mock, JOB_EVENTS_DLQ_PRUNE, _utc(2026, 6, 10))
+            await supervisor._run_job(engine, repo_mock, JOB_TASK_REAPER, _utc(2026, 6, 10))
 
     assert dispatched == [], "dispatch must NOT be called when mark_running returns 0"
     repo_mock.mark_done.assert_not_called()
@@ -907,7 +812,7 @@ async def test_dispatch_job_raises_timeout_on_slow_job():
     """
     engine = _fake_engine()
     supervisor = MaintenanceSupervisor(
-        {"dead_letter_days": 30, "timeout_minutes": 15, "max_retries": 3}
+        {"hard_cap": 5}
     )
 
     repo_mock = MagicMock(spec=MaintenanceScheduleRepository)
@@ -1018,20 +923,3 @@ async def test_tenant_logs_prune_continues_on_per_schema_error(caplog):
     )
 
 
-# ---------------------------------------------------------------------------
-# build_supervisor_config imports max_retries from events_module
-# ---------------------------------------------------------------------------
-
-
-def test_build_supervisor_config_max_retries_matches_events_module():
-    """build_supervisor_config must import MAX_RETRIES from events_module,
-    not hardcode 3, to prevent silent drift between the supervisor and the
-    events consumer."""
-    from dynastore.modules.events.events_module import MAX_RETRIES as events_max_retries
-
-    cfg = build_supervisor_config()
-    assert cfg["max_retries"] == events_max_retries, (
-        f"build_supervisor_config max_retries={cfg['max_retries']} does not match "
-        f"events_module.MAX_RETRIES={events_max_retries}. "
-        "The supervisor must import this constant, not hardcode it."
-    )

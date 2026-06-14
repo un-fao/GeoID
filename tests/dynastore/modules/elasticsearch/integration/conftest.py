@@ -67,39 +67,38 @@ def _resolve_asyncpg_url() -> str:
 
 
 async def drain_es_items_outbox(catalog_id: str) -> int:
-    """Drive the ES items OUTBOX drain in-process until the queue is empty.
+    """Drive the ES items storage drain in-process until the queue is empty.
 
-    Production runs the drain inside a separate Cloud Run Job whose
-    ``CapabilityMap`` advertises ``index_drain``; the in-process test
-    harness never claims that task, so a STAC POST's atomically-enqueued
-    ``OutboxDrainTask`` sits forever and a follow-up ``refresh + search``
-    hits an empty index (#614). We open a dedicated asyncpg connection,
-    pin ``search_path`` to the catalog schema, and call ``drain_once()``
-    until it reports zero.
+    Production runs the drain inside the ``catalog`` tier (a tier-agnostic
+    ``storage_drain`` task routed there by the default matrix); the in-process
+    test harness never claims that task, so a STAC POST's atomically-enqueued
+    ``storage_drain`` row sits forever and a follow-up ``refresh + search``
+    hits an empty index (#614). We construct a :class:`StorageDrainTask`,
+    open a dedicated SQLAlchemy engine, and call ``drain_once()`` until it
+    reports zero.
+
+    The storage outbox is now the global ``tasks.storage`` table keyed by
+    ``catalog_id`` (#1807 P4), not a per-schema ``storage_outbox`` — so a
+    single drain empties every pending row regardless of physical schema.
+    ``catalog_id`` is retained for signature compatibility and diagnostics.
 
     Returns the total rows drained (informational; tests rely on the
     side effect of items appearing in ES).
     """
-    import asyncpg
+    from uuid import uuid4
 
-    from dynastore.tasks.outbox_drain.es_entrypoint import build_es_drain_task
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
 
-    conn = await asyncpg.connect(_resolve_asyncpg_url())
+    from dynastore.tasks.workclass_drain.storage_drain_task import StorageDrainTask
+
+    sa_url = _resolve_asyncpg_url().replace(
+        "postgresql://", "postgresql+asyncpg://", 1
+    )
+    engine = create_async_engine(sa_url, poolclass=NullPool)
+    task = StorageDrainTask()
+    owner_id = f"test_drain:{uuid4()}"
     try:
-        # storage_outbox lives in the catalog's physical_schema (s_<rand>),
-        # not under the catalog_id itself.  Resolve it from catalog.catalogs
-        # before pinning search_path — without this, the drain queries
-        # against the wrong schema and surfaces ``relation "storage_outbox"
-        # does not exist`` even though it was created by ``create_catalog``.
-        physical_schema = await conn.fetchval(
-            'SELECT physical_schema FROM catalog.catalogs '
-            'WHERE id = $1 AND deleted_at IS NULL',
-            catalog_id,
-        )
-        if not physical_schema:
-            physical_schema = catalog_id
-        await conn.execute(f'SET search_path TO "{physical_schema}"')
-        task = await build_es_drain_task(conn=conn, catalog_id=catalog_id)
         total = 0
         # Bounded loop: a healthy claim batch is finite; the cap guards
         # against an indexer that keeps marking rows transient. If we hit
@@ -109,20 +108,20 @@ async def drain_es_items_outbox(catalog_id: str) -> int:
         cap = 50
         drained = False
         for _ in range(cap):
-            n = await task.drain_once()
+            n = await task.drain_once(engine=engine, owner_id=owner_id)
             total += n
             if n == 0:
                 drained = True
                 break
         if not drained:
             raise AssertionError(
-                f"OUTBOX drain for catalog={catalog_id!r} did not empty after {cap} iterations "
+                f"storage drain for catalog={catalog_id!r} did not empty after {cap} iterations "
                 f"({total} rows drained); a downstream indexer is likely marking rows transient. "
-                "Inspect storage_outbox for this schema before retrying."
+                "Inspect tasks.storage for pending rows before retrying."
             )
         return total
     finally:
-        await conn.close()
+        await engine.dispose()
 
 
 async def refresh_items_index(catalog_id: str) -> None:

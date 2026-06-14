@@ -76,17 +76,19 @@ def test_no_legacy_alias_maps_exported():
 
 
 def test_outbox_drain_key_not_resolved_by_shim():
-    """resolved_targets must not translate 'outbox_drain' → 'index_drain'.
+    """resolved_targets must not translate the retired 'outbox_drain' key.
 
-    The seeder fixup ensures stored configs no longer carry 'outbox_drain';
-    a direct miss on the key returns an empty list.
+    Both the Phase-0 'outbox_drain' alias and the 'index_drain' task it mapped
+    to are gone (#1807 P4: the storage drain is now 'storage_drain'). A direct
+    miss on a retired key returns an empty list — no implicit translation.
     """
-    target = RunnerTarget(runner="background", consumers=["worker"])
+    target = RunnerTarget(runner="background", consumers=["catalog"])
     cfg = TaskRoutingConfig(
-        tasks={"index_drain": [target]},
+        tasks={"storage_drain": [target]},
         processes={},
     )
     # Direct hit still works.
-    assert cfg.resolved_targets("index_drain") == [target]
-    # Old key is not translated — seeder fixup handles that.
+    assert cfg.resolved_targets("storage_drain") == [target]
+    # Retired keys are not translated to the live key.
     assert cfg.resolved_targets("outbox_drain") == []
+    assert cfg.resolved_targets("index_drain") == []

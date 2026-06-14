@@ -25,7 +25,7 @@ Scenarios covered:
    volume for hot-update collections without losing fidelity, since a
    consumer applying the original ops in order would converge on the
    same final state.
-2. **Atomicity on outbox failure** — when ``OutboxStore.enqueue_bulk``
+2. **Atomicity on outbox failure** — when ``enqueue_storage_op``
    raises inside the wrapping TX, the FATAL driver's bulk write is
    rolled back. ``upsert_bulk`` re-raises so the caller knows nothing
    landed.
@@ -41,18 +41,19 @@ Scenarios covered:
    access-aware driver, the outbox payload also carries ``_visibility`` /
    ``_owner`` (#1285/#1287).
 
-The tests inject a fake routing resolver, a fake driver registry, a
-fake outbox store, and a stub TX/db resource via the new
-``ItemService.upsert_bulk`` injection seams. They never construct the
-full app graph — keeping the suite cheap and targeted at the new
-contract introduced for Phase 9 (atomic outbox enqueue).
+The tests inject a fake routing resolver, a fake driver registry, an
+outbox-store presence sentinel, and a stub TX/db resource via the
+``ItemService.upsert_bulk`` injection seams, and patch the module-level
+``enqueue_storage_op`` (the single storage write path since #1807 P4) to
+capture the enqueued rows. They never construct the full app graph —
+keeping the suite cheap and targeted at the atomic-enqueue contract.
 """
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
-from uuid import UUID
+from unittest.mock import patch
 
 import pytest
 
@@ -64,6 +65,9 @@ from dynastore.modules.storage.routing_config import (
     OperationDriverEntry,
     WriteMode,
 )
+
+# Where ``upsert_bulk`` imports the storage-emit function (patched per test).
+_ENQUEUE = "dynastore.modules.storage.storage_emit.enqueue_storage_op"
 
 
 # ---------------------------------------------------------------------------
@@ -132,17 +136,18 @@ class _RecordingDriver:
         return list(entities)
 
 
-class _RecordingOutbox:
-    """Stub :class:`OutboxStore` — records enqueue_bulk calls.
+class _EnqueueCapture:
+    """Stand-in for ``enqueue_storage_op`` — records (conn, catalog_id, rows).
 
-    Implements the full ``OutboxStore`` runtime_checkable Protocol surface
-    (six methods); tests only exercise ``enqueue_bulk``."""
+    Patched over the module-level function the write path imports, so the
+    tests can assert on the enqueued rows without a live DB. Set
+    ``raise_on_enqueue`` to simulate a failure inside the wrapping TX."""
 
     def __init__(self, *, raise_on_enqueue: bool = False) -> None:
         self.enqueued_calls: List[Dict[str, Any]] = []
         self.raise_on_enqueue = raise_on_enqueue
 
-    async def enqueue_bulk(
+    async def __call__(
         self,
         conn: Any = None,
         *,
@@ -156,32 +161,6 @@ class _RecordingOutbox:
         })
         if self.raise_on_enqueue:
             raise RuntimeError("outbox enqueue failed (test)")
-
-    async def claim_batch(
-        self, *, driver_ref: str, catalog_id: str,
-        batch_size: int, claimed_by: str,
-    ) -> List[Any]:
-        return []
-
-    async def mark_done(self, *, catalog_id: str, op_ids: Sequence[UUID]) -> None:
-        return None
-
-    async def mark_retry(
-        self, *, catalog_id: str, op_ids: Sequence[UUID],
-        error: str, attempts_seen: int,
-    ) -> None:
-        return None
-
-    async def mark_failed(
-        self, *, catalog_id: str, op_ids: Sequence[UUID], error: str,
-    ) -> None:
-        return None
-
-    def listen(self, *, driver_ref: str, catalog_id: str):  # type: ignore[no-untyped-def]
-        async def _empty():
-            if False:
-                yield  # pragma: no cover
-        return _empty()
 
 
 def _make_routing_resolver(
@@ -234,19 +213,20 @@ def _service_with(
     *,
     engine: _FakeEngine,
     driver_map: Dict[str, Any],
-    outbox: Any,
     fatal_drivers: List[str],
     outbox_drivers: List[str],
 ) -> ItemService:
     svc = ItemService(engine=engine)  # type: ignore[arg-type]
     # Inject test seams. The new ``upsert_bulk`` honours these slots when
-    # they are not None, bypassing the production routing/registry/outbox
-    # resolution helpers.
+    # they are not None, bypassing the production routing/registry resolution
+    # helpers. ``_test_outbox_store`` is a non-None presence sentinel that
+    # satisfies the "outbox wired" guard; the actual enqueue goes through the
+    # patched module-level ``enqueue_storage_op``.
     svc._test_routing_resolver = _make_routing_resolver(  # type: ignore[attr-defined]
         fatal_drivers=fatal_drivers, outbox_drivers=outbox_drivers,
     )
     svc._test_driver_registry = _make_registry(driver_map)  # type: ignore[attr-defined]
-    svc._test_outbox_store = outbox  # type: ignore[attr-defined]
+    svc._test_outbox_store = object()  # type: ignore[attr-defined]
     svc._test_managed_transaction = _fake_managed_transaction  # type: ignore[attr-defined]
     return svc
 
@@ -261,11 +241,10 @@ async def test_upsert_bulk_coalesces_same_item_ops_in_chunk():
     """Three ops with the same id collapse to one outbox row (latest wins)."""
     engine = _FakeEngine()
     driver = _RecordingDriver()
-    outbox = _RecordingOutbox()
+    capture = _EnqueueCapture()
     svc = _service_with(
         engine=engine,
         driver_map={"items_postgresql_driver": driver},
-        outbox=outbox,
         fatal_drivers=["items_postgresql_driver"],
         outbox_drivers=["items_elasticsearch_driver"],
     )
@@ -276,7 +255,8 @@ async def test_upsert_bulk_coalesces_same_item_ops_in_chunk():
         {"id": "i1", "v": 3},
     ]
 
-    await svc.upsert_bulk("cat", "col", items)
+    with patch(_ENQUEUE, capture):
+        await svc.upsert_bulk("cat", "col", items)
 
     assert engine.tx_state.committed
     assert not engine.tx_state.rolled_back
@@ -288,13 +268,13 @@ async def test_upsert_bulk_coalesces_same_item_ops_in_chunk():
 
     # Outbox receives one row for the (single) ASYNC OUTBOX entry,
     # carrying the latest payload.
-    assert len(outbox.enqueued_calls) == 1
-    rows = outbox.enqueued_calls[0]["rows"]
+    assert len(capture.enqueued_calls) == 1
+    rows = capture.enqueued_calls[0]["rows"]
     assert len(rows) == 1
     assert rows[0].driver_id == "items_elasticsearch_driver"
     assert rows[0].item_id == "i1"
     assert rows[0].payload == {"id": "i1", "v": 3}
-    assert outbox.enqueued_calls[0]["conn"] is engine.conn
+    assert capture.enqueued_calls[0]["conn"] is engine.conn
 
 
 @pytest.mark.asyncio
@@ -302,18 +282,17 @@ async def test_upsert_bulk_rolls_back_on_outbox_failure():
     """An outbox enqueue failure rolls back the wrapping TX."""
     engine = _FakeEngine()
     driver = _RecordingDriver()
-    outbox = _RecordingOutbox(raise_on_enqueue=True)
+    capture = _EnqueueCapture(raise_on_enqueue=True)
     svc = _service_with(
         engine=engine,
         driver_map={"items_postgresql_driver": driver},
-        outbox=outbox,
         fatal_drivers=["items_postgresql_driver"],
         outbox_drivers=["items_elasticsearch_driver"],
     )
 
     items = [{"id": "i1", "v": 1}]
 
-    with pytest.raises(RuntimeError, match="outbox enqueue failed"):
+    with pytest.raises(RuntimeError, match="outbox enqueue failed"), patch(_ENQUEUE, capture):
         await svc.upsert_bulk("cat", "col", items)
 
     # PG bulk write was attempted (it ran before the outbox enqueue),
@@ -329,23 +308,22 @@ async def test_upsert_bulk_does_not_enqueue_when_pg_fails():
     """A FATAL driver failure prevents the outbox enqueue from running."""
     engine = _FakeEngine()
     driver = _RecordingDriver(raise_on_write=True)
-    outbox = _RecordingOutbox()
+    capture = _EnqueueCapture()
     svc = _service_with(
         engine=engine,
         driver_map={"items_postgresql_driver": driver},
-        outbox=outbox,
         fatal_drivers=["items_postgresql_driver"],
         outbox_drivers=["items_elasticsearch_driver"],
     )
 
     items = [{"id": "i1", "v": 1}]
 
-    with pytest.raises(RuntimeError, match="driver bulk write failed"):
+    with pytest.raises(RuntimeError, match="driver bulk write failed"), patch(_ENQUEUE, capture):
         await svc.upsert_bulk("cat", "col", items)
 
     # PG was attempted; outbox enqueue must NOT run.
     assert len(driver.calls) == 1
-    assert outbox.enqueued_calls == []
+    assert capture.enqueued_calls == []
     assert engine.tx_state.entered
     assert engine.tx_state.rolled_back
     assert not engine.tx_state.committed
@@ -359,11 +337,10 @@ async def test_upsert_bulk_stamps_identity_on_outbox_records():
     The inline FATAL primary write keeps the UNSTAMPED items."""
     engine = _FakeEngine()
     driver = _RecordingDriver()
-    outbox = _RecordingOutbox()
+    capture = _EnqueueCapture()
     svc = _service_with(
         engine=engine,
         driver_map={"items_postgresql_driver": driver},
-        outbox=outbox,
         fatal_drivers=["items_postgresql_driver"],
         outbox_drivers=["items_elasticsearch_driver"],
     )
@@ -384,12 +361,13 @@ async def test_upsert_bulk_stamps_identity_on_outbox_records():
         {"id": "i2", "properties": {"CODE": "ITA_02"}},
     ]
 
-    await svc.upsert_bulk(
-        "cat", "col", items, processing_context={"asset_id": "asset-xyz"},
-    )
+    with patch(_ENQUEUE, capture):
+        await svc.upsert_bulk(
+            "cat", "col", items, processing_context={"asset_id": "asset-xyz"},
+        )
 
     # OUTBOX rows carry stamped identity, per item.
-    rows = outbox.enqueued_calls[0]["rows"]
+    rows = capture.enqueued_calls[0]["rows"]
     by_id = {r.item_id: r.payload for r in rows}
     assert by_id["i1"]["_external_id"] == "ITA_01"
     assert by_id["i1"]["_asset_id"] == "asset-xyz"
@@ -413,11 +391,10 @@ async def test_upsert_bulk_stamps_access_envelope_for_access_aware_driver():
     #1285/#1287. The primary write stays clean."""
     engine = _FakeEngine()
     driver = _RecordingDriver()
-    outbox = _RecordingOutbox()
+    capture = _EnqueueCapture()
     svc = _service_with(
         engine=engine,
         driver_map={"items_postgresql_driver": driver},
-        outbox=outbox,
         fatal_drivers=["items_postgresql_driver"],
         outbox_drivers=["items_elasticsearch_envelope_driver"],
     )
@@ -436,9 +413,10 @@ async def test_upsert_bulk_stamps_access_envelope_for_access_aware_driver():
 
     items = [{"id": "i1", "properties": {}}]
 
-    await svc.upsert_bulk("cat", "col", items)
+    with patch(_ENQUEUE, capture):
+        await svc.upsert_bulk("cat", "col", items)
 
-    payload = outbox.enqueued_calls[0]["rows"][0].payload
+    payload = capture.enqueued_calls[0]["rows"][0].payload
     assert payload["_visibility"] == "private"
     assert payload["_owner"] == "alice"
     # Primary store row is untouched by the envelope stamping.

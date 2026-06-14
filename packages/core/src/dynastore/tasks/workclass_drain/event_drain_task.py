@@ -25,11 +25,9 @@ The event-plane counterpart of :class:`StorageDrainTask`.  Drains the GLOBAL
 column, not the physical table) and delivers each event to the in-process
 async listeners registered on the resolved :class:`EventBusProtocol`.
 
-Why a control-plane task and not the in-process shard loop
-----------------------------------------------------------
-The legacy event plane is drained in-process by ``EventService``'s 16
-leader-elected shard loops (``events.events``).  The WorkClass end-state moves
-delivery onto the generic task control plane so it shares routing, the
+Why a control-plane task
+------------------------
+Delivery runs on the generic task control plane so it shares routing, the
 capability registry, heartbeat leasing, and the co-transactional NOTIFY wakeup
 with every other durable task — and can be offloaded to a dedicated worker the
 same way the index drain and gdal are.  Event *handlers* stay where they are:
@@ -54,18 +52,17 @@ column vocabulary (``owner_id`` / ``locked_until`` rather than ``claimed_by`` /
 
 Lifecycle
 ---------
-``tasks.events`` carries the legacy event lifecycle vocabulary
+``tasks.events`` carries the event lifecycle vocabulary
 (``PENDING`` / ``PROCESSING`` / ``DEAD_LETTER``) plus a terminal ``COMPLETED``
-state — unlike the legacy ``events.events`` table, drained rows are NOT deleted
-on ack; whole-leaf ``DROP PARTITION`` retention reclaims them (the failure
-forensics window the #1807 red-team note requires).  ``locked_until`` serves
-double duty: the claim lease while ``PROCESSING`` and the retry-not-before
-delay while ``PENDING``.
+state.  Drained rows are NOT deleted on ack; whole-leaf ``DROP PARTITION``
+retention reclaims them (preserving the failure-forensics window).
+``locked_until`` serves double duty: the claim lease while ``PROCESSING`` and
+the retry-not-before delay while ``PENDING``.
 
 Drain loop
 ----------
 ``run(payload)`` loops ``drain_once()`` until it returns 0, then exits
-(one-shot drain-to-empty, matching ``StorageDrainTask`` / ``OutboxDrainTask``).
+(one-shot drain-to-empty, matching ``StorageDrainTask``).
 The dispatcher re-enters via NOTIFY / periodic catch-up.
 """
 from __future__ import annotations
@@ -83,16 +80,16 @@ from dynastore.tools.db import validate_sql_identifier
 logger = logging.getLogger(__name__)
 
 
-# Per-attempt retry backoff in seconds (mirrors StorageDrainTask /
-# pg_outbox._BACKOFF_SECONDS). Indexed by ``retry_count`` (0-based); the last
-# entry caps the backoff at ~30 min.
+# Per-attempt retry backoff in seconds (mirrors StorageDrainTask).
+# Indexed by ``retry_count`` (0-based); the last entry caps the backoff at
+# ~30 min.
 _BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
 
 # Seconds before a PROCESSING row is considered stale (lease expired) and
 # eligible for reclaim by any drain worker.
 _DEFAULT_LEASE_SECONDS: int = 300
 
-# Default claim batch size — mirrors the legacy event consumer's batch_size.
+# Default claim batch size for one drain_once() pass.
 _DEFAULT_BATCH_SIZE: int = 100
 
 # Default max delivery attempts when the row carries no per-row ``max_retries``
@@ -302,7 +299,7 @@ class EventDrainTask(TaskProtocol):
 
         A *malformed* payload — a value that parses to a non-object, an
         un-decodable string, or an unexpected column type — cannot arise from
-        the dual-write producer (which always stores ``{"args", "kwargs"}``),
+        the ``emit_event_row`` producer (which always stores a serialised dict),
         so it signals storage corruption or an out-of-band writer.  Those cases
         still degrade to ``{}`` to preserve liveness (delivering with empty
         args rather than poison-looping a row that will never decode), but emit
@@ -415,8 +412,8 @@ class EventDrainTask(TaskProtocol):
 
         If another worker reclaimed the row (bumping claim_version), this
         UPDATE matches 0 rows — the stale drain's finalization is a no-op.
-        Rows are not deleted (unlike the legacy ``events.events`` ACK);
-        ``DROP PARTITION`` retention reclaims COMPLETED rows.
+        Rows are not deleted on ack; ``DROP PARTITION`` retention reclaims
+        COMPLETED rows.
         """
         from dynastore.modules.db_config.query_executor import (
             DQLQuery,

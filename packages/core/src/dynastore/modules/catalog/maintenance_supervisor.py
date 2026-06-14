@@ -75,9 +75,6 @@ _SUPERVISOR_ADVISORY_LOCK_KEY = 0x4D41494E_54454E41  # "MAINTENA" in ASCII hex
 # Job names — must match the strings passed to repo.upsert_job at startup.
 # ---------------------------------------------------------------------------
 
-JOB_EVENTS_DLQ_PRUNE = "events_dlq_prune"
-JOB_EVENTS_STUCK_REAPER = "events_stuck_reaper"
-JOB_EVENTS_PENDING_ALERT = "events_pending_alert"
 JOB_TENANT_LOGS_PRUNE = "tenant_logs_prune"
 JOB_SYSTEM_LOGS_PRUNE = "system_logs_prune"
 JOB_IAM_PRUNE = "iam_prune"
@@ -100,6 +97,12 @@ _OBSOLETE_SCHEDULE_JOBS = (
     "work_index_retention",
     "work_events_partition_create",
     "work_events_retention",
+    # Legacy events.events accumulation jobs, retired with the events plane
+    # (#1807 P4): the in-process consumer is gone and tasks.events handles
+    # its own retry/dead-letter + DROP-PARTITION retention.
+    "events_dlq_prune",
+    "events_stuck_reaper",
+    "events_pending_alert",
 )
 
 # pg_cron job names this supervisor supersedes. On a non-fresh deploy these may
@@ -121,9 +124,6 @@ _SUPERSEDED_TENANT_LOG_PREFIX = "monthly_cleanup_logs_"
 _SUPERSEDED_TASK_REAPER_PREFIX = "dynastore-task-reaper-"
 
 # Cadences (seconds)
-_CADENCE_DLQ_PRUNE = 86400        # daily
-_CADENCE_STUCK_REAPER = 300       # 5 minutes
-_CADENCE_PENDING_ALERT = 86400    # daily
 _CADENCE_TENANT_LOGS = 2592000    # monthly (30 days)
 _CADENCE_SYSTEM_LOGS = 2592000    # monthly (30 days)
 _CADENCE_IAM_PRUNE = 86400        # daily
@@ -155,9 +155,6 @@ _JOB_STATEMENT_TIMEOUT_MS = 60_000  # 60 seconds
 # a legitimate slow run across many schemas still completes; an actual hung
 # job is cancelled well before it wedges the supervisor for a full cycle.
 JOB_DISPATCH_TIMEOUT_SECONDS = 900  # 15 minutes
-
-# Events schema — mirrors events_module._EVENTS_SCHEMA
-_EVENTS_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
 
 # IAM schema — always "iam"
 _IAM_SCHEMA = "iam"
@@ -206,84 +203,6 @@ async def _bounded_batch_delete(
 # ---------------------------------------------------------------------------
 # Individual job implementations
 # ---------------------------------------------------------------------------
-
-
-async def _run_events_dlq_prune(conn: Any, dead_letter_days: int) -> int:
-    """Delete DEAD_LETTER events older than *dead_letter_days* days."""
-    sql = (
-        f"DELETE FROM {_EVENTS_SCHEMA}.events "
-        f"WHERE ctid IN ("
-        f"  SELECT ctid FROM {_EVENTS_SCHEMA}.events "
-        f"  WHERE status = 'DEAD_LETTER' "
-        f"    AND created_at < NOW() - (:dead_letter_days * INTERVAL '1 day') "
-        f"  LIMIT :batch_size"
-        f")"
-    )
-    return await _bounded_batch_delete(conn, sql, dead_letter_days=dead_letter_days)
-
-
-async def _run_events_stuck_reaper(
-    conn: Any, timeout_minutes: int, max_retries: int
-) -> int:
-    """Reap PROCESSING events older than *timeout_minutes* minutes.
-
-    Ports the former events DLQ-reaper CTE (previously a pg_cron job, removed
-    with the events-module cron registrations). Rows whose retry_count + 1 >=
-    max_retries transition to DEAD_LETTER; others reset to PENDING.
-    """
-    sql = (
-        f"WITH expired AS ("
-        f"  SELECT shard, event_id, retry_count"
-        f"  FROM {_EVENTS_SCHEMA}.events"
-        f"  WHERE status = 'PROCESSING'"
-        f"    AND processed_at < NOW() - (:timeout_minutes * INTERVAL '1 minute')"
-        f"  FOR UPDATE SKIP LOCKED"
-        f")"
-        f"UPDATE {_EVENTS_SCHEMA}.events e"
-        f"  SET status = CASE"
-        f"    WHEN expired.retry_count + 1 >= :max_retries THEN 'DEAD_LETTER'"
-        f"    ELSE 'PENDING'"
-        f"  END,"
-        f"  retry_count = expired.retry_count + 1,"
-        f"  error_message = 'reaped stale PROCESSING'"
-        f"  FROM expired"
-        f"  WHERE e.shard = expired.shard AND e.event_id = expired.event_id"
-    )
-    result = await DQLQuery(sql, result_handler=ResultHandler.ROWCOUNT).execute(
-        conn,
-        timeout_minutes=timeout_minutes,
-        max_retries=max_retries,
-    )
-    return result or 0
-
-
-async def _run_events_pending_alert(conn: Any, dead_letter_days: int) -> int:
-    """Emit a WARNING log per shard for stale PENDING events.
-
-    Ports the former events retention alert query (previously a pg_cron job).
-    No DB state is changed; last_rows = total stale pending count.
-    """
-    sql = (
-        f"SELECT shard,"
-        f"       count(*) AS n,"
-        f"       EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec"
-        f"  FROM {_EVENTS_SCHEMA}.events"
-        f" WHERE status = 'PENDING'"
-        f"   AND created_at < NOW() - (:dead_letter_days * INTERVAL '1 day')"
-        f" GROUP BY shard"
-    )
-    rows = await DQLQuery(sql, result_handler=ResultHandler.ALL_DICTS).execute(
-        conn, dead_letter_days=dead_letter_days
-    )
-    total = 0
-    for row in (rows or []):
-        n = row["n"]
-        total += n
-        logger.warning(
-            "events.pending_stale shard=%s count=%s oldest_age_sec=%s",
-            row["shard"], n, row["oldest_age_sec"],
-        )
-    return total
 
 
 async def _list_active_catalog_schemas(conn: Any) -> list[str]:
@@ -559,14 +478,6 @@ async def _dispatch_job(job_name: str, conn: Any, config: dict[str, Any]) -> int
     Returns the number of rows affected (0 if not applicable).
     Raises on unexpected errors so the caller can record status='error'.
     """
-    if job_name == JOB_EVENTS_DLQ_PRUNE:
-        return await _run_events_dlq_prune(conn, config["dead_letter_days"])
-    if job_name == JOB_EVENTS_STUCK_REAPER:
-        return await _run_events_stuck_reaper(
-            conn, config["timeout_minutes"], config["max_retries"]
-        )
-    if job_name == JOB_EVENTS_PENDING_ALERT:
-        return await _run_events_pending_alert(conn, config["dead_letter_days"])
     if job_name == JOB_TENANT_LOGS_PRUNE:
         return await _run_tenant_logs_prune(conn)
     if job_name == JOB_SYSTEM_LOGS_PRUNE:
@@ -612,9 +523,8 @@ class MaintenanceSupervisor:
         """Initialise with resolved job config values.
 
         *config* must contain:
-          ``dead_letter_days`` (int)   — from EventsModule.accumulation_policy
-          ``timeout_minutes`` (int)    — EVENT_PROCESSING_TIMEOUT_MINUTES env var
-          ``max_retries`` (int)        — from EventsModule.accumulation_policy
+          ``hard_cap`` (int)   — task reaper hard retry cap, from
+                                 tasks_module.get_hard_retry_cap()
         """
         self._config = config
         self._task: Optional[asyncio.Task[Any]] = None
@@ -835,9 +745,6 @@ async def register_supervisor_jobs(engine: Any) -> None:
     """
     repo = MaintenanceScheduleRepository()
     jobs = [
-        (JOB_EVENTS_DLQ_PRUNE, _CADENCE_DLQ_PRUNE),
-        (JOB_EVENTS_STUCK_REAPER, _CADENCE_STUCK_REAPER),
-        (JOB_EVENTS_PENDING_ALERT, _CADENCE_PENDING_ALERT),
         (JOB_TENANT_LOGS_PRUNE, _CADENCE_TENANT_LOGS),
         (JOB_SYSTEM_LOGS_PRUNE, _CADENCE_SYSTEM_LOGS),
         (JOB_IAM_PRUNE, _CADENCE_IAM_PRUNE),
@@ -868,23 +775,13 @@ async def register_supervisor_jobs(engine: Any) -> None:
 
 
 def build_supervisor_config() -> dict[str, Any]:
-    """Read config values needed by the supervisor from the same sources the old cron code used.
+    """Read config values needed by the supervisor.
 
-    Mirrors events_module.PostgresEventsDriver.accumulation_policy, the
-    EVENT_PROCESSING_TIMEOUT_MINUTES env var, and tasks_module.get_hard_retry_cap()
-    — exact same sources, no drift.
+    The only runtime-tunable value left is the task reaper's hard retry cap,
+    sourced from tasks_module.get_hard_retry_cap() — the events plane now owns
+    its own retry/dead-letter and DROP-PARTITION retention on tasks.events, so
+    the supervisor no longer carries the legacy events accumulation knobs.
     """
-    dead_letter_days = int(os.getenv("GLOBAL_EVENT_RETENTION_DAYS", "30"))
-    timeout_minutes = int(os.getenv("EVENT_PROCESSING_TIMEOUT_MINUTES", "15"))
-    # Import lazily; events_module priority=10 starts before CatalogModule
-    # (priority=20).  MAX_RETRIES is the single-source value — importing it
-    # here prevents the supervisor's reaper threshold from silently drifting
-    # away from the events accumulation policy.
-    try:
-        from dynastore.modules.events.events_module import MAX_RETRIES
-        max_retries = MAX_RETRIES
-    except Exception:
-        max_retries = 3  # fallback if events module is not loaded
     # Import lazily to avoid circular import; tasks_module priority=15 starts before
     # CatalogModule (priority=20) which hosts the supervisor.
     try:
@@ -893,8 +790,5 @@ def build_supervisor_config() -> dict[str, Any]:
     except Exception:
         hard_cap = 5  # mirrors tasks_module._HARD_RETRY_CAP default
     return {
-        "dead_letter_days": dead_letter_days,
-        "timeout_minutes": timeout_minutes,
-        "max_retries": max_retries,
         "hard_cap": hard_cap,
     }

@@ -33,9 +33,8 @@ Scenarios covered:
 6. Delivery failure -> PENDING with backoff; attempts exhausted -> DEAD_LETTER.
 7. No EventBus in the process -> every claimed row retried, never dropped.
 8. No listeners for the event_type -> COMPLETED (successful no-op delivery).
-9. Drain trigger: dispatch_event_dual_write with emit_target_events='new'
-   inserts exactly ONE pending event_drain task row (dedup) and rolls
-   back with the outer transaction.
+9. Drain trigger: emit_event_row inserts exactly ONE pending event_drain
+   task row (dedup) per outer transaction and rolls back with it.
 """
 from __future__ import annotations
 
@@ -621,28 +620,12 @@ async def test_no_listeners_marks_completed(drain_env, monkeypatch):  # noqa: AN
 # ---------------------------------------------------------------------------
 
 
-class _StubConfigs:
-    def __init__(self, cfg: Any) -> None:
-        self._cfg = cfg
-
-    async def get_config(self, config_cls: Any, **_kw: Any) -> Any:
-        return self._cfg
-
-
-def _config_events(target: str) -> Any:
-    from dynastore.modules.tasks.workclass_config import EmitTarget, WorkClassConfig
-
-    return WorkClassConfig(emit_target_events=EmitTarget(target))
-
-
-async def _publish(engine: Any, task_schema: str, configs: Any, *, item: str) -> None:
+async def _publish(engine: Any, task_schema: str, *, item: str) -> None:
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.events_dual_write import (
-        dispatch_event_dual_write,
-    )
+    from dynastore.modules.events.events_emit import emit_event_row
 
     async with managed_transaction(engine) as conn:
-        await dispatch_event_dual_write(
+        await emit_event_row(
             conn,
             event_type="catalog_creation",
             scope="PLATFORM",
@@ -652,16 +635,15 @@ async def _publish(engine: Any, task_schema: str, configs: Any, *, item: str) ->
             identity_id=None,
             payload_str=json.dumps({"args": [item], "kwargs": {}}),
             shard=0,
-            configs=configs,
         )
 
 
 @pytest.mark.asyncio
 async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
-    """emit_target_events='new' inserts exactly one event_drain task row
+    """A single event write inserts exactly one event_drain task row
     via the co-transactional drain trigger."""
     task_schema, engine = drain_env
-    await _publish(engine, task_schema, _StubConfigs(_config_events("new")), item="a")
+    await _publish(engine, task_schema, item="a")
 
     assert await _count_tasks(engine, task_schema) == 1
     # And the event landed in tasks.events with its event_type.
@@ -673,9 +655,8 @@ async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
 async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
     """Multiple writes coalesce to ONE pending drain task (dedup guard)."""
     task_schema, engine = drain_env
-    configs = _StubConfigs(_config_events("new"))
     for i in range(3):
-        await _publish(engine, task_schema, configs, item=f"item_{i}")
+        await _publish(engine, task_schema, item=f"item_{i}")
 
     assert await _count_tasks(engine, task_schema) == 1
     assert len(await _fetch_rows(engine, task_schema)) == 3
@@ -685,16 +666,13 @@ async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
 async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
     """An aborted outer transaction leaves no task row and no event row."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.events_dual_write import (
-        dispatch_event_dual_write,
-    )
+    from dynastore.modules.events.events_emit import emit_event_row
 
     task_schema, engine = drain_env
-    configs = _StubConfigs(_config_events("new"))
 
     with pytest.raises(RuntimeError, match="simulated abort"):
         async with managed_transaction(engine) as conn:
-            await dispatch_event_dual_write(
+            await emit_event_row(
                 conn,
                 event_type="catalog_creation",
                 scope="PLATFORM",
@@ -704,7 +682,6 @@ async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
                 identity_id=None,
                 payload_str=json.dumps({"args": [], "kwargs": {}}),
                 shard=0,
-                configs=configs,
             )
             raise RuntimeError("simulated abort")
 

@@ -87,9 +87,8 @@ async def async_schema(async_conn) -> AsyncIterator[str]:  # noqa: ANN001
     """Per-test PG schema with ``search_path`` already set on ``async_conn``.
 
     Returns the bare schema name string. Tests that need a second connection
-    to also see the schema must set ``search_path`` on it themselves (see
-    ``test_pg_outbox_claim_batch_skip_locked``). Schema is dropped on
-    teardown by the same connection that created it.
+    to also see the schema must set ``search_path`` on it themselves. Schema
+    is dropped on teardown by the same connection that created it.
     """
     schema = f"outbox_t_{generate_id_hex()[:10]}"
     await async_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')  # type: ignore[attr-defined]

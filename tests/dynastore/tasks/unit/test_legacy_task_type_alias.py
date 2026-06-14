@@ -25,11 +25,14 @@ lookup only.
 """
 from __future__ import annotations
 
-import pytest
-
 import dynastore.tasks as tasks_mod
 from dynastore.tasks import TaskConfig, get_task_config
-from dynastore.tasks.outbox_drain.drain_task import OutboxDrainTask
+
+
+# Minimal stand-in used to populate TaskConfig for resolution tests.
+# The concrete OutboxDrainTask class was removed in Phase 4 of #1807.
+class _DrainTask:
+    task_type = "index_drain"
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +42,7 @@ from dynastore.tasks.outbox_drain.drain_task import OutboxDrainTask
 
 def _make_drain_config() -> TaskConfig:
     return TaskConfig(
-        cls=OutboxDrainTask,  # type: ignore[arg-type]
+        cls=_DrainTask,  # type: ignore[arg-type]
         module_name=__name__,
         name="index_drain",
     )
@@ -69,11 +72,11 @@ def test_get_task_config_unknown_returns_none(monkeypatch):
 
 
 def test_outbox_drain_is_not_resolvable_by_old_name(monkeypatch):
-    """After shim removal, 'outbox_drain' must NOT resolve to OutboxDrainTask.
+    """After shim removal, 'outbox_drain' must NOT resolve to any task.
 
     The seeder fixup ensures no PENDING rows survive with the old task_type.
     If a stale row somehow reached the dispatcher, it returns None (no handler)
-    rather than silently routing to the index_drain task under an old alias.
+    rather than silently routing to a task under an old alias.
     """
     cfg = _make_drain_config()
     monkeypatch.setattr(tasks_mod, "_DYNASTORE_TASKS", {"index_drain": cfg})
@@ -86,9 +89,9 @@ def test_outbox_drain_is_not_resolvable_by_old_name(monkeypatch):
 
 
 def test_legacy_task_types_attribute_removed_from_drain_task():
-    """OutboxDrainTask must not declare legacy_task_types after shim removal."""
-    assert not hasattr(OutboxDrainTask, "legacy_task_types"), (
-        "OutboxDrainTask.legacy_task_types must be removed; "
+    """The drain task stub must not declare legacy_task_types."""
+    assert not hasattr(_DrainTask, "legacy_task_types"), (
+        "_DrainTask.legacy_task_types must not be present; "
         "the Phase 0 shim is retired."
     )
 

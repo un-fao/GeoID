@@ -17,21 +17,22 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 """
-EventDriverProtocol — abstract driver for event persistence, consumption, and notification.
+EventDriverProtocol — abstract driver for event persistence and notification.
 
-Replaces EventStorageProtocol with a richer capability/delivery-mode contract that
-accommodates multiple backend types (PostgreSQL outbox, GCP Pub/Sub, JMS, EventArc).
+Replaces EventStorageProtocol with a richer capability/delivery-mode contract
+that accommodates multiple backend types (PostgreSQL ``tasks.events``, GCP
+Pub/Sub, JMS, EventArc).
 
 Implementations:
   - PostgreSQL (default): ``EventsModule`` in dynastore.modules.events
-    Capabilities: PERSISTENCE, LOCKING, NOTIFICATION, SUBSCRIBE, DEAD_LETTER
+    Capabilities: PERSISTENCE, NOTIFICATION, SUBSCRIBE, DEAD_LETTER
     DeliveryMode: AT_LEAST_ONCE
   - Other backends: implement a subset of capabilities and declare them accordingly.
 
 The durable consume lifecycle (claim -> dispatch -> ack/retry) is owned by
-``EventDrainTask`` — the control-plane drain of ``tasks.events`` — not by this
-protocol. Drivers provide the publish side, the advisory consumer lock, the
-NOTIFY/wait signal, subscriptions, and event search.
+``EventDrainTask`` — the control-plane drain of ``tasks.events``.  Drivers
+provide the publish side, the NOTIFY/wait signal, subscriptions, and event
+search.
 """
 
 from __future__ import annotations
@@ -127,10 +128,14 @@ class AccumulationPolicy:
 @runtime_checkable
 class EventDriverProtocol(Protocol):
     """
-    Abstract driver for event persistence, consumption, and notification.
+    Abstract driver for event persistence and notification.
 
-    Implementations: PostgreSQL outbox (EventsModule), Google Pub/Sub,
-    JMS broker, GCP EventArc, etc.
+    Implementations: PostgreSQL ``tasks.events`` (EventsModule), Google
+    Pub/Sub, JMS broker, GCP EventArc, etc.
+
+    The sole reader of ``tasks.events`` is ``EventDrainTask``, which claims
+    rows, delivers them to in-process async listeners, and applies fenced
+    terminal writes (done / retry / dead-letter).
 
     Consumers depend only on this protocol, never on the concrete implementation.
     """
@@ -164,11 +169,11 @@ class EventDriverProtocol(Protocol):
 
     async def initialize(self, conn: Any) -> None:
         """
-        Create or verify the global event table (e.g. ``events.events``).
+        Create or verify the global event table.
 
-        Called once by EventsModule during its lifespan startup, under an
-        advisory lock so the operation is safe across multiple Cloud Run
-        instances.
+        Called once by EventsModule during its lifespan startup.  The default
+        PG implementation is a no-op: ``tasks.events`` DDL is owned by the
+        tasks module.
         """
         ...
 
@@ -177,8 +182,8 @@ class EventDriverProtocol(Protocol):
         Create or verify per-catalog event tables inside ``catalog_schema``.
 
         No-op for backends that use the global outbox exclusively (default PG
-        implementation after Phase 2).  Future drivers may use this to provision
-        per-tenant Pub/Sub topics or JMS destinations.
+        implementation).  Future drivers may use this to provision per-tenant
+        Pub/Sub topics or JMS destinations.
         """
         ...
 
@@ -203,35 +208,6 @@ class EventDriverProtocol(Protocol):
         ...
 
     # ------------------------------------------------------------------
-    # Distributed lock
-    # ------------------------------------------------------------------
-
-    def acquire_consumer_lock(self, key: str) -> Any:
-        """
-        Try to acquire a distributed consumer lock as an async context manager.
-
-        Non-blocking: yields ``True`` if this instance became the leader,
-        ``False`` otherwise (either the lock is already held by a peer, or the
-        backend lacks the ``LOCKING`` capability). Callers must sleep & retry
-        on ``False`` to poll for leadership.
-
-        When ``True`` is yielded, the lock is held for the lifetime of the
-        context manager and released automatically on connection drop (PG
-        advisory lock on a dedicated AUTOCOMMIT connection) — no heartbeat
-        required.
-
-        Usage::
-
-            while not shutdown_event.is_set():
-                async with storage.acquire_consumer_lock(leader_key) as is_leader:
-                    if not is_leader:
-                        await asyncio.sleep(5.0)
-                        continue
-                    await run_consume_loop(shutdown_event)
-        """
-        ...
-
-    # ------------------------------------------------------------------
     # Produce
     # ------------------------------------------------------------------
 
@@ -247,7 +223,7 @@ class EventDriverProtocol(Protocol):
         db_resource: Optional[Any] = None,
     ) -> str:
         """
-        Persist an event to the durable outbox.
+        Persist an event to the durable outbox (``tasks.events``).
 
         Returns the ``event_id`` on success.
 
