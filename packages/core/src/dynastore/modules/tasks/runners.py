@@ -238,7 +238,13 @@ class SyncRunner(RunnerProtocol, ProtocolPlugin[Any]):
             # OGC API - Processes Part 1 requires ``GET /jobs/{id}/results`` to work
             # for both async AND sync executions when status=successful. Persist
             # outputs on the audit task so sync-executed jobs can be retrieved later.
-            update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
+            from dynastore.tasks.report import normalize_task_result
+            _outputs, _err_msg = normalize_task_result(result)
+            update_data = TaskUpdate(
+                status=TaskStatusEnum.COMPLETED, progress=100,
+                outputs=_outputs,
+                error_message=_err_msg,
+            )
             await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
             logger.info(f"Sync task '{job.task_id}' completed successfully.")
             return result
@@ -379,7 +385,13 @@ class BackgroundRunner(RunnerProtocol, ProtocolPlugin[Any]):
                     hydrated_payload = hydrate_task_payload(task_instance, raw_payload)
                     result = await task_instance.run(hydrated_payload)
 
-                    update_data = TaskUpdate(status=TaskStatusEnum.COMPLETED, progress=100, outputs=result)
+                    from dynastore.tasks.report import normalize_task_result
+                    _outputs, _err_msg = normalize_task_result(result)
+                    update_data = TaskUpdate(
+                        status=TaskStatusEnum.COMPLETED, progress=100,
+                        outputs=_outputs,
+                        error_message=_err_msg,
+                    )
                     await tasks_mgr.update_task(context.engine, job.task_id, update_data, schema=context.db_schema)
                     logger.info(f"Async task '{job.task_id}' completed successfully.")
 
