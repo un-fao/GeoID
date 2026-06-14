@@ -97,13 +97,17 @@ class WorkIndexDrainTask(TaskProtocol):
     applies fenced terminal writes (done / retry / dead).  Drains to empty
     then exits; the dispatcher re-enters via NOTIFY.
 
-    Routing: ``affinity_tier = "worker"`` — the worker service claims this
-    task type under all deployment presets.
+    Routing: tier-agnostic (``affinity_tier = None``). Placement comes from
+    the task routing config; with no override the default matrix routes a
+    tier-less system task to the ``catalog`` tier — the service that
+    co-locates the dispatcher and the secondary-write driver this drain pushes
+    to (and where the legacy outbox drain already runs). An operator can
+    repoint it via routing config without a code change.
     """
 
     task_type: ClassVar[str] = "work_index_drain"
     priority: int = 100
-    affinity_tier: ClassVar[Optional[str]] = "worker"
+    affinity_tier: ClassVar[Optional[str]] = None
 
     def __init__(
         self,
