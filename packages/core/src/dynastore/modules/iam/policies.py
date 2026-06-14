@@ -151,9 +151,22 @@ class PolicyService:
         self._role_config = role_config or IamRolesConfig()
 
     async def _resolve_schema(
-        self, catalog_id: Optional[str], conn: Optional[Any] = None
+        self, catalog_id: Optional[str], conn: Optional[Any] = None, *, strict: bool = False
     ) -> str:
-        """Resolve physical schema from catalog_id, with fallback to 'iam' for global."""
+        """Resolve physical schema from catalog_id, with fallback to 'iam' for global.
+
+        ``strict`` (keyword-only, default ``False``) governs the fallback when
+        a *catalog* schema cannot be resolved. The default keeps the defensive
+        fallback to the platform ``iam`` schema — correct for read/evaluation
+        paths, where an unresolvable tenant simply yields no catalog-scoped
+        policies (and the read methods further degrade on ``TableNotFoundError``).
+        WRITE paths (``create_policy`` / ``update_policy`` / ``delete_policy`` /
+        ``initialize``) MUST pass ``strict=True``: silently retargeting a tenant
+        policy write to ``iam`` contaminates the global schema and can delete or
+        return another tenant's rows by ``partition_key`` collision. With
+        ``strict=True`` an unresolved schema raises instead of writing nowhere.
+        Mirrors ``IamService.resolve_schema``'s ``strict`` contract (#1698).
+        """
         from dynastore.models.protocols import CatalogsProtocol
 
         catalogs = get_protocol(CatalogsProtocol)
@@ -162,6 +175,11 @@ class PolicyService:
             return "iam"
 
         if catalogs is None:
+            if strict:
+                raise ValueError(
+                    f"Cannot resolve tenant schema for catalog '{catalog_id}': "
+                    "CatalogsProtocol is unavailable."
+                )
             raise RuntimeError("CatalogsProtocol not available.")
 
         db_resource = conn or cast(Any, self.storage).engine
@@ -169,14 +187,20 @@ class PolicyService:
         res = await catalogs.resolve_physical_schema(
             catalog_id, ctx=DriverContext(db_resource=db_resource), allow_missing=True
         )
-        schema = res if res else "iam"
-        return _validate_schema_name(schema)
+        if res:
+            return _validate_schema_name(res)
+        if strict:
+            raise ValueError(
+                f"Cannot resolve tenant schema for catalog '{catalog_id}': "
+                "no physical schema found (catalog missing or not provisioned)."
+            )
+        return _validate_schema_name("iam")
 
     async def initialize(
         self, catalog_id: Optional[str] = None, conn: Optional[Any] = None
     ):
         """Initializes storage for the specified catalog/schema."""
-        schema = await self._resolve_schema(catalog_id, conn=conn)
+        schema = await self._resolve_schema(catalog_id, conn=conn, strict=True)
         async with managed_transaction(conn or self._engine) as db:
             await cast(Any, self.storage).initialize(conn=db, schema=schema)
 
@@ -253,7 +277,7 @@ class PolicyService:
         self, policy: Policy, catalog_id: Optional[str] = None
     ) -> Policy:
         _validate_policy_condition_types(policy)
-        schema = await self._resolve_schema(catalog_id)
+        schema = await self._resolve_schema(catalog_id, strict=True)
         if not policy.partition_key:
             policy.partition_key = "global"
 
@@ -310,7 +334,7 @@ class PolicyService:
         self, policy: Policy, catalog_id: Optional[str] = None
     ) -> Optional[Policy]:
         _validate_policy_condition_types(policy)
-        schema = await self._resolve_schema(catalog_id)
+        schema = await self._resolve_schema(catalog_id, strict=True)
         res = await self.storage.update_policy(policy, schema=schema)
         self.invalidate_cache()
         return res
@@ -339,7 +363,7 @@ class PolicyService:
     async def delete_policy(
         self, policy_id: str, catalog_id: Optional[str] = None
     ) -> bool:
-        schema = await self._resolve_schema(catalog_id)
+        schema = await self._resolve_schema(catalog_id, strict=True)
         res = await self.storage.delete_policy(
             policy_id, schema=schema, partition_key=catalog_id or "global",
         )
