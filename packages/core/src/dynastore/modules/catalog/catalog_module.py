@@ -577,16 +577,45 @@ class CatalogModule(ModuleProtocol):
                     exc,
                 )
 
+            # 9. Start lifecycle-state reaper for stuck PROVISIONING / DELETING
+            # collections (backstop for pods that crash mid-init or mid-purge).
+            from dynastore.modules.catalog.lifecycle_reaper import (
+                LifecycleReaper,
+                load_lifecycle_reaper_config,
+            )
+            _lifecycle_reaper_shutdown = asyncio.Event()
+            _lifecycle_reaper: Optional[LifecycleReaper] = None
+            try:
+                lifecycle_reaper_cfg = await load_lifecycle_reaper_config()
+                _lifecycle_reaper = LifecycleReaper(lifecycle_reaper_cfg)
+                _lifecycle_reaper.start(_lifecycle_reaper_shutdown)
+                logger.info(
+                    "CatalogModule: lifecycle reaper started "
+                    "(threshold=%ds, interval=%ds).",
+                    lifecycle_reaper_cfg.stuck_threshold_seconds,
+                    lifecycle_reaper_cfg.reaper_interval_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                logger.warning(
+                    "CatalogModule: lifecycle reaper failed to start: %s — "
+                    "stuck PROVISIONING/DELETING collections will not be "
+                    "automatically reconciled.",
+                    exc,
+                )
+
             try:
                 yield
             finally:
                 _consumer_shutdown.set()
                 _reaper_shutdown.set()
                 _supervisor_shutdown.set()
+                _lifecycle_reaper_shutdown.set()
                 if _reaper is not None:
                     await _reaper.stop()
                 if _supervisor is not None:
                     await _supervisor.stop()
+                if _lifecycle_reaper is not None:
+                    await _lifecycle_reaper.stop()
                 await self.event_service.stop_consumer()
                 # Services cleanup handled by AsyncExitStack (stack.close() via __aexit__)
                 # Remove the services from the discovery registry so a future
