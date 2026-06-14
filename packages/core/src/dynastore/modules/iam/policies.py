@@ -53,6 +53,11 @@ from .models import PolicyBundle, Policy, Condition, Role, Principal  # noqa: F4
 
 # Private aliases kept for IAM-internal references throughout this module.
 _GrantTraceRecord = GrantTraceRecord
+
+# Wire-format effect constants used by grant rows from the storage layer.
+# These are lowercase strings; Policy.effect uses uppercase "ALLOW"/"DENY".
+_GRANT_EFFECT_ALLOW = "allow"
+_GRANT_EFFECT_DENY = "deny"
 _TraceCollector = TraceCollector
 
 _SAFE_SCHEMA_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
@@ -596,6 +601,13 @@ class PolicyService:
                 for role_name in granted_role_names:
                     resolved_roles.add(role_name)
                     grant_row = role_rows[role_name]
+                    # D9: a deny grant on a role contributes each of that
+                    # role's policies as a synthetic DENY, short-circuiting
+                    # the evaluator for any matching request — regardless of
+                    # the stored policy effect. An allow grant uses the
+                    # stored effect unchanged (additive path).
+                    grant_effect = str(grant_row.get("effect") or _GRANT_EFFECT_ALLOW).lower()
+                    is_deny_grant = grant_effect == _GRANT_EFFECT_DENY
                     grant_policy_ids: set = set()
                     for check_schema in schemas_to_check:
                         role_obj = await self.iam_storage.get_role(
@@ -608,16 +620,24 @@ class PolicyService:
                         if not pol and catalog_id:
                             pol = await self.get_policy(pid, catalog_id=None)
                         if pol:
-                            effective_policies.append(pol)
+                            # Rewrite the policy effect to DENY when the
+                            # binding itself is a deny grant (D9). model_copy
+                            # recompiles the regex caches via model_post_init.
+                            contributed = (
+                                pol.model_copy(update={"effect": "DENY"})
+                                if is_deny_grant
+                                else pol
+                            )
+                            effective_policies.append(contributed)
                             if trace_collector is not None:
                                 trace_collector.add(_GrantTraceRecord(
-                                    policy_id=pol.id,
-                                    grant_id=str(grant_row.get("id") or f"grant:{role_name}:{pol.id}"),
+                                    policy_id=contributed.id,
+                                    grant_id=str(grant_row.get("id") or f"grant:{role_name}:{contributed.id}"),
                                     subject_kind="role",
                                     subject_ref=role_name,
                                     object_kind="role",
                                     object_ref=role_name,
-                                    effect=str(grant_row.get("effect") or pol.effect).lower(),
+                                    effect=contributed.effect.lower(),
                                     resource_kind=grant_row.get("resource_kind"),
                                     resource_ref=grant_row.get("resource_ref"),
                                     valid_from=grant_row.get("valid_from"),
@@ -626,9 +646,10 @@ class PolicyService:
                                 ))
                 # Direct policy grants (object_kind='policy'): a policy bound
                 # straight to the principal, optionally collection-scoped.
-                # Attach it; its own ALLOW/DENY effect governs via the
-                # ranking in the caller. Dedup against policies already
-                # collected so a policy reachable both via a role and
+                # D9: when the grant itself carries effect='deny' the policy
+                # is contributed as a synthetic DENY regardless of its stored
+                # effect — the grant binding overrides. Dedup against policies
+                # already collected so a policy reachable both via a role and
                 # directly is not double-listed.
                 seen_ids = {p.id for p in effective_policies}
                 policy_rows: Dict[str, Dict[str, Any]] = {}
@@ -643,18 +664,28 @@ class PolicyService:
                     if not pol and catalog_id:
                         pol = await self.get_policy(pid, catalog_id=None)
                     if pol:
-                        effective_policies.append(pol)
-                        seen_ids.add(pol.id)
+                        grant_row = policy_rows[pid]
+                        grant_effect = str(grant_row.get("effect") or _GRANT_EFFECT_ALLOW).lower()
+                        is_deny_grant = grant_effect == _GRANT_EFFECT_DENY
+                        # Rewrite the policy effect when the binding is a
+                        # deny grant. model_copy triggers model_post_init so
+                        # the regex caches are rebuilt for the new instance.
+                        contributed = (
+                            pol.model_copy(update={"effect": "DENY"})
+                            if is_deny_grant
+                            else pol
+                        )
+                        effective_policies.append(contributed)
+                        seen_ids.add(contributed.id)
                         if trace_collector is not None:
-                            grant_row = policy_rows[pid]
                             trace_collector.add(_GrantTraceRecord(
-                                policy_id=pol.id,
-                                grant_id=str(grant_row.get("id") or f"grant:policy:{pol.id}"),
+                                policy_id=contributed.id,
+                                grant_id=str(grant_row.get("id") or f"grant:policy:{contributed.id}"),
                                 subject_kind="principal",
                                 subject_ref=str(principal_id) if principal_id else "",
                                 object_kind="policy",
-                                object_ref=pol.id,
-                                effect=str(grant_row.get("effect") or pol.effect).lower(),
+                                object_ref=contributed.id,
+                                effect=contributed.effect.lower(),
                                 resource_kind=grant_row.get("resource_kind"),
                                 resource_ref=grant_row.get("resource_ref"),
                                 valid_from=grant_row.get("valid_from"),
