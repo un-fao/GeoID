@@ -65,6 +65,26 @@ class CityJsonHeader(BaseModel):
     metadata: dict[str, Any] = {}
 
 
+# CityObject types that are surface/coverage layers, not volumetric objects.
+# Our ingest model unions a CityObject's surface rings into one 2D footprint
+# and extrudes it by the feature's z-extent — correct for solids (Building),
+# but for a terrain TIN or a flat coverage it collapses the whole layer into a
+# single tile-spanning slab that swallows the scene. Real city tiles (3DBAG /
+# 3D BK Delft) ship a TINRelief next to the buildings, so it must be dropped.
+_NON_VOLUMETRIC_TYPES: frozenset[str] = frozenset(
+    {
+        "TINRelief",
+        "WaterBody",
+        "LandUse",
+        "PlantCover",
+        "TransportationSquare",
+        "Road",
+        "Railway",
+        "Waterway",
+    }
+)
+
+
 # ---------------------------------------------------------------------------
 # Feature-type declaration (Task 1.2)
 # ---------------------------------------------------------------------------
@@ -181,8 +201,14 @@ def _split_cityjson_to_features(doc: dict[str, Any]) -> list[dict[str, Any]]:
         for parent_id in obj.get("parents", []):
             children_map.setdefault(parent_id, []).append(obj_id)
 
-    # Identify roots (no parents declared)
-    roots = [k for k, v in city_objects.items() if not v.get("parents")]
+    # Identify roots (no parents declared), skipping surface/coverage layers
+    # (terrain TINRelief, water, land use, …) that would extrude into one
+    # scene-swallowing slab. Only volumetric objects become features.
+    roots = [
+        k
+        for k, v in city_objects.items()
+        if not v.get("parents") and v.get("type") not in _NON_VOLUMETRIC_TYPES
+    ]
 
     features = []
     for root_id in roots:
