@@ -83,6 +83,16 @@ class StacVirtualMixin(_Host):
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
+
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
+
         catalogs_svc = await self._get_catalogs_service()
 
         async with managed_transaction(engine) as conn:
@@ -160,6 +170,15 @@ class StacVirtualMixin(_Host):
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
+
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
 
         async with managed_transaction(engine) as conn:
             stac_config = await self._get_stac_config(
@@ -368,6 +387,16 @@ class StacVirtualMixin(_Host):
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
+
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
+
         catalogs_svc = await self._get_catalogs_service()
 
         async with managed_transaction(engine) as conn:
@@ -757,6 +786,15 @@ class StacVirtualMixin(_Host):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
 
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
+
         async with managed_transaction(engine) as conn:
             # Get STAC config to find the hierarchy rule
             config_manager = get_protocol(ConfigsProtocol)
@@ -940,6 +978,15 @@ class StacVirtualMixin(_Host):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
 
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
+
         async with managed_transaction(engine) as conn:
             # Get STAC config to find the hierarchy rule
             config_service = await self._get_configs_service()
@@ -1053,6 +1100,15 @@ class StacVirtualMixin(_Host):
         """
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
+
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
 
         # Override catalog_id in search_request to ensure consistency
         search_request.catalog_id = catalog_id
