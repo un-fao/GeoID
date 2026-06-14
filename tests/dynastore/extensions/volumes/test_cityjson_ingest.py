@@ -284,6 +284,75 @@ def test_parse_single_cityjson_object(tmp_path):
         assert max(all_indices) < len(local_verts)
 
 
+def test_terrain_relief_root_is_skipped(tmp_path):
+    """A top-level TINRelief (terrain) must NOT become a feature.
+
+    Real CityJSON city tiles (e.g. 3DBAG / 3D BK Delft Den Haag) carry a single
+    TINRelief alongside the buildings. The footprint-extrusion model unions all
+    surface rings into one 2D polygon and extrudes it by the z-extent — for a
+    terrain TIN that produces one tile-spanning slab that swallows the whole
+    scene. Only volumetric objects (Building/BuildingPart) should be ingested.
+    """
+    from dynastore.extensions.volumes.cityjson_ingest import parse_cityjsonseq
+
+    doc = {
+        "type": "CityJSON",
+        "version": "2.0",
+        "transform": {"scale": [0.001, 0.001, 0.001], "translate": [0.0, 0.0, 0.0]},
+        "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/7415"},
+        "CityObjects": {
+            "bldg-A": {
+                "type": "Building",
+                "attributes": {"height": 10.0},
+                "geometry": [
+                    {
+                        "type": "Solid",
+                        "lod": "1",
+                        "boundaries": [
+                            [
+                                [[0, 1, 2, 3]],
+                                [[4, 5, 1, 0]],
+                                [[5, 6, 2, 1]],
+                                [[6, 7, 3, 2]],
+                                [[7, 4, 0, 3]],
+                                [[7, 6, 5, 4]],
+                            ]
+                        ],
+                    }
+                ],
+            },
+            "terrain": {
+                "type": "TINRelief",
+                "attributes": {},
+                "geometry": [
+                    {
+                        "type": "CompositeSurface",
+                        "lod": "1",
+                        "boundaries": [[[0, 1, 2]], [[0, 2, 3]]],
+                    }
+                ],
+            },
+        },
+        "vertices": [
+            [0, 0, 0],
+            [10, 0, 0],
+            [10, 10, 0],
+            [0, 10, 0],
+            [0, 0, 10000],
+            [10, 0, 10000],
+            [10, 10, 10000],
+            [0, 10, 10000],
+        ],
+    }
+    path = tmp_path / "terrain.city.json"
+    path.write_text(json.dumps(doc))
+
+    _header, features = parse_cityjsonseq(path)
+
+    # Only the building survives; the terrain relief is dropped.
+    assert [f["id"] for f in features] == ["bldg-A"]
+
+
 # ---------------------------------------------------------------------------
 # Task 1.2 — ingest_cityjson_file
 # ---------------------------------------------------------------------------

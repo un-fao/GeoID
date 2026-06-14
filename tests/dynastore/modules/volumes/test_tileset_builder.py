@@ -74,6 +74,22 @@ def test_box_is_metric_not_degrees():
     assert math.isclose(hz, 10.0, abs_tol=1.0)  # 20 m z-extent → 10 m half
 
 
+def test_buildings_rest_on_ground_not_centered():
+    # The vertical ENU origin must be the dataset floor (min_z), not the
+    # mid-height. Otherwise the root box is centred on z=0 (cz≈0) and the lower
+    # half of every building sinks below the basemap ground plane, so only the
+    # roofs poke through as a flat plateau. With a floor-anchored origin the box
+    # sits entirely above ground: cz ≈ hz and the box bottom (cz - hz) ≈ 0.
+    b = [FeatureBounds("f", 4.30, 52.07, 5.0, 4.31, 52.08, 25.0)]
+    ts = build_tileset(b, VolumesConfig())
+    box = ts["root"]["boundingVolume"]["box"]
+    cz, hz = box[2], box[11]
+    assert math.isclose(hz, 10.0, abs_tol=1.0)  # 20 m z-extent → 10 m half
+    # Box bottom rests on the ground plane (z=0), not 10 m below it.
+    assert math.isclose(cz - hz, 0.0, abs_tol=0.5)
+    assert math.isclose(cz, hz, abs_tol=0.5)
+
+
 def test_single_feature_is_a_leaf():
     b = [FeatureBounds("f", 0, 0, 0, 1, 1, 1)]
     ts = build_tileset(b, VolumesConfig())
