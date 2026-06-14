@@ -57,11 +57,18 @@ def build_tileset(
         }
 
     root_bbox = merge_bounds(bounds)
-    # Anchor a local East-North-Up metric frame at the collection centre. All
-    # node boxes are emitted in that frame (metres); the root ``transform``
-    # places it on the globe. Stored coords are EPSG:4326, so x=lon, y=lat,
-    # z=height(m).
-    origin = root_bbox.center()  # (lon0, lat0, h0)
+    # Anchor a local East-North-Up metric frame at the collection. All node
+    # boxes are emitted in that frame (metres); the root ``transform`` places
+    # it on the globe. Stored coords are EPSG:4326, so x=lon, y=lat, z=h(m).
+    #
+    # lon/lat are taken at the horizontal centre so the ENU east/north axes hug
+    # the data, but the *vertical* origin is the dataset floor (min_z), NOT the
+    # mid-height. The globe viewer draws its basemap at the ENU ground plane
+    # (z=0), so building bases must land there; using the mid-height sinks the
+    # lower half of every building (zmax-zmin)/2 metres below the streets,
+    # leaving only the roofs poking through as a flat plateau.
+    cx, cy, _ = root_bbox.center()
+    origin = (cx, cy, root_bbox.min_z)  # (lon0, lat0, h0=floor)
     root = _build_subtree(
         list(bounds),
         bbox=root_bbox,

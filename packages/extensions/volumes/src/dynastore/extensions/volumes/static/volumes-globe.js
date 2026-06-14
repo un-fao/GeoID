@@ -464,12 +464,12 @@ function buildLightingEffect() {
   try {
     const { AmbientLight, DirectionalLight, LightingEffect } = deck;
     if (!AmbientLight || !DirectionalLight || !LightingEffect) return [];
-    const ambient = new AmbientLight({ color: [255, 255, 255], intensity: 1.2 });
+    const ambient = new AmbientLight({ color: [255, 255, 255], intensity: 1.0 });
     const sun = new DirectionalLight({
-      color: [255, 246, 224], intensity: 2.4, direction: [-1, -2.4, -1.6],
+      color: [255, 248, 230], intensity: 1.5, direction: [-1, -2.4, -1.6],
     });
     const fill = new DirectionalLight({
-      color: [206, 224, 255], intensity: 0.7, direction: [1.6, 1.0, -0.6],
+      color: [206, 224, 255], intensity: 0.4, direction: [1.6, 1.0, -0.6],
     });
     return [new LightingEffect({ ambient, sun, fill })];
   } catch (_e) {

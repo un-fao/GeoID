@@ -75,8 +75,20 @@ async function loadSidebar() {
         // 1. Separate Top-level items from fragments
         const pages = allPages.filter(p => !p.is_embed);
         
-        // 2. Find Top-level items (no section)
-        const topLevelPages = pages.filter(p => !p.section).sort((a, b) => {
+        // 2. Find Top-level items.
+        //    A page is surfaced as a top-level app when:
+        //      - it has no section (classic top-level page), OR
+        //      - it opts in via show_as_tile (first-class app that should be
+        //        launchable directly, while still grouped under its section), OR
+        //      - its declared section parent is not present in this deployment
+        //        (orphan promotion). Some catalog scopes ship only a subset of
+        //        pages — e.g. an api_open catalog has no Admin shell — so a
+        //        sub-page whose parent is absent would otherwise be unreachable.
+        const sectionParentIds = new Set(pages.filter(p => !p.section).map(p => p.id));
+        const isTopLevel = p =>
+            !p.section || p.show_as_tile || !sectionParentIds.has(p.section);
+
+        const topLevelPages = pages.filter(isTopLevel).sort((a, b) => {
             if (a.id === 'home') return -1;
             if (b.id === 'home') return 1;
             if (b.priority !== a.priority) return b.priority - a.priority;
@@ -84,8 +96,9 @@ async function loadSidebar() {
         });
 
         container.innerHTML = topLevelPages.map(page => {
-            // Find pages targeting this one as a section
-            const subPages = pages.filter(p => p.section === page.id).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+            // Find pages targeting this one as a section (never list a page as
+            // its own child, in case a promoted app shares its id with a section).
+            const subPages = pages.filter(p => p.section === page.id && p.id !== page.id).sort((a, b) => (b.priority || 0) - (a.priority || 0));
             const hasSubPages = subPages.length > 0;
 
             // Restore collapsed state from localStorage (default: expanded)
