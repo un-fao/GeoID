@@ -1,5 +1,24 @@
 # DynaStore Events Module
 
+## Cross-pod listener co-location rule (load-bearing)
+
+Domain-event listeners are registered in an in-process registry, so a listener
+fires **only on the pod that drains the event**.  Durable delivery is cross-pod
+(shared table, leader-elected consumer), but in-process dispatch is pod-local.
+Therefore listeners **must** be registered on the same tier that runs the
+drain/consumer (the catalog tier); a listener registered on a different tier
+will silently never fire because no event rows are drained by that pod.
+
+Concretely: when `tasks.events` is the active drain table (WorkClass cutover
+step `new`), the `EventDrainTask` consumer runs on the catalog tier where it
+resolves the process-local `EventBusProtocol` and calls
+`dispatch_to_listeners`.  Any module that registers a listener via
+`events.async_event_listener(...)` must be loaded on the **catalog** service,
+not on a worker-only service that does not run the drain task.  An
+`EventBusProtocol` that resolves `None` in the drain process causes every
+claimed row to be retried rather than delivered — the drain warns and the rows
+accumulate until a capable pod claims them.
+
 The Events Module is a generic, decoupled system that allows DynaStore to publish domain events (e.g., item creation, catalog deletion) and enables external applications or other internal modules to react to these events.
 
 This is extremely powerful for building downstream integrations, such as:

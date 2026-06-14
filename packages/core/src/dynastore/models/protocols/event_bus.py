@@ -132,7 +132,7 @@ class EventBusProtocol(EventsProtocol, Protocol):
         Await every registered async listener for *event_type*.
 
         The process-independent handler surface: a durable consumer (the
-        in-process shard loop or the control-plane WorkEventDrainTask) resolves
+        in-process shard loop or the control-plane EventDrainTask) resolves
         the event bus and dispatches each claimed event through this method.
         Awaits each handler with the payload's positional/keyword args; the
         first handler exception propagates so the caller can nack / retry.

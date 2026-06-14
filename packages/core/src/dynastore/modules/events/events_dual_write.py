@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-# dynastore/modules/events/work_events_dual_write.py
+# dynastore/modules/events/events_dual_write.py
 """Event-plane dual-write seam for the WorkClass durable-work unification.
 
 ``dispatch_event_dual_write`` is the single point of control for the event
@@ -25,11 +25,11 @@ emit path during the WorkClass cutover (#1807).  It sits between the public
 
 * **Legacy path** — ``events.events`` (the existing global outbox).  Active
   whenever ``WorkClassConfig.emit_events_to_legacy`` is True (the default).
-  The legacy ``_publish_query`` write and the new ``tasks.work_events`` write
+  The legacy ``_publish_query`` write and the new ``tasks.events`` write
   share the same ``conn`` so they participate in the same transaction and roll
   back together on any failure.
 
-* **New path** — ``tasks.work_events`` (the WorkClass global hot plane).
+* **New path** — ``tasks.events`` (the WorkClass global hot plane).
   Active whenever ``WorkClassConfig.emit_events_to_new`` is True.
 
 The default ``WorkClassConfig`` has ``emit_target_events = EmitTarget.LEGACY``,
@@ -47,9 +47,9 @@ legacy event from being emitted.
 Scope normalisation
 -------------------
 ``scope`` is stored as-is in the legacy ``events.events`` table (e.g.
-``"PLATFORM"``).  The new ``tasks.work_events`` table has a PG CHECK
+``"PLATFORM"``).  The new ``tasks.events`` table has a PG CHECK
 constraint requiring ``scope = lower(scope)``, so the value is lowercased
-**only** for the work_events INSERT.
+**only** for the tasks.events INSERT.
 
 Phase-C deletion
 ----------------
@@ -78,8 +78,8 @@ logger = logging.getLogger(__name__)
 # TemplateQueryBuilder scan on the event hot path during cutover.
 # ---------------------------------------------------------------------------
 
-_WORK_EVENTS_INSERT_SQL = """
-INSERT INTO {task_schema}.work_events (
+_EVENTS_INSERT_SQL = """
+INSERT INTO {task_schema}.events (
     event_id,
     day,
     shard,
@@ -99,11 +99,11 @@ INSERT INTO {task_schema}.work_events (
 """
 
 # Cache of built INSERT queries keyed by task schema (one entry in practice).
-_WORK_EVENTS_INSERT_QUERY_CACHE: Dict[str, "DQLQuery"] = {}
+_EVENTS_INSERT_QUERY_CACHE: Dict[str, "DQLQuery"] = {}
 
 
-def _work_events_insert_query(task_schema: str) -> "DQLQuery":
-    """Return a cached ``DQLQuery`` for the work_events INSERT in ``task_schema``.
+def _events_insert_query(task_schema: str) -> "DQLQuery":
+    """Return a cached ``DQLQuery`` for the tasks.events INSERT in ``task_schema``.
 
     Built once per schema and reused, like the legacy ``_publish_query``
     singleton. ``task_schema`` lands in identifier position via ``.format``,
@@ -111,7 +111,7 @@ def _work_events_insert_query(task_schema: str) -> "DQLQuery":
     trusted env default, but every other schema qualifier in the codebase is
     validated the same way).
     """
-    query = _WORK_EVENTS_INSERT_QUERY_CACHE.get(task_schema)
+    query = _EVENTS_INSERT_QUERY_CACHE.get(task_schema)
     if query is None:
         from dynastore.modules.db_config.query_executor import (  # noqa: PLC0415
             DQLQuery,
@@ -120,14 +120,14 @@ def _work_events_insert_query(task_schema: str) -> "DQLQuery":
         from dynastore.tools.db import validate_sql_identifier  # noqa: PLC0415
 
         validate_sql_identifier(task_schema)
-        sql = _WORK_EVENTS_INSERT_SQL.format(task_schema=task_schema)
+        sql = _EVENTS_INSERT_SQL.format(task_schema=task_schema)
         query = DQLQuery(sql, result_handler=ResultHandler.NONE)
-        _WORK_EVENTS_INSERT_QUERY_CACHE[task_schema] = query
+        _EVENTS_INSERT_QUERY_CACHE[task_schema] = query
     return query
 
 
 async def _enqueue_event_drain_trigger(conn: Any) -> None:
-    """Insert one global dedup'd ``work_event_drain`` PENDING task on ``conn``.
+    """Insert one global dedup'd ``event_drain`` PENDING task on ``conn``.
 
     Co-transactional twin of the storage plane's
     ``storage_dual_write._enqueue_drain_trigger``: the drain row commits if
@@ -137,7 +137,7 @@ async def _enqueue_event_drain_trigger(conn: Any) -> None:
     dispatcher without a dedicated LISTEN connection.
 
     Degrades gracefully when the tasks table is absent (e.g. test environments
-    that only provision ``work_events``): the INSERT is SAVEPOINT-isolated via
+    that only provision ``tasks.events``): the INSERT is SAVEPOINT-isolated via
     ``conn.begin_nested()`` so a missing table cannot abort the outer PG
     transaction carrying the event row, and any failure is logged at DEBUG and
     swallowed.  The event row still commits; the drain runs on its next
@@ -158,12 +158,12 @@ async def _enqueue_event_drain_trigger(conn: Any) -> None:
         f"INSERT INTO {task_schema}.tasks"
         f" (task_id, schema_name, scope, task_type, type, execution_mode,"
         f"  inputs, timestamp, status, dedup_key)"
-        f" SELECT :task_id, 'platform', 'platform', 'work_event_drain',"
+        f" SELECT :task_id, 'platform', 'platform', 'event_drain',"
         f"        'task', 'ASYNCHRONOUS', '{{}}'::jsonb, now(), 'PENDING',"
-        f"        'work_event_drain'"
+        f"        'event_drain'"
         f" WHERE NOT EXISTS ("
         f"     SELECT 1 FROM {task_schema}.tasks"
-        f"     WHERE dedup_key = 'work_event_drain'"
+        f"     WHERE dedup_key = 'event_drain'"
         f"       AND schema_name = 'platform'"
         # Terminal set matches the dispatcher's claim query: a terminal-state
         # drain task (incl. DISMISSED) must NOT block a fresh enqueue, or the
@@ -181,7 +181,7 @@ async def _enqueue_event_drain_trigger(conn: Any) -> None:
                     )
             except Exception:  # noqa: BLE001
                 logger.debug(
-                    "work_event_drain: drain trigger skipped — tasks table not "
+                    "event_drain: drain trigger skipped — tasks table not "
                     "available in schema %r (normal during staged rollout).",
                     task_schema,
                     exc_info=True,
@@ -192,7 +192,7 @@ async def _enqueue_event_drain_trigger(conn: Any) -> None:
             )
     except Exception:  # noqa: BLE001
         logger.debug(
-            "work_event_drain: drain trigger failed for schema %r.",
+            "event_drain: drain trigger failed for schema %r.",
             task_schema,
             exc_info=True,
         )
@@ -266,7 +266,7 @@ async def dispatch_event_dual_write(
         # Any failure — missing protocol, DB error, config not found — falls
         # back to legacy-only.  This must NEVER prevent the legacy write.
         logger.debug(
-            "work_events_dual_write: could not resolve WorkClassConfig; "
+            "events_dual_write: could not resolve WorkClassConfig; "
             "falling back to legacy-only emit.",
             exc_info=True,
         )
@@ -291,7 +291,7 @@ async def dispatch_event_dual_write(
             shard=shard,
         )
 
-    # --- New write: tasks.work_events -------------------------------------
+    # --- New write: tasks.events ------------------------------------------
     new_event_id: Optional[str] = None
 
     if write_new:
@@ -302,7 +302,7 @@ async def dispatch_event_dual_write(
         new_event_id = str(generate_uuidv7())
         scope_lower = (scope or "platform").lower()
 
-        await _work_events_insert_query(task_schema).execute(
+        await _events_insert_query(task_schema).execute(
             conn,
             event_id=new_event_id,
             shard=shard,

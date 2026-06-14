@@ -16,7 +16,7 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Live-PG tests for WorkEventDrainTask (#1807 PR-5b / #2120).
+"""Live-PG tests for EventDrainTask (#1807 PR-5b / #2120).
 
 Each test runs against a per-test throwaway schema; ``DYNASTORE_TASK_SCHEMA``
 is patched so every ``get_task_schema()`` call resolves to it.
@@ -34,7 +34,7 @@ Scenarios covered:
 7. No EventBus in the process -> every claimed row retried, never dropped.
 8. No listeners for the event_type -> COMPLETED (successful no-op delivery).
 9. Drain trigger: dispatch_event_dual_write with emit_target_events='new'
-   inserts exactly ONE pending work_event_drain task row (dedup) and rolls
+   inserts exactly ONE pending event_drain task row (dedup) and rolls
    back with the outer transaction.
 """
 from __future__ import annotations
@@ -66,10 +66,10 @@ def _sa_db_url() -> str:
     return url
 
 
-# Flat (un-partitioned) work_events for tests — mirrors the production column
+# Flat (un-partitioned) events for tests — mirrors the production column
 # set including the PR-5b additions (event_type NOT NULL, error_message).
-_WORK_EVENTS_DDL = """
-CREATE TABLE IF NOT EXISTS "{schema}".work_events (
+_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS "{schema}".events (
     event_id        UUID            NOT NULL,
     day             DATE            NOT NULL DEFAULT CURRENT_DATE,
     shard           SMALLINT        NOT NULL DEFAULT 0,
@@ -138,7 +138,7 @@ async def sa_engine():
 async def drain_env(
     sa_engine, monkeypatch  # noqa: ANN001
 ) -> AsyncIterator[Tuple[str, Any]]:
-    """Provision a throwaway schema with work_events + tasks tables.
+    """Provision a throwaway schema with events + tasks tables.
 
     Patches ``DYNASTORE_TASK_SCHEMA`` so ``get_task_schema()`` resolves to the
     throwaway schema. Yields ``(task_schema, engine)``.
@@ -157,7 +157,7 @@ async def drain_env(
             result_handler=ResultHandler.NONE,
         ).execute(conn)
         await DQLQuery(
-            _WORK_EVENTS_DDL.format(schema=task_schema),
+            _EVENTS_DDL.format(schema=task_schema),
             result_handler=ResultHandler.NONE,
         ).execute(conn)
         await DQLQuery(
@@ -199,7 +199,7 @@ async def _seed_events(
     retry_count: int = 0,
     max_retries: Optional[int] = None,
 ) -> List[str]:
-    """Insert N rows into work_events; return list of event_id strings."""
+    """Insert N rows into tasks.events; return list of event_id strings."""
     from dynastore.modules.db_config.query_executor import (
         DQLQuery, ResultHandler, managed_transaction,
     )
@@ -214,7 +214,7 @@ async def _seed_events(
             locked_expr = f"now() {locked_until_offset}"
 
         sql = (
-            f"INSERT INTO {task_schema}.work_events"
+            f"INSERT INTO {task_schema}.events"
             f" (event_id, day, shard, schema_name, scope, event_type, status,"
             f"  payload, claim_version, owner_id, locked_until, retry_count,"
             f"  max_retries)"
@@ -248,7 +248,7 @@ async def _fetch_rows(engine: Any, task_schema: str) -> List[Dict[str, Any]]:
         return await DQLQuery(
             f"SELECT event_id, status, claim_version, owner_id, retry_count,"
             f"       locked_until, processed_at, error_message"
-            f" FROM {task_schema}.work_events",
+            f" FROM {task_schema}.events",
             result_handler=ResultHandler.ALL_DICTS,
         ).execute(conn) or []
 
@@ -263,7 +263,7 @@ async def _fetch_row(
 
 
 async def _count_tasks(
-    engine: Any, task_schema: str, task_type: str = "work_event_drain"
+    engine: Any, task_schema: str, task_type: str = "event_drain"
 ) -> int:
     from dynastore.modules.db_config.query_executor import (
         DQLQuery, ResultHandler, managed_transaction,
@@ -276,11 +276,11 @@ async def _count_tasks(
 
 
 def _make_task(engine: Any, task_schema: str) -> Any:
-    """Construct a WorkEventDrainTask with a small batch size for test control."""
-    from dynastore.tasks.workclass_drain.work_event_drain_task import (
-        WorkEventDrainTask,
+    """Construct an EventDrainTask with a small batch size for test control."""
+    from dynastore.tasks.workclass_drain.event_drain_task import (
+        EventDrainTask,
     )
-    return WorkEventDrainTask(batch_size=10, lease_seconds=300)
+    return EventDrainTask(batch_size=10, lease_seconds=300)
 
 
 class _FakeEventBus:
@@ -385,7 +385,7 @@ async def test_stale_claim_fence_cas_prevents_double_finalization(drain_env):
     )
     async with managed_transaction(engine) as conn:
         await DQLQuery(
-            f"UPDATE {task_schema}.work_events"
+            f"UPDATE {task_schema}.events"
             f" SET locked_until = now() - INTERVAL '1 hour'"
             f" WHERE event_id = :event_id",
             result_handler=ResultHandler.NONE,
@@ -637,7 +637,7 @@ def _config_events(target: str) -> Any:
 
 async def _publish(engine: Any, task_schema: str, configs: Any, *, item: str) -> None:
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import (
+    from dynastore.modules.events.events_dual_write import (
         dispatch_event_dual_write,
     )
 
@@ -658,13 +658,13 @@ async def _publish(engine: Any, task_schema: str, configs: Any, *, item: str) ->
 
 @pytest.mark.asyncio
 async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
-    """emit_target_events='new' inserts exactly one work_event_drain task row
+    """emit_target_events='new' inserts exactly one event_drain task row
     via the co-transactional drain trigger."""
     task_schema, engine = drain_env
     await _publish(engine, task_schema, _StubConfigs(_config_events("new")), item="a")
 
     assert await _count_tasks(engine, task_schema) == 1
-    # And the event landed in work_events with its event_type.
+    # And the event landed in tasks.events with its event_type.
     rows = await _fetch_rows(engine, task_schema)
     assert len(rows) == 1
 
@@ -685,7 +685,7 @@ async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
 async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
     """An aborted outer transaction leaves no task row and no event row."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import (
+    from dynastore.modules.events.events_dual_write import (
         dispatch_event_dual_write,
     )
 
@@ -719,10 +719,10 @@ async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
 
 
 def test_coerce_payload_valid_shapes_pass_through():
-    from dynastore.tasks.workclass_drain.work_event_drain_task import (
-        WorkEventDrainTask,
+    from dynastore.tasks.workclass_drain.event_drain_task import (
+        EventDrainTask,
     )
-    coerce = WorkEventDrainTask._coerce_payload
+    coerce = EventDrainTask._coerce_payload
     assert coerce({"args": [1], "kwargs": {"k": 2}}) == {"args": [1], "kwargs": {"k": 2}}
     assert coerce(None) == {}  # absent payload is a legitimate no-args delivery
     assert coerce('{"args": [3]}') == {"args": [3]}  # JSON string (asyncpg codec)
@@ -731,10 +731,10 @@ def test_coerce_payload_valid_shapes_pass_through():
 def test_coerce_payload_malformed_degrades_with_warning(caplog):
     import logging
 
-    from dynastore.tasks.workclass_drain.work_event_drain_task import (
-        WorkEventDrainTask,
+    from dynastore.tasks.workclass_drain.event_drain_task import (
+        EventDrainTask,
     )
-    coerce = WorkEventDrainTask._coerce_payload
+    coerce = EventDrainTask._coerce_payload
     with caplog.at_level(logging.WARNING):
         assert coerce("[1, 2, 3]") == {}      # decodes to a non-object
         assert coerce("not valid json") == {}  # undecodable

@@ -49,14 +49,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 
-from dynastore.durable.locks import stable_lock_id_blake2b as _stable_lock_id_blake2b
+from dynastore.modules.tasks.durable.locks import stable_lock_id_blake2b as _stable_lock_id_blake2b
 
 
 def _stable_advisory_lock_key(*parts: str) -> int:
     """Process-stable signed bigint for ``pg_try_advisory_xact_lock``.
 
-    Alias of :func:`dynastore.durable.locks.stable_lock_id_blake2b`.
-    The canonical home is the durable package; the output is frozen.
+    Alias of :func:`dynastore.modules.tasks.durable.locks.stable_lock_id_blake2b`.
+    The canonical home is the tasks durable submodule; the output is frozen.
     """
     return _stable_lock_id_blake2b(*parts)
 

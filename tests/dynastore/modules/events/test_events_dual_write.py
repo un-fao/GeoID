@@ -23,9 +23,9 @@ prove atomicity, fail-safe behaviour, and scope normalisation.
 
 The test schema is created fresh per-test and torn down afterwards.  The
 ``legacy`` table mirrors the structure of ``events.events`` that
-``_publish_query`` writes to; the ``new`` table mirrors
-``tasks.work_events``.  Both are created inside a unique test-scoped schema so
-concurrent test runs on the same DB do not interfere.
+``_publish_query`` writes to; the ``new`` table mirrors ``tasks.events``.
+Both are created inside a unique test-scoped schema so concurrent test runs
+on the same DB do not interfere.
 
 The fixture skips automatically when PostgreSQL is unreachable.
 
@@ -33,8 +33,8 @@ Scenarios covered
 -----------------
 1. ``configs=None`` (fail-safe) → only the legacy table gets a row.
 2. ``get_config`` raising (fail-safe) → only the legacy table gets a row.
-3. ``EmitTarget.BOTH`` → both tables get a row; work_events scope is lowercase.
-4. ``EmitTarget.NEW`` → only work_events gets a row.
+3. ``EmitTarget.BOTH`` → both tables get a row; tasks.events scope is lowercase.
+4. ``EmitTarget.NEW`` → only tasks.events gets a row.
 5. Rollback atomicity: an exception inside the outer transaction leaves zero
    rows in either table.
 """
@@ -98,7 +98,7 @@ async def sa_engine():
 
 @pytest_asyncio.fixture
 async def dual_write_schema(sa_engine) -> AsyncIterator[str]:  # noqa: ANN001
-    """Per-test schema with a legacy-events-like table and a work_events-like table.
+    """Per-test schema with a legacy-events-like table and a tasks.events-like table.
 
     Table structures match what ``_publish_query`` and
     ``dispatch_event_dual_write`` write to, but are isolated to a throwaway
@@ -144,11 +144,11 @@ async def dual_write_schema(sa_engine) -> AsyncIterator[str]:  # noqa: ANN001
             result_handler=ResultHandler.NONE,
         ).execute(conn)
 
-        # work_events-like table: matches tasks.work_events DDL exactly
+        # tasks.events-like table: matches tasks.events DDL exactly
         # (non-partitioned for simplicity — the INSERT path is identical).
         await DQLQuery(
             f"""
-            CREATE TABLE "{schema}".work_events (
+            CREATE TABLE "{schema}".task_events (
                 event_id        UUID            NOT NULL,
                 day             DATE            NOT NULL DEFAULT CURRENT_DATE,
                 shard           SMALLINT        NOT NULL,
@@ -286,6 +286,38 @@ def _patch_publish_query(schema: str):
     return _ctx()
 
 
+def _patch_events_insert_query(schema: str):
+    """Context manager: redirect _EVENTS_INSERT_SQL to the test schema task_events table."""
+    import contextlib
+    import unittest.mock as mock
+
+    from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
+
+    patched = DQLQuery(
+        f"""
+        INSERT INTO "{schema}".task_events
+            (event_id, shard, schema_name, scope, event_type, payload)
+        VALUES
+            (:event_id, :shard, :schema_name, :scope, :event_type, :payload)
+        """,
+        result_handler=ResultHandler.NONE,
+    )
+
+    @contextlib.asynccontextmanager
+    async def _ctx():
+        with mock.patch(
+            "dynastore.modules.events.events_dual_write._EVENTS_INSERT_QUERY_CACHE",
+            {},
+        ):
+            with mock.patch(
+                "dynastore.modules.events.events_dual_write._events_insert_query",
+                return_value=patched,
+            ):
+                yield
+
+    return _ctx()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -295,7 +327,7 @@ def _patch_publish_query(schema: str):
 async def test_failsafe_configs_none(sa_engine, dual_write_schema):
     """When configs=None, only the legacy table gets a row (fail-safe)."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     async with _patch_publish_query(dual_write_schema):
         async with managed_transaction(sa_engine) as conn:
@@ -314,14 +346,14 @@ async def test_failsafe_configs_none(sa_engine, dual_write_schema):
 
     assert event_id is not None and len(event_id) > 0
     assert await _count(sa_engine, dual_write_schema, "events") == 1
-    assert await _count(sa_engine, dual_write_schema, "work_events") == 0
+    assert await _count(sa_engine, dual_write_schema, "task_events") == 0
 
 
 @pytest.mark.asyncio
 async def test_failsafe_get_config_raises(sa_engine, dual_write_schema):
     """When get_config raises, only the legacy table gets a row (fail-safe)."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     configs = _make_configs("RAISE")
 
@@ -342,45 +374,46 @@ async def test_failsafe_get_config_raises(sa_engine, dual_write_schema):
 
     assert event_id is not None
     assert await _count(sa_engine, dual_write_schema, "events") == 1
-    assert await _count(sa_engine, dual_write_schema, "work_events") == 0
+    assert await _count(sa_engine, dual_write_schema, "task_events") == 0
 
 
 @pytest.mark.asyncio
 async def test_both_mode_writes_to_both_tables(sa_engine, dual_write_schema):
-    """EmitTarget.BOTH → row in both events and work_events."""
+    """EmitTarget.BOTH → row in both events and task_events (tasks.events plane)."""
     import unittest.mock as mock
 
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     configs = _make_configs("both")
 
     async with _patch_publish_query(dual_write_schema):
-        with mock.patch(
-            "dynastore.modules.tasks.tasks_module.get_task_schema",
-            return_value=dual_write_schema,
-        ):
-            async with managed_transaction(sa_engine) as conn:
-                event_id = await dispatch_event_dual_write(
-                    conn,
-                    event_type="collection_creation",
-                    scope="PLATFORM",
-                    schema_name="tenant_a",
-                    catalog_id="mycat",
-                    collection_id="mycol",
-                    identity_id=None,
-                    payload_str='{"z": 3}',
-                    shard=5,
-                    configs=configs,
-                )
+        async with _patch_events_insert_query(dual_write_schema):
+            with mock.patch(
+                "dynastore.modules.tasks.tasks_module.get_task_schema",
+                return_value=dual_write_schema,
+            ):
+                async with managed_transaction(sa_engine) as conn:
+                    event_id = await dispatch_event_dual_write(
+                        conn,
+                        event_type="collection_creation",
+                        scope="PLATFORM",
+                        schema_name="tenant_a",
+                        catalog_id="mycat",
+                        collection_id="mycol",
+                        identity_id=None,
+                        payload_str='{"z": 3}',
+                        shard=5,
+                        configs=configs,
+                    )
 
     assert event_id is not None
     assert await _count(sa_engine, dual_write_schema, "events") == 1
-    assert await _count(sa_engine, dual_write_schema, "work_events") == 1
+    assert await _count(sa_engine, dual_write_schema, "task_events") == 1
 
-    # work_events scope must be lowercase even though we passed "PLATFORM"
-    we_scope = await _fetch_scope(sa_engine, dual_write_schema, "work_events")
-    assert we_scope == "platform", f"expected 'platform', got {we_scope!r}"
+    # task_events scope must be lowercase even though we passed "PLATFORM"
+    te_scope = await _fetch_scope(sa_engine, dual_write_schema, "task_events")
+    assert te_scope == "platform", f"expected 'platform', got {te_scope!r}"
 
     # legacy events scope is unchanged (uppercase)
     ev_scope = await _fetch_scope(sa_engine, dual_write_schema, "events")
@@ -388,76 +421,78 @@ async def test_both_mode_writes_to_both_tables(sa_engine, dual_write_schema):
 
 
 @pytest.mark.asyncio
-async def test_new_mode_writes_only_to_work_events(sa_engine, dual_write_schema):
-    """EmitTarget.NEW → only work_events gets a row, events stays empty."""
+async def test_new_mode_writes_only_to_task_events(sa_engine, dual_write_schema):
+    """EmitTarget.NEW → only task_events gets a row, events stays empty."""
     import unittest.mock as mock
 
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     configs = _make_configs("new")
 
     async with _patch_publish_query(dual_write_schema):
-        with mock.patch(
-            "dynastore.modules.tasks.tasks_module.get_task_schema",
-            return_value=dual_write_schema,
-        ):
-            async with managed_transaction(sa_engine) as conn:
-                event_id = await dispatch_event_dual_write(
-                    conn,
-                    event_type="catalog_deletion",
-                    scope="PLATFORM",
-                    schema_name=None,
-                    catalog_id="gone_cat",
-                    collection_id=None,
-                    identity_id="user42",
-                    payload_str='{"deleted": true}',
-                    shard=2,
-                    configs=configs,
-                )
+        async with _patch_events_insert_query(dual_write_schema):
+            with mock.patch(
+                "dynastore.modules.tasks.tasks_module.get_task_schema",
+                return_value=dual_write_schema,
+            ):
+                async with managed_transaction(sa_engine) as conn:
+                    event_id = await dispatch_event_dual_write(
+                        conn,
+                        event_type="catalog_deletion",
+                        scope="PLATFORM",
+                        schema_name=None,
+                        catalog_id="gone_cat",
+                        collection_id=None,
+                        identity_id="user42",
+                        payload_str='{"deleted": true}',
+                        shard=2,
+                        configs=configs,
+                    )
 
     assert event_id is not None
     assert await _count(sa_engine, dual_write_schema, "events") == 0
-    assert await _count(sa_engine, dual_write_schema, "work_events") == 1
+    assert await _count(sa_engine, dual_write_schema, "task_events") == 1
 
-    # Scope must be lowercased in work_events
-    we_scope = await _fetch_scope(sa_engine, dual_write_schema, "work_events")
-    assert we_scope == "platform", f"expected 'platform', got {we_scope!r}"
+    # Scope must be lowercased in task_events
+    te_scope = await _fetch_scope(sa_engine, dual_write_schema, "task_events")
+    assert te_scope == "platform", f"expected 'platform', got {te_scope!r}"
 
 
 @pytest.mark.asyncio
-async def test_scope_lowercased_in_work_events(sa_engine, dual_write_schema):
-    """Mixed-case scope value is lowercased for work_events, preserved for legacy."""
+async def test_scope_lowercased_in_task_events(sa_engine, dual_write_schema):
+    """Mixed-case scope value is lowercased for task_events, preserved for legacy."""
     import unittest.mock as mock
 
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     configs = _make_configs("both")
 
     async with _patch_publish_query(dual_write_schema):
-        with mock.patch(
-            "dynastore.modules.tasks.tasks_module.get_task_schema",
-            return_value=dual_write_schema,
-        ):
-            async with managed_transaction(sa_engine) as conn:
-                await dispatch_event_dual_write(
-                    conn,
-                    event_type="scope_test",
-                    scope="PLATFORM",
-                    schema_name=None,
-                    catalog_id=None,
-                    collection_id=None,
-                    identity_id=None,
-                    payload_str="{}",
-                    shard=0,
-                    configs=configs,
-                )
+        async with _patch_events_insert_query(dual_write_schema):
+            with mock.patch(
+                "dynastore.modules.tasks.tasks_module.get_task_schema",
+                return_value=dual_write_schema,
+            ):
+                async with managed_transaction(sa_engine) as conn:
+                    await dispatch_event_dual_write(
+                        conn,
+                        event_type="scope_test",
+                        scope="PLATFORM",
+                        schema_name=None,
+                        catalog_id=None,
+                        collection_id=None,
+                        identity_id=None,
+                        payload_str="{}",
+                        shard=0,
+                        configs=configs,
+                    )
 
     ev_scope = await _fetch_scope(sa_engine, dual_write_schema, "events")
-    we_scope = await _fetch_scope(sa_engine, dual_write_schema, "work_events")
+    te_scope = await _fetch_scope(sa_engine, dual_write_schema, "task_events")
     assert ev_scope == "PLATFORM"
-    assert we_scope == "platform"
+    assert te_scope == "platform"
 
 
 @pytest.mark.asyncio
@@ -466,54 +501,55 @@ async def test_rollback_leaves_no_rows_in_either_table(sa_engine, dual_write_sch
     import unittest.mock as mock
 
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.events.work_events_dual_write import dispatch_event_dual_write
+    from dynastore.modules.events.events_dual_write import dispatch_event_dual_write
 
     configs = _make_configs("both")
 
     async with _patch_publish_query(dual_write_schema):
-        with mock.patch(
-            "dynastore.modules.tasks.tasks_module.get_task_schema",
-            return_value=dual_write_schema,
-        ):
-            with pytest.raises(RuntimeError, match="simulated failure"):
-                async with managed_transaction(sa_engine) as conn:
-                    # Write to both tables
-                    await dispatch_event_dual_write(
-                        conn,
-                        event_type="rollback_test",
-                        scope="PLATFORM",
-                        schema_name=None,
-                        catalog_id=None,
-                        collection_id=None,
-                        identity_id=None,
-                        payload_str="{}",
-                        shard=1,
-                        configs=configs,
-                    )
-                    # Verify rows are visible mid-transaction before aborting
-                    from dynastore.modules.db_config.query_executor import (
-                        DQLQuery,
-                        ResultHandler,
-                    )
+        async with _patch_events_insert_query(dual_write_schema):
+            with mock.patch(
+                "dynastore.modules.tasks.tasks_module.get_task_schema",
+                return_value=dual_write_schema,
+            ):
+                with pytest.raises(RuntimeError, match="simulated failure"):
+                    async with managed_transaction(sa_engine) as conn:
+                        # Write to both tables
+                        await dispatch_event_dual_write(
+                            conn,
+                            event_type="rollback_test",
+                            scope="PLATFORM",
+                            schema_name=None,
+                            catalog_id=None,
+                            collection_id=None,
+                            identity_id=None,
+                            payload_str="{}",
+                            shard=1,
+                            configs=configs,
+                        )
+                        # Verify rows are visible mid-transaction before aborting
+                        from dynastore.modules.db_config.query_executor import (
+                            DQLQuery,
+                            ResultHandler,
+                        )
 
-                    ev_mid = (
-                        await DQLQuery(
-                            f'SELECT count(*) FROM "{dual_write_schema}".events',
-                            result_handler=ResultHandler.SCALAR,
-                        ).execute(conn)
-                        or 0
-                    )
-                    we_mid = (
-                        await DQLQuery(
-                            f'SELECT count(*) FROM "{dual_write_schema}".work_events',
-                            result_handler=ResultHandler.SCALAR,
-                        ).execute(conn)
-                        or 0
-                    )
-                    assert ev_mid == 1, f"expected 1 in-tx events row, got {ev_mid}"
-                    assert we_mid == 1, f"expected 1 in-tx work_events row, got {we_mid}"
-                    raise RuntimeError("simulated failure")
+                        ev_mid = (
+                            await DQLQuery(
+                                f'SELECT count(*) FROM "{dual_write_schema}".events',
+                                result_handler=ResultHandler.SCALAR,
+                            ).execute(conn)
+                            or 0
+                        )
+                        te_mid = (
+                            await DQLQuery(
+                                f'SELECT count(*) FROM "{dual_write_schema}".task_events',
+                                result_handler=ResultHandler.SCALAR,
+                            ).execute(conn)
+                            or 0
+                        )
+                        assert ev_mid == 1, f"expected 1 in-tx events row, got {ev_mid}"
+                        assert te_mid == 1, f"expected 1 in-tx task_events row, got {te_mid}"
+                        raise RuntimeError("simulated failure")
 
     # After rollback both tables must be empty
     assert await _count(sa_engine, dual_write_schema, "events") == 0
-    assert await _count(sa_engine, dual_write_schema, "work_events") == 0
+    assert await _count(sa_engine, dual_write_schema, "task_events") == 0

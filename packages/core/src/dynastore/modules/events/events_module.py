@@ -664,7 +664,7 @@ class EventsModule(ModuleProtocol):
         db_resource: Optional[DbResource] = None,
     ) -> str:
         """Insert an event into the global outbox. Returns event_id."""
-        from dynastore.modules.events.work_events_dual_write import (  # noqa: PLC0415
+        from dynastore.modules.events.events_dual_write import (  # noqa: PLC0415
             dispatch_event_dual_write,
         )
 
