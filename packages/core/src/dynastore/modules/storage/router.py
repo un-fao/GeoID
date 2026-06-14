@@ -175,7 +175,33 @@ async def _resolve_driver_ids_cached(
         # Sort by (-len(effective), entry_order) so longest-effective wins,
         # with original-position as the deterministic final tiebreak.
         matched.sort(key=lambda triple: (-len(triple[2]), triple[0]))
-        entries = [e for _, e, _eff in matched]
+        if matched:
+            entries = [e for _, e, _eff in matched]
+        elif operation in (Operation.READ, Operation.SEARCH):
+            # No configured driver satisfies the requested hints — e.g. a READ
+            # asking for GEOMETRY_EXACT against a catalog whose only items
+            # driver serves GEOMETRY_SIMPLIFIED (an Elasticsearch-only catalog
+            # with no PG exact-geometry driver registered). For read paths the
+            # hint is a *preference*, not a hard filter: relax it and fall back
+            # to any available reader so the request returns data (simplified
+            # geometry) instead of an empty result. This is what makes the OGC
+            # API Features /items list non-empty on ES-only catalogs, where it
+            # previously read the (absent) exact-geometry PG tier and returned
+            # numberMatched=0. `entries` is left as the full unfiltered list in
+            # its original order. WRITE is never relaxed (and in practice never
+            # passes hints) — fanning a write to an unintended driver must stay
+            # impossible, so it keeps the strict empty-on-no-match semantics.
+            logger.info(
+                "router-resolve: no driver satisfies hints=%s for op=%s "
+                "catalog=%s collection=%s; relaxing to any available reader",
+                sorted(hints),
+                operation,
+                catalog_id,
+                collection_id,
+            )
+            # entries unchanged — fall through with the full unfiltered set.
+        else:
+            entries = []
 
     return [(e.driver_ref, e.on_failure, e.write_mode) for e in entries]
 
@@ -206,13 +232,19 @@ async def resolve_drivers(
         hints: Optional set of preferences. An empty set selects all entries
             (preserves zero-config defaults). Non-empty: only entries whose
             effective hints are a SUPERSET of the request are kept, longest
-            effective set wins on tie, then entry order.
+            effective set wins on tie, then entry order. For ``READ``/``SEARCH``
+            a non-empty hint set that matches NO configured driver is treated as
+            a preference and relaxed — every available reader is returned in its
+            original order — so a read still resolves a driver (e.g. exact
+            geometry requested on an ES-only catalog falls back to the
+            simplified-geometry driver). ``WRITE`` is never relaxed.
         routing_plugin_cls: PluginConfig class — ``ItemsRoutingConfig`` for
             collections, ``AssetRoutingConfig`` for assets.
 
     Returns:
-        Ordered list of :class:`ResolvedDriver`. Empty when the request
-        ``hints`` are not satisfiable by any configured driver.
+        Ordered list of :class:`ResolvedDriver`. Empty only when no driver is
+        configured for the operation at all (``WRITE`` with unsatisfiable hints
+        also yields empty; ``READ``/``SEARCH`` relax the hints instead).
     """
     # L4 — per-request memoisation: if the same resolution was already performed
     # earlier in this request, return the cached result without touching L1/L2/L3.

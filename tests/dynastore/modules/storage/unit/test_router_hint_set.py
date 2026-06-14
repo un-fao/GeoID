@@ -240,7 +240,14 @@ class TestBestOverlapMatcher:
         assert [t[0] for t in out] == ["postgresql"]
 
     @pytest.mark.asyncio
-    async def test_request_hint_unsatisfiable_returns_empty(self):
+    async def test_read_hint_unsatisfiable_relaxes_to_any_reader(self):
+        # An ES-only catalog: the sole items driver serves GEOMETRY_SIMPLIFIED.
+        # A READ asking for GEOMETRY_EXACT matches no driver, but for read paths
+        # the hint is a preference, not a hard filter — the router relaxes it and
+        # falls back to the available reader so the request returns data instead
+        # of an empty result. This is what makes the OGC API Features /items list
+        # non-empty on ES-only catalogs (it previously read the absent exact-
+        # geometry PG tier and returned numberMatched=0).
         routing = _make_routing({
             Operation.READ: [
                 ("elasticsearch", {Hint.GEOMETRY_SIMPLIFIED}),
@@ -256,6 +263,55 @@ class TestBestOverlapMatcher:
         ):
             out = await _resolve_driver_ids_cached(
                 ItemsRoutingConfig, "cat1", "col1", Operation.READ,
+                frozenset({Hint.GEOMETRY_EXACT}),
+            )
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        assert [t[0] for t in out] == ["elasticsearch"]
+
+    @pytest.mark.asyncio
+    async def test_search_hint_unsatisfiable_relaxes_to_any_reader(self):
+        # SEARCH is relaxed the same way as READ.
+        routing = _make_routing({
+            Operation.SEARCH: [
+                ("elasticsearch", {Hint.GEOMETRY_SIMPLIFIED}),
+            ],
+        })
+        mock_configs = _mock_configs_protocol(routing)
+        es = _mock_driver("elasticsearch")
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        with (
+            patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs),
+            patch("dynastore.tools.discovery.get_protocols", return_value=[es]),
+        ):
+            out = await _resolve_driver_ids_cached(
+                ItemsRoutingConfig, "cat1", "col1", Operation.SEARCH,
+                frozenset({Hint.GEOMETRY_EXACT}),
+            )
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        assert [t[0] for t in out] == ["elasticsearch"]
+
+    @pytest.mark.asyncio
+    async def test_write_hint_unsatisfiable_returns_empty(self):
+        # WRITE is NEVER relaxed: fanning a write to an unintended driver must
+        # stay impossible, so an unsatisfiable hint set yields no driver.
+        routing = _make_routing({
+            Operation.WRITE: [
+                ("elasticsearch", {Hint.GEOMETRY_SIMPLIFIED}),
+            ],
+        })
+        mock_configs = _mock_configs_protocol(routing)
+        es = _mock_driver("elasticsearch")
+        DriverRegistry.clear()
+        _resolve_driver_ids_cached.cache_clear()
+        with (
+            patch("dynastore.tools.discovery.get_protocol", return_value=mock_configs),
+            patch("dynastore.tools.discovery.get_protocols", return_value=[es]),
+        ):
+            out = await _resolve_driver_ids_cached(
+                ItemsRoutingConfig, "cat1", "col1", Operation.WRITE,
                 frozenset({Hint.GEOMETRY_EXACT}),
             )
         DriverRegistry.clear()
