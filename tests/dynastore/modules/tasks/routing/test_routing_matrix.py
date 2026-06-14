@@ -180,3 +180,39 @@ def test_empty_inventory_returns_empty_maps():
     tasks, procs = build_routing_matrix([], preset="cloud")
     assert tasks == {}
     assert procs == {}
+
+
+# ---------------------------------------------------------------------------
+# #2129 — the WorkClass hot-plane drains must be claimable on a worker-less
+# topology. There is no always-on "worker" service (dev/cloud run only
+# catalog/auth/maps/tools plus on-demand single-task Cloud Run jobs), so the
+# drains are tier-agnostic and route to the catalog tier, which co-locates the
+# dispatcher and the in-process event listeners / secondary-write driver they
+# need. A regression to affinity_tier="worker" would make them unclaimable.
+# ---------------------------------------------------------------------------
+
+
+def test_workclass_drains_are_tier_agnostic():
+    from dynastore.tasks.workclass_drain.work_event_drain_task import (
+        WorkEventDrainTask,
+    )
+    from dynastore.tasks.workclass_drain.work_index_drain_task import (
+        WorkIndexDrainTask,
+    )
+
+    assert WorkEventDrainTask.affinity_tier is None
+    assert WorkIndexDrainTask.affinity_tier is None
+
+
+def test_workclass_drains_route_to_catalog_not_worker():
+    for preset in ("cloud", "review", "onprem"):
+        tasks, _ = build_routing_matrix(
+            [_task("work_event_drain"), _task("work_index_drain")],
+            preset=preset,
+        )
+        for key in ("work_event_drain", "work_index_drain"):
+            assert tasks[key][0].consumers == ["catalog"], (
+                f"{key} under {preset} must route to catalog, not {tasks[key][0].consumers}"
+            )
+            assert tasks[key][0].consumers != ["worker"]
+            assert tasks[key][0].runner == "background"
