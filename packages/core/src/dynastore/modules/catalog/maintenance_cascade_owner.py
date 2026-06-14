@@ -18,10 +18,10 @@
 
 """Cascade cleanup owner for pending maintenance work.
 
-:class:`MaintenancePendingOwner` cancels still-pending ``tasks.tasks`` and
-``events.events`` rows that belong to a catalog or collection being
-hard-deleted.  Completed / terminal rows are immutable and age out via the
-monthly partition-drop GC — they are not deleted per-tenant.
+:class:`MaintenancePendingOwner` cancels still-pending ``tasks.tasks`` rows
+that belong to a catalog or collection being hard-deleted.  Completed /
+terminal rows are immutable and age out via the monthly partition-drop GC —
+they are not deleted per-tenant.
 
 Only PENDING rows are touched.  ACTIVE rows may be mid-flight (including the
 cascade_cleanup task that drives this very owner); they are left untouched so
@@ -33,6 +33,10 @@ physical schema (e.g. ``s_abc123``).  The cascade_cleanup task itself is
 created with ``schema_name='system'`` and is therefore structurally excluded
 by the tenant-schema filter — a defensive ``AND schema_name <> 'system'``
 predicate reinforces this.
+
+Event rows in ``tasks.events`` are reclaimed by the DROP-PARTITION retention
+GC when their day partition is dropped; there is no per-row cancel needed.
+The legacy ``events.events`` table has been removed.
 
 ``physical_schema`` is resolved at ``describe_scope`` time (inside the delete
 transaction, while ``catalog.catalogs`` still has the row) and snapshotted
@@ -68,16 +72,12 @@ logger = logging.getLogger(__name__)
 # Mirrors tasks_module.get_task_schema() without importing the module at load time.
 _TASKS_PG_SCHEMA = os.getenv("DYNASTORE_TASK_SCHEMA", "tasks")
 
-# PG schema that holds the events table.
-# Mirrors events_module._EVENTS_SCHEMA without importing the module at load time.
-_EVENTS_PG_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
-
 # Reason written to error_message when rows are cancelled by cascade teardown.
 _CANCEL_REASON = "cancelled: owning element was hard-deleted"
 
 
 class MaintenancePendingOwner(BaseResourceOwner):
-    """Cancels pending tasks/events rows when their owner element is deleted.
+    """Cancels pending tasks rows when their owner element is deleted.
 
     Supported scopes: CATALOG and COLLECTION (default from
     :class:`~dynastore.modules.catalog.resource_owner.BaseResourceOwner`).
@@ -147,7 +147,7 @@ class MaintenancePendingOwner(BaseResourceOwner):
         *,
         dry_run: bool = False,
     ) -> CleanupOutcome:
-        """Mark PENDING tasks and events for the deleted element as DEAD_LETTER.
+        """Mark PENDING tasks for the deleted element as DEAD_LETTER.
 
         SOFT mode is a no-op (maintenance rows are not tombstoned, only
         hard-deleted owners are relevant).  dry_run logs the intent and
@@ -156,6 +156,9 @@ class MaintenancePendingOwner(BaseResourceOwner):
         Only PENDING rows are updated; ACTIVE rows may be mid-flight.
         The tasks schema_name='system' guard is structural (tenant schema
         never equals 'system') and is reinforced by an explicit predicate.
+
+        Event rows in ``tasks.events`` are reclaimed by DROP-PARTITION
+        retention and do not need per-row cancellation.
         """
         if mode == CleanupMode.SOFT:
             return CleanupOutcome.DONE
@@ -174,7 +177,7 @@ class MaintenancePendingOwner(BaseResourceOwner):
 
         if dry_run:
             logger.info(
-                "MaintenancePendingOwner: dry-run — would cancel PENDING tasks/events "
+                "MaintenancePendingOwner: dry-run — would cancel PENDING tasks "
                 "for schema=%r catalog_id=%r collection_id=%r.",
                 schema, catalog_id, collection_id,
             )
@@ -197,12 +200,11 @@ class MaintenancePendingOwner(BaseResourceOwner):
 
             async with managed_transaction(engine) as conn:
                 tasks_rows = await _cancel_pending_tasks(conn, schema, collection_id)
-                events_rows = await _cancel_pending_events(conn, schema, collection_id)
 
             logger.info(
-                "MaintenancePendingOwner: cancelled %d task(s) and %d event(s) "
+                "MaintenancePendingOwner: cancelled %d task(s) "
                 "for schema=%r catalog_id=%r collection_id=%r.",
-                tasks_rows, events_rows, schema, catalog_id, collection_id,
+                tasks_rows, schema, catalog_id, collection_id,
             )
             return CleanupOutcome.DONE
 
@@ -246,42 +248,6 @@ async def _cancel_pending_tasks(
         f" SET status = 'DEAD_LETTER',"
         f"     error_message = :reason,"
         f"     finished_at = NOW()"
-        f" WHERE schema_name = :schema"
-        f"   AND schema_name <> 'system'"
-        f"   AND status = 'PENDING'"
-        f"   {collection_clause}"
-    )
-    params: dict[str, Any] = {"schema": schema, "reason": _CANCEL_REASON}
-    if collection_id is not None:
-        params["collection_id"] = collection_id
-
-    result: int | None = await DQLQuery(
-        sql, result_handler=ResultHandler.ROWCOUNT
-    ).execute(conn, **params)
-    return result or 0
-
-
-async def _cancel_pending_events(
-    conn: Any,
-    schema: str,
-    collection_id: str | None,
-) -> int:
-    """UPDATE events.events PENDING → DEAD_LETTER for the given tenant schema.
-
-    Mirrors ``_cancel_pending_tasks`` but targets the events table.  The
-    events table has no system-tenant rows (schema_name is the tenant
-    physical schema or NULL for platform events), so the ``<> 'system'``
-    guard is purely defensive.
-    """
-    from dynastore.modules.db_config.query_executor import DQLQuery, ResultHandler
-
-    collection_clause = (
-        "AND collection_id = :collection_id" if collection_id is not None else ""
-    )
-    sql = (
-        f"UPDATE {_EVENTS_PG_SCHEMA}.events"
-        f" SET status = 'DEAD_LETTER',"
-        f"     error_message = :reason"
         f" WHERE schema_name = :schema"
         f"   AND schema_name <> 'system'"
         f"   AND status = 'PENDING'"

@@ -16,11 +16,10 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 import orjson
 from dynastore.modules import ModuleProtocol, get_protocol
@@ -30,13 +29,8 @@ from dynastore.modules.db_config.query_executor import (
     DbEngine,
     managed_transaction,
     DDLQuery,
-    DDLBatch,
     DQLQuery,
     ResultHandler,
-)
-from dynastore.modules.db_config.locking_tools import (
-    check_trigger_exists,
-    pg_advisory_leadership,
 )
 from dynastore.models.protocols import (
     PropertiesProtocol,
@@ -52,106 +46,14 @@ from .models import (
     EventSubscriptionCreate,
     API_KEY_NAME,
 )
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Global events schema DDL
+# Subscription table DDL
 # ---------------------------------------------------------------------------
 
 _EVENTS_SCHEMA = os.getenv("DYNASTORE_EVENTS_SCHEMA", "events")
-
-# Dev note: the schema is rebuilt from scratch on clean startup. When evolving
-# this DDL, run `DROP SCHEMA events CASCADE` before restart — the per-shard
-# leaf partitions are plain `FOR VALUES IN (N)` with no sub-partitioning.
-GLOBAL_EVENTS_TABLE_DDL = f"""
-CREATE SCHEMA IF NOT EXISTS "{_EVENTS_SCHEMA}";
-CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events (
-    event_id      UUID          NOT NULL DEFAULT gen_random_uuid(),
-    event_type    VARCHAR       NOT NULL,
-    scope         VARCHAR(50)   NOT NULL DEFAULT 'PLATFORM',
-    schema_name   VARCHAR(255),
-    catalog_id    VARCHAR(255),
-    collection_id VARCHAR(255),
-    identity_id   VARCHAR(255),
-    payload       JSONB         NOT NULL DEFAULT '{{}}',
-    status        VARCHAR       NOT NULL DEFAULT 'PENDING',
-    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    processed_at  TIMESTAMPTZ,
-    error_message TEXT,
-    retry_count   INT           NOT NULL DEFAULT 0,
-    shard         SMALLINT      NOT NULL,
-    PRIMARY KEY (shard, event_id)
-) PARTITION BY LIST (shard);
-"""
-
-GLOBAL_EVENTS_INDEXES_DDL = f"""
-CREATE INDEX IF NOT EXISTS idx_events_pending
-    ON {_EVENTS_SCHEMA}.events (shard, created_at)
-    WHERE status = 'PENDING';
-CREATE INDEX IF NOT EXISTS idx_events_processing
-    ON {_EVENTS_SCHEMA}.events (processed_at)
-    WHERE status = 'PROCESSING';
-CREATE INDEX IF NOT EXISTS idx_events_event_id
-    ON {_EVENTS_SCHEMA}.events (event_id);
-
-CREATE OR REPLACE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    PERFORM pg_notify('dynastore_events_channel', NEW.event_type);
-    RETURN NEW;
-END;
-$$;
-"""
-
-# Trigger is kept separate so we can guard creation with a pg_trigger
-# existence check. DROP+CREATE TRIGGER takes AccessExclusiveLock on
-# events.events and would deadlock against any concurrent writer holding a
-# RowExclusiveLock (e.g. a publish INSERT) in another pod. Trigger body
-# changes are a migration concern — never re-create in place on a hot table.
-GLOBAL_EVENTS_TRIGGER_DDL = f"""
-CREATE TRIGGER on_event_insert
-    AFTER INSERT ON {_EVENTS_SCHEMA}.events
-    FOR EACH ROW
-    WHEN (NEW.status = 'PENDING')
-    EXECUTE FUNCTION {_EVENTS_SCHEMA}.notify_event_ready();
-"""
-
-
-# Module-level batch: on warm starts, the sentinel (trigger) existence check
-# is the only round-trip — table and indexes are skipped entirely.
-# Advisory lock keys are auto-derived from statement hash by DDLExecutor.
-#
-# `check_query` is passed explicitly (rather than relying on regex
-# auto-inference in ddl_inference._infer_existence_check) because the
-# events trigger is the most failure-prone DDL in the system: a stale or
-# mis-parsed inferred check would silently fall through to a bare
-# CREATE TRIGGER on a hot DB and abort foundational-module startup with
-# DuplicateObject (PG has no CREATE TRIGGER IF NOT EXISTS, and DROP+CREATE
-# would deadlock against concurrent writers — see comment above the trigger DDL).
-def _check_events_trigger_exists(conn):
-    return check_trigger_exists(
-        conn, "on_event_insert", _EVENTS_SCHEMA, table="events"
-    )
-
-
-GLOBAL_EVENTS_DDL_BATCH = DDLBatch(
-    sentinel=DDLQuery(
-        GLOBAL_EVENTS_TRIGGER_DDL, check_query=_check_events_trigger_exists
-    ),
-    steps=[
-        DDLQuery(GLOBAL_EVENTS_TABLE_DDL),
-        DDLQuery(GLOBAL_EVENTS_INDEXES_DDL),
-        DDLQuery(
-            GLOBAL_EVENTS_TRIGGER_DDL, check_query=_check_events_trigger_exists
-        ),
-    ],
-)
-
-# ---------------------------------------------------------------------------
-# Subscription table DDL
-# ---------------------------------------------------------------------------
 
 SUBSCRIPTIONS_SCHEMA = f"""
 CREATE SCHEMA IF NOT EXISTS "{_EVENTS_SCHEMA}";
@@ -200,7 +102,7 @@ _delete_subscription_query = DQLQuery(
 )
 
 # ---------------------------------------------------------------------------
-# Internal event store query objects
+# Internal event store constants
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 3
@@ -208,32 +110,6 @@ _MAX_RETRIES = 3
 #: maintenance supervisor to keep the stuck-event reaper threshold in sync
 #: with the accumulation-policy value set here.
 MAX_RETRIES: int = _MAX_RETRIES
-
-_publish_query = DQLQuery(
-    f"""
-    INSERT INTO {_EVENTS_SCHEMA}.events
-        (event_type, scope, schema_name, catalog_id, collection_id, identity_id,
-         payload, shard)
-    VALUES
-        (:event_type, :scope, :schema_name, :catalog_id, :collection_id,
-         :identity_id, :payload, :shard)
-    RETURNING event_id::text;
-    """,
-    result_handler=ResultHandler.SCALAR_ONE,
-)
-
-_backlog_query = DQLQuery(
-    f"""
-    SELECT shard,
-           count(*) AS pending,
-           EXTRACT(EPOCH FROM NOW()-min(created_at))::bigint AS oldest_age_sec
-      FROM {_EVENTS_SCHEMA}.events
-     WHERE status = 'PENDING'
-     GROUP BY shard
-    HAVING count(*) > :warn_threshold;
-    """,
-    result_handler=ResultHandler.ALL_DICTS,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -341,15 +217,18 @@ def register_catalog_listeners() -> None:
 
 class EventsModule(ModuleProtocol):
     """
-    Owns all event storage and provides the EventDriverProtocol.
+    Owns webhook subscription storage and provides the EventDriverProtocol.
 
     Responsibilities:
-    - Create and manage events.events (global outbox, 16-shard partitioned)
-    - Implement publish / search_events / wait_for_events; events are drained
-      by the control-plane EventDrainTask (tasks.events), not an in-module loop
     - Manage webhook subscriptions (platform.event_subscriptions)
-    - Expose distributed advisory lock via acquire_consumer_lock
+    - Implement publish / search_events / wait_for_events; events are written
+      to ``tasks.events`` (the WorkClass global hot plane) and drained by
+      the control-plane EventDrainTask — not an in-module loop
     - Register catalog lifecycle listeners
+
+    The legacy ``events.events`` global outbox and its DDL, shard partitions,
+    backlog monitor, and in-process consumer have been removed.  All event
+    writes go directly to ``tasks.events`` via ``emit_event_row``.
 
     Priority 11: starts after DBService (10), before TasksModule (15) and CatalogModule (20).
     """
@@ -367,7 +246,6 @@ class EventsModule(ModuleProtocol):
     def capabilities(self) -> FrozenSet[str]:
         return frozenset({
             EventDriverCapability.PERSISTENCE,
-            EventDriverCapability.LOCKING,
             EventDriverCapability.NOTIFICATION,
             EventDriverCapability.SUBSCRIBE,
             EventDriverCapability.DEAD_LETTER,
@@ -388,7 +266,6 @@ class EventsModule(ModuleProtocol):
             max_retries=_MAX_RETRIES,
         )
 
-
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -403,51 +280,14 @@ class EventsModule(ModuleProtocol):
             yield
             return
 
-        # 1. Create global events table (guarded by advisory lock for multi-instance safety).
-        # managed_transaction now retries transient connect failures (DB warming,
-        # OperationalError, asyncio.TimeoutError, OSError) with bounded exponential
-        # backoff via retry_on_transient_connect, so no caller-side try/except is needed
-        # — anything that still escapes is a genuine, persistent failure that should
-        # crash the lifespan with its original traceback intact.
-        logger.info(
-            "EventsModule: Initialising global events storage (%s.events)…", _EVENTS_SCHEMA
-        )
-        async with managed_transaction(self._engine) as conn:
-            await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
-        logger.info("EventsModule: %s.events ready.", _EVENTS_SCHEMA)
-
-        # Create 16 shard leaf partitions (single-level LIST partitioning)
-        # as one multi-statement DDL blob with an explicit sentinel check:
-        # if the last shard (events_s15) already exists, skip all 16
-        # CREATE TABLE IF NOT EXISTS statements — 1 round-trip vs 16.
-        # Auto-inference returns None for PARTITION OF, so the check
-        # must be explicit.
-        from dynastore.modules.db_config.locking_tools import check_table_exists
-
-        shard_partitions_ddl = "\n".join(
-            f"CREATE TABLE IF NOT EXISTS {_EVENTS_SCHEMA}.events_s{i} "
-            f"PARTITION OF {_EVENTS_SCHEMA}.events FOR VALUES IN ({i});"
-            for i in range(16)
-        )
-
-        def _check_last_shard(conn):
-            return check_table_exists(conn, "events_s15", _EVENTS_SCHEMA)
-
-        async with managed_transaction(self._engine) as conn:
-            await DDLQuery(
-                shard_partitions_ddl, check_query=_check_last_shard
-            ).execute(conn)
-
-        logger.info("EventsModule: Global events shard partitions configured.")
-
-        # 2. Create webhook subscriptions table
+        # Create webhook subscriptions table
         async with managed_transaction(self._engine) as conn:
             from dynastore.modules.db_config.locking_tools import check_table_exists
             if not await check_table_exists(conn, "event_subscriptions", _EVENTS_SCHEMA):
                 await DDLQuery(SUBSCRIPTIONS_SCHEMA).execute(conn)
                 await DDLQuery(SUBSCRIPTIONS_SCHEMA_INDEX).execute(conn)
 
-        # 3. Load / generate platform API key
+        # Load / generate platform API key
         global PLATFORM_API_KEY
         if not PLATFORM_API_KEY:
             try:
@@ -469,7 +309,7 @@ class EventsModule(ModuleProtocol):
                     "PropertiesProtocol not available: %s. Cannot load '%s'.", e, API_KEY_NAME
                 )
 
-        # 4. Register catalog integration listeners (deferred until CatalogsProtocol is present)
+        # Register catalog integration listeners (deferred until CatalogsProtocol is present)
         from dynastore.models.protocols import CatalogsProtocol
         if get_protocol(CatalogsProtocol):
             try:
@@ -483,26 +323,9 @@ class EventsModule(ModuleProtocol):
 
         logger.info("EventsModule: Initialisation complete. Event storage is active.")
 
-        backlog_task = asyncio.create_task(
-            self._backlog_monitor_loop(
-                warn_threshold=int(os.getenv("EVENT_BACKLOG_WARN", "10000")),
-                cadence_seconds=int(os.getenv("EVENT_BACKLOG_CADENCE_SEC", "60")),
-            ),
-            name="events_backlog_monitor",
-        )
         try:
             yield
         finally:
-            backlog_task.cancel()
-            try:
-                await backlog_task
-            except asyncio.CancelledError:
-                pass  # expected — we just cancelled it
-            except Exception:
-                logger.warning(
-                    "EventsModule: backlog-monitor task errored during shutdown",
-                    exc_info=True,
-                )
             logger.info("EventsModule: Shutdown complete.")
 
     # ------------------------------------------------------------------
@@ -510,17 +333,17 @@ class EventsModule(ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def initialize(self, conn: Any) -> None:
-        """Create global events table (idempotent). Called by lifespan; exposed for tests."""
-        await GLOBAL_EVENTS_DDL_BATCH.execute(conn)
+        """No-op: tasks.events DDL is owned by the tasks module."""
+        pass
 
     async def init_catalog_scope(self, conn: Any, catalog_schema: str) -> None:
-        """No-op. The global shard-partitioned outbox serves all catalogs."""
+        """No-op. The global partitioned tasks.events outbox serves all catalogs."""
         pass
 
     async def init_collection_scope(
         self, conn: Any, catalog_schema: str, collection_id: str
     ) -> None:
-        """No-op. The global shard-partitioned outbox serves all collections."""
+        """No-op. The global partitioned tasks.events outbox serves all collections."""
         pass
 
     async def drop_collection_scope(
@@ -528,83 +351,6 @@ class EventsModule(ModuleProtocol):
     ) -> None:
         """No-op. The global outbox does not maintain per-collection partitions."""
         pass
-
-    # ------------------------------------------------------------------
-    # EventDriverProtocol — distributed lock
-    # ------------------------------------------------------------------
-
-    @asynccontextmanager
-    async def acquire_consumer_lock(self, key: str) -> AsyncIterator[bool]:
-        """
-        Try to acquire a PostgreSQL session-scoped advisory lock on a dedicated
-        AUTOCOMMIT connection. Non-blocking: yields True if this worker became
-        the leader, False otherwise. Callers must poll to retry leadership.
-
-        The lock is held for the lifetime of the context. On connection drop
-        (pod/worker death) it is released automatically — no heartbeat needed.
-
-        Thin protocol adapter over :func:`pg_advisory_leadership` (the shared
-        leadership primitive); kept so non-PG drivers can implement the same
-        ``EventDriverProtocol`` surface differently.
-        """
-        engine = self._engine
-        if not isinstance(engine, AsyncEngine):
-            if not getattr(self, "_sync_engine_warned", False):
-                logger.warning(
-                    "EventsModule: acquire_consumer_lock requires AsyncEngine "
-                    "(got %s); event consumer disabled on this instance.",
-                    type(engine).__name__ if engine else "None",
-                )
-                self._sync_engine_warned = True
-            yield False
-            return
-        async with pg_advisory_leadership(
-            engine, key, name=f"EventsModule[{key}]"
-        ) as is_leader:
-            yield is_leader
-
-    # ------------------------------------------------------------------
-    # Backlog monitor (leader-elected)
-    # ------------------------------------------------------------------
-
-    async def _backlog_monitor_loop(
-        self, warn_threshold: int, cadence_seconds: int
-    ) -> None:
-        """Log per-shard backlog warnings when PENDING count exceeds threshold.
-
-        Runs on the leader only (non-blocking advisory lock); non-leaders poll
-        for leadership on the same cadence. On cancellation or any inner-loop
-        exception the lock is released (via ``run_leader_loop``) and another
-        instance can take over — preventing a leader-held connection from
-        staying associated with a poisoned pool slot across retries.
-        """
-        from dynastore.tools.async_utils import run_leader_loop
-        from dynastore.tools.protocol_helpers import get_engine
-
-        async def _scan_while_leader() -> None:
-            engine = self._engine or get_engine()
-            while True:
-                async with managed_transaction(engine) as conn:
-                    rows = await _backlog_query.execute(
-                        conn, warn_threshold=warn_threshold
-                    )
-                for row in rows or []:
-                    logger.warning(
-                        "events.backlog shard=%s pending=%s oldest_age_sec=%s",
-                        row["shard"],
-                        row["pending"],
-                        row["oldest_age_sec"],
-                    )
-                await asyncio.sleep(cadence_seconds)
-
-        await run_leader_loop(
-            acquire_leadership=lambda: self.acquire_consumer_lock(
-                "events_backlog_monitor"
-            ),
-            on_leader=_scan_while_leader,
-            name="events.backlog_monitor",
-            cadence_seconds=float(cadence_seconds),
-        )
 
     # ------------------------------------------------------------------
     # EventDriverProtocol — produce
@@ -621,9 +367,9 @@ class EventsModule(ModuleProtocol):
         identity_id: Optional[str] = None,
         db_resource: Optional[DbResource] = None,
     ) -> str:
-        """Insert an event into the global outbox. Returns event_id."""
-        from dynastore.modules.events.events_dual_write import (  # noqa: PLC0415
-            dispatch_event_dual_write,
+        """Insert an event into tasks.events. Returns event_id."""
+        from dynastore.modules.events.events_emit import (  # noqa: PLC0415
+            emit_event_row,
         )
 
         async def _run(conn: Any) -> str:
@@ -631,13 +377,7 @@ class EventsModule(ModuleProtocol):
             # Compute shard value in Python to avoid asyncpg type inference conflicts
             shard_key = catalog_id or "PLATFORM"
             shard = abs(hash(shard_key)) % 16
-            try:
-                from dynastore.modules import get_protocol  # noqa: PLC0415
-                from dynastore.models.protocols import ConfigsProtocol  # noqa: PLC0415
-                configs = get_protocol(ConfigsProtocol)
-            except Exception:
-                configs = None
-            return await dispatch_event_dual_write(
+            return await emit_event_row(
                 conn,
                 event_type=event_type,
                 scope=scope,
@@ -647,7 +387,6 @@ class EventsModule(ModuleProtocol):
                 identity_id=identity_id,
                 payload_str=payload_str,
                 shard=shard,
-                configs=configs,
             )
 
         if db_resource is not None:
@@ -668,29 +407,26 @@ class EventsModule(ModuleProtocol):
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Search for events in the global outbox."""
+        """Search for events in tasks.events (the active event store)."""
+        from dynastore.modules.tasks.tasks_module import get_task_schema  # noqa: PLC0415
+
+        task_schema = get_task_schema()
         async with managed_transaction(engine) as conn:
             clauses = []
             params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
             if catalog_id and catalog_id != "_system_":
-                clauses.append("catalog_id = :catalog_id")
-                params["catalog_id"] = catalog_id
-            if collection_id:
-                clauses.append("collection_id = :collection_id")
-                params["collection_id"] = collection_id
-            if identity_id:
-                clauses.append("identity_id = :identity_id")
-                params["identity_id"] = identity_id
+                clauses.append("schema_name = :schema_name")
+                params["schema_name"] = catalog_id
             if event_type:
                 clauses.append("event_type = :event_type")
                 params["event_type"] = event_type
 
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             sql = (
-                f"SELECT event_id::text as id, event_type, catalog_id, collection_id, "
-                f"identity_id, payload, created_at, status "
-                f"FROM {_EVENTS_SCHEMA}.events {where} "
+                f"SELECT event_id::text as id, event_type, schema_name, "
+                f"scope, payload, created_at, status "
+                f"FROM {task_schema}.events {where} "
                 f"ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
             )
             try:
@@ -716,7 +452,7 @@ class EventsModule(ModuleProtocol):
     # ------------------------------------------------------------------
 
     async def create_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        """Publish an event to the global outbox."""
+        """Publish an event to tasks.events."""
         try:
             await self.publish(event_type=event_type, payload=payload, scope="PLATFORM")
             logger.debug("EventsModule: published event '%s'.", event_type)

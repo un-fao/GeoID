@@ -196,7 +196,7 @@ class TestCleanupOneHard:
 
         mock_conn = AsyncMock()
         mock_dql_inst = MagicMock()
-        mock_dql_inst.execute = AsyncMock(side_effect=[3, 2])
+        mock_dql_inst.execute = AsyncMock(side_effect=[3])
         mock_engine = MagicMock()
 
         with (
@@ -216,8 +216,9 @@ class TestCleanupOneHard:
             outcome = await owner.cleanup_one(ref, CleanupMode.HARD)
 
         assert outcome == CleanupOutcome.DONE
-        # DQLQuery.execute called twice — once for tasks, once for events
-        assert mock_dql_inst.execute.await_count == 2
+        # DQLQuery.execute called once — for tasks only (events rows are
+        # reclaimed by DROP-PARTITION retention, not per-row cancellation)
+        assert mock_dql_inst.execute.await_count == 1
 
     @pytest.mark.asyncio
     async def test_hard_collection_scope_sql_includes_collection_id(self) -> None:
@@ -229,7 +230,7 @@ class TestCleanupOneHard:
         captured_sqls: list[str] = []
 
         mock_dql_inst = MagicMock()
-        mock_dql_inst.execute = AsyncMock(side_effect=[1, 0])
+        mock_dql_inst.execute = AsyncMock(side_effect=[1])
 
         def _capture_dql(sql: str, **kwargs: Any):
             captured_sqls.append(sql)
@@ -252,7 +253,7 @@ class TestCleanupOneHard:
             outcome = await owner.cleanup_one(ref, CleanupMode.HARD)
 
         assert outcome == CleanupOutcome.DONE
-        assert len(captured_sqls) == 2
+        assert len(captured_sqls) == 1
         for sql in captured_sqls:
             assert "collection_id" in sql, (
                 f"Expected collection_id predicate in SQL but got:\n{sql}"
@@ -268,7 +269,7 @@ class TestCleanupOneHard:
         captured_sqls: list[str] = []
 
         mock_dql_inst = MagicMock()
-        mock_dql_inst.execute = AsyncMock(side_effect=[0, 0])
+        mock_dql_inst.execute = AsyncMock(side_effect=[0])
 
         def _capture_dql(sql: str, **kwargs: Any):
             captured_sqls.append(sql)
@@ -290,7 +291,7 @@ class TestCleanupOneHard:
         ):
             await owner.cleanup_one(ref, CleanupMode.HARD)
 
-        assert len(captured_sqls) == 2
+        assert len(captured_sqls) == 1
         for sql in captured_sqls:
             assert "system" in sql, (
                 f"Expected 'system' exclusion guard in SQL but got:\n{sql}"
