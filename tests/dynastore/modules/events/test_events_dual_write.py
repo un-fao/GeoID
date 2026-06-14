@@ -387,3 +387,68 @@ async def test_drain_trigger_enqueued_co_transactionally(sa_engine, emit_schema)
                     )
 
     mock_enqueue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_events_filters_collection_id_via_payload(sa_engine, emit_schema):
+    """search_events scopes to a collection via the payload JSONB path.
+
+    tasks.events has no dedicated collection_id column (#1807 P4); the
+    collection lifecycle publishers store collection_id in the event payload,
+    so the collection-scoped events REST endpoint must filter on
+    ``payload->>'collection_id'``. This pins that contract end-to-end.
+    """
+    import unittest.mock as mock
+
+    from dynastore.modules.db_config.query_executor import managed_transaction
+    from dynastore.modules.events.events_emit import emit_event_row
+    from dynastore.modules.events.events_module import EventsModule
+
+    async def _seed(collection_id: str) -> None:
+        async with managed_transaction(sa_engine) as conn:
+            await emit_event_row(
+                conn,
+                event_type="collection_creation",
+                scope="PLATFORM",
+                schema_name="cat_search",
+                catalog_id="cat_search",
+                collection_id=collection_id,
+                identity_id=None,
+                payload_str=(
+                    '{"catalog_id": "cat_search", "collection_id": "'
+                    + collection_id
+                    + '"}'
+                ),
+                shard=1,
+            )
+
+    svc = EventsModule.__new__(EventsModule)
+
+    with mock.patch(
+        "dynastore.modules.events.events_emit._enqueue_event_drain_trigger",
+        new=mock.AsyncMock(),
+    ):
+        async with _patch_events_insert_query(emit_schema):
+            with mock.patch(
+                "dynastore.modules.tasks.tasks_module.get_task_schema",
+                return_value=emit_schema,
+            ):
+                await _seed("colA")
+                await _seed("colB")
+
+                only_a = await svc.search_events(
+                    engine=sa_engine, catalog_id="cat_search", collection_id="colA",
+                )
+                only_b = await svc.search_events(
+                    engine=sa_engine, catalog_id="cat_search", collection_id="colB",
+                )
+                both = await svc.search_events(
+                    engine=sa_engine, catalog_id="cat_search",
+                )
+
+    assert len(only_a) == 1, f"collection filter must scope to colA; got {only_a!r}"
+    assert "colA" in str(only_a[0]["payload"])
+    assert len(only_b) == 1, f"collection filter must scope to colB; got {only_b!r}"
+    assert "colB" in str(only_b[0]["payload"])
+    # No collection filter → both catalog events returned.
+    assert len(both) == 2

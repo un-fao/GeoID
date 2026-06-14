@@ -418,6 +418,18 @@ class EventsModule(ModuleProtocol):
             if catalog_id and catalog_id != "_system_":
                 clauses.append("schema_name = :schema_name")
                 params["schema_name"] = catalog_id
+            # tasks.events has no dedicated collection_id / identity_id columns
+            # (#1807 P4): both live in the event payload (the collection
+            # lifecycle publishers set payload['collection_id']). Filter via the
+            # JSONB path so the collection-scoped events REST endpoint keeps
+            # returning only that collection's events — the same contract the
+            # legacy events.events column filters provided.
+            if collection_id:
+                clauses.append("payload->>'collection_id' = :collection_id")
+                params["collection_id"] = collection_id
+            if identity_id:
+                clauses.append("payload->>'identity_id' = :identity_id")
+                params["identity_id"] = identity_id
             if event_type:
                 clauses.append("event_type = :event_type")
                 params["event_type"] = event_type
