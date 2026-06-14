@@ -49,12 +49,16 @@ from typing import Tuple
 
 RGB = Tuple[int, int, int]
 
-# Default palette — a neutral light wall so a per-building height tint (COLOR_0)
-# multiplies through cleanly, with cool glass and a slightly darker frame.
-_WALL: RGB = (203, 198, 189)
-_FRAME: RGB = (150, 146, 138)
-_GLASS_TOP: RGB = (120, 150, 178)     # lighter at the top (faux sky reflection)
-_GLASS_BOTTOM: RGB = (64, 84, 108)
+# Default palette — a vivid indigo wall so the buildings read as a deliberate,
+# branded scene rather than grey massing. (The renderer we target, deck.gl's
+# Tile3DLayer, paints the glTF baseColorTexture but ignores per-vertex COLOR_0,
+# so the wall colour itself — not a height tint — is what shows; we therefore
+# bake the colour into the texture.) Light, near-white glass keeps the window
+# grid crisp and bright against the saturated wall.
+_WALL: RGB = (99, 102, 241)           # indigo brand wall (#6366f1)
+_FRAME: RGB = (60, 64, 150)           # deep indigo frame for crisp window edges
+_GLASS_TOP: RGB = (210, 225, 255)     # bright sky-reflection at the top
+_GLASS_BOTTOM: RGB = (150, 175, 235)  # light periwinkle so windows stay luminous
 
 
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
