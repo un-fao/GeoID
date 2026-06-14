@@ -77,6 +77,7 @@ from uuid import uuid4
 
 from dynastore.models.tasks import TaskPayload
 from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.report import TaskReport
 from dynastore.tools.db import validate_sql_identifier
 
 logger = logging.getLogger(__name__)
@@ -136,11 +137,16 @@ class WorkEventDrainTask(TaskProtocol):
         self.batch_size = batch_size
         self.lease_seconds = lease_seconds
 
-    async def run(self, payload: TaskPayload) -> Dict[str, Any]:
+    async def run(self, payload: TaskPayload) -> TaskReport:
         """Drain ``tasks.work_events`` to empty, then return.
 
         Loops ``drain_once()`` until it reports zero claimed rows.  The
         dispatcher re-enters via NOTIFY when new rows appear.
+
+        Returns a :class:`~dynastore.tasks.report.TaskReport` so the runner
+        persists structured metrics alongside the human-facing message
+        (#1807 P2).  ``drain_once`` retains its ``int`` return type so internal
+        callers and existing tests are unaffected.
         """
         from sqlalchemy.ext.asyncio import create_async_engine
         from sqlalchemy.pool import NullPool
@@ -167,7 +173,20 @@ class WorkEventDrainTask(TaskProtocol):
         finally:
             await engine.dispose()
 
-        return {"drained": total}
+        report = TaskReport.completed(
+            message=f"work event drain completed: {total} event(s) processed",
+            metrics={"drained": total},
+            correlation={"owner_id": owner_id},
+        )
+
+        # Best-effort structured log.  No catalog_id at this level (global
+        # task), so we emit to the standard logger for observability.
+        logger.info(
+            "WorkEventDrainTask finished",
+            extra={"task_report": report.log_details()},
+        )
+
+        return report
 
     async def drain_once(self, *, engine: Any, owner_id: str) -> int:
         """Claim one batch, deliver, apply fenced outcomes; return rows handled.

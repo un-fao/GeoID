@@ -58,6 +58,7 @@ from dynastore.models.protocols.indexing import (
 )
 from dynastore.models.tasks import TaskPayload
 from dynastore.tasks.protocols import TaskProtocol
+from dynastore.tasks.report import TaskReport
 from dynastore.tools.db import validate_sql_identifier
 
 logger = logging.getLogger(__name__)
@@ -123,11 +124,16 @@ class StorageDrainTask(TaskProtocol):
         # driver_id -> resolved BulkIndexer, memoised for this run.
         self._indexer_cache: Dict[str, BulkIndexer] = {}
 
-    async def run(self, payload: TaskPayload) -> Dict[str, Any]:
+    async def run(self, payload: TaskPayload) -> TaskReport:
         """Drain ``tasks.storage`` to empty, then return.
 
         Loops ``drain_once()`` until it reports zero claimed rows.  The
         dispatcher re-enters via NOTIFY when new rows appear.
+
+        Returns a :class:`~dynastore.tasks.report.TaskReport` so the runner
+        persists structured metrics alongside the human-facing message
+        (#1807 P2).  ``drain_once`` retains its ``int`` return type so internal
+        callers and existing tests are unaffected.
         """
         from dynastore.modules.db_config.db_config import DBConfig
         from sqlalchemy.ext.asyncio import create_async_engine
@@ -154,7 +160,22 @@ class StorageDrainTask(TaskProtocol):
         finally:
             await engine.dispose()
 
-        return {"drained": total}
+        report = TaskReport.completed(
+            message=f"storage drain completed: {total} row(s) processed",
+            metrics={"drained": total},
+            correlation={"owner_id": owner_id},
+        )
+
+        # Best-effort structured log via the catalog log manager.  No
+        # catalog_id is available at the drain level (this task is global,
+        # not tenant-scoped), so we skip the tenant log and rely on the
+        # standard logger for observability.
+        logger.info(
+            "StorageDrainTask finished",
+            extra={"task_report": report.log_details()},
+        )
+
+        return report
 
     async def drain_once(self, *, engine: Any, owner_id: str) -> int:
         """Claim one batch, process, apply fenced outcomes; return rows handled.

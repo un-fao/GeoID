@@ -2163,6 +2163,11 @@ async def complete_task(
     as a lost race rather than clobbering the new attempt. See #750.
     """
     task_schema = get_task_schema()
+    # Normalize a TaskReport envelope to a plain dict + error_message pair
+    # (#1807 P2).  Non-TaskReport values pass through verbatim.
+    from dynastore.tasks.report import normalize_task_result
+    outputs, _err = normalize_task_result(outputs)
+
     serialized_outputs = None
     if outputs is not None:
         from dynastore.tools.json import CustomJSONEncoder
