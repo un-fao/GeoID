@@ -199,7 +199,14 @@ class IamService:
             return "iam"
 
         if res:
-            return res
+            # Validate the DB-sourced physical schema as a safe SQL identifier
+            # before it reaches identifier-interpolating queries (e.g. the
+            # f-string schema interpolation in build_search_principals_query).
+            # Defense-in-depth chokepoint covering every consumer of the
+            # resolved schema; mirrors PolicyService._resolve_schema.
+            from dynastore.modules.iam.policies import _validate_schema_name
+
+            return _validate_schema_name(res)
 
         if strict:
             raise ValueError(

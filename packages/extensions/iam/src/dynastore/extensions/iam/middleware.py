@@ -410,7 +410,7 @@ class IamMiddleware(BaseHTTPMiddleware):
         # A. Token/Principal Policy (The "User")
         if principal_obj and principal_obj.custom_policies:
             p_policy = PolicyBundle(statements=principal_obj.custom_policies)
-            if not self._policy_service.evaluate_policy_statements(p_policy, method, path):  # type: ignore[union-attr,arg-type]
+            if not await self._policy_service.evaluate_policy_statements(p_policy, method, path):  # type: ignore[union-attr,arg-type]
                 return JSONResponse(
                     {"detail": "Access denied by Principal policy."}, status_code=403
                 )
