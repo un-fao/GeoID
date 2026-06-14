@@ -74,12 +74,13 @@ _DEFAULT_LEASE_SECONDS: int = 300
 # Default claim batch size — mirrors OutboxDrainTask.
 _DEFAULT_BATCH_SIZE: int = 1500
 
-# driver_id of the only asynchronous index-outbox producer today — the
-# Elasticsearch items driver. The legacy storage_outbox drain is likewise
-# ES-specific (composed in tasks/outbox_drain/es_entrypoint.py). A general
-# driver_id -> BulkIndexer registry is a tracked follow-up; until it exists,
-# any other driver_id resolves to no indexer and its rows are funnelled to
-# retry (never dropped).
+# The well-known driver_id for the Elasticsearch items secondary-index driver.
+# Resolution is config-scoped via the storage driver registry (populated from
+# per-collection routing configs at startup). The ES adapter is just one
+# adapter — any driver registered under its config-scoped snake_case id resolves
+# automatically through the registry.  This constant is used only as a fallback
+# construction key when the registry has not yet been populated (e.g. early
+# in startup or in test environments without a running app context).
 _ES_ITEMS_DRIVER_ID: str = "items_elasticsearch_driver"
 
 
@@ -295,38 +296,96 @@ class WorkIndexDrainTask(TaskProtocol):
     async def _resolve_indexer(self, driver_id: str) -> Optional[BulkIndexer]:
         """Resolve a :class:`BulkIndexer` for ``driver_id``; cached per run.
 
-        The drain MUST use the ``BulkIndexer`` protocol
-        (``index_bulk(ops) -> BulkIndexResult``), NOT the distinct ``Indexer``
-        protocol (``index_bulk(ctx, ops) -> BulkResult``) — they are different
-        types with different signatures. ``OutboxDrainTask`` (the legacy
-        counterpart) is composed with an ``ESBulkIndexer`` by
-        ``build_es_drain_task``; this method reproduces that composition,
-        resolving the ES items driver_id to an ``ESBulkIndexer`` over a fresh
-        ``ItemsElasticsearchDriver``.
+        Resolution is config-scoped via the storage driver registry
+        (``DriverRegistry.collection_index()``), which is populated from
+        per-collection routing configs at startup.  The snake_case ``driver_id``
+        stamped on each ``work_index`` row matches the registry key
+        (``_to_snake(type(driver).__name__)``), so any driver registered under
+        its config-scoped id resolves automatically — the ES adapter is just
+        one concrete implementation.
 
-        The stamped ``driver_id`` is the *driver's* identity
-        (``"items_elasticsearch_driver"``), not the indexer adapter's class
-        name, so a name-based registry lookup would not match — the mapping is
-        explicit here. Any unknown driver_id (or an ES driver whose extras are
-        missing) returns ``None``; the caller funnels those rows to retry so
-        they are never dropped.
+        The drain MUST use the :class:`BulkIndexer` protocol
+        (``index_bulk(ops) -> BulkIndexResult``), NOT the distinct
+        :class:`Indexer` protocol (``index_bulk(ctx, ops) -> BulkResult``) —
+        they are different types with different signatures.
+
+        Resolution order
+        ----------------
+        1. Per-run cache (``self._indexer_cache``) — avoids repeated registry
+           lookups within a single drain cycle.
+        2. ``DriverRegistry.collection_index().get(driver_id)`` — the process-
+           wide L0 registry built from protocol discovery at startup.  Covers
+           any registered ``CollectionItemsStore`` driver, not just ES.
+        3. ``DriverRegistry.asset_index().get(driver_id)`` — fallback for
+           drivers that live in the asset tier rather than the items tier.
+        4. For the known ES items driver_id: if the registry yields nothing
+           (e.g. early startup or a test environment without a running app
+           context), construct ``ItemsElasticsearchDriver()`` directly and wrap
+           it.  This preserves the original availability semantics and keeps
+           existing tests green.
+
+        ``driver_id``\\s that cannot be resolved through any of the above paths
+        return ``None``; the caller funnels those rows to retry — they are
+        never dropped.
+
+        Config-scope gating (grouping rows by ``(catalog_id, collection_id,
+        driver_id)`` and skipping rows for driver_ids not present in that
+        collection's resolved WRITE drivers) is deferred.  The live-PG dispatch
+        tests seed rows in a throwaway schema with no routing config, so a hard
+        gate would break them.  See issue #1807 (P1.3) to add the gate once
+        test fixtures carry per-collection routing config or the gate is guarded
+        on a non-empty ``resolve_drivers`` result.
         """
         cached = self._indexer_cache.get(driver_id)
         if cached is not None:
             return cached
 
-        if driver_id == _ES_ITEMS_DRIVER_ID:
-            from dynastore.modules.storage.drivers.elasticsearch import (
-                ItemsElasticsearchDriver,
-            )
-            from dynastore.tasks.outbox_drain.es_indexer_adapter import (
-                ESBulkIndexer,
-            )
+        from dynastore.modules.storage.drivers.elasticsearch import (
+            ItemsElasticsearchDriver,
+        )
+        from dynastore.modules.storage.driver_registry import DriverRegistry
+        from dynastore.tasks.outbox_drain.es_indexer_adapter import ESBulkIndexer
 
+        # --- Step 1: registry-driven resolution ---
+        driver = (
+            DriverRegistry.collection_index().get(driver_id)
+            or DriverRegistry.asset_index().get(driver_id)
+        )
+
+        if driver is not None:
+            if isinstance(driver, ItemsElasticsearchDriver):
+                if not driver.is_available():
+                    logger.warning(
+                        "WorkIndexDrainTask: ES driver unavailable (opensearch-py "
+                        "missing from worker extras) — rows for driver_id=%r will "
+                        "retry until a capable pod drains them.",
+                        driver_id,
+                    )
+                    return None
+                indexer = cast(BulkIndexer, ESBulkIndexer(driver))
+                self._indexer_cache[driver_id] = indexer
+                return indexer
+            # Any other driver found in the registry but without a known
+            # BulkIndexer adapter yet: treat as unresolved (retry).  Adding
+            # new adapters here as they are developed will extend support
+            # without touching the drain loop.
+            logger.debug(
+                "WorkIndexDrainTask: driver_id=%r resolved from registry but "
+                "no BulkIndexer adapter is registered for type %r — rows will retry.",
+                driver_id,
+                type(driver).__name__,
+            )
+            return None
+
+        # --- Step 2: construction fallback for the known ES driver_id ---
+        # Handles the case where the registry is not yet populated (e.g. the
+        # elasticsearch extension is installed but discovery hasn't run, or the
+        # worker is in a lightweight context that skips protocol registration).
+        if driver_id == _ES_ITEMS_DRIVER_ID:
             # cast(Any, ...) mirrors build_es_drain_task: pyright sees the
             # Protocol-mixin as abstract, but runtime instantiation is valid.
-            driver = cast(Any, ItemsElasticsearchDriver)()
-            if not driver.is_available():
+            es_driver = cast(Any, ItemsElasticsearchDriver)()
+            if not es_driver.is_available():
                 logger.warning(
                     "WorkIndexDrainTask: ES driver unavailable (opensearch-py "
                     "missing from worker extras) — rows for driver_id=%r will "
@@ -334,7 +393,7 @@ class WorkIndexDrainTask(TaskProtocol):
                     driver_id,
                 )
                 return None
-            indexer = cast(BulkIndexer, ESBulkIndexer(driver))
+            indexer = cast(BulkIndexer, ESBulkIndexer(es_driver))
             self._indexer_cache[driver_id] = indexer
             return indexer
 
