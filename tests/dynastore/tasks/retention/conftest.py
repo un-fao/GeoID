@@ -14,8 +14,7 @@
 
 """Shared fixtures for tests/dynastore/tasks/retention.
 
-Mirrors tests/dynastore/tasks/outbox_drain/conftest.py — provides a raw
-asyncpg connection and a per-test PG schema with the full tasks table
+Provides a raw asyncpg connection and a per-test PG schema with the full tasks table
 hierarchy (partitioned table + DEFAULT partition) already provisioned,
 so the retention function can be exercised end-to-end.
 """

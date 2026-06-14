@@ -401,8 +401,8 @@ class StorageDrainTask(TaskProtocol):
         # elasticsearch extension is installed but discovery hasn't run, or the
         # worker is in a lightweight context that skips protocol registration).
         if driver_id == _ES_ITEMS_DRIVER_ID:
-            # cast(Any, ...) mirrors build_es_drain_task: pyright sees the
-            # Protocol-mixin as abstract, but runtime instantiation is valid.
+            # cast(Any, ...): pyright sees the Protocol-mixin as abstract, but
+            # runtime instantiation is valid.
             es_driver = cast(Any, ItemsElasticsearchDriver)()
             if not es_driver.is_available():
                 logger.warning(

@@ -19,8 +19,7 @@
 """Unit tests for workclass_ddl.py (tasks.events + tasks.storage DDL).
 
 All DDL-content and regex tests are pure-Python (no live DB required).
-The live-PG tests use the same ``async_conn`` fixture pattern as
-``tests/dynastore/modules/storage/test_pg_outbox.py``; they skip cleanly
+The live-PG tests use a raw ``async_conn`` fixture; they skip cleanly
 when no PG is reachable (``asyncpg.connect`` raises ``ConnectionRefusedError``
 or ``OSError`` before the test body runs).
 

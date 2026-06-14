@@ -62,7 +62,7 @@ the retry-not-before delay while ``PENDING``.
 Drain loop
 ----------
 ``run(payload)`` loops ``drain_once()`` until it returns 0, then exits
-(one-shot drain-to-empty, matching ``StorageDrainTask`` / ``OutboxDrainTask``).
+(one-shot drain-to-empty, matching ``StorageDrainTask``).
 The dispatcher re-enters via NOTIFY / periodic catch-up.
 """
 from __future__ import annotations
@@ -80,16 +80,16 @@ from dynastore.tools.db import validate_sql_identifier
 logger = logging.getLogger(__name__)
 
 
-# Per-attempt retry backoff in seconds (mirrors StorageDrainTask /
-# pg_outbox._BACKOFF_SECONDS). Indexed by ``retry_count`` (0-based); the last
-# entry caps the backoff at ~30 min.
+# Per-attempt retry backoff in seconds (mirrors StorageDrainTask).
+# Indexed by ``retry_count`` (0-based); the last entry caps the backoff at
+# ~30 min.
 _BACKOFF_SECONDS: List[int] = [1, 5, 30, 5 * 60, 30 * 60]
 
 # Seconds before a PROCESSING row is considered stale (lease expired) and
 # eligible for reclaim by any drain worker.
 _DEFAULT_LEASE_SECONDS: int = 300
 
-# Default claim batch size — mirrors the legacy event consumer's batch_size.
+# Default claim batch size for one drain_once() pass.
 _DEFAULT_BATCH_SIZE: int = 100
 
 # Default max delivery attempts when the row carries no per-row ``max_retries``
