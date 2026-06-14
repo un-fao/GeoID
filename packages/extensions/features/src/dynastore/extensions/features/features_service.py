@@ -924,12 +924,16 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 if key not in OGC_RESERVED_QUERY_PARAMS and value != ""
             }
 
-            # OGC Features /items always returns exact, full-precision geometry.
-            # The simplified-geometry ES fast-path is not applicable here; the
+            # OGC Features /items prefers exact, full-precision geometry. The
             # routing hint EXACT_READ_HINTS passed to dispatch_or_stream_items
-            # below selects the exact driver via the routing layer directly.
-            # Setting search_dispatch=None unconditionally skips the ES path and
-            # goes straight to stream_items with the exact hint.
+            # below selects the exact-geometry driver (today PG) when one is
+            # registered. The hint is a preference, not a hard filter: on a
+            # catalog with no exact-geometry driver (e.g. Elasticsearch-only)
+            # the router relaxes it and falls back to the available reader, so
+            # the list returns items with simplified geometry rather than an
+            # empty response. Setting search_dispatch=None skips the ES
+            # search fast-path and goes straight to stream_items with the hint,
+            # which the relaxed reader still honours.
             search_dispatch: Optional[Any] = None
 
             # Resolve skipGeometry/returnGeometry from the two accepted forms.
