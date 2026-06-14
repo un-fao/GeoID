@@ -575,7 +575,8 @@ async def test_ensure_collection_returns_false_when_row_absent_after_raise() -> 
 # ---------------------------------------------------------------------------
 
 
-def test_iter_items_retries_first_page_with_smaller_limit() -> None:
+@pytest.mark.asyncio
+async def test_iter_items_retries_first_page_with_smaller_limit() -> None:
     """A first-page fetch failure (e.g. limit too large) retries with a halved limit."""
     from dynastore.tasks.stac_harvest import task as harvest_task
 
@@ -588,21 +589,22 @@ def test_iter_items_retries_first_page_with_smaller_limit() -> None:
         return {"features": [{"id": "i1"}, {"id": "i2"}], "links": []}
 
     with patch.object(harvest_task, "_http_get_json", side_effect=fake_get):
-        items = list(harvest_task.iter_items("https://src/v1", "col"))
+        items = [x async for x in harvest_task.iter_items("https://src/v1", "col")]
 
     assert [i["id"] for i in items] == ["i1", "i2"]
     assert any("limit=100" in u for u in calls)  # tried large first
     assert any("limit=50" in u for u in calls)   # then halved and succeeded
 
 
-def test_iter_items_gives_up_after_min_limit() -> None:
+@pytest.mark.asyncio
+async def test_iter_items_gives_up_after_min_limit() -> None:
     """If even the minimum page size fails, iter_items yields nothing (no crash)."""
     from dynastore.tasks.stac_harvest import task as harvest_task
 
     with patch.object(
         harvest_task, "_http_get_json", side_effect=RuntimeError("boom")
     ):
-        items = list(harvest_task.iter_items("https://src/v1", "col"))
+        items = [x async for x in harvest_task.iter_items("https://src/v1", "col")]
 
     assert items == []
 
