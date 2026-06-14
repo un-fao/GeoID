@@ -558,6 +558,15 @@ class StacVirtualMixin(_Host):
         catalog_id = validate_sql_identifier(catalog_id)
         collection_id = validate_sql_identifier(collection_id)
 
+        from dynastore.models.protocols.visibility import resolve_collection_listing_ids
+
+        visible_collections = await resolve_collection_listing_ids(catalog_id)
+        if visible_collections is not None and collection_id not in visible_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_id}' not found.",
+            )
+
         async with managed_transaction(engine) as conn:
             # 1. Get the asset to find its URI
             asset_mgr = get_protocol(AssetsProtocol)

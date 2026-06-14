@@ -422,3 +422,57 @@ async def test_search_virtual_hierarchy_items_iam_off_reaches_service(monkeypatc
 
     assert exc_info.value.status_code == 404
     assert "hierarchy" in exc_info.value.detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# resolve_asset_source — hidden → 404; IAM-off → passthrough
+# The /assets/{asset_code}/source route redirects to (or proxies) the asset
+# bytes, so a hidden collection must 404 before any asset/config resolution.
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_asset_source_hidden_raises_404(monkeypatch):
+    svc = _svc()
+    monkeypatch.setattr(stac_virtual_mod, "managed_transaction", _fake_txn)
+    # get_protocol must never be reached once the gate fires.
+    monkeypatch.setattr(
+        stac_virtual_mod,
+        "get_protocol",
+        lambda _p: (_ for _ in ()).throw(AssertionError("must not reach")),
+    )
+
+    with patch(_RESOLVE, AsyncMock(return_value=frozenset({"allowed-col"}))):
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.resolve_asset_source(
+                catalog_id="mycat",
+                collection_id="secret",
+                asset_code="a1",
+                request=_request(),
+                engine=object(),
+            )
+
+    assert exc_info.value.status_code == 404
+    assert "secret" in exc_info.value.detail
+
+
+async def test_resolve_asset_source_iam_off_reaches_service(monkeypatch):
+    """IAM off → gate passes through to the asset-service layer (get_asset
+    returns None → asset-not-found 404, not collection-not-found)."""
+    svc = _svc()
+    monkeypatch.setattr(stac_virtual_mod, "managed_transaction", _fake_txn)
+    assets_stub = SimpleNamespace(get_asset=AsyncMock(return_value=None))
+    monkeypatch.setattr(stac_virtual_mod, "get_protocol", lambda _p: assets_stub)
+
+    with patch(_RESOLVE, AsyncMock(return_value=None)):
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.resolve_asset_source(
+                catalog_id="mycat",
+                collection_id="anycol",
+                asset_code="no-such",
+                request=_request(),
+                engine=object(),
+            )
+
+    assert exc_info.value.status_code == 404
+    # Asset-not-found message proves the gate passed through.
+    assert "no-such" in exc_info.value.detail or "not found" in exc_info.value.detail.lower()
