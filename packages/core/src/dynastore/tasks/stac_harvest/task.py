@@ -24,12 +24,13 @@ protocols only (no direct module imports).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple
 
 from dynastore.models.ogc import Feature
 from dynastore.modules.processes.models import ExecuteRequest, Process
@@ -83,12 +84,12 @@ def _next_href(page: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def iter_collections(catalog_url: str) -> Iterator[Dict[str, Any]]:
+async def iter_collections(catalog_url: str) -> AsyncIterator[Dict[str, Any]]:
     """Walk source /collections with rel=next cursor pagination."""
     url: Optional[str] = f"{catalog_url}/collections"
     while url:
         try:
-            page = _http_get_json(url)
+            page = await asyncio.to_thread(_http_get_json, url)
         except Exception as exc:
             logger.warning("stac_harvest: GET %s failed: %s", url, exc)
             return
@@ -97,7 +98,7 @@ def iter_collections(catalog_url: str) -> Iterator[Dict[str, Any]]:
         url = _next_href(page)
 
 
-def iter_items(catalog_url: str, collection_id: str) -> Iterator[Dict[str, Any]]:
+async def iter_items(catalog_url: str, collection_id: str) -> AsyncIterator[Dict[str, Any]]:
     """Walk source /collections/{id}/items with rel=next cursor pagination.
 
     If the very first page fetch fails (a source may reject the requested page
@@ -112,7 +113,7 @@ def iter_items(catalog_url: str, collection_id: str) -> Iterator[Dict[str, Any]]
     first_page = True
     while url:
         try:
-            page = _http_get_json(url)
+            page = await asyncio.to_thread(_http_get_json, url)
         except Exception as exc:
             if first_page and limit > _MIN_PAGE_LIMIT:
                 limit = max(_MIN_PAGE_LIMIT, limit // 2)
@@ -460,7 +461,7 @@ async def run_harvest(
     stats = HarvestStats()
     stac_presets_applied = False
 
-    for coll_raw in iter_collections(request.catalog_url):
+    async for coll_raw in iter_collections(request.catalog_url):
         if request.max_collections and stats.collections_seen >= request.max_collections:
             break
         stats.collections_seen += 1
@@ -482,7 +483,7 @@ async def run_harvest(
 
         batch: List[Dict[str, Any]] = []
         n_items = 0
-        for feat_raw in iter_items(request.catalog_url, coll_raw.get("id", cid)):
+        async for feat_raw in iter_items(request.catalog_url, coll_raw.get("id", cid)):
             if request.max_items and n_items >= request.max_items:
                 break
             batch.append(map_item(feat_raw, cid))
