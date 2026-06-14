@@ -19,7 +19,7 @@
 """Indexing Protocols and value types — frozen contract for the
 multi-driver bulk-write architecture.
 
-* IndexableOp           — one durable op (one row of storage_outbox)
+* IndexableOp           — one durable op (one row of tasks.storage)
 * BulkIndexResult       — per-row outcome from BulkIndexer.index_bulk
 * OutboxRecord/OutboxRow — DTOs for OutboxStore
 
@@ -112,8 +112,8 @@ class OutboxStore(Protocol):
         existing transaction (e.g. ``item_service.upsert_bulk`` writing items
         + outbox rows atomically). When ``None``, the implementation acquires
         its own connection from a pool. Implementations targeting a single
-        backend can disregard the parameter; production ``PgOutboxStore``
-        uses it for transaction-sharing."""
+        backend can disregard the parameter; implementations that support
+        transaction-sharing use it when non-None."""
         ...
 
     async def claim_batch(

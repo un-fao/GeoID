@@ -23,7 +23,7 @@ The adapter translates a batch of :class:`IndexableOp` to an ES
 ``_bulk`` request, dispatches it via the driver's resolved async
 client, and partitions the per-row response into
 :class:`BulkIndexResult` ``passed`` / ``transient`` / ``poison``
-buckets so the outbox drain task can mark each row appropriately.
+buckets so the storage drain task can mark each row appropriately.
 
 Classification rules
 --------------------
@@ -68,7 +68,7 @@ class ESBulkIndexer:
     and the per-tenant items index name (via
     :func:`dynastore.modules.storage.drivers.elasticsearch._tenant_items_index`).
     The adapter does not touch the driver's higher-level
-    ``write_entities`` path — outbox drain operates on pre-serialised
+    ``write_entities`` path — drain tasks operate on pre-serialised
     STAC item payloads emitted by the dispatcher.
     """
 
@@ -112,11 +112,7 @@ class ESBulkIndexer:
             op_index_map.append(op)
 
         # Add each touched per-tenant index to the platform public alias.
-        # Idempotent — already-aliased indices skip cheaply ES-side. Without
-        # this, ES auto-creates the per-tenant index on first bulk write
-        # (drain path doesn't go through ItemsElasticsearchDriver.ensure_storage),
-        # leaving the new index unaliased and invisible to alias-based
-        # cross-catalog search.
+        # Idempotent — already-aliased indices skip cheaply ES-side.
         from dynastore.modules.elasticsearch.aliases import (
             add_index_to_public_alias,
         )
@@ -142,14 +138,7 @@ class ESBulkIndexer:
     # ------------------------------------------------------------------
 
     def _index_name(self, catalog_id: str) -> str:
-        """Resolve the per-tenant items index name.
-
-        Prefers a driver-instance helper if present (used by tests via
-        ``_get_index_name`` / ``get_index_name``); falls back to the
-        module-level :func:`_tenant_items_index` helper, which is the
-        path production takes since :class:`ItemsElasticsearchDriver`
-        does not expose a per-instance index-name method.
-        """
+        """Resolve the per-tenant items index name."""
         helper = getattr(self._driver, "_get_index_name", None) or getattr(
             self._driver, "get_index_name", None,
         )
@@ -161,15 +150,7 @@ class ESBulkIndexer:
         return _tenant_items_index(catalog_id)
 
     def _get_client(self) -> Any:
-        """Resolve the async ES client.
-
-        Driver-instance ``_get_client`` wins when present (test
-        adapters use this for stub injection). Production
-        :class:`ItemsElasticsearchDriver` doesn't expose it; we fall
-        back to the module-level
-        :func:`_es_client_required` helper which raises a clear
-        ``RuntimeError`` if the platform module hasn't started.
-        """
+        """Resolve the async ES client."""
         getter = getattr(self._driver, "_get_client", None)
         if getter is not None:
             return getter()
@@ -187,18 +168,7 @@ class ESBulkIndexer:
         op_index_map: Sequence[IndexableOp],
         response: dict,
     ) -> BulkIndexResult:
-        """Translate an ES bulk response into a :class:`BulkIndexResult`.
-
-        Delegates the per-row classification to the shared
-        :func:`~dynastore.modules.elasticsearch.bulk_classify.classify_bulk_response`
-        helper, then maps string ids back to the ``op_id`` UUIDs that the
-        drain protocol requires.  The shared helper works with string ids so
-        both the drain adapter and the inline write drivers can reuse it
-        without importing ``IndexableOp``.
-        """
-        # Build a parallel list of string ids so classify_bulk_response can
-        # correlate response items back to documents even when ES omits ``_id``
-        # from an error entry (e.g. 429 with no body).
+        """Translate an ES bulk response into a :class:`BulkIndexResult`."""
         str_ids = [op.idempotency_key for op in op_index_map]
         op_by_key = {op.idempotency_key: op for op in op_index_map}
 
