@@ -1264,19 +1264,15 @@ class ItemQueryMixin:
                     idempotency_key=gid,
                 ))
         if records:
-            # Dual-write dispatch (delete twin of ItemService.upsert_bulk):
-            # legacy {schema}.storage_outbox and/or new tasks.storage per
-            # WorkClassConfig.emit_target_storage. Default writes only legacy;
-            # both writes ride this conn for co-transactional rollback.
-            from dynastore.modules.storage.storage_dual_write import (
-                dispatch_storage_dual_write,
+            # Enqueue storage rows and drain trigger co-transactionally on the
+            # caller's conn (delete twin of ItemService.upsert_bulk).
+            from dynastore.modules.storage.storage_emit import (
+                enqueue_storage_op,
             )
-            await dispatch_storage_dual_write(
+            await enqueue_storage_op(
                 conn,
-                outbox=outbox,
                 catalog_id=catalog_id,
                 rows=records,
-                configs=get_protocol(ConfigsProtocol),
             )
 
     async def stream_items(

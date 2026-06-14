@@ -70,7 +70,6 @@ from dynastore.models.protocols.indexer import (
     IndexOp,
 )
 from dynastore.models.protocols.indexing import IndexableOp, OutboxStore
-from dynastore.tools.async_utils import LoopLocalLock
 from dynastore.modules.storage.routing_config import (
     FailurePolicy,
     OperationDriverEntry,
@@ -376,14 +375,6 @@ class TaskTableOutboxWriter:
 
 _DEFAULT_DISPATCHER: Optional["IndexDispatcher"] = None
 
-# Process-wide lazy asyncpg pool for the bulk OutboxStore. Created on
-# first dispatch that needs it; reused across calls. Sized small by
-# default — the pool is only used by the dispatcher's missing-indexer
-# OUTBOX path, so production traffic is bounded by the dispatch rate
-# rather than the request rate.
-_OUTBOX_POOL: Any = None
-_OUTBOX_POOL_LOCK = LoopLocalLock()
-
 
 def _log_dispatch_path(
     *,
@@ -404,166 +395,6 @@ def _log_dispatch_path(
         mode, indexer_id, catalog, collection, chunk_size,
     )
 
-
-async def _get_outbox_pool() -> Any:
-    """Return (lazily creating) the process-wide asyncpg pool used by
-    :class:`PgOutboxStore`.
-
-    Acquires the DSN from :class:`DBConfig` (the same env-driven source
-    SQLAlchemy uses) and strips the ``+asyncpg`` dialect suffix so the
-    libpq URL is acceptable to ``asyncpg.create_pool``.
-    """
-    global _OUTBOX_POOL
-    if _OUTBOX_POOL is not None:
-        return _OUTBOX_POOL
-    async with _OUTBOX_POOL_LOCK:
-        if _OUTBOX_POOL is not None:
-            return _OUTBOX_POOL
-        import asyncpg  # local import: keep module import-light
-
-        from dynastore.modules.db_config.db_config import DBConfig
-
-        dsn = DBConfig.database_url.replace("postgresql+asyncpg://", "postgresql://")
-        _OUTBOX_POOL = await asyncpg.create_pool(
-            dsn=dsn, min_size=1, max_size=10,
-        )
-        return _OUTBOX_POOL
-
-
-async def _close_outbox_pool() -> None:
-    """Test/shutdown hook — closes the lazy outbox pool if it was opened.
-
-    Production processes typically rely on Cloud Run reaping the worker
-    rather than explicit teardown, but tests that exercise the
-    production-mode wiring need to release pool sockets cleanly.
-    """
-    global _OUTBOX_POOL
-    if _OUTBOX_POOL is None:
-        return
-    pool = _OUTBOX_POOL
-    _OUTBOX_POOL = None
-    try:
-        await pool.close()
-    except Exception:
-        # Best-effort shutdown; don't mask the original test failure.
-        logger.exception("IndexDispatcher: outbox pool close failed")
-
-
-class _LazyPoolProxy:
-    """Pool-shaped object that resolves the real asyncpg pool on demand.
-
-    ``PgOutboxStore`` only ever calls ``await pool.acquire()`` and
-    ``await pool.release(conn)`` against the object passed to its
-    ``pool=`` kw, so the proxy implements just those two methods.
-    Connections are released back to the underlying pool — same
-    contract as a direct asyncpg.Pool reference.
-    """
-
-    async def acquire(self) -> Any:
-        pool = await _get_outbox_pool()
-        return await pool.acquire()
-
-    async def release(self, conn: Any) -> None:
-        pool = await _get_outbox_pool()
-        await pool.release(conn)
-
-
-class _DualOutbox:
-    """Bridge that satisfies both the bulk :class:`OutboxStore` Protocol
-    (``enqueue_bulk`` / ``claim_batch`` / ``mark_*`` / ``listen``) and
-    the legacy :class:`OutboxWriterProtocol` singular ``enqueue``
-    surface.
-
-    The dispatcher's ``_handle_missing`` path (Phase 6, ``IndexableOp``
-    callers) goes through ``enqueue_bulk`` → :class:`PgOutboxStore`
-    (the per-tenant ``storage_outbox`` table). The legacy
-    ``_handle_failure`` path (resolved-but-failing indexer with the
-    older :class:`IndexOp` shape) goes through ``enqueue`` →
-    :class:`TaskTableOutboxWriter` (the existing ``tasks.tasks`` row
-    with ``task_type='index_propagation'``).
-
-    Keeping both lets the dispatcher honour OUTBOX policy for both call
-    sites while the codebase finishes migrating off the legacy IndexOp
-    shape.
-    """
-
-    def __init__(
-        self, *, bulk: OutboxStore, legacy: "OutboxWriterProtocol",
-    ) -> None:
-        self._bulk = bulk
-        self._legacy = legacy
-
-    # OutboxStore surface — delegate to the bulk implementation.
-    async def enqueue_bulk(
-        self, conn: Any = None, *, catalog_id: str, rows: Sequence[Any],
-    ) -> None:
-        await self._bulk.enqueue_bulk(conn, catalog_id=catalog_id, rows=rows)
-        # Observability (#504): one structured log per *successful* bulk
-        # enqueue — captures chunk size and per-indexer emission rate.
-        # Emitted after the delegate returns so a raise does not leave a
-        # log line describing a chunk that was never durably persisted.
-        chunk_size = len(rows)
-        if chunk_size:
-            indexer_ids = sorted({getattr(r, "indexer_id", "?") for r in rows})
-            indexer_label = ",".join(indexer_ids)
-            logger.info(
-                "index_chunk_emitted indexer=%s source=bulk catalog=%s "
-                "chunk_size=%d",
-                indexer_label, catalog_id, chunk_size,
-            )
-            _log_dispatch_path(
-                mode="outbox_handoff",
-                indexer_id=indexer_label,
-                catalog=catalog_id,
-                collection="",
-                chunk_size=chunk_size,
-            )
-
-    async def claim_batch(
-        self, *, driver_id: str, catalog_id: str,
-        batch_size: int, claimed_by: str,
-    ) -> List[Any]:
-        return await self._bulk.claim_batch(
-            driver_id=driver_id, catalog_id=catalog_id,
-            batch_size=batch_size, claimed_by=claimed_by,
-        )
-
-    async def mark_done(
-        self, *, catalog_id: str, op_ids: Sequence[Any],
-    ) -> None:
-        await self._bulk.mark_done(catalog_id=catalog_id, op_ids=op_ids)
-
-    async def mark_retry(
-        self, *, catalog_id: str, op_ids: Sequence[Any],
-        error: str, attempts_seen: int,
-    ) -> None:
-        await self._bulk.mark_retry(
-            catalog_id=catalog_id, op_ids=op_ids,
-            error=error, attempts_seen=attempts_seen,
-        )
-
-    async def mark_failed(
-        self, *, catalog_id: str, op_ids: Sequence[Any], error: str,
-    ) -> None:
-        await self._bulk.mark_failed(
-            catalog_id=catalog_id, op_ids=op_ids, error=error,
-        )
-
-    def listen(self, *, driver_id: str, catalog_id: str) -> Any:
-        return self._bulk.listen(driver_id=driver_id, catalog_id=catalog_id)
-
-    # OutboxWriterProtocol surface — delegate to the legacy task-table
-    # writer so the older IndexOp callers keep their durable retry path.
-    async def enqueue(
-        self, *, indexer_id: str, ctx: IndexContext,
-        ops: Sequence[IndexOp],
-        last_error: Optional[str] = None,
-        chunk_size: Optional[int] = None,
-    ) -> None:
-        await self._legacy.enqueue(
-            indexer_id=indexer_id, ctx=ctx, ops=ops,
-            last_error=last_error, chunk_size=chunk_size,
-        )
 
 
 def _make_default_routing_resolver():
@@ -686,31 +517,18 @@ def _make_default_indexer_registry():
 
 
 def get_index_dispatcher() -> IndexDispatcher:
-    """Process-wide singleton dispatcher — reuses live resolvers + a
-    composite outbox (:class:`PgOutboxStore` for the bulk
-    :class:`OutboxStore` Protocol path used by ``_handle_missing`` and
-    :class:`TaskTableOutboxWriter` for the legacy singular ``enqueue``
-    path used by ``_handle_failure``) + a per-indexer
-    :class:`CircuitBreaker`.
-
-    The asyncpg pool backing :class:`PgOutboxStore` is created lazily at
-    first call to ``enqueue_bulk`` (see :func:`_get_outbox_pool`) so
-    importing this module doesn't open DB sockets and tests that never
-    exercise the missing-indexer OUTBOX path don't pay the pool cost.
-    Pool size is small by default (1..10) since dispatch failures are
-    expected to be rare relative to request volume.
+    """Process-wide singleton dispatcher — reuses live resolvers +
+    :class:`TaskTableOutboxWriter` for the ``OUTBOX`` failure path +
+    a per-indexer :class:`CircuitBreaker`.
     """
     global _DEFAULT_DISPATCHER
     if _DEFAULT_DISPATCHER is None:
         from dynastore.modules.storage.circuit_breaker import CircuitBreaker
-        from dynastore.modules.storage.pg_outbox import PgOutboxStore
 
-        bulk_outbox = PgOutboxStore(pool=_LazyPoolProxy())
-        legacy_outbox = TaskTableOutboxWriter()
         _DEFAULT_DISPATCHER = IndexDispatcher(
             routing_resolver=_make_default_routing_resolver(),
             indexer_registry=_make_default_indexer_registry(),
-            outbox=_DualOutbox(bulk=bulk_outbox, legacy=legacy_outbox),
+            outbox=TaskTableOutboxWriter(),
             breaker=CircuitBreaker(),
         )
     return _DEFAULT_DISPATCHER
@@ -719,15 +537,9 @@ def get_index_dispatcher() -> IndexDispatcher:
 async def reset_index_dispatcher() -> None:
     """Test hook — drops the cached singleton so the next
     :func:`get_index_dispatcher` rebuilds with current discovery state.
-
-    Also closes the lazy asyncpg outbox pool (see :func:`_close_outbox_pool`)
-    so subsequent tests that exercise production-mode wiring don't leak
-    sockets across resets. Must be awaited; tests that previously called
-    this synchronously need to be async or wrap with ``asyncio.run``.
     """
     global _DEFAULT_DISPATCHER
     _DEFAULT_DISPATCHER = None
-    await _close_outbox_pool()
 
 
 # ---------------------------------------------------------------------------

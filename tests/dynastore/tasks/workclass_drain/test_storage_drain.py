@@ -33,9 +33,9 @@ Scenarios covered:
    in_flight is not.
 5. Retry backoff: mark_retry sets status='ready', bumps attempts,
    pushes ready_at into the future.
-6. Drain trigger: dispatch_storage_dual_write with emit_target_storage='new'
-   or 'both' inserts exactly ONE pending storage_drain task row on the
-   same conn (dedup) and rolls back with the outer transaction.
+6. Drain trigger: enqueue_storage_op inserts exactly ONE pending storage_drain
+   task row on the same conn (dedup) and rolls back with the outer
+   transaction.
 """
 from __future__ import annotations
 
@@ -525,15 +525,12 @@ async def test_retry_backoff_bumps_attempts_and_delays_ready_at(drain_env):
 
 @pytest.mark.asyncio
 async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
-    """dispatch_storage_dual_write with emit_target_storage='new' inserts exactly
-    one storage_drain task row via the co-transactional drain trigger.
+    """enqueue_storage_op inserts exactly one storage_drain task row via the
+    co-transactional drain trigger.
     """
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.storage.storage_dual_write import (
-        dispatch_storage_dual_write,
-    )
+    from dynastore.modules.storage.storage_emit import enqueue_storage_op
     from dynastore.models.protocols.indexing import OutboxRecord
-    from dynastore.modules.storage.pg_outbox import PgOutboxStore
 
     task_schema, engine = drain_env
 
@@ -549,17 +546,9 @@ async def test_drain_trigger_inserts_one_pending_task_row(drain_env):
             idempotency_key="ik_1",
         ),
     ]
-    configs = _StubConfigs(_config("new"))
-    outbox = PgOutboxStore(pool=object(), single_conn=None)
 
     async with managed_transaction(engine) as conn:
-        await dispatch_storage_dual_write(
-            conn,
-            outbox=outbox,
-            catalog_id=task_schema,
-            rows=rows,
-            configs=configs,
-        )
+        await enqueue_storage_op(conn, catalog_id=task_schema, rows=rows)
 
     count = await _count_tasks(engine, task_schema)
     assert count == 1, f"expected 1 pending drain task; got {count}"
@@ -571,11 +560,8 @@ async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
     task due to the dedup WHERE NOT EXISTS guard.
     """
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.storage.storage_dual_write import (
-        dispatch_storage_dual_write,
-    )
+    from dynastore.modules.storage.storage_emit import enqueue_storage_op
     from dynastore.models.protocols.indexing import OutboxRecord
-    from dynastore.modules.storage.pg_outbox import PgOutboxStore
 
     task_schema, engine = drain_env
 
@@ -591,19 +577,10 @@ async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
             idempotency_key=f"ik_{item_id}",
         )
 
-    configs = _StubConfigs(_config("new"))
-    outbox = PgOutboxStore(pool=object(), single_conn=None)
-
     # Three separate writes — each calls _enqueue_drain_trigger.
     for i in range(3):
         async with managed_transaction(engine) as conn:
-            await dispatch_storage_dual_write(
-                conn,
-                outbox=outbox,
-                catalog_id=task_schema,
-                rows=[_row(f"item_{i}")],
-                configs=configs,
-            )
+            await enqueue_storage_op(conn, catalog_id=task_schema, rows=[_row(f"item_{i}")])
 
     count = await _count_tasks(engine, task_schema)
     assert count == 1, f"dedup should coalesce to 1 pending task; got {count}"
@@ -613,11 +590,8 @@ async def test_drain_trigger_dedup_multiple_writes_one_row(drain_env):
 async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
     """An aborted outer transaction leaves no task row in tasks."""
     from dynastore.modules.db_config.query_executor import managed_transaction
-    from dynastore.modules.storage.storage_dual_write import (
-        dispatch_storage_dual_write,
-    )
+    from dynastore.modules.storage.storage_emit import enqueue_storage_op
     from dynastore.models.protocols.indexing import OutboxRecord
-    from dynastore.modules.storage.pg_outbox import PgOutboxStore
 
     task_schema, engine = drain_env
 
@@ -633,43 +607,14 @@ async def test_drain_trigger_rolls_back_with_outer_transaction(drain_env):
             idempotency_key="ik_rb",
         ),
     ]
-    configs = _StubConfigs(_config("new"))
-    outbox = PgOutboxStore(pool=object(), single_conn=None)
 
     with pytest.raises(RuntimeError, match="simulated abort"):
         async with managed_transaction(engine) as conn:
-            await dispatch_storage_dual_write(
-                conn,
-                outbox=outbox,
-                catalog_id=task_schema,
-                rows=rows,
-                configs=configs,
-            )
+            await enqueue_storage_op(conn, catalog_id=task_schema, rows=rows)
             raise RuntimeError("simulated abort")
 
     count = await _count_tasks(engine, task_schema)
     assert count == 0, f"rollback must remove the drain task row; got {count}"
-
-
-# ---------------------------------------------------------------------------
-# Stub helpers for trigger tests
-# ---------------------------------------------------------------------------
-
-
-class _StubConfigs:
-    def __init__(self, cfg: Any) -> None:
-        self._cfg = cfg
-
-    async def get_config(self, config_cls: Any, **_kw: Any) -> Any:
-        return self._cfg
-
-
-def _config(target: Optional[str] = None) -> Any:
-    from dynastore.modules.tasks.workclass_config import EmitTarget, WorkClassConfig
-
-    if target is None:
-        return WorkClassConfig()
-    return WorkClassConfig(emit_target_storage=EmitTarget(target))
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +740,7 @@ async def test_resolve_indexer_es_driver_is_bulk_indexer(drain_env):
     if indexer is None:
         pytest.skip("ES driver unavailable (opensearch-py not installed)")
 
-    from dynastore.tasks.outbox_drain.es_indexer_adapter import ESBulkIndexer
+    from dynastore.tasks.workclass_drain.es_indexer_adapter import ESBulkIndexer
 
     assert isinstance(indexer, ESBulkIndexer)
     params = list(inspect.signature(indexer.index_bulk).parameters)

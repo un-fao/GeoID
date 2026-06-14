@@ -19,7 +19,7 @@
 """Shared ES bulk-response classifier.
 
 Single home for the classification rules consumed by:
-* :class:`~dynastore.tasks.outbox_drain.es_indexer_adapter.ESBulkIndexer`
+* :class:`~dynastore.tasks.workclass_drain.es_indexer_adapter.ESBulkIndexer`
   (async drain path — ``_classify_response`` delegates here).
 * Every inline synchronous ES write driver that calls ``es.bulk()``
   inside the request path (``write_entities`` / ``index_bulk``).
