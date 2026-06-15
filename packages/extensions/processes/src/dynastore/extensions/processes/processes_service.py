@@ -69,9 +69,23 @@ from dynastore.modules.processes.inventory import (
 from dynastore.models.auth_models import SYSTEM_USER_ID
 from dynastore.models.driver_context import DriverContext
 from dynastore.extensions.tools.query import parse_hints_param  # noqa: E402
+from dynastore.extensions.tools.url import enforce_https  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
+
+
+def _external_url(url: Any) -> str:
+    """Stringify a request-derived URL and upgrade its scheme when FORCE_HTTPS.
+
+    ``request.url_for`` / ``request.url`` / ``request.base_url`` carry the
+    scheme the app sees behind the inner load balancer, which terminates TLS
+    and forwards plain http. Without this, the advertised HATEOAS job/process
+    links leak an ``http://`` origin to external clients (mixed content).
+    ``enforce_https`` upgrades the scheme when ``FORCE_HTTPS`` is set and is a
+    no-op otherwise (local/dev), so the inner hop stays unaffected.
+    """
+    return enforce_https(str(url))
 
 # --- OGC Processes Conformance URIs ---
 PROCESSES_CONFORMANCE = [
@@ -171,7 +185,7 @@ def _build_execution_links(
         )
 
     if catalog_id and collection_id:
-        href = str(
+        href = _external_url(
             request.url_for(
                 "execute_process_collection",
                 catalog_id=catalog_id,
@@ -183,7 +197,7 @@ def _build_execution_links(
         return links
 
     if catalog_id:
-        href = str(
+        href = _external_url(
             request.url_for(
                 "execute_process_catalog",
                 catalog_id=catalog_id,
@@ -194,7 +208,7 @@ def _build_execution_links(
         return links
 
     # Canonical description: advertise one templated URL per declared scope.
-    base = str(request.base_url).rstrip("/")
+    base = _external_url(request.base_url).rstrip("/")
     for scope in process.scopes:
         template = _SCOPE_URL_TEMPLATES[scope].replace(
             "{process_id}", process.id
@@ -331,7 +345,7 @@ async def _render_process_list(
     for entry in entries:
         process = await _lookup_process_or_404_silent(entry.id)
         self_link_href = (
-            str(request.url_for("get_process_description", process_id=entry.id))
+            _external_url(request.url_for("get_process_description", process_id=entry.id))
             if process is not None
             else ""
         )
@@ -358,7 +372,7 @@ async def _render_process_list(
 
     links = [
         models.Link(
-            href=str(request.url), rel="self", type="application/json", hreflang=None
+            href=_external_url(request.url), rel="self", type="application/json", hreflang=None
         )
     ]
     return models.ProcessList(processes=process_summaries, links=links)
@@ -497,7 +511,7 @@ async def get_process_description(process_id: str, request: Request):
     """
     process = await _lookup_process_or_404(process_id)
     self_link = models.Link(
-        href=str(request.url),
+        href=_external_url(request.url),
         rel="self",
         type="application/json",
         title="Self",  # type: ignore[arg-type]
@@ -742,7 +756,7 @@ def _handle_execution_result(
         return Response(
             content=status_info.model_dump_json(by_alias=True),
             status_code=status.HTTP_201_CREATED,
-            headers={"Location": str(job_status_url)},
+            headers={"Location": _external_url(job_status_url)},
             media_type="application/json",
         )
     else:
@@ -1426,14 +1440,14 @@ def _get_job_links(task: Task, request: Request) -> List[models.Link]:
     collection_id = path_params.get("collection_id")
 
     if catalog_id and collection_id:
-        status_url = str(request.url_for("get_job_status_collection", catalog_id=catalog_id, collection_id=collection_id, job_id=str(job_id)))
-        results_url = str(request.url_for("get_job_results_collection", catalog_id=catalog_id, collection_id=collection_id, job_id=str(job_id)))
+        status_url = _external_url(request.url_for("get_job_status_collection", catalog_id=catalog_id, collection_id=collection_id, job_id=str(job_id)))
+        results_url = _external_url(request.url_for("get_job_results_collection", catalog_id=catalog_id, collection_id=collection_id, job_id=str(job_id)))
     elif catalog_id:
-        status_url = str(request.url_for("get_job_status_catalog", catalog_id=catalog_id, job_id=str(job_id)))
-        results_url = str(request.url_for("get_job_results_catalog", catalog_id=catalog_id, job_id=str(job_id)))
+        status_url = _external_url(request.url_for("get_job_status_catalog", catalog_id=catalog_id, job_id=str(job_id)))
+        results_url = _external_url(request.url_for("get_job_results_catalog", catalog_id=catalog_id, job_id=str(job_id)))
     else:
-        status_url = str(request.url_for("get_job_status", job_id=str(job_id)))
-        results_url = str(request.url_for("get_job_results", job_id=str(job_id)))
+        status_url = _external_url(request.url_for("get_job_status", job_id=str(job_id)))
+        results_url = _external_url(request.url_for("get_job_results", job_id=str(job_id)))
 
     links = [
         models.Link(href=status_url, rel="self", type="application/json", title="This document"),  # type: ignore[arg-type]
