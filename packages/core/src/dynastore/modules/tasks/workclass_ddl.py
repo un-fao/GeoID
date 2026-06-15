@@ -239,11 +239,26 @@ DECLARE
     date_str TEXT;
     part_date DATE;
     default_deleted BIGINT;
+    prune_count INT;
+    prune_list TEXT;
 BEGIN
     -- Bound AccessExclusiveLock wait: if a partition is being actively scanned,
     -- fail fast and let the next supervisor tick retry rather than stalling.
     SET LOCAL lock_timeout = '10s';
     cutoff_date := CURRENT_DATE - INTERVAL '30 days';
+    -- Pre-flight (#2106): announce the prune at LOG level so it is never silent.
+    -- The per-partition message below is NOTICE, suppressed by the server log at
+    -- the default log_min_messages=WARNING; this LOG line records how many daily
+    -- leaf partitions and which names this tick will DROP.
+    SELECT count(*), string_agg(c.relname, ', ' ORDER BY c.relname)
+      INTO prune_count, prune_list
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = '{schema}' AND c.relkind = 'r'
+        AND c.relname ~ '^events_\\d{4}_\\d{2}_\\d{2}$'
+        AND to_date(substring(c.relname from '\\d{4}_\\d{2}_\\d{2}$'), 'YYYY_MM_DD') < cutoff_date;
+    IF prune_count > 0 THEN
+        RAISE LOG 'partition retention [{schema}.events]: dropping % daily partition(s) older than % : %', prune_count, cutoff_date, prune_list;
+    END IF;
     -- Match ONLY daily leaf partitions (events_YYYY_MM_DD).  The regex
     -- explicitly excludes the parent table name and the DEFAULT partition.
     FOR row IN
@@ -317,9 +332,24 @@ DECLARE
     date_str TEXT;
     part_date DATE;
     default_deleted BIGINT;
+    prune_count INT;
+    prune_list TEXT;
 BEGIN
     SET LOCAL lock_timeout = '10s';
     cutoff_date := CURRENT_DATE - INTERVAL '30 days';
+    -- Pre-flight (#2106): announce the prune at LOG level so it is never silent.
+    -- The per-partition message below is NOTICE, suppressed by the server log at
+    -- the default log_min_messages=WARNING; this LOG line records how many daily
+    -- leaf partitions and which names this tick will DROP.
+    SELECT count(*), string_agg(c.relname, ', ' ORDER BY c.relname)
+      INTO prune_count, prune_list
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = '{schema}' AND c.relkind = 'r'
+        AND c.relname ~ '^storage_\\d{4}_\\d{2}_\\d{2}$'
+        AND to_date(substring(c.relname from '\\d{4}_\\d{2}_\\d{2}$'), 'YYYY_MM_DD') < cutoff_date;
+    IF prune_count > 0 THEN
+        RAISE LOG 'partition retention [{schema}.storage]: dropping % daily partition(s) older than % : %', prune_count, cutoff_date, prune_list;
+    END IF;
     FOR row IN
         SELECT relname FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace

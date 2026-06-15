@@ -70,10 +70,14 @@ class FailurePolicy(StrEnum):
 
     ``OUTBOX`` is the production-grade durability policy for secondary-index
     WRITE entries: on synchronous failure (or when the per-indexer circuit breaker is
-    open) the dispatcher persists an ``_meta.index_outbox`` row in the
+    open) the dispatcher persists a ``tasks.storage`` row in the
     same PG transaction as the upstream data write.  A background worker
     drains it with exponential backoff.  PG TX commit guarantees neither
-    the data nor the obligation-to-index can ever be lost.
+    the data nor the obligation-to-index can ever be lost.  The value name
+    reflects the transactional-outbox PATTERN; the durable plane moved from
+    the per-tenant ``_meta.index_outbox`` table to the unified
+    ``tasks.storage`` table in #1807 (the enum value is unchanged — it is a
+    persisted config value).
 
     Selection guide:
         ``FATAL``   — caller rolls back if this driver fails.  Use for
@@ -88,7 +92,7 @@ class FailurePolicy(StrEnum):
     """
 
     FATAL = "fatal"      # operation fails if this driver fails
-    OUTBOX = "outbox"    # on failure, enqueue _meta.index_outbox row in same TX
+    OUTBOX = "outbox"    # on failure, enqueue a tasks.storage row in same TX (outbox pattern)
     WARN = "warn"        # log warning, continue with other drivers
     IGNORE = "ignore"    # silently skip on failure
 
@@ -1316,7 +1320,7 @@ def _self_register_indexers_into(
     ``operations[WRITE]`` independently.
 
     The ``OUTBOX`` default means a transient indexer failure enqueues a row
-    in ``_meta.index_outbox`` (same PG transaction as the upstream write)
+    in ``tasks.storage`` (same PG transaction as the upstream write)
     for the drain task to retry, instead of dropping the obligation with a
     log line.  Operators who want a non-durable best-effort sink can
     override per-entry to ``WARN``, or a strongly-consistent index with

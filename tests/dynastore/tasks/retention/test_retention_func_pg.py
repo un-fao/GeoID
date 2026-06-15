@@ -172,3 +172,64 @@ async def test_retention_func_drains_tasks_default(retention_schema, async_conn)
     assert count_after == 0, (
         "Retention function should have deleted the stale row from tasks_default"
     )
+
+
+@pytest.mark.asyncio
+async def test_retention_func_announces_prune_at_log_level(retention_schema, async_conn):
+    """Retention must announce the prune at LOG level (#2106) so partition
+    deletion is observable, not silent.
+
+    The per-partition message in the function is NOTICE, which the server log
+    suppresses at the default log_min_messages=WARNING.  The pre-flight summary
+    is RAISE LOG (written to the server log at the default).  We raise this
+    connection's client_min_messages to 'log' so asyncpg surfaces it to the
+    log listener and we can assert on its content (count + partition name).
+    """
+    from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
+
+    schema = retention_schema
+    conn = async_conn
+
+    three_months_ago = datetime.now(tz=timezone.utc).replace(day=1) - relativedelta(months=3)
+    part_name = f"tasks_{three_months_ago.strftime('%Y_%m')}"
+    start = three_months_ago.replace(day=1)
+    end = start + relativedelta(months=1)
+    await conn.execute(  # type: ignore[attr-defined]
+        f'CREATE TABLE IF NOT EXISTS "{schema}"."{part_name}" '
+        f'PARTITION OF "{schema}".tasks '
+        f"FOR VALUES FROM ('{start.isoformat()}') TO ('{end.isoformat()}');"
+    )
+
+    captured: list[str] = []
+    conn.add_log_listener(lambda _c, m: captured.append(getattr(m, "message", str(m))))  # type: ignore[attr-defined]
+    # RAISE LOG reaches the client only when client_min_messages <= log.
+    await conn.execute("SET client_min_messages TO 'log'")  # type: ignore[attr-defined]
+
+    await _provision_retention_func(conn, schema)
+    await _call_retention_func(conn, schema)
+
+    preflight = [m for m in captured if "partition retention" in m and part_name in m]
+    assert preflight, (
+        f"expected a pre-flight LOG line naming {part_name}; captured={captured!r}"
+    )
+    assert "1 monthly partition" in preflight[0], preflight[0]
+
+
+@pytest.mark.asyncio
+async def test_retention_func_quiet_when_nothing_to_prune(retention_schema, async_conn):
+    """No pre-flight LOG when there is nothing older than the cutoff — the
+    summary must not become per-tick noise on a healthy queue."""
+    schema = retention_schema
+    conn = async_conn
+
+    captured: list[str] = []
+    conn.add_log_listener(lambda _c, m: captured.append(getattr(m, "message", str(m))))  # type: ignore[attr-defined]
+    await conn.execute("SET client_min_messages TO 'log'")  # type: ignore[attr-defined]
+
+    # Fresh schema: only the parent + DEFAULT partition exist, nothing aged out.
+    await _provision_retention_func(conn, schema)
+    await _call_retention_func(conn, schema)
+
+    assert not [m for m in captured if "partition retention" in m], (
+        f"expected no pre-flight LOG when nothing to prune; captured={captured!r}"
+    )
