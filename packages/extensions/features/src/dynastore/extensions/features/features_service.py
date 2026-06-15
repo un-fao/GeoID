@@ -63,6 +63,7 @@ from dynastore.models.shared_models import (
 from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
+from dynastore.extensions.tools.response_i18n import localize_model
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.web.decorators import expose_web_page, expose_static
@@ -398,7 +399,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         self, request: Request, language: str = Depends(get_language)
     ):
         landing_page = ogc_generator.create_landing_page(request, language=language)
-        return JSONResponse(content=landing_page.model_dump())
+        return JSONResponse(content=localize_model(landing_page, language))
 
     async def get_conformance(self, request: Request):
         """Returns the list of conformance classes (Part 1)."""
