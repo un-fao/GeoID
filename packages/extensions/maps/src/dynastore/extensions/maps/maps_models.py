@@ -17,14 +17,22 @@
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 from dynastore.models.shared_models import Link
+from dynastore.models.localization import LocalizedText
 from dynastore.extensions.tools.ogc_common_models import LandingPage
 
 
 class MapContent(BaseModel):
-    """Describes a map resource available for a dataset."""
-    title: str
+    """Describes a map resource available for a dataset.
+
+    ``title`` carries a collection title, which is stored as a multi-language
+    ``LocalizedText``. The route resolves it to a single language by default
+    (per the ``lang`` query parameter / ``Accept-Language`` header, falling
+    back to ``en``); ``lang=*`` returns the full multi-language object. The
+    field therefore accepts either a resolved string or the full object.
+    """
+    title: Optional[Union[str, LocalizedText]] = None
     links: List[Link]
 
 class DatasetMaps(BaseModel):

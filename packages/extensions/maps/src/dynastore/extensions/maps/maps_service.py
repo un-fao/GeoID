@@ -49,6 +49,7 @@ from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.web.decorators import expose_web_page
 from dynastore.extensions.tools.query import parse_hints_param
+from dynastore.extensions.tools.language_utils import get_language
 import os
 
 # Imports for Tiling Support
@@ -253,6 +254,7 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
         dataset: str,
         request: Request,
         request_hints: FrozenSet = Depends(parse_hints_param),
+        language: str = Depends(get_language),
     ):
         # Accepted for uniform cross-protocol routing-hints support; this route
         # returns dataset-maps metadata (links) and performs no vector-geometry read.
@@ -267,7 +269,12 @@ class MapsService(ExtensionProtocol, OGCServiceMixin):
                 Link(href=f"{request.url}/map?collections={coll.id}&bbox=-180,-90,180,90&crs=EPSG:4326", rel="item", type="image/png"),
                 Link(href=f"{request.url}/map/tiles", rel="http://www.opengis.net/def/rel/ogc/1.0/tilesets-map", type="application/json", title=LocalizedText(en="Map Tilesets"))
             ]
-            maps.append(MapContent(title=coll.title, links=map_links))
+            # The collection title is stored as a multi-language LocalizedText,
+            # but OGC MapContent.title is a single string. Resolve to the
+            # requested language (lang query param / Accept-Language, default
+            # 'en'); lang='*' returns the full multi-language object.
+            title = coll.title.resolve(language) if coll.title is not None else None
+            maps.append(MapContent(title=title, links=map_links))
         
         links = [Link(href=str(request.url), rel="self"), Link(href=str(request.url_for('get_maps_landing_page')), rel="up")]
         return DatasetMaps(title=f"Maps for '{dataset}'", maps=maps, links=links)
