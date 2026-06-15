@@ -51,7 +51,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin
@@ -85,6 +85,8 @@ from dynastore.modules.volumes.writers.glb import pack_glb
 from dynastore.modules.volumes.writers.tileset_json import write_tileset_json
 from dynastore.tools.discovery import get_protocol
 from dynastore.extensions.tools.url import get_url
+from dynastore.extensions.tools.language_utils import get_language
+from dynastore.extensions.tools.response_i18n import resolve_localized
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +271,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         bbox: Optional[str] = Query(None),
+        language: str = Depends(get_language),
     ) -> Dict[str, Any]:
         """List collections flagged as 3D containers.
 
@@ -292,7 +295,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         for coll in (all_collections or []):
             if not _is_3d_collection(coll):
                 continue
-            container = _build_3d_container(coll, catalog_id)
+            container = _build_3d_container(coll, catalog_id, language)
             if parsed_bbox is not None:
                 if not _bbox_intersects(container.contentExtent.bbox, parsed_bbox):
                     continue
@@ -307,6 +310,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
         self,
         catalog_id: str,
         collection_id: str,
+        language: str = Depends(get_language),
     ) -> Dict[str, Any]:
         """Return a ThreeDContainer for the given collection.
 
@@ -321,7 +325,7 @@ class VolumesService(ExtensionProtocol, OGCServiceMixin):
                 status_code=404,
                 detail="Collection is not a 3D GeoVolumes container.",
             )
-        container = _build_3d_container(coll, catalog_id)
+        container = _build_3d_container(coll, catalog_id, language)
         return container.model_dump(exclude_none=True)
 
     async def stream_cityjsonseq(
@@ -605,15 +609,16 @@ def _get_extras(coll: Any) -> Dict[str, Any]:
     return extras
 
 
-def _plain_text(value: Any) -> Optional[str]:
-    """Coerce a LocalizedText (or plain string) to a single string for the wire."""
-    if value is None or isinstance(value, str):
-        return value
-    resolve = getattr(value, "resolve", None)
-    if callable(resolve):
-        resolved = resolve("en")
-        return resolved if isinstance(resolved, str) else None
-    return str(value)
+def _plain_text(value: Any, language: str = "en") -> Any:
+    """Coerce a LocalizedText (or plain string) to the requested language for the wire.
+
+    Delegates to ``resolve_localized``:
+    - ``language == '*'``: returns *value* unchanged (full multi-language passthrough).
+    - Plain ``str``: returned as-is.
+    - ``LocalizedDTO`` / language-keyed dict: collapsed to the best matching translation.
+    - Anything else: returned as-is.
+    """
+    return resolve_localized(value, language)
 
 
 def _is_3d_collection(coll: Any) -> bool:
@@ -687,7 +692,7 @@ def _build_cityjsonseq_link(catalog_id: str, collection_id: str) -> ContentLink:
     )
 
 
-def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
+def _build_3d_container(coll: Any, catalog_id: str, language: str = "en") -> ThreeDContainer:
     """Build a ThreeDContainer wire model from a Collection.
 
     When extras carry ``geovolumes:tileset_url`` (a non-empty string), that
@@ -695,6 +700,10 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
     alternate link is omitted (external containers have no CityJSON payload).
     Otherwise the native runtime tileset href is used and the CityJSONSeq
     link is included (CityJSON collections only).
+
+    *language* controls how ``LocalizedText`` title values are resolved on the
+    wire.  Pass ``'*'`` to return the full multi-language object; any other
+    value collapses to that language with ``'en'`` as fallback.
     """
     extras = _get_extras(coll)
     bbox_3d = _collection_bbox_3d(coll, extras)
@@ -727,9 +736,14 @@ def _build_3d_container(coll: Any, catalog_id: str) -> ThreeDContainer:
     if attribution and isinstance(attribution, str):
         attribution = attribution.strip() or None
 
+    # ThreeDContainer.title is Optional[str]; _plain_text with lang="*" returns
+    # the raw LocalizedText which Pydantic cannot accept there.  Collapse to
+    # "en" in that case so the model validates — the multi-language dict cannot
+    # be represented in this model's wire shape.
+    resolved_title = _plain_text(getattr(coll, "title", None), language if language != "*" else "en")
     return ThreeDContainer(
         id=coll.id,
-        title=_plain_text(getattr(coll, "title", None)),
+        title=resolved_title if isinstance(resolved_title, str) or resolved_title is None else str(resolved_title),
         collectionType="3dcontainer",
         contentExtent=ContentExtent(bbox=bbox_3d),
         content=content,
