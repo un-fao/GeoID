@@ -160,7 +160,7 @@ class _StubEsDriver:
 
     async def get_driver_config(self, catalog_id, collection_id, *, db_resource=None):
         class _Cfg:
-            pass
+            simplify_geometry: bool
         cfg = _Cfg()
         cfg.simplify_geometry = self._simplify
         return cfg
