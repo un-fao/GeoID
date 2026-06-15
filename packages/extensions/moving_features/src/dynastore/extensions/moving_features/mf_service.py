@@ -38,6 +38,8 @@ from starlette import status
 
 from dynastore.extensions import protocols
 from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.fast_api import AppJSONResponse as _AppJSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.web.decorators import expose_web_page, expose_static
 from dynastore.extensions.tools.db import get_async_connection
 from dynastore.extensions.tools.query import parse_hints_param
@@ -172,8 +174,10 @@ class MovingFeaturesService(protocols.ExtensionProtocol, OGCServiceMixin, Moving
     # Standard OGC endpoints
     # ------------------------------------------------------------------
 
-    async def get_landing_page(self, request: Request):
-        return await self.ogc_landing_page_handler(request)
+    async def get_landing_page(
+        self, request: Request, language: str = Depends(get_language)
+    ) -> _AppJSONResponse:
+        return await self.ogc_landing_page_handler(request, language=language)
 
     async def get_conformance(self, request: Request):
         return await self.ogc_conformance_handler(request)

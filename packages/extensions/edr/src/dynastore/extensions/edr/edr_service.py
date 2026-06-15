@@ -33,7 +33,10 @@ from fastapi.responses import Response, StreamingResponse
 
 from dynastore.extensions.ogc_base import OGCServiceMixin, ogc_asset_href
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.query import parse_hints_param
+from dynastore.extensions.tools.response_i18n import localize_model
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.extensions.web.decorators import expose_static, expose_web_page
 from dynastore.models.protocols import CatalogsProtocol
@@ -192,12 +195,37 @@ class EDRService(ExtensionProtocol, OGCServiceMixin):
     # Landing page & conformance (delegated to OGCServiceMixin)
     # ------------------------------------------------------------------
 
-    async def get_landing_page(self, request: Request) -> em.EDRLandingPage:
-        # The shared OGC handler returns the base ``LandingPage``; re-validate
-        # through ``EDRLandingPage`` so the EDR-specific defaults for title /
-        # description apply when the underlying landing page omits them.
-        base = await self.ogc_landing_page_handler(request)
-        return em.EDRLandingPage(**base.model_dump())
+    async def get_landing_page(
+        self, request: Request, language: str = Depends(get_language)
+    ) -> JSONResponse:
+        # Build an EDRLandingPage (which applies EDR-specific title/description
+        # defaults) and return it localized to the requested language.
+        from dynastore.models.shared_models import Link as _Link
+
+        root_url = get_root_url(request)
+        landing = em.EDRLandingPage(
+            links=[
+                _Link(
+                    href=f"{root_url}{self.prefix}/",
+                    rel="self",
+                    type="application/json",
+                    title="This document",  # type: ignore[arg-type]
+                ),
+                _Link(
+                    href=f"{root_url}{self.prefix}/conformance",
+                    rel="conformance",
+                    type="application/json",
+                    title="Conformance classes",  # type: ignore[arg-type]
+                ),
+                _Link(
+                    href=f"{root_url}/api",
+                    rel="service-doc",
+                    type="application/json",
+                    title="API documentation",  # type: ignore[arg-type]
+                ),
+            ],
+        )
+        return JSONResponse(content=localize_model(landing, language))
 
     async def get_conformance(self, request: Request) -> em.Conformance:
         return await self.ogc_conformance_handler(request)
