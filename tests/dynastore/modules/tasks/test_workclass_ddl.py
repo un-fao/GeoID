@@ -340,6 +340,7 @@ async def test_register_supervisor_jobs_includes_workclass_jobs():
     from unittest.mock import AsyncMock, MagicMock, patch
     from dynastore.modules.catalog.maintenance_supervisor import (
         register_supervisor_jobs,
+        JOB_TASK_RETENTION,
         JOB_EVENTS_PARTITION_CREATE,
         JOB_EVENTS_RETENTION,
         JOB_STORAGE_PARTITION_CREATE,
@@ -398,9 +399,14 @@ async def test_register_supervisor_jobs_includes_workclass_jobs():
 
     cadence_map = dict(upserted)
 
-    # 9 original + 4 workclass = 13 total
-    assert len(cadence_map) == 13
+    # 6 platform/task jobs (tenant+system logs prune, iam prune, task reaper,
+    # task partition-create, task retention) + 4 workclass (events/storage
+    # partition-create + retention) = 10 total.
+    assert len(cadence_map) == 10
 
+    # The tasks-table retention job must be registered — it is what runs the
+    # monthly partition prune (the #2106 pre-flight-LOG path).
+    assert JOB_TASK_RETENTION in cadence_map
     assert cadence_map[JOB_EVENTS_PARTITION_CREATE] == _CADENCE_EVENTS_PARTITION_CREATE
     assert cadence_map[JOB_EVENTS_RETENTION] == _CADENCE_EVENTS_RETENTION
     assert cadence_map[JOB_STORAGE_PARTITION_CREATE] == _CADENCE_STORAGE_PARTITION_CREATE
