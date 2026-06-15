@@ -36,10 +36,12 @@ Design properties
 * **In-process when possible** — when the dispatcher and the indexer run
   in the same pod the call is a direct ``await indexer.index(...)`` —
   no event/task hop.
-* **Durable on failure** — the ``OUTBOX`` failure policy persists an
-  ``_meta.index_outbox`` row in the *same* PG transaction as the upstream
+* **Durable on failure** — the ``OUTBOX`` failure policy persists a
+  ``tasks.storage`` row in the *same* PG transaction as the upstream
   write.  PG TX commit guarantees neither the data nor the
-  obligation-to-index can be lost.
+  obligation-to-index can be lost.  (The transactional-outbox PATTERN is
+  unchanged; #1807 moved the durable plane from the per-tenant
+  ``_meta.index_outbox`` table to the unified ``tasks.storage`` table.)
 * **Circuit-broken** — per-indexer-id breaker (Phase 3).  When open,
   sync attempts short-circuit; ``OUTBOX`` policy still enqueues so the
   worker drains when the breaker half-closes.
@@ -49,9 +51,9 @@ Phases
 
 * Phase 1 (this module) — Protocol surface + dispatcher skeleton.  No
   consumer wiring yet; existing event-driven listeners remain in place.
-* Phase 2 — ``_meta.index_outbox`` table + drain worker; replace the
-  ES driver's event listeners with a direct dispatcher call from
-  ``item_service.upsert``.
+* Phase 2 — durable plane (now ``tasks.storage``, #1807) + drain worker;
+  replace the ES driver's event listeners with a direct dispatcher call
+  from ``item_service.upsert``.
 * Phase 3 — Circuit breaker (Valkey-backed shared state); migrate the
   private/per-catalog geoid-only indexer onto the same protocol.
 """

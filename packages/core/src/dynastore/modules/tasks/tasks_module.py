@@ -243,12 +243,30 @@ DECLARE
     row RECORD;
     cutoff_date DATE;
     default_deleted BIGINT;
+    prune_count INT;
+    prune_list TEXT;
 BEGIN
     -- Bound AccessExclusiveLock wait: if a partition is being scanned
     -- fail this DROP fast and let the next supervisor tick retry.
     SET LOCAL lock_timeout = '10s';
     -- 'daily' is not a valid PostgreSQL date_trunc unit; the correct unit is 'day'.
     cutoff_date := date_trunc('day', NOW()) - INTERVAL '1 month';
+    -- Pre-flight (#2106): announce, at LOG level, how many monthly leaf
+    -- partitions this run will DROP and their names.  The per-partition message
+    -- below is NOTICE, which the server log suppresses at the default
+    -- log_min_messages=WARNING, so without this the deletion is invisible in
+    -- production.  A retention fix applied to a long-running deployment can drop
+    -- several months of accumulated partitions on the first tick; this makes
+    -- that one-time bulk prune observable instead of silent.
+    SELECT count(*), string_agg(c.relname, ', ' ORDER BY c.relname)
+      INTO prune_count, prune_list
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = '{schema}' AND c.relkind = 'r'
+        AND c.relname ~ '^tasks_\\d{4}_\\d{2}$'
+        AND to_date(substring(c.relname from '\\d{4}_\\d{2}$'), 'YYYY_MM') < cutoff_date;
+    IF prune_count > 0 THEN
+        RAISE LOG 'partition retention [{schema}.tasks]: dropping % monthly partition(s) older than % : %', prune_count, cutoff_date, prune_list;
+    END IF;
     FOR row IN SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND c.relname ~ '^tasks_\\d{4}_\\d{2}$' LOOP
         DECLARE
             date_str TEXT;
