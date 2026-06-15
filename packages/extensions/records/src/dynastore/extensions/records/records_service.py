@@ -63,6 +63,32 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_links_titles(links: Any, language: str) -> None:
+    """Resolve LocalizedText titles in a serialized links list in-place.
+
+    After ``model_dump(exclude_none=True)``, ``Link.title`` serializes as a
+    ``dict`` (e.g. ``{"en": "Records in this collection", "fr": "..."}``).
+    This helper collapses each title to the requested language string so the
+    wire format is plain strings, not language objects.
+
+    ``lang='*'`` keeps the full dict unchanged (wildcard = return all
+    languages as-is).
+    """
+    if not links:
+        return
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        title = link.get("title")
+        if isinstance(title, dict):
+            link["title"] = resolve_localized_field(title, language)
+
+
+# ---------------------------------------------------------------------------
 # OGC API - Records conformance URIs (OGC 20-004)
 # ---------------------------------------------------------------------------
 
@@ -332,6 +358,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         request: Request,
         catalog_id: str,
         collection_id: str,
+        language: str = Depends(get_language),
         conn: AsyncConnection = Depends(get_async_connection),
         limit: int = Query(10, ge=1, le=1000, description="Maximum number of records to return."),
         offset: int = Query(0, ge=0, description="Offset of the first record to return."),
@@ -570,8 +597,12 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
             numberMatched=count,
             numberReturned=len(records),
         )
+        content = result.model_dump(exclude_none=True)
+        _resolve_links_titles(content.get("links"), language)
+        for feat in content.get("features", []):
+            _resolve_links_titles(feat.get("links"), language)
         return JSONResponse(
-            content=result.model_dump(exclude_none=True),
+            content=content,
             media_type="application/geo+json",
         )
 
@@ -581,6 +612,7 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         collection_id: str,
         record_id: str,
         request: Request,
+        language: str = Depends(get_language),
         conn: AsyncConnection = Depends(get_async_connection),
     ) -> rm.Record:
         catalogs_svc = await self._get_catalogs_service()
@@ -618,8 +650,10 @@ class RecordsService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin):
         read_policy = await resolve_items_read_policy(catalog_id, collection_id)
         root_url = get_root_url(request)
         record = gen.db_row_to_record(feature, catalog_id, collection_id, root_url, layer_config, read_policy=read_policy)
+        content = record.model_dump(exclude_none=True)
+        _resolve_links_titles(content.get("links"), language)
         return JSONResponse(
-            content=record.model_dump(exclude_none=True),
+            content=content,
         )
 
     async def add_records(
