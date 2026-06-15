@@ -45,8 +45,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse  # noqa: E402
+from dynastore.extensions.tools.language_utils import get_language  # noqa: E402
 from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
+from dynastore.extensions.tools.response_i18n import localize_response_dict, resolve_links  # noqa: E402
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
@@ -388,6 +391,30 @@ async def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Proc
     return None
 
 
+def _localize_process_list(pl: models.ProcessList, language: str) -> dict:
+    """Serialize a ProcessList and resolve all link titles to *language*.
+
+    ``localize_response_dict`` only resolves the top-level ``links`` key.
+    ``ProcessList.processes[].links`` is one level deeper, so we walk it
+    separately using :func:`~dynastore.extensions.tools.response_i18n.resolve_links`.
+    """
+    data = pl.model_dump(by_alias=True, exclude_none=True)
+    # Resolve top-level links
+    localize_response_dict(data, language, text_fields=(), link_keys=("links",))
+    # Resolve per-process links
+    for process in data.get("processes", []):
+        if "links" in process:
+            process["links"] = resolve_links(process["links"], language)
+    return data
+
+
+def _localize_status_info(si: models.StatusInfo, language: str) -> dict:
+    """Serialize a StatusInfo and resolve all link titles to *language*."""
+    data = si.model_dump(by_alias=True, exclude_none=True)
+    localize_response_dict(data, language, text_fields=(), link_keys=("links",))
+    return data
+
+
 @router.get(
     "/conformance",
     response_model=Conformance,
@@ -399,7 +426,6 @@ async def get_processes_conformance() -> Conformance:
 
 @router.get(
     "/processes",
-    response_model=models.ProcessList,
     name="list_processes",
 )
 async def list_processes(
@@ -425,7 +451,8 @@ async def list_processes(
         ),
     ),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists processes available in this deployment.
 
     By default (``scope=all``, ``typology=true``) returns every registered
@@ -434,17 +461,17 @@ async def list_processes(
     """
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         scope_param=scope,
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
     "/catalogs/{catalog_id}/processes",
-    response_model=models.ProcessList,
     name="list_processes_catalog",
 )
 async def list_processes_catalog(
@@ -454,22 +481,23 @@ async def list_processes_catalog(
     typology: bool = Query(default=True),
     runner: Optional[str] = Query(default=None),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists catalog-scoped processes available for this catalog."""
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         catalog_id=catalog_id,
         scope_param=scope,
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/processes",
-    response_model=models.ProcessList,
     name="list_processes_collection",
 )
 async def list_processes_collection(
@@ -480,11 +508,12 @@ async def list_processes_collection(
     typology: bool = Query(default=True),
     runner: Optional[str] = Query(default=None),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists collection-scoped processes available for this collection."""
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -492,6 +521,7 @@ async def list_processes_collection(
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
@@ -829,14 +859,14 @@ async def _get_job_internal(job_id: uuid.UUID, catalog_id: str, conn: AsyncConne
 
 @router.get(
     "/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status",
 )
 async def get_job_status(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (unscoped lookup).
 
     Searches by ``task_id`` alone — task IDs are UUIDv7, globally unique, so
@@ -853,7 +883,8 @@ async def get_job_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job '{job_id}' not found.",
         )
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
@@ -879,7 +910,6 @@ async def get_job_results(
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status_collection",
 )
 async def get_job_status_collection(
@@ -888,7 +918,8 @@ async def get_job_status_collection(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (Collection context)."""
     task = await _get_job_internal(job_id, catalog_id, conn)
     # Optionally verify collection_id matches if task stores it
@@ -900,7 +931,8 @@ async def get_job_status_collection(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job '{job_id}' does not belong to collection '{collection_id}'.",
         )
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
@@ -926,7 +958,6 @@ async def get_job_results_collection(
 
 @router.get(
     "/catalogs/{catalog_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status_catalog",
 )
 async def get_job_status_catalog(
@@ -934,10 +965,12 @@ async def get_job_status_catalog(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (Catalog context)."""
     task = await _get_job_internal(job_id, catalog_id, conn)
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
