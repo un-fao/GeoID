@@ -42,6 +42,7 @@ from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
 from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.query import parse_hints_param  # noqa: E402
+from dynastore.extensions.tools.response_i18n import localize_response_dict, resolve_localized  # noqa: E402
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.modules.coverages.domainset import build_domainset
 from dynastore.modules.coverages.rangetype import build_rangetype
@@ -199,9 +200,14 @@ def _build_metadata_response(
     catalog_id: str,
     collection_id: str,
     default_style_id: Optional[str],
+    language: str = "en",
 ) -> dict:
-    """Assemble the /coverage/metadata payload for a given STAC-ish item dict."""
-    return {
+    """Assemble the /coverage/metadata payload for a given STAC-ish item dict.
+
+    ``language`` is used to resolve any LocalizedText values that may appear in
+    the response dict (title, description) to a single language string.
+    """
+    data: dict = {
         "title": item.get("id"),
         "extent": {"spatial": {"bbox": [item.get("bbox", [])]}},
         "domainset": build_domainset(item),
@@ -213,6 +219,7 @@ def _build_metadata_response(
             default_style_id=default_style_id,
         ),
     }
+    return localize_response_dict(data, language)
 
 logger = logging.getLogger(__name__)
 
@@ -370,13 +377,17 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         self,
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        language: str = Depends(get_language),
     ):
         """List catalogs available to the Coverages service."""
         catalogs_svc = await self._get_catalogs_service()
         catalogs = await catalogs_svc.list_catalogs(limit=limit, offset=offset)
         return {
             "catalogs": [
-                {"id": c.id, "title": getattr(c, "title", None)}
+                {
+                    "id": c.id,
+                    "title": resolve_localized(getattr(c, "title", None), language),
+                }
                 for c in (catalogs or [])
             ]
         }
@@ -386,18 +397,24 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         catalog_id: str,
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
+        language: str = Depends(get_language),
     ):
         """List collections in a catalog (web-browser navigation)."""
         catalogs_svc = await self._get_catalogs_service()
         collections = await catalogs_svc.list_collections(
             catalog_id, limit=limit, offset=offset
         )
-        return {
-            "collections": [
-                {"id": c.id, "title": getattr(c, "title", None)}
-                for c in (collections or [])
-            ]
-        }
+        items = []
+        for c in (collections or []):
+            entry: dict = {"id": c.id}
+            title = resolve_localized(getattr(c, "title", None), language)
+            if title is not None:
+                entry["title"] = title
+            description = resolve_localized(getattr(c, "description", None), language)
+            if description is not None:
+                entry["description"] = description
+            items.append(entry)
+        return {"collections": items}
 
     # ------------------------------------------------------------------
     # Landing page & conformance (delegated to OGCServiceMixin)
@@ -474,7 +491,11 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
         return _extract_rangetype(item)
 
     async def get_coverage_metadata(
-        self, catalog_id: str, collection_id: str, request: Request,
+        self,
+        catalog_id: str,
+        collection_id: str,
+        request: Request,
+        language: str = Depends(get_language),
     ):
         await self._require_collection_visible(catalog_id, collection_id)
         item = await self._get_first_item(catalog_id, collection_id)
@@ -487,6 +508,7 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
             catalog_id=catalog_id,
             collection_id=collection_id,
             default_style_id=_resolve_default_style_for_coverage(config=cfg, item=item),
+            language=language,
         )
 
     async def _build_domain(self, catalog_id: str, collection_id: str) -> dict:
