@@ -284,19 +284,35 @@ class _GeoVolumesDemoPreset:
             item_service=catalogs,
             catalog_service=catalogs,
         )
+        warnings_list = ingest_result.get("warnings", []) or []
         logger.info(
             "geovolumes_demo: ingested %d item(s), %d failed, %d warning(s)",
             ingest_result.get("items", 0),
             ingest_result.get("failed", 0),
-            len(ingest_result.get("warnings", [])),
+            len(warnings_list),
         )
 
+        # Surface the ingestion summary on the applied descriptor so an operator
+        # can see how many features were skipped at parse/build time and why
+        # (warnings carry per-feature "Skipped feature <id>: <reason>" lines).
+        # The warnings list is capped so the persisted descriptor stays bounded;
+        # warnings_count keeps the true total.
+        #
+        # NOTE: items_failed/warnings cover synchronous parse/build and
+        # whole-batch write failures only. Per-document Elasticsearch rejections
+        # happen later in the async write drain and are NOT counted here — use
+        # GET /admin/catalogs/{cat}/index-drift to reconcile PG against ES.
+        _MAX_REPORTED_WARNINGS = 100
         return AppliedDescriptor(payload={
             "catalog_id": p.catalog_id,
             "collection_id": p.collection_id,
             "created_catalog": created_catalog,
             "created_collection": created_collection,
             "skipped": False,
+            "items_ingested": ingest_result.get("items", 0),
+            "items_failed": ingest_result.get("failed", 0),
+            "warnings_count": len(warnings_list),
+            "warnings": warnings_list[:_MAX_REPORTED_WARNINGS],
         })
 
     async def revoke(

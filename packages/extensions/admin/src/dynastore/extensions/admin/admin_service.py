@@ -57,8 +57,10 @@ from .models import (
     GrantUsageView, GrantUsageEntry, GrantUsageCounters,
     GrantRateLimitCounter, GrantMaxCountCounter,
     AdminTaskRequest, AdminTaskResponse, AdminTaskTarget,
+    IndexDriftReport,
 )
 from . import task_dispatch as _task_dispatch
+from .index_drift import compute_index_drift
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +297,30 @@ class AdminService(ExtensionProtocol):
     )
     async def list_task_registry_view():  # type: ignore[reportGeneralTypeIssues]
         return await list_task_registry()
+
+    # -------------------------------------------------------------------------
+    # ES-vs-PG index-drift report (/admin/catalogs/{cat}/index-drift)
+    # -------------------------------------------------------------------------
+
+    @router.get(
+        "/catalogs/{catalog_id}/index-drift",
+        summary="Read-only ES-vs-PG item-index drift report; repair via the reindex task.",
+        response_model=IndexDriftReport,
+    )
+    async def get_index_drift(  # type: ignore[reportGeneralTypeIssues]
+        catalog_id: str,
+        collection_id: Optional[str] = Query(
+            None,
+            description=(
+                "Limit the report to a single collection; omit to scan the "
+                "whole catalog."
+            ),
+        ),
+    ):
+        # Authorization is inherited: /admin/catalogs/{cat}/... is gated by the
+        # admin_access (sysadmin) and admin_catalog_access (catalog-admin)
+        # policies, so no per-route policy is needed. Read-only — no mutation.
+        return await compute_index_drift(catalog_id, collection_id)
 
     # -------------------------------------------------------------------------
     # Principal Management (/admin/principals)

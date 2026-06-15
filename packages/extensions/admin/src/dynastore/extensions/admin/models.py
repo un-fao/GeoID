@@ -179,3 +179,48 @@ class AdminTaskResponse(BaseModel):
     action: str
     target: AdminTaskTarget
     status: str = "queued"
+
+
+# --- ES-vs-PG index-drift report DTOs (#2044) ---
+
+
+class CollectionIndexDrift(BaseModel):
+    """Per-collection PostgreSQL (source-of-truth) vs Elasticsearch counts."""
+
+    collection_id: str
+    es_active: bool = Field(
+        description="Whether the regular ES driver is in this collection's routing config."
+    )
+    pg_count: int = Field(
+        description="Authoritative item count from the PostgreSQL source-of-truth read driver."
+    )
+    es_count: int = Field(
+        description="Document count in the Elasticsearch items index for this collection."
+    )
+    drift: int = Field(
+        description=(
+            "pg_count - es_count. Positive means ES is missing documents that "
+            "PG holds (e.g. un-drained async writes or geo_shape-rejected docs)."
+        )
+    )
+    in_sync: bool = Field(
+        description="True when ES matches PG, or when ES is not active for this collection."
+    )
+
+
+class IndexDriftReport(BaseModel):
+    """ES-vs-PG item-index drift report for a catalog (read-only diagnostic).
+
+    Remediation for a non-zero drift is the existing reindex-from-PG task:
+    POST /admin/catalogs/{cat}/tasks {"action": "reindex"} (or the
+    collection-scoped variant), which rebuilds the ES index from PG.
+    """
+
+    catalog_id: str
+    collections: List[CollectionIndexDrift]
+    total_pg: int = Field(description="Sum of pg_count across ES-active collections.")
+    total_es: int = Field(description="Sum of es_count across ES-active collections.")
+    total_drift: int = Field(
+        description="total_pg - total_es across ES-active collections."
+    )
+    in_sync: bool
