@@ -45,8 +45,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse  # noqa: E402
+from dynastore.extensions.tools.language_utils import get_language  # noqa: E402
 from dynastore.extensions.tools.ogc_common_models import Conformance
 from dynastore.extensions.tools.db import get_async_connection, get_async_engine
+from dynastore.extensions.tools.response_i18n import localize_response_dict, resolve_links  # noqa: E402
+from dynastore.tools.json import CustomJSONEncoder  # noqa: E402
 from dynastore.models.protocols import CatalogsProtocol
 from dynastore.tools.discovery import get_protocol
 
@@ -388,6 +392,30 @@ async def _lookup_process_or_404_silent(process_id: str) -> Optional[models.Proc
     return None
 
 
+def _localize_process_list(pl: models.ProcessList, language: str) -> dict:
+    """Serialize a ProcessList and resolve all link titles to *language*.
+
+    ``localize_response_dict`` only resolves the top-level ``links`` key.
+    ``ProcessList.processes[].links`` is one level deeper, so we walk it
+    separately using :func:`~dynastore.extensions.tools.response_i18n.resolve_links`.
+    """
+    data = pl.model_dump(by_alias=True, exclude_none=True)
+    # Resolve top-level links
+    localize_response_dict(data, language, text_fields=(), link_keys=("links",))
+    # Resolve per-process links
+    for process in data.get("processes", []):
+        if "links" in process:
+            process["links"] = resolve_links(process["links"], language)
+    return data
+
+
+def _localize_status_info(si: models.StatusInfo, language: str) -> dict:
+    """Serialize a StatusInfo and resolve all link titles to *language*."""
+    data = si.model_dump(by_alias=True, exclude_none=True)
+    localize_response_dict(data, language, text_fields=(), link_keys=("links",))
+    return data
+
+
 @router.get(
     "/conformance",
     response_model=Conformance,
@@ -399,7 +427,6 @@ async def get_processes_conformance() -> Conformance:
 
 @router.get(
     "/processes",
-    response_model=models.ProcessList,
     name="list_processes",
 )
 async def list_processes(
@@ -425,7 +452,8 @@ async def list_processes(
         ),
     ),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists processes available in this deployment.
 
     By default (``scope=all``, ``typology=true``) returns every registered
@@ -434,17 +462,17 @@ async def list_processes(
     """
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         scope_param=scope,
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
     "/catalogs/{catalog_id}/processes",
-    response_model=models.ProcessList,
     name="list_processes_catalog",
 )
 async def list_processes_catalog(
@@ -454,22 +482,23 @@ async def list_processes_catalog(
     typology: bool = Query(default=True),
     runner: Optional[str] = Query(default=None),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists catalog-scoped processes available for this catalog."""
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         catalog_id=catalog_id,
         scope_param=scope,
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/processes",
-    response_model=models.ProcessList,
     name="list_processes_collection",
 )
 async def list_processes_collection(
@@ -480,11 +509,12 @@ async def list_processes_collection(
     typology: bool = Query(default=True),
     runner: Optional[str] = Query(default=None),
     request_hints: FrozenSet = Depends(parse_hints_param),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists collection-scoped processes available for this collection."""
     # Accepted for uniform cross-protocol routing-hints support; this route
     # returns process inventory metadata and performs no vector-geometry read.
-    return await _render_process_list(
+    pl = await _render_process_list(
         request,
         catalog_id=catalog_id,
         collection_id=collection_id,
@@ -492,6 +522,7 @@ async def list_processes_collection(
         runner_param=runner,
         typology=typology,
     )
+    return JSONResponse(content=_localize_process_list(pl, language))
 
 
 @router.get(
@@ -526,9 +557,6 @@ async def get_process_description(process_id: str, request: Request):
 @router.post(
     "/processes/{process_id}/execution",
     status_code=status.HTTP_201_CREATED,
-    response_model=Union[
-        models.StatusInfo, Any
-    ],  # The response can be a status or a direct result
     name="execute_process",
 )
 async def execute_process(
@@ -552,6 +580,7 @@ async def execute_process(
             "{process_id}/execution."
         ),
     ),
+    language: str = Depends(get_language),
 ):
     """Executes a platform-scoped process, creating a new job (task)."""
     # Validate routing BEFORE touching the DB engine so bad-URL requests
@@ -578,13 +607,12 @@ async def execute_process(
     except Exception as e:
         _handle_execution_exception(process_id, e)
 
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 @router.post(
     "/catalogs/{catalog_id}/processes/{process_id}/execution",
     status_code=status.HTTP_201_CREATED,
-    response_model=Union[models.StatusInfo, Any],
     name="execute_process_catalog",
 )
 async def execute_process_catalog(
@@ -593,6 +621,7 @@ async def execute_process_catalog(
     execution_request: models.ExecuteRequest,
     request: Request,
     background_tasks: BackgroundTasks,
+    language: str = Depends(get_language),
 ):
     """Executes a catalog-scoped process.
 
@@ -624,13 +653,12 @@ async def execute_process_catalog(
     except Exception as e:
         _handle_execution_exception(process_id, e)
 
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 @router.post(
     "/catalogs/{catalog_id}/collections/{collection_id}/processes/{process_id}/execution",
     status_code=status.HTTP_201_CREATED,
-    response_model=Union[models.StatusInfo, Any],
     name="execute_process_collection",
 )
 async def execute_process_collection(
@@ -640,6 +668,7 @@ async def execute_process_collection(
     execution_request: models.ExecuteRequest,
     request: Request,
     background_tasks: BackgroundTasks,
+    language: str = Depends(get_language),
 ):
     """Executes a collection-scoped process.
 
@@ -673,7 +702,7 @@ async def execute_process_collection(
     except Exception as e:
         _handle_execution_exception(process_id, e)
 
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 def _task_to_status_info(task: Task, request: Request) -> models.StatusInfo:
@@ -721,7 +750,7 @@ def _handle_execution_exception(process_id: str, e: Exception):
 
 
 def _handle_execution_result(
-    result: Union[Task, models.StatusInfo, Any], request: Request
+    result: Union[Task, models.StatusInfo, Any], request: Request, language: str = "en"
 ):
     if isinstance(result, Task):
         # ASYNC_EXECUTE: The runner returned a new task object.
@@ -754,7 +783,7 @@ def _handle_execution_result(
         status_info = models.task_to_status_info(result, links=links)
 
         return Response(
-            content=status_info.model_dump_json(by_alias=True),
+            content=json.dumps(_localize_status_info(status_info, language), cls=CustomJSONEncoder),
             status_code=status.HTTP_201_CREATED,
             headers={"Location": _external_url(job_status_url)},
             media_type="application/json",
@@ -829,14 +858,14 @@ async def _get_job_internal(job_id: uuid.UUID, catalog_id: str, conn: AsyncConne
 
 @router.get(
     "/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status",
 )
 async def get_job_status(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (unscoped lookup).
 
     Searches by ``task_id`` alone — task IDs are UUIDv7, globally unique, so
@@ -853,7 +882,8 @@ async def get_job_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job '{job_id}' not found.",
         )
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
@@ -879,7 +909,6 @@ async def get_job_results(
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status_collection",
 )
 async def get_job_status_collection(
@@ -888,7 +917,8 @@ async def get_job_status_collection(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (Collection context)."""
     task = await _get_job_internal(job_id, catalog_id, conn)
     # Optionally verify collection_id matches if task stores it
@@ -900,7 +930,8 @@ async def get_job_status_collection(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job '{job_id}' does not belong to collection '{collection_id}'.",
         )
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
@@ -926,7 +957,6 @@ async def get_job_results_collection(
 
 @router.get(
     "/catalogs/{catalog_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="get_job_status_catalog",
 )
 async def get_job_status_catalog(
@@ -934,10 +964,12 @@ async def get_job_status_catalog(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Gets the status of a specific job (Catalog context)."""
     task = await _get_job_internal(job_id, catalog_id, conn)
-    return _task_to_status_info(task, request)
+    si = _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(si, language))
 
 
 @router.get(
@@ -957,7 +989,6 @@ async def get_job_results_catalog(
 
 @router.get(
     "/jobs",
-    response_model=List[models.StatusInfo],
     name="list_jobs",
 )
 async def list_jobs(
@@ -965,15 +996,15 @@ async def list_jobs(
     limit: int = Query(20, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists jobs (System context)."""
     tasks = await tasks_module.list_tasks(conn, schema="public", limit=limit, offset=offset)
-    return [_task_to_status_info(t, request) for t in tasks]
+    return JSONResponse(content=[_localize_status_info(_task_to_status_info(t, request), language) for t in tasks])
 
 
 @router.get(
     "/catalogs/{catalog_id}/jobs",
-    response_model=List[models.StatusInfo],
     name="list_jobs_catalog",
 )
 async def list_jobs_catalog(
@@ -982,16 +1013,16 @@ async def list_jobs_catalog(
     limit: int = Query(20, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists jobs (Catalog context)."""
     schema = await _resolve_catalog_schema(catalog_id, conn)
     tasks = await tasks_module.list_tasks(conn, schema=schema, limit=limit, offset=offset)
-    return [_task_to_status_info(t, request) for t in tasks]
+    return JSONResponse(content=[_localize_status_info(_task_to_status_info(t, request), language) for t in tasks])
 
 
 @router.get(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs",
-    response_model=List[models.StatusInfo],
     name="list_jobs_collection",
 )
 async def list_jobs_collection(
@@ -1001,38 +1032,38 @@ async def list_jobs_collection(
     limit: int = Query(20, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Lists jobs (Collection context). Filters by collection_id."""
     schema = await _resolve_catalog_schema(catalog_id, conn)
     all_tasks = await tasks_module.list_tasks(conn, schema=schema, limit=limit, offset=offset)
     filtered = [t for t in all_tasks if getattr(t, "collection_id", None) == collection_id]
-    return [_task_to_status_info(t, request) for t in filtered]
+    return JSONResponse(content=[_localize_status_info(_task_to_status_info(t, request), language) for t in filtered])
 
 
 # --- OGC Part 1: Dismiss Job (DELETE /jobs/{id}) at 3 scopes ---
 
 @router.delete(
     "/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="dismiss_job",
 )
 async def dismiss_job(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Dismiss a job (System context)."""
     engine = get_async_engine(request)
     try:
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema="public")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(task, request), language))
 
 
 @router.delete(
     "/catalogs/{catalog_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="dismiss_job_catalog",
 )
 async def dismiss_job_catalog(
@@ -1040,7 +1071,8 @@ async def dismiss_job_catalog(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Dismiss a job (Catalog context)."""
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
@@ -1048,12 +1080,11 @@ async def dismiss_job_catalog(
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(task, request), language))
 
 
 @router.delete(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="dismiss_job_collection",
 )
 async def dismiss_job_collection(
@@ -1062,7 +1093,8 @@ async def dismiss_job_collection(
     job_id: uuid.UUID,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Dismiss a job (Collection context)."""
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
@@ -1073,7 +1105,7 @@ async def dismiss_job_collection(
         task = await execution_engine.dismiss_job(job_id, engine=engine, db_schema=schema)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(task, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(task, request), language))
 
 
 # --- OGC Part 4: Deferred Execution (POST /jobs, PATCH, POST /results) at 3 scopes ---
@@ -1087,12 +1119,12 @@ class _CreateJobRequest(models.BaseModel):
 @router.post(
     "/jobs",
     status_code=status.HTTP_201_CREATED,
-    response_model=models.StatusInfo,
     name="create_job",
 )
 async def create_job(
     body: _CreateJobRequest,
     request: Request,
+    language: str = Depends(get_language),
 ):
     """Create a deferred job (System context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
@@ -1108,7 +1140,7 @@ async def create_job(
     status_info = _task_to_status_info(job, request)
     job_url = str(request.url_for("get_job_status", job_id=str(job.task_id)))
     return Response(
-        content=status_info.model_dump_json(by_alias=True),
+        content=json.dumps(_localize_status_info(status_info, language), cls=CustomJSONEncoder),
         status_code=status.HTTP_201_CREATED,
         headers={"Location": job_url},
         media_type="application/json",
@@ -1118,7 +1150,6 @@ async def create_job(
 @router.post(
     "/catalogs/{catalog_id}/jobs",
     status_code=status.HTTP_201_CREATED,
-    response_model=models.StatusInfo,
     name="create_job_catalog",
 )
 async def create_job_catalog(
@@ -1126,6 +1157,7 @@ async def create_job_catalog(
     body: _CreateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
+    language: str = Depends(get_language),
 ):
     """Create a deferred job (Catalog context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
@@ -1142,7 +1174,7 @@ async def create_job_catalog(
     status_info = _task_to_status_info(job, request)
     job_url = str(request.url_for("get_job_status_catalog", catalog_id=catalog_id, job_id=str(job.task_id)))
     return Response(
-        content=status_info.model_dump_json(by_alias=True),
+        content=json.dumps(_localize_status_info(status_info, language), cls=CustomJSONEncoder),
         status_code=status.HTTP_201_CREATED,
         headers={"Location": job_url},
         media_type="application/json",
@@ -1152,7 +1184,6 @@ async def create_job_catalog(
 @router.post(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs",
     status_code=status.HTTP_201_CREATED,
-    response_model=models.StatusInfo,
     name="create_job_collection",
 )
 async def create_job_collection(
@@ -1161,6 +1192,7 @@ async def create_job_collection(
     body: _CreateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
+    language: str = Depends(get_language),
 ):
     """Create a deferred job (Collection context). Status = CREATED."""
     principal = getattr(request.state, "principal", None)
@@ -1183,7 +1215,7 @@ async def create_job_collection(
         job_id=str(job.task_id),
     ))
     return Response(
-        content=status_info.model_dump_json(by_alias=True),
+        content=json.dumps(_localize_status_info(status_info, language), cls=CustomJSONEncoder),
         status_code=status.HTTP_201_CREATED,
         headers={"Location": job_url},
         media_type="application/json",
@@ -1199,26 +1231,25 @@ class _UpdateJobRequest(models.BaseModel):
 
 @router.patch(
     "/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="update_job",
 )
 async def update_job(
     job_id: uuid.UUID,
     body: _UpdateJobRequest,
     request: Request,
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Update a deferred job's inputs (System context). Only while CREATED."""
     engine = get_async_engine(request)
     try:
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema="public")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(job, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(job, request), language))
 
 
 @router.patch(
     "/catalogs/{catalog_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="update_job_catalog",
 )
 async def update_job_catalog(
@@ -1227,7 +1258,8 @@ async def update_job_catalog(
     body: _UpdateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Update a deferred job's inputs (Catalog context). Only while CREATED."""
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
@@ -1235,12 +1267,11 @@ async def update_job_catalog(
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(job, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(job, request), language))
 
 
 @router.patch(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}",
-    response_model=models.StatusInfo,
     name="update_job_collection",
 )
 async def update_job_collection(
@@ -1250,7 +1281,8 @@ async def update_job_collection(
     body: _UpdateJobRequest,
     request: Request,
     conn: AsyncConnection = Depends(get_async_connection),
-):
+    language: str = Depends(get_language),
+) -> JSONResponse:
     """Update a deferred job's inputs (Collection context). Only while CREATED."""
     engine = get_async_engine(request)
     schema = await _resolve_catalog_schema(catalog_id, conn)
@@ -1258,7 +1290,7 @@ async def update_job_collection(
         job = await execution_engine.update_job(job_id, body.inputs, engine=engine, db_schema=schema)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _task_to_status_info(job, request)
+    return JSONResponse(content=_localize_status_info(_task_to_status_info(job, request), language))
 
 
 # --- OGC Part 4: Start Job (POST /jobs/{id}/results) at 3 scopes ---
@@ -1266,13 +1298,13 @@ async def update_job_collection(
 @router.post(
     "/jobs/{job_id}/results",
     status_code=status.HTTP_202_ACCEPTED,
-    response_model=Union[models.StatusInfo, Any],
     name="start_job",
 )
 async def start_job(
     job_id: uuid.UUID,
     request: Request,
     background_tasks: BackgroundTasks,
+    language: str = Depends(get_language),
 ):
     """Trigger execution of a CREATED job (System context)."""
     engine = get_async_engine(request)
@@ -1286,13 +1318,12 @@ async def start_job(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 @router.post(
     "/catalogs/{catalog_id}/jobs/{job_id}/results",
     status_code=status.HTTP_202_ACCEPTED,
-    response_model=Union[models.StatusInfo, Any],
     name="start_job_catalog",
 )
 async def start_job_catalog(
@@ -1301,6 +1332,7 @@ async def start_job_catalog(
     request: Request,
     background_tasks: BackgroundTasks,
     conn: AsyncConnection = Depends(get_async_connection),
+    language: str = Depends(get_language),
 ):
     """Trigger execution of a CREATED job (Catalog context)."""
     engine = get_async_engine(request)
@@ -1315,13 +1347,12 @@ async def start_job_catalog(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 @router.post(
     "/catalogs/{catalog_id}/collections/{collection_id}/jobs/{job_id}/results",
     status_code=status.HTTP_202_ACCEPTED,
-    response_model=Union[models.StatusInfo, Any],
     name="start_job_collection",
 )
 async def start_job_collection(
@@ -1331,6 +1362,7 @@ async def start_job_collection(
     request: Request,
     background_tasks: BackgroundTasks,
     conn: AsyncConnection = Depends(get_async_connection),
+    language: str = Depends(get_language),
 ):
     """Trigger execution of a CREATED job (Collection context)."""
     engine = get_async_engine(request)
@@ -1345,7 +1377,7 @@ async def start_job_collection(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found. ({e})") from e
-    return _handle_execution_result(result, request)
+    return _handle_execution_result(result, request, language)
 
 
 def _handle_job_results(task: Task, job_id: uuid.UUID):
