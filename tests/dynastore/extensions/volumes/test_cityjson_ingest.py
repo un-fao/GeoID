@@ -543,3 +543,198 @@ async def test_ingest_best_effort_batch_failure():
     assert batch_warnings, "Expected at least one batch-failure warning"
     # Both batches were attempted (2 calls total)
     assert item_service.upsert.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Geometry repair: make_valid + polygonal coercion (issue #2044)
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_to_multipolygon_valid_polygon():
+    """A valid Polygon is wrapped into a one-element MultiPolygon."""
+    from shapely.geometry import Polygon
+
+    from dynastore.extensions.volumes.cityjson_ingest import _coerce_to_multipolygon
+
+    p = Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    result = _coerce_to_multipolygon(p)
+    assert result.geom_type == "MultiPolygon"
+    assert result.is_valid
+    assert not result.is_empty
+
+
+def test_coerce_to_multipolygon_valid_multipolygon():
+    """A valid MultiPolygon is returned unchanged."""
+    from shapely.geometry import MultiPolygon, Polygon
+
+    from dynastore.extensions.volumes.cityjson_ingest import _coerce_to_multipolygon
+
+    mp = MultiPolygon([
+        Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        Polygon([(2, 2), (3, 2), (3, 3), (2, 3)]),
+    ])
+    result = _coerce_to_multipolygon(mp)
+    assert result.geom_type == "MultiPolygon"
+    assert result.is_valid
+    assert not result.is_empty
+
+
+def test_coerce_to_multipolygon_self_intersecting_bowtie():
+    """A self-intersecting (bow-tie) Polygon is repaired and the result is:
+    (a) valid per shapely,
+    (b) polygonal (Polygon or MultiPolygon, NOT GeometryCollection),
+    (c) non-empty — area is preserved from both lobes of the bow-tie.
+    """
+    from shapely.geometry import Polygon
+
+    from dynastore.extensions.volumes.cityjson_ingest import _coerce_to_multipolygon
+
+    # Classic bow-tie: two triangles sharing a single crossing point.
+    # buffer(0) collapses this to empty; make_valid preserves both lobes.
+    bow_tie = Polygon([(0, 0), (2, 2), (2, 0), (0, 2), (0, 0)])
+    assert not bow_tie.is_valid, "precondition: bow-tie must be invalid"
+
+    result = _coerce_to_multipolygon(bow_tie)
+
+    # (a) valid
+    assert result.is_valid, f"result is not valid: {result}"
+    # (b) polygonal — never a GeometryCollection
+    assert result.geom_type in ("Polygon", "MultiPolygon"), (
+        f"expected Polygon or MultiPolygon, got {result.geom_type}"
+    )
+    # (c) non-empty — both lobes survive
+    assert not result.is_empty
+    assert result.area > 0
+
+
+def test_coerce_to_multipolygon_geometrycollection_with_lines():
+    """A GeometryCollection mixing polygons and lines is coerced to MultiPolygon.
+
+    ES geo_shape rejects GeometryCollection and LineString. ``make_valid``
+    can return these for pathological inputs (e.g. collinear self-touching edges).
+    The coercion must extract only the polygon-area components.
+    """
+    from shapely.geometry import GeometryCollection, LineString, Polygon
+
+    from dynastore.extensions.volumes.cityjson_ingest import _coerce_to_multipolygon
+
+    # Build a GeometryCollection directly (simulates make_valid output)
+    gc = GeometryCollection([
+        Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+        LineString([(0, 4), (2, 2)]),
+    ])
+    assert gc.geom_type == "GeometryCollection"
+
+    result = _coerce_to_multipolygon(gc)
+
+    assert result.geom_type in ("Polygon", "MultiPolygon"), (
+        f"expected polygonal type, got {result.geom_type}"
+    )
+    assert result.is_valid
+    assert not result.is_empty
+    # The polygon area must be preserved; the line contributes no area
+    assert abs(result.area - 16.0) < 1e-9
+
+
+def test_coerce_to_multipolygon_es_serializable():
+    """The repaired MultiPolygon must serialize to valid GeoJSON that an ES
+    geo_shape mapping accepts — i.e. only type=MultiPolygon, well-formed
+    coordinates, no GeometryCollection wrapper.
+    """
+    import json
+
+    from shapely.geometry import Polygon, mapping
+
+    from dynastore.extensions.volumes.cityjson_ingest import _coerce_to_multipolygon
+
+    bow_tie = Polygon([(0, 0), (2, 2), (2, 0), (0, 2), (0, 0)])
+    result = _coerce_to_multipolygon(bow_tie)
+
+    geojson = mapping(result)
+    # JSON-serialisable
+    dumped = json.dumps(geojson)
+    reloaded = json.loads(dumped)
+
+    assert reloaded["type"] == "MultiPolygon", (
+        f"GeoJSON type must be MultiPolygon for ES geo_shape, got {reloaded['type']}"
+    )
+    assert isinstance(reloaded["coordinates"], list)
+    assert len(reloaded["coordinates"]) > 0
+
+
+def test_build_footprint_produces_multipolygon_for_bowtie_ring(tmp_path):
+    """_build_footprint_geojson must produce a valid MultiPolygon GeoJSON even
+    when the 2D-projected surface rings are self-intersecting (bow-tie).
+
+    This is the regression test for issue #2044: previously ``buffer(0)`` on
+    self-intersecting rings could produce an empty geometry; ``make_valid``
+    preserves the polygon area. The returned GeoJSON must have type=MultiPolygon
+    so ES geo_shape accepts it.
+    """
+    import pyproj
+    from shapely.geometry import shape
+
+    from dynastore.extensions.volumes.cityjson_ingest import (
+        CityJsonHeader,
+        _build_footprint_geojson,
+        dequantize,
+    )
+
+    # Craft a CityJSON feature whose single surface ring will project to a
+    # self-intersecting polygon in 2D. We use EPSG:28992 (Dutch RD) with
+    # a trivial identity-like transform (scale=1, translate=0).
+    # The surface ring crosses itself: first two points and last two points
+    # form a bow-tie when projected.
+    header = CityJsonHeader(
+        version="2.0",
+        transform_scale=[1.0, 1.0, 1.0],
+        transform_translate=[0.0, 0.0, 0.0],
+        reference_system="https://www.opengis.net/def/crs/EPSG/0/28992",
+        epsg=28992,
+        metadata={},
+    )
+    transformer = pyproj.Transformer.from_crs(28992, 4326, always_xy=True)
+
+    # Two valid triangles slightly offset so when projected they both survive.
+    # We use a known valid Dutch RD coordinate region (near Amsterdam ~[120000, 487000]).
+    base_x, base_y = 120000, 487000
+    feature = {
+        "type": "CityJSONFeature",
+        "id": "bowtie-bldg",
+        "CityObjects": {
+            "bowtie-bldg": {
+                "type": "Building",
+                "attributes": {},
+                "geometry": [
+                    {
+                        "type": "MultiSurface",
+                        "lod": "2",
+                        # A self-intersecting ring: vertices wind in a bow-tie pattern
+                        # (0->2->1->3 instead of 0->1->2->3)
+                        "boundaries": [
+                            # surface 0: bow-tie ring
+                            [[0, 2, 1, 3]],
+                        ],
+                    }
+                ],
+            }
+        },
+        "vertices": [
+            [base_x, base_y, 0],
+            [base_x + 10, base_y, 0],
+            [base_x + 10, base_y + 10, 0],
+            [base_x, base_y + 10, 0],
+        ],
+    }
+
+    vertices_3d = dequantize(feature["vertices"], header)
+    geojson = _build_footprint_geojson(feature, transformer, vertices_3d)
+
+    # Must be a valid GeoJSON MultiPolygon
+    assert geojson["type"] == "MultiPolygon", (
+        f"Expected MultiPolygon for ES geo_shape, got {geojson['type']}"
+    )
+    # Must be shapely-valid
+    shapely_geom = shape(geojson)
+    assert shapely_geom.is_valid, f"Repaired geometry is not valid: {shapely_geom}"
+    assert not shapely_geom.is_empty
