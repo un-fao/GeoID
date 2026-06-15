@@ -36,7 +36,7 @@ Usage::
 import logging
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Iterable, List, Optional, Tuple, Type, TypeVar, cast
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, Response, status
 
 from dynastore.extensions.ogc_models_shared import (
     BulkCreationResponse,
@@ -44,7 +44,9 @@ from dynastore.extensions.ogc_models_shared import (
     SidecarRejection,
 )
 from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
+from dynastore.extensions.tools.response_i18n import localize_model
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.driver_context import DriverContext
 from dynastore.models.protocols import (
@@ -366,14 +368,22 @@ class OGCServiceMixin:
         """Standard conformance endpoint returning this protocol's URIs."""
         return Conformance(conformsTo=self.conformance_uris)
 
-    async def ogc_landing_page_handler(self, request: Request) -> LandingPage:
+    async def ogc_landing_page_handler(
+        self,
+        request: Request,
+        language: str = Depends(get_language),
+    ) -> JSONResponse:
         """Standard landing page with self, conformance, and service-doc links.
+
+        Returns a ``JSONResponse`` with link titles collapsed to a single
+        language string (or the full multi-language dict when
+        ``language='*'``).  Default language is ``'en'``.
 
         Override in subclass if the protocol needs a custom landing page
         (e.g. STAC returns a root catalog, not a plain landing page).
         """
         root_url = get_root_url(request)
-        return LandingPage(
+        landing_page = LandingPage(
             title=self.protocol_title,
             description=self.protocol_description,
             links=[
@@ -397,6 +407,7 @@ class OGCServiceMixin:
                 ),
             ],
         )
+        return JSONResponse(content=localize_model(landing_page, language))
 
     # ------------------------------------------------------------------
     # Shared CRUD helpers

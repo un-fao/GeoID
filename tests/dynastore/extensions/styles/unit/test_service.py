@@ -25,7 +25,7 @@ landing page generation, and the internal stylesheet helpers.
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi import Request
 
@@ -143,30 +143,32 @@ def test_routes_registered():
 
 @pytest.mark.asyncio
 async def test_landing_page_contains_self_link(monkeypatch):
-    from dynastore.extensions.tools.url import get_root_url
-
+    import json as _json
     monkeypatch.setattr(
         "dynastore.extensions.ogc_base.get_root_url",
         lambda req: "http://example.com",
     )
     svc = _build_service()
     req = _make_request()
-    page = await svc.get_landing_page(req)
-    hrefs = [lnk.href for lnk in page.links]
-    assert any("self" in lnk.rel for lnk in page.links)
+    resp = await svc.get_landing_page(req, language="en")
+    body = _json.loads(resp.body)
+    hrefs = [lnk["href"] for lnk in body["links"]]
+    assert any("self" in lnk["rel"] for lnk in body["links"])
     assert any("/styles/" in h for h in hrefs)
 
 
 @pytest.mark.asyncio
 async def test_landing_page_contains_conformance_link(monkeypatch):
+    import json as _json
     monkeypatch.setattr(
         "dynastore.extensions.ogc_base.get_root_url",
         lambda req: "http://example.com",
     )
     svc = _build_service()
     req = _make_request()
-    page = await svc.get_landing_page(req)
-    assert any("conformance" in lnk.rel for lnk in page.links)
+    resp = await svc.get_landing_page(req, language="en")
+    body = _json.loads(resp.body)
+    assert any("conformance" in lnk["rel"] for lnk in body["links"])
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,8 @@ from dynastore.extensions.coverages.config import CoveragesConfig
 from dynastore.extensions.coverages.links import build_coverage_links
 from dynastore.extensions.ogc_base import OGCServiceMixin, ogc_asset_href
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.query import parse_hints_param  # noqa: E402
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.modules.coverages.domainset import build_domainset
@@ -401,8 +403,10 @@ class CoveragesService(ExtensionProtocol, OGCServiceMixin):
     # Landing page & conformance (delegated to OGCServiceMixin)
     # ------------------------------------------------------------------
 
-    async def get_landing_page(self, request: Request):
-        return await self.ogc_landing_page_handler(request)
+    async def get_landing_page(
+        self, request: Request, language: str = Depends(get_language)
+    ) -> JSONResponse:
+        return await self.ogc_landing_page_handler(request, language=language)
 
     async def get_conformance(self, request: Request) -> cm.Conformance:
         return await self.ogc_conformance_handler(request)
