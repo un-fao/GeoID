@@ -307,7 +307,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                     if isinstance(resolved, IdpConfig)
                     else IdpConfig.model_validate(resolved)
                 )
-                logger.debug("IdpConfig loaded: type=%s, issuer_url=%s, is_configured=%s", cfg.type, cfg.issuer_url, cfg.is_configured)
+                logger.info("DEBUG: IdpConfig loaded: type=%s, issuer_url=%s, is_configured=%s", cfg.type, cfg.issuer_url, cfg.is_configured)
             except Exception:
                 logger.debug("IdpConfig unavailable", exc_info=True)
 
@@ -337,7 +337,7 @@ class IamModule(ModuleProtocol, AuthenticationProtocol, AuthorizationProtocol, P
                 "registered. See modules/iam/identity_providers/README.md."
             )
         
-        logger.debug("_register_identity_provider end: cfg=%s, is_configured=%s", cfg is not None, cfg.is_configured if cfg else None)
+        logger.info("DEBUG: _register_identity_provider end: cfg=%s, is_configured=%s", cfg is not None, cfg.is_configured if cfg else None)
 
     async def _register_usage_counter_drivers(self, stack: AsyncExitStack) -> None:
         """Wire a :class:`UsageCounterProtocol` driver for rate-limit / quota.
