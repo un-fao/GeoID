@@ -49,6 +49,8 @@ from dynastore.extensions.tools.query import parse_hints_param  # noqa: E402
 from dynastore.extensions.dggs.config import DGGSConfig
 from dynastore.extensions.ogc_base import OGCServiceMixin
 from dynastore.extensions.protocols import ExtensionProtocol
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.url import get_root_url
 from dynastore.models.shared_models import Link
 from dynastore.modules.dggs import h3_indexer, s2_indexer
@@ -205,8 +207,10 @@ class DGGSService(ExtensionProtocol, OGCServiceMixin):
     # Landing page & conformance
     # ------------------------------------------------------------------
 
-    async def get_landing_page(self, request: Request):
-        return await self.ogc_landing_page_handler(request)
+    async def get_landing_page(
+        self, request: Request, language: str = Depends(get_language)
+    ) -> JSONResponse:
+        return await self.ogc_landing_page_handler(request, language=language)
 
     async def get_conformance(self, request: Request):
         return await self.ogc_conformance_handler(request)
