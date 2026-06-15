@@ -41,6 +41,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from dynastore.extensions import protocols
 from dynastore.extensions.ogc_base import OGCServiceMixin
+from dynastore.extensions.tools.fast_api import AppJSONResponse as JSONResponse
+from dynastore.extensions.tools.language_utils import get_language
 from dynastore.extensions.tools.ogc_common_models import Conformance, LandingPage
 from dynastore.tools.discovery import get_protocol
 from dynastore.models.protocols.configs import ConfigsProtocol
@@ -242,8 +244,10 @@ class TilesService(protocols.ExtensionProtocol, StaticFilesProtocol, OGCServiceM
 
     # --- OGC API Common (delegated to OGCServiceMixin) ---
 
-    async def get_landing_page(self, request: Request) -> LandingPage:
-        return await self.ogc_landing_page_handler(request)
+    async def get_landing_page(
+        self, request: Request, language: str = Depends(get_language)
+    ) -> JSONResponse:
+        return await self.ogc_landing_page_handler(request, language=language)
 
     async def get_conformance(self, request: Request) -> Conformance:
         return await self.ogc_conformance_handler(request)

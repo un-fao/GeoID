@@ -16,146 +16,162 @@
 #    Company: FAO, Viale delle Terme di Caracalla, 00100 Rome, Italy
 #    Contact: copyright@fao.org - http://fao.org/contact-us/terms/en/
 
-"""Helpers for resolving LocalizedText fields in OGC response objects.
+"""Response-level i18n helpers for OGC API endpoints.
 
-These functions operate on already-serialized dicts (``model_dump`` output) or
-on Pydantic model instances via ``model_construct``, never through a normal
-constructor.  The ``Link.title`` before-validator re-wraps any plain ``str``
-to ``{"en": "..."}``; bypassing that validator is required to put a plain
-string on the wire when ``lang != '*'``.
+These utilities operate on *serialized dicts* (output of model_dump) rather
+than on live Pydantic model instances.  That distinction is intentional:
+``Link.title`` carries a ``@field_validator("title", mode="before")`` that
+re-wraps any plain ``str`` value back into ``{"en": str}`` on every
+validation pass.  Resolving on the dumped dict avoids triggering that
+validator and keeps plain strings on the wire for the chosen language.
+
+Typical use::
+
+    from dynastore.extensions.tools.response_i18n import localize_model
+
+    data = localize_model(landing_page, language)
+    return JSONResponse(content=data)
 """
-from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel
+
+from dynastore.models.localization import (
+    LocalizedDTO,
+    is_multilanguage_input,
+)
 
 
-def resolve_localized(
-    value: Any,
-    language: str,
-) -> Any:
-    """Resolve a localized value (``LocalizedText`` instance or ``dict``) to a
-    single-language scalar.
+def resolve_localized(value: Any, lang: str) -> Any:
+    """Collapse a localised value to a single language string.
 
-    - ``language == '*'``: returns the full ``{"lang": "value", ...}`` dict.
-    - Otherwise: returns the best-match string, falling back to ``"en"``, then
-      the first available language.
-    - If ``value`` is already a plain ``str`` / non-dict / ``None``, it is
-      returned unchanged.
+    Collapse rules (applied in order):
+    * ``lang == '*'`` — return *value* unchanged (full round-trip passthrough).
+    * ``value is None`` — return ``None``.
+    * Plain ``str`` — return unchanged.
+    * :class:`~dynastore.models.localization.LocalizedDTO` (including
+      ``LocalizedText``) — delegate to ``.resolve(lang, default="en")``.
+    * Language-keyed ``dict`` (detected via
+      :func:`~dynastore.models.localization.is_multilanguage_input`) —
+      collapse with the same fallback order as ``LocalizedDTO.resolve``:
+      exact → base-language → ``"en"`` → first key.
+    * Anything else — return unchanged.
     """
+    if lang == "*":
+        return value
     if value is None:
         return None
-
-    # Already a plain string (field was never multi-language).
     if isinstance(value, str):
         return value
-
-    # Support both LocalizedText pydantic instances and raw dicts.
-    from pydantic import BaseModel
-
-    if isinstance(value, BaseModel):
-        data: Dict[str, Any] = {k: v for k, v in value.model_dump().items() if v is not None}
-    elif isinstance(value, dict):
-        data = {k: v for k, v in value.items() if v is not None}
-    else:
-        return value
-
-    if not data:
-        return None
-
-    if language == "*":
-        return data
-
-    return (
-        data.get(language)
-        or data.get(language.split("-")[0])
-        or data.get("en")
-        or next(iter(data.values()), None)
-    )
+    if isinstance(value, LocalizedDTO):
+        return value.resolve(lang, default="en")
+    if is_multilanguage_input(value):
+        # Replicate LocalizedDTO.resolve fallback order on a plain dict.
+        data: Dict[str, Any] = {k: v for k, v in value.items() if v is not None}
+        if not data:
+            return None
+        # 1. Exact match
+        if lang in data:
+            return data[lang]
+        # 2. Base language (e.g. "en" from "en-US")
+        base = lang.split("-")[0]
+        if base in data:
+            return data[base]
+        # 3. Default "en"
+        if "en" in data:
+            return data["en"]
+        # 4. First available
+        return next(iter(data.values()))
+    return value
 
 
-def resolve_links(
-    links: Optional[List[Any]],
-    language: str,
-) -> Optional[List[Any]]:
-    """Resolve ``title`` on each ``Link`` (model or dict) in *links*.
+def resolve_links(links: Optional[List[Any]], lang: str) -> Optional[List[Dict[str, Any]]]:
+    """Dump each Link and resolve its ``title`` field to *lang*.
 
-    Returns a new list where every element whose ``title`` is a
-    ``LocalizedText`` (or a ``{"lang": "..."}`` dict) has been replaced with a
-    ``Link`` instance built via ``model_construct`` — bypassing the
-    ``before`` validator that would otherwise re-wrap a resolved plain string
-    back into ``{"en": "..."}``.
+    Each element is serialized via ``model_dump(by_alias=True,
+    exclude_none=True)`` when it is a Pydantic model, otherwise passed
+    through as-is.  The ``title`` key in the resulting dict is then
+    collapsed with :func:`resolve_localized`.
 
-    Elements that are already plain dicts (no ``model_construct``) are
-    processed in-place as shallow copies.
+    ``lang == '*'`` is a passthrough: links are still dumped to dicts but
+    their ``title`` values (which are stored as ``{"en": "..."}`` after the
+    Link validator runs) are returned as-is (full multi-language dicts).
     """
-    if not links:
-        return links
-
-    from dynastore.models.shared_models import Link
-
-    resolved: List[Any] = []
+    if links is None:
+        return None
+    result: List[Dict[str, Any]] = []
     for link in links:
-        if link is None:
-            resolved.append(link)
-            continue
-
-        # --- dict branch (pre-dumped links) ---
-        if isinstance(link, dict):
-            title = link.get("title")
-            if title is None:
-                resolved.append(link)
-                continue
-            new_title = resolve_localized(title, language)
-            if new_title is title:
-                resolved.append(link)
-            else:
-                copy = dict(link)
-                if new_title is None:
-                    copy.pop("title", None)
-                else:
-                    copy["title"] = new_title
-                resolved.append(copy)
-            continue
-
-        # --- Pydantic Link branch ---
-        title = getattr(link, "title", None)
-        if title is None:
-            resolved.append(link)
-            continue
-
-        new_title = resolve_localized(title, language)
-        # Dump all fields, replace title with the resolved value, then
-        # rebuild via model_construct to bypass the before-validator.
-        d = link.model_dump(exclude_none=True)
-        if new_title is None:
-            d.pop("title", None)
+        if isinstance(link, BaseModel):
+            d: Dict[str, Any] = link.model_dump(by_alias=True, exclude_none=True)
+        elif isinstance(link, dict):
+            d = dict(link)
         else:
-            d["title"] = new_title
-        resolved.append(Link.model_construct(**d))
+            continue
+        if "title" in d:
+            d["title"] = resolve_localized(d["title"], lang)
+            if d["title"] is None:
+                del d["title"]
+        result.append(d)
+    return result
 
-    return resolved
+
+def localize_response_dict(
+    data: Dict[str, Any],
+    lang: str,
+    *,
+    text_fields: Tuple[str, ...] = ("title", "description"),
+    link_keys: Tuple[str, ...] = ("links",),
+) -> Dict[str, Any]:
+    """Resolve localised fields in a serialized response dict, in-place.
+
+    * Each key in *text_fields* at the top level is passed through
+      :func:`resolve_localized`.
+    * Each key in *link_keys* is treated as a list of link objects and
+      passed through :func:`resolve_links`.
+
+    The dict is mutated **and** returned so callers can chain the call::
+
+        data = localize_response_dict(landing_page.model_dump(...), lang)
+
+    ``lang == '*'`` is a no-op for plain-string fields (they are left
+    unchanged) but the full multi-language dict is preserved on localised
+    fields.
+    """
+    for field in text_fields:
+        if field in data:
+            resolved = resolve_localized(data[field], lang)
+            if resolved is None:
+                del data[field]
+            else:
+                data[field] = resolved
+
+    for lk in link_keys:
+        if lk in data:
+            data[lk] = resolve_links(data[lk], lang)
+
+    return data
 
 
 def localize_model(
-    model_dict: Dict[str, Any],
-    language: str,
+    model: BaseModel,
+    lang: str,
+    *,
+    text_fields: Tuple[str, ...] = ("title", "description"),
+    link_keys: Tuple[str, ...] = ("links",),
 ) -> Dict[str, Any]:
-    """Resolve all ``links[].title`` entries in a serialized model dict.
+    """Serialize *model* and resolve all localised fields for *lang*.
 
-    Operates on the dict returned by ``model.model_dump(...)``.  Only the
-    ``links`` key is processed; all other members are left untouched so no
-    foreign members are added or dropped.
+    Equivalent to::
+
+        localize_response_dict(
+            model.model_dump(by_alias=True, exclude_none=True),
+            lang,
+            text_fields=text_fields,
+            link_keys=link_keys,
+        )
+
+    Returns a plain ``dict`` ready for ``JSONResponse(content=...)``.
     """
-    raw_links = model_dict.get("links")
-    if not raw_links:
-        return model_dict
-
-    resolved = resolve_links(raw_links, language)
-    if resolved is raw_links:
-        return model_dict
-
-    # Return a shallow copy with the resolved links so the original dict is
-    # not mutated (callers may hold references to it).
-    result = dict(model_dict)
-    result["links"] = resolved
-    return result
+    data = model.model_dump(by_alias=True, exclude_none=True)
+    return localize_response_dict(data, lang, text_fields=text_fields, link_keys=link_keys)

@@ -31,7 +31,11 @@ from __future__ import annotations
 
 from dynastore.models.localization import LocalizedText
 from dynastore.models.shared_models import Link
-from dynastore.extensions.tools.response_i18n import resolve_localized, resolve_links, localize_model
+from dynastore.extensions.tools.response_i18n import (
+    resolve_localized,
+    resolve_links,
+    localize_response_dict,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +64,11 @@ def test_resolve_localized_fallback_to_en_on_unknown_lang():
 def test_resolve_localized_wildcard_returns_full_dict():
     lt = LocalizedText(en="Items list", fr="Liste des entités")
     result = resolve_localized(lt, "*")
-    assert isinstance(result, dict)
-    assert result["en"] == "Items list"
-    assert result["fr"] == "Liste des entités"
+    # '*' is a passthrough: the full multi-language object is returned
+    # unchanged and serialized to the full dict at the response boundary.
+    dumped = result.model_dump(exclude_none=True) if hasattr(result, "model_dump") else result
+    assert dumped["en"] == "Items list"
+    assert dumped["fr"] == "Liste des entités"
 
 
 def test_resolve_localized_plain_str_passthrough():
@@ -121,7 +127,9 @@ def test_resolve_links_no_title_link_unchanged():
     link = Link(href="https://example.com", rel="collection")
     resolved = resolve_links([link], "en")
     assert resolved is not None
-    assert resolved[0] is link
+    # resolve_links always returns serialized dicts; a titleless link keeps
+    # its other members (title is excluded as None).
+    assert resolved[0] == {"href": "https://example.com", "rel": "collection"}
 
 
 def test_resolve_links_empty_returns_empty():
@@ -161,7 +169,7 @@ def test_localize_model_resolves_links_title():
             {"href": "https://example.com/items?f=html", "rel": "alternate", "title": {"en": "HTML view"}},
         ],
     }
-    result = localize_model(model_dict, "en")
+    result = localize_response_dict(model_dict, "en")
     assert result["links"][1]["title"] == "HTML view"
 
 
@@ -178,7 +186,7 @@ def test_localize_model_does_not_add_top_level_members_feature():
         ],
     }
     keys_before = set(feature_dict.keys())
-    result = localize_model(feature_dict, "en")
+    result = localize_response_dict(feature_dict, "en")
     assert set(result.keys()) == keys_before, "top-level members must not change"
     assert result["type"] == "Feature"
     assert result["id"] == "item-1"
@@ -199,7 +207,7 @@ def test_localize_model_does_not_add_top_level_members_feature_collection():
         ],
     }
     keys_before = set(fc_dict.keys())
-    result = localize_model(fc_dict, "fr")
+    result = localize_response_dict(fc_dict, "fr")
     assert set(result.keys()) == keys_before
     assert result["links"][1]["title"] == "Vue HTML"
     assert result["features"] is fc_dict["features"]
@@ -208,7 +216,7 @@ def test_localize_model_does_not_add_top_level_members_feature_collection():
 
 def test_localize_model_no_links_is_identity():
     d = {"type": "Feature", "id": "x", "geometry": None, "properties": {}}
-    result = localize_model(d, "en")
+    result = localize_response_dict(d, "en")
     assert result is d  # unchanged, same object
 
 
@@ -217,5 +225,5 @@ def test_localize_model_link_without_title_unchanged():
         "type": "Feature",
         "links": [{"href": "https://example.com", "rel": "self"}],
     }
-    result = localize_model(d, "en")
+    result = localize_response_dict(d, "en")
     assert result["links"][0] == {"href": "https://example.com", "rel": "self"}
