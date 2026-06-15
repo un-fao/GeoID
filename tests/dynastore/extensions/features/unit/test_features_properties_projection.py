@@ -198,6 +198,7 @@ def _call_get_items(svc, **overrides):
         bbox_crs=None,
         sortby=None,
         f=OutputFormatEnum.GEOJSON,
+        language="en",
     )
     kwargs.update(overrides)
     return svc.get_items(**kwargs)

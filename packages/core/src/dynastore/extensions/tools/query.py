@@ -673,15 +673,33 @@ def stream_ogc_features(
     collection_id: str,
     target_srid: int = 4326,
     links: Optional[List[Any]] = None,
+    language: str = "en",
 ) -> StreamingResponse:
     """
     Unified streaming response for OGC Features/WFS/DWH.
+
+    ``language`` controls how ``Link.title`` values (``LocalizedText``) are
+    resolved before writing to the wire.  Default ``'en'`` collapses each
+    title to a plain string; ``'*'`` preserves the full multi-language dict.
     """
-    ogc_metadata = OGCResponseMetadata(
+    from datetime import datetime, timezone
+    from dynastore.extensions.tools.response_i18n import resolve_links
+
+    links_data: Optional[List[Any]] = None
+    if links:
+        # Dump each Link to a plain dict, then resolve title in-place so the
+        # resolved value (plain str or full dict) reaches the wire unchanged.
+        # We bypass OGCResponseMetadata's Link validator (which would re-wrap
+        # a plain str back to {"en": "..."}) by using model_construct below.
+        raw_dicts = [lnk.model_dump(exclude_none=True) if hasattr(lnk, "model_dump") else lnk for lnk in links]
+        links_data = resolve_links(raw_dicts, language)
+
+    # model_construct bypasses Pydantic field validators so pre-resolved dicts
+    # stored in links_data reach formatters.py without being re-wrapped.
+    ogc_metadata = OGCResponseMetadata.model_construct(
         numberMatched=query_response.total_count,
-        links=[l.model_dump() if hasattr(l, "model_dump") else l for l in links]
-        if links
-        else None,
+        links=links_data,
+        timeStamp=datetime.now(timezone.utc),
     )
 
     return format_response(
