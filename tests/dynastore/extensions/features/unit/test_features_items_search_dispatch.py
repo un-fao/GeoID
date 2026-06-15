@@ -154,7 +154,7 @@ async def test_get_items_uses_search_dispatch_when_available(monkeypatch):
         request=_make_request(), catalog_id="cat", collection_id="col",
         conn=None, limit=10, offset=0, bbox=None, datetime_param=None,
         filter=None, filter_lang="cql2-text", crs=None, bbox_crs=None,
-        sortby=None, f=OutputFormatEnum.GEOJSON,
+        sortby=None, f=OutputFormatEnum.GEOJSON, language="en",
     )
     body = json.loads(await _read_body(resp))
     assert body["type"] == "FeatureCollection"
@@ -194,7 +194,7 @@ async def test_get_items_threads_bbox_and_datetime_to_dispatch(monkeypatch):
         conn=None, limit=25, offset=50, bbox="1,2,3,4",
         datetime_param="2024-01-01/2024-12-31",
         filter=None, filter_lang="cql2-text", crs=None, bbox_crs=None,
-        sortby=None, f=OutputFormatEnum.GEOJSON,
+        sortby=None, f=OutputFormatEnum.GEOJSON, language="en",
     )
     assert captured["bbox"] == [1.0, 2.0, 3.0, 4.0]
     assert captured["datetime"] == "2024-01-01/2024-12-31"
@@ -219,7 +219,7 @@ async def test_get_items_falls_back_to_pg_when_dispatch_declines(monkeypatch):
         request=_make_request(), catalog_id="cat", collection_id="col",
         conn=None, limit=10, offset=0, bbox=None, datetime_param=None,
         filter=None, filter_lang="cql2-text", crs=None, bbox_crs=None,
-        sortby=None, f=OutputFormatEnum.GEOJSON,
+        sortby=None, f=OutputFormatEnum.GEOJSON, language="en",
     )
     body = json.loads(await _read_body(resp))
     assert [f["id"] for f in body["features"]] == ["pg-1"]
@@ -246,7 +246,7 @@ async def test_get_items_skips_dispatch_for_cql_filter(monkeypatch):
         request=_make_request(), catalog_id="cat", collection_id="col",
         conn=None, limit=10, offset=0, bbox=None, datetime_param=None,
         filter="prop = 'x'", filter_lang="cql2-text", crs=None, bbox_crs=None,
-        sortby=None, f=OutputFormatEnum.GEOJSON,
+        sortby=None, f=OutputFormatEnum.GEOJSON, language="en",
     )
     assert called["dispatch"] is False
     assert catalogs.stream_called is True
@@ -279,7 +279,7 @@ async def test_get_items_skips_dispatch_for_non_4326_crs(monkeypatch):
         conn=None, limit=10, offset=0, bbox=None, datetime_param=None,
         filter=None, filter_lang="cql2-text",
         crs="http://www.opengis.net/def/crs/EPSG/0/3857", bbox_crs=None,
-        sortby=None, f=OutputFormatEnum.GEOJSON,
+        sortby=None, f=OutputFormatEnum.GEOJSON, language="en",
     )
     assert called["dispatch"] is False
     assert catalogs.stream_called is True

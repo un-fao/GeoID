@@ -63,7 +63,10 @@ from dynastore.models.shared_models import (
 from dynastore.models.ogc import Feature as _OGCFeature
 from dynastore.extensions.tools.url import get_root_url, get_url
 from dynastore.extensions.tools.language_utils import get_language
-from dynastore.extensions.tools.response_i18n import localize_model
+from dynastore.extensions.tools.response_i18n import (  # noqa: E402
+    localize_model,
+    localize_response_dict,
+)
 from dynastore.extensions.protocols import ExtensionProtocol
 from dynastore.extensions.ogc_base import OGCServiceMixin, OGCTransactionMixin
 from dynastore.extensions.web.decorators import expose_web_page, expose_static
@@ -586,11 +589,17 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             crs=supported_crs,
         )
 
-    async def get_supported_functions(self, request: Request):
+    async def get_supported_functions(
+        self,
+        request: Request,
+        language: str = Depends(get_language),
+    ):
         """Returns a list of supported filter functions (Part 3)."""
         # The list of functions is defined at the module level.
         # In a future implementation, this could be made dynamic based on backend capabilities.
-        return FunctionsResponse(functions=SUPPORTED_CQL_FUNCTIONS)
+        resp = FunctionsResponse(functions=SUPPORTED_CQL_FUNCTIONS)
+        d = localize_response_dict(resp.model_dump(exclude_none=True), language)
+        return JSONResponse(content=d)
 
     async def get_queryables(
         self,
@@ -831,6 +840,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             description="The output format for the features.",
         ),
         request_hints: FrozenSet = Depends(parse_hints_param),
+        language: str = Depends(get_language),
     ) -> Response:
         catalogs_svc = await self._get_catalogs_service()
         configs_svc = await self._get_configs_service()
@@ -1067,6 +1077,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
                 collection_id=collection_id,
                 target_srid=target_crs_srid or 4326,
                 links=links,
+                language=language,
             )
         except Exception as e:
             return handle_or_raise(
@@ -1083,6 +1094,7 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
         item_id: str,
         request: Request,
         conn: AsyncConnection = Depends(get_async_connection),
+        language: str = Depends(get_language),
     ):
         catalogs_svc = await self._get_catalogs_service()
         items_protocol = cast(ItemsProtocol, catalogs_svc)
@@ -1124,9 +1136,9 @@ class OGCFeaturesService(ExtensionProtocol, OGCServiceMixin, OGCTransactionMixin
             feature, catalog_id, collection_id, root_url, layer_config,
             read_policy=read_policy,
         )
-        return JSONResponse(
-            content=ogc_feature.model_dump(exclude_none=True, by_alias=True),
-        )
+        feature_dict = ogc_feature.model_dump(exclude_none=True, by_alias=True)
+        feature_dict = localize_response_dict(feature_dict, language)
+        return JSONResponse(content=feature_dict)
 
     async def add_item(
         self,
